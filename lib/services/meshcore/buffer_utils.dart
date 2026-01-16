@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 /// Buffer reader for parsing binary data from MeshCore devices
@@ -206,7 +207,7 @@ class BufferWriter {
     final bytes = Uint8List(maxLength);
     
     // Copy string bytes up to maxLength - 1
-    final copyLength = encoded.length < maxLength - 1 ? encoded.length : maxLength - 1;
+    final copyLength = math.min(encoded.length, maxLength - 1);
     for (int i = 0; i < copyLength; i++) {
       bytes[i] = encoded[i];
     }
