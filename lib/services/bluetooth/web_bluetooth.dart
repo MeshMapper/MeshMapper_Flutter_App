@@ -139,10 +139,17 @@ class WebBluetoothService implements BluetoothService {
       // Start notifications on TX characteristic
       await _txCharacteristic!.startNotifications();
       _notificationSubscription = _txCharacteristic!.value.listen((value) {
-        // Convert ByteData to Uint8List
-        final buffer = value.buffer.asUint8List(value.offsetInBytes, value.lengthInBytes);
-        if (buffer.isNotEmpty) {
-          _dataController.add(buffer);
+        try {
+          // Convert ByteData to Uint8List
+          final buffer = value.buffer.asUint8List(value.offsetInBytes, value.lengthInBytes);
+          if (buffer.isNotEmpty) {
+            _dataController.add(buffer);
+          }
+        } catch (e) {
+          // If value is already Uint8List or conversion fails, try direct cast
+          if (value is Uint8List && value.isNotEmpty) {
+            _dataController.add(value);
+          }
         }
       });
 
