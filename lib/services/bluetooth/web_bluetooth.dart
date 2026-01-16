@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter_web_bluetooth/flutter_web_bluetooth.dart';
+import 'package:flutter_web_bluetooth/flutter_web_bluetooth.dart' as fwb;
 
 import '../../models/connection_state.dart';
 import '../meshcore/protocol_constants.dart';
@@ -12,13 +12,13 @@ import 'bluetooth_service.dart';
 class WebBluetoothService implements BluetoothService {
   final _connectionController = StreamController<ConnectionStatus>.broadcast();
   final _dataController = StreamController<Uint8List>.broadcast();
-  final FlutterWebBluetooth _webBluetooth = FlutterWebBluetooth.instance;
+  final fwb.FlutterWebBluetooth _webBluetooth = fwb.FlutterWebBluetooth.instance;
 
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   DiscoveredDevice? _connectedDevice;
-  BluetoothDevice? _device;
-  BluetoothCharacteristic? _rxCharacteristic;
-  BluetoothCharacteristic? _txCharacteristic;
+  fwb.BluetoothDevice? _device;
+  dynamic _rxCharacteristic;  // Using dynamic to handle WebBluetoothRemoteGATTCharacteristic
+  dynamic _txCharacteristic;  // Using dynamic to handle WebBluetoothRemoteGATTCharacteristic
   StreamSubscription? _notificationSubscription;
 
   @override
@@ -67,7 +67,7 @@ class WebBluetoothService implements BluetoothService {
     try {
       // Request device with MeshCore service filter
       final device = await _webBluetooth.requestDevice(
-        RequestOptionsBuilder.acceptAllDevices(
+        fwb.RequestOptionsBuilder.acceptAllDevices(
           optionalServices: [BleUuids.serviceUuid.toLowerCase()],
         ),
       );
@@ -100,7 +100,7 @@ class WebBluetoothService implements BluetoothService {
 
       // Request device again (Web Bluetooth requires this)
       _device = await _webBluetooth.requestDevice(
-        RequestOptionsBuilder.acceptAllDevices(
+        fwb.RequestOptionsBuilder.acceptAllDevices(
           optionalServices: [BleUuids.serviceUuid.toLowerCase()],
         ),
       );
@@ -139,8 +139,23 @@ class WebBluetoothService implements BluetoothService {
       // Start notifications on TX characteristic
       await _txCharacteristic!.startNotifications();
       _notificationSubscription = _txCharacteristic!.value.listen((value) {
-        if (value.isNotEmpty) {
-          _dataController.add(value);
+        try {
+          Uint8List buffer;
+          // Handle different data types from Web Bluetooth API
+          if (value is ByteData) {
+            buffer = value.buffer.asUint8List(value.offsetInBytes, value.lengthInBytes);
+          } else if (value is Uint8List) {
+            buffer = value;
+          } else {
+            // Unexpected type, skip
+            return;
+          }
+          
+          if (buffer.isNotEmpty) {
+            _dataController.add(buffer);
+          }
+        } catch (e) {
+          // Silently ignore conversion errors
         }
       });
 

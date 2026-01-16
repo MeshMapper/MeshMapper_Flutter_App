@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../models/connection_state.dart';
@@ -16,9 +16,9 @@ class MobileBluetoothService implements BluetoothService {
 
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   DiscoveredDevice? _connectedDevice;
-  BluetoothDevice? _bleDevice;
-  BluetoothCharacteristic? _rxCharacteristic;
-  BluetoothCharacteristic? _txCharacteristic;
+  fbp.BluetoothDevice? _bleDevice;
+  fbp.BluetoothCharacteristic? _rxCharacteristic;
+  fbp.BluetoothCharacteristic? _txCharacteristic;
   StreamSubscription? _connectionStateSubscription;
   StreamSubscription? _notificationSubscription;
   StreamSubscription? _scanSubscription;
@@ -43,7 +43,7 @@ class MobileBluetoothService implements BluetoothService {
   @override
   Future<bool> isAvailable() async {
     try {
-      return await FlutterBluePlus.isSupported;
+      return await fbp.FlutterBluePlus.isSupported;
     } catch (e) {
       return false;
     }
@@ -52,8 +52,8 @@ class MobileBluetoothService implements BluetoothService {
   @override
   Future<bool> isEnabled() async {
     try {
-      final state = await FlutterBluePlus.adapterState.first;
-      return state == BluetoothAdapterState.on;
+      final state = await fbp.FlutterBluePlus.adapterState.first;
+      return state == fbp.BluetoothAdapterState.on;
     } catch (e) {
       return false;
     }
@@ -79,13 +79,13 @@ class MobileBluetoothService implements BluetoothService {
 
     try {
       // Start scanning with filter for MeshCore service UUID
-      await FlutterBluePlus.startScan(
-        withServices: [Guid(BleUuids.serviceUuid)],
+      await fbp.FlutterBluePlus.startScan(
+        withServices: [fbp.Guid(BleUuids.serviceUuid)],
         timeout: timeout ?? const Duration(seconds: 10),
       );
 
       // Listen for scan results
-      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+      _scanSubscription = fbp.FlutterBluePlus.scanResults.listen((results) {
         for (final result in results) {
           final device = DiscoveredDevice(
             id: result.device.remoteId.str,
@@ -107,7 +107,7 @@ class MobileBluetoothService implements BluetoothService {
 
   @override
   Future<void> stopScan() async {
-    await FlutterBluePlus.stopScan();
+    await fbp.FlutterBluePlus.stopScan();
     await _scanSubscription?.cancel();
     _scanSubscription = null;
     if (_connectionStatus == ConnectionStatus.scanning) {
@@ -121,11 +121,11 @@ class MobileBluetoothService implements BluetoothService {
       _updateStatus(ConnectionStatus.connecting);
 
       // Get the device
-      _bleDevice = BluetoothDevice.fromId(deviceId);
+      _bleDevice = fbp.BluetoothDevice.fromId(deviceId);
 
       // Listen for connection state changes
       _connectionStateSubscription = _bleDevice!.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected) {
+        if (state == fbp.BluetoothConnectionState.disconnected) {
           _handleDisconnection();
         }
       });
