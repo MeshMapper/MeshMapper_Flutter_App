@@ -95,15 +95,13 @@ class GpsService {
 
     _updateStatus(GpsStatus.searching);
 
-    // Configure location settings
-    const locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 25, // Trigger every 25m movement
-      timeLimit: Duration(seconds: 30),
-    );
-
+    // Configure location settings for position stream
     _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 25, // Trigger every 25m movement
+        timeLimit: Duration(seconds: 30),
+      ),
     ).listen(
       (position) {
         _lastPosition = position;
@@ -124,10 +122,8 @@ class GpsService {
     // Get initial position
     try {
       final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 15),
-        ),
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 15),
       );
       _lastPosition = position;
       _positionController.add(position);
@@ -196,10 +192,8 @@ class GpsService {
 
     try {
       return await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 15),
-        ),
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 15),
       );
     } catch (e) {
       return null;
