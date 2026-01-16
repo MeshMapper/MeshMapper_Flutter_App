@@ -12,24 +12,23 @@ permissions:
 
 concurrency: 
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress:  false
 
-jobs:
+jobs: 
   deploy:
     runs-on: ubuntu-latest
     environment: 
       name:  github-pages
-      url: ${{ steps.deployment. outputs. page_url }}
-    steps:
-      - uses: actions/checkout@v4
+      url: ${{ steps.deployment. outputs.page_url }}
+    steps: 
+      - uses:  actions/checkout@v4
       
       - uses: subosito/flutter-action@v2
         with:  
-          flutter-version: '3.2.0'
           channel: 'stable'
       
       - run: flutter pub get
-      - run: flutter build web --release --base-href "/"
+      - run:  flutter build web --release --base-href "/"
       
       - uses: actions/configure-pages@v4
       
