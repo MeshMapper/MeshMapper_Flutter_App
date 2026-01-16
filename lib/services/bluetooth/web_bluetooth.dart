@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_web_bluetooth/flutter_web_bluetooth.dart' as fwb;
 
 import '../../models/connection_state.dart';
+import '../../utils/debug_logger_io.dart';
 import '../meshcore/protocol_constants.dart';
 import 'bluetooth_service.dart';
 
@@ -63,13 +64,14 @@ class WebBluetoothService implements BluetoothService {
     // Web Bluetooth doesn't support scanning - uses requestDevice dialog
     // This is a stub that will yield devices from the request dialog
     _updateStatus(ConnectionStatus.scanning);
+    debugLog('[BLE] Opening device picker with service filter: ${BleUuids.serviceUuid}');
     
     try {
-      // Request device with MeshCore service filter
+      // Request device filtered by MeshCore service UUID (matches JS implementation)
       final device = await _webBluetooth.requestDevice(
-        fwb.RequestOptionsBuilder.acceptAllDevices(
-          optionalServices: [BleUuids.serviceUuid.toLowerCase()],
-        ),
+        fwb.RequestOptionsBuilder([
+          fwb.RequestFilterBuilder(services: [BleUuids.serviceUuid.toLowerCase()]),
+        ]),
       );
 
       if (device != null) {
@@ -97,12 +99,13 @@ class WebBluetoothService implements BluetoothService {
   Future<void> connect(String deviceId) async {
     try {
       _updateStatus(ConnectionStatus.connecting);
+      debugLog('[BLE] Connecting to device: $deviceId');
 
-      // Request device again (Web Bluetooth requires this)
+      // Request device filtered by MeshCore service UUID (matches JS implementation)
       _device = await _webBluetooth.requestDevice(
-        fwb.RequestOptionsBuilder.acceptAllDevices(
-          optionalServices: [BleUuids.serviceUuid.toLowerCase()],
-        ),
+        fwb.RequestOptionsBuilder([
+          fwb.RequestFilterBuilder(services: [BleUuids.serviceUuid.toLowerCase()]),
+        ]),
       );
 
       if (_device == null) {

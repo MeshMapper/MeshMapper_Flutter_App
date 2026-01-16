@@ -14,6 +14,15 @@ import '../services/device_model_service.dart';
 import '../services/gps_service.dart';
 import '../services/meshcore/connection.dart';
 import '../services/ping_service.dart';
+import '../utils/debug_logger_io.dart';
+
+/// Auto-ping mode (matches MeshMapper_WebClient behavior)
+enum AutoMode {
+  /// TX/RX Auto: Sends pings on movement, listens for RX responses
+  txRx,
+  /// RX Auto: Passive listening only (no transmit)
+  rxOnly,
+}
 
 /// Main application state provider
 class AppStateProvider extends ChangeNotifier {
@@ -44,6 +53,7 @@ class AppStateProvider extends ChangeNotifier {
   // Ping state
   PingStats _pingStats = const PingStats();
   bool _autoPingEnabled = false;
+  AutoMode _autoMode = AutoMode.txRx;
   int _queueSize = 0;
 
   // Discovered devices
@@ -73,6 +83,7 @@ class AppStateProvider extends ChangeNotifier {
   String? get manufacturerString => _manufacturerString;
   PingStats get pingStats => _pingStats;
   bool get autoPingEnabled => _autoPingEnabled;
+  AutoMode get autoMode => _autoMode;
   int get queueSize => _queueSize;
   List<DiscoveredDevice> get discoveredDevices => _discoveredDevices;
   bool get isScanning => _isScanning;
@@ -287,18 +298,29 @@ class AppStateProvider extends ChangeNotifier {
   /// Send a manual TX ping
   Future<bool> sendPing() async {
     if (_pingService == null) return false;
+    debugLog('[PING] Sending manual TX ping');
     return await _pingService!.sendTxPing();
   }
 
-  /// Toggle auto-ping mode
-  void toggleAutoPing() {
+  /// Toggle auto-ping mode (TX/RX or RX-only)
+  void toggleAutoPing(AutoMode mode) {
     if (_pingService == null) return;
     
-    if (_autoPingEnabled) {
+    // If currently running the same mode, stop it
+    if (_autoPingEnabled && _autoMode == mode) {
+      debugLog('[PING] Stopping auto mode: ${mode.name}');
       _pingService!.disableAutoPing();
       _autoPingEnabled = false;
     } else {
-      _pingService!.enableAutoPing();
+      // Stop any existing mode first
+      if (_autoPingEnabled) {
+        _pingService!.disableAutoPing();
+      }
+      
+      // Start new mode
+      debugLog('[PING] Starting auto mode: ${mode.name}');
+      _autoMode = mode;
+      _pingService!.enableAutoPing(rxOnly: mode == AutoMode.rxOnly);
       _autoPingEnabled = true;
     }
     

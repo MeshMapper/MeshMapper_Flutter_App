@@ -3,41 +3,75 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
-import '../services/ping_service.dart';
 
-/// Ping control buttons (manual/auto ping)
+/// Ping control buttons matching MeshMapper_WebClient layout:
+/// - TX Ping (sky blue) - Manual single ping
+/// - TX/RX Auto (indigo) - Auto mode with TX and RX listening
+/// - RX Auto (indigo) - Passive RX listening only
 class PingControls extends StatelessWidget {
   const PingControls({super.key});
+
+  // Colors matching the original web app
+  static const Color _txPingColor = Color(0xFF0284C7); // sky-600
+  static const Color _txPingHover = Color(0xFF0EA5E9); // sky-500
+  static const Color _autoColor = Color(0xFF4F46E5); // indigo-600
+  static const Color _autoHover = Color(0xFF6366F1); // indigo-500
+  static const Color _stopColor = Color(0xFFDC2626); // red-600
+  static const Color _disabledColor = Color(0xFF6B7280); // gray-500
 
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final validation = appState.pingValidation;
     final canPing = validation == PingValidation.valid;
+    final isTxRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.txRx;
+    final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Manual ping button
-        SizedBox(
-          height: 56,
-          child: ElevatedButton.icon(
-            onPressed: canPing ? () => _sendPing(context, appState) : null,
-            icon: const Icon(Icons.send, size: 24),
-            label: const Text(
-              'PING',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        // Three button row matching web layout
+        Row(
+          children: [
+            // TX Ping button (sky blue)
+            Expanded(
+              child: _PingButton(
+                label: 'TX Ping',
+                color: _txPingColor,
+                hoverColor: _txPingHover,
+                enabled: canPing && !isTxRxAutoRunning && !isRxAutoRunning,
+                onPressed: () => _sendPing(context, appState),
+              ),
             ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
-              disabledBackgroundColor: Colors.grey.shade300,
+            const SizedBox(width: 8),
+            
+            // TX/RX Auto button (indigo, or red when active)
+            Expanded(
+              child: _PingButton(
+                label: isTxRxAutoRunning ? 'Stop' : 'TX/RX Auto',
+                color: isTxRxAutoRunning ? _stopColor : _autoColor,
+                hoverColor: isTxRxAutoRunning ? _stopColor : _autoHover,
+                enabled: appState.isConnected && appState.hasGpsLock,
+                onPressed: () => _toggleTxRxAuto(appState),
+              ),
             ),
-          ),
+            const SizedBox(width: 8),
+            
+            // RX Auto button (indigo, or red when active)
+            Expanded(
+              child: _PingButton(
+                label: isRxAutoRunning ? 'Stop' : 'RX Auto',
+                color: isRxAutoRunning ? _stopColor : _autoColor,
+                hoverColor: isRxAutoRunning ? _stopColor : _autoHover,
+                enabled: appState.isConnected,
+                onPressed: () => _toggleRxAuto(appState),
+              ),
+            ),
+          ],
         ),
         
         // Validation message
-        if (!canPing)
+        if (!canPing && appState.isConnected)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Text(
@@ -50,46 +84,31 @@ class PingControls extends StatelessWidget {
             ),
           ),
 
-        const SizedBox(height: 12),
-
-        // Auto-ping toggle
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Auto Ping',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
+        // Auto-ping status info
+        if (isTxRxAutoRunning || isRxAutoRunning)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              isTxRxAutoRunning 
+                  ? 'TX/RX Auto: Pinging on movement, listening for responses'
+                  : 'RX Auto: Listening for repeater signals only',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.green,
+                    fontWeight: FontWeight.w500,
+                  ),
+              textAlign: TextAlign.center,
             ),
-            Switch.adaptive(
-              value: appState.autoPingEnabled,
-              onChanged: appState.isConnected && appState.hasGpsLock
-                  ? (_) => appState.toggleAutoPing()
-                  : null,
-            ),
-          ],
-        ),
-
-        // Auto-ping info
-        if (appState.autoPingEnabled)
-          Text(
-            'Automatically pings every 25m of movement',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.grey,
-                ),
           ),
       ],
     );
   }
 
   Future<void> _sendPing(BuildContext context, AppStateProvider appState) async {
-    // Haptic feedback
     HapticFeedback.mediumImpact();
     
     final success = await appState.sendPing();
     
     if (success && context.mounted) {
-      // Show brief success feedback
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Ping sent!'),
@@ -99,4 +118,60 @@ class PingControls extends StatelessWidget {
       );
     }
   }
+
+  void _toggleTxRxAuto(AppStateProvider appState) {
+    HapticFeedback.lightImpact();
+    appState.toggleAutoPing(AutoMode.txRx);
+  }
+
+  void _toggleRxAuto(AppStateProvider appState) {
+    HapticFeedback.lightImpact();
+    appState.toggleAutoPing(AutoMode.rxOnly);
+  }
 }
+
+/// Individual ping button styled to match web app
+class _PingButton extends StatelessWidget {
+  final String label;
+  final Color color;
+  final Color hoverColor;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  const _PingButton({
+    required this.label,
+    required this.color,
+    required this.hoverColor,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 44,
+      child: ElevatedButton(
+        onPressed: enabled ? onPressed : null,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: PingControls._disabledColor.withOpacity(0.4),
+          disabledForegroundColor: Colors.white.withOpacity(0.6),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+    );
+  }
+}
+

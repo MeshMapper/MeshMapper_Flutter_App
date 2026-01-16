@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 
 import '../models/connection_state.dart';
 import '../models/ping_data.dart';
+import '../utils/debug_logger_io.dart';
 import 'api_queue_service.dart';
 import 'gps_service.dart';
 import 'meshcore/connection.dart';
@@ -41,6 +42,7 @@ class PingService {
   
   // Auto-ping mode
   bool _autoPingEnabled = false;
+  bool _rxOnlyMode = false;
   StreamSubscription? _positionSubscription;
 
   /// Callback for ping events
@@ -228,14 +230,23 @@ class PingService {
   }
 
   /// Enable auto-ping mode
-  void enableAutoPing() {
+  /// @param rxOnly - If true, only listens for RX (no TX pings)
+  void enableAutoPing({bool rxOnly = false}) {
     if (_autoPingEnabled) return;
     
     _autoPingEnabled = true;
+    _rxOnlyMode = rxOnly;
+    debugLog('[PING] Auto-ping enabled, rxOnly: $rxOnly');
 
     // Listen for position updates and auto-ping when conditions are met
     _positionSubscription = _gpsService.positionStream.listen((position) async {
       if (!_autoPingEnabled) return;
+      
+      // RX-only mode doesn't send pings
+      if (_rxOnlyMode) {
+        debugLog('[RX] RX-only mode - listening for signals');
+        return;
+      }
       
       final validation = canPing();
       if (validation == PingValidation.valid) {
@@ -246,7 +257,9 @@ class PingService {
 
   /// Disable auto-ping mode
   void disableAutoPing() {
+    debugLog('[PING] Auto-ping disabled');
     _autoPingEnabled = false;
+    _rxOnlyMode = false;
     _positionSubscription?.cancel();
     _positionSubscription = null;
   }

@@ -8,12 +8,18 @@ import 'screens/home_screen.dart';
 import 'services/bluetooth/bluetooth_service.dart';
 import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
+import 'utils/debug_logger_io.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // Initialize debug logger (checks for ?debug=1 URL param on web)
+  DebugLogger.initialize();
+  debugLog('[APP] MeshMapper starting...');
+  
   // Initialize Hive for local storage
   await Hive.initFlutter();
+  debugLog('[APP] Hive initialized');
   
   runApp(const MeshMapperApp());
 }
