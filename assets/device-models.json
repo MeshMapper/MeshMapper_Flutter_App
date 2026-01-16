@@ -1,0 +1,293 @@
+{
+  "version": "1.0.0",
+  "generated": "2026-01-04",
+  "source": "MeshCore firmware repository - github.com/meshcore-dev/MeshCore",
+  "devices": [
+    {
+      "manufacturer": "Ikoka Stick-E22-22dBm (Xiao_nrf52)",
+      "shortName": "Ikoka Stick",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "EBYTE E22-900M22S, no PA amplifier"
+    },
+    {
+      "manufacturer": "Ikoka Stick-E22-30dBm (Xiao_nrf52)",
+      "shortName": "Ikoka Stick",
+      "power": 1.0,
+      "platform": "nrf52",
+      "txPower": 20,
+      "notes": "EBYTE E22-900M30S, 1W PA: 20dBm input → 30dBm output"
+    },
+    {
+      "manufacturer": "Ikoka Stick-E22-33dBm (Xiao_nrf52)",
+      "shortName": "Ikoka Stick",
+      "power": 2.0,
+      "platform": "nrf52",
+      "txPower": 9,
+      "notes": "EBYTE E22-900M33S, 2W PA: 9dBm input → 33dBm output (avoid hardware damage)"
+    },
+    {
+      "manufacturer": "Ikoka Nano-E22-22dBm (Xiao_nrf52)",
+      "shortName": "Ikoka Nano",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "EBYTE E22-900M22S, no PA amplifier"
+    },
+    {
+      "manufacturer": "Ikoka Nano-E22-30dBm (Xiao_nrf52)",
+      "shortName": "Ikoka Nano",
+      "power": 1.0,
+      "platform": "nrf52",
+      "txPower": 20,
+      "notes": "EBYTE E22-900M30S, 1W PA: 20dBm input → 30dBm output"
+    },
+    {
+      "manufacturer": "Ikoka Nano-E22-33dBm (Xiao_nrf52)",
+      "shortName": "Ikoka Nano",
+      "power": 2.0,
+      "platform": "nrf52",
+      "txPower": 9,
+      "notes": "EBYTE E22-900M33S, 2W PA: 9dBm input → 33dBm output (avoid hardware damage)"
+    },
+    {
+      "manufacturer": "Ikoka Handheld E22 30dBm (Xiao_nrf52)",
+      "shortName": "Ikoka Handheld",
+      "power": 1.0,
+      "platform": "nrf52",
+      "txPower": 20,
+      "notes": "EBYTE E22-900M30S, 1W PA: 20dBm input → 30dBm output"
+    },
+    {
+      "manufacturer": "Elecrow ThinkNode-M1",
+      "shortName": "Elecrow ThinkNode M1",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Elecrow ThinkNode M1"
+    },
+    {
+      "manufacturer": "Heltec V2",
+      "shortName": "Heltec V2",
+      "power": 0.3,
+      "platform": "esp32",
+      "txPower": 20,
+      "notes": "Heltec WiFi LoRa 32 V2"
+    },
+    {
+      "manufacturer": "Heltec V3",
+      "shortName": "Heltec V3",
+      "power": 0.3,
+      "platform": "esp32-s3",
+      "txPower": 22,
+      "notes": "Heltec WiFi LoRa 32 V3"
+    },
+    {
+      "manufacturer": "Heltec V4",
+      "shortName": "Heltec V4",
+      "power": 0.6,
+      "platform": "esp32-s3",
+      "txPower": 10,
+      "notes": "Firmware power 10dBm, PA amplifier to 22dBm actual output"
+    },
+    {
+      "manufacturer": "Heltec E213",
+      "shortName": "Heltec E213",
+      "power": 0.3,
+      "platform": "esp32-s3",
+      "txPower": 22,
+      "notes": "Heltec E-Ink display variant"
+    },
+    {
+      "manufacturer": "Heltec E290",
+      "shortName": "Heltec E290",
+      "power": 0.3,
+      "platform": "esp32-s3",
+      "txPower": 22,
+      "notes": "Heltec E-Ink display variant"
+    },
+    {
+      "manufacturer": "Heltec T190",
+      "shortName": "Heltec T190",
+      "power": 0.3,
+      "platform": "esp32-s3",
+      "txPower": 22,
+      "notes": "Heltec T190 tracker variant"
+    },
+    {
+      "manufacturer": "Heltec T114",
+      "shortName": "Heltec T114",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Heltec T114 tracker variant"
+    },
+    {
+      "manufacturer": "Heltec Tracker V2",
+      "shortName": "Heltec Tracker V2",
+      "power": 0.3,
+      "platform": "esp32-s3",
+      "txPower": 10,
+      "notes": "Firmware power 10dBm, PA amplifier to 22dBm actual output"
+    },
+    {
+      "manufacturer": "Heltec Mesh Solar",
+      "shortName": "Heltec Mesh Solar",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Solar-powered variant"
+    },
+    {
+      "manufacturer": "Heltec MeshPocket",
+      "shortName": "Heltec MeshPocket",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Pocket-sized handheld"
+    },
+    {
+      "manufacturer": "Heltec CT62",
+      "shortName": "Heltec CT62",
+      "power": 0.3,
+      "platform": "esp32-c3",
+      "txPower": 22,
+      "notes": "ESP32-C3 based variant"
+    },
+    {
+      "manufacturer": "RAK 4631",
+      "shortName": "RAK 4631",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "RAKwireless WisBlock Core"
+    },
+    {
+      "manufacturer": "RAK 3x72",
+      "shortName": "RAK 3x72",
+      "power": 0.3,
+      "platform": "stm32",
+      "txPower": 22,
+      "notes": "RAKwireless STM32WLE5 module"
+    },
+    {
+      "manufacturer": "LilyGo T-Echo",
+      "shortName": "LilyGo T-Echo",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "E-Ink display variant (both T-Echo and T-Echo Lite)"
+    },
+    {
+      "manufacturer": "LilyGo T-Deck",
+      "shortName": "LilyGo T-Deck",
+      "power": 0.3,
+      "platform": "esp32-s3",
+      "txPower": 22,
+      "notes": "Full keyboard handheld"
+    },
+    {
+      "manufacturer": "LilyGo T-Beam",
+      "shortName": "LilyGo T-Beam",
+      "power": 0.3,
+      "platform": "esp32",
+      "txPower": 22,
+      "notes": "GPS tracker variant"
+    },
+    {
+      "manufacturer": "LILYGO T-LoRa V2.1-1.6",
+      "shortName": "LILYGO T-LoRa V2.1",
+      "power": 0.3,
+      "platform": "esp32",
+      "txPower": 20,
+      "notes": "OLED display variant"
+    },
+    {
+      "manufacturer": "Seeed Wio E5 Dev Board",
+      "shortName": "Wio E5 Dev Board",
+      "power": 0.3,
+      "platform": "stm32",
+      "txPower": 22,
+      "notes": "STM32WLE5 integrated LoRa"
+    },
+    {
+      "manufacturer": "Seeed Wio Tracker L1",
+      "shortName": "Seeed Wio Tracker L1",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Seeed Wio Tracker L1"
+    },
+    {
+      "manufacturer": "Seeed Tracker T1000",
+      "shortName": "Seeed Tracker T1000",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Seeed Tracker T1000"
+    },
+    {
+      "manufacturer": "Xiao C3",
+      "shortName": "Xiao C3",
+      "power": 0.3,
+      "platform": "esp32-c3",
+      "txPower": 22,
+      "notes": "Seeed Xiao ESP32-C3"
+    },
+    {
+      "manufacturer": "Xiao C6",
+      "shortName": "Xiao C6",
+      "power": 0.3,
+      "platform": "esp32-c6",
+      "txPower": 22,
+      "notes": "Seeed Xiao ESP32-C6"
+    },
+    {
+      "manufacturer": "Xiao S3 WIO",
+      "shortName": "Xiao S3 WIO",
+      "power": 0.3,
+      "platform": "esp32-s3",
+      "txPower": 22,
+      "notes": "Seeed Xiao ESP32-S3 with WIO expansion"
+    },
+    {
+      "manufacturer": "Tiny Relay",
+      "shortName": "Tiny Relay",
+      "power": 0.3,
+      "platform": "stm32",
+      "txPower": 22,
+      "notes": "STM32-based relay control board"
+    },
+    {
+      "manufacturer": "Minewsemi",
+      "shortName": "Minewsemi",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Minewsemi ME25LS01 tracker"
+    },
+    {
+      "manufacturer": "Station G2",
+      "shortName": "Station G2",
+      "power": 1.0,
+      "platform": "esp32-s3",
+      "txPower": 19,
+      "notes": "Custom power 19dBm (RX boosted gain disabled for RF performance)"
+    }
+  ],
+  "powerMapping": {
+    "0.3": "24 dBm and below - Standard devices without PA",
+    "0.6": "28 dBm - Heltek v4",
+    "1.0": "30 dBm - 1W PA modules (E22-900M30S): 20dBm input → 30dBm output",
+    "2.0": "33 dBm - 2W PA modules (E22-900M33S): 9dBm input → 33dBm output"
+  },
+  "notes": [
+    "Build suffix (e.g., 'nightly-e31c46f') is appended at compile time and should be stripped for matching",
+    "Power values are wardrive.js radio power settings (0.3, 0.6, 1.0, 2.0)",
+    "txPower values are firmware LORA_TX_POWER settings in dBm",
+    "PA (Power Amplifier) modules boost input power to higher output power",
+    "Some devices may report different strings based on firmware version",
+    "For unknown devices, default to power 0.3 (safest conservative setting)"
+  ]
+}
