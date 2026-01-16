@@ -3,11 +3,10 @@
 // Export via debug_logger_io.dart for conditional import
 
 // ignore: avoid_web_libraries_in_flutter
-import 'dart:html' as html show window;
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:js_util' as js_util;
+import 'dart:js_interop';
 
 import 'package:flutter/foundation.dart';
+import 'package:web/web.dart' as web;
 
 /// Debug logging utility that mirrors MeshMapper_WebClient debug system.
 /// 
@@ -95,10 +94,10 @@ class DebugLogger {
     }
   }
 
-  // Web console methods using dart:js_util for proper browser console output
+  // Web console methods using package:web for proper browser console output
   static void _consoleLog(String message) {
     try {
-      js_util.callMethod(html.window.console, 'log', [message]);
+      web.console.log(message.toJS);
     } catch (e) {
       // Fallback
       // ignore: avoid_print
@@ -108,7 +107,7 @@ class DebugLogger {
 
   static void _consoleWarn(String message) {
     try {
-      js_util.callMethod(html.window.console, 'warn', [message]);
+      web.console.warn(message.toJS);
     } catch (e) {
       // ignore: avoid_print
       print('WARN: $message');
@@ -117,7 +116,7 @@ class DebugLogger {
 
   static void _consoleError(String message) {
     try {
-      js_util.callMethod(html.window.console, 'error', [message]);
+      web.console.error(message.toJS);
     } catch (e) {
       // ignore: avoid_print
       print('ERROR: $message');

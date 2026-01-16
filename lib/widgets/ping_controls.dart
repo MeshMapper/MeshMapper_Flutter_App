@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
+import '../services/ping_service.dart';
 
 /// Ping control buttons matching MeshMapper_WebClient layout:
 /// - TX Ping (sky blue) - Manual single ping
