@@ -12,7 +12,7 @@ import 'bluetooth_service.dart';
 class WebBluetoothService implements BluetoothService {
   final _connectionController = StreamController<ConnectionStatus>.broadcast();
   final _dataController = StreamController<Uint8List>.broadcast();
-  final fwb.FlutterWebBluetooth _webBluetooth = fwb.FlutterWebBluetooth.instance;
+  final fwb.FlutterWebBluetoothInterface _webBluetooth = fwb.FlutterWebBluetooth.instance;
 
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   DiscoveredDevice? _connectedDevice;
