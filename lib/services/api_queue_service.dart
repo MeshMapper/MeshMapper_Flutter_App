@@ -3,20 +3,22 @@ import 'dart:async';
 import 'package:hive/hive.dart';
 
 import '../models/api_queue_item.dart';
+import '../utils/debug_logger_io.dart';
 import 'api_service.dart';
 
 /// API queue service with batch upload and retry logic
 /// Ported from apiQueue and batchUpload() in wardrive.js
-/// 
+///
 /// Features:
 /// - Queue pings locally with Hive persistence
-/// - Batch upload every 10 entries OR 30 seconds
+/// - Batch upload every 50 entries OR 30 seconds
 /// - RX buffering: group by repeater ID (max 4 per batch)
 /// - Retry with exponential backoff for failed uploads
+/// - Offline mode: accumulates pings without uploading
 class ApiQueueService {
   static const String _boxName = 'api_queue';
-  static const int _batchSize = 10;
-  static const Duration _batchTimeout = Duration(seconds: 30);
+  static const int _batchSize = 50;
+  static const Duration _batchTimeout = Duration(seconds: 15);
   static const int _maxRetries = 5;
   static const int _maxRxPerRepeater = 4;
 
@@ -25,11 +27,26 @@ class ApiQueueService {
   Timer? _batchTimer;
   bool _isUploading = false;
 
+  // Offline mode
+  bool _offlineMode = false;
+  final List<Map<String, dynamic>> _offlinePings = [];
+
   // RX buffer for grouping by repeater
   final Map<String, List<ApiQueueItem>> _rxBuffer = {};
 
   /// Callback for queue updates
   void Function(int queueSize)? onQueueUpdated;
+
+  /// Offline mode status
+  bool get offlineMode => _offlineMode;
+
+  /// Number of pings accumulated in current offline session
+  int get offlinePingCount => _offlinePings.length;
+
+  /// Set offline mode
+  set offlineMode(bool value) {
+    _offlineMode = value;
+  }
 
   ApiQueueService({required ApiService apiService}) : _apiService = apiService;
 
@@ -50,63 +67,90 @@ class ApiQueueService {
   int get queueSize => _box?.length ?? 0;
 
   /// Enqueue a TX ping
+  /// heardRepeats format: "4e(12.25),77(12.25)" or "None"
   Future<void> enqueueTx({
     required double latitude,
     required double longitude,
-    required int power,
-    required String deviceId,
+    required String heardRepeats,
+    required int timestamp,
+    int? noiseFloor,
   }) async {
     final item = ApiQueueItem.fromTx(
       latitude: latitude,
       longitude: longitude,
-      power: power,
-      deviceId: deviceId,
+      heardRepeats: heardRepeats,
+      timestamp: timestamp,
+      noiseFloor: noiseFloor,
     );
-    
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (_offlineMode) {
+      _offlinePings.add(item.toApiJson());
+      return;
+    }
+
     await _box?.add(item);
     onQueueUpdated?.call(queueSize);
     _checkBatchUpload();
   }
 
-  /// Enqueue an RX ping (buffered by repeater)
+  /// Enqueue an RX observation
+  /// heardRepeats format: "4e(12.0)" (single repeater with SNR)
   Future<void> enqueueRx({
     required double latitude,
     required double longitude,
+    required String heardRepeats,
+    required int timestamp,
     required String repeaterId,
-    required double snr,
-    required int rssi,
-    required String deviceId,
+    int? noiseFloor,
   }) async {
     final item = ApiQueueItem.fromRx(
       latitude: latitude,
       longitude: longitude,
-      repeaterId: repeaterId,
-      snr: snr,
-      rssi: rssi,
-      deviceId: deviceId,
+      heardRepeats: heardRepeats,
+      timestamp: timestamp,
+      noiseFloor: noiseFloor,
     );
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (_offlineMode) {
+      _offlinePings.add(item.toApiJson());
+      return;
+    }
 
     // Buffer RX pings by repeater (max 4 per batch)
     if (!_rxBuffer.containsKey(repeaterId)) {
       _rxBuffer[repeaterId] = [];
     }
-    
+
     if (_rxBuffer[repeaterId]!.length < _maxRxPerRepeater) {
       _rxBuffer[repeaterId]!.add(item);
     }
-    
+
     // Check if we should flush RX buffer
     _checkRxBufferFlush();
   }
 
   /// Flush RX buffer to main queue
   Future<void> _flushRxBuffer() async {
+    // Return early if buffer is empty (avoids concurrent flush issues)
+    if (_rxBuffer.isEmpty) return;
+
+    // Make a copy of the buffer and clear it immediately
+    // This prevents concurrent calls from trying to add the same items twice
+    final itemsToFlush = <ApiQueueItem>[];
     for (final items in _rxBuffer.values) {
-      for (final item in items) {
-        await _box?.add(item);
-      }
+      itemsToFlush.addAll(items);
     }
+    final bufferSize = _rxBuffer.length;
     _rxBuffer.clear();
+
+    // Now add items to the box
+    for (final item in itemsToFlush) {
+      await _box?.add(item);
+    }
+
+    debugLog('[API QUEUE] Flushed ${itemsToFlush.length} RX items from $bufferSize repeaters to queue');
     onQueueUpdated?.call(queueSize);
   }
 
@@ -132,6 +176,12 @@ class ApiQueueService {
     if (queueSize >= _batchSize) {
       _uploadBatch();
     }
+  }
+
+  /// Manually flush queue (called by TX-triggered flush timer)
+  Future<void> flushQueue() async {
+    await _flushRxBuffer();
+    await _uploadBatch();
   }
 
   /// Upload batch of queued items
@@ -196,6 +246,19 @@ class ApiQueueService {
     return _box?.values
         .where((item) => item.retryCount >= _maxRetries)
         .toList() ?? [];
+  }
+
+  /// Get accumulated offline pings and clear the accumulator
+  /// Returns the list of ping JSON objects collected during offline session
+  List<Map<String, dynamic>> getAndClearOfflinePings() {
+    final pings = List<Map<String, dynamic>>.from(_offlinePings);
+    _offlinePings.clear();
+    return pings;
+  }
+
+  /// Clear offline pings without returning them
+  void clearOfflinePings() {
+    _offlinePings.clear();
   }
 
   /// Dispose of resources

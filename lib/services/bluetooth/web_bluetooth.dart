@@ -18,9 +18,10 @@ class WebBluetoothService implements BluetoothService {
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   DiscoveredDevice? _connectedDevice;
   fwb.BluetoothDevice? _device;
-  dynamic _rxCharacteristic;  // Using dynamic to handle WebBluetoothRemoteGATTCharacteristic
-  dynamic _txCharacteristic;  // Using dynamic to handle WebBluetoothRemoteGATTCharacteristic
-  StreamSubscription? _notificationSubscription;
+  fwb.BluetoothDevice? _pendingDevice; // Store device from scan for connect()
+  fwb.BluetoothCharacteristic? _rxCharacteristic;  // For writing (device RX)
+  fwb.BluetoothCharacteristic? _txCharacteristic;  // For notifications (device TX)
+  StreamSubscription<ByteData>? _notificationSubscription;
 
   @override
   Stream<ConnectionStatus> get connectionStream => _connectionController.stream;
@@ -75,24 +76,30 @@ class WebBluetoothService implements BluetoothService {
       );
 
       if (device != null) {
+        // Store the device for later connection (avoid requesting twice)
+        _pendingDevice = device;
+        debugLog('[BLE] Device selected: ${device.name ?? device.id}');
+        
         yield DiscoveredDevice(
           id: device.id,
           name: device.name ?? 'MeshCore Device',
         );
       }
     } catch (e) {
-      // User cancelled or error
-    } finally {
+      debugError('[BLE] Device picker error: $e');
+      // Only set disconnected on error - successful scan will proceed to connect()
       _updateStatus(ConnectionStatus.disconnected);
     }
+    // NOTE: Do NOT set disconnected in finally block. On web, connect() is called
+    // immediately after scan yields a device. Setting disconnected here would race
+    // with the connect() call and potentially dispose the new MeshCoreConnection.
   }
 
   @override
   Future<void> stopScan() async {
     // Web Bluetooth doesn't have explicit scan stop
-    if (_connectionStatus == ConnectionStatus.scanning) {
-      _updateStatus(ConnectionStatus.disconnected);
-    }
+    // NOTE: Do NOT fire 'disconnected' here. Stopping a scan is not a disconnection.
+    // The status will be updated by connect() when a connection starts.
   }
 
   @override
@@ -101,37 +108,55 @@ class WebBluetoothService implements BluetoothService {
       _updateStatus(ConnectionStatus.connecting);
       debugLog('[BLE] Connecting to device: $deviceId');
 
-      // Request device filtered by MeshCore service UUID (matches JS implementation)
-      _device = await _webBluetooth.requestDevice(
-        fwb.RequestOptionsBuilder([
-          fwb.RequestFilterBuilder(services: [BleUuids.serviceUuid.toLowerCase()]),
-        ]),
-      );
+      // Use the pending device from scanForDevices() - don't request again!
+      if (_pendingDevice == null) {
+        debugError('[BLE] No pending device - must call scanForDevices first');
+        throw Exception('No device selected. Please scan for devices first.');
+      }
+      
+      _device = _pendingDevice;
+      _pendingDevice = null; // Clear pending
+      debugLog('[BLE] Using stored device: ${_device!.name ?? _device!.id}');
 
-      if (_device == null) {
-        throw Exception('No device selected');
+      // Connect to GATT server using HIGH-LEVEL API
+      debugLog('[BLE] Connecting to GATT server...');
+      await _device!.connect(timeout: const Duration(seconds: 10));
+      debugLog('[BLE] GATT connected');
+
+      // Discover services using HIGH-LEVEL API
+      debugLog('[BLE] Discovering services...');
+      final services = await _device!.discoverServices();
+      debugLog('[BLE] Found ${services.length} services');
+      
+      // Find our MeshCore service
+      fwb.BluetoothService? meshCoreService;
+      for (final service in services) {
+        debugLog('[BLE] Service: ${service.uuid}');
+        if (service.uuid.toLowerCase() == BleUuids.serviceUuid.toLowerCase()) {
+          meshCoreService = service;
+          debugLog('[BLE] Found MeshCore service');
+          break;
+        }
+      }
+      
+      if (meshCoreService == null) {
+        throw Exception('MeshCore service not found');
       }
 
-      // Connect to GATT server
-      final server = await _device!.gatt?.connect();
-      if (server == null) {
-        throw Exception('Could not connect to GATT server');
-      }
-
-      // Get primary service
-      final service = await server.getPrimaryService(
-        BleUuids.serviceUuid.toLowerCase(),
-      );
-
-      // Get characteristics
-      final characteristics = await service.getCharacteristics();
+      // Get characteristics using HIGH-LEVEL API
+      debugLog('[BLE] Getting characteristics...');
+      final characteristics = await meshCoreService.getCharacteristics();
+      debugLog('[BLE] Found ${characteristics.length} characteristics');
 
       for (final char in characteristics) {
         final uuid = char.uuid.toUpperCase();
+        debugLog('[BLE] Characteristic: $uuid');
         if (uuid == BleUuids.characteristicRxUuid.toUpperCase()) {
           _rxCharacteristic = char;
+          debugLog('[BLE] Found RX characteristic (for writing)');
         } else if (uuid == BleUuids.characteristicTxUuid.toUpperCase()) {
           _txCharacteristic = char;
+          debugLog('[BLE] Found TX characteristic (for notifications)');
         }
       }
 
@@ -139,28 +164,38 @@ class WebBluetoothService implements BluetoothService {
         throw Exception('Required characteristics not found');
       }
 
-      // Start notifications on TX characteristic
-      await _txCharacteristic!.startNotifications();
-      _notificationSubscription = _txCharacteristic!.value.listen((value) {
-        try {
-          Uint8List buffer;
-          // Handle different data types from Web Bluetooth API
-          if (value is ByteData) {
-            buffer = value.buffer.asUint8List(value.offsetInBytes, value.lengthInBytes);
-          } else if (value is Uint8List) {
-            buffer = value;
-          } else {
-            // Unexpected type, skip
-            return;
-          }
-          
-          if (buffer.isNotEmpty) {
-            _dataController.add(buffer);
-          }
-        } catch (e) {
-          // Silently ignore conversion errors
-        }
-      });
+      // Start notifications on TX characteristic (device sends data to us via TX)
+      debugLog('[BLE] Starting notifications on TX characteristic...');
+      try {
+        await _txCharacteristic!.startNotifications();
+        debugLog('[BLE] Notifications started, setting up listener...');
+        
+        // HIGH-LEVEL API: BluetoothCharacteristic.value is a Stream<ByteData>
+        _notificationSubscription = _txCharacteristic!.value.listen(
+          (ByteData data) {
+            try {
+              // Convert ByteData to Uint8List
+              final buffer = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+              
+              if (buffer.isNotEmpty) {
+                debugLog('[BLE] Received ${buffer.length} bytes');
+                _dataController.add(buffer);
+              }
+            } catch (e) {
+              debugError('[BLE] Error processing notification data: $e');
+            }
+          },
+          onError: (error) {
+            debugError('[BLE] Notification stream error: $error');
+          },
+          cancelOnError: false,
+        );
+        debugLog('[BLE] Notification listener active');
+      } catch (e) {
+        debugError('[BLE] Failed to start notifications: $e');
+        // This is critical - without notifications we can't receive data
+        throw Exception('Failed to enable BLE notifications: $e');
+      }
 
       _connectedDevice = DiscoveredDevice(
         id: _device!.id,
@@ -168,7 +203,9 @@ class WebBluetoothService implements BluetoothService {
       );
 
       _updateStatus(ConnectionStatus.connected);
+      debugLog('[BLE] Connected successfully!');
     } catch (e) {
+      debugError('[BLE] Connection failed: $e');
       _updateStatus(ConnectionStatus.error);
       rethrow;
     }
@@ -176,16 +213,19 @@ class WebBluetoothService implements BluetoothService {
 
   @override
   Future<void> disconnect() async {
+    debugLog('[BLE] Disconnecting...');
     try {
-      _device?.gatt?.disconnect();
+      await _notificationSubscription?.cancel();
+      _device?.disconnect();
     } finally {
       _connectedDevice = null;
       _device = null;
+      _pendingDevice = null;
       _rxCharacteristic = null;
       _txCharacteristic = null;
-      _notificationSubscription?.cancel();
       _notificationSubscription = null;
       _updateStatus(ConnectionStatus.disconnected);
+      debugLog('[BLE] Disconnected');
     }
   }
 
@@ -203,6 +243,6 @@ class WebBluetoothService implements BluetoothService {
     _notificationSubscription?.cancel();
     _connectionController.close();
     _dataController.close();
-    _device?.gatt?.disconnect();
+    _device?.disconnect();
   }
 }

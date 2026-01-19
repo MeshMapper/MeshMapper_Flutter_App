@@ -21,20 +21,17 @@ class ApiQueueItemAdapter extends TypeAdapter<ApiQueueItem> {
       latitude: fields[1] as double,
       longitude: fields[2] as double,
       timestamp: fields[3] as DateTime,
-      deviceId: fields[4] as String,
+      heardRepeats: fields[12] as String,
       retryCount: fields[5] as int,
       lastRetryAt: fields[6] as DateTime?,
-      power: fields[7] as int?,
-      repeaterId: fields[8] as String?,
-      snr: fields[9] as double?,
-      rssi: fields[10] as int?,
+      noiseFloor: fields[11] as int?,
     );
   }
 
   @override
   void write(BinaryWriter writer, ApiQueueItem obj) {
     writer
-      ..writeByte(11)
+      ..writeByte(8)
       ..writeByte(0)
       ..write(obj.type)
       ..writeByte(1)
@@ -43,20 +40,14 @@ class ApiQueueItemAdapter extends TypeAdapter<ApiQueueItem> {
       ..write(obj.longitude)
       ..writeByte(3)
       ..write(obj.timestamp)
-      ..writeByte(4)
-      ..write(obj.deviceId)
       ..writeByte(5)
       ..write(obj.retryCount)
       ..writeByte(6)
       ..write(obj.lastRetryAt)
-      ..writeByte(7)
-      ..write(obj.power)
-      ..writeByte(8)
-      ..write(obj.repeaterId)
-      ..writeByte(9)
-      ..write(obj.snr)
-      ..writeByte(10)
-      ..write(obj.rssi);
+      ..writeByte(11)
+      ..write(obj.noiseFloor)
+      ..writeByte(12)
+      ..write(obj.heardRepeats);
   }
 
   @override

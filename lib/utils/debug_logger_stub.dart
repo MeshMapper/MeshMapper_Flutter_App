@@ -1,11 +1,15 @@
 import 'package:flutter/foundation.dart';
+import '../services/debug_file_logger.dart';
 
 /// Debug logging utility stub for non-web platforms.
-/// 
+///
 /// Logs are only output when DEBUG_ENABLED is true.
 /// All log messages should use tagged format: `[TAG] message`
-/// 
+///
 /// Common tags: [BLE], [GPS], [PING], [API], [RX], [UI], [CONN]
+///
+/// When file logging is enabled via DebugFileLogger, all logs are also
+/// written to a timestamped file in the app documents directory.
 class DebugLogger {
   static bool _debugEnabled = false;
   static bool _initialized = false;
@@ -36,27 +40,39 @@ class DebugLogger {
   /// Use tagged format: debugLog('[BLE] Connected to device');
   static void log(String message, [Object? arg1, Object? arg2, Object? arg3]) {
     if (!_debugEnabled) return;
-    
+
     final args = [message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
-    debugPrint(args.join(' '));
+    final formattedMessage = args.join(' ');
+    debugPrint(formattedMessage);
+
+    // Write to file if file logging is enabled
+    DebugFileLogger.write('LOG', formattedMessage);
   }
 
   /// Log a warning message to the console.
   /// Use tagged format: debugWarn('[GPS] Position stale, re-acquiring');
   static void warn(String message, [Object? arg1, Object? arg2, Object? arg3]) {
     if (!_debugEnabled) return;
-    
+
     final args = ['⚠️', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
-    debugPrint('WARN: ${args.join(' ')}');
+    final formattedMessage = args.join(' ');
+    debugPrint('WARN: $formattedMessage');
+
+    // Write to file if file logging is enabled
+    DebugFileLogger.write('WARN', formattedMessage);
   }
 
   /// Log an error message to the console.
   /// Use tagged format: debugError('[API] Failed to post queue', error);
   static void error(String message, [Object? arg1, Object? arg2, Object? arg3]) {
     if (!_debugEnabled) return;
-    
+
     final args = ['❌', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
-    debugPrint('ERROR: ${args.join(' ')}');
+    final formattedMessage = args.join(' ');
+    debugPrint('ERROR: $formattedMessage');
+
+    // Write to file if file logging is enabled
+    DebugFileLogger.write('ERROR', formattedMessage);
   }
 }
 

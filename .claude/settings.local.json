@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze:*)",
+      "Bash(flutter build web:*)",
+      "Bash(echo:*)",
+      "Bash(sed:*)",
+      "Bash(flutter pub get:*)",
+      "Bash(curl:*)",
+      "Bash(flutter --version:*)",
+      "Bash(flutter pub run build_runner:*)",
+      "Bash(flutter build:*)",
+      "Bash(flutter doctor:*)",
+      "Bash(flutter create:*)",
+      "Bash(find:*)"
+    ]
+  }
+}

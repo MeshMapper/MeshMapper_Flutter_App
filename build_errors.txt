@@ -1,0 +1,23 @@
+Running Gradle task 'assembleRelease'...                        
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Invalid depfile: /Users/schnobbc/Documents/Github/MeshMapper_Flutter_App/.dart_tool/flutter_build/8594e642add43c29fcdf7a22690a7feb/kernel_snapshot_program.d
+Font asset "MaterialIcons-Regular.otf" was tree-shaken, reducing it from 1645184 to 11060 bytes (99.3% reduction). Tree-shaking can be disabled by providing the --no-tree-shake-icons flag when building your app.
+Checking the license for package CMake 3.22.1 in /opt/homebrew/share/android-commandlinetools/licenses
+License for package CMake 3.22.1 accepted.
+Preparing "Install CMake 3.22.1 v.3.22.1".
+"Install CMake 3.22.1 v.3.22.1" ready.
+Installing CMake 3.22.1 in /opt/homebrew/share/android-commandlinetools/cmake/3.22.1
+"Install CMake 3.22.1 v.3.22.1" complete.
+"Install CMake 3.22.1 v.3.22.1" finished.
+Running Gradle task 'assembleRelease'...                          160.0s
+✓ Built build/app/outputs/flutter-apk/app-release.apk (55.0MB)

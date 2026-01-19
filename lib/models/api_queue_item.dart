@@ -4,114 +4,104 @@ part 'api_queue_item.g.dart';
 
 /// Item in the API upload queue
 /// Persisted using Hive for crash recovery
+///
+/// Matches WebClient wardrive payload format:
+/// {
+///   "type": "TX" or "RX",
+///   "lat": 45.26974,
+///   "lon": -75.77746,
+///   "noisefloor": -103,
+///   "heard_repeats": "4e(12.25),77(12.25)",
+///   "timestamp": 1768762843
+/// }
 @HiveType(typeId: 3)
 class ApiQueueItem extends HiveObject {
   @HiveField(0)
   final String type; // 'TX' or 'RX'
-  
+
   @HiveField(1)
   final double latitude;
-  
+
   @HiveField(2)
   final double longitude;
-  
+
   @HiveField(3)
   final DateTime timestamp;
-  
-  @HiveField(4)
-  final String deviceId;
-  
+
   @HiveField(5)
   int retryCount;
-  
+
   @HiveField(6)
   DateTime? lastRetryAt;
-  
-  // TX-specific fields
-  @HiveField(7)
-  final int? power;
-  
-  // RX-specific fields
-  @HiveField(8)
-  final String? repeaterId;
-  
-  @HiveField(9)
-  final double? snr;
-  
-  @HiveField(10)
-  final int? rssi;
+
+  @HiveField(11)
+  final int? noiseFloor;
+
+  /// Heard repeats string formatted as "id(snr),id(snr)" e.g. "4e(12.25),77(12.25)"
+  /// For TX: multiple repeaters separated by comma
+  /// For RX: single repeater e.g. "4e(12.0)"
+  @HiveField(12)
+  final String heardRepeats;
 
   ApiQueueItem({
     required this.type,
     required this.latitude,
     required this.longitude,
     required this.timestamp,
-    required this.deviceId,
+    required this.heardRepeats,
     this.retryCount = 0,
     this.lastRetryAt,
-    this.power,
-    this.repeaterId,
-    this.snr,
-    this.rssi,
+    this.noiseFloor,
   });
 
   /// Create from TX ping
+  /// heardRepeats format: "4e(12.25),77(12.25)" or "None"
   factory ApiQueueItem.fromTx({
     required double latitude,
     required double longitude,
-    required int power,
-    required String deviceId,
+    required String heardRepeats,
+    required int timestamp,
+    int? noiseFloor,
   }) {
     return ApiQueueItem(
       type: 'TX',
       latitude: latitude,
       longitude: longitude,
-      timestamp: DateTime.now(),
-      deviceId: deviceId,
-      power: power,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: heardRepeats,
+      noiseFloor: noiseFloor,
     );
   }
 
-  /// Create from RX ping
+  /// Create from RX observation
+  /// heardRepeats format: "4e(12.0)" (single repeater with SNR)
   factory ApiQueueItem.fromRx({
     required double latitude,
     required double longitude,
-    required String repeaterId,
-    required double snr,
-    required int rssi,
-    required String deviceId,
+    required String heardRepeats,
+    required int timestamp,
+    int? noiseFloor,
   }) {
     return ApiQueueItem(
       type: 'RX',
       latitude: latitude,
       longitude: longitude,
-      timestamp: DateTime.now(),
-      deviceId: deviceId,
-      repeaterId: repeaterId,
-      snr: snr,
-      rssi: rssi,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: heardRepeats,
+      noiseFloor: noiseFloor,
     );
   }
 
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
-    final json = <String, dynamic>{
+    return {
       'type': type,
       'lat': latitude,
       'lon': longitude,
-      'timestamp': timestamp.millisecondsSinceEpoch,
-      'device_id': deviceId,
+      'noisefloor': noiseFloor,
+      'heard_repeats': heardRepeats,
+      'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
     };
-
-    if (type == 'TX') {
-      json['power'] = power;
-    } else {
-      json['repeater_id'] = repeaterId;
-      json['snr'] = snr;
-      json['rssi'] = rssi;
-    }
-
-    return json;
   }
 
   /// Calculate next retry delay using exponential backoff

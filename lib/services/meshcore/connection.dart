@@ -3,8 +3,11 @@ import 'dart:typed_data';
 
 import '../../models/connection_state.dart';
 import '../../models/device_model.dart';
+import '../../utils/debug_logger_io.dart';
 import '../bluetooth/bluetooth_service.dart';
 import 'buffer_utils.dart';
+import 'channel_service.dart';
+import 'crypto_service.dart';
 import 'packet_parser.dart';
 import 'protocol_constants.dart';
 
@@ -12,13 +15,34 @@ import 'protocol_constants.dart';
 class DeviceQueryResponse {
   final int protocolVersion;
   final String manufacturer;
-  final Uint8List publicKey;
+  final String? firmwareBuildDate; // Added in protocol v8
 
   const DeviceQueryResponse({
     required this.protocolVersion,
     required this.manufacturer,
-    required this.publicKey,
+    this.firmwareBuildDate,
   });
+}
+
+/// Response from AppStart/SelfInfo command
+/// Contains device identity including public key
+class SelfInfo {
+  final int type;
+  final int txPower;
+  final int maxTxPower;
+  final Uint8List publicKey;
+  final String name;
+
+  const SelfInfo({
+    required this.type,
+    required this.txPower,
+    required this.maxTxPower,
+    required this.publicKey,
+    required this.name,
+  });
+
+  /// Get public key as hex string
+  String get publicKeyHex => publicKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').toUpperCase();
 }
 
 /// MeshCore connection manager
@@ -39,16 +63,38 @@ class MeshCoreConnection {
   final _stepController = StreamController<ConnectionStep>.broadcast();
   final _channelMessageController = StreamController<ChannelMessage>.broadcast();
   final _rawDataController = StreamController<Map<String, dynamic>>.broadcast();
+  final _logRxDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
+  final _noiseFloorController = StreamController<int>.broadcast();
+  final _batteryController = StreamController<int>.broadcast();
 
   ConnectionStep _currentStep = ConnectionStep.disconnected;
   DeviceQueryResponse? _deviceInfo;
   DeviceModel? _deviceModel;
+  ChannelInfo? _wardrivingChannel;
   StreamSubscription? _dataSubscription;
 
   // Completers for command responses
   Completer<DeviceQueryResponse>? _deviceQueryCompleter;
+  Completer<SelfInfo>? _selfInfoCompleter;
   Completer<void>? _sentCompleter;
   Completer<ChannelInfo>? _channelInfoCompleter;
+  Completer<int>? _statsCompleter;
+
+  // Device self info (contains public key)
+  SelfInfo? _selfInfo;
+
+  // Callback for auth request during connection workflow (Step 6)
+  // Set by AppStateProvider before calling connect()
+  // Returns auth result map or null on failure
+  Future<Map<String, dynamic>?> Function()? onRequestAuth;
+
+  // Noise floor tracking
+  int? _lastNoiseFloor; // dBm or null if not supported
+  Timer? _noiseFloorTimer;
+
+  // Battery tracking
+  int? _lastBatteryMilliVolts; // millivolts or null if not supported
+  Timer? _batteryTimer;
 
   MeshCoreConnection({required BluetoothService bluetooth}) : _bluetooth = bluetooth {
     _dataSubscription = _bluetooth.dataStream.listen(_onFrameReceived);
@@ -63,6 +109,15 @@ class MeshCoreConnection {
   /// Stream of raw data pushes
   Stream<Map<String, dynamic>> get rawDataStream => _rawDataController.stream;
 
+  /// Stream of LogRxData packets (for unified RX handler)
+  Stream<({Uint8List raw, double snr, int rssi})> get logRxDataStream => _logRxDataController.stream;
+
+  /// Stream of noise floor updates (dBm)
+  Stream<int> get noiseFloorStream => _noiseFloorController.stream;
+
+  /// Stream of battery updates (percentage 0-100)
+  Stream<int> get batteryStream => _batteryController.stream;
+
   /// Current connection step
   ConnectionStep get currentStep => _currentStep;
 
@@ -72,13 +127,49 @@ class MeshCoreConnection {
   /// Matched device model (null if not connected or unknown)
   DeviceModel? get deviceModel => _deviceModel;
 
+  /// Device self info including public key (null if not connected)
+  SelfInfo? get selfInfo => _selfInfo;
+
+  /// Device public key as hex string (null if not connected)
+  String? get devicePublicKey => _selfInfo?.publicKeyHex;
+
+  /// Last noise floor reading (dBm) or null if not supported/not connected
+  int? get lastNoiseFloor => _lastNoiseFloor;
+
+  /// Last battery percentage (0-100) or null if not supported/not connected
+  int? get lastBatteryPercent => _lastBatteryMilliVolts != null
+      ? _milliVoltsToPercent(_lastBatteryMilliVolts!)
+      : null;
+
+  /// Wardriving channel info (index, name, secret) - null if not connected
+  ChannelInfo? get wardrivingChannel => _wardrivingChannel;
+
+  /// Wardriving channel index (for TX tracking) - null if not connected
+  int? get wardrivingChannelIndex => _wardrivingChannel?.channelIndex;
+
+  /// Wardriving channel key (for message decryption) - null if not connected
+  Uint8List? get wardrivingChannelKey => _wardrivingChannel?.secret;
+
+  /// Wardriving channel hash (for echo correlation) - null if not connected
+  int? get wardrivingChannelHash => _wardrivingChannel != null
+      ? CryptoService.computeChannelHash(_wardrivingChannel!.secret)
+      : null;
+
   void _updateStep(ConnectionStep step) {
     _currentStep = step;
+    if (_stepController.isClosed) {
+      debugError('[CONN] Cannot update step - controller is closed!');
+      return;
+    }
+    debugLog('[CONN] Step: $step');
     _stepController.add(step);
   }
 
   /// Execute the full connection workflow
-  Future<void> connect(String deviceId, List<DeviceModel> deviceModels) async {
+  /// Returns (deviceModel, autoPowerConfigured) for preferences update
+  Future<({DeviceModel? deviceModel, bool autoPowerConfigured})> connect(String deviceId, List<DeviceModel> deviceModels) async {
+    bool autoPowerConfigured = false;
+    
     try {
       // Step 1: BLE Connect
       _updateStep(ConnectionStep.bleConnecting);
@@ -92,24 +183,51 @@ class MeshCoreConnection {
       _updateStep(ConnectionStep.deviceQuery);
       _deviceInfo = await deviceQuery(ProtocolConstants.supportedCompanionProtocolVersion);
 
+      // Step 3b: Get Self Info (contains public key)
+      // This is critical for geo-auth API authentication
+      try {
+        _selfInfo = await getSelfInfo();
+        debugLog('[CONN] Public key acquired: ${_selfInfo!.publicKeyHex.substring(0, 16)}...');
+      } catch (e) {
+        debugError('[CONN] Failed to get self info (public key): $e');
+        // Public key is REQUIRED for geo-auth API
+        throw Exception('Failed to acquire device public key: $e');
+      }
+
       // Step 4: Power Configuration (auto-select based on device model)
       _updateStep(ConnectionStep.powerConfiguration);
       _deviceModel = _matchDeviceModel(_deviceInfo!.manufacturer, deviceModels);
       if (_deviceModel != null) {
         await setTxPower(_deviceModel!.txPower);
+        autoPowerConfigured = true;
+        debugLog('[CONN] Auto-configured power: ${_deviceModel!.power}W (${_deviceModel!.txPower}dBm) for ${_deviceModel!.shortName}');
       }
 
       // Step 5: Time Sync
       _updateStep(ConnectionStep.timeSync);
       await setDeviceTime(DateTime.now().millisecondsSinceEpoch ~/ 1000);
 
-      // Step 6: Slot Acquisition (handled by API service)
+      // Step 6: API Session Acquisition (geo-auth)
       _updateStep(ConnectionStep.slotAcquisition);
-      // API slot acquisition is handled externally
+      if (onRequestAuth != null) {
+        debugLog('[CONN] Requesting API session via geo-auth');
+        final authResult = await onRequestAuth!();
+        if (authResult == null || authResult['success'] != true) {
+          final reason = authResult?['reason'] ?? 'unknown';
+          final message = authResult?['message'] ?? 'Authentication failed';
+          debugError('[CONN] API session acquisition failed: $reason - $message');
+          throw Exception('Failed to acquire API session: $message');
+        }
+        debugLog('[CONN] API session acquired successfully');
+      } else {
+        debugLog('[CONN] No auth callback set, skipping API session acquisition');
+      }
 
       // Step 7: Channel Setup
       _updateStep(ConnectionStep.channelSetup);
-      // Channel is pre-configured on device
+      debugLog('[CONN] Creating #wardriving channel');
+      _wardrivingChannel = await ChannelService.ensureWardrivingChannel(this);
+      debugLog('[CONN] Channel ready: ${_wardrivingChannel?.name ?? 'unknown'} (CH:${_wardrivingChannel?.channelIndex ?? -1})');
 
       // Step 8: GPS Init (handled externally)
       _updateStep(ConnectionStep.gpsInit);
@@ -117,9 +235,61 @@ class MeshCoreConnection {
 
       // Step 9: Connected
       _updateStep(ConnectionStep.connected);
+      debugLog('[CONN] Connection workflow complete');
+
+      // Small delay to avoid BLE command collision
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      // Start battery polling (30-second interval)
+      _startBatteryPolling();
+
+      // Start noise floor polling (5-second interval)
+      // This may fail on older firmware (< v1.11.0)
+      _startNoiseFloorPolling();
+
+      return (deviceModel: _deviceModel, autoPowerConfigured: autoPowerConfigured);
     } catch (e) {
+      debugError('[CONN] Connection failed: $e');
       _updateStep(ConnectionStep.error);
       rethrow;
+    }
+  }
+
+  /// Disconnect and cleanup
+  /// Delete wardriving channel early (before stopping services)
+  /// This should be called FIRST in the disconnect flow to ensure BLE is still connected
+  Future<void> deleteWardrivingChannelEarly() async {
+    if (_wardrivingChannel != null) {
+      await ChannelService.deleteWardrivingChannel(this, _wardrivingChannel!.channelIndex);
+      _wardrivingChannel = null;
+    }
+  }
+
+  Future<void> disconnect() async {
+    try {
+      debugLog('[CONN] Disconnecting');
+
+      // Stop noise floor polling
+      _stopNoiseFloorPolling();
+
+      // Stop battery polling
+      _stopBatteryPolling();
+
+      // Channel deletion happens early (before this method is called)
+      // See deleteWardrivingChannelEarly() called from app_state_provider
+
+      // Disconnect BLE
+      await _bluetooth.disconnect();
+      _deviceInfo = null;
+      _deviceModel = null;
+      _selfInfo = null;
+      _lastNoiseFloor = null;
+      _lastBatteryMilliVolts = null;
+      _updateStep(ConnectionStep.disconnected);
+      debugLog('[CONN] Disconnected successfully');
+    } catch (e) {
+      debugError('[CONN] Disconnect error: $e');
+      _updateStep(ConnectionStep.disconnected);
     }
   }
 
@@ -146,59 +316,150 @@ class MeshCoreConnection {
     return null;
   }
 
-  /// Disconnect from device
-  Future<void> disconnect() async {
-    await _bluetooth.disconnect();
-    _deviceInfo = null;
-    _deviceModel = null;
-    _updateStep(ConnectionStep.disconnected);
-  }
-
   /// Handle incoming frame from device
   void _onFrameReceived(Uint8List frame) {
     if (frame.isEmpty) return;
 
-    final reader = BufferReader(frame);
-    final responseCode = reader.readByte();
+    try {
+      debugLog('[CONN] Frame received (${frame.length} bytes): ${_hexDump(frame)}');
+      
+      final reader = BufferReader(frame);
+      final responseCode = reader.readByte();
+      
+      debugLog('[CONN] Response code: 0x${responseCode.toRadixString(16).padLeft(2, '0')} (${responseCode})');
 
-    switch (responseCode) {
-      case ResponseCodes.deviceInfo:
-        _onDeviceInfoResponse(reader);
-        break;
-      case ResponseCodes.sent:
-        _onSentResponse();
-        break;
-      case ResponseCodes.channelMsgRecv:
-        _onChannelMsgRecvResponse(reader);
-        break;
-      case ResponseCodes.channelInfo:
-        _onChannelInfoResponse(reader);
-        break;
-      case PushCodes.rawData:
-        _onRawDataPush(reader);
-        break;
-      case PushCodes.logRxData:
-        _onLogRxDataPush(reader);
-        break;
-      default:
-        // Ignore unhandled response codes
-        break;
+      switch (responseCode) {
+        case ResponseCodes.ok:
+          debugLog('[CONN] Received OK response');
+          break;
+        case ResponseCodes.err:
+          final errorCode = reader.remainingBytesCount > 0 ? reader.readByte() : 0;
+          debugLog('[CONN] Received ERR response (error code: $errorCode)');
+          // Complete any pending completers with error
+          final errException = Exception('Command error (code $errorCode)');
+          _statsCompleter?.completeError(errException);
+          _statsCompleter = null;
+          _channelInfoCompleter?.completeError(errException);
+          _channelInfoCompleter = null;
+          _deviceQueryCompleter?.completeError(errException);
+          _deviceQueryCompleter = null;
+          break;
+        case ResponseCodes.deviceInfo:
+          _onDeviceInfoResponse(reader);
+          break;
+        case ResponseCodes.selfInfo:
+          _onSelfInfoResponse(reader);
+          break;
+        case ResponseCodes.sent:
+          _onSentResponse();
+          break;
+        case ResponseCodes.channelMsgRecv:
+          _onChannelMsgRecvResponse(reader);
+          break;
+        case ResponseCodes.channelInfo:
+          _onChannelInfoResponse(reader);
+          break;
+        case PushCodes.rawData:
+          _onRawDataPush(reader);
+          break;
+        case PushCodes.logRxData:
+          _onLogRxDataPush(reader);
+          break;
+        case ResponseCodes.stats:
+          _onStatsResponse(reader);
+          break;
+        case ResponseCodes.batteryVoltage:
+          _onBatteryVoltageResponse(reader);
+          break;
+        default:
+          // Log unhandled response codes (like JS implementation)
+          debugLog('[CONN] Unhandled frame: code=${responseCode} (0x${responseCode.toRadixString(16).padLeft(2, '0')})');
+          break;
+      }
+    } catch (e, stack) {
+      debugError('[CONN] Error processing frame (${frame.length} bytes): $e');
+      debugError('[CONN] Frame hex: ${_hexDump(frame)}');
+      debugError('[CONN] Stack trace: $stack');
     }
   }
 
+  /// Helper to convert bytes to hex string for debugging
+  String _hexDump(Uint8List bytes) {
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+  }
+
   void _onDeviceInfoResponse(BufferReader reader) {
-    final protocolVersion = reader.readByte();
-    final manufacturer = reader.readCString(64);
-    final publicKey = reader.readBytes(32);
+    // Protocol v8 changed the format:
+    // v1: protoVer (1) + manufacturer C-string (64) + publicKey (32)
+    // v8: firmwareVer (1) + reserved (6) + buildDate C-string (12) + manufacturerModel string (rest)
+    
+    final firmwareVer = reader.readByte();
+    debugLog('[CONN] Firmware version: $firmwareVer');
+    
+    if (firmwareVer >= 8) {
+      // Protocol v8+ format
+      final reserved = reader.readBytes(6); // reserved bytes
+      final buildDate = reader.readCString(12); // e.g. "04-Jan-2026"
+      final manufacturerModel = reader.readString(); // remainder of frame
+      
+      debugLog('[CONN] Build date: $buildDate');
+      debugLog('[CONN] Manufacturer model: $manufacturerModel');
+      
+      final response = DeviceQueryResponse(
+        protocolVersion: firmwareVer,
+        manufacturer: manufacturerModel,
+        firmwareBuildDate: buildDate,
+      );
+      
+      _deviceQueryCompleter?.complete(response);
+      _deviceQueryCompleter = null;
+    } else {
+      // Old protocol v1 format
+      final manufacturer = reader.readCString(64);
+      final publicKey = reader.readBytes(32);
+      
+      debugLog('[CONN] Manufacturer: $manufacturer');
+      
+      final response = DeviceQueryResponse(
+        protocolVersion: firmwareVer,
+        manufacturer: manufacturer,
+      );
+      
+      _deviceQueryCompleter?.complete(response);
+      _deviceQueryCompleter = null;
+    }
+  }
 
-    final response = DeviceQueryResponse(
-      protocolVersion: protocolVersion,
-      manufacturer: manufacturer,
-      publicKey: publicKey,
-    );
+  void _onSelfInfoResponse(BufferReader reader) {
+    // SelfInfo response format (from connection.js onSelfInfoResponse):
+    // type (1 byte) + txPower (1 byte) + maxTxPower (1 byte) + publicKey (32 bytes) + name (C-string, variable length)
+    try {
+      final type = reader.readByte();
+      final txPower = reader.readByte();
+      final maxTxPower = reader.readByte();
+      final publicKey = reader.readBytes(32);
+      // Read name using remaining bytes (variable length, null-terminated)
+      final nameLength = reader.remainingBytesCount.clamp(0, 64);
+      final name = nameLength > 0 ? reader.readCString(nameLength) : '';
 
-    _deviceQueryCompleter?.complete(response);
-    _deviceQueryCompleter = null;
+      final selfInfo = SelfInfo(
+        type: type,
+        txPower: txPower,
+        maxTxPower: maxTxPower,
+        publicKey: publicKey,
+        name: name,
+      );
+
+      _selfInfo = selfInfo;
+      debugLog('[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}...');
+
+      _selfInfoCompleter?.complete(selfInfo);
+      _selfInfoCompleter = null;
+    } catch (e) {
+      debugError('[CONN] Error parsing SelfInfo response: $e');
+      _selfInfoCompleter?.completeError(e);
+      _selfInfoCompleter = null;
+    }
   }
 
   void _onSentResponse() {
@@ -248,11 +509,66 @@ class MeshCoreConnection {
     final rssi = reader.readInt8();
     final raw = reader.readRemainingBytes();
 
+    // Broadcast to both legacy stream and new unified RX stream
     _rawDataController.add({
       'snr': snr,
       'rssi': rssi,
       'raw': raw,
     });
+
+    _logRxDataController.add((raw: raw, snr: snr, rssi: rssi));
+  }
+
+  void _onStatsResponse(BufferReader reader) {
+    // Stats response format (from web client):
+    // <stats_type:1> <noise:int16> <last_rssi:int8> <last_snr:int8> <tx_air_secs:uint32> <rx_air_secs:uint32>
+    try {
+      final statsType = reader.readByte();
+      if (statsType == StatsTypes.radio) {
+        final noiseFloor = reader.readInt16LE();
+        // Skip remaining fields (lastRssi, lastSnr, txAirSecs, rxAirSecs)
+        _lastNoiseFloor = noiseFloor;
+        _noiseFloorController.add(noiseFloor); // Emit to stream
+        debugLog('[CONN] Noise floor updated: ${noiseFloor}dBm');
+        _statsCompleter?.complete(noiseFloor);
+      } else {
+        debugLog('[CONN] Unknown stats type: $statsType');
+        _statsCompleter?.complete(0);
+      }
+      _statsCompleter = null;
+    } catch (e) {
+      debugError('[CONN] Error parsing stats response: $e');
+      _statsCompleter?.completeError(e);
+      _statsCompleter = null;
+    }
+  }
+
+  void _onBatteryVoltageResponse(BufferReader reader) {
+    try {
+      final milliVolts = reader.readUInt16LE();
+      _lastBatteryMilliVolts = milliVolts;
+      final percent = _milliVoltsToPercent(milliVolts);
+
+      // Consume any remaining bytes (firmware may send extended format)
+      if (reader.remainingBytesCount > 0) {
+        final extraBytes = reader.readRemainingBytes();
+        debugLog('[CONN] Battery response has ${extraBytes.length} extra bytes (ignoring)');
+      }
+
+      _batteryController.add(percent); // Emit percentage to stream
+      debugLog('[CONN] Battery updated: ${milliVolts}mV (${percent}%)');
+    } catch (e) {
+      debugError('[CONN] Error parsing battery response: $e');
+    }
+  }
+
+  /// Convert battery millivolts to percentage (0-100)
+  /// Typical LiPo range: 3.0V (empty) to 4.2V (full)
+  int _milliVoltsToPercent(int milliVolts) {
+    const minVoltage = 3000; // 3.0V = 0%
+    const maxVoltage = 4200; // 4.2V = 100%
+    final clamped = milliVolts.clamp(minVoltage, maxVoltage);
+    return ((clamped - minVoltage) / (maxVoltage - minVoltage) * 100).round();
   }
 
   /// Write frame to device
@@ -263,6 +579,32 @@ class MeshCoreConnection {
   // ============================================
   // Command Methods (ported from connection.js)
   // ============================================
+
+  /// Send AppStart command to request SelfInfo
+  /// Reference: sendCommandAppStart() in connection.js
+  Future<void> sendCommandAppStart() async {
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.appStart);
+    data.writeByte(1); // appVer
+    data.writeBytes(Uint8List(6)); // reserved (6 zero bytes)
+    data.writeString('MeshMapper'); // appName
+    await _sendToRadio(data);
+  }
+
+  /// Get device self info (includes public key)
+  /// Reference: getSelfInfo() in connection.js
+  Future<SelfInfo> getSelfInfo({Duration timeout = const Duration(seconds: 5)}) async {
+    _selfInfoCompleter = Completer<SelfInfo>();
+
+    // Send AppStart command
+    await sendCommandAppStart();
+
+    // Wait for SelfInfo response
+    return _selfInfoCompleter!.future.timeout(
+      timeout,
+      onTimeout: () => throw TimeoutException('getSelfInfo timed out'),
+    );
+  }
 
   /// Query device info
   Future<DeviceQueryResponse> deviceQuery(int appTargetVer) async {
@@ -308,16 +650,22 @@ class MeshCoreConnection {
 
   /// Get channel info
   Future<ChannelInfo> getChannel(int channelIdx) async {
+    debugLog('[CONN] getChannel($channelIdx) - sending request');
     _channelInfoCompleter = Completer<ChannelInfo>();
 
     final data = BufferWriter();
-    data.writeByte(CommandCodes.getChannel);
+    data.writeByte(CommandCodes.getChannel);  // 31 (0x1F)
     data.writeByte(channelIdx);
-    await _sendToRadio(data);
+    final bytes = data.toBytes();
+    debugLog('[CONN] getChannel bytes: ${bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
+    await _bluetooth.write(bytes);
 
     return _channelInfoCompleter!.future.timeout(
       const Duration(seconds: 5),
-      onTimeout: () => throw TimeoutException('Get channel timed out'),
+      onTimeout: () {
+        debugLog('[CONN] getChannel($channelIdx) - TIMEOUT after 5s');
+        throw TimeoutException('Get channel timed out');
+      },
     );
   }
 
@@ -329,6 +677,59 @@ class MeshCoreConnection {
     data.writeCString(name, 32);
     data.writeBytes(secret);
     await _sendToRadio(data);
+  }
+
+  /// Delete channel by setting it to empty
+  Future<void> deleteChannel(int channelIdx) async {
+    await setChannel(channelIdx, '', Uint8List(16));
+  }
+
+  /// Get all channels (queries until error)
+  Future<List<ChannelInfo>> getChannels() async {
+    final channels = <ChannelInfo>[];
+    var channelIdx = 0;
+
+    while (true) {
+      try {
+        final channel = await getChannel(channelIdx);
+        channels.add(channel);
+        channelIdx++;
+      } catch (e) {
+        // Stop when we get an error (no more channels)
+        break;
+      }
+    }
+
+    return channels;
+  }
+
+  /// Find channel by name (exact match)
+  Future<ChannelInfo?> findChannelByName(String name) async {
+    final channels = await getChannels();
+    try {
+      return channels.firstWhere((channel) => channel.name == name);
+    } catch (e) {
+      return null; // Not found
+    }
+  }
+
+  /// Find channel by secret
+  Future<ChannelInfo?> findChannelBySecret(Uint8List secret) async {
+    final channels = await getChannels();
+    try {
+      return channels.firstWhere((channel) => _areBuffersEqual(channel.secret, secret));
+    } catch (e) {
+      return null; // Not found
+    }
+  }
+
+  /// Helper to compare two byte arrays
+  bool _areBuffersEqual(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// Send channel text message (for TX pings)
@@ -354,11 +755,22 @@ class MeshCoreConnection {
   }
 
   /// Send ping to #wardriving channel
-  /// Format: @[MapperBot]<LAT LON>[power]
-  Future<void> sendPing(double lat, double lon, int power) async {
-    final message = '@[MapperBot]<$lat $lon>[$power]';
+  /// Format: @[MapperBot] LAT, LON [power]
+  /// Reference: buildPayload() in wardrive.js
+  Future<void> sendPing(double lat, double lon, double powerWatts) async {
+    if (_wardrivingChannel == null) {
+      throw Exception('Wardriving channel not initialized');
+    }
+
+    // Format coordinates to 5 decimal places with comma separator
+    final coordsStr = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
+    // Format power as "X.Xw" (e.g., "1.0w", "0.3w")
+    final powerStr = '${powerWatts.toStringAsFixed(1)}w';
+    final message = '@[MapperBot] $coordsStr [$powerStr]';
+
+    debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    await sendChannelTextMessage(TxtTypes.plain, 0, timestamp, message);
+    await sendChannelTextMessage(TxtTypes.plain, _wardrivingChannel!.channelIndex, timestamp, message);
   }
 
   /// Get battery voltage
@@ -366,6 +778,94 @@ class MeshCoreConnection {
     final data = BufferWriter();
     data.writeByte(CommandCodes.getBatteryVoltage);
     await _sendToRadio(data);
+  }
+
+  /// Get radio statistics (noise floor)
+  /// Reference: sendCommandGetStats in connection.js
+  Future<int> getStats(int statsType) async {
+    _statsCompleter = Completer<int>();
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.getStats);
+    data.writeByte(statsType);
+    await _sendToRadio(data);
+
+    return _statsCompleter!.future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => throw TimeoutException('Get stats timed out'),
+    );
+  }
+
+  /// Get noise floor (convenience method for getStats with Radio type)
+  Future<int> getNoiseFloor() async {
+    return await getStats(StatsTypes.radio);
+  }
+
+  /// Start periodic noise floor polling (5-second interval)
+  /// Reference: noiseFloorUpdateTimer in wardrive.js
+  void _startNoiseFloorPolling() {
+    // Check if firmware supports noise floor (v1.11.0+)
+    // For now, we'll try and handle errors gracefully
+    _noiseFloorTimer?.cancel();
+
+    // Get initial reading immediately
+    _fetchNoiseFloor();
+
+    _noiseFloorTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      await _fetchNoiseFloor();
+    });
+
+    debugLog('[CONN] Started noise floor polling (5s interval)');
+  }
+
+  Future<void> _fetchNoiseFloor() async {
+    try {
+      debugLog('[CONN] Fetching noise floor...');
+      await getNoiseFloor();
+    } catch (e) {
+      // Firmware may not support noise floor - don't spam logs
+      debugLog('[CONN] Noise floor fetch failed: $e');
+      // Stop polling if consistently failing
+      _stopNoiseFloorPolling();
+    }
+  }
+
+  /// Stop noise floor polling
+  void _stopNoiseFloorPolling() {
+    _noiseFloorTimer?.cancel();
+    _noiseFloorTimer = null;
+    debugLog('[CONN] Stopped noise floor polling');
+  }
+
+  /// Start periodic battery polling (30-second interval)
+  void _startBatteryPolling() {
+    _batteryTimer?.cancel();
+
+    // Get initial reading (with error handling)
+    _fetchBattery();
+
+    _batteryTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      await _fetchBattery();
+    });
+
+    debugLog('[CONN] Started battery polling (30s interval)');
+  }
+
+  Future<void> _fetchBattery() async {
+    try {
+      debugLog('[CONN] ⚡ Fetching battery voltage (poll triggered)...');
+      await getBatteryVoltage();
+    } catch (e) {
+      debugWarn('[CONN] Battery voltage fetch failed: $e');
+      // Don't stop polling - battery might become available
+    }
+  }
+
+  /// Stop battery polling
+  void _stopBatteryPolling() {
+    _batteryTimer?.cancel();
+    _batteryTimer = null;
+    debugLog('[CONN] Stopped battery polling');
   }
 
   /// Reboot device
@@ -378,9 +878,14 @@ class MeshCoreConnection {
 
   /// Dispose of resources
   void dispose() {
+    _stopNoiseFloorPolling();
+    _stopBatteryPolling();
     _dataSubscription?.cancel();
     _stepController.close();
     _channelMessageController.close();
     _rawDataController.close();
+    _logRxDataController.close();
+    _noiseFloorController.close();
+    _batteryController.close();
   }
 }

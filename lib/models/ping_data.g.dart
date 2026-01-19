@@ -6,45 +6,6 @@ part of 'ping_data.dart';
 // TypeAdapterGenerator
 // **************************************************************************
 
-class PingTypeAdapter extends TypeAdapter<PingType> {
-  @override
-  final int typeId = 0;
-
-  @override
-  PingType read(BinaryReader reader) {
-    switch (reader.readByte()) {
-      case 0:
-        return PingType.tx;
-      case 1:
-        return PingType.rx;
-      default:
-        return PingType.tx;
-    }
-  }
-
-  @override
-  void write(BinaryWriter writer, PingType obj) {
-    switch (obj) {
-      case PingType.tx:
-        writer.writeByte(0);
-        break;
-      case PingType.rx:
-        writer.writeByte(1);
-        break;
-    }
-  }
-
-  @override
-  int get hashCode => typeId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is PingTypeAdapter &&
-          runtimeType == other.runtimeType &&
-          typeId == other.typeId;
-}
-
 class TxPingAdapter extends TypeAdapter<TxPing> {
   @override
   final int typeId = 1;
@@ -136,6 +97,45 @@ class RxPingAdapter extends TypeAdapter<RxPing> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is RxPingAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class PingTypeAdapter extends TypeAdapter<PingType> {
+  @override
+  final int typeId = 0;
+
+  @override
+  PingType read(BinaryReader reader) {
+    switch (reader.readByte()) {
+      case 0:
+        return PingType.tx;
+      case 1:
+        return PingType.rx;
+      default:
+        return PingType.tx;
+    }
+  }
+
+  @override
+  void write(BinaryWriter writer, PingType obj) {
+    switch (obj) {
+      case PingType.tx:
+        writer.writeByte(0);
+        break;
+      case PingType.rx:
+        writer.writeByte(1);
+        break;
+    }
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PingTypeAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

@@ -11,10 +11,27 @@ import 'bluetooth_service.dart';
 /// Mobile Bluetooth implementation using flutter_blue_plus
 /// For Android and iOS platforms
 class MobileBluetoothService implements BluetoothService {
-  final _connectionController = StreamController<ConnectionStatus>.broadcast();
-  final _dataController = StreamController<Uint8List>.broadcast();
+  StreamController<ConnectionStatus>? _connectionController;
+  StreamController<Uint8List>? _dataController;
+  bool _isDisposed = false;
 
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
+
+  MobileBluetoothService() {
+    _initControllers();
+  }
+
+  void _initControllers() {
+    _connectionController = StreamController<ConnectionStatus>.broadcast();
+    _dataController = StreamController<Uint8List>.broadcast();
+    _isDisposed = false;
+  }
+
+  void _ensureControllers() {
+    if (_isDisposed || _connectionController == null || _connectionController!.isClosed) {
+      _initControllers();
+    }
+  }
   DiscoveredDevice? _connectedDevice;
   fbp.BluetoothDevice? _bleDevice;
   fbp.BluetoothCharacteristic? _rxCharacteristic;
@@ -24,10 +41,16 @@ class MobileBluetoothService implements BluetoothService {
   StreamSubscription? _scanSubscription;
 
   @override
-  Stream<ConnectionStatus> get connectionStream => _connectionController.stream;
+  Stream<ConnectionStatus> get connectionStream {
+    _ensureControllers();
+    return _connectionController!.stream;
+  }
 
   @override
-  Stream<Uint8List> get dataStream => _dataController.stream;
+  Stream<Uint8List> get dataStream {
+    _ensureControllers();
+    return _dataController!.stream;
+  }
 
   @override
   ConnectionStatus get connectionStatus => _connectionStatus;
@@ -37,7 +60,10 @@ class MobileBluetoothService implements BluetoothService {
 
   void _updateStatus(ConnectionStatus status) {
     _connectionStatus = status;
-    _connectionController.add(status);
+    _ensureControllers();
+    if (!_connectionController!.isClosed) {
+      _connectionController!.add(status);
+    }
   }
 
   @override
@@ -110,45 +136,81 @@ class MobileBluetoothService implements BluetoothService {
     await fbp.FlutterBluePlus.stopScan();
     await _scanSubscription?.cancel();
     _scanSubscription = null;
-    if (_connectionStatus == ConnectionStatus.scanning) {
-      _updateStatus(ConnectionStatus.disconnected);
-    }
+    // NOTE: Do NOT fire 'disconnected' here. Stopping a scan is not a disconnection.
+    // The status will be updated by connect() when a connection starts.
+    // Firing 'disconnected' here causes a race condition where the queued event
+    // arrives after a new MeshCoreConnection is created and disposes it incorrectly.
   }
 
   @override
   Future<void> connect(String deviceId) async {
     try {
+      print('[BLE] Starting connection to $deviceId');
       _updateStatus(ConnectionStatus.connecting);
+
+      // Cancel any existing subscriptions from a previous connection
+      // This prevents old listeners from interfering with the new connection
+      await _connectionStateSubscription?.cancel();
+      _connectionStateSubscription = null;
+      await _notificationSubscription?.cancel();
+      _notificationSubscription = null;
+
+      // Ensure controllers are initialized
+      _ensureControllers();
+
+      // Disconnect any previously connected device
+      if (_bleDevice != null) {
+        print('[BLE] Disconnecting previous device');
+        try {
+          await _bleDevice!.disconnect();
+        } catch (e) {
+          print('[BLE] Previous disconnect error (ignoring): $e');
+        }
+        _bleDevice = null;
+      }
 
       // Get the device
       _bleDevice = fbp.BluetoothDevice.fromId(deviceId);
+      print('[BLE] Device reference created');
 
-      // Listen for connection state changes
-      _connectionStateSubscription = _bleDevice!.connectionState.listen((state) {
+      // Connect to GATT server FIRST (before subscribing to state changes)
+      print('[BLE] Connecting to GATT...');
+      await _bleDevice!.connect(timeout: const Duration(seconds: 15));
+      print('[BLE] GATT connected');
+
+      // NOW subscribe to connection state changes (after we're connected)
+      // Use skip(1) to ignore the initial state emission from the stream.
+      // Flutter Blue Plus emits the current state immediately when you subscribe,
+      // but we only want to react to CHANGES, not the initial state.
+      // This prevents false disconnection triggers during connection setup.
+      _connectionStateSubscription = _bleDevice!.connectionState.skip(1).listen((state) {
+        print('[BLE] Connection state changed: $state');
         if (state == fbp.BluetoothConnectionState.disconnected) {
           _handleDisconnection();
         }
       });
 
-      // Connect to GATT server
-      await _bleDevice!.connect(timeout: const Duration(seconds: 15));
-
       // Discover services
+      print('[BLE] Discovering services...');
       final services = await _bleDevice!.discoverServices();
+      print('[BLE] Found ${services.length} services');
 
       // Find our service
       final service = services.firstWhere(
         (s) => s.uuid.toString().toUpperCase() == BleUuids.serviceUuid,
         orElse: () => throw Exception('MeshCore service not found'),
       );
+      print('[BLE] Found MeshCore service');
 
       // Find characteristics
       for (final char in service.characteristics) {
         final uuid = char.uuid.toString().toUpperCase();
         if (uuid == BleUuids.characteristicRxUuid) {
           _rxCharacteristic = char;
+          print('[BLE] Found RX characteristic');
         } else if (uuid == BleUuids.characteristicTxUuid) {
           _txCharacteristic = char;
+          print('[BLE] Found TX characteristic');
         }
       }
 
@@ -157,28 +219,40 @@ class MobileBluetoothService implements BluetoothService {
       }
 
       // Enable notifications on TX characteristic
+      print('[BLE] Enabling notifications...');
       await _txCharacteristic!.setNotifyValue(true);
       _notificationSubscription = _txCharacteristic!.lastValueStream.listen((value) {
-        if (value.isNotEmpty) {
-          _dataController.add(Uint8List.fromList(value));
+        if (value.isNotEmpty && _dataController != null && !_dataController!.isClosed) {
+          _dataController!.add(Uint8List.fromList(value));
         }
       });
+      print('[BLE] Notifications enabled');
 
       _connectedDevice = DiscoveredDevice(
         id: deviceId,
-        name: _bleDevice!.platformName.isNotEmpty 
-            ? _bleDevice!.platformName 
+        name: _bleDevice!.platformName.isNotEmpty
+            ? _bleDevice!.platformName
             : 'MeshCore Device',
       );
 
+      print('[BLE] Connection complete');
       _updateStatus(ConnectionStatus.connected);
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('[BLE] Connection error: $e');
+      print('[BLE] Stack trace: $stackTrace');
       _updateStatus(ConnectionStatus.error);
       rethrow;
     }
   }
 
   void _handleDisconnection() {
+    // Guard against double-disconnect: when disconnect() is called, the BLE
+    // connectionState listener fires first, then the finally block also calls
+    // this method. Only process the first call.
+    if (_connectionStatus == ConnectionStatus.disconnected) {
+      return;
+    }
+
     _connectedDevice = null;
     _bleDevice = null;
     _rxCharacteristic = null;
@@ -211,11 +285,12 @@ class MobileBluetoothService implements BluetoothService {
 
   @override
   void dispose() {
+    _isDisposed = true;
     _scanSubscription?.cancel();
     _notificationSubscription?.cancel();
     _connectionStateSubscription?.cancel();
-    _connectionController.close();
-    _dataController.close();
+    _connectionController?.close();
+    _dataController?.close();
     _bleDevice?.disconnect();
   }
 }

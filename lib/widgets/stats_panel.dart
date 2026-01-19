@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
+import 'tx_log_panel.dart';
+import 'rx_log_panel.dart';
 
 /// Stats panel showing TX/RX counts and success rates
 class StatsPanel extends StatelessWidget {
@@ -12,7 +14,7 @@ class StatsPanel extends StatelessWidget {
     final appState = context.watch<AppStateProvider>();
     final stats = appState.pingStats;
 
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -97,19 +99,48 @@ class StatsPanel extends StatelessWidget {
             ),
           ],
 
-          const Spacer(),
-
-          // Clear button
-          TextButton.icon(
-            onPressed: () => appState.clearPings(),
-            icon: const Icon(Icons.delete_outline),
-            label: const Text('Clear Markers'),
+          // Clear buttons
+          Row(
+            children: [
+              Expanded(
+                child: TextButton.icon(
+                  onPressed: () => appState.clearPings(),
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: const Text('Clear Markers', style: TextStyle(fontSize: 12)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextButton.icon(
+                  onPressed: () => appState.clearLogs(),
+                  icon: const Icon(Icons.delete_sweep, size: 18),
+                  label: const Text('Clear Logs', style: TextStyle(fontSize: 12)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  ),
+                ),
+              ),
+            ],
           ),
+
+          const SizedBox(height: 16),
+
+          // TX Log Panel
+          TxLogPanel(entries: appState.txLogEntries),
+
+          const SizedBox(height: 12),
+
+          // RX Log Panel
+          RxLogPanel(entries: appState.rxLogEntries),
         ],
       ),
     );
   }
 
+  /// Build stat card matching status bar chip theme
   Widget _buildStatCard(
     BuildContext context, {
     required IconData icon,
@@ -120,9 +151,9 @@ class StatsPanel extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
       ),
       child: Column(
         children: [

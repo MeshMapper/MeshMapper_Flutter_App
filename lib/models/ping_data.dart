@@ -17,31 +17,40 @@ enum PingType {
 class TxPing {
   @HiveField(0)
   final double latitude;
-  
+
   @HiveField(1)
   final double longitude;
-  
+
   @HiveField(2)
   final int power;
-  
+
   @HiveField(3)
   final DateTime timestamp;
-  
+
   @HiveField(4)
   final String deviceId;
 
-  const TxPing({
+  /// Heard repeaters (populated after echo tracking window ends)
+  /// Not persisted to Hive - transient runtime data
+  final List<HeardRepeater> heardRepeaters;
+
+  TxPing({
     required this.latitude,
     required this.longitude,
     required this.power,
     required this.timestamp,
     required this.deviceId,
-  });
+    List<HeardRepeater>? heardRepeaters,
+  }) : heardRepeaters = heardRepeaters ?? [];
 
   /// Format ping message for BLE transmission
-  /// Format: @[MapperBot]<LAT LON>[power]
-  String toMessageFormat() {
-    return '@[MapperBot]<$latitude $longitude>[$power]';
+  /// Format: @[MapperBot] LAT, LON [POWERw]
+  /// Note: power is stored in dBm but the message format uses watts
+  /// The actual message is built in PingService with the correct watts value
+  String toMessageFormat({double? powerWatts}) {
+    final coordsStr = '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
+    final pw = powerWatts ?? 0.3; // Default to 0.3w if not provided
+    return '@[MapperBot] $coordsStr [${pw.toStringAsFixed(1)}w]';
   }
 
   Map<String, dynamic> toApiJson() {
@@ -97,6 +106,21 @@ class RxPing {
       'rssi': rssi,
     };
   }
+}
+
+/// Repeater that heard a TX ping (from echo tracking)
+class HeardRepeater {
+  final String repeaterId; // Hex ID (e.g., "4e", "77")
+  final double snr; // Best SNR observed
+  final int rssi; // RSSI in dBm
+  final int seenCount; // How many times this repeater was heard
+
+  const HeardRepeater({
+    required this.repeaterId,
+    required this.snr,
+    this.rssi = 0,
+    this.seenCount = 1,
+  });
 }
 
 /// Information about a known repeater

@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:geolocator/geolocator.dart';
 
 import '../models/connection_state.dart';
+import '../utils/debug_logger_io.dart';
+import 'gps_simulator_service.dart';
 
 /// GPS service for location tracking and geofencing
 /// Ported from wardrive.js geolocation logic
@@ -17,6 +19,18 @@ class GpsService {
   
   /// Minimum distance (meters) from last ping before allowing new ping
   static const double minDistanceMeters = 25.0;
+  
+  /// Maximum GPS age for manual pings (60 seconds)
+  /// Reference: GPS_WATCH_MAX_AGE_MS in wardrive.js
+  static const Duration maxGpsAgeForManualPing = Duration(seconds: 60);
+  
+  /// Maximum GPS accuracy threshold for pings (100 meters)
+  /// Reference: GPS_ACCURACY_THRESHOLD_M in wardrive.js docs
+  static const double maxAccuracyMetersForPing = 100.0;
+  
+  /// Maximum GPS accuracy threshold for zone checks (50 meters)
+  /// Reference: getValidGpsForZoneCheck() in wardrive.js
+  static const double maxAccuracyMetersForZoneCheck = 50.0;
 
   final _statusController = StreamController<GpsStatus>.broadcast();
   final _positionController = StreamController<Position>.broadcast();
@@ -25,6 +39,20 @@ class GpsService {
   Position? _lastPosition;
   Position? _lastPingPosition;
   StreamSubscription<Position>? _positionSubscription;
+
+  /// GPS Simulator for testing
+  GpsSimulatorService? _simulator;
+  StreamSubscription<Position>? _simulatorSubscription;
+  bool _simulatorEnabled = false;
+
+  /// Check if simulator is enabled
+  bool get isSimulatorEnabled => _simulatorEnabled;
+
+  /// Get simulator instance (creates if needed)
+  GpsSimulatorService get simulator {
+    _simulator ??= GpsSimulatorService();
+    return _simulator!;
+  }
 
   /// Stream of GPS status changes
   Stream<GpsStatus> get statusStream => _statusController.stream;
@@ -96,14 +124,17 @@ class GpsService {
     _updateStatus(GpsStatus.searching);
 
     // Configure location settings for position stream
+    // Note: No timeLimit - we want continuous GPS tracking even when stationary
+    // The distanceFilter handles update frequency (10m for RX batch checks at 25m)
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 25, // Trigger every 25m movement
-        timeLimit: Duration(seconds: 30),
+        distanceFilter: 10, // Trigger every 10m movement (check RX batches at 25m)
       ),
     ).listen(
       (position) {
+        debugLog('[GPS SERVICE] Position stream fired: lat=${position.latitude.toStringAsFixed(5)}, '
+            'lon=${position.longitude.toStringAsFixed(5)}, accuracy=${position.accuracy.toStringAsFixed(1)}m');
         _lastPosition = position;
         _positionController.add(position);
 
@@ -115,6 +146,7 @@ class GpsService {
         }
       },
       onError: (error) {
+        debugError('[GPS SERVICE] Position stream error: $error');
         _updateStatus(GpsStatus.disabled);
       },
     );
@@ -180,6 +212,67 @@ class GpsService {
     _lastPingPosition = position;
   }
 
+  /// Check if GPS position is fresh enough for manual pings (< 60s old)
+  /// Reference: GPS_WATCH_MAX_AGE_MS validation in wardrive.js
+  bool isPositionFresh(Position position) {
+    final age = DateTime.now().difference(position.timestamp);
+    return age <= maxGpsAgeForManualPing;
+  }
+  
+  /// Check if GPS position has acceptable accuracy for pings (< 100m)
+  /// Reference: GPS_ACCURACY_THRESHOLD_M in wardrive.js
+  bool isAccuracyAcceptableForPing(Position position) {
+    return position.accuracy <= maxAccuracyMetersForPing;
+  }
+  
+  /// Check if GPS position has acceptable accuracy for zone checks (< 50m)
+  /// Reference: getValidGpsForZoneCheck() in wardrive.js
+  bool isAccuracyAcceptableForZoneCheck(Position position) {
+    return position.accuracy <= maxAccuracyMetersForZoneCheck;
+  }
+  
+  /// Validate position for ping operation
+  /// Checks freshness (< 60s old) and accuracy (< 100m)
+  /// Returns null if valid, error message if invalid
+  String? validatePositionForPing(Position position) {
+    // Check freshness
+    if (!isPositionFresh(position)) {
+      final age = DateTime.now().difference(position.timestamp).inSeconds;
+      debugWarn('[GPS] Position too old: ${age}s (max 60s)');
+      return 'GPS data too old ($age seconds)';
+    }
+    
+    // Check accuracy
+    if (!isAccuracyAcceptableForPing(position)) {
+      final accuracy = position.accuracy.toInt();
+      debugWarn('[GPS] Position too inaccurate: ${accuracy}m (max 100m)');
+      return 'GPS accuracy too low ($accuracy meters)';
+    }
+    
+    return null; // Valid
+  }
+  
+  /// Validate position for zone check operation
+  /// Checks freshness (< 60s old) and accuracy (< 50m, stricter than ping)
+  /// Returns null if valid, error message if invalid
+  String? validatePositionForZoneCheck(Position position) {
+    // Check freshness
+    if (!isPositionFresh(position)) {
+      final age = DateTime.now().difference(position.timestamp).inSeconds;
+      debugWarn('[GPS] [AUTH] Position too old: ${age}s (max 60s)');
+      return 'GPS data too old ($age seconds)';
+    }
+    
+    // Check accuracy (stricter for zone checks)
+    if (!isAccuracyAcceptableForZoneCheck(position)) {
+      final accuracy = position.accuracy.toInt();
+      debugWarn('[GPS] [AUTH] Position too inaccurate: ${accuracy}m (max 50m)');
+      return 'GPS accuracy too low ($accuracy meters)';
+    }
+    
+    return null; // Valid
+  }
+
   /// Get current position (single request)
   Future<Position?> getCurrentPosition() async {
     if (!await requestPermissions()) {
@@ -220,9 +313,88 @@ class GpsService {
     return Geolocator.bearingBetween(startLat, startLon, endLat, endLon);
   }
 
+  /// Enable GPS simulator (for testing)
+  /// Stops real GPS and starts simulated position updates
+  void enableSimulator({
+    double? startLatitude,
+    double? startLongitude,
+    double speed = 50.0,
+    SimulatorPattern pattern = SimulatorPattern.randomWalk,
+  }) {
+    if (_simulatorEnabled) return;
+
+    debugLog('[GPS] Enabling simulator mode');
+
+    // Stop real GPS
+    stopWatching();
+
+    // Configure and start simulator
+    simulator.configure(
+      latitude: startLatitude,
+      longitude: startLongitude,
+      speed: speed,
+      pattern: pattern,
+    );
+
+    // Subscribe to simulator positions
+    _simulatorSubscription = simulator.positionStream.listen((position) {
+      _lastPosition = position;
+      _positionController.add(position);
+
+      // Update status based on geofence
+      if (isWithinGeofence(position)) {
+        _updateStatus(GpsStatus.locked);
+      } else {
+        _updateStatus(GpsStatus.outsideGeofence);
+      }
+    });
+
+    simulator.start();
+    _simulatorEnabled = true;
+
+    // Set initial position immediately from simulator
+    if (simulator.currentPosition != null) {
+      _lastPosition = simulator.currentPosition;
+      _positionController.add(simulator.currentPosition!);
+    }
+
+    _updateStatus(GpsStatus.locked); // Simulator always has "lock"
+  }
+
+  /// Disable GPS simulator and return to real GPS
+  void disableSimulator() {
+    if (!_simulatorEnabled) return;
+
+    debugLog('[GPS] Disabling simulator mode');
+
+    // Stop simulator
+    simulator.stop();
+    _simulatorSubscription?.cancel();
+    _simulatorSubscription = null;
+    _simulatorEnabled = false;
+
+    // Restart real GPS
+    startWatching();
+  }
+
+  /// Configure simulator parameters (speed, pattern)
+  void configureSimulator({
+    double? speed,
+    SimulatorPattern? pattern,
+    double? heading,
+  }) {
+    simulator.configure(
+      speed: speed,
+      pattern: pattern,
+      heading: heading,
+    );
+  }
+
   /// Dispose of resources
   void dispose() {
     stopWatching();
+    simulator.dispose();
+    _simulatorSubscription?.cancel();
     _statusController.close();
     _positionController.close();
   }
