@@ -37,6 +37,9 @@ class ApiQueueService {
   /// Callback for queue updates
   void Function(int queueSize)? onQueueUpdated;
 
+  /// Callback for successful uploads (passes count of items uploaded)
+  void Function(int uploadedCount)? onUploadSuccess;
+
   /// Offline mode status
   bool get offlineMode => _offlineMode;
 
@@ -86,10 +89,12 @@ class ApiQueueService {
     // In offline mode, accumulate to offline pings list instead of queue
     if (_offlineMode) {
       _offlinePings.add(item.toApiJson());
+      debugLog('[API QUEUE] TX enqueued (offline): $heardRepeats');
       return;
     }
 
     await _box?.add(item);
+    debugLog('[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
     onQueueUpdated?.call(queueSize);
     _checkBatchUpload();
   }
@@ -167,6 +172,7 @@ class ApiQueueService {
   void _startBatchTimer() {
     _batchTimer?.cancel();
     _batchTimer = Timer.periodic(_batchTimeout, (_) {
+      debugLog('[API QUEUE] Batch timer fired (15s interval)');
       _flushRxBuffer();
       _uploadBatch();
     });
@@ -186,8 +192,15 @@ class ApiQueueService {
 
   /// Upload batch of queued items
   Future<void> _uploadBatch() async {
-    if (_isUploading || _box == null || _box!.isEmpty) return;
-    
+    if (_isUploading) {
+      debugLog('[API QUEUE] Upload skipped: already uploading');
+      return;
+    }
+    if (_box == null || _box!.isEmpty) {
+      debugLog('[API QUEUE] Upload skipped: queue empty');
+      return;
+    }
+
     _isUploading = true;
 
     try {
@@ -198,6 +211,7 @@ class ApiQueueService {
           .toList();
 
       if (items.isEmpty) {
+        debugLog('[API QUEUE] Upload skipped: no items ready for upload');
         _isUploading = false;
         return;
       }
@@ -205,23 +219,30 @@ class ApiQueueService {
       // Convert to API format
       final pings = items.map((item) => item.toApiJson()).toList();
 
+      debugLog('[API QUEUE] Uploading ${items.length} items...');
+
       // Attempt upload
       final success = await _apiService.uploadBatch(pings);
 
       if (success) {
+        final uploadedCount = items.length;
         // Remove successful items
         for (final item in items) {
           await item.delete();
         }
+        debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
+        onUploadSuccess?.call(uploadedCount);
       } else {
         // Mark items as retried
         for (final item in items) {
           item.markRetried();
         }
+        debugLog('[API QUEUE] Upload FAILED: ${items.length} items marked for retry');
       }
 
       onQueueUpdated?.call(queueSize);
     } catch (e) {
+      debugError('[API QUEUE] Upload exception: $e');
       // Retry later
     } finally {
       _isUploading = false;

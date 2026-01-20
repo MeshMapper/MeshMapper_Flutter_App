@@ -336,6 +336,7 @@ class ApiService {
       }
 
       if (result['success'] == true) {
+        debugLog('[API] Upload batch SUCCESS: ${pings.length} items');
         return true;
       }
 

@@ -93,7 +93,7 @@ class PingControls extends StatelessWidget {
             // Can start even when tooCloseToLastPing - ping will be skipped until user moves
             Expanded(
               child: _ActionButton(
-                icon: Icons.sync,
+                icon: Icons.sensors,
                 label: cooldownActive && !isTxRxAutoRunning
                     ? '$cooldownRemaining s'
                     : 'TX/RX Auto',
@@ -264,10 +264,10 @@ class _ActionButtonState extends State<_ActionButton>
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 14),
               decoration: BoxDecoration(
-                color: effectiveColor.withOpacity(bgOpacity),
+                color: effectiveColor.withValues(alpha: bgOpacity),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: effectiveColor.withOpacity(borderOpacity),
+                  color: effectiveColor.withValues(alpha: borderOpacity),
                   width: widget.isActive ? 2 : 1,
                 ),
               ),
@@ -326,12 +326,12 @@ class _ActionButtonState extends State<_ActionButton>
                   SizedBox(
                     height: 12,
                     child: widget.isActive
-                        ? Text(
+                        ? const Text(
                             'Active',
                             style: TextStyle(
                               fontSize: 9,
                               fontWeight: FontWeight.w600,
-                              color: const Color(0xFF22C55E),
+                              color: Color(0xFF22C55E),
                             ),
                           )
                         : widget.subtitle != null
@@ -372,10 +372,10 @@ class _OfflineModeToggle extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: Colors.grey.withOpacity(0.08),
+            color: Colors.grey.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: Colors.grey.withOpacity(0.2),
+              color: Colors.grey.withValues(alpha: 0.2),
             ),
           ),
           child: Row(
@@ -384,7 +384,7 @@ class _OfflineModeToggle extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: Colors.grey.withOpacity(0.1),
+                  color: Colors.grey.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
@@ -459,13 +459,13 @@ class _OfflineModeToggle extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             color: offlineMode
-                ? Colors.orange.withOpacity(0.15)
-                : Colors.grey.withOpacity(0.08),
+                ? Colors.orange.withValues(alpha: 0.15)
+                : Colors.grey.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: offlineMode
-                  ? Colors.orange.withOpacity(0.4)
-                  : Colors.grey.withOpacity(0.2),
+                  ? Colors.orange.withValues(alpha: 0.4)
+                  : Colors.grey.withValues(alpha: 0.2),
             ),
           ),
           child: Row(
@@ -475,8 +475,8 @@ class _OfflineModeToggle extends StatelessWidget {
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
                   color: offlineMode
-                      ? Colors.orange.withOpacity(0.2)
-                      : Colors.grey.withOpacity(0.1),
+                      ? Colors.orange.withValues(alpha: 0.2)
+                      : Colors.grey.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(

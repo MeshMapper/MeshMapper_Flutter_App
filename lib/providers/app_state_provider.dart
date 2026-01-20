@@ -268,6 +268,14 @@ class AppStateProvider extends ChangeNotifier {
       }
     };
 
+    _apiQueueService.onUploadSuccess = (uploadedCount) {
+      _pingStats = _pingStats.copyWith(
+        successfulUploads: _pingStats.successfulUploads + uploadedCount,
+      );
+      debugLog('[APP] Upload success: +$uploadedCount items (total: ${_pingStats.successfulUploads})');
+      notifyListeners();
+    };
+
     // Initialize offline session service
     await _offlineSessionService.init();
     _offlineSessionService.onSessionsUpdated = (sessions) {
@@ -577,10 +585,13 @@ class AppStateProvider extends ChangeNotifier {
       };
 
       _pingService!.onStatsUpdated = (stats) {
-        // Preserve rxCount from RxLogger while updating TX-related stats from PingService
-        // PingService sends stats with rxCount=0 (it never tracks RX), so we must preserve
-        // the rxCount that onRxEntry increments in the unified RX handler
-        _pingStats = stats.copyWith(rxCount: _pingStats.rxCount);
+        // Preserve rxCount and successfulUploads while updating TX-related stats from PingService
+        // PingService sends stats with rxCount=0 and successfulUploads=0 (it doesn't track these),
+        // so we must preserve the values that other handlers increment
+        _pingStats = stats.copyWith(
+          rxCount: _pingStats.rxCount,
+          successfulUploads: _pingStats.successfulUploads,
+        );
         notifyListeners();
 
         // Update background service notification with current stats
