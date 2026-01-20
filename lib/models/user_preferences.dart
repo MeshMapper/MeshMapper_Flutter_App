@@ -34,6 +34,9 @@ class UserPreferences {
   /// IATA zone code for geo-auth (default: 'YOW' for Ottawa)
   final String iataCode;
 
+  /// Background mode enabled (requests "Always" location permission on iOS)
+  final bool backgroundModeEnabled;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -46,6 +49,7 @@ class UserPreferences {
     this.powerLevelSet = false,
     this.offlineMode = false,
     this.iataCode = 'YOW',
+    this.backgroundModeEnabled = false,
   });
 
   /// Create from JSON (for persistence)
@@ -62,6 +66,7 @@ class UserPreferences {
       powerLevelSet: (json['powerLevelSet'] as bool?) ?? false,
       offlineMode: (json['offlineMode'] as bool?) ?? false,
       iataCode: (json['iataCode'] as String?) ?? 'YOW',
+      backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
     );
   }
 
@@ -79,6 +84,7 @@ class UserPreferences {
       'powerLevelSet': powerLevelSet,
       'offlineMode': offlineMode,
       'iataCode': iataCode,
+      'backgroundModeEnabled': backgroundModeEnabled,
     };
   }
 
@@ -95,6 +101,7 @@ class UserPreferences {
     bool? powerLevelSet,
     bool? offlineMode,
     String? iataCode,
+    bool? backgroundModeEnabled,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -108,6 +115,7 @@ class UserPreferences {
       powerLevelSet: powerLevelSet ?? this.powerLevelSet,
       offlineMode: offlineMode ?? this.offlineMode,
       iataCode: iataCode ?? this.iataCode,
+      backgroundModeEnabled: backgroundModeEnabled ?? this.backgroundModeEnabled,
     );
   }
 
@@ -146,7 +154,8 @@ class UserPreferences {
         other.ignoreRepeaterId == ignoreRepeaterId &&
         other.autoPowerSet == autoPowerSet &&
         other.offlineMode == offlineMode &&
-        other.iataCode == iataCode;
+        other.iataCode == iataCode &&
+        other.backgroundModeEnabled == backgroundModeEnabled;
   }
 
   @override
@@ -162,6 +171,7 @@ class UserPreferences {
       autoPowerSet,
       offlineMode,
       iataCode,
+      backgroundModeEnabled,
     );
   }
 }

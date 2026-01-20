@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
+import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../models/connection_state.dart';
@@ -87,14 +89,64 @@ class MobileBluetoothService implements BluetoothService {
 
   @override
   Future<bool> requestPermissions() async {
-    // Request Bluetooth permissions
-    final bluetoothScan = await Permission.bluetoothScan.request();
-    final bluetoothConnect = await Permission.bluetoothConnect.request();
-    final location = await Permission.locationWhenInUse.request();
+    if (Platform.isIOS) {
+      // iOS: Core Bluetooth handles Bluetooth authorization automatically.
+      // It will prompt the user when we first try to scan/connect.
+      //
+      // For location, we use Geolocator's API instead of permission_handler
+      // because permission_handler can incorrectly report status on iOS.
+      LocationPermission locationPermission = await Geolocator.checkPermission();
+      print('[BLE] iOS location permission check: $locationPermission');
 
-    return bluetoothScan.isGranted &&
-        bluetoothConnect.isGranted &&
-        location.isGranted;
+      if (locationPermission == LocationPermission.denied) {
+        // Request permission
+        locationPermission = await Geolocator.requestPermission();
+        print('[BLE] iOS location permission after request: $locationPermission');
+      }
+
+      if (locationPermission == LocationPermission.deniedForever) {
+        print('[BLE] iOS location permission permanently denied - user must enable in Settings');
+        throw BlePermissionDeniedException(
+          'Location permission required for Bluetooth scanning. '
+          'Please enable in Settings > Privacy & Security > Location Services > MeshMapper'
+        );
+      }
+
+      if (locationPermission == LocationPermission.denied) {
+        print('[BLE] iOS location permission denied');
+        return false;
+      }
+
+      print('[BLE] iOS permissions OK - Core Bluetooth will prompt for Bluetooth access when scanning');
+      return true;
+    } else {
+      // Android: Use bluetoothScan and bluetoothConnect (Android 12+)
+      final bluetoothScan = await Permission.bluetoothScan.request();
+      final bluetoothConnect = await Permission.bluetoothConnect.request();
+      final location = await Permission.locationWhenInUse.request();
+
+      print('[BLE] Android permission check - scan: $bluetoothScan, connect: $bluetoothConnect, location: $location');
+
+      // Check for permanently denied permissions
+      if (bluetoothScan.isPermanentlyDenied || bluetoothConnect.isPermanentlyDenied || location.isPermanentlyDenied) {
+        final denied = <String>[];
+        if (bluetoothScan.isPermanentlyDenied) denied.add('Bluetooth Scan');
+        if (bluetoothConnect.isPermanentlyDenied) denied.add('Bluetooth Connect');
+        if (location.isPermanentlyDenied) denied.add('Location');
+        print('[BLE] Android permissions permanently denied: ${denied.join(", ")}');
+        throw BlePermissionDeniedException('${denied.join(", ")} permission(s) denied. Please enable in Settings');
+      }
+
+      final granted = bluetoothScan.isGranted &&
+          bluetoothConnect.isGranted &&
+          location.isGranted;
+
+      if (!granted) {
+        print('[BLE] Android permissions not fully granted');
+      }
+
+      return granted;
+    }
   }
 
   @override

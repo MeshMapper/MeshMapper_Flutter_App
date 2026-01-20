@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:geolocator/geolocator.dart';
 
 // Conditional import for web file helpers
 import '../utils/web_file_helpers_stub.dart'
@@ -136,6 +137,13 @@ class SettingsScreen extends StatelessWidget {
                 ],
               ),
             ),
+
+          // Background Mode (iOS only - for "Always" location permission)
+          if (!kIsWeb && Platform.isIOS) ...[
+            const Divider(),
+            _buildSectionHeader(context, 'Background Mode'),
+            _BackgroundModeToggle(appState: appState),
+          ],
 
           const Divider(),
 
@@ -1104,6 +1112,147 @@ class SettingsScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Widget for Background Mode toggle (iOS "Always" location permission)
+class _BackgroundModeToggle extends StatefulWidget {
+  final AppStateProvider appState;
+
+  const _BackgroundModeToggle({required this.appState});
+
+  @override
+  State<_BackgroundModeToggle> createState() => _BackgroundModeToggleState();
+}
+
+class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
+    with WidgetsBindingObserver {
+  bool _hasAlwaysPermission = false;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkPermission();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-check permission when app comes back to foreground
+    // (user may have changed it in Settings)
+    if (state == AppLifecycleState.resumed) {
+      _checkPermission();
+    }
+  }
+
+  Future<void> _checkPermission() async {
+    final hasPermission = await widget.appState.hasAlwaysLocationPermission();
+    if (mounted) {
+      setState(() {
+        _hasAlwaysPermission = hasPermission;
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _requestPermission() async {
+    setState(() => _isLoading = true);
+
+    final granted = await widget.appState.requestAlwaysLocationPermission();
+
+    if (mounted) {
+      setState(() {
+        _hasAlwaysPermission = granted;
+        _isLoading = false;
+      });
+
+      if (!granted) {
+        // Show dialog suggesting to open Settings
+        _showPermissionDeniedDialog();
+      }
+    }
+  }
+
+  void _showPermissionDeniedDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Permission Required'),
+        content: const Text(
+          'To enable background location tracking, please go to Settings and set Location to "Always".\n\n'
+          'This allows the app to track your location while in the background for continuous wardriving.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Geolocator.openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      secondary: Icon(
+        Icons.location_on,
+        color: _hasAlwaysPermission ? Colors.green : null,
+      ),
+      title: Row(
+        children: [
+          const Text('Background Location'),
+          if (_hasAlwaysPermission) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.green,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Text(
+                'ALWAYS',
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+      subtitle: Text(
+        _hasAlwaysPermission
+            ? 'Location tracking works in background'
+            : 'Enable for background wardriving',
+      ),
+      value: _hasAlwaysPermission,
+      onChanged: _isLoading
+          ? null
+          : (value) {
+              if (value) {
+                _requestPermission();
+              } else {
+                // Can't revoke - direct to settings
+                _showPermissionDeniedDialog();
+              }
+            },
     );
   }
 }

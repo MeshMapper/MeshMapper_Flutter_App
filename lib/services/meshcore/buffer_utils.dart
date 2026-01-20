@@ -40,23 +40,25 @@ class BufferReader {
   }
 
   /// Read remaining bytes as UTF-8 string
+  /// Uses allowMalformed to handle any non-UTF-8 bytes gracefully
   String readString() {
-    return utf8.decode(readRemainingBytes());
+    return utf8.decode(readRemainingBytes(), allowMalformed: true);
   }
 
   /// Read null-terminated string with max length
+  /// Uses allowMalformed to handle firmware padding bytes that aren't valid UTF-8
   String readCString(int maxLength) {
     final bytes = <int>[];
     final rawBytes = readBytes(maxLength);
-    
+
     for (final byte in rawBytes) {
       if (byte == 0) {
-        return utf8.decode(Uint8List.fromList(bytes));
+        return utf8.decode(Uint8List.fromList(bytes), allowMalformed: true);
       }
       bytes.add(byte);
     }
-    
-    return utf8.decode(Uint8List.fromList(bytes));
+
+    return utf8.decode(Uint8List.fromList(bytes), allowMalformed: true);
   }
 
   /// Read signed 8-bit integer

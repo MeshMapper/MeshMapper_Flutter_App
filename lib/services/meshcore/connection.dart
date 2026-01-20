@@ -432,15 +432,31 @@ class MeshCoreConnection {
 
   void _onSelfInfoResponse(BufferReader reader) {
     // SelfInfo response format (from connection.js onSelfInfoResponse):
-    // type (1 byte) + txPower (1 byte) + maxTxPower (1 byte) + publicKey (32 bytes) + name (C-string, variable length)
+    // type (1 byte) + txPower (1 byte) + maxTxPower (1 byte) + publicKey (32 bytes)
+    // + advLat (4 bytes) + advLon (4 bytes) + reserved (3 bytes) + manualAddContacts (1 byte)
+    // + radioFreq (4 bytes) + radioBw (4 bytes) + radioSf (1 byte) + radioCr (1 byte)
+    // + name (remaining bytes as string)
     try {
       final type = reader.readByte();
       final txPower = reader.readByte();
       final maxTxPower = reader.readByte();
       final publicKey = reader.readBytes(32);
-      // Read name using remaining bytes (variable length, null-terminated)
-      final nameLength = reader.remainingBytesCount.clamp(0, 64);
-      final name = nameLength > 0 ? reader.readCString(nameLength) : '';
+
+      // Skip additional fields added in newer firmware versions
+      // These fields exist between publicKey and name
+      if (reader.remainingBytesCount >= 22) {
+        reader.readInt32LE();  // advLat
+        reader.readInt32LE();  // advLon
+        reader.readBytes(3);   // reserved
+        reader.readByte();     // manualAddContacts
+        reader.readUInt32LE(); // radioFreq
+        reader.readUInt32LE(); // radioBw
+        reader.readByte();     // radioSf
+        reader.readByte();     // radioCr
+      }
+
+      // Read name from remaining bytes
+      final name = reader.hasMoreBytes ? reader.readString() : '';
 
       final selfInfo = SelfInfo(
         type: type,
@@ -596,11 +612,14 @@ class MeshCoreConnection {
   Future<SelfInfo> getSelfInfo({Duration timeout = const Duration(seconds: 5)}) async {
     _selfInfoCompleter = Completer<SelfInfo>();
 
+    // Save reference to future BEFORE sending command to avoid race condition
+    final future = _selfInfoCompleter!.future;
+
     // Send AppStart command
     await sendCommandAppStart();
 
     // Wait for SelfInfo response
-    return _selfInfoCompleter!.future.timeout(
+    return future.timeout(
       timeout,
       onTimeout: () => throw TimeoutException('getSelfInfo timed out'),
     );
@@ -610,12 +629,15 @@ class MeshCoreConnection {
   Future<DeviceQueryResponse> deviceQuery(int appTargetVer) async {
     _deviceQueryCompleter = Completer<DeviceQueryResponse>();
 
+    // Save reference to future BEFORE sending command to avoid race condition
+    final future = _deviceQueryCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.deviceQuery);
     data.writeByte(appTargetVer);
     await _sendToRadio(data);
 
-    return _deviceQueryCompleter!.future.timeout(
+    return future.timeout(
       const Duration(seconds: 5),
       onTimeout: () => throw TimeoutException('Device query timed out'),
     );
@@ -653,6 +675,10 @@ class MeshCoreConnection {
     debugLog('[CONN] getChannel($channelIdx) - sending request');
     _channelInfoCompleter = Completer<ChannelInfo>();
 
+    // Save reference to future BEFORE writing command to avoid race condition
+    // where response arrives and nulls completer before we can access the future
+    final future = _channelInfoCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.getChannel);  // 31 (0x1F)
     data.writeByte(channelIdx);
@@ -660,7 +686,7 @@ class MeshCoreConnection {
     debugLog('[CONN] getChannel bytes: ${bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
     await _bluetooth.write(bytes);
 
-    return _channelInfoCompleter!.future.timeout(
+    return future.timeout(
       const Duration(seconds: 5),
       onTimeout: () {
         debugLog('[CONN] getChannel($channelIdx) - TIMEOUT after 5s');
@@ -737,6 +763,9 @@ class MeshCoreConnection {
   Future<void> sendChannelTextMessage(int txtType, int channelIdx, int senderTimestamp, String text) async {
     _sentCompleter = Completer<void>();
 
+    // Save reference to future BEFORE sending command to avoid race condition
+    final future = _sentCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.sendChannelTxtMsg);
     data.writeByte(txtType);
@@ -746,7 +775,7 @@ class MeshCoreConnection {
     await _sendToRadio(data);
 
     // Wait for sent confirmation (with timeout)
-    await _sentCompleter!.future.timeout(
+    await future.timeout(
       const Duration(seconds: 3),
       onTimeout: () {
         // Ignore timeout - message may still be sent
@@ -785,12 +814,15 @@ class MeshCoreConnection {
   Future<int> getStats(int statsType) async {
     _statsCompleter = Completer<int>();
 
+    // Save reference to future BEFORE sending command to avoid race condition
+    final future = _statsCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.getStats);
     data.writeByte(statsType);
     await _sendToRadio(data);
 
-    return _statsCompleter!.future.timeout(
+    return future.timeout(
       const Duration(seconds: 5),
       onTimeout: () => throw TimeoutException('Get stats timed out'),
     );

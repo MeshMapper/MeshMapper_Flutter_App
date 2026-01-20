@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
+import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
@@ -38,12 +42,62 @@ void main() async {
 Future<void> _requestPermissions() async {
   debugLog('[APP] Requesting permissions...');
 
-  // Request all permissions needed for the app
+  if (Platform.isIOS) {
+    // iOS: Use Geolocator for location (permission_handler is unreliable on iOS)
+    // and trigger Core Bluetooth to prompt for Bluetooth permission
+    await _requestiOSPermissions();
+  } else {
+    // Android: Use permission_handler
+    await _requestAndroidPermissions();
+  }
+}
+
+/// Request permissions on iOS
+Future<void> _requestiOSPermissions() async {
+  // Request location permission using Geolocator (more reliable on iOS)
+  debugLog('[APP] iOS: Requesting location permission via Geolocator...');
+  LocationPermission locationPermission = await Geolocator.checkPermission();
+  if (locationPermission == LocationPermission.denied) {
+    locationPermission = await Geolocator.requestPermission();
+  }
+  debugLog('[APP] iOS location permission: $locationPermission');
+
+  // Trigger Core Bluetooth authorization by checking adapter state
+  // This will cause iOS to show the Bluetooth permission prompt if not already granted
+  debugLog('[APP] iOS: Triggering Core Bluetooth authorization...');
+  try {
+    // Just checking the adapter state triggers the iOS Bluetooth permission prompt
+    final adapterState = await fbp.FlutterBluePlus.adapterState.first;
+    debugLog('[APP] iOS Bluetooth adapter state: $adapterState');
+
+    // If Bluetooth is off or unauthorized, wait a moment for user to respond to prompt
+    if (adapterState != fbp.BluetoothAdapterState.on) {
+      debugLog('[APP] iOS: Waiting for Bluetooth authorization...');
+      // Wait up to 3 seconds for the adapter state to become 'on'
+      await fbp.FlutterBluePlus.adapterState
+          .where((state) => state == fbp.BluetoothAdapterState.on)
+          .first
+          .timeout(const Duration(seconds: 3), onTimeout: () {
+        debugLog('[APP] iOS: Bluetooth authorization timeout (user may have denied or BT is off)');
+        return fbp.BluetoothAdapterState.off;
+      });
+    }
+  } catch (e) {
+    debugLog('[APP] iOS: Error checking Bluetooth: $e');
+  }
+
+  // Request notification permission
+  final notificationStatus = await Permission.notification.request();
+  debugLog('[APP] iOS notification permission: $notificationStatus');
+}
+
+/// Request permissions on Android
+Future<void> _requestAndroidPermissions() async {
   final permissions = [
     Permission.bluetoothScan,
     Permission.bluetoothConnect,
     Permission.locationWhenInUse,
-    Permission.notification, // Required for background service notification
+    Permission.notification,
   ];
 
   final statuses = await permissions.request();

@@ -3,6 +3,16 @@ import 'dart:typed_data';
 
 import '../../models/connection_state.dart';
 
+/// Exception thrown when BLE permissions are permanently denied
+/// User must enable permissions in device Settings
+class BlePermissionDeniedException implements Exception {
+  final String message;
+  BlePermissionDeniedException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 /// Discovered Bluetooth device
 class DiscoveredDevice {
   final String id;

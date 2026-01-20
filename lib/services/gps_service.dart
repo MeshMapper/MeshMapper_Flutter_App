@@ -81,25 +81,65 @@ class GpsService {
         permission == LocationPermission.whileInUse;
   }
 
-  /// Request GPS permissions
+  /// Request GPS permissions (When In Use)
   Future<bool> requestPermissions() async {
     LocationPermission permission = await Geolocator.checkPermission();
-    
+
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-    
+
     if (permission == LocationPermission.deniedForever) {
       _updateStatus(GpsStatus.permissionDenied);
       return false;
     }
-    
+
     if (permission == LocationPermission.denied) {
       _updateStatus(GpsStatus.permissionDenied);
       return false;
     }
-    
+
     return true;
+  }
+
+  /// Check if "Always" location permission is granted
+  Future<bool> hasAlwaysPermission() async {
+    final permission = await Geolocator.checkPermission();
+    return permission == LocationPermission.always;
+  }
+
+  /// Request "Always" location permission for background mode
+  /// On iOS, this triggers the second permission dialog after "When In Use" is granted
+  /// Returns true if permission is granted, false otherwise
+  Future<bool> requestAlwaysPermission() async {
+    debugLog('[GPS] Requesting Always location permission');
+
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    // If already have "Always", we're good
+    if (permission == LocationPermission.always) {
+      debugLog('[GPS] Already have Always permission');
+      return true;
+    }
+
+    // If denied forever, can't request again - user must go to settings
+    if (permission == LocationPermission.deniedForever) {
+      debugLog('[GPS] Permission denied forever - user must enable in Settings');
+      return false;
+    }
+
+    // Request permission - on iOS this will show the "Always" upgrade prompt
+    // if "When In Use" was already granted
+    permission = await Geolocator.requestPermission();
+
+    if (permission == LocationPermission.always) {
+      debugLog('[GPS] Always permission granted');
+      return true;
+    }
+
+    // User may have granted "When In Use" instead of "Always"
+    debugLog('[GPS] Always permission not granted (got: $permission)');
+    return false;
   }
 
   /// Check if location services are enabled

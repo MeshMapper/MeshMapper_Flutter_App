@@ -344,9 +344,16 @@ class AppStateProvider extends ChangeNotifier {
     if (_isScanning) return;
 
     // Check permissions
-    final hasPermission = await _bluetoothService.requestPermissions();
-    if (!hasPermission) {
-      _connectionError = 'Bluetooth permissions not granted';
+    try {
+      final hasPermission = await _bluetoothService.requestPermissions();
+      if (!hasPermission) {
+        _connectionError = 'Bluetooth permissions not granted';
+        notifyListeners();
+        return;
+      }
+    } on BlePermissionDeniedException catch (e) {
+      // Permissions are permanently denied - user must enable in Settings
+      _connectionError = e.message;
       notifyListeners();
       return;
     }
@@ -358,9 +365,20 @@ class AppStateProvider extends ChangeNotifier {
       return;
     }
 
-    // Check if Bluetooth is enabled
-    if (!await _bluetoothService.isEnabled()) {
-      _connectionError = 'Bluetooth is disabled';
+    // Check if Bluetooth is enabled (with retry for iOS permission race condition)
+    // After granting Bluetooth permission on iOS, there's a brief delay before
+    // the adapter state updates. Retry a few times to handle this.
+    bool isEnabled = await _bluetoothService.isEnabled();
+    if (!isEnabled) {
+      debugLog('[BLE] Bluetooth not enabled, retrying...');
+      for (int i = 0; i < 3 && !isEnabled; i++) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        isEnabled = await _bluetoothService.isEnabled();
+        debugLog('[BLE] Retry ${i + 1}: isEnabled=$isEnabled');
+      }
+    }
+    if (!isEnabled) {
+      _connectionError = 'Bluetooth is disabled. Please enable Bluetooth and try again.';
       notifyListeners();
       return;
     }
@@ -1674,6 +1692,20 @@ class AppStateProvider extends ChangeNotifier {
       _gpsSimulatorPattern = SimulatorPattern.randomWalk;
     }
     notifyListeners();
+  }
+
+  // ============================================
+  // Background Location Permission (iOS)
+  // ============================================
+
+  /// Check if "Always" location permission is granted
+  Future<bool> hasAlwaysLocationPermission() async {
+    return await _gpsService.hasAlwaysPermission();
+  }
+
+  /// Request "Always" location permission for background mode
+  Future<bool> requestAlwaysLocationPermission() async {
+    return await _gpsService.requestAlwaysPermission();
   }
 
   // ============================================

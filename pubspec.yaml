@@ -49,6 +49,7 @@ flutter_launcher_icons:
   ios: true
   remove_alpha_ios: true
   image_path: "assets/wardrive.png"
+  image_path_ios: "assets/wardrive_ios.png"
   adaptive_icon_background: "#0F172A"
   adaptive_icon_foreground: "assets/wardrive.png"
 
