@@ -639,7 +639,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           onTap: () => _showTxPingDetails(ping),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.green,
+              color: ping.heardRepeaters.isEmpty ? Colors.grey : Colors.green,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: [

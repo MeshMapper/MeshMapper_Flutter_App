@@ -288,6 +288,9 @@ class AppStateProvider extends ChangeNotifier {
     // Load remembered device (mobile only)
     await _loadRememberedDevice();
 
+    // Load user preferences
+    await _loadPreferences();
+
     // Set device ID for API
     _apiService.setDeviceId(_deviceId);
 
@@ -1258,7 +1261,7 @@ class AppStateProvider extends ChangeNotifier {
         'externalAntenna=${preferences.externalAntenna}, autoPowerSet=${preferences.autoPowerSet}');
     _preferences = preferences;
     notifyListeners();
-    // TODO: Persist to SharedPreferences
+    _savePreferences();
   }
 
   /// Navigate to coordinates on map (triggered from log entries)
@@ -1724,6 +1727,7 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================
 
   static const String _rememberedDeviceBoxName = 'remembered_device';
+  static const String _preferencesBoxName = 'user_preferences';
 
   /// Load remembered device from Hive storage
   Future<void> _loadRememberedDevice() async {
@@ -1791,6 +1795,38 @@ class AppStateProvider extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugLog('[APP] Failed to clear remembered device: $e');
+    }
+  }
+
+  // ============================================
+  // User Preferences Persistence
+  // ============================================
+
+  /// Load user preferences from Hive storage
+  Future<void> _loadPreferences() async {
+    try {
+      final box = await Hive.openBox(_preferencesBoxName);
+      final json = box.get('preferences');
+      if (json != null) {
+        _preferences = UserPreferences.fromJson(Map<String, dynamic>.from(json));
+        debugLog('[APP] Loaded preferences: interval=${_preferences.autoPingInterval}s, '
+            'ignoreCarpeater=${_preferences.ignoreCarpeater}, '
+            'ignoreRepeaterId=${_preferences.ignoreRepeaterId}');
+        notifyListeners();
+      }
+    } catch (e) {
+      debugLog('[APP] Failed to load preferences: $e');
+    }
+  }
+
+  /// Save user preferences to Hive storage
+  Future<void> _savePreferences() async {
+    try {
+      final box = await Hive.openBox(_preferencesBoxName);
+      await box.put('preferences', _preferences.toJson());
+      debugLog('[APP] Saved preferences');
+    } catch (e) {
+      debugLog('[APP] Failed to save preferences: $e');
     }
   }
 

@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../models/connection_state.dart';
 import '../models/remembered_device.dart';
+import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
 import '../services/bluetooth/bluetooth_service.dart';
 
@@ -150,16 +151,17 @@ class ConnectionScreen extends StatelessWidget {
                 const Divider(height: 24),
                 _buildInfoRow('Hardware', hardware),
                 _buildInfoRow('Version', version ?? 'Unknown'),
-                if (appState.deviceModel != null) ...[
+                if (appState.deviceModel != null)
                   _buildInfoRow('Platform', appState.deviceModel!.platform),
-                  _buildInfoRow('Power', '${appState.deviceModel!.power} W'),
-                ],
                 if (appState.devicePublicKey != null)
                   _buildPublicKeyRow(context, appState.devicePublicKey!),
               ],
             ),
           ),
         ),
+        const SizedBox(height: 16),
+        // Power Level card
+        _buildPowerLevelCard(context, appState),
         const SizedBox(height: 16),
         ElevatedButton.icon(
           onPressed: () async {
@@ -256,6 +258,203 @@ class ConnectionScreen extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPowerLevelCard(BuildContext context, AppStateProvider appState) {
+    final prefs = appState.preferences;
+    final isAutoMode = appState.autoPingEnabled;
+    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
+
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.power),
+        title: const Text('Power Level'),
+        subtitle: Builder(
+          builder: (context) {
+            if (!isPowerSet) {
+              return Text(
+                'Unknown hardware - select power',
+                style: TextStyle(color: Colors.orange.shade700),
+              );
+            }
+            return Row(
+              children: [
+                Text(prefs.powerLevelDisplay),
+                if (prefs.autoPowerSet) ...[
+                  const SizedBox(width: 8),
+                  const Icon(Icons.auto_awesome, size: 14, color: Colors.green),
+                  const SizedBox(width: 4),
+                  const Text(
+                    'Auto',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.green,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ],
+            );
+          },
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        enabled: !isAutoMode,
+        onTap: isAutoMode ? null : () => _showPowerLevelSelector(context, appState),
+      ),
+    );
+  }
+
+  void _showPowerLevelSelector(BuildContext context, AppStateProvider appState) {
+    final prefs = appState.preferences;
+    final deviceModel = appState.deviceModel;
+    // Only show selection if power has been set (auto or manual)
+    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || deviceModel != null;
+    final currentPower = isPowerSet ? prefs.powerLevel : null;
+
+    // Helper to handle power selection with confirmation for overrides
+    void selectPower(double value) {
+      final isOverride = prefs.autoPowerSet && deviceModel != null;
+
+      // Show override confirmation if changing auto-detected power
+      if (isOverride && value != deviceModel.power) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Override Auto-Detected Power?'),
+            content: Text(
+              'This device was auto-detected as "${deviceModel.shortName}" '
+              'which reports ${deviceModel.power}W.\n\n'
+              'Are you sure you want to report ${value}W instead?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  appState.updatePreferences(
+                    prefs.copyWith(
+                      powerLevel: value,
+                      txPower: PowerLevel.getTxPower(value),
+                      autoPowerSet: false, // Clear auto flag on override
+                    ),
+                  );
+                  Navigator.pop(context); // Close confirmation
+                  Navigator.pop(context); // Close power selector
+                },
+                child: const Text('Override'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        // Direct selection (no auto-power or same value)
+        appState.updatePreferences(
+          prefs.copyWith(
+            powerLevel: value,
+            txPower: PowerLevel.getTxPower(value),
+            autoPowerSet: false,
+            powerLevelSet: true,  // Mark as manually set
+          ),
+        );
+        Navigator.pop(context);
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Select Power Level'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Auto-detection info banner
+            if (prefs.autoPowerSet && deviceModel != null)
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  border: Border.all(color: Colors.green),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.auto_awesome, size: 20, color: Colors.green),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Auto-detected: ${deviceModel.shortName} ${deviceModel.power}W',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // Power level options
+            ...PowerLevel.values.map((power) {
+              final isSelected = power == currentPower;
+              final isRecommended = prefs.autoPowerSet && deviceModel != null && power == deviceModel.power;
+
+              // Create a temp preferences object to get the display string with dBm
+              final tempPrefs = UserPreferences(powerLevel: power);
+
+              return RadioListTile<double>(
+                title: Row(
+                  children: [
+                    Flexible(child: Text(tempPrefs.powerLevelDisplayWithDbm)),
+                    if (isRecommended) ...[
+                      const SizedBox(width: 8),
+                      const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                    ],
+                  ],
+                ),
+                value: power,
+                groupValue: currentPower,
+                selected: isSelected,
+                onChanged: (value) {
+                  if (value != null) {
+                    selectPower(value);
+                  }
+                },
+              );
+            }),
+
+            // Info note
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.info_outline, size: 16, color: Colors.blue),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This setting is used for reporting your radio\'s power level in wardriving data. It does not change your radio\'s actual output.',
+                      style: TextStyle(fontSize: 11, color: Colors.blue[800]),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
           ),
         ],
       ),
