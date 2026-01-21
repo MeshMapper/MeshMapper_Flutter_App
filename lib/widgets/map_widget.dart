@@ -91,6 +91,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   bool _alwaysNorth = true; // true = north always up, false = rotate with heading
   double? _lastHeading; // Track last heading for smooth rotation
 
+  // MeshMapper overlay toggle (on by default)
+  bool _showMeshMapperOverlay = true;
+
   // Map navigation trigger tracking (from log screen)
   int _lastNavigationTrigger = 0;
 
@@ -391,8 +394,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             tileProvider: SilentCancellableNetworkTileProvider(), // Silently handles tile errors
           ),
 
-          // MeshMapper coverage overlay (only when zone code available from auth)
-          if (appState.zoneCode != null)
+          // MeshMapper coverage overlay (only when zone code available and overlay enabled)
+          if (appState.zoneCode != null && _showMeshMapperOverlay)
             TileLayer(
               urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}',
               userAgentPackageName: 'com.meshmapper.app',
@@ -539,6 +542,20 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: _toggleNorthMode,
             isActive: !_alwaysNorth,
           ),
+          // MeshMapper overlay toggle (only show when zone code available)
+          if (appState.zoneCode != null) ...[
+            Container(
+              height: 1,
+              width: 32,
+              color: Colors.white24,
+            ),
+            _buildControlButton(
+              icon: Icons.layers,
+              tooltip: _showMeshMapperOverlay ? 'Hide Coverage Overlay' : 'Show Coverage Overlay',
+              onPressed: _toggleMeshMapperOverlay,
+              isActive: _showMeshMapperOverlay,
+            ),
+          ],
         ],
       ),
     );
@@ -593,6 +610,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       });
       _animateToPosition(targetPosition); // Smooth animation
     }
+  }
+
+  void _toggleMeshMapperOverlay() {
+    setState(() {
+      _showMeshMapperOverlay = !_showMeshMapperOverlay;
+    });
   }
 
   void _toggleNorthMode() {
