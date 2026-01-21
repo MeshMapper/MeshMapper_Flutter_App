@@ -109,6 +109,7 @@ class AppStateProvider extends ChangeNotifier {
   // TX/RX log entries
   final List<TxLogEntry> _txLogEntries = [];
   final List<RxLogEntry> _rxLogEntries = [];
+  final List<DiscLogEntry> _discLogEntries = [];
 
   // User error log entries
   final List<UserErrorEntry> _errorLogEntries = [];
@@ -172,6 +173,7 @@ class AppStateProvider extends ChangeNotifier {
   List<RxPing> get rxPings => List.unmodifiable(_rxPings);
   List<TxLogEntry> get txLogEntries => List.unmodifiable(_txLogEntries);
   List<RxLogEntry> get rxLogEntries => List.unmodifiable(_rxLogEntries);
+  List<DiscLogEntry> get discLogEntries => List.unmodifiable(_discLogEntries);
   List<UserErrorEntry> get errorLogEntries => List.unmodifiable(_errorLogEntries);
   ({double lat, double lon})? get mapNavigationTarget => _mapNavigationTarget;
   int get mapNavigationTrigger => _mapNavigationTrigger;
@@ -675,6 +677,11 @@ class AppStateProvider extends ChangeNotifier {
         _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
       };
 
+      // Wire up discovery complete callback for RX Auto mode
+      _pingService!.onDiscoveryComplete = (entry) {
+        _addDiscLogEntry(entry);
+      };
+
       // Save this device for quick reconnection (mobile only)
       await _saveRememberedDevice(device);
 
@@ -1148,7 +1155,19 @@ class AppStateProvider extends ChangeNotifier {
   void clearLogs() {
     _txLogEntries.clear();
     _rxLogEntries.clear();
+    _discLogEntries.clear();
     _errorLogEntries.clear();
+    notifyListeners();
+  }
+
+  /// Add a discovery log entry (from RX Auto mode)
+  void _addDiscLogEntry(DiscLogEntry entry) {
+    _discLogEntries.insert(0, entry);
+    // Keep max 100 entries
+    if (_discLogEntries.length > 100) {
+      _discLogEntries.removeLast();
+    }
+    debugLog('[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
     notifyListeners();
   }
 

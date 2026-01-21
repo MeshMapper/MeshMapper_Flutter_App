@@ -92,8 +92,51 @@ class ApiQueueItem extends HiveObject {
     );
   }
 
+  /// Create from DISC discovery observation
+  /// Each discovered node is stored as a separate item
+  factory ApiQueueItem.fromDisc({
+    required double latitude,
+    required double longitude,
+    required String repeaterId,
+    required String nodeType,
+    required double localSnr,
+    required int localRssi,
+    required double remoteSnr,
+    required int timestamp,
+    int? noiseFloor,
+  }) {
+    // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr"
+    final heardRepeats = '$repeaterId:$nodeType:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
+    return ApiQueueItem(
+      type: 'DISC',
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: heardRepeats,
+      noiseFloor: noiseFloor,
+    );
+  }
+
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
+    // For DISC type, parse the heardRepeats field to extract individual values
+    if (type == 'DISC') {
+      // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr"
+      final parts = heardRepeats.split(':');
+      return {
+        'type': type,
+        'lat': latitude,
+        'lon': longitude,
+        'noisefloor': noiseFloor,
+        'repeater_id': parts.isNotEmpty ? parts[0] : '',
+        'node_type': parts.length > 1 ? parts[1] : '',
+        'local_snr': parts.length > 2 ? double.tryParse(parts[2]) ?? 0.0 : 0.0,
+        'local_rssi': parts.length > 3 ? int.tryParse(parts[3]) ?? 0 : 0,
+        'remote_snr': parts.length > 4 ? double.tryParse(parts[4]) ?? 0.0 : 0.0,
+        'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
+      };
+    }
+
     return {
       'type': type,
       'lat': latitude,

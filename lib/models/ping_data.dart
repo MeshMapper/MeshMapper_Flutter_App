@@ -177,6 +177,7 @@ class RepeaterInfo {
 class PingStats {
   final int txCount;
   final int rxCount;
+  final int discCount; // Discovery count (RX Auto mode)
   final int successfulUploads;
   final int failedUploads;
   final int queuedCount;
@@ -184,6 +185,7 @@ class PingStats {
   const PingStats({
     this.txCount = 0,
     this.rxCount = 0,
+    this.discCount = 0,
     this.successfulUploads = 0,
     this.failedUploads = 0,
     this.queuedCount = 0,
@@ -192,6 +194,7 @@ class PingStats {
   PingStats copyWith({
     int? txCount,
     int? rxCount,
+    int? discCount,
     int? successfulUploads,
     int? failedUploads,
     int? queuedCount,
@@ -199,6 +202,7 @@ class PingStats {
     return PingStats(
       txCount: txCount ?? this.txCount,
       rxCount: rxCount ?? this.rxCount,
+      discCount: discCount ?? this.discCount,
       successfulUploads: successfulUploads ?? this.successfulUploads,
       failedUploads: failedUploads ?? this.failedUploads,
       queuedCount: queuedCount ?? this.queuedCount,

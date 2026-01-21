@@ -19,7 +19,7 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -69,7 +69,9 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
                 const SizedBox(width: 8),
                 Expanded(child: _buildTabChip(1, 'RX', appState.rxLogEntries.length)),
                 const SizedBox(width: 8),
-                Expanded(child: _buildTabChip(2, 'Errors', appState.errorLogEntries.length, isError: true)),
+                Expanded(child: _buildTabChip(2, 'DISC', appState.discLogEntries.length, isDisc: true)),
+                const SizedBox(width: 8),
+                Expanded(child: _buildTabChip(3, 'Errors', appState.errorLogEntries.length, isError: true)),
               ],
             ),
           ),
@@ -80,6 +82,7 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
               children: [
                 _TxLogTab(entries: appState.txLogEntries),
                 _RxLogTab(entries: appState.rxLogEntries),
+                _DiscLogTab(entries: appState.discLogEntries),
                 _ErrorLogTab(entries: appState.errorLogEntries),
               ],
             ),
@@ -90,8 +93,10 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
   }
 
   /// Build a tab chip that matches StatusBar chip styling
-  Widget _buildTabChip(int index, String label, int count, {bool isError = false}) {
+  Widget _buildTabChip(int index, String label, int count, {bool isError = false, bool isDisc = false}) {
     final theme = Theme.of(context);
+    // Medium slate blue/purple for DISC tab
+    const discColor = Color(0xFF7B68EE);
 
     return GestureDetector(
       onTap: () {
@@ -102,9 +107,18 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
         animation: _tabController,
         builder: (context, child) {
           final isCurrentlySelected = _tabController.index == index;
-          final currentColor = isCurrentlySelected
-              ? (isError ? Colors.red : theme.colorScheme.primary)
-              : theme.colorScheme.onSurfaceVariant;
+          Color currentColor;
+          if (isCurrentlySelected) {
+            if (isError) {
+              currentColor = Colors.red;
+            } else if (isDisc) {
+              currentColor = discColor;
+            } else {
+              currentColor = theme.colorScheme.primary;
+            }
+          } else {
+            currentColor = theme.colorScheme.onSurfaceVariant;
+          }
 
           return Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -162,7 +176,10 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
       case 1: // RX Log
         _copyRxLogToCsv(context, appState.rxLogEntries);
         break;
-      case 2: // Error Log
+      case 2: // DISC Log
+        _copyDiscLogToCsv(context, appState.discLogEntries);
+        break;
+      case 3: // Error Log
         _copyErrorLogToCsv(context, appState.errorLogEntries);
         break;
     }
@@ -206,6 +223,25 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
     );
   }
 
+  void _copyDiscLogToCsv(BuildContext context, List<DiscLogEntry> entries) {
+    if (entries.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No DISC log entries to copy'), duration: Duration(seconds: 2)),
+      );
+      return;
+    }
+
+    final buffer = StringBuffer();
+    buffer.writeln('timestamp,latitude,longitude,noisefloor,node_count,nodes');
+    for (final entry in entries) {
+      buffer.writeln(entry.toCsv());
+    }
+    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('DISC log copied to clipboard'), duration: Duration(seconds: 2)),
+    );
+  }
+
   void _copyErrorLogToCsv(BuildContext context, List<UserErrorEntry> entries) {
     if (entries.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -230,7 +266,7 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Clear All Logs?'),
-        content: const Text('This will clear TX, RX, and error logs.'),
+        content: const Text('This will clear TX, RX, DISC, and error logs.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -348,13 +384,63 @@ class _TxLogTab extends StatelessWidget {
               ],
             ),
 
-            // Repeaters section
+            // Repeaters table
             if (entry.events.isNotEmpty) ...[
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: entry.events.map((event) => _buildRepeaterChip(context, event)).toList(),
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade700),
+                ),
+                child: Column(
+                  children: [
+                    // Header row
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 50,
+                            child: Text(
+                              'Node',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade500,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'SNR',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade500,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'RSSI',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    // Data rows
+                    ...entry.events.map((event) => _buildRepeaterRow(context, event)),
+                  ],
+                ),
               ),
             ] else ...[
               const SizedBox(height: 8),
@@ -374,8 +460,8 @@ class _TxLogTab extends StatelessWidget {
     );
   }
 
-  /// Build repeater chip with SNR and RSSI (status bar theme style)
-  Widget _buildRepeaterChip(BuildContext context, RxEvent event) {
+  /// Build a table row for a repeater event
+  Widget _buildRepeaterRow(BuildContext context, RxEvent event) {
     Color snrColor;
     switch (event.severity) {
       case SnrSeverity.poor:
@@ -396,65 +482,57 @@ class _TxLogTab extends StatelessWidget {
       rssiColor = Colors.red;
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade700),
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
           // Repeater ID
-          Text(
-            event.repeaterId,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey.shade300,
-              fontFamily: 'monospace',
-            ),
-          ),
-          const SizedBox(width: 8),
-          // SNR chip
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: snrColor.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: snrColor.withValues(alpha: 0.4)),
-            ),
+          SizedBox(
+            width: 50,
             child: Text(
-              '${event.snr.toStringAsFixed(1)}',
+              event.repeaterId,
               style: TextStyle(
-                fontSize: 10,
+                fontSize: 11,
                 fontWeight: FontWeight.w600,
-                color: snrColor,
                 fontFamily: 'monospace',
+                color: Colors.grey.shade300,
               ),
             ),
           ),
-          const SizedBox(width: 4),
-          // RSSI chip
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: rssiColor.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: rssiColor.withValues(alpha: 0.4)),
+          // SNR
+          Expanded(
+            child: Center(
+              child: _buildTxChip(event.snr.toStringAsFixed(1), snrColor),
             ),
-            child: Text(
-              '${event.rssi}',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: rssiColor,
-                fontFamily: 'monospace',
-              ),
+          ),
+          // RSSI
+          Expanded(
+            child: Center(
+              child: _buildTxChip('${event.rssi}', rssiColor),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Build a small colored chip for TX table cells
+  Widget _buildTxChip(String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        value,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: color,
+          fontFamily: 'monospace',
+        ),
       ),
     );
   }
@@ -553,24 +631,6 @@ class _RxLogTab extends StatelessWidget {
             ),
             const SizedBox(height: 8),
 
-            // Repeater ID row
-            Row(
-              children: [
-                Icon(Icons.router, size: 14, color: Colors.grey.shade500),
-                const SizedBox(width: 4),
-                Text(
-                  entry.repeaterId,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'monospace',
-                    color: Colors.grey.shade300,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-
             // Location
             Row(
               children: [
@@ -588,52 +648,412 @@ class _RxLogTab extends StatelessWidget {
             ),
             const SizedBox(height: 10),
 
-            // Metrics row: SNR and RSSI chips
-            Row(
-              children: [
-                // SNR chip
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: snrColor.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: snrColor.withValues(alpha: 0.4)),
-                  ),
-                  child: Text(
-                    '${entry.snr.toStringAsFixed(1)} dB',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: snrColor,
-                      fontFamily: 'monospace',
+            // Repeater table (single row)
+            Container(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade700),
+              ),
+              child: Column(
+                children: [
+                  // Header row
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 50,
+                          child: Text(
+                            'Node',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey.shade500,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            'SNR',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey.shade500,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            'RSSI',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.grey.shade500,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                // RSSI chip
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: rssiColor.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: rssiColor.withValues(alpha: 0.4)),
-                  ),
-                  child: Text(
-                    '${entry.rssi} dBm',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: rssiColor,
-                      fontFamily: 'monospace',
+                  Divider(height: 1, color: Colors.grey.shade700),
+                  // Data row
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Row(
+                      children: [
+                        // Repeater ID
+                        SizedBox(
+                          width: 50,
+                          child: Text(
+                            entry.repeaterId,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: 'monospace',
+                              color: Colors.grey.shade300,
+                            ),
+                          ),
+                        ),
+                        // SNR
+                        Expanded(
+                          child: Center(
+                            child: _buildRxChip(entry.snr.toStringAsFixed(1), snrColor),
+                          ),
+                        ),
+                        // RSSI
+                        Expanded(
+                          child: Center(
+                            child: _buildRxChip('${entry.rssi}', rssiColor),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
       ),
         ),
+    );
+  }
+
+  /// Build a small colored chip for RX table cells
+  Widget _buildRxChip(String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        value,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: color,
+          fontFamily: 'monospace',
+        ),
+      ),
+    );
+  }
+}
+
+/// DISC Log Tab (Discovery observations from RX Auto mode)
+class _DiscLogTab extends StatelessWidget {
+  final List<DiscLogEntry> entries;
+
+  const _DiscLogTab({required this.entries});
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.radar_outlined, size: 48, color: Colors.grey),
+            SizedBox(height: 16),
+            Text('No discovery observations yet', style: TextStyle(color: Colors.grey)),
+            SizedBox(height: 8),
+            Text('Enable RX Auto mode to discover nearby nodes',
+                style: TextStyle(color: Colors.grey, fontSize: 12)),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entry = entries[index]; // Already sorted most recent first
+        return _buildDiscEntry(context, entry);
+      },
+    );
+  }
+
+  Widget _buildDiscEntry(BuildContext context, DiscLogEntry entry) {
+    final appState = context.read<AppStateProvider>();
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      child: InkWell(
+        onTap: () {
+          // Navigate to map and show this location
+          appState.navigateToMapCoordinates(entry.latitude, entry.longitude);
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header row: Time and node count (matching TX log style)
+              Row(
+                children: [
+                  // Time badge
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade800,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      entry.timeString,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'monospace',
+                        color: Colors.grey.shade300,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  // Node count indicator (like power indicator in TX log)
+                  Text(
+                    '${entry.nodeCount} node${entry.nodeCount == 1 ? '' : 's'}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade500,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+
+              // Location
+              Row(
+                children: [
+                  Icon(Icons.location_on, size: 14, color: Colors.grey.shade500),
+                  const SizedBox(width: 4),
+                  Text(
+                    entry.locationString,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade400,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+
+              // Nodes table
+              if (entry.discoveredNodes.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade700),
+                  ),
+                  child: Column(
+                    children: [
+                      // Header row
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 50,
+                              child: Text(
+                                'Node',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade500,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                'RX SNR',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade500,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                'RX RSSI',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade500,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                'TX SNR',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Divider(height: 1, color: Colors.grey.shade700),
+                      // Data rows
+                      ...entry.discoveredNodes.map((node) => _buildNodeRow(context, node)),
+                    ],
+                  ),
+                ),
+              ] else ...[
+                const SizedBox(height: 8),
+                Text(
+                  'No nodes discovered',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey.shade500,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Build a table row for a discovered node
+  Widget _buildNodeRow(BuildContext context, DiscoveredNodeEntry node) {
+    // Color for RX SNR (what we received)
+    Color rxSnrColor;
+    switch (node.severity) {
+      case SnrSeverity.poor:
+        rxSnrColor = Colors.red;
+      case SnrSeverity.fair:
+        rxSnrColor = Colors.orange;
+      case SnrSeverity.good:
+        rxSnrColor = Colors.green;
+    }
+
+    // TX SNR color (what they received from us)
+    Color txSnrColor;
+    if (node.remoteSnr <= -1) {
+      txSnrColor = Colors.red;
+    } else if (node.remoteSnr <= 5) {
+      txSnrColor = Colors.orange;
+    } else {
+      txSnrColor = Colors.green;
+    }
+
+    // RSSI color based on signal strength
+    Color rssiColor;
+    if (node.localRssi >= -70) {
+      rssiColor = Colors.green;
+    } else if (node.localRssi >= -100) {
+      rssiColor = Colors.orange;
+    } else {
+      rssiColor = Colors.red;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      child: Row(
+        children: [
+          // Node ID with type
+          SizedBox(
+            width: 50,
+            child: Row(
+              children: [
+                Text(
+                  node.repeaterId,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'monospace',
+                    color: Colors.grey.shade300,
+                  ),
+                ),
+                Text(
+                  node.nodeTypeLabel,
+                  style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF7B68EE),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // RX SNR
+          Expanded(
+            child: Center(
+              child: _buildChip(node.localSnr.toStringAsFixed(1), rxSnrColor),
+            ),
+          ),
+          // RSSI
+          Expanded(
+            child: Center(
+              child: _buildChip('${node.localRssi}', rssiColor),
+            ),
+          ),
+          // TX SNR
+          Expanded(
+            child: Center(
+              child: _buildChip(node.remoteSnr.toStringAsFixed(1), txSnrColor),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Build a small colored chip for table cells
+  Widget _buildChip(String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        value,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: color,
+          fontFamily: 'monospace',
+        ),
+      ),
     );
   }
 }

@@ -153,3 +153,75 @@ enum ErrorSeverity {
   warning, // Orange: warnings
   error,   // Red: errors
 }
+
+/// Discovery Log Entry (discovery protocol observation)
+/// Reference: MeshCore discovery protocol for efficient repeater mapping
+class DiscLogEntry {
+  final DateTime timestamp;
+  final double latitude;
+  final double longitude;
+  final int? noiseFloor;
+  final List<DiscoveredNodeEntry> discoveredNodes;
+
+  DiscLogEntry({
+    required this.timestamp,
+    required this.latitude,
+    required this.longitude,
+    this.noiseFloor,
+    required this.discoveredNodes,
+  });
+
+  /// Get formatted timestamp (HH:MM:SS)
+  String get timeString {
+    return '${timestamp.hour.toString().padLeft(2, '0')}:'
+        '${timestamp.minute.toString().padLeft(2, '0')}:'
+        '${timestamp.second.toString().padLeft(2, '0')}';
+  }
+
+  /// Get formatted location (5 decimal places)
+  String get locationString {
+    return '${latitude.toStringAsFixed(5)},${longitude.toStringAsFixed(5)}';
+  }
+
+  /// Get node count
+  int get nodeCount => discoveredNodes.length;
+
+  /// Get CSV row
+  String toCsv() {
+    final nodesStr = discoveredNodes.isEmpty
+        ? 'None'
+        : discoveredNodes.map((n) => '${n.repeaterId}${n.nodeTypeLabel}(${n.localSnr.toStringAsFixed(2)})').join(',');
+    return '${timestamp.toIso8601String()},$latitude,$longitude,${noiseFloor ?? ''},${discoveredNodes.length},$nodesStr';
+  }
+}
+
+/// Discovered node entry for log display
+class DiscoveredNodeEntry {
+  final String repeaterId;      // First 2 hex chars of pubkey (e.g., "77", "4E")
+  final String nodeType;        // "REPEATER" or "ROOM"
+  final double localSnr;        // SNR as seen by local device (dB)
+  final int localRssi;          // RSSI as seen by local device (dBm)
+  final double remoteSnr;       // SNR as seen by remote node (dB)
+
+  DiscoveredNodeEntry({
+    required this.repeaterId,
+    required this.nodeType,
+    required this.localSnr,
+    required this.localRssi,
+    required this.remoteSnr,
+  });
+
+  /// Get short display label: "(R)" for REPEATER, "(RM)" for ROOM
+  String get nodeTypeLabel => nodeType == 'REPEATER' ? '(R)' : '(RM)';
+
+  /// Get SNR color severity based on local SNR
+  SnrSeverity get severity {
+    if (localSnr <= -1) {
+      return SnrSeverity.poor;
+    } else if (localSnr <= 5) {
+      return SnrSeverity.fair;
+    } else {
+      return SnrSeverity.good;
+    }
+  }
+}

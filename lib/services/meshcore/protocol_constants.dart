@@ -63,6 +63,7 @@ class CommandCodes {
   static const int signData = 34;
   static const int signFinish = 35;
   static const int sendTracePath = 36;
+  static const int sendControlData = 55; // 0x37 - CMD_SEND_CONTROL_DATA (discovery)
   static const int setOtherParams = 38;
   static const int sendTelemetryReq = 39;
   static const int getStats = 56; // 0x38
@@ -112,6 +113,7 @@ class PushCodes {
   static const int newAdvert = 0x8A;
   static const int telemetryResponse = 0x8B;
   static const int binaryResponse = 0x8C;
+  static const int controlData = 0x8E; // PUSH_CODE_CONTROL_DATA (discovery response)
 }
 
 /// Error codes from device
@@ -208,4 +210,22 @@ class PayloadType {
   static const int path = 0x08;
   static const int trace = 0x09;
   static const int rawCustom = 0x0F;
+}
+
+/// Discovery protocol constants
+class DiscoveryConstants {
+  DiscoveryConstants._();
+
+  /// Discovery request flag (DISCOVER_REQ, not prefix-only)
+  static const int discoverReqFlag = 0x80;
+
+  /// Discovery response flag (upper nibble of response byte 0)
+  static const int discoverRespFlag = 0x90;
+
+  /// Node type filter: REPEATER (0x02) | ROOM (0x04)
+  static const int typeFilterRepeaterRoom = 0x06;
+
+  /// Node types (lower nibble of response byte 0)
+  static const int nodeTypeRepeater = 0x02;
+  static const int nodeTypeRoom = 0x04;
 }

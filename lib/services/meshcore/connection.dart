@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:typed_data';
 
 import '../../models/connection_state.dart';
@@ -64,6 +65,7 @@ class MeshCoreConnection {
   final _channelMessageController = StreamController<ChannelMessage>.broadcast();
   final _rawDataController = StreamController<Map<String, dynamic>>.broadcast();
   final _logRxDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
+  final _controlDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
   final _noiseFloorController = StreamController<int>.broadcast();
   final _batteryController = StreamController<int>.broadcast();
 
@@ -111,6 +113,9 @@ class MeshCoreConnection {
 
   /// Stream of LogRxData packets (for unified RX handler)
   Stream<({Uint8List raw, double snr, int rssi})> get logRxDataStream => _logRxDataController.stream;
+
+  /// Stream of ControlData packets (for discovery responses)
+  Stream<({Uint8List raw, double snr, int rssi})> get controlDataStream => _controlDataController.stream;
 
   /// Stream of noise floor updates (dBm)
   Stream<int> get noiseFloorStream => _noiseFloorController.stream;
@@ -365,6 +370,9 @@ class MeshCoreConnection {
         case PushCodes.logRxData:
           _onLogRxDataPush(reader);
           break;
+        case PushCodes.controlData:
+          _onControlDataPush(reader);
+          break;
         case ResponseCodes.stats:
           _onStatsResponse(reader);
           break;
@@ -533,6 +541,17 @@ class MeshCoreConnection {
     });
 
     _logRxDataController.add((raw: raw, snr: snr, rssi: rssi));
+  }
+
+  void _onControlDataPush(BufferReader reader) {
+    final snr = reader.readInt8() / 4.0;
+    final rssi = reader.readInt8();
+    final raw = reader.readRemainingBytes();
+
+    debugLog('[CONN] Received control data (discovery response): '
+        '${raw.length} bytes, snr=$snr, rssi=$rssi');
+
+    _controlDataController.add((raw: raw, snr: snr, rssi: rssi));
   }
 
   void _onStatsResponse(BufferReader reader) {
@@ -802,6 +821,41 @@ class MeshCoreConnection {
     await sendChannelTextMessage(TxtTypes.plain, _wardrivingChannel!.channelIndex, timestamp, message);
   }
 
+  /// Send discovery request to find nearby repeaters/rooms
+  /// Reference: MeshCore discovery protocol
+  ///
+  /// Format:
+  /// - Byte 0: CMD_SEND_CONTROL_DATA (0x37)
+  /// - Byte 1: flags: DISCOVER_REQ (0x80)
+  /// - Byte 2: type filter: REPEATER | ROOM (0x0C)
+  /// - Bytes 3-6: random tag (4 bytes)
+  /// - Bytes 7-10: timestamp = 0 (discover all)
+  ///
+  /// Returns the 4-byte tag used for matching responses
+  Future<Uint8List> sendDiscoveryRequest() async {
+    // Generate random 4-byte tag
+    final random = Random.secure();
+    final tag = Uint8List.fromList([
+      random.nextInt(256),
+      random.nextInt(256),
+      random.nextInt(256),
+      random.nextInt(256),
+    ]);
+
+    debugLog('[CONN] Sending discovery request with tag: '
+        '${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.sendControlData);     // 0x37
+    data.writeByte(DiscoveryConstants.discoverReqFlag);  // 0x80 = DISCOVER_REQ
+    data.writeByte(DiscoveryConstants.typeFilterRepeaterRoom);  // 0x0C = REPEATER | ROOM
+    data.writeBytes(tag);                              // 4-byte random tag
+    data.writeUInt32LE(0);                             // timestamp = 0 (discover all)
+    await _sendToRadio(data);
+
+    return tag;
+  }
+
   /// Get battery voltage
   Future<void> getBatteryVoltage() async {
     final data = BufferWriter();
@@ -917,6 +971,7 @@ class MeshCoreConnection {
     _channelMessageController.close();
     _rawDataController.close();
     _logRxDataController.close();
+    _controlDataController.close();
     _noiseFloorController.close();
     _batteryController.close();
   }

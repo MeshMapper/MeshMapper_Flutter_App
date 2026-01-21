@@ -136,6 +136,44 @@ class ApiQueueService {
     _checkRxBufferFlush();
   }
 
+  /// Enqueue a DISC discovery observation
+  /// Each discovered node is queued separately
+  Future<void> enqueueDisc({
+    required double latitude,
+    required double longitude,
+    required String repeaterId,
+    required String nodeType,
+    required double localSnr,
+    required int localRssi,
+    required double remoteSnr,
+    required int timestamp,
+    int? noiseFloor,
+  }) async {
+    final item = ApiQueueItem.fromDisc(
+      latitude: latitude,
+      longitude: longitude,
+      repeaterId: repeaterId,
+      nodeType: nodeType,
+      localSnr: localSnr,
+      localRssi: localRssi,
+      remoteSnr: remoteSnr,
+      timestamp: timestamp,
+      noiseFloor: noiseFloor,
+    );
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (_offlineMode) {
+      _offlinePings.add(item.toApiJson());
+      debugLog('[API QUEUE] DISC enqueued (offline): $repeaterId');
+      return;
+    }
+
+    await _box?.add(item);
+    debugLog('[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
+    onQueueUpdated?.call(queueSize);
+    _checkBatchUpload();
+  }
+
   /// Flush RX buffer to main queue
   Future<void> _flushRxBuffer() async {
     // Return early if buffer is empty (avoids concurrent flush issues)

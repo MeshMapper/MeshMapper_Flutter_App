@@ -3,12 +3,14 @@ import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 
 import '../models/connection_state.dart';
+import '../models/log_entry.dart';
 import '../models/ping_data.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_queue_service.dart';
 import 'countdown_timer_service.dart';
 import 'gps_service.dart';
 import 'meshcore/connection.dart';
+import 'meshcore/disc_tracker.dart';
 import 'meshcore/tx_tracker.dart';
 import 'wakelock_service.dart';
 
@@ -27,11 +29,19 @@ import 'wakelock_service.dart';
 /// 2. Validates packet: GroupText header, channel hash, message correlation
 /// 3. Extracts repeater ID from path (first hop)
 /// 4. After window ends, collect results and post to API queue with type "RX"
+///
+/// Discovery Flow (RX Auto mode only):
+/// 1. In RX Auto mode, send discovery request instead of TX ping
+/// 2. Start 7-second listening window via DiscTracker
+/// 3. Collect discovery responses (0x8E packets)
+/// 4. After window ends, create log entry and queue DISC API payloads
 class PingService {
   /// RX listening window duration (6 seconds - matches JS RX_LOG_LISTEN_WINDOW_MS = 6000)
   static const Duration _rxListeningWindow = Duration(seconds: 6);
   /// Cooldown period between pings (7 seconds - matches JS COOLDOWN_MS = 7000)
   static const Duration _autoPingCooldown = Duration(seconds: 7);
+  /// Discovery listening window duration (7 seconds)
+  static const Duration _discoveryListeningWindow = Duration(seconds: 7);
 
   final GpsService _gpsService;
   final MeshCoreConnection _connection;
@@ -66,6 +76,12 @@ class PingService {
   // Skip reason for display during auto mode countdown
   String? _skipReason;
 
+  // Discovery tracking
+  DiscTracker? _discTracker;
+  StreamSubscription? _controlDataSubscription;
+  Timer? _discoveryTimer;
+  Position? _discoveryStartPosition;
+
   // Validation callbacks
   bool Function()? checkExternalAntennaConfigured;
   bool Function()? checkPowerLevelConfigured;
@@ -77,6 +93,10 @@ class PingService {
   /// Called in real-time when each echo is received during tracking window
   /// Parameters: (TxPing txPing, HeardRepeater repeater, bool isNew)
   void Function(TxPing, HeardRepeater, bool isNew)? onEchoReceived;
+
+  /// Callback for discovery events (RX Auto mode)
+  /// Called when a discovery window completes with the log entry
+  void Function(DiscLogEntry)? onDiscoveryComplete;
 
   /// Last TX ping sent (for updating with heard repeaters)
   TxPing? _lastTxPing;
@@ -607,8 +627,9 @@ class PingService {
     await _wakelockService.enable();
 
     if (rxOnly) {
-      // RX Auto mode: just enable wardriving listening, no pings
-      debugLog('[RX AUTO] RX Auto mode started - listening for signals only');
+      // RX Auto mode: send discovery requests instead of TX pings
+      debugLog('[RX AUTO] RX Auto mode started - using discovery protocol');
+      await _startDiscoveryMode();
     } else {
       // TX/RX Auto mode: send first ping immediately, then schedule timer
       // Reference: sendPing(false) called immediately in startAutoPing() in wardrive.js
@@ -663,6 +684,7 @@ class PingService {
     _skipReason = null;
     _autoPingEnabled = false;
     _rxOnlyMode = false;
+    _stopDiscoveryMode();
     await _wakelockService.disable();
   }
 
@@ -672,10 +694,178 @@ class PingService {
     onStatsUpdated?.call(_stats);
   }
 
+  // ============================================
+  // Discovery Mode (RX Auto)
+  // ============================================
+
+  /// Start discovery mode - subscribes to control data and sends discovery requests
+  Future<void> _startDiscoveryMode() async {
+    debugLog('[DISC] Starting discovery mode');
+
+    // Create and configure discovery tracker
+    _discTracker = DiscTracker();
+    _discTracker!.onNodeDiscovered = (node, isNew) {
+      debugLog('[DISC] Node discovered: ${node.repeaterId} (${node.nodeTypeName}), isNew=$isNew');
+    };
+    _discTracker!.onWindowComplete = (nodes) {
+      debugLog('[DISC] Window complete: ${nodes.length} nodes discovered');
+      _handleDiscoveryWindowComplete(nodes);
+    };
+
+    // Subscribe to control data stream for discovery responses
+    _controlDataSubscription = _connection.controlDataStream.listen((data) {
+      if (_discTracker != null && _discTracker!.isListening) {
+        _discTracker!.handlePacket(data.raw, data.snr, data.rssi);
+      }
+    });
+
+    // Send first discovery request immediately
+    await _sendDiscoveryRequest();
+  }
+
+  /// Stop discovery mode - cleans up tracker and subscription
+  void _stopDiscoveryMode() {
+    debugLog('[DISC] Stopping discovery mode');
+    _discoveryTimer?.cancel();
+    _discoveryTimer = null;
+    _controlDataSubscription?.cancel();
+    _controlDataSubscription = null;
+    _discTracker?.dispose();
+    _discTracker = null;
+    _discoveryStartPosition = null;
+  }
+
+  /// Send a discovery request and start listening window
+  Future<void> _sendDiscoveryRequest() async {
+    if (!_autoPingEnabled || !_rxOnlyMode) {
+      debugLog('[DISC] Not in RX Auto mode, skipping discovery request');
+      return;
+    }
+
+    // Check GPS
+    final position = _gpsService.lastPosition;
+    if (position == null) {
+      debugLog('[DISC] No GPS position, skipping discovery request');
+      _scheduleNextDiscovery();
+      return;
+    }
+
+    // Check if within geofence
+    if (!_gpsService.isWithinGeofence(position)) {
+      debugLog('[DISC] Outside geofence, skipping discovery request');
+      _scheduleNextDiscovery();
+      return;
+    }
+
+    // Store position at discovery start
+    _discoveryStartPosition = position;
+
+    // Capture noise floor
+    final noiseFloor = _connection.lastNoiseFloor;
+
+    debugLog('[DISC] Sending discovery request at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
+
+    try {
+      // Send discovery request and get tag
+      final tag = await _connection.sendDiscoveryRequest();
+
+      // Start tracking with the tag
+      _discTracker?.startTracking(
+        tag: tag,
+        windowDuration: _discoveryListeningWindow,
+      );
+
+      // Store noise floor for later use
+      _pendingTxNoiseFloor = noiseFloor;
+
+    } catch (e) {
+      debugError('[DISC] Failed to send discovery request: $e');
+      _scheduleNextDiscovery();
+    }
+  }
+
+  /// Handle discovery window completion
+  void _handleDiscoveryWindowComplete(List<DiscoveredNode> nodes) {
+    final position = _discoveryStartPosition;
+    if (position == null) {
+      debugLog('[DISC] No position recorded for discovery, skipping');
+      _scheduleNextDiscovery();
+      return;
+    }
+
+    debugLog('[DISC] Processing ${nodes.length} discovered nodes');
+
+    // Create log entry
+    final discoveredNodes = nodes.map((n) => DiscoveredNodeEntry(
+      repeaterId: n.repeaterId,
+      nodeType: n.nodeTypeName,
+      localSnr: n.localSnr,
+      localRssi: n.localRssi,
+      remoteSnr: n.remoteSnr,
+    )).toList();
+
+    final logEntry = DiscLogEntry(
+      timestamp: DateTime.now(),
+      latitude: position.latitude,
+      longitude: position.longitude,
+      noiseFloor: _pendingTxNoiseFloor,
+      discoveredNodes: discoveredNodes,
+    );
+
+    // Queue API payloads for each discovered node
+    for (final node in nodes) {
+      _apiQueue.enqueueDisc(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        repeaterId: node.repeaterId,
+        nodeType: node.nodeTypeName,
+        localSnr: node.localSnr,
+        localRssi: node.localRssi,
+        remoteSnr: node.remoteSnr,
+        timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        noiseFloor: _pendingTxNoiseFloor,
+      );
+    }
+
+    // Update stats
+    _stats = _stats.copyWith(discCount: _stats.discCount + 1);
+    onStatsUpdated?.call(_stats);
+
+    // Notify callback
+    onDiscoveryComplete?.call(logEntry);
+
+    debugLog('[DISC] Discovery window complete: ${nodes.length} nodes, queued ${nodes.length} API payloads');
+
+    // Schedule next discovery
+    _scheduleNextDiscovery();
+  }
+
+  /// Schedule next discovery request
+  void _scheduleNextDiscovery() {
+    if (!_autoPingEnabled || !_rxOnlyMode) {
+      debugLog('[DISC] Not in RX Auto mode, not scheduling next discovery');
+      return;
+    }
+
+    _discoveryTimer?.cancel();
+    _discoveryTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
+      debugLog('[DISC] Discovery timer fired');
+      if (_autoPingEnabled && _rxOnlyMode) {
+        _sendDiscoveryRequest();
+      }
+    });
+
+    // Notify callback for countdown display
+    onAutoPingScheduled?.call(_autoPingIntervalMs, null);
+
+    debugLog('[DISC] Next discovery scheduled in ${_autoPingIntervalMs}ms');
+  }
+
   /// Dispose of resources
   void dispose() async {
     _rxWindowTimer?.cancel();
     _autoTimer?.cancel();
+    _stopDiscoveryMode();
     await _wakelockService.dispose();
   }
 }
