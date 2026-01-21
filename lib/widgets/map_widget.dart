@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import '../models/ping_data.dart';
+import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 
 /// Map style options
@@ -398,7 +399,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         MarkerLayer(
           markers: _buildRxMarkers(appState.rxPings),
         ),
-        
+
+        // Repeater markers (magenta circles with ID)
+        MarkerLayer(
+          markers: _buildRepeaterMarkers(appState.repeaters),
+        ),
+
         // Current position marker (car icon)
         if (appState.currentPosition != null)
           MarkerLayer(
@@ -682,6 +688,87 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               ],
             ),
             // Simple dot - no arrow (looks good at any map rotation)
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  /// Repeater marker color (#a52163 - magenta/pink) - Active
+  static const Color _repeaterMarkerColor = Color(0xFFA52163);
+
+  /// Duplicate repeater marker color (#a51d2a - red)
+  static const Color _repeaterDuplicateColor = Color(0xFFA51D2A);
+
+  /// New repeater marker color (#c05802 - orange)
+  static const Color _repeaterNewColor = Color(0xFFC05802);
+
+  /// Dead repeater marker color (grey)
+  static const Color _repeaterDeadColor = Colors.grey;
+
+  /// Get set of duplicate repeater IDs
+  Set<String> _getDuplicateRepeaterIds(List<Repeater> repeaters) {
+    final idCounts = <String, int>{};
+    for (final repeater in repeaters) {
+      idCounts[repeater.id] = (idCounts[repeater.id] ?? 0) + 1;
+    }
+    return idCounts.entries
+        .where((e) => e.value > 1)
+        .map((e) => e.key)
+        .toSet();
+  }
+
+  /// Get marker color for a repeater based on status priority:
+  /// 1. Duplicate → Red (always takes priority)
+  /// 2. Dead → Grey (not heard in 24 hours)
+  /// 3. New → Orange (created in past 7 days)
+  /// 4. Active → Magenta (default healthy state)
+  Color _getRepeaterMarkerColor(Repeater repeater, bool isDuplicate) {
+    if (isDuplicate) return _repeaterDuplicateColor;
+    if (repeater.isDead) return _repeaterDeadColor;
+    if (repeater.isNew) return _repeaterNewColor;
+    return _repeaterMarkerColor; // Active (default)
+  }
+
+  List<Marker> _buildRepeaterMarkers(List<Repeater> repeaters) {
+    final duplicateIds = _getDuplicateRepeaterIds(repeaters);
+
+    if (duplicateIds.isNotEmpty) {
+      debugPrint('[MAP] Duplicate repeater IDs found: $duplicateIds');
+    }
+
+    return repeaters.map((repeater) {
+      final isDuplicate = duplicateIds.contains(repeater.id);
+      final markerColor = _getRepeaterMarkerColor(repeater, isDuplicate);
+
+      return Marker(
+        point: LatLng(repeater.lat, repeater.lon),
+        width: 28,
+        height: 28,
+        child: GestureDetector(
+          onTap: () => _showRepeaterDetails(repeater, isDuplicate: isDuplicate),
+          child: Container(
+            decoration: BoxDecoration(
+              color: markerColor,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: [
+                const BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 4,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              repeater.id,
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
           ),
         ),
       );
@@ -1015,6 +1102,165 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   _buildStatChip(
                     value: '${ping.rssi} dBm',
                     color: rssiColor,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Build a status chip for the repeater popup
+  Widget _buildRepeaterStatusChip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  /// Show repeater details popup
+  void _showRepeaterDetails(Repeater repeater, {bool isDuplicate = false}) {
+    // Determine icon badge color based on primary status
+    final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
+
+    // Determine status label and color
+    String statusLabel;
+    Color statusColor;
+    if (repeater.isNew) {
+      statusLabel = 'New';
+      statusColor = _repeaterNewColor;
+    } else if (repeater.isActive) {
+      statusLabel = 'Active';
+      statusColor = _repeaterMarkerColor;
+    } else {
+      statusLabel = 'Dead';
+      statusColor = _repeaterDeadColor;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header with icon badge (containing ID) and name
+            Row(
+              children: [
+                // Icon badge with ID (mirrors map marker)
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: iconColor,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    repeater.id,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    repeater.name,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // Status chips row
+            Row(
+              children: [
+                if (isDuplicate) ...[
+                  _buildRepeaterStatusChip('Duplicate', _repeaterDuplicateColor),
+                  const SizedBox(width: 8),
+                ],
+                _buildRepeaterStatusChip(statusLabel, statusColor),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // Details card
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  // Location row
+                  Row(
+                    children: [
+                      Icon(Icons.location_on, size: 16, color: Colors.grey.shade400),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontFamily: 'monospace',
+                            color: Colors.grey.shade300,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  // Last heard row
+                  Row(
+                    children: [
+                      Icon(Icons.access_time, size: 16, color: Colors.grey.shade400),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          repeater.lastHeardFormatted,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey.shade300,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

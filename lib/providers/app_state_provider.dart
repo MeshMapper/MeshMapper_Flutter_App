@@ -12,6 +12,7 @@ import '../models/device_model.dart';
 import '../models/ping_data.dart';
 import '../models/log_entry.dart';
 import '../models/remembered_device.dart';
+import '../models/repeater.dart';
 import '../models/user_preferences.dart';
 import '../services/api_queue_service.dart';
 import '../services/api_service.dart';
@@ -136,6 +137,11 @@ class AppStateProvider extends ChangeNotifier {
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
   bool _requestMapTabSwitch = false; // Request switch to map tab
 
+  // Repeater markers state
+  List<Repeater> _repeaters = [];
+  bool _repeatersLoaded = false;
+  String? _repeatersLoadedForIata;
+
   AppStateProvider({required BluetoothService bluetoothService})
       : _bluetoothService = bluetoothService {
     _initialize();
@@ -189,6 +195,9 @@ class AppStateProvider extends ChangeNotifier {
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
   String? get nearestZoneName => _nearestZone?['name'] as String?;
   double? get nearestZoneDistanceKm => (_nearestZone?['distance_km'] as num?)?.toDouble();
+
+  // Repeater markers getters
+  List<Repeater> get repeaters => List.unmodifiable(_repeaters);
 
   bool get isConnected => _connectionStep == ConnectionStep.connected;
   bool get hasGpsLock => _gpsStatus == GpsStatus.locked;
@@ -1475,9 +1484,14 @@ class AppStateProvider extends ChangeNotifier {
         _currentZone = result['zone'] as Map<String, dynamic>?;
         _nearestZone = null;
         final zoneName = _currentZone?['name'] ?? 'Unknown';
-        final zoneCode = _currentZone?['code'] ?? '';
+        final zoneCode = _currentZone?['code'] as String? ?? '';
         debugLog('[GEOFENCE] In zone: $zoneName ($zoneCode)');
         _statusMessageService.setDynamicStatus('Zone: $zoneName ($zoneCode)', StatusColor.success);
+
+        // Fetch repeaters for this zone
+        if (zoneCode.isNotEmpty) {
+          await _fetchRepeatersForZone(zoneCode);
+        }
       } else {
         _currentZone = null;
         _nearestZone = result['nearest_zone'] as Map<String, dynamic>?;
@@ -1488,6 +1502,11 @@ class AppStateProvider extends ChangeNotifier {
           'Outside zone. Nearest: $nearestName (${distanceKm}km)',
           StatusColor.warning,
         );
+
+        // Clear repeaters when exiting zone
+        _repeaters = [];
+        _repeatersLoaded = false;
+        _repeatersLoadedForIata = null;
       }
     } catch (e) {
       debugError('[GEOFENCE] Zone status check error: $e');
@@ -1495,6 +1514,28 @@ class AppStateProvider extends ChangeNotifier {
     } finally {
       _isCheckingZone = false;
       notifyListeners();
+    }
+  }
+
+  /// Fetch repeaters for a zone (called when zone is discovered)
+  /// Only fetches once per IATA code to avoid redundant network requests
+  Future<void> _fetchRepeatersForZone(String iata) async {
+    // Skip if already loaded for this IATA
+    if (_repeatersLoaded && _repeatersLoadedForIata == iata) {
+      debugLog('[MAP] Repeaters already loaded for zone: $iata');
+      return;
+    }
+
+    debugLog('[MAP] Fetching repeaters for zone: $iata');
+    try {
+      final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
+      _repeaters = fetchedRepeaters;
+      _repeatersLoaded = true;
+      _repeatersLoadedForIata = iata;
+      debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
+      notifyListeners();
+    } catch (e) {
+      debugError('[MAP] Failed to fetch repeaters: $e');
     }
   }
 

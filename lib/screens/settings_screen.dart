@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // Conditional import for web file helpers
 import '../utils/web_file_helpers_stub.dart'
@@ -204,21 +205,11 @@ class SettingsScreen extends StatelessWidget {
             title: const Text('Version'),
             subtitle: Text(AppConstants.appVersion),
           ),
-          if (appState.isConnected && appState.deviceModel != null)
-            ListTile(
-              leading: const Icon(Icons.memory),
-              title: const Text('Device Firmware'),
-              subtitle: Text(appState.manufacturerString ?? 'Unknown'),
-            ),
           ListTile(
-            leading: const Icon(Icons.code),
-            title: const Text('Source Code'),
-            subtitle: const Text('github.com/MeshMapper/MeshMapper_Flutter_App'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.book),
-            title: const Text('Documentation'),
-            subtitle: const Text('MeshCore wardriving app'),
+            leading: const Icon(Icons.bug_report),
+            title: const Text('Issues & Feedback'),
+            subtitle: const Text('Report bugs or request features'),
+            onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
           ),
 
           const Divider(),
@@ -516,6 +507,13 @@ class SettingsScreen extends StatelessWidget {
             ),
       ),
     );
+  }
+
+  Future<void> _launchUrl(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
   }
 
   void _confirmClearQueue(BuildContext context, AppStateProvider appState) {

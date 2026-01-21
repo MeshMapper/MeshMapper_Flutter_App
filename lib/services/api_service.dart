@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 
 /// MeshMapper API service
@@ -355,6 +356,45 @@ class ApiService {
     } catch (e) {
       debugError('[API] Upload batch exception: $e');
       return false;
+    }
+  }
+
+  /// Fetch repeaters for a zone from the MeshMapper API
+  /// Returns a list of enabled repeaters for the given IATA zone code
+  Future<List<Repeater>> fetchRepeaters(String iata) async {
+    try {
+      final url = 'https://${iata.toLowerCase()}.meshmapper.net/repeaters.json';
+      debugLog('[API] Fetching repeaters from: $url');
+
+      final response = await _client.get(
+        Uri.parse(url),
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode != 200) {
+        debugError('[API] Failed to fetch repeaters: HTTP ${response.statusCode}');
+        return [];
+      }
+
+      final List<dynamic> jsonList = json.decode(response.body) as List<dynamic>;
+      final repeaters = <Repeater>[];
+
+      for (final item in jsonList) {
+        try {
+          final repeater = Repeater.fromJson(item as Map<String, dynamic>);
+          // Only include enabled repeaters
+          if (repeater.isEnabled) {
+            repeaters.add(repeater);
+          }
+        } catch (e) {
+          debugError('[API] Failed to parse repeater: $e');
+        }
+      }
+
+      debugLog('[API] Fetched ${repeaters.length} enabled repeaters');
+      return repeaters;
+    } catch (e) {
+      debugError('[API] Error fetching repeaters: $e');
+      return [];
     }
   }
 
