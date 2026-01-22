@@ -32,6 +32,17 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
 
+    // Auto-switch to Error tab when requested
+    if (appState.requestErrorLogSwitch) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _tabController.index != 3) {
+          _tabController.animateTo(3); // Switch to Error tab
+          setState(() {});
+        }
+        appState.clearErrorLogSwitchRequest();
+      });
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Logs'),

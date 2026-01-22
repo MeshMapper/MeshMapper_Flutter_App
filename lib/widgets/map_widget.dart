@@ -603,12 +603,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         appState.currentPosition!.latitude,
         appState.currentPosition!.longitude,
       );
-      // Re-enable auto-follow and animate to position
+      // Re-enable auto-follow and animate to position with zoom
       setState(() {
         _autoFollow = true;
         _lastGpsPosition = targetPosition;
       });
-      _animateToPosition(targetPosition); // Smooth animation
+      _animateToPositionWithZoom(targetPosition, 16.0); // Smooth animation with zoom
     }
   }
 
@@ -1584,7 +1584,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       statusLabel = 'Active';
       statusColor = _repeaterMarkerColor;
     } else {
-      statusLabel = 'Dead';
+      statusLabel = 'Stale';
       statusColor = _repeaterDeadColor;
     }
 

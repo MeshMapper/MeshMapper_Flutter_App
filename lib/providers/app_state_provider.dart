@@ -137,11 +137,15 @@ class AppStateProvider extends ChangeNotifier {
   ({double lat, double lon})? _mapNavigationTarget;
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
   bool _requestMapTabSwitch = false; // Request switch to map tab
+  bool _requestErrorLogSwitch = false; // Request switch to error log tab
 
   // Repeater markers state
   List<Repeater> _repeaters = [];
   bool _repeatersLoaded = false;
   String? _repeatersLoadedForIata;
+
+  // Regional channels from API (for UI display)
+  List<String> _regionalChannels = [];
 
   AppStateProvider({required BluetoothService bluetoothService})
       : _bluetoothService = bluetoothService {
@@ -178,6 +182,7 @@ class AppStateProvider extends ChangeNotifier {
   ({double lat, double lon})? get mapNavigationTarget => _mapNavigationTarget;
   int get mapNavigationTrigger => _mapNavigationTrigger;
   bool get requestMapTabSwitch => _requestMapTabSwitch;
+  bool get requestErrorLogSwitch => _requestErrorLogSwitch;
   UserPreferences get preferences => _preferences;
   RememberedDevice? get rememberedDevice => _rememberedDevice;
 
@@ -200,6 +205,9 @@ class AppStateProvider extends ChangeNotifier {
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
+
+  // Regional channels getter (for UI)
+  List<String> get regionalChannels => List.unmodifiable(_regionalChannels);
 
   bool get isConnected => _connectionStep == ConnectionStep.connected;
   bool get hasGpsLock => _gpsStatus == GpsStatus.locked;
@@ -257,9 +265,9 @@ class AppStateProvider extends ChangeNotifier {
     _autoPingTimer = AutoPingTimer(_statusMessageService);
     _rxWindowTimer = RxWindowTimer(_statusMessageService);
 
-    // Initialize channel service with pre-computed keys
-    await ChannelService.initialize();
-    debugLog('[APP] Channel service initialized');
+    // Initialize channel service with Public channel only (regional channels added after auth)
+    await ChannelService.initializePublicChannel();
+    debugLog('[APP] Channel service initialized (Public channel only)');
 
     // Initialize API queue
     await _apiQueueService.init();
@@ -538,6 +546,29 @@ class AppStateProvider extends ChangeNotifier {
 
       // Create unified RX handler
       await _createUnifiedRxHandler();
+
+      // Set regional channels from API response and update validator
+      final apiChannels = _apiService.channels;
+      await ChannelService.setRegionalChannels(apiChannels);
+      _regionalChannels = ChannelService.getRegionalChannelNames();
+      debugLog('[APP] Regional channels configured: $_regionalChannels');
+
+      // Update unified RX handler's validator with new channel configuration
+      if (_unifiedRxHandler != null) {
+        final allowedChannelsData = ChannelService.getAllowedChannelsForValidator();
+        final allowedChannels = <int, ChannelInfo>{};
+        for (final entry in allowedChannelsData.entries) {
+          allowedChannels[entry.key] = ChannelInfo(
+            channelName: entry.value.channelName,
+            key: entry.value.key,
+            hash: entry.value.hash,
+          );
+        }
+        final newValidator = PacketValidator(allowedChannels: allowedChannels);
+        _unifiedRxHandler!.updateValidator(newValidator);
+        debugLog('[APP] PacketValidator updated with ${allowedChannels.length} channels: '
+            '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
+      }
 
       // Create ping service with wakelock (create new instance per connection)
       _pingService = PingService(
@@ -1017,6 +1048,10 @@ class AppStateProvider extends ChangeNotifier {
     _currentNoiseFloor = null;
     _currentBatteryPercent = null;
 
+    // Clear regional channels (keeps only Public)
+    ChannelService.clearRegionalChannels();
+    _regionalChannels = [];
+
     // Clear discovered devices so user must scan fresh
     _discoveredDevices = [];
 
@@ -1178,6 +1213,7 @@ class AppStateProvider extends ChangeNotifier {
       message: message,
       severity: severity,
     ));
+    _requestErrorLogSwitch = true; // Auto-switch to error log
     notifyListeners();
   }
 
@@ -1303,6 +1339,11 @@ class AppStateProvider extends ChangeNotifier {
   /// Clear the map tab switch request (called by main scaffold after switching)
   void clearMapTabSwitchRequest() {
     _requestMapTabSwitch = false;
+  }
+
+  /// Clear the error log switch request (called by log screen after switching)
+  void clearErrorLogSwitchRequest() {
+    _requestErrorLogSwitch = false;
   }
 
   // ============================================

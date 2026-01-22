@@ -164,6 +164,14 @@
       "notes": "RAKwireless WisBlock Core"
     },
     {
+      "manufacturer": "RAK WisMesh Tag",
+      "shortName": "WisMesh Tag",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "RAKwireless WisMesh Tag"
+    },
+    {
       "manufacturer": "RAK 3x72",
       "shortName": "RAK 3x72",
       "power": 0.3,

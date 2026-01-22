@@ -18,7 +18,7 @@ class MainScaffold extends StatefulWidget {
 class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
 
-  final List<Widget> _screens = const [
+  final List<Widget> _screens = [
     HomeScreen(),
     LogScreen(),
     ConnectionScreen(),
@@ -37,6 +37,18 @@ class _MainScaffoldState extends State<MainScaffold> {
             _selectedIndex = 0; // Switch to map tab
           });
           appState.clearMapTabSwitchRequest();
+        }
+      });
+    }
+
+    // Listen for error log requests - switch to Log tab
+    if (appState.requestErrorLogSwitch && _selectedIndex != 1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          setState(() {
+            _selectedIndex = 1; // Switch to Log tab
+          });
+          // Don't clear yet - LogScreen needs to see it to switch to Error tab
         }
       });
     }

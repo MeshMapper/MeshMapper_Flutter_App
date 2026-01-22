@@ -66,8 +66,10 @@ enum GpsStatus {
   
   /// GPS lock acquired
   locked,
-  
-  /// Outside geofence (150km from Ottawa)
+
+  /// Outside service area
+  /// Note: This state is reserved for future use with dynamic zone boundaries
+  /// Zone validation is now handled server-side by the API
   outsideGeofence,
 }
 

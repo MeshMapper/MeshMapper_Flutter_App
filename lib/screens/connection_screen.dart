@@ -9,6 +9,7 @@ import '../models/remembered_device.dart';
 import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../widgets/regional_config_card.dart';
 
 /// BLE device selection and connection screen
 class ConnectionScreen extends StatelessWidget {
@@ -111,67 +112,86 @@ class ConnectionScreen extends StatelessWidget {
     // Use shortName from device model if available, otherwise fall back to manufacturer string
     final hardware = appState.deviceModel?.shortName ?? manufacturerString ?? 'Unknown';
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
+    return Column(
       children: [
-        Card(
-          child: Padding(
+        Expanded(
+          child: ListView(
             padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.bluetooth_connected,
-                      color: Colors.green,
-                      size: 32,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         children: [
-                          Text(
-                            'Connected',
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: Colors.green,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                          const Icon(
+                            Icons.bluetooth_connected,
+                            color: Colors.green,
+                            size: 32,
                           ),
-                          Text(
-                            deviceName,
-                            style: Theme.of(context).textTheme.bodyLarge,
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Connected',
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                        color: Colors.green,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                ),
+                                Text(
+                                  deviceName,
+                                  style: Theme.of(context).textTheme.bodyLarge,
+                                ),
+                              ],
+                            ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
+                      const Divider(height: 24),
+                      _buildInfoRow('Hardware', hardware),
+                      _buildInfoRow('Version', version ?? 'Unknown'),
+                      if (appState.deviceModel != null)
+                        _buildInfoRow('Platform', appState.deviceModel!.platform),
+                      if (appState.devicePublicKey != null)
+                        _buildPublicKeyRow(context, appState.devicePublicKey!),
+                    ],
+                  ),
                 ),
-                const Divider(height: 24),
-                _buildInfoRow('Hardware', hardware),
-                _buildInfoRow('Version', version ?? 'Unknown'),
-                if (appState.deviceModel != null)
-                  _buildInfoRow('Platform', appState.deviceModel!.platform),
-                if (appState.devicePublicKey != null)
-                  _buildPublicKeyRow(context, appState.devicePublicKey!),
-              ],
-            ),
+              ),
+              const SizedBox(height: 16),
+              // Power Level card
+              _buildPowerLevelCard(context, appState),
+              const SizedBox(height: 16),
+              // Regional Configuration card
+              RegionalConfigCard(
+                zoneName: appState.zoneName,
+                zoneCode: appState.zoneCode,
+                channels: appState.regionalChannels,
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 16),
-        // Power Level card
-        _buildPowerLevelCard(context, appState),
-        const SizedBox(height: 16),
-        ElevatedButton.icon(
-          onPressed: () async {
-            await appState.disconnect();
-          },
-          icon: const Icon(Icons.bluetooth_disabled),
-          label: const Text('Disconnect'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.red,
-            foregroundColor: Colors.white,
+        // Disconnect button fixed at bottom
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                await appState.disconnect();
+              },
+              icon: const Icon(Icons.bluetooth_disabled),
+              label: const Text('Disconnect'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+            ),
           ),
         ),
       ],

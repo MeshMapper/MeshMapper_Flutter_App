@@ -10,19 +10,29 @@ import 'tx_tracker.dart';
 /// Reference: handleUnifiedRxLogEvent() in wardrive.js (lines 3772-3810)
 class UnifiedRxHandler {
   bool isListening = false;
-  
+
   final TxTracker txTracker;
   final RxLogger rxLogger;
-  final PacketValidator validator;
-  
+  PacketValidator _validator;
+
+  /// Get current validator
+  PacketValidator get validator => _validator;
+
   /// Channel key for message decryption (injected for TX validation)
   Uint8List? channelKey;
 
   UnifiedRxHandler({
     required this.txTracker,
     required this.rxLogger,
-    required this.validator,
-  });
+    required PacketValidator validator,
+  }) : _validator = validator;
+
+  /// Update validator with new channel configuration
+  /// Called when regional channels change (after auth)
+  void updateValidator(PacketValidator newValidator) {
+    _validator = newValidator;
+    debugLog('[UNIFIED RX] Validator updated with new channel configuration');
+  }
 
   /// Start unified RX listening
   void startListening() {

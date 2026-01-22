@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:geolocator/geolocator.dart';
 
@@ -7,16 +6,10 @@ import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
 import 'gps_simulator_service.dart';
 
-/// GPS service for location tracking and geofencing
+/// GPS service for location tracking
 /// Ported from wardrive.js geolocation logic
+/// Note: Zone validation is now handled server-side by the API
 class GpsService {
-  /// Ottawa coordinates (geofence center)
-  static const double _ottawaLat = 45.4215;
-  static const double _ottawaLon = -75.6972;
-  
-  /// Geofence radius in kilometers
-  static const double _geofenceRadiusKm = 150.0;
-  
   /// Minimum distance (meters) from last ping before allowing new ping
   static const double minDistanceMeters = 25.0;
   
@@ -178,12 +171,8 @@ class GpsService {
         _lastPosition = position;
         _positionController.add(position);
 
-        // Update status based on geofence
-        if (isWithinGeofence(position)) {
-          _updateStatus(GpsStatus.locked);
-        } else {
-          _updateStatus(GpsStatus.outsideGeofence);
-        }
+        // GPS signal acquired
+        _updateStatus(GpsStatus.locked);
       },
       onError: (error) {
         debugError('[GPS SERVICE] Position stream error: $error');
@@ -199,12 +188,7 @@ class GpsService {
       );
       _lastPosition = position;
       _positionController.add(position);
-      
-      if (isWithinGeofence(position)) {
-        _updateStatus(GpsStatus.locked);
-      } else {
-        _updateStatus(GpsStatus.outsideGeofence);
-      }
+      _updateStatus(GpsStatus.locked);
     } catch (e) {
       // Will receive updates from stream
     }
@@ -214,18 +198,6 @@ class GpsService {
   void stopWatching() {
     _positionSubscription?.cancel();
     _positionSubscription = null;
-  }
-
-  /// Check if position is within geofence (150km from Ottawa)
-  /// Reference: checkGeofence() in wardrive.js
-  bool isWithinGeofence(Position position) {
-    final distanceMeters = Geolocator.distanceBetween(
-      _ottawaLat,
-      _ottawaLon,
-      position.latitude,
-      position.longitude,
-    );
-    return distanceMeters <= (_geofenceRadiusKm * 1000);
   }
 
   /// Calculate distance from last ping position
@@ -381,12 +353,8 @@ class GpsService {
       _lastPosition = position;
       _positionController.add(position);
 
-      // Update status based on geofence
-      if (isWithinGeofence(position)) {
-        _updateStatus(GpsStatus.locked);
-      } else {
-        _updateStatus(GpsStatus.outsideGeofence);
-      }
+      // Simulator position acquired
+      _updateStatus(GpsStatus.locked);
     });
 
     simulator.start();

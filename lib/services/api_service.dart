@@ -35,6 +35,10 @@ class ApiService {
   int? _sessionExpiresAt;
   Timer? _heartbeatTimer;
   Function? _onSessionExpiring;
+  List<String> _channels = [];
+
+  /// Regional channels from auth response (e.g., ['public', 'ottawa', 'testing'])
+  List<String> get channels => List.unmodifiable(_channels);
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -123,7 +127,7 @@ class ApiService {
 
         payload['who'] = who ?? 'GOME-WarDriver';
         payload['ver'] = appVersion ?? 'UNKNOWN';
-        payload['power'] = power ?? 0.3;  // Wattage (0.3, 0.6, 1.0, 2.0)
+        payload['power'] = '${power ?? 0.3}w';  // Wattage (0.3w, 0.6w, 1.0w, 2.0w)
         payload['iata'] = iataCode ?? 'YOW';
         payload['model'] = model ?? 'Unknown';
         payload['coords'] = {
@@ -151,6 +155,15 @@ class ApiService {
         _txAllowed = data['tx_allowed'] == true;
         _rxAllowed = data['rx_allowed'] == true;
         _sessionExpiresAt = data['expires_at'] as int?;
+
+        // Parse channels array from auth response
+        final channelsData = data['channels'];
+        if (channelsData is List) {
+          _channels = channelsData.cast<String>().toList();
+          debugLog('[API] Regional channels: $_channels');
+        } else {
+          _channels = [];
+        }
 
         // Start heartbeat timer if we have an expiry time
         _scheduleHeartbeat();
@@ -296,6 +309,7 @@ class ApiService {
     _txAllowed = false;
     _rxAllowed = false;
     _sessionExpiresAt = null;
+    _channels = [];
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     debugLog('[API] Session cleared');

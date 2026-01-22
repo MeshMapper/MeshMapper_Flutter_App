@@ -18,7 +18,7 @@ import 'wakelock_service.dart';
 /// Ported from wardrive.js ping logic
 ///
 /// TX Flow:
-/// 1. Validate GPS lock, geofence (150km from Ottawa), 25m min distance
+/// 1. Validate GPS lock, 25m min distance (zone validation handled server-side)
 /// 2. Start TxTracker to monitor for repeater echoes
 /// 3. Send @[MapperBot] LAT, LON [POWERw] to #wardriving channel
 /// 4. Start 6-second RX listening window (matches JS RX_LOG_LISTEN_WINDOW_MS)
@@ -171,9 +171,6 @@ class PingService {
     if (_gpsService.status != GpsStatus.locked) {
       debugLog('[PING] GPS status check failed: status=${_gpsService.status}, '
           'lastPosition=${_gpsService.lastPosition != null ? 'available' : 'null'}');
-      if (_gpsService.status == GpsStatus.outsideGeofence) {
-        return PingValidation.outsideGeofence;
-      }
       return PingValidation.noGpsLock;
     }
 
@@ -192,10 +189,7 @@ class PingService {
       return PingValidation.gpsInaccurate;
     }
 
-    // Check geofence
-    if (!_gpsService.isWithinGeofence(position)) {
-      return PingValidation.outsideGeofence;
-    }
+    // Note: Zone validation is now handled server-side by the API
 
     // Check minimum distance from last ping
     if (!_gpsService.canPingAtPosition(position)) {
@@ -234,9 +228,6 @@ class PingService {
 
     // Check GPS status
     if (_gpsService.status != GpsStatus.locked) {
-      if (_gpsService.status == GpsStatus.outsideGeofence) {
-        return PingValidation.outsideGeofence;
-      }
       return PingValidation.noGpsLock;
     }
 
@@ -253,10 +244,7 @@ class PingService {
       return PingValidation.gpsInaccurate;
     }
 
-    // Check geofence
-    if (!_gpsService.isWithinGeofence(position)) {
-      return PingValidation.outsideGeofence;
-    }
+    // Note: Zone validation is now handled server-side by the API
 
     // NOTE: Skip distance check (tooCloseToLastPing) intentionally
     // Auto mode handles this by setting skipReason='too close' and scheduling next ping
@@ -750,12 +738,7 @@ class PingService {
       return;
     }
 
-    // Check if within geofence
-    if (!_gpsService.isWithinGeofence(position)) {
-      debugLog('[DISC] Outside geofence, skipping discovery request');
-      _scheduleNextDiscovery();
-      return;
-    }
+    // Note: Zone validation is now handled server-side by the API
 
     // Store position at discovery start
     _discoveryStartPosition = position;
@@ -893,7 +876,8 @@ enum PingValidation {
   /// GPS accuracy too low (> 100 meters)
   gpsInaccurate,
   
-  /// Outside geofence (150km from Ottawa)
+  /// Outside service area (zone validation handled by API)
+  /// Reserved for future use with dynamic zone boundaries
   outsideGeofence,
   
   /// Too close to last ping (< 25m)
@@ -921,7 +905,7 @@ extension PingValidationExtension on PingValidation {
       case PingValidation.gpsInaccurate:
         return 'GPS accuracy too low (> 100 meters)';
       case PingValidation.outsideGeofence:
-        return 'Outside service area (150km from Ottawa)';
+        return 'Outside service area';
       case PingValidation.tooCloseToLastPing:
         return 'Move 25m before next ping';
       case PingValidation.cooldownActive:

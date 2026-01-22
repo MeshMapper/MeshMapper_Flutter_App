@@ -69,8 +69,10 @@ class StatusBar extends StatelessWidget {
         text = 'GPS...';
         break;
       case GpsStatus.outsideGeofence:
-        icon = Icons.location_off;
-        color = Colors.red;
+        // Note: This state is no longer set - zone validation is handled by API
+        // Falls through to same display as locked outside zone
+        icon = Icons.location_on;
+        color = Colors.orange;
         text = '—';
         break;
       case GpsStatus.disabled:

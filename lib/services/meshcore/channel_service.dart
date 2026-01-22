@@ -15,27 +15,69 @@ class ChannelService {
   /// Wardriving channel name
   static const String wardrivingChannelName = '#wardriving';
 
-  /// Initialize pre-computed channel map
-  static Future<void> initialize() async {
-    debugLog('[CHANNEL] Initializing channel service');
-    
-    // Pre-compute keys for allowed channels
-    final channelNames = [
-      wardrivingChannelName,
-      '#testing',
-      '#ottawa',
-      '#wartest',
-      'Public', // Use fixed key
-    ];
+  /// Initialize ONLY Public channel (app startup)
+  /// Regional channels are added after auth via setRegionalChannels()
+  static Future<void> initializePublicChannel() async {
+    debugLog('[CHANNEL] Initializing Public channel only');
+    _allowedChannels.clear();
 
+    final publicKey = CryptoService.publicChannelFixedKey;
+    final publicHash = CryptoService.computeChannelHash(publicKey);
+    _allowedChannels['Public'] = _ChannelData(key: publicKey, hash: publicHash);
+    debugLog('[CHANNEL] Public channel initialized (hash=$publicHash)');
+  }
+
+  /// Set regional channels from API (after auth)
+  /// Always includes #wardriving for TX, plus channels from API response
+  static Future<void> setRegionalChannels(List<String> channelNames) async {
+    debugLog('[CHANNEL] Setting regional channels: $channelNames');
+
+    // Keep Public, clear regional
+    _allowedChannels.removeWhere((key, _) => key != 'Public');
+
+    // Always add #wardriving (required for TX)
+    final wardrivingKey = CryptoService.getChannelKey(wardrivingChannelName);
+    final wardrivingHash = CryptoService.computeChannelHash(wardrivingKey);
+    _allowedChannels[wardrivingChannelName] = _ChannelData(key: wardrivingKey, hash: wardrivingHash);
+    debugLog('[CHANNEL] Added: $wardrivingChannelName -> hash=$wardrivingHash');
+
+    // Add regional channels from API
     for (final name in channelNames) {
-      final key = CryptoService.getChannelKey(name);
+      final channelName = name.toLowerCase() == 'public' ? 'Public' :
+                          name.startsWith('#') ? name : '#$name';
+
+      // Skip if already added
+      if (_allowedChannels.containsKey(channelName)) continue;
+
+      final key = CryptoService.getChannelKey(channelName);
       final hash = CryptoService.computeChannelHash(key);
-      _allowedChannels[name] = _ChannelData(key: key, hash: hash);
-      debugLog('[CHANNEL] Pre-computed: $name -> hash=$hash');
+      _allowedChannels[channelName] = _ChannelData(key: key, hash: hash);
+      debugLog('[CHANNEL] Added: $channelName -> hash=$hash');
     }
-    
-    debugLog('[CHANNEL] Initialized ${_allowedChannels.length} channels');
+
+    debugLog('[CHANNEL] Total channels: ${_allowedChannels.length}');
+  }
+
+  /// Clear regional channels (disconnect)
+  /// Keeps only Public channel
+  static void clearRegionalChannels() {
+    debugLog('[CHANNEL] Clearing regional channels');
+    _allowedChannels.removeWhere((key, _) => key != 'Public');
+  }
+
+  /// Get regional channel names (for UI display)
+  /// Excludes Public and #wardriving (those are always present)
+  static List<String> getRegionalChannelNames() {
+    return _allowedChannels.keys
+        .where((name) => name != 'Public' && name != wardrivingChannelName)
+        .toList();
+  }
+
+  /// @deprecated Use initializePublicChannel() instead
+  /// Legacy initialize method - kept for backward compatibility
+  static Future<void> initialize() async {
+    debugLog('[CHANNEL] Legacy initialize called - forwarding to initializePublicChannel');
+    await initializePublicChannel();
   }
 
   /// Get channel key for a known channel
