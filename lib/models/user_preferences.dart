@@ -37,6 +37,9 @@ class UserPreferences {
   /// Background mode enabled (requests "Always" location permission on iOS)
   final bool backgroundModeEnabled;
 
+  /// Developer mode enabled (unlocked by tapping version 7 times)
+  final bool developerModeEnabled;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -50,6 +53,7 @@ class UserPreferences {
     this.offlineMode = false,
     this.iataCode = 'YOW',
     this.backgroundModeEnabled = false,
+    this.developerModeEnabled = false,
   });
 
   /// Create from JSON (for persistence)
@@ -67,6 +71,7 @@ class UserPreferences {
       offlineMode: false, // Never persist - always off by default
       iataCode: (json['iataCode'] as String?) ?? 'YOW',
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
+      developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
     );
   }
 
@@ -85,6 +90,7 @@ class UserPreferences {
       // offlineMode intentionally not persisted - always off on app start
       'iataCode': iataCode,
       'backgroundModeEnabled': backgroundModeEnabled,
+      'developerModeEnabled': developerModeEnabled,
     };
   }
 
@@ -102,6 +108,7 @@ class UserPreferences {
     bool? offlineMode,
     String? iataCode,
     bool? backgroundModeEnabled,
+    bool? developerModeEnabled,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -116,6 +123,7 @@ class UserPreferences {
       offlineMode: offlineMode ?? this.offlineMode,
       iataCode: iataCode ?? this.iataCode,
       backgroundModeEnabled: backgroundModeEnabled ?? this.backgroundModeEnabled,
+      developerModeEnabled: developerModeEnabled ?? this.developerModeEnabled,
     );
   }
 
@@ -155,7 +163,8 @@ class UserPreferences {
         other.autoPowerSet == autoPowerSet &&
         other.offlineMode == offlineMode &&
         other.iataCode == iataCode &&
-        other.backgroundModeEnabled == backgroundModeEnabled;
+        other.backgroundModeEnabled == backgroundModeEnabled &&
+        other.developerModeEnabled == developerModeEnabled;
   }
 
   @override
@@ -172,6 +181,7 @@ class UserPreferences {
       offlineMode,
       iataCode,
       backgroundModeEnabled,
+      developerModeEnabled,
     );
   }
 }

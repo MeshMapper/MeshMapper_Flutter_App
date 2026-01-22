@@ -25,10 +25,11 @@ class ApiService {
   /// API key (matching wardrive.js)
   static const String apiKey = '59C7754DABDF5C11CA5F5D8368F89';
 
-  /// Heartbeat interval (send 5 minutes before expiry)
-  static const Duration heartbeatLeadTime = Duration(minutes: 5);
+  /// Heartbeat idle timeout (send keepalive after 3 minutes of no API activity)
+  static const Duration heartbeatIdleTimeout = Duration(minutes: 3);
 
   final http.Client _client;
+  bool _heartbeatEnabled = false;  // Track if heartbeat mode is active
   String? _sessionId;
   bool _txAllowed = false;
   bool _rxAllowed = false;
@@ -172,8 +173,8 @@ class ApiService {
           _channels = [];
         }
 
-        // Start heartbeat timer if we have an expiry time
-        _scheduleHeartbeat();
+        // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
+        // (not on initial auth, since heartbeat is only for auto mode)
       } else if (reason == 'disconnect') {
         // Clear session on disconnect
         _clearSession();
@@ -210,10 +211,12 @@ class ApiService {
 
       final data = json.decode(response.body) as Map<String, dynamic>;
 
-      // Update expires_at if provided and reschedule heartbeat
-      if (data['success'] == true && data['expires_at'] != null) {
-        _sessionExpiresAt = data['expires_at'] as int;
-        _scheduleHeartbeat();
+      // Update expires_at if provided and reset heartbeat idle timer
+      if (data['success'] == true) {
+        if (data['expires_at'] != null) {
+          _sessionExpiresAt = data['expires_at'] as int;
+        }
+        _resetHeartbeatTimer();  // Resets 3-min idle timer on each successful upload
       }
 
       return data;
@@ -255,10 +258,9 @@ class ApiService {
 
       final data = json.decode(response.body) as Map<String, dynamic>;
 
-      // Update expires_at if provided and reschedule heartbeat
+      // Update expires_at if provided (timer reset handled by _resetHeartbeatTimer in caller)
       if (data['success'] == true && data['expires_at'] != null) {
         _sessionExpiresAt = data['expires_at'] as int;
-        _scheduleHeartbeat();
       }
 
       return data;
@@ -267,44 +269,36 @@ class ApiService {
     }
   }
 
-  /// Schedule heartbeat timer to fire 5 minutes before session expires
-  /// Reference: sendHeartbeat() in wardrive.js
-  void _scheduleHeartbeat() {
-    // Cancel existing timer
+  /// Enable heartbeat mode (called when auto mode starts)
+  /// Heartbeat fires after 3 minutes of API inactivity to keep session alive
+  void enableHeartbeat() {
+    _heartbeatEnabled = true;
+    _resetHeartbeatTimer();
+    debugLog('[API] Heartbeat mode enabled (3 min idle timeout)');
+  }
+
+  /// Disable heartbeat mode (called when auto mode stops)
+  void disableHeartbeat() {
+    _heartbeatEnabled = false;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    debugLog('[API] Heartbeat mode disabled');
+  }
 
-    if (_sessionExpiresAt == null) {
-      debugLog('[API] No expiry time, skipping heartbeat schedule');
-      return;
-    }
+  /// Reset the heartbeat timer (call after any API activity)
+  /// Timer fires 3 minutes after last API post to send keepalive
+  void _resetHeartbeatTimer() {
+    if (!_heartbeatEnabled) return;
 
-    final expiryTime = DateTime.fromMillisecondsSinceEpoch(_sessionExpiresAt! * 1000);
-    final heartbeatTime = expiryTime.subtract(heartbeatLeadTime);
-    final now = DateTime.now();
-
-    if (heartbeatTime.isBefore(now)) {
-      // Already expired or expiring very soon - notify immediately
-      debugWarn('[API] Session expires soon, notifying immediately');
-      _onSessionExpiring?.call();
-      return;
-    }
-
-    final delay = heartbeatTime.difference(now);
-    debugLog('[API] Scheduling heartbeat in ${delay.inSeconds}s (${heartbeatTime})');
-
-    _heartbeatTimer = Timer(delay, () async {
-      debugLog('[API] Heartbeat timer fired, sending heartbeat');
-      try {
-        final result = await sendHeartbeat();
-        if (result?['success'] == true) {
-          debugLog('[API] Heartbeat successful, session extended');
-        } else {
-          debugWarn('[API] Heartbeat failed: ${result?['message'] ?? 'unknown'}');
-          _onSessionExpiring?.call();
-        }
-      } catch (e) {
-        debugError('[API] Heartbeat error: $e');
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer(heartbeatIdleTimeout, () async {
+      debugLog('[API] Heartbeat timer fired (3 min idle), sending keepalive');
+      final result = await sendHeartbeat();
+      if (result?['success'] == true) {
+        debugLog('[API] Heartbeat successful');
+        _resetHeartbeatTimer();  // Schedule next heartbeat
+      } else {
+        debugWarn('[API] Heartbeat failed: ${result?['message']}');
         _onSessionExpiring?.call();
       }
     });

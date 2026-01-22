@@ -42,6 +42,8 @@ class PingService {
   static const Duration _autoPingCooldown = Duration(seconds: 7);
   /// Discovery listening window duration (7 seconds)
   static const Duration _discoveryListeningWindow = Duration(seconds: 7);
+  /// Discovery request interval (30 seconds - repeaters only respond 4 times per 2 minutes)
+  static const Duration _discoveryInterval = Duration(seconds: 30);
 
   final GpsService _gpsService;
   final MeshCoreConnection _connection;
@@ -81,6 +83,7 @@ class PingService {
   StreamSubscription? _controlDataSubscription;
   Timer? _discoveryTimer;
   Position? _discoveryStartPosition;
+  Position? _lastDiscoveryPosition;  // Track last discovery position for 25m check
 
   // Validation callbacks
   bool Function()? checkExternalAntennaConfigured;
@@ -721,6 +724,7 @@ class PingService {
     _discTracker?.dispose();
     _discTracker = null;
     _discoveryStartPosition = null;
+    _lastDiscoveryPosition = null;  // Reset so first discovery always sends on next start
   }
 
   /// Send a discovery request and start listening window
@@ -737,6 +741,25 @@ class PingService {
       _scheduleNextDiscovery();
       return;
     }
+
+    // Check minimum distance from last discovery (25m)
+    if (_lastDiscoveryPosition != null) {
+      final distance = Geolocator.distanceBetween(
+        _lastDiscoveryPosition!.latitude,
+        _lastDiscoveryPosition!.longitude,
+        position.latitude,
+        position.longitude,
+      );
+      if (distance < GpsService.minDistanceMeters) {
+        debugLog('[DISC] Too close to last discovery (${distance.toStringAsFixed(1)}m < 25m), skipping');
+        _skipReason = 'too close';
+        _scheduleNextDiscovery();
+        return;
+      }
+    }
+
+    // Clear skip reason since we're proceeding
+    _skipReason = null;
 
     // Note: Zone validation is now handled server-side by the API
 
@@ -760,6 +783,9 @@ class PingService {
 
       // Store noise floor for later use
       _pendingTxNoiseFloor = noiseFloor;
+
+      // Update last discovery position for 25m check
+      _lastDiscoveryPosition = position;
 
     } catch (e) {
       debugError('[DISC] Failed to send discovery request: $e');
@@ -824,6 +850,7 @@ class PingService {
   }
 
   /// Schedule next discovery request
+  /// Uses fixed 30-second interval (repeaters only respond 4 times per 2 minutes)
   void _scheduleNextDiscovery() {
     if (!_autoPingEnabled || !_rxOnlyMode) {
       debugLog('[DISC] Not in RX Auto mode, not scheduling next discovery');
@@ -831,17 +858,17 @@ class PingService {
     }
 
     _discoveryTimer?.cancel();
-    _discoveryTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
+    _discoveryTimer = Timer(_discoveryInterval, () {
       debugLog('[DISC] Discovery timer fired');
       if (_autoPingEnabled && _rxOnlyMode) {
         _sendDiscoveryRequest();
       }
     });
 
-    // Notify callback for countdown display
-    onAutoPingScheduled?.call(_autoPingIntervalMs, null);
+    // Notify callback for countdown display (30 seconds hardcoded for discovery)
+    onAutoPingScheduled?.call(_discoveryInterval.inMilliseconds, _skipReason);
 
-    debugLog('[DISC] Next discovery scheduled in ${_autoPingIntervalMs}ms');
+    debugLog('[DISC] Next discovery scheduled in ${_discoveryInterval.inSeconds}s');
   }
 
   /// Dispose of resources

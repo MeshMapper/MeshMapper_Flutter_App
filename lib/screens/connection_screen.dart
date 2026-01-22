@@ -503,7 +503,7 @@ class ConnectionScreen extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'Connection Failed',
+              appState.isAuthError ? 'Authentication Failed' : 'Connection Failed',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 8),

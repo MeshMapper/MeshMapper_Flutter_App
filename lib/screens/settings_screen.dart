@@ -19,8 +19,59 @@ import '../services/offline_session_service.dart';
 import '../utils/constants.dart';
 
 /// Settings screen for user preferences and API configuration
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  // Developer mode tap counter state
+  int _versionTapCount = 0;
+  DateTime? _lastVersionTap;
+
+  void _onVersionTap(AppStateProvider appState) {
+    final now = DateTime.now();
+
+    // Reset if last tap was more than 2 seconds ago
+    if (_lastVersionTap != null &&
+        now.difference(_lastVersionTap!).inSeconds > 2) {
+      _versionTapCount = 0;
+    }
+
+    _lastVersionTap = now;
+    _versionTapCount++;
+
+    if (appState.developerModeEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Developer mode already enabled'),
+          duration: Duration(milliseconds: 1500),
+        ),
+      );
+      return;
+    }
+
+    if (_versionTapCount >= 7) {
+      appState.setDeveloperMode(true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Developer mode enabled!'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      _versionTapCount = 0;
+    } else if (_versionTapCount >= 3) {
+      final remaining = 7 - _versionTapCount;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$remaining taps to enable developer mode'),
+          duration: const Duration(milliseconds: 500),
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -208,10 +259,13 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.info_outline),
             title: Text(AppConstants.appName),
           ),
-          ListTile(
-            leading: const Icon(Icons.new_releases_outlined),
-            title: const Text('Version'),
-            subtitle: Text(AppConstants.appVersion),
+          GestureDetector(
+            onTap: () => _onVersionTap(appState),
+            child: ListTile(
+              leading: const Icon(Icons.new_releases_outlined),
+              title: const Text('Version'),
+              subtitle: Text(AppConstants.appVersion),
+            ),
           ),
           ListTile(
             leading: const Icon(Icons.bug_report),
@@ -220,12 +274,24 @@ class SettingsScreen extends StatelessWidget {
             onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
           ),
 
-          const Divider(),
+          // Developer Tools section - only visible when developer mode is enabled
+          if (appState.developerModeEnabled) ...[
+            const Divider(),
 
-          // Debug / Testing section
-          _buildSectionHeader(context, 'Debug / Testing'),
+            _buildSectionHeader(context, 'Developer Tools'),
 
-          // GPS Simulator Toggle
+            // Developer mode toggle (to disable)
+            SwitchListTile(
+              secondary: const Icon(Icons.developer_mode),
+              title: const Text('Developer Mode'),
+              subtitle: const Text('Disable to hide developer tools'),
+              value: appState.developerModeEnabled,
+              onChanged: (value) {
+                appState.setDeveloperMode(value);
+              },
+            ),
+
+            // GPS Simulator Toggle
           SwitchListTile(
             secondary: Icon(
               Icons.gps_fixed,
@@ -386,10 +452,13 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ],
+          ], // Close developerModeEnabled conditional
 
-          // Debug Logs Toggle (mobile only)
+          // Debug section (always visible on mobile)
           if (!kIsWeb) ...[
-            const Divider(height: 32, thickness: 1),
+            const Divider(),
+
+            _buildSectionHeader(context, 'Debug'),
 
             SwitchListTile(
               secondary: Icon(
@@ -817,7 +886,7 @@ class SettingsScreen extends StatelessWidget {
           backgroundColor = Colors.red;
           break;
         case OfflineUploadResult.authFailed:
-          message = 'Authentication failed - check device credentials';
+          message = 'Authentication failed - Advert your device on the mesh';
           backgroundColor = Colors.red;
           break;
         case OfflineUploadResult.partialFailure:

@@ -87,6 +87,7 @@ class AppStateProvider extends ChangeNotifier {
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   ConnectionStep _connectionStep = ConnectionStep.disconnected;
   String? _connectionError;
+  bool _isAuthError = false;  // Track if connection failed due to auth
 
   // GPS state
   GpsStatus _gpsStatus = GpsStatus.permissionDenied;
@@ -174,6 +175,7 @@ class AppStateProvider extends ChangeNotifier {
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;
   String? get connectionError => _connectionError;
+  bool get isAuthError => _isAuthError;
   GpsStatus get gpsStatus => _gpsStatus;
   Position? get currentPosition => _currentPosition;
   DeviceModel? get deviceModel => _deviceModel;
@@ -236,6 +238,9 @@ class AppStateProvider extends ChangeNotifier {
   // Offline mode
   bool get offlineMode => _preferences.offlineMode;
   List<OfflineSession> get offlineSessions => _offlineSessionService.sessions;
+
+  // Developer mode
+  bool get developerModeEnabled => _preferences.developerModeEnabled;
   int get offlinePingCount => _apiQueueService.offlinePingCount;
   OfflineSessionService get offlineSessionService => _offlineSessionService;
 
@@ -432,6 +437,7 @@ class AppStateProvider extends ChangeNotifier {
     _isScanning = true;
     _discoveredDevices = [];
     _connectionError = null;
+    _isAuthError = false;
     notifyListeners();
 
     // Listen for discovered devices
@@ -472,6 +478,7 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> connectToDevice(DiscoveredDevice device) async {
     try {
       _connectionError = null;
+      _isAuthError = false;
 
       // Clean up any previous connection first
       if (_meshCoreConnection != null) {
@@ -795,7 +802,23 @@ class AppStateProvider extends ChangeNotifier {
       }
 
     } catch (e) {
-      _connectionError = e.toString();
+      // Parse auth failure errors for clean display
+      final errorStr = e.toString();
+      if (errorStr.contains('AUTH_FAILED:')) {
+        // Format: "Exception: AUTH_FAILED:reason:message"
+        _isAuthError = true;
+        final parts = errorStr.split('AUTH_FAILED:');
+        if (parts.length > 1) {
+          final errorParts = parts[1].split(':');
+          final reason = errorParts.isNotEmpty ? errorParts[0] : 'unknown';
+          _connectionError = _getErrorMessage(reason, null);
+        } else {
+          _connectionError = 'Authentication failed';
+        }
+      } else {
+        _isAuthError = false;
+        _connectionError = errorStr.replaceFirst('Exception: ', '');
+      }
       _connectionStep = ConnectionStep.error;
       notifyListeners();
     }
@@ -1003,6 +1026,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Disconnect from current device
   Future<void> disconnect() async {
+    // Disable heartbeat immediately on disconnect
+    _apiService.disableHeartbeat();
+
     // Stop auto-ping if running (before releasing session)
     if (_autoPingEnabled) {
       await _pingService?.forceDisableAutoPing();
@@ -1129,6 +1155,9 @@ class AppStateProvider extends ChangeNotifier {
         await _saveOfflineSession();
       }
 
+      // Disable heartbeat when stopping auto mode
+      _apiService.disableHeartbeat();
+
       _autoPingEnabled = false;
 
       // Start 7-second shared cooldown ONLY for TX/RX Auto (not RX Auto)
@@ -1186,6 +1215,12 @@ class AppStateProvider extends ChangeNotifier {
       // Reference: state.rxTracking.isWardriving = true in wardrive.js
       _rxLogger?.startWardriving();
       _autoPingEnabled = true;
+
+      // Enable heartbeat if not in offline mode
+      // Heartbeat fires after 3 minutes of API inactivity to keep session alive
+      if (!_preferences.offlineMode) {
+        _apiService.enableHeartbeat();
+      }
 
       // Start background service for continuous operation
       final modeName = isRxOnly ? 'RX Auto' : 'TX/RX Auto';
@@ -1415,6 +1450,9 @@ class AppStateProvider extends ChangeNotifier {
 
     debugLog('[APP] Offline upload authenticated, session: ${authResult['session_id']}');
 
+    // Delay after auth before posting
+    await Future.delayed(const Duration(seconds: 1));
+
     // 4. Upload pings in batches of 50
     const batchSize = 50;
     var uploadedCount = 0;
@@ -1431,6 +1469,9 @@ class AppStateProvider extends ChangeNotifier {
         debugError('[APP] Failed to upload batch ${(i ~/ batchSize) + 1}');
       }
     }
+
+    // Delay after posting before disconnect
+    await Future.delayed(const Duration(seconds: 1));
 
     // 5. Release API session
     await _apiService.requestAuth(
@@ -1483,6 +1524,14 @@ class AppStateProvider extends ChangeNotifier {
     _savePreferences();
   }
 
+  /// Set developer mode (unlocked by tapping version 7 times)
+  void setDeveloperMode(bool enabled) {
+    _preferences = _preferences.copyWith(developerModeEnabled: enabled);
+    debugLog('[APP] Developer mode ${enabled ? 'enabled' : 'disabled'}');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Navigate to coordinates on map (triggered from log entries)
   void navigateToMapCoordinates(double latitude, double longitude) {
     _mapNavigationTarget = (lat: latitude, lon: longitude);
@@ -1510,7 +1559,7 @@ class AppStateProvider extends ChangeNotifier {
   String _getErrorMessage(String? reason, String? serverMessage) {
     switch (reason) {
       case 'unknown_device':
-        return 'Device not registered. Please advertise yourself on the mesh first.';
+        return 'Unknown device. Please advertise yourself on the mesh using the official MeshCore app.';
       case 'outside_zone':
         return 'Not in any wardriving zone. Move closer to a zone and try again.';
       case 'zone_disabled':

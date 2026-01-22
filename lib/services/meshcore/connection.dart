@@ -221,7 +221,8 @@ class MeshCoreConnection {
           final reason = authResult?['reason'] ?? 'unknown';
           final message = authResult?['message'] ?? 'Authentication failed';
           debugError('[CONN] API session acquisition failed: $reason - $message');
-          throw Exception('Failed to acquire API session: $message');
+          // Throw with reason code prefix for proper error handling
+          throw Exception('AUTH_FAILED:$reason:$message');
         }
         debugLog('[CONN] API session acquired successfully');
       } else {
