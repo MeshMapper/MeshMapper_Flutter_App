@@ -64,7 +64,7 @@ class UserPreferences {
       ignoreRepeaterId: json['ignoreRepeaterId'] as String?,
       autoPowerSet: (json['autoPowerSet'] as bool?) ?? false,
       powerLevelSet: (json['powerLevelSet'] as bool?) ?? false,
-      offlineMode: (json['offlineMode'] as bool?) ?? false,
+      offlineMode: false, // Never persist - always off by default
       iataCode: (json['iataCode'] as String?) ?? 'YOW',
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
     );
@@ -82,7 +82,7 @@ class UserPreferences {
       'ignoreRepeaterId': ignoreRepeaterId,
       'autoPowerSet': autoPowerSet,
       'powerLevelSet': powerLevelSet,
-      'offlineMode': offlineMode,
+      // offlineMode intentionally not persisted - always off on app start
       'iataCode': iataCode,
       'backgroundModeEnabled': backgroundModeEnabled,
     };

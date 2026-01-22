@@ -45,6 +45,20 @@ enum AutoMode {
   rxOnly,
 }
 
+/// Result of uploading an offline session
+enum OfflineUploadResult {
+  /// Upload completed successfully
+  success,
+  /// Session file not found
+  notFound,
+  /// Session data is invalid or empty
+  invalidSession,
+  /// API authentication failed
+  authFailed,
+  /// Some pings failed to upload
+  partialFailure,
+}
+
 /// Main application state provider
 class AppStateProvider extends ChangeNotifier {
   final BluetoothService _bluetoothService;
@@ -337,14 +351,16 @@ class AppStateProvider extends ChangeNotifier {
       notifyListeners();
 
       // Check zone on first GPS lock (when _inZone is null)
-      if (_inZone == null) {
+      // Skip zone checks when offline mode is enabled
+      if (_inZone == null && !_preferences.offlineMode) {
         debugLog('[GEOFENCE] First GPS lock, checking zone status');
         await checkZoneStatus();
       }
 
       // Check zone every 100m movement (while disconnected)
       // This allows users to know if they've entered/exited a zone while moving
-      if (!isConnected && _shouldRecheckZone(position)) {
+      // Skip zone checks when offline mode is enabled
+      if (!isConnected && !_preferences.offlineMode && _shouldRecheckZone(position)) {
         debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone');
         await checkZoneStatus();
       }
@@ -469,29 +485,36 @@ class AppStateProvider extends ChangeNotifier {
       _meshCoreConnection = MeshCoreConnection(bluetooth: _bluetoothService);
 
       // Set auth callback for Step 6 (called during connect, after public key is acquired)
-      _meshCoreConnection!.onRequestAuth = () async {
-        final publicKey = _meshCoreConnection!.devicePublicKey;
-        if (publicKey == null) {
-          debugError('[APP] Cannot request auth: no public key');
-          return {'success': false, 'reason': 'no_public_key', 'message': 'Device public key not available'};
-        }
+      // Skip auth when offline mode is enabled
+      if (!_preferences.offlineMode) {
+        _meshCoreConnection!.onRequestAuth = () async {
+          final publicKey = _meshCoreConnection!.devicePublicKey;
+          if (publicKey == null) {
+            debugError('[APP] Cannot request auth: no public key');
+            return {'success': false, 'reason': 'no_public_key', 'message': 'Device public key not available'};
+          }
 
-        debugLog('[APP] Requesting API auth with public key: ${publicKey.substring(0, 16)}...');
-        // Strip "MeshCore-" prefix from device name for API
-        final deviceName = connectedDeviceName?.replaceFirst('MeshCore-', '') ?? 'GOME-WarDriver';
-        return await _apiService.requestAuth(
-          reason: 'connect',
-          publicKey: publicKey,
-          who: deviceName,
-          appVersion: _appVersion,
-          power: _preferences.powerLevel,  // Send wattage (0.3, 1.0, 2.0) to match WebClient
-          iataCode: _preferences.iataCode,
-          model: _meshCoreConnection!.deviceModel?.manufacturer ?? _meshCoreConnection!.deviceInfo?.manufacturer ?? 'Unknown',
-          lat: _currentPosition?.latitude,
-          lon: _currentPosition?.longitude,
-          accuracyMeters: _currentPosition?.accuracy,
-        );
-      };
+          debugLog('[APP] Requesting API auth with public key: ${publicKey.substring(0, 16)}...');
+          // Strip "MeshCore-" prefix from device name for API
+          final deviceName = connectedDeviceName?.replaceFirst('MeshCore-', '') ?? 'GOME-WarDriver';
+          return await _apiService.requestAuth(
+            reason: 'connect',
+            publicKey: publicKey,
+            who: deviceName,
+            appVersion: _appVersion,
+            power: _preferences.powerLevel,  // Send wattage (0.3, 1.0, 2.0) to match WebClient
+            iataCode: _preferences.iataCode,
+            model: _meshCoreConnection!.deviceModel?.manufacturer ?? _meshCoreConnection!.deviceInfo?.manufacturer ?? 'Unknown',
+            lat: _currentPosition?.latitude,
+            lon: _currentPosition?.longitude,
+            accuracyMeters: _currentPosition?.accuracy,
+          );
+        };
+      } else {
+        // Offline mode: skip API auth
+        _meshCoreConnection!.onRequestAuth = null;
+        debugLog('[APP] Offline mode: skipping API auth');
+      }
 
       // Listen for step changes
       _meshCoreConnection!.stepStream.listen((step) {
@@ -1237,11 +1260,36 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================
 
   /// Toggle offline mode
-  void setOfflineMode(bool enabled) {
+  /// Returns false if offline mode cannot be changed (e.g., while connected)
+  bool setOfflineMode(bool enabled) {
+    // Cannot change offline mode while connected
+    if (isConnected) {
+      debugLog('[APP] Cannot change offline mode while connected');
+      return false;
+    }
+
     _preferences = _preferences.copyWith(offlineMode: enabled);
     _apiQueueService.offlineMode = enabled;
     debugLog('[APP] Offline mode ${enabled ? 'enabled' : 'disabled'}');
+
+    if (enabled) {
+      // Clear zone data when entering offline mode
+      _inZone = null;
+      _currentZone = null;
+      _nearestZone = null;
+      _lastZoneCheck = null;
+      _lastZoneCheckPosition = null;
+      debugLog('[GEOFENCE] Cleared zone data for offline mode');
+    } else {
+      // Re-check zone status when exiting offline mode
+      if (_currentPosition != null) {
+        debugLog('[GEOFENCE] Re-checking zone status after offline mode disabled');
+        checkZoneStatus();
+      }
+    }
+
     notifyListeners();
+    return true;
   }
 
   /// Save accumulated offline pings to a session file
@@ -1251,7 +1299,13 @@ class AppStateProvider extends ChangeNotifier {
       debugLog('[APP] No offline pings to save');
       return;
     }
-    await _offlineSessionService.saveSession(pings);
+
+    // Include device info for auth during upload
+    await _offlineSessionService.saveSession(
+      pings,
+      devicePublicKey: _devicePublicKey,
+      deviceName: connectedDeviceName?.replaceFirst('MeshCore-', ''),
+    );
     debugLog('[APP] Saved offline session with ${pings.length} pings');
     notifyListeners();
   }
@@ -1300,6 +1354,107 @@ class AppStateProvider extends ChangeNotifier {
         StatusColor.error,
       );
       return false;
+    }
+  }
+
+  /// Upload an offline session with authenticated API session
+  /// Uses stored device credentials to authenticate before uploading
+  ///
+  /// Returns the result of the upload operation
+  Future<OfflineUploadResult> uploadOfflineSessionWithAuth(String filename) async {
+    // 1. Get session with stored device credentials
+    final session = _offlineSessionService.getSession(filename);
+    if (session == null) {
+      debugLog('[APP] Offline session not found: $filename');
+      return OfflineUploadResult.notFound;
+    }
+
+    // Check if session has pings
+    final sessionData = session.data;
+    final pings = (sessionData['pings'] as List<dynamic>?)
+        ?.map((p) => Map<String, dynamic>.from(p as Map))
+        .toList();
+
+    if (pings == null || pings.isEmpty) {
+      debugLog('[APP] Offline session has no pings: $filename');
+      return OfflineUploadResult.invalidSession;
+    }
+
+    // 2. Get device credentials from session
+    final publicKey = session.devicePublicKey;
+    if (publicKey == null) {
+      debugLog('[APP] Offline session missing device public key: $filename');
+      return OfflineUploadResult.invalidSession;
+    }
+
+    // 3. Authenticate with offline_mode: true
+    debugLog('[APP] Authenticating for offline upload with device: ${session.deviceName ?? "unknown"}');
+    final authResult = await _apiService.requestAuth(
+      reason: 'connect',
+      publicKey: publicKey,
+      who: session.deviceName ?? 'GOME-WarDriver',
+      appVersion: _appVersion,
+      power: _preferences.powerLevel,
+      iataCode: _preferences.iataCode,
+      model: 'Offline Upload',
+      lat: _currentPosition?.latitude,
+      lon: _currentPosition?.longitude,
+      accuracyMeters: _currentPosition?.accuracy,
+      offlineMode: true,
+    );
+
+    if (authResult == null || authResult['success'] != true) {
+      final reason = authResult?['reason'] as String? ?? 'unknown';
+      debugLog('[APP] Offline upload auth failed: $reason');
+      _statusMessageService.setDynamicStatus(
+        'Auth failed: $reason',
+        StatusColor.error,
+      );
+      return OfflineUploadResult.authFailed;
+    }
+
+    debugLog('[APP] Offline upload authenticated, session: ${authResult['session_id']}');
+
+    // 4. Upload pings in batches of 50
+    const batchSize = 50;
+    var uploadedCount = 0;
+    var failedBatches = 0;
+
+    for (var i = 0; i < pings.length; i += batchSize) {
+      final batch = pings.skip(i).take(batchSize).toList();
+      final success = await _apiService.uploadBatch(batch);
+      if (success) {
+        uploadedCount += batch.length;
+        debugLog('[APP] Uploaded batch ${(i ~/ batchSize) + 1}: ${batch.length} pings');
+      } else {
+        failedBatches++;
+        debugError('[APP] Failed to upload batch ${(i ~/ batchSize) + 1}');
+      }
+    }
+
+    // 5. Release API session
+    await _apiService.requestAuth(
+      reason: 'disconnect',
+      publicKey: publicKey,
+    );
+    debugLog('[APP] Offline upload session released');
+
+    // 6. Mark session as uploaded (don't delete) if all batches succeeded
+    if (failedBatches == 0) {
+      await _offlineSessionService.markAsUploaded(filename);
+      _statusMessageService.setDynamicStatus(
+        'Uploaded ${pings.length} pings from $filename',
+        StatusColor.success,
+      );
+      notifyListeners();
+      return OfflineUploadResult.success;
+    } else {
+      _statusMessageService.setDynamicStatus(
+        'Partial upload: $uploadedCount/${pings.length} pings',
+        StatusColor.warning,
+      );
+      notifyListeners();
+      return OfflineUploadResult.partialFailure;
     }
   }
 

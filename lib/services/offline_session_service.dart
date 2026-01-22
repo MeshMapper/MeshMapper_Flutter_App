@@ -10,12 +10,18 @@ class OfflineSession {
   final DateTime createdAt;
   final int pingCount;
   final Map<String, dynamic> data;
+  final String? devicePublicKey;  // Device public key for auth during upload
+  final String? deviceName;       // Device name for display
+  final bool uploaded;            // Track upload status
 
   OfflineSession({
     required this.filename,
     required this.createdAt,
     required this.pingCount,
     required this.data,
+    this.devicePublicKey,
+    this.deviceName,
+    this.uploaded = false,
   });
 
   /// Create from stored JSON
@@ -25,6 +31,9 @@ class OfflineSession {
       createdAt: DateTime.parse(json['createdAt'] as String),
       pingCount: json['pingCount'] as int,
       data: json['data'] as Map<String, dynamic>,
+      devicePublicKey: json['devicePublicKey'] as String?,
+      deviceName: json['deviceName'] as String?,
+      uploaded: json['uploaded'] as bool? ?? false,
     );
   }
 
@@ -35,7 +44,23 @@ class OfflineSession {
       'createdAt': createdAt.toIso8601String(),
       'pingCount': pingCount,
       'data': data,
+      'devicePublicKey': devicePublicKey,
+      'deviceName': deviceName,
+      'uploaded': uploaded,
     };
+  }
+
+  /// Create a copy with uploaded status changed
+  OfflineSession copyWith({bool? uploaded}) {
+    return OfflineSession(
+      filename: filename,
+      createdAt: createdAt,
+      pingCount: pingCount,
+      data: data,
+      devicePublicKey: devicePublicKey,
+      deviceName: deviceName,
+      uploaded: uploaded ?? this.uploaded,
+    );
   }
 
   /// Display-friendly date
@@ -108,7 +133,15 @@ class OfflineSessionService {
   }
 
   /// Save a new offline session
-  Future<void> saveSession(List<Map<String, dynamic>> pings) async {
+  ///
+  /// @param pings List of ping data to save
+  /// @param devicePublicKey Optional device public key for auth during upload
+  /// @param deviceName Optional device name for display
+  Future<void> saveSession(
+    List<Map<String, dynamic>> pings, {
+    String? devicePublicKey,
+    String? deviceName,
+  }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to save, skipping session creation');
       return;
@@ -123,6 +156,8 @@ class OfflineSessionService {
       'created_at': now.toIso8601String(),
       'ping_count': pings.length,
       'pings': pings,
+      if (devicePublicKey != null) 'device_public_key': devicePublicKey,
+      if (deviceName != null) 'device_name': deviceName,
     };
 
     final session = OfflineSession(
@@ -130,12 +165,36 @@ class OfflineSessionService {
       createdAt: now,
       pingCount: pings.length,
       data: sessionData,
+      devicePublicKey: devicePublicKey,
+      deviceName: deviceName,
     );
 
     _sessions.insert(0, session); // Add at beginning (newest first)
     await _saveSessions();
 
-    debugLog('[OFFLINE] Saved session: $filename with ${pings.length} pings');
+    debugLog('[OFFLINE] Saved session: $filename with ${pings.length} pings (device: ${deviceName ?? "unknown"})');
+  }
+
+  /// Mark a session as uploaded without deleting it
+  Future<void> markAsUploaded(String filename) async {
+    final index = _sessions.indexWhere((s) => s.filename == filename);
+    if (index == -1) {
+      debugLog('[OFFLINE] Session not found for marking uploaded: $filename');
+      return;
+    }
+
+    _sessions[index] = _sessions[index].copyWith(uploaded: true);
+    await _saveSessions();
+    debugLog('[OFFLINE] Marked session as uploaded: $filename');
+  }
+
+  /// Get a session by filename
+  OfflineSession? getSession(String filename) {
+    try {
+      return _sessions.firstWhere((s) => s.filename == filename);
+    } catch (e) {
+      return null;
+    }
   }
 
   /// Delete a session

@@ -43,22 +43,30 @@ class StatusBar extends StatelessWidget {
     Color color;
     String text;
 
+    // Offline mode: show greyed out with "-"
+    if (appState.offlineMode) {
+      icon = Icons.flight;
+      color = Colors.grey;
+      text = '-';
+      return _buildStatChip(icon: icon, value: text, color: color);
+    }
+
     // Show GPS region (e.g., "YOW") when locked and inside a zone
     switch (appState.gpsStatus) {
       case GpsStatus.locked:
         // Check if we're in a zone and have zone code from API
         if (appState.inZone == true && appState.zoneCode != null) {
-          icon = Icons.location_on;
+          icon = Icons.flight;
           color = Colors.green;
           text = appState.zoneCode!;
         } else if (appState.inZone == false) {
           // GPS locked but outside any zone
-          icon = Icons.location_on;
+          icon = Icons.flight;
           color = Colors.orange;
           text = '—';
         } else {
           // GPS locked but zone not checked yet
-          icon = Icons.location_on;
+          icon = Icons.flight;
           color = Colors.green;
           text = '...';
         }
@@ -71,7 +79,7 @@ class StatusBar extends StatelessWidget {
       case GpsStatus.outsideGeofence:
         // Note: This state is no longer set - zone validation is handled by API
         // Falls through to same display as locked outside zone
-        icon = Icons.location_on;
+        icon = Icons.flight;
         color = Colors.orange;
         text = '—';
         break;

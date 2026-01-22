@@ -27,10 +27,17 @@ class ConnectionScreen extends StatelessWidget {
       body: _buildBody(context, appState),
       floatingActionButton: !appState.isScanning && !appState.isConnected
           ? FloatingActionButton.extended(
-              onPressed: appState.inZone == true ? () => appState.startScan() : null,
+              // Allow scanning when in zone OR when offline mode enabled
+              onPressed: (appState.inZone == true || appState.offlineMode)
+                  ? () => appState.startScan()
+                  : null,
               icon: const Icon(Icons.bluetooth_searching),
-              label: Text(appState.inZone == true ? 'Scan' : 'Outside Zone'),
-              backgroundColor: appState.inZone == true ? null : Colors.grey,
+              label: Text(appState.offlineMode
+                  ? 'Scan'
+                  : (appState.inZone == true ? 'Scan' : 'Outside Zone')),
+              backgroundColor: (appState.inZone == true || appState.offlineMode)
+                  ? null
+                  : Colors.grey,
             )
           : null,
     );
@@ -169,9 +176,10 @@ class ConnectionScreen extends StatelessWidget {
               const SizedBox(height: 16),
               // Regional Configuration card
               RegionalConfigCard(
-                zoneName: appState.zoneName,
-                zoneCode: appState.zoneCode,
-                channels: appState.regionalChannels,
+                zoneName: appState.offlineMode ? null : appState.zoneName,
+                zoneCode: appState.offlineMode ? null : appState.zoneCode,
+                channels: appState.offlineMode ? [] : appState.regionalChannels,
+                isOfflineMode: appState.offlineMode,
               ),
             ],
           ),
@@ -525,9 +533,14 @@ class ConnectionScreen extends StatelessWidget {
     String? iataCode;
     Color locationColor;
 
+    // Offline mode: show greyed out with "-"
+    if (appState.offlineMode) {
+      locationIcon = Icons.gps_off;
+      locationText = '-';
+      locationColor = Colors.grey;
     // Only show "Checking..." on initial load when we don't have zone info yet
     // After that, keep showing current state while checking happens in background
-    if (appState.isCheckingZone && appState.inZone == null) {
+    } else if (appState.isCheckingZone && appState.inZone == null) {
       locationIcon = Icons.location_searching;
       locationText = 'Checking...';
       locationColor = Colors.blue;
@@ -642,11 +655,11 @@ class ConnectionScreen extends StatelessWidget {
   }
 
   Widget _buildDeviceList(BuildContext context, AppStateProvider appState) {
-    // Check if Connect should be disabled (outside zone)
-    final canConnect = appState.inZone == true;
+    // Allow connection when in zone OR when offline mode enabled
+    final canConnect = appState.inZone == true || appState.offlineMode;
 
-    // Show onboarding message when outside zone
-    if (appState.inZone == false) {
+    // Show onboarding message when outside zone (but NOT when offline mode is enabled)
+    if (appState.inZone == false && !appState.offlineMode) {
       return Column(
         children: [
           _buildZoneStatusBar(context, appState),

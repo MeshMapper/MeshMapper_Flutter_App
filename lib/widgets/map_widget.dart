@@ -17,6 +17,7 @@ import '../providers/app_state_provider.dart';
 enum MapStyle {
   dark,
   light,
+  satellite,
 }
 
 extension MapStyleExtension on MapStyle {
@@ -26,6 +27,8 @@ extension MapStyleExtension on MapStyle {
         return 'Dark';
       case MapStyle.light:
         return 'Light';
+      case MapStyle.satellite:
+        return 'Satellite';
     }
   }
 
@@ -35,6 +38,8 @@ extension MapStyleExtension on MapStyle {
         return Icons.dark_mode;
       case MapStyle.light:
         return Icons.light_mode;
+      case MapStyle.satellite:
+        return Icons.satellite_alt;
     }
   }
 
@@ -44,6 +49,8 @@ extension MapStyleExtension on MapStyle {
         return 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
       case MapStyle.light:
         return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+      case MapStyle.satellite:
+        return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
     }
   }
 
@@ -53,6 +60,8 @@ extension MapStyleExtension on MapStyle {
         return ['a', 'b', 'c', 'd'];
       case MapStyle.light:
         return null; // OSM doesn't use subdomains anymore
+      case MapStyle.satellite:
+        return null; // ArcGIS doesn't use subdomains
     }
   }
 }

@@ -97,8 +97,9 @@ class ApiService {
 
   /// Request authentication with MeshMapper geo-auth API
   /// Matches requestAuth() in wardrive.js
-  /// 
+  ///
   /// @param reason Either "connect" (acquire session) or "disconnect" (release session)
+  /// @param offlineMode Set to true when uploading offline session data
   /// @returns Map with success, session_id, tx_allowed, rx_allowed, expires_at, reason, message
   Future<Map<String, dynamic>?> requestAuth({
     required String reason,
@@ -111,6 +112,7 @@ class ApiService {
     double? lat,
     double? lon,
     double? accuracyMeters,
+    bool offlineMode = false,
   }) async {
     try {
       final payload = <String, dynamic>{
@@ -118,6 +120,11 @@ class ApiService {
         'public_key': publicKey,
         'reason': reason,
       };
+
+      // Add offline_mode flag for offline session uploads
+      if (offlineMode) {
+        payload['offline_mode'] = true;
+      }
 
       // For connect: add device metadata and GPS coords
       if (reason == 'connect') {

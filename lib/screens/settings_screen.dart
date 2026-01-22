@@ -775,15 +775,62 @@ class SettingsScreen extends StatelessWidget {
   }
 
   Future<void> _uploadOfflineSession(BuildContext context, AppStateProvider appState, String filename) async {
-    final success = await appState.uploadOfflineSession(filename);
+    // Show loading indicator
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Text('Uploading session...'),
+          ],
+        ),
+        duration: Duration(seconds: 30), // Will be dismissed when upload completes
+      ),
+    );
+
+    final result = await appState.uploadOfflineSessionWithAuth(filename);
+
     if (context.mounted) {
+      // Dismiss loading indicator
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+      // Show result
+      String message;
+      Color backgroundColor;
+
+      switch (result) {
+        case OfflineUploadResult.success:
+          message = 'Uploaded: $filename';
+          backgroundColor = Colors.green;
+          break;
+        case OfflineUploadResult.notFound:
+          message = 'Session not found: $filename';
+          backgroundColor = Colors.red;
+          break;
+        case OfflineUploadResult.invalidSession:
+          message = 'Invalid session data or missing device credentials';
+          backgroundColor = Colors.red;
+          break;
+        case OfflineUploadResult.authFailed:
+          message = 'Authentication failed - check device credentials';
+          backgroundColor = Colors.red;
+          break;
+        case OfflineUploadResult.partialFailure:
+          message = 'Partial upload - some pings failed';
+          backgroundColor = Colors.orange;
+          break;
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(success
-              ? 'Uploaded and deleted: $filename'
-              : 'Failed to upload: $filename'),
+          content: Text(message),
           duration: const Duration(seconds: 3),
-          backgroundColor: success ? Colors.green : Colors.red,
+          backgroundColor: backgroundColor,
         ),
       );
     }
@@ -1086,25 +1133,50 @@ class _OfflineSessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isUploaded = session.uploaded;
+
     return ListTile(
-      leading: const Icon(Icons.cloud_off, color: Colors.orange),
+      leading: Icon(
+        isUploaded ? Icons.cloud_done : Icons.cloud_off,
+        color: isUploaded ? Colors.green : Colors.orange,
+      ),
       title: Text(session.filename),
-      subtitle: Text('${session.pingCount} pings • ${session.displayDate}'),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('${session.pingCount} pings • ${session.displayDate}'),
+          if (isUploaded)
+            const Text(
+              'Uploaded',
+              style: TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.w500),
+            ),
+          if (session.deviceName != null)
+            Text(
+              'Device: ${session.deviceName}',
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+            ),
+        ],
+      ),
+      isThreeLine: session.deviceName != null || isUploaded,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Download button - always available
           IconButton(
             icon: const Icon(Icons.download),
             onPressed: onDownload,
             tooltip: 'Download JSON',
             color: Colors.blue,
           ),
-          IconButton(
-            icon: const Icon(Icons.cloud_upload),
-            onPressed: onUpload,
-            tooltip: 'Upload session',
-            color: Colors.green,
-          ),
+          // Upload button - only when not uploaded
+          if (!isUploaded)
+            IconButton(
+              icon: const Icon(Icons.cloud_upload),
+              onPressed: onUpload,
+              tooltip: 'Upload session',
+              color: Colors.green,
+            ),
+          // Delete button - always available
           IconButton(
             icon: const Icon(Icons.delete_outline),
             onPressed: onDelete,

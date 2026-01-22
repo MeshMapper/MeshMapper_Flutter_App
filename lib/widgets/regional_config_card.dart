@@ -6,16 +6,22 @@ class RegionalConfigCard extends StatelessWidget {
   final String? zoneName;
   final String? zoneCode;
   final List<String> channels;
+  final bool isOfflineMode;
 
   const RegionalConfigCard({
     super.key,
     this.zoneName,
     this.zoneCode,
     this.channels = const [],
+    this.isOfflineMode = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    // When offline mode is enabled, show "-" for zone fields
+    final displayZoneName = isOfflineMode ? '-' : (zoneName ?? 'Not configured');
+    final displayZoneCode = isOfflineMode ? '-' : zoneCode;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -25,7 +31,10 @@ class RegionalConfigCard extends StatelessWidget {
             // Header
             Row(
               children: [
-                Icon(Icons.public, color: Theme.of(context).colorScheme.primary),
+                Icon(
+                  isOfflineMode ? Icons.cloud_off : Icons.public,
+                  color: isOfflineMode ? Colors.orange : Theme.of(context).colorScheme.primary,
+                ),
                 const SizedBox(width: 8),
                 Text(
                   'Regional Configuration',
@@ -33,24 +42,41 @@ class RegionalConfigCard extends StatelessWidget {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
+                if (isOfflineMode) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.orange,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'OFFLINE',
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
             const Divider(height: 24),
 
             // Zone info
-            _buildInfoRow(context, Icons.location_on, 'Zone',
-              zoneName ?? 'Not configured'),
-            if (zoneCode != null) ...[
-              const SizedBox(height: 8),
-              _buildInfoRow(context, Icons.flight, 'IATA', zoneCode!),
-            ],
+            _buildInfoRow(context, Icons.location_on, 'Zone', displayZoneName,
+                isOffline: isOfflineMode),
+            const SizedBox(height: 8),
+            _buildInfoRow(context, Icons.flight, 'IATA', displayZoneCode ?? '-',
+                isOffline: isOfflineMode),
             const SizedBox(height: 12),
 
             // Channels header
             _buildInfoRow(context, Icons.tag, 'RX Channels', null),
             const SizedBox(height: 8),
 
-            // Channel chips
+            // Channel chips - show Public and #wardriving when offline
             Padding(
               padding: const EdgeInsets.only(left: 26),
               child: Wrap(
@@ -59,7 +85,8 @@ class RegionalConfigCard extends StatelessWidget {
                 children: [
                   _buildChannelChip(context, 'Public', isDefault: true),
                   _buildChannelChip(context, '#wardriving', isDefault: true),
-                  ...channels.map((c) => _buildChannelChip(context, c)),
+                  if (!isOfflineMode)
+                    ...channels.map((c) => _buildChannelChip(context, c)),
                 ],
               ),
             ),
@@ -69,17 +96,20 @@ class RegionalConfigCard extends StatelessWidget {
     );
   }
 
-  Widget _buildInfoRow(BuildContext context, IconData icon, String label, String? value) {
+  Widget _buildInfoRow(BuildContext context, IconData icon, String label, String? value,
+      {bool isOffline = false}) {
     return Row(
       children: [
-        Icon(icon, size: 18, color: Colors.grey),
+        Icon(icon, size: 18, color: isOffline ? Colors.orange : Colors.grey),
         const SizedBox(width: 8),
         Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
         if (value != null) ...[
           const SizedBox(width: 8),
           Expanded(
             child: Text(value, style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+              color: isOffline
+                  ? Colors.orange.shade700
+                  : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
             )),
           ),
         ],

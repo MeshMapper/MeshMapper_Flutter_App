@@ -23,6 +23,9 @@ class PingControls extends StatelessWidget {
     final cooldownActive = appState.cooldownTimer.isRunning; // Shared cooldown for both TX Ping and TX/RX Auto
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
 
+    // TX is blocked when offline mode is active and connected
+    final txBlockedByOffline = appState.offlineMode && appState.isConnected;
+
     // Calculate distance feedback for TX Ping button
     final distanceFromLastPing = appState.distanceFromLastPing;
     final needToMove = validation == PingValidation.tooCloseToLastPing && distanceFromLastPing != null;
@@ -74,35 +77,41 @@ class PingControls extends StatelessWidget {
         // Action buttons row
         Row(
           children: [
-            // TX Ping button
+            // TX Ping button - disabled when offline mode is active
             Expanded(
               child: _ActionButton(
                 icon: Icons.cell_tower,
-                label: cooldownActive ? '$cooldownRemaining s' : 'TX Ping',
+                label: txBlockedByOffline
+                    ? 'TX Disabled'
+                    : (cooldownActive ? '$cooldownRemaining s' : 'TX Ping'),
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isTxRxAutoRunning && !isRxAutoRunning && !cooldownActive,
+                enabled: canPing && !isTxRxAutoRunning && !isRxAutoRunning && !cooldownActive && !txBlockedByOffline,
                 onPressed: () => _sendPing(context, appState),
-                showCooldown: cooldownActive,
-                subtitle: moveSubtitle,
-                subtitleColor: Colors.orange.shade600,
+                showCooldown: cooldownActive && !txBlockedByOffline,
+                subtitle: txBlockedByOffline ? 'Offline Mode' : moveSubtitle,
+                subtitleColor: txBlockedByOffline ? Colors.orange : Colors.orange.shade600,
               ),
             ),
             const SizedBox(width: 10),
 
-            // TX/RX Auto button
+            // TX/RX Auto button - disabled when offline mode is active
             // Can start even when tooCloseToLastPing - ping will be skipped until user moves
             Expanded(
               child: _ActionButton(
                 icon: Icons.sensors,
-                label: cooldownActive && !isTxRxAutoRunning
-                    ? '$cooldownRemaining s'
-                    : 'TX/RX Auto',
+                label: txBlockedByOffline
+                    ? 'TX Disabled'
+                    : (cooldownActive && !isTxRxAutoRunning
+                        ? '$cooldownRemaining s'
+                        : 'TX/RX Auto'),
                 color: isTxRxAutoRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500
-                enabled: isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive),
+                enabled: (isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive)) && !txBlockedByOffline,
                 isActive: isTxRxAutoRunning,
                 onPressed: () => _toggleTxRxAuto(context, appState),
+                subtitle: txBlockedByOffline ? 'Offline Mode' : null,
+                subtitleColor: Colors.orange,
               ),
             ),
             const SizedBox(width: 10),
@@ -356,12 +365,11 @@ class _ActionButtonState extends State<_ActionButton>
 }
 
 /// Compact offline mode toggle matching app design language
-/// Currently disabled - feature coming soon
 class _OfflineModeToggle extends StatelessWidget {
   const _OfflineModeToggle();
 
-  // TODO: Set to true when offline mode is fully implemented
-  static const bool _isEnabled = false;
+  // Offline mode is now enabled
+  static const bool _isEnabled = true;
 
   @override
   Widget build(BuildContext context) {
@@ -449,11 +457,24 @@ class _OfflineModeToggle extends StatelessWidget {
     final appState = context.watch<AppStateProvider>();
     final offlineMode = appState.offlineMode;
     final offlinePingCount = appState.offlinePingCount;
+    final isConnected = appState.isConnected;
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => appState.setOfflineMode(!offlineMode),
+        onTap: () {
+          // Cannot change offline mode while connected
+          if (isConnected) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Disconnect from device before changing offline mode'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+            return;
+          }
+          appState.setOfflineMode(!offlineMode);
+        },
         borderRadius: BorderRadius.circular(10),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
