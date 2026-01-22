@@ -110,6 +110,15 @@ class StatusBar extends StatelessWidget {
 
         const SizedBox(width: 8),
 
+        // DISC count chip
+        _buildStatChip(
+          icon: Icons.radar,
+          value: '${appState.pingStats.discCount}',
+          color: const Color(0xFF7B68EE),  // DISC purple
+        ),
+
+        const SizedBox(width: 8),
+
         // Uploaded count chip
         _buildStatChip(
           icon: Icons.cloud_done,

@@ -169,6 +169,14 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           ListTile(
+            leading: const Icon(Icons.radar),
+            title: const Text('DISC Pings'),
+            trailing: Text(
+              '${appState.pingStats.discCount}',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          ListTile(
             leading: const Icon(Icons.check_circle),
             title: const Text('Successful Uploads'),
             trailing: Text(
