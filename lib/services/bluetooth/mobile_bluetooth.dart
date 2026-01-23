@@ -13,6 +13,10 @@ import 'bluetooth_service.dart';
 /// Mobile Bluetooth implementation using flutter_blue_plus
 /// For Android and iOS platforms
 class MobileBluetoothService implements BluetoothService {
+  // Retry constants for Android BLE error 133 (GATT_ERROR)
+  static const int _maxRetries = 3;
+  static const Duration _retryDelay = Duration(milliseconds: 500);
+
   StreamController<ConnectionStatus>? _connectionController;
   StreamController<Uint8List>? _dataController;
   bool _isDisposed = false;
@@ -196,104 +200,129 @@ class MobileBluetoothService implements BluetoothService {
 
   @override
   Future<void> connect(String deviceId) async {
-    try {
-      print('[BLE] Starting connection to $deviceId');
-      _updateStatus(ConnectionStatus.connecting);
+    int attempt = 0;
 
-      // Cancel any existing subscriptions from a previous connection
-      // This prevents old listeners from interfering with the new connection
-      await _connectionStateSubscription?.cancel();
-      _connectionStateSubscription = null;
-      await _notificationSubscription?.cancel();
-      _notificationSubscription = null;
+    while (attempt < _maxRetries) {
+      attempt++;
+      try {
+        print('[BLE] Connection attempt $attempt/$_maxRetries to $deviceId');
+        _updateStatus(ConnectionStatus.connecting);
 
-      // Ensure controllers are initialized
-      _ensureControllers();
+        // Cancel any existing subscriptions from a previous connection
+        // This prevents old listeners from interfering with the new connection
+        await _connectionStateSubscription?.cancel();
+        _connectionStateSubscription = null;
+        await _notificationSubscription?.cancel();
+        _notificationSubscription = null;
 
-      // Disconnect any previously connected device
-      if (_bleDevice != null) {
-        print('[BLE] Disconnecting previous device');
-        try {
-          await _bleDevice!.disconnect();
-        } catch (e) {
-          print('[BLE] Previous disconnect error (ignoring): $e');
+        // Ensure controllers are initialized
+        _ensureControllers();
+
+        // Disconnect any previously connected device
+        if (_bleDevice != null) {
+          print('[BLE] Disconnecting previous device');
+          try {
+            await _bleDevice!.disconnect();
+          } catch (e) {
+            print('[BLE] Previous disconnect error (ignoring): $e');
+          }
+          _bleDevice = null;
         }
-        _bleDevice = null;
+
+        // Get the device
+        _bleDevice = fbp.BluetoothDevice.fromId(deviceId);
+        print('[BLE] Device reference created');
+
+        // Connect to GATT server FIRST (before subscribing to state changes)
+        print('[BLE] Connecting to GATT...');
+        await _bleDevice!.connect(timeout: const Duration(seconds: 15));
+        print('[BLE] GATT connected');
+
+        // NOW subscribe to connection state changes (after we're connected)
+        // Use skip(1) to ignore the initial state emission from the stream.
+        // Flutter Blue Plus emits the current state immediately when you subscribe,
+        // but we only want to react to CHANGES, not the initial state.
+        // This prevents false disconnection triggers during connection setup.
+        _connectionStateSubscription = _bleDevice!.connectionState.skip(1).listen((state) {
+          print('[BLE] Connection state changed: $state');
+          if (state == fbp.BluetoothConnectionState.disconnected) {
+            _handleDisconnection();
+          }
+        });
+
+        // Discover services
+        print('[BLE] Discovering services...');
+        final services = await _bleDevice!.discoverServices();
+        print('[BLE] Found ${services.length} services');
+
+        // Find our service
+        final service = services.firstWhere(
+          (s) => s.uuid.toString().toUpperCase() == BleUuids.serviceUuid,
+          orElse: () => throw Exception('MeshCore service not found'),
+        );
+        print('[BLE] Found MeshCore service');
+
+        // Find characteristics
+        for (final char in service.characteristics) {
+          final uuid = char.uuid.toString().toUpperCase();
+          if (uuid == BleUuids.characteristicRxUuid) {
+            _rxCharacteristic = char;
+            print('[BLE] Found RX characteristic');
+          } else if (uuid == BleUuids.characteristicTxUuid) {
+            _txCharacteristic = char;
+            print('[BLE] Found TX characteristic');
+          }
+        }
+
+        if (_rxCharacteristic == null || _txCharacteristic == null) {
+          throw Exception('Required characteristics not found');
+        }
+
+        // Enable notifications on TX characteristic
+        print('[BLE] Enabling notifications...');
+        await _txCharacteristic!.setNotifyValue(true);
+        _notificationSubscription = _txCharacteristic!.lastValueStream.listen((value) {
+          if (value.isNotEmpty && _dataController != null && !_dataController!.isClosed) {
+            _dataController!.add(Uint8List.fromList(value));
+          }
+        });
+        print('[BLE] Notifications enabled');
+
+        _connectedDevice = DiscoveredDevice(
+          id: deviceId,
+          name: _bleDevice!.platformName.isNotEmpty
+              ? _bleDevice!.platformName
+              : 'MeshCore Device',
+        );
+
+        print('[BLE] Connection complete');
+        _updateStatus(ConnectionStatus.connected);
+        return; // Success - exit retry loop
+
+      } catch (e, stackTrace) {
+        // Check for Android error 133 (GATT_ERROR) - a well-known Android BLE stack issue
+        // that typically succeeds on retry
+        final isError133 = Platform.isAndroid && e.toString().contains('android-code: 133');
+
+        if (isError133 && attempt < _maxRetries) {
+          print('[BLE] Error 133 on attempt $attempt, retrying after delay...');
+          await Future.delayed(_retryDelay);
+          // Force cleanup before retry
+          try {
+            await _bleDevice?.disconnect();
+          } catch (_) {}
+          _bleDevice = null;
+          _rxCharacteristic = null;
+          _txCharacteristic = null;
+          continue; // Retry
+        }
+
+        // Final attempt failed or non-retryable error
+        print('[BLE] Connection error: $e');
+        print('[BLE] Stack trace: $stackTrace');
+        _updateStatus(ConnectionStatus.error);
+        rethrow;
       }
-
-      // Get the device
-      _bleDevice = fbp.BluetoothDevice.fromId(deviceId);
-      print('[BLE] Device reference created');
-
-      // Connect to GATT server FIRST (before subscribing to state changes)
-      print('[BLE] Connecting to GATT...');
-      await _bleDevice!.connect(timeout: const Duration(seconds: 15));
-      print('[BLE] GATT connected');
-
-      // NOW subscribe to connection state changes (after we're connected)
-      // Use skip(1) to ignore the initial state emission from the stream.
-      // Flutter Blue Plus emits the current state immediately when you subscribe,
-      // but we only want to react to CHANGES, not the initial state.
-      // This prevents false disconnection triggers during connection setup.
-      _connectionStateSubscription = _bleDevice!.connectionState.skip(1).listen((state) {
-        print('[BLE] Connection state changed: $state');
-        if (state == fbp.BluetoothConnectionState.disconnected) {
-          _handleDisconnection();
-        }
-      });
-
-      // Discover services
-      print('[BLE] Discovering services...');
-      final services = await _bleDevice!.discoverServices();
-      print('[BLE] Found ${services.length} services');
-
-      // Find our service
-      final service = services.firstWhere(
-        (s) => s.uuid.toString().toUpperCase() == BleUuids.serviceUuid,
-        orElse: () => throw Exception('MeshCore service not found'),
-      );
-      print('[BLE] Found MeshCore service');
-
-      // Find characteristics
-      for (final char in service.characteristics) {
-        final uuid = char.uuid.toString().toUpperCase();
-        if (uuid == BleUuids.characteristicRxUuid) {
-          _rxCharacteristic = char;
-          print('[BLE] Found RX characteristic');
-        } else if (uuid == BleUuids.characteristicTxUuid) {
-          _txCharacteristic = char;
-          print('[BLE] Found TX characteristic');
-        }
-      }
-
-      if (_rxCharacteristic == null || _txCharacteristic == null) {
-        throw Exception('Required characteristics not found');
-      }
-
-      // Enable notifications on TX characteristic
-      print('[BLE] Enabling notifications...');
-      await _txCharacteristic!.setNotifyValue(true);
-      _notificationSubscription = _txCharacteristic!.lastValueStream.listen((value) {
-        if (value.isNotEmpty && _dataController != null && !_dataController!.isClosed) {
-          _dataController!.add(Uint8List.fromList(value));
-        }
-      });
-      print('[BLE] Notifications enabled');
-
-      _connectedDevice = DiscoveredDevice(
-        id: deviceId,
-        name: _bleDevice!.platformName.isNotEmpty
-            ? _bleDevice!.platformName
-            : 'MeshCore Device',
-      );
-
-      print('[BLE] Connection complete');
-      _updateStatus(ConnectionStatus.connected);
-    } catch (e, stackTrace) {
-      print('[BLE] Connection error: $e');
-      print('[BLE] Stack trace: $stackTrace');
-      _updateStatus(ConnectionStatus.error);
-      rethrow;
     }
   }
 

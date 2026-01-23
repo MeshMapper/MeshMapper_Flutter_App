@@ -44,6 +44,11 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Android signing keys (never commit)
+android/key.properties
+*.jks
+*.keystore
+
 # iOS generated files
 /ios/Flutter/Flutter.framework
 /ios/Flutter/Flutter.podspec

@@ -1,0 +1,11 @@
+# Copy this file to key.properties and fill in your values
+# DO NOT commit key.properties - it contains sensitive paths
+#
+# For CI/CD, use environment variables instead:
+#   SIGNING_STORE_FILE - path to .jks file
+#   SIGNING_STORE_PASSWORD - keystore password
+#   SIGNING_KEY_ALIAS - key alias name
+#   SIGNING_KEY_PASSWORD - key password
+
+keyAlias=my-key-alias
+storeFile=/path/to/your/keystore.jks
