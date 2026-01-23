@@ -276,6 +276,14 @@
       "notes": "Minewsemi ME25LS01 tracker"
     },
     {
+      "manufacturer": "Nano G2 Ultra",
+      "shortName": "Nano G2 Ultra",
+      "power": 0.3,
+      "platform": "sx1262",
+      "txPower": 22,
+      "notes": "Nano G2 Ultra"
+    },
+    {
       "manufacturer": "Station G2",
       "shortName": "Station G2",
       "power": 1.0,

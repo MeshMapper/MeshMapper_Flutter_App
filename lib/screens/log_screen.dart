@@ -76,9 +76,9 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
             ),
             child: Row(
               children: [
-                Expanded(child: _buildTabChip(0, 'TX', appState.txLogEntries.length)),
+                Expanded(child: _buildTabChip(0, 'TX', appState.txLogEntries.length, isTx: true)),
                 const SizedBox(width: 8),
-                Expanded(child: _buildTabChip(1, 'RX', appState.rxLogEntries.length)),
+                Expanded(child: _buildTabChip(1, 'RX', appState.rxLogEntries.length, isRx: true)),
                 const SizedBox(width: 8),
                 Expanded(child: _buildTabChip(2, 'DISC', appState.discLogEntries.length, isDisc: true)),
                 const SizedBox(width: 8),
@@ -104,10 +104,12 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
   }
 
   /// Build a tab chip that matches StatusBar chip styling
-  Widget _buildTabChip(int index, String label, int count, {bool isError = false, bool isDisc = false}) {
+  Widget _buildTabChip(int index, String label, int count, {bool isError = false, bool isDisc = false, bool isTx = false, bool isRx = false}) {
     final theme = Theme.of(context);
-    // Medium slate blue/purple for DISC tab
-    const discColor = Color(0xFF7B68EE);
+    // Colors matching status bar chips
+    const discColor = Color(0xFF7B68EE); // DISC purple
+    const txColor = Colors.green;         // TX green (matches status bar)
+    const rxColor = Colors.blue;          // RX blue (matches status bar)
 
     return GestureDetector(
       onTap: () {
@@ -124,6 +126,10 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
               currentColor = Colors.red;
             } else if (isDisc) {
               currentColor = discColor;
+            } else if (isTx) {
+              currentColor = txColor;
+            } else if (isRx) {
+              currentColor = rxColor;
             } else {
               currentColor = theme.colorScheme.primary;
             }
@@ -366,9 +372,9 @@ class _TxLogTab extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                // Power indicator
+                // Power indicator (watts)
                 Text(
-                  '${entry.power} dBm',
+                  '${entry.power.toStringAsFixed(1)} W',
                   style: TextStyle(
                     fontSize: 11,
                     color: Colors.grey.shade500,

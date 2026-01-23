@@ -632,12 +632,12 @@ class AppStateProvider extends ChangeNotifier {
       _pingService!.onTxPing = (ping) {
         _txPings.add(ping);
 
-        // Add TX log entry
+        // Add TX log entry (power in watts from preferences)
         _txLogEntries.add(TxLogEntry(
           timestamp: ping.timestamp,
           latitude: ping.latitude,
           longitude: ping.longitude,
-          power: ping.power,
+          power: _preferences.powerLevel, // Watts (0.3, 0.6, 1.0, 2.0)
           events: [], // Will be updated when RX responses come in
         ));
 

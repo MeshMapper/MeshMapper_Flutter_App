@@ -4,7 +4,7 @@ class TxLogEntry {
   final DateTime timestamp;
   final double latitude;
   final double longitude;
-  final int power;
+  final double power; // Power in watts (0.3, 0.6, 1.0, 2.0)
   final List<RxEvent> events; // Repeaters that heard this ping
 
   TxLogEntry({

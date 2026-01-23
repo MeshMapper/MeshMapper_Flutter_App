@@ -77,17 +77,17 @@ class PingControls extends StatelessWidget {
         // Action buttons row
         Row(
           children: [
-            // Send Ping button - disabled when offline mode is active
+            // Send Ping button - disabled when offline mode is active, but works during Passive Mode
             Expanded(
               child: _ActionButton(
                 icon: Icons.cell_tower,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : (cooldownActive ? '$cooldownRemaining s' : 'Send Ping'),
+                    : (cooldownActive && !isTxRxAutoRunning ? '$cooldownRemaining s' : 'Send Ping'),
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isTxRxAutoRunning && !isRxAutoRunning && !cooldownActive && !txBlockedByOffline,
+                enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline,
                 onPressed: () => _sendPing(context, appState),
-                showCooldown: cooldownActive && !txBlockedByOffline,
+                showCooldown: cooldownActive && !isTxRxAutoRunning && !txBlockedByOffline,
                 subtitle: txBlockedByOffline ? 'Offline Mode' : moveSubtitle,
                 subtitleColor: txBlockedByOffline ? Colors.orange : Colors.orange.shade600,
               ),
@@ -101,7 +101,7 @@ class PingControls extends StatelessWidget {
                 icon: Icons.sensors,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : (cooldownActive && !isTxRxAutoRunning
+                    : (cooldownActive && !isTxRxAutoRunning && !isRxAutoRunning
                         ? '$cooldownRemaining s'
                         : 'Active Mode'),
                 color: isTxRxAutoRunning
