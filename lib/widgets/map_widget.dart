@@ -565,6 +565,17 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               isActive: _showMeshMapperOverlay,
             ),
           ],
+          // Legend button (always visible)
+          Container(
+            height: 1,
+            width: 32,
+            color: Colors.white24,
+          ),
+          _buildControlButton(
+            icon: Icons.info_outline,
+            tooltip: 'Map Legend',
+            onPressed: _showLegendPopup,
+          ),
         ],
       ),
     );
@@ -680,6 +691,153 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         });
       }
     });
+  }
+
+  /// Show map legend popup explaining marker colors
+  void _showLegendPopup() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                  ),
+                  child: const Icon(Icons.map, color: Colors.blue, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Map Legend',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // Legend items
+            Container(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  _buildLegendItem(
+                    color: const Color(0xFF7EE094),
+                    label: 'BIDIR',
+                    description: 'Heard repeats from the mesh AND successfully routed through it',
+                  ),
+                  Divider(height: 1, color: Colors.grey.shade700),
+                  _buildLegendItem(
+                    color: const Color(0xFF51D4E9),
+                    label: 'DISC',
+                    description: 'Wardriving app sent a discovery packet and heard a reply',
+                  ),
+                  Divider(height: 1, color: Colors.grey.shade700),
+                  _buildLegendItem(
+                    color: const Color(0xFFFD8928),
+                    label: 'TX',
+                    description: 'Successfully routed through, but no repeats heard back',
+                  ),
+                  Divider(height: 1, color: Colors.grey.shade700),
+                  _buildLegendItem(
+                    color: const Color(0xFF7D54C7),
+                    label: 'RX',
+                    description: 'Heard mesh traffic but did not transmit',
+                  ),
+                  Divider(height: 1, color: Colors.grey.shade700),
+                  _buildLegendItem(
+                    color: const Color(0xFF9E9689),
+                    label: 'DEAD',
+                    description: 'Repeater heard it, but no other radio received the repeat',
+                  ),
+                  Divider(height: 1, color: Colors.grey.shade700),
+                  _buildLegendItem(
+                    color: const Color(0xFFE04F5D),
+                    label: 'DROP',
+                    description: 'No repeats heard AND no successful route',
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Build a legend item row with colored circle, label, and description
+  Widget _buildLegendItem({
+    required Color color,
+    required String label,
+    required String description,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        children: [
+          // Colored circle indicator
+          Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 1.5),
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Label
+          SizedBox(
+            width: 48,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+                color: Colors.grey.shade200,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Description
+          Expanded(
+            child: Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade400,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   List<Marker> _buildTxMarkers(List<TxPing> pings) {
@@ -899,7 +1057,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Send Ping',
+                        'TX Ping',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
@@ -1331,7 +1489,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Discovery',
+                        'Disc Request',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),

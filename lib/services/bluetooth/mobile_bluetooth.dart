@@ -97,16 +97,10 @@ class MobileBluetoothService implements BluetoothService {
       // iOS: Core Bluetooth handles Bluetooth authorization automatically.
       // It will prompt the user when we first try to scan/connect.
       //
-      // For location, we use Geolocator's API instead of permission_handler
-      // because permission_handler can incorrectly report status on iOS.
+      // For location, we CHECK permissions but don't REQUEST them here.
+      // Location permission requests are handled by the disclosure flow in MainScaffold.
       LocationPermission locationPermission = await Geolocator.checkPermission();
       print('[BLE] iOS location permission check: $locationPermission');
-
-      if (locationPermission == LocationPermission.denied) {
-        // Request permission
-        locationPermission = await Geolocator.requestPermission();
-        print('[BLE] iOS location permission after request: $locationPermission');
-      }
 
       if (locationPermission == LocationPermission.deniedForever) {
         print('[BLE] iOS location permission permanently denied - user must enable in Settings');
@@ -117,7 +111,7 @@ class MobileBluetoothService implements BluetoothService {
       }
 
       if (locationPermission == LocationPermission.denied) {
-        print('[BLE] iOS location permission denied');
+        print('[BLE] iOS location permission not yet granted (disclosure flow will handle)');
         return false;
       }
 
@@ -125,9 +119,11 @@ class MobileBluetoothService implements BluetoothService {
       return true;
     } else {
       // Android: Use bluetoothScan and bluetoothConnect (Android 12+)
+      // Note: Location permission is CHECKED but not REQUESTED here.
+      // Location requests are handled by the disclosure flow in MainScaffold.
       final bluetoothScan = await Permission.bluetoothScan.request();
       final bluetoothConnect = await Permission.bluetoothConnect.request();
-      final location = await Permission.locationWhenInUse.request();
+      final location = await Permission.locationWhenInUse.status; // CHECK only, don't request
 
       print('[BLE] Android permission check - scan: $bluetoothScan, connect: $bluetoothConnect, location: $location');
 

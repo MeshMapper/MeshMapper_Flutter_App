@@ -16,6 +16,7 @@ import '../providers/app_state_provider.dart';
 import '../models/user_preferences.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/offline_session_service.dart';
+import '../services/permission_disclosure_service.dart';
 import '../utils/constants.dart';
 
 /// Settings screen for user preferences and API configuration
@@ -152,8 +153,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
 
-          // Background Mode (iOS only - for "Always" location permission)
-          if (!kIsWeb && Platform.isIOS) ...[
+          // Background Mode - for "Always" location permission (iOS and Android)
+          if (!kIsWeb) ...[
             const Divider(),
             _buildSectionHeader(context, 'Background Mode'),
             _BackgroundModeToggle(appState: appState),
@@ -1075,6 +1076,12 @@ class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
   }
 
   Future<void> _requestPermission() async {
+    // Show prominent disclosure before requesting background location
+    final accepted = await PermissionDisclosureService.showBackgroundLocationDisclosure(context);
+    if (!accepted) {
+      return; // User declined
+    }
+
     setState(() => _isLoading = true);
 
     final granted = await widget.appState.requestAlwaysLocationPermission();

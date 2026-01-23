@@ -39,39 +39,45 @@ class DebugLogger {
   /// Log a general info message to the console.
   /// Use tagged format: debugLog('[BLE] Connected to device');
   static void log(String message, [Object? arg1, Object? arg2, Object? arg3]) {
-    if (!_debugEnabled) return;
-
     final args = [message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
     final formattedMessage = args.join(' ');
-    debugPrint(formattedMessage);
 
-    // Write to file if file logging is enabled
+    // Console logging only in debug mode
+    if (_debugEnabled) {
+      debugPrint(formattedMessage);
+    }
+
+    // File logging always (DebugFileLogger.write checks if enabled internally)
     DebugFileLogger.write('LOG', formattedMessage);
   }
 
   /// Log a warning message to the console.
   /// Use tagged format: debugWarn('[GPS] Position stale, re-acquiring');
   static void warn(String message, [Object? arg1, Object? arg2, Object? arg3]) {
-    if (!_debugEnabled) return;
-
     final args = ['⚠️', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
     final formattedMessage = args.join(' ');
-    debugPrint('WARN: $formattedMessage');
 
-    // Write to file if file logging is enabled
+    // Console logging only in debug mode
+    if (_debugEnabled) {
+      debugPrint('WARN: $formattedMessage');
+    }
+
+    // File logging always (DebugFileLogger.write checks if enabled internally)
     DebugFileLogger.write('WARN', formattedMessage);
   }
 
   /// Log an error message to the console.
   /// Use tagged format: debugError('[API] Failed to post queue', error);
   static void error(String message, [Object? arg1, Object? arg2, Object? arg3]) {
-    if (!_debugEnabled) return;
-
     final args = ['❌', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
     final formattedMessage = args.join(' ');
-    debugPrint('ERROR: $formattedMessage');
 
-    // Write to file if file logging is enabled
+    // Console logging only in debug mode
+    if (_debugEnabled) {
+      debugPrint('ERROR: $formattedMessage');
+    }
+
+    // File logging always (DebugFileLogger.write checks if enabled internally)
     DebugFileLogger.write('ERROR', formattedMessage);
   }
 }

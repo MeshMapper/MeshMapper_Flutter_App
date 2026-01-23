@@ -59,9 +59,18 @@ class ApiQueueService {
     if (!Hive.isAdapterRegistered(3)) {
       Hive.registerAdapter(ApiQueueItemAdapter());
     }
-    
+
     _box = await Hive.openBox<ApiQueueItem>(_boxName);
-    
+
+    // ALWAYS START FRESH - clear any leftover pings from previous sessions
+    // Pings without a valid session cannot be uploaded, so delete them
+    if (_box!.isNotEmpty) {
+      debugLog('[API QUEUE] Clearing ${_box!.length} stale items from previous session');
+      await _box!.clear();
+    }
+    _rxBuffer.clear();
+    _offlinePings.clear();
+
     // Start batch timer
     _startBatchTimer();
   }
@@ -295,6 +304,30 @@ class ApiQueueService {
 
   /// Clear all queued items
   Future<void> clear() async {
+    await _box?.clear();
+    _rxBuffer.clear();
+    onQueueUpdated?.call(0);
+  }
+
+  /// Clear queue on disconnect - ALWAYS START FRESH
+  /// Called when device disconnects to ensure no stale pings remain
+  Future<void> clearOnDisconnect() async {
+    final count = queueSize + _rxBuffer.length;
+    if (count > 0) {
+      debugLog('[API QUEUE] Clearing $count items on disconnect (queue: $queueSize, rxBuffer: ${_rxBuffer.length})');
+    }
+    await _box?.clear();
+    _rxBuffer.clear();
+    onQueueUpdated?.call(0);
+  }
+
+  /// Clear queue before connecting - ALWAYS START FRESH
+  /// Called before establishing a new connection
+  Future<void> clearBeforeConnect() async {
+    final count = queueSize + _rxBuffer.length;
+    if (count > 0) {
+      debugLog('[API QUEUE] Clearing $count stale items before connect');
+    }
     await _box?.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);

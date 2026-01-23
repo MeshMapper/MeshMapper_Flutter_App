@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
@@ -13,6 +14,8 @@ class DebugFileLogger {
   static File? _currentLogFile;
   static IOSink? _logSink;
   static bool _enabled = false;
+  static final List<String> _pendingLogs = [];
+  static Timer? _flushTimer;
 
   /// Returns whether file logging is currently enabled
   static bool get isEnabled => _enabled;
@@ -36,6 +39,15 @@ class DebugFileLogger {
       final now = DateTime.now().toIso8601String();
       _logSink!.writeln('=== MeshMapper Debug Log Started: $now ===\n');
 
+      // Flush any logs that were captured before the sink was ready
+      _flushPendingLogs();
+
+      // Start periodic flush timer (every 5 seconds) to ensure logs persist
+      // This is important on iOS where background suspension can lose buffered data
+      _flushTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _logSink?.flush();
+      });
+
       // Clean up old files if needed
       await _rotateOldFiles(dir);
     } catch (e) {
@@ -53,6 +65,10 @@ class DebugFileLogger {
     if (!_enabled) return;
 
     try {
+      // Cancel flush timer
+      _flushTimer?.cancel();
+      _flushTimer = null;
+
       if (_logSink != null) {
         final now = DateTime.now().toIso8601String();
         _logSink!.writeln('\n=== MeshMapper Debug Log Stopped: $now ===');
@@ -70,16 +86,43 @@ class DebugFileLogger {
   ///
   /// Called by debug_logger_stub.dart for each log message
   /// Format: [ISO8601_timestamp] LEVEL: message
+  ///
+  /// If the log sink isn't ready yet (race condition during init), logs are
+  /// buffered and flushed when the sink becomes available.
   static void write(String level, String message) {
-    if (!_enabled || _logSink == null) return;
+    if (!_enabled) return;
+
+    final timestamp = DateTime.now().toIso8601String();
+    final line = '[$timestamp] $level: $message';
+
+    if (_logSink == null) {
+      // Buffer logs until sink is ready (race condition during initialization)
+      _pendingLogs.add(line);
+      return;
+    }
+
+    // Flush any pending logs first
+    _flushPendingLogs();
 
     try {
-      final timestamp = DateTime.now().toIso8601String();
-      _logSink!.writeln('[$timestamp] $level: $message');
+      _logSink!.writeln(line);
     } catch (e) {
       // Silently fail to avoid recursive logging errors
       // If file writing fails, we don't want to crash the app
     }
+  }
+
+  /// Flush pending logs that were captured before the sink was ready
+  static void _flushPendingLogs() {
+    if (_pendingLogs.isEmpty || _logSink == null) return;
+    for (final line in _pendingLogs) {
+      try {
+        _logSink!.writeln(line);
+      } catch (e) {
+        // Silently fail
+      }
+    }
+    _pendingLogs.clear();
   }
 
   /// List all debug log files in the app documents directory

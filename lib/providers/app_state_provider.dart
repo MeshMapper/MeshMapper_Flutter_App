@@ -383,9 +383,17 @@ class AppStateProvider extends ChangeNotifier {
       }
     });
 
-    // Start GPS
+    // Start GPS (may skip if permissions not yet granted - disclosure flow handles that)
     await _gpsService.startWatching();
 
+    notifyListeners();
+  }
+
+  /// Restart GPS service after permission disclosure is accepted
+  /// Called from MainScaffold after user grants location permission
+  Future<void> restartGpsAfterPermission() async {
+    debugLog('[APP] Restarting GPS after permission granted');
+    await _gpsService.startWatching();
     notifyListeners();
   }
 
@@ -489,6 +497,9 @@ class AppStateProvider extends ChangeNotifier {
         _meshCoreConnection!.dispose();
         _meshCoreConnection = null;
       }
+
+      // ALWAYS START FRESH - clear any stale pings before connecting
+      await _apiQueueService.clearBeforeConnect();
 
       // Create MeshCore connection
       debugLog('[APP] Creating new MeshCoreConnection');
@@ -1061,8 +1072,9 @@ class AppStateProvider extends ChangeNotifier {
     // Stop RX wardriving if active (flushes batches to queue)
     _rxLogger?.stopWardriving(trigger: 'disconnect');
 
-    // Force upload any queued data before releasing session
-    await _apiQueueService.forceUpload();
+    // ALWAYS START FRESH - clear any queued data on disconnect
+    // Pings without a valid session cannot be uploaded later
+    await _apiQueueService.clearOnDisconnect();
 
     // Release API session (best effort - always cleanup locally)
     if (_devicePublicKey != null && _apiService.hasSession) {

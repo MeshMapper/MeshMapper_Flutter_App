@@ -14,10 +14,18 @@ import 'services/background_service.dart';
 import 'services/bluetooth/bluetooth_service.dart';
 import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
+import 'services/debug_file_logger.dart';
+import 'utils/constants.dart';
 import 'utils/debug_logger_io.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Enable debug file logging FIRST on mobile for dev builds
+  // This must happen before DebugLogger.initialize() to capture early logs
+  if (!kIsWeb && AppConstants.isDevelopmentBuild) {
+    await DebugFileLogger.enable();
+  }
 
   // Initialize debug logger (checks for ?debug=1 URL param on web)
   DebugLogger.initialize();
@@ -54,13 +62,9 @@ Future<void> _requestPermissions() async {
 
 /// Request permissions on iOS
 Future<void> _requestiOSPermissions() async {
-  // Request location permission using Geolocator (more reliable on iOS)
-  debugLog('[APP] iOS: Requesting location permission via Geolocator...');
-  LocationPermission locationPermission = await Geolocator.checkPermission();
-  if (locationPermission == LocationPermission.denied) {
-    locationPermission = await Geolocator.requestPermission();
-  }
-  debugLog('[APP] iOS location permission: $locationPermission');
+  // Note: Location permission is now requested AFTER showing the prominent disclosure
+  // dialog in MainScaffold (required for Google Play compliance)
+  debugLog('[APP] iOS: Skipping location permission (handled after disclosure)');
 
   // Trigger Core Bluetooth authorization by checking adapter state
   // This will cause iOS to show the Bluetooth permission prompt if not already granted
@@ -93,11 +97,13 @@ Future<void> _requestiOSPermissions() async {
 
 /// Request permissions on Android
 Future<void> _requestAndroidPermissions() async {
+  // Note: Location permission is now requested AFTER showing the prominent disclosure
+  // dialog in MainScaffold (required for Google Play compliance)
   final permissions = [
     Permission.bluetoothScan,
     Permission.bluetoothConnect,
-    Permission.locationWhenInUse,
     Permission.notification,
+    // locationWhenInUse is requested after disclosure dialog
   ];
 
   final statuses = await permissions.request();

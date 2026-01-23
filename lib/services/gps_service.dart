@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
@@ -103,36 +105,38 @@ class GpsService {
 
   /// Request "Always" location permission for background mode
   /// On iOS, this triggers the second permission dialog after "When In Use" is granted
+  /// On Android 10+, this triggers the "Allow all the time" dialog
   /// Returns true if permission is granted, false otherwise
   Future<bool> requestAlwaysPermission() async {
     debugLog('[GPS] Requesting Always location permission');
 
-    LocationPermission permission = await Geolocator.checkPermission();
+    final current = await Geolocator.checkPermission();
 
     // If already have "Always", we're good
-    if (permission == LocationPermission.always) {
+    if (current == LocationPermission.always) {
       debugLog('[GPS] Already have Always permission');
       return true;
     }
 
     // If denied forever, can't request again - user must go to settings
-    if (permission == LocationPermission.deniedForever) {
+    if (current == LocationPermission.deniedForever) {
       debugLog('[GPS] Permission denied forever - user must enable in Settings');
       return false;
     }
 
-    // Request permission - on iOS this will show the "Always" upgrade prompt
-    // if "When In Use" was already granted
-    permission = await Geolocator.requestPermission();
-
-    if (permission == LocationPermission.always) {
-      debugLog('[GPS] Always permission granted');
-      return true;
+    // Platform-specific request
+    if (Platform.isAndroid) {
+      // Android: Use permission_handler to request locationAlways
+      // This triggers "Allow all the time" dialog on Android 10+
+      final status = await Permission.locationAlways.request();
+      debugLog('[GPS] Android always permission result: $status');
+      return status.isGranted;
+    } else {
+      // iOS: Use Geolocator for the upgrade dialog
+      final permission = await Geolocator.requestPermission();
+      debugLog('[GPS] iOS permission result: $permission');
+      return permission == LocationPermission.always;
     }
-
-    // User may have granted "When In Use" instead of "Always"
-    debugLog('[GPS] Always permission not granted (got: $permission)');
-    return false;
   }
 
   /// Check if location services are enabled
@@ -141,9 +145,12 @@ class GpsService {
   }
 
   /// Start watching position
+  /// Note: This only CHECKS permissions, does not REQUEST them.
+  /// Permission requests are handled by the disclosure flow in MainScaffold.
   Future<void> startWatching() async {
-    // Check permissions first
-    if (!await requestPermissions()) {
+    // Check permissions first (don't request - disclosure flow handles that)
+    if (!await checkPermissions()) {
+      debugLog('[GPS] Permissions not granted yet, waiting for disclosure flow');
       _updateStatus(GpsStatus.permissionDenied);
       return;
     }
