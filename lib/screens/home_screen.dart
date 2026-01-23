@@ -51,7 +51,7 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           // Noise floor indicator (always visible, greyed when disconnected)
           _buildStatIndicator(
-            icon: Icons.signal_cellular_alt,
+            icon: Icons.volume_up,
             value: appState.currentNoiseFloor != null
                 ? '${appState.currentNoiseFloor}'
                 : '--',
