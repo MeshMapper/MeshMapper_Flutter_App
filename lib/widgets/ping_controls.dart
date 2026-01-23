@@ -77,13 +77,13 @@ class PingControls extends StatelessWidget {
         // Action buttons row
         Row(
           children: [
-            // TX Ping button - disabled when offline mode is active
+            // Send Ping button - disabled when offline mode is active
             Expanded(
               child: _ActionButton(
                 icon: Icons.cell_tower,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : (cooldownActive ? '$cooldownRemaining s' : 'TX Ping'),
+                    : (cooldownActive ? '$cooldownRemaining s' : 'Send Ping'),
                 color: const Color(0xFF0EA5E9), // sky-500
                 enabled: canPing && !isTxRxAutoRunning && !isRxAutoRunning && !cooldownActive && !txBlockedByOffline,
                 onPressed: () => _sendPing(context, appState),
@@ -94,7 +94,7 @@ class PingControls extends StatelessWidget {
             ),
             const SizedBox(width: 10),
 
-            // TX/RX Auto button - disabled when offline mode is active
+            // Active Mode button - disabled when offline mode is active
             // Can start even when tooCloseToLastPing - ping will be skipped until user moves
             Expanded(
               child: _ActionButton(
@@ -103,7 +103,7 @@ class PingControls extends StatelessWidget {
                     ? 'TX Disabled'
                     : (cooldownActive && !isTxRxAutoRunning
                         ? '$cooldownRemaining s'
-                        : 'TX/RX Auto'),
+                        : 'Active Mode'),
                 color: isTxRxAutoRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500
@@ -116,12 +116,12 @@ class PingControls extends StatelessWidget {
             ),
             const SizedBox(width: 10),
 
-            // RX Auto button
-            // RX Auto is passive listening - needs connection + antenna + power config, no cooldown/GPS/distance checks
+            // Passive Mode button
+            // Passive Mode is passive listening - needs connection + antenna + power config, no cooldown/GPS/distance checks
             Expanded(
               child: _ActionButton(
                 icon: Icons.hearing,
-                label: 'RX Auto',
+                label: 'Passive Mode',
                 color: isRxAutoRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500

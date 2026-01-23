@@ -161,8 +161,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(),
 
-          // Queue section
-          _buildSectionHeader(context, 'API Queue'),
+          // Data Management section
+          _buildSectionHeader(context, 'Data Management'),
           ListTile(
             leading: const Icon(Icons.cloud_queue),
             title: const Text('Queued Pings'),
@@ -188,6 +188,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
+          // Clear Map Markers
+          ListTile(
+            leading: const Icon(Icons.delete_sweep),
+            title: const Text('Clear Map Markers'),
+            subtitle: const Text('Remove all TX/RX markers from map'),
+            onTap: () => _confirmClearPings(context, appState),
+          ),
+
           // Offline Sessions
           if (appState.offlineSessions.isNotEmpty) ...[
             _buildSectionHeader(context, 'Offline Sessions'),
@@ -198,48 +206,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onDownload: () => _downloadOfflineSession(context, appState, session.filename),
             )),
           ],
-
-          const Divider(),
-          
-          // Statistics section
-          _buildSectionHeader(context, 'Statistics'),
-          ListTile(
-            leading: const Icon(Icons.send),
-            title: const Text('TX Pings'),
-            trailing: Text(
-              '${appState.pingStats.txCount}',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.call_received),
-            title: const Text('RX Pings'),
-            trailing: Text(
-              '${appState.pingStats.rxCount}',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.radar),
-            title: const Text('DISC Pings'),
-            trailing: Text(
-              '${appState.pingStats.discCount}',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.check_circle),
-            title: const Text('Successful Uploads'),
-            trailing: Text(
-              '${appState.pingStats.successfulUploads}',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.delete_forever),
-            title: const Text('Clear Map Markers'),
-            onTap: () => _confirmClearPings(context, appState),
-          ),
 
           const Divider(),
 
@@ -272,6 +238,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('Issues & Feedback'),
             subtitle: const Text('Report bugs or request features'),
             onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.groups),
+            title: const Text('Community'),
+            subtitle: const Text('Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
+            onTap: () => _launchUrl('https://ottawamesh.ca/'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.coffee),
+            title: const Text('Buy us a coffee ☕'),
+            subtitle: const Text('Support MeshMapper development'),
+            onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
           ),
 
           // Developer Tools section - only visible when developer mode is enabled
@@ -590,8 +568,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _launchUrl(String url) async {
     final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
+    try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint('[SETTINGS] Failed to launch URL: $url - $e');
     }
   }
 

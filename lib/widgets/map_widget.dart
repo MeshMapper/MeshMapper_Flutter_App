@@ -899,7 +899,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'TX Ping',
+                        'Send Ping',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),

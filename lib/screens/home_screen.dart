@@ -133,29 +133,185 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Header with close button
+          // Header with help and close buttons
           ListTile(
             title: const Text('Controls', style: TextStyle(fontWeight: FontWeight.bold)),
-            trailing: IconButton(
-              icon: const Icon(Icons.close),
-              onPressed: () => setState(() => _showControlPanel = false),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.help_outline),
+                  onPressed: () => _showControlsHelp(context),
+                  tooltip: 'Help',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => setState(() => _showControlPanel = false),
+                ),
+              ],
             ),
           ),
           const Divider(height: 1),
-          
+
           // Compact connection info
           const Padding(
             padding: EdgeInsets.all(12),
             child: ConnectionPanel(compact: true),
           ),
-          
+
           // Ping controls
           const Padding(
             padding: EdgeInsets.all(12),
             child: PingControls(),
           ),
-          
+
           const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  /// Show help bottom sheet explaining each control
+  void _showControlsHelp(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => SingleChildScrollView(
+          controller: scrollController,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.help_outline, color: Colors.blue),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Controls Help',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              const Divider(height: 24),
+
+              // External Antenna
+              _buildHelpItem(
+                icon: Icons.settings_input_antenna,
+                color: Colors.orange,
+                title: 'External Antenna',
+                description: 'Enable if using an external antenna (ex: mag mount on roof of car). We store this along with pings as external antennas can make a big difference in reception.',
+              ),
+
+              // Send Ping button
+              _buildHelpItem(
+                icon: Icons.cell_tower,
+                color: const Color(0xFF0EA5E9),
+                title: 'Send Ping',
+                description: 'Send a single ping to #wardriving and track which repeaters heard it.',
+              ),
+
+              // Active Mode button
+              _buildHelpItem(
+                icon: Icons.sensors,
+                color: const Color(0xFF6366F1),
+                title: 'Active Mode',
+                description: 'Auto-pings #wardriving at your set interval, tracks repeaters from pings and received mesh traffic.',
+              ),
+
+              // Passive Mode button
+              _buildHelpItem(
+                icon: Icons.hearing,
+                color: const Color(0xFF6366F1),
+                title: 'Passive Mode',
+                description: 'Sends zero-hop discovery pings every 30s, tracks nearby repeaters and received mesh traffic.',
+              ),
+
+              // Offline mode toggle
+              _buildHelpItem(
+                icon: Icons.cloud_off,
+                color: Colors.orange,
+                title: 'Offline Mode',
+                description: 'Save pings locally instead of uploading immediately. Useful when you have poor connectivity. Upload saved sessions later from the Settings tab.',
+              ),
+
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Build a single help item
+  Widget _buildHelpItem({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String description,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 20, color: color),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  description,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey.shade600,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
