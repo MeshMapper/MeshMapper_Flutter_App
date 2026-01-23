@@ -284,6 +284,9 @@ class AppStateProvider extends ChangeNotifier {
     _autoPingTimer = AutoPingTimer(_statusMessageService);
     _rxWindowTimer = RxWindowTimer(_statusMessageService);
 
+    // Auto-enable debug logging for development builds
+    await _autoEnableDebugLogsIfDevelopmentBuild();
+
     // Initialize channel service with Public channel only (regional channels added after auth)
     await ChannelService.initializePublicChannel();
     debugLog('[APP] Channel service initialized (Public channel only)');
@@ -1806,6 +1809,24 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================
   // Debug File Logging (Mobile Only)
   // ============================================
+
+  /// Auto-enable debug file logging for development builds
+  Future<void> _autoEnableDebugLogsIfDevelopmentBuild() async {
+    if (kIsWeb) return; // File logging not available on web
+
+    if (AppConstants.isDevelopmentBuild) {
+      debugLog('[INIT] Development build detected (${AppConstants.appVersion}), auto-enabling debug logs');
+      try {
+        await DebugFileLogger.enable();
+        _debugLogsEnabled = true;
+        await _refreshDebugLogFiles();
+      } catch (e) {
+        debugError('[INIT] Failed to auto-enable debug logs: $e');
+      }
+    } else {
+      debugLog('[INIT] Release build (${AppConstants.appVersion}), debug logs disabled by default');
+    }
+  }
 
   /// Enable debug file logging
   ///

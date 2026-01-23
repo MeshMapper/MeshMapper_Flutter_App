@@ -235,7 +235,10 @@ class MobileBluetoothService implements BluetoothService {
 
         // Connect to GATT server FIRST (before subscribing to state changes)
         print('[BLE] Connecting to GATT...');
-        await _bleDevice!.connect(timeout: const Duration(seconds: 15));
+        await _bleDevice!.connect(
+          timeout: const Duration(seconds: 15),
+          mtu: null,  // Disable automatic MTU negotiation to avoid race condition errors on Android
+        );
         print('[BLE] GATT connected');
 
         // NOW subscribe to connection state changes (after we're connected)

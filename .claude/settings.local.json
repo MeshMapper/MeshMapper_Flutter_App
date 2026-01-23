@@ -12,7 +12,8 @@
       "Bash(flutter build:*)",
       "Bash(flutter doctor:*)",
       "Bash(flutter create:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(grep:*)"
     ]
   }
 }
