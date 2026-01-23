@@ -237,9 +237,30 @@ class MobileBluetoothService implements BluetoothService {
         print('[BLE] Connecting to GATT...');
         await _bleDevice!.connect(
           timeout: const Duration(seconds: 15),
-          mtu: null,  // Disable automatic MTU negotiation to avoid race condition errors on Android
+          mtu: null,  // Disable automatic MTU negotiation during connect to avoid race condition errors on Android
         );
         print('[BLE] GATT connected');
+
+        // Request larger MTU AFTER connection is established
+        // SelfInfo response needs ~60 bytes, ChannelInfo needs ~50 bytes
+        // Request 512 to be safe (most devices support at least 185)
+        // Note: iOS automatically negotiates MTU, but we still call this for consistency
+        if (Platform.isAndroid) {
+          try {
+            final mtu = await _bleDevice!.requestMtu(512);
+            print('[BLE] MTU negotiated: $mtu bytes');
+            // Small delay to ensure MTU takes effect on Android
+            await Future.delayed(const Duration(milliseconds: 100));
+          } catch (e) {
+            // MTU negotiation failure is not fatal - continue with default MTU
+            // Some older devices may not support MTU negotiation
+            print('[BLE] MTU negotiation failed (continuing with default): $e');
+          }
+        } else {
+          // iOS auto-negotiates MTU, just log the current value
+          final mtu = await _bleDevice!.mtu.first;
+          print('[BLE] iOS MTU: $mtu bytes');
+        }
 
         // NOW subscribe to connection state changes (after we're connected)
         // Use skip(1) to ignore the initial state emission from the stream.

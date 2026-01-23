@@ -805,6 +805,18 @@ class AppStateProvider extends ChangeNotifier {
       }
 
     } catch (e) {
+      debugError('[APP] Connection failed: $e');
+
+      // Ensure BLE is disconnected on any connection failure
+      // (connection.dart should have done this, but be defensive)
+      try {
+        if (_meshCoreConnection != null) {
+          await _meshCoreConnection!.disconnect();
+        }
+      } catch (disconnectError) {
+        debugError('[APP] Cleanup disconnect failed: $disconnectError');
+      }
+
       // Parse auth failure errors for clean display
       final errorStr = e.toString();
       if (errorStr.contains('AUTH_FAILED:')) {

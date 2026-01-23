@@ -257,6 +257,13 @@ class MeshCoreConnection {
     } catch (e) {
       debugError('[CONN] Connection failed: $e');
       _updateStep(ConnectionStep.error);
+      // Clean up BLE connection on failure
+      try {
+        await _bluetooth.disconnect();
+        debugLog('[CONN] Disconnected BLE after connection failure');
+      } catch (disconnectError) {
+        debugError('[CONN] Failed to disconnect after error: $disconnectError');
+      }
       rethrow;
     }
   }
@@ -398,15 +405,16 @@ class MeshCoreConnection {
   }
 
   void _onDeviceInfoResponse(BufferReader reader) {
-    // Protocol v8 changed the format:
-    // v1: protoVer (1) + manufacturer C-string (64) + publicKey (32)
-    // v8: firmwareVer (1) + reserved (6) + buildDate C-string (12) + manufacturerModel string (rest)
-    
+    // Protocol format changed in v7/v8:
+    // v1-v6: protoVer (1) + manufacturer C-string (64) + publicKey (32)
+    // v7+: firmwareVer (1) + reserved (6) + buildDate C-string (12) + manufacturerModel string (rest)
+    // Note: Some v7 firmware (e.g., RAK4631) uses the new format
+
     final firmwareVer = reader.readByte();
     debugLog('[CONN] Firmware version: $firmwareVer');
-    
-    if (firmwareVer >= 8) {
-      // Protocol v8+ format
+
+    if (firmwareVer >= 7) {
+      // Protocol v7+ format
       final reserved = reader.readBytes(6); // reserved bytes
       final buildDate = reader.readCString(12); // e.g. "04-Jan-2026"
       final manufacturerModel = reader.readString(); // remainder of frame
@@ -423,7 +431,7 @@ class MeshCoreConnection {
       _deviceQueryCompleter?.complete(response);
       _deviceQueryCompleter = null;
     } else {
-      // Old protocol v1 format
+      // Old protocol v1-v6 format
       final manufacturer = reader.readCString(64);
       final publicKey = reader.readBytes(32);
       
