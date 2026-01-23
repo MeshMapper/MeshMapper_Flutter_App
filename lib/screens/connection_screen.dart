@@ -896,19 +896,47 @@ class _DeviceListTile extends StatelessWidget {
         style: TextStyle(color: enabled ? null : Colors.grey),
       ),
       trailing: device.rssi != null
-          ? Chip(
-              label: Text('${device.rssi} dBm'),
-              backgroundColor: enabled ? _getRssiColor(device.rssi!) : Colors.grey.shade200,
-            )
+          ? _buildRssiChip(device.rssi!, enabled)
           : null,
       enabled: enabled,
       onTap: onTap,
     );
   }
 
-  Color _getRssiColor(int rssi) {
-    if (rssi >= -50) return Colors.green.shade100;
-    if (rssi >= -70) return Colors.yellow.shade100;
-    return Colors.red.shade100;
+  Widget _buildRssiChip(int rssi, bool enabled) {
+    Color color;
+    if (!enabled) {
+      color = Colors.grey;
+    } else if (rssi >= -50) {
+      color = Colors.green;
+    } else if (rssi >= -70) {
+      color = Colors.orange;
+    } else {
+      color = Colors.red;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.signal_cellular_alt, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(
+            '$rssi dBm',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
