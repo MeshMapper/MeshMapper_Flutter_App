@@ -1318,7 +1318,14 @@ class AppStateProvider extends ChangeNotifier {
       // Enable heartbeat if not in offline mode
       // Heartbeat fires after 3 minutes of API inactivity to keep session alive
       if (!_preferences.offlineMode) {
-        _apiService.enableHeartbeat();
+        _apiService.enableHeartbeat(
+          gpsProvider: () {
+            // Provide current GPS coordinates for heartbeat (matching wardrive.js)
+            final pos = _gpsService?.lastPosition;
+            if (pos == null) return null;
+            return (lat: pos.latitude, lon: pos.longitude);
+          },
+        );
       }
 
       // Start background service for continuous operation

@@ -38,6 +38,10 @@ class ApiService {
   Function? _onSessionExpiring;
   List<String> _channels = [];
 
+  /// Callback to get current GPS coordinates for heartbeat
+  /// Returns (lat, lon) or null if GPS is not available
+  ({double lat, double lon})? Function()? _gpsProvider;
+
   /// Regional channels from auth response (e.g., ['public', 'ottawa', 'testing'])
   List<String> get channels => List.unmodifiable(_channels);
 
@@ -271,8 +275,10 @@ class ApiService {
 
   /// Enable heartbeat mode (called when auto mode starts)
   /// Heartbeat fires after 3 minutes of API inactivity to keep session alive
-  void enableHeartbeat() {
+  /// @param gpsProvider Callback to get current GPS coordinates for heartbeat
+  void enableHeartbeat({({double lat, double lon})? Function()? gpsProvider}) {
     _heartbeatEnabled = true;
+    _gpsProvider = gpsProvider;
     _resetHeartbeatTimer();
     debugLog('[API] Heartbeat mode enabled (3 min idle timeout)');
   }
@@ -280,6 +286,7 @@ class ApiService {
   /// Disable heartbeat mode (called when auto mode stops)
   void disableHeartbeat() {
     _heartbeatEnabled = false;
+    _gpsProvider = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     debugLog('[API] Heartbeat mode disabled');
@@ -293,7 +300,11 @@ class ApiService {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer(heartbeatIdleTimeout, () async {
       debugLog('[API] Heartbeat timer fired (3 min idle), sending keepalive');
-      final result = await sendHeartbeat();
+
+      // Get GPS coordinates from provider (matching wardrive.js behavior)
+      final coords = _gpsProvider?.call();
+      final result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
+
       if (result?['success'] == true) {
         debugLog('[API] Heartbeat successful');
         _resetHeartbeatTimer();  // Schedule next heartbeat
