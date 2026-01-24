@@ -20,11 +20,16 @@ class PingControls extends StatelessWidget {
     final canStartAuto = autoValidation == PingValidation.valid;
     final isTxRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.txRx;
     final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
-    final cooldownActive = appState.cooldownTimer.isRunning; // Shared cooldown for both TX Ping and TX/RX Auto
+    final cooldownActive = appState.cooldownTimer.isRunning; // Shared cooldown after disabling Active Mode
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning; // RX listening window after ping
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
-    final isPingSending = appState.isPingSending; // True immediately when button clicked
+    final isPingSending = appState.isPingSending; // True immediately when manual ping button clicked
+    final isPingInProgress = appState.isPingInProgress; // True during entire ping + RX window (includes auto pings)
+    final autoPingWaiting = appState.autoPingTimer.isRunning; // Waiting for next auto ping
+    final autoPingRemaining = appState.autoPingTimer.remainingSec;
+    final discoveryWindowActive = appState.discoveryWindowTimer.isRunning; // Discovery listening window countdown (Passive Mode)
+    final discoveryWindowRemaining = appState.discoveryWindowTimer.remainingSec;
 
     // TX is blocked when offline mode is active and connected
     final txBlockedByOffline = appState.offlineMode && appState.isConnected;
@@ -80,63 +85,100 @@ class PingControls extends StatelessWidget {
         // Action buttons row
         Row(
           children: [
-            // Send Ping button - disabled when offline mode is active, but works during Passive Mode
-            // Shows active state with pulse animation during sending and RX listening window
+            // Send Ping button
+            // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Send Ping"
+            // Also shows cooldown countdown when Active Mode is disabled or Passive Mode is listening
+            // When Active/Passive Mode is running, just shows "Send Ping" or "Cooldown" (disabled)
             Expanded(
               child: _ActionButton(
                 icon: Icons.cell_tower,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : isPingSending
-                        ? 'Sending...'
-                        : rxWindowActive
-                            ? 'Listening ${rxWindowRemaining}s'
-                            : (cooldownActive && !isTxRxAutoRunning ? '$cooldownRemaining s' : 'Send Ping'),
+                    : isTxRxAutoRunning
+                        ? 'Send Ping'  // Just disabled when Active Mode is running
+                        : isPingSending
+                            ? 'Sending...'
+                            : rxWindowActive
+                                ? 'Listening ${rxWindowRemaining}s'  // Manual ping listening (works during Passive Mode too)
+                                : discoveryWindowActive
+                                    ? 'Cooldown ${discoveryWindowRemaining}s'  // Cooldown during Passive Mode listening
+                                    : cooldownActive
+                                        ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
+                                        : 'Send Ping',
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline && !rxWindowActive && !isPingSending,
-                isActive: isPingSending || rxWindowActive,
+                enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline && !rxWindowActive && !isPingSending && !discoveryWindowActive,
+                isActive: (isPingSending || rxWindowActive) && !isTxRxAutoRunning,  // Only active during manual ping flow
                 onPressed: () => _sendPing(context, appState),
-                showCooldown: cooldownActive && !isTxRxAutoRunning && !txBlockedByOffline,
-                subtitle: txBlockedByOffline ? 'Offline Mode' : ((isPingSending || rxWindowActive) ? null : moveSubtitle),
+                showCooldown: false, // No longer needed - countdown shown in label
+                subtitle: txBlockedByOffline ? 'Offline Mode' : ((isPingSending || rxWindowActive || cooldownActive || discoveryWindowActive) ? null : moveSubtitle),
                 subtitleColor: txBlockedByOffline ? Colors.orange : Colors.orange.shade600,
               ),
             ),
             const SizedBox(width: 10),
 
-            // Active Mode button - disabled when offline mode is active
-            // Can start even when tooCloseToLastPing - ping will be skipped until user moves
+            // Active Mode button (toggle)
+            // When ON: shows "Sending..." → "Listening Xs" → "Next ping in Xs" cycle
+            // When OFF after being ON: shows "Cooldown Xs" like other buttons
+            // During manual ping: shows "Cooldown Xs" (disabled)
             Expanded(
               child: _ActionButton(
                 icon: Icons.sensors,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : (cooldownActive && !isTxRxAutoRunning && !isRxAutoRunning
-                        ? '$cooldownRemaining s'
-                        : 'Active Mode'),
+                    : isTxRxAutoRunning
+                        ? (isPingInProgress && !rxWindowActive
+                            ? 'Sending...'  // Brief moment while ping is being sent
+                            : rxWindowActive
+                                ? 'Listening ${rxWindowRemaining}s'  // During RX window
+                                : autoPingWaiting
+                                    ? 'Next ping ${autoPingRemaining}s'  // Waiting for next auto ping
+                                    : 'Active Mode')  // Initial state before first ping
+                        : rxWindowActive
+                            ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping
+                            : cooldownActive
+                                ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
+                                : 'Active Mode',
                 color: isTxRxAutoRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500
-                enabled: (isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive)) && !txBlockedByOffline,
-                isActive: isTxRxAutoRunning,
+                enabled: (isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline,
+                isActive: isTxRxAutoRunning && (isPingInProgress || rxWindowActive || autoPingWaiting),  // Active during sending/listening/waiting phases
                 onPressed: () => _toggleTxRxAuto(context, appState),
+                showCooldown: false, // No longer needed - countdown shown in label
                 subtitle: txBlockedByOffline ? 'Offline Mode' : null,
                 subtitleColor: Colors.orange,
               ),
             ),
             const SizedBox(width: 10),
 
-            // Passive Mode button
-            // Passive Mode is passive listening - needs connection + antenna + power config, no cooldown/GPS/distance checks
+            // Passive Mode button (toggle)
+            // When ON: shows "Listening..." → "Next Disc Xs" cycle
+            // When OFF: returns to normal, Active Mode re-enables immediately
+            // Disabled during manual ping countdown phases, shows "Cooldown Xs"
+            // When Active Mode is running, just shows "Passive Mode" (disabled, no countdown)
             Expanded(
               child: _ActionButton(
                 icon: Icons.hearing,
-                label: 'Passive Mode',
+                label: isRxAutoRunning
+                    ? (discoveryWindowActive
+                        ? 'Listening ${discoveryWindowRemaining}s'  // During discovery listening window
+                        : autoPingWaiting
+                            ? 'Next Disc ${autoPingRemaining}s'  // Waiting for next discovery
+                            : 'Passive Mode')  // Initial state before first discovery
+                    : isTxRxAutoRunning
+                        ? 'Passive Mode'  // Just disabled when Active Mode is running
+                        : rxWindowActive
+                            ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping listening
+                            : cooldownActive
+                                ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
+                                : 'Passive Mode',
                 color: isRxAutoRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500
                 enabled: isRxAutoRunning || (appState.isConnected && !isTxRxAutoRunning &&
+                    !isPingSending && !rxWindowActive && !cooldownActive &&
                     prefs.externalAntennaSet && isPowerSet),
-                isActive: isRxAutoRunning,
+                isActive: isRxAutoRunning && (discoveryWindowActive || autoPingWaiting),  // Active during listening/waiting phases
                 onPressed: () => _toggleRxAuto(context, appState),
               ),
             ),

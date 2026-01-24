@@ -140,10 +140,11 @@ class CooldownTimer extends CountdownTimerService {
 class AutoPingTimer extends CountdownTimerService {
   String? _skipReason;
 
-  AutoPingTimer(StatusMessageService statusService)
+  AutoPingTimer(StatusMessageService statusService, {VoidCallback? onUpdate})
       : super(
           statusService,
           getStatusMessage: null, // Custom logic in override
+          onUpdate: onUpdate,
         );
 
   /// Set skip reason (e.g., "too close", "gps too old")
@@ -189,6 +190,9 @@ class AutoPingTimer extends CountdownTimerService {
 
     // Mark first update as complete
     _isFirstUpdate = false;
+
+    // Trigger UI refresh callback after each update
+    onUpdate?.call();
   }
 
   @override
@@ -215,12 +219,26 @@ class AutoPingTimer extends CountdownTimerService {
 /// Specialized countdown timer for RX listening window
 /// Reference: wardrive.js state.rxListeningEndTime
 class RxWindowTimer extends CountdownTimerService {
-  RxWindowTimer(StatusMessageService statusService)
+  RxWindowTimer(StatusMessageService statusService, {VoidCallback? onUpdate})
       : super(
           statusService,
           getStatusMessage: (remainingSec) => CountdownResult(
             'Listening for responses (${remainingSec}s)',
             StatusColor.info,
           ),
+          onUpdate: onUpdate,
+        );
+}
+
+/// Specialized countdown timer for discovery listening window (Passive Mode)
+class DiscoveryWindowTimer extends CountdownTimerService {
+  DiscoveryWindowTimer(StatusMessageService statusService, {VoidCallback? onUpdate})
+      : super(
+          statusService,
+          getStatusMessage: (remainingSec) => CountdownResult(
+            'Listening for nodes (${remainingSec}s)',
+            StatusColor.info,
+          ),
+          onUpdate: onUpdate,
         );
 }

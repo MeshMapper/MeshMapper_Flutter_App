@@ -71,6 +71,7 @@ class AppStateProvider extends ChangeNotifier {
   late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and TX/RX Auto
   late final AutoPingTimer _autoPingTimer;
   late final RxWindowTimer _rxWindowTimer;
+  late final DiscoveryWindowTimer _discoveryWindowTimer; // Discovery listening window (Passive Mode)
   MeshCoreConnection? _meshCoreConnection;
   PingService? _pingService;
   UnifiedRxHandler? _unifiedRxHandler;
@@ -186,6 +187,8 @@ class AppStateProvider extends ChangeNotifier {
   bool get autoPingEnabled => _autoPingEnabled;
   AutoMode get autoMode => _autoMode;
   bool get isPingSending => _isPingSending;
+  bool get isPingInProgress => _pingService?.pingInProgress ?? false;  // True during entire ping + RX window (for auto pings)
+  bool get isDiscoveryListening => _pingService?.isDiscoveryListening ?? false;  // True during discovery listening window (for Passive Mode)
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
   int? get currentBatteryPercent => _currentBatteryPercent;
@@ -258,6 +261,7 @@ class AppStateProvider extends ChangeNotifier {
   CooldownTimer get cooldownTimer => _cooldownTimer; // Shared cooldown for TX Ping and TX/RX Auto
   AutoPingTimer get autoPingTimer => _autoPingTimer;
   RxWindowTimer get rxWindowTimer => _rxWindowTimer;
+  DiscoveryWindowTimer get discoveryWindowTimer => _discoveryWindowTimer; // Discovery listening window (Passive Mode)
 
   // ============================================
   // Initialization
@@ -281,10 +285,11 @@ class AppStateProvider extends ChangeNotifier {
 
     // Initialize status message and countdown timers
     _statusMessageService = StatusMessageService();
-    // Pass notifyListeners callback to cooldown timer for smooth UI updates
+    // Pass notifyListeners callback to timers for smooth UI updates
     _cooldownTimer = CooldownTimer(_statusMessageService, onUpdate: notifyListeners);
-    _autoPingTimer = AutoPingTimer(_statusMessageService);
-    _rxWindowTimer = RxWindowTimer(_statusMessageService);
+    _autoPingTimer = AutoPingTimer(_statusMessageService, onUpdate: notifyListeners);
+    _rxWindowTimer = RxWindowTimer(_statusMessageService, onUpdate: notifyListeners);
+    _discoveryWindowTimer = DiscoveryWindowTimer(_statusMessageService, onUpdate: notifyListeners);
 
     // Auto-enable debug logging for development builds
     await _autoEnableDebugLogsIfDevelopmentBuild();
@@ -624,6 +629,7 @@ class AppStateProvider extends ChangeNotifier {
         wakelockService: WakelockService(),
         cooldownTimer: _cooldownTimer,
         rxWindowTimer: _rxWindowTimer,
+        discoveryWindowTimer: _discoveryWindowTimer,
         deviceId: _deviceId,
         txTracker: _txTracker,
       );
@@ -2263,6 +2269,7 @@ class AppStateProvider extends ChangeNotifier {
     _cooldownTimer.dispose();
     _autoPingTimer.dispose();
     _rxWindowTimer.dispose();
+    _discoveryWindowTimer.dispose();
     super.dispose();
   }
 }

@@ -36,8 +36,8 @@ import 'wakelock_service.dart';
 /// 3. Collect discovery responses (0x8E packets)
 /// 4. After window ends, create log entry and queue DISC API payloads
 class PingService {
-  /// RX listening window duration (6 seconds - matches JS RX_LOG_LISTEN_WINDOW_MS = 6000)
-  static const Duration _rxListeningWindow = Duration(seconds: 6);
+  /// RX listening window duration (7 seconds - matches cooldown duration)
+  static const Duration _rxListeningWindow = Duration(seconds: 7);
   /// Cooldown period between pings (7 seconds - matches JS COOLDOWN_MS = 7000)
   static const Duration _autoPingCooldown = Duration(seconds: 7);
   /// Discovery listening window duration (7 seconds)
@@ -51,6 +51,7 @@ class PingService {
   final WakelockService _wakelockService;
   final CooldownTimer _cooldownTimer;
   final RxWindowTimer _rxWindowCountdown;
+  final DiscoveryWindowTimer _discoveryWindowCountdown;
   final String _deviceId;
   final TxTracker? _txTracker;
 
@@ -111,6 +112,7 @@ class PingService {
     required WakelockService wakelockService,
     required CooldownTimer cooldownTimer,
     required RxWindowTimer rxWindowTimer,
+    required DiscoveryWindowTimer discoveryWindowTimer,
     required String deviceId,
     TxTracker? txTracker,
   })  : _gpsService = gpsService,
@@ -119,6 +121,7 @@ class PingService {
         _wakelockService = wakelockService,
         _cooldownTimer = cooldownTimer,
         _rxWindowCountdown = rxWindowTimer,
+        _discoveryWindowCountdown = discoveryWindowTimer,
         _deviceId = deviceId,
         _txTracker = txTracker;
 
@@ -133,6 +136,9 @@ class PingService {
 
   /// Check if RX-only mode is active
   bool get rxOnlyMode => _rxOnlyMode;
+
+  /// Check if discovery tracker is currently listening (for Passive Mode UI)
+  bool get isDiscoveryListening => _discTracker?.isListening ?? false;
 
   /// Get current auto-ping interval in milliseconds
   int get autoPingIntervalMs => _autoPingIntervalMs;
@@ -780,6 +786,9 @@ class PingService {
         tag: tag,
         windowDuration: _discoveryListeningWindow,
       );
+
+      // Start discovery window countdown display (7 seconds)
+      _discoveryWindowCountdown.start(_discoveryListeningWindow.inMilliseconds);
 
       // Store noise floor for later use
       _pendingTxNoiseFloor = noiseFloor;
