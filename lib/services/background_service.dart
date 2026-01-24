@@ -209,7 +209,7 @@ class BackgroundServiceManager {
     // Required for background execution
     DartPluginRegistrant.ensureInitialized();
 
-    String currentMode = 'TX/RX Auto';
+    String currentMode = 'Active Mode';
 
     // Listen for stop command
     service.on('stop').listen((event) {
@@ -232,7 +232,7 @@ class BackgroundServiceManager {
         final queueSize = event['queueSize'] as int? ?? 0;
 
         String body;
-        if (mode == 'RX Auto') {
+        if (mode == 'Passive Mode') {
           body = 'RX: $rxCount | Queue: $queueSize';
         } else {
           body = 'TX: $txCount | RX: $rxCount | Queue: $queueSize';

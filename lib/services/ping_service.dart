@@ -30,8 +30,8 @@ import 'wakelock_service.dart';
 /// 3. Extracts repeater ID from path (first hop)
 /// 4. After window ends, collect results and post to API queue with type "RX"
 ///
-/// Discovery Flow (RX Auto mode only):
-/// 1. In RX Auto mode, send discovery request instead of TX ping
+/// Discovery Flow (Passive Mode only):
+/// 1. In Passive Mode, send discovery request instead of TX ping
 /// 2. Start 7-second listening window via DiscTracker
 /// 3. Collect discovery responses (0x8E packets)
 /// 4. After window ends, create log entry and queue DISC API payloads
@@ -69,7 +69,7 @@ class PingService {
 
   // Auto-ping mode
   bool _autoPingEnabled = false;
-  bool _rxOnlyMode = false;
+  bool _passiveModeEnabled = false;
   Timer? _autoTimer;
 
   // Pending disable flag - when true, disable will execute after RX window ends
@@ -101,7 +101,7 @@ class PingService {
   /// Parameters: (TxPing txPing, HeardRepeater repeater, bool isNew)
   void Function(TxPing, HeardRepeater, bool isNew)? onEchoReceived;
 
-  /// Callback for discovery events (RX Auto mode)
+  /// Callback for discovery events (Passive Mode)
   /// Called when a discovery window completes with the log entry
   void Function(DiscLogEntry)? onDiscoveryComplete;
 
@@ -141,8 +141,8 @@ class PingService {
   /// Check if a ping is currently in progress
   bool get pingInProgress => _pingInProgress;
 
-  /// Check if RX-only mode is active
-  bool get rxOnlyMode => _rxOnlyMode;
+  /// Check if Passive Mode is active (listen-only, no transmit)
+  bool get isPassiveMode => _passiveModeEnabled;
 
   /// Check if discovery tracker is currently listening (for Passive Mode UI)
   bool get isDiscoveryListening => _discTracker?.isListening ?? false;
@@ -324,7 +324,7 @@ class PingService {
       final validation = canPing();
       if (validation != PingValidation.valid) {
         // For auto mode, schedule next attempt if distance check failed
-        if (!manual && _autoPingEnabled && !_rxOnlyMode) {
+        if (!manual && _autoPingEnabled && !_passiveModeEnabled) {
           if (validation == PingValidation.tooCloseToLastPing) {
             _skipReason = 'too close';
             debugLog('[PING] Auto ping blocked: too close to last ping, scheduling next');
@@ -530,7 +530,7 @@ class PingService {
       debugLog('[PING] Executing pending disable after RX window');
       _pendingDisable = false;
       _autoPingEnabled = false;
-      _rxOnlyMode = false;
+      _passiveModeEnabled = false;
       _autoTimer?.cancel();
       _autoTimer = null;
       // Start cooldown immediately
@@ -541,12 +541,12 @@ class PingService {
       return;  // Don't schedule next auto ping
     }
 
-    // Schedule next auto ping if in TX/RX Auto mode AND not in cooldown
+    // Schedule next auto ping if in Active Mode AND not in cooldown
     // The cooldown check prevents scheduling when user disabled auto mode during RX window
     // (the cooldown timer started when auto mode was disabled)
     // Reference: scheduleNextAutoPing() called after RX window in wardrive.js
-    if (_autoPingEnabled && !_rxOnlyMode && !isInCooldown()) {
-      debugLog('[TX/RX AUTO] Scheduling next auto ping after RX window completion');
+    if (_autoPingEnabled && !_passiveModeEnabled && !isInCooldown()) {
+      debugLog('[ACTIVE MODE] Scheduling next auto ping after RX window completion');
       _scheduleNextAutoPing();
     } else if (isInCooldown()) {
       debugLog('[PING] Skipping auto-ping scheduling - cooldown active');
@@ -558,8 +558,8 @@ class PingService {
   /// Schedule next auto ping after interval
   /// Reference: scheduleNextAutoPing() in wardrive.js
   void _scheduleNextAutoPing() {
-    if (!_autoPingEnabled || _rxOnlyMode) {
-      debugLog('[TX/RX AUTO] Not scheduling next auto ping - auto mode not running or RX-only');
+    if (!_autoPingEnabled || _passiveModeEnabled) {
+      debugLog('[ACTIVE MODE] Not scheduling next auto ping - auto mode not running or Passive Mode');
       return;
     }
 
@@ -568,7 +568,7 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
 
-    debugLog('[TX/RX AUTO] Scheduling next auto ping in ${_autoPingIntervalMs}ms');
+    debugLog('[ACTIVE MODE] Scheduling next auto ping in ${_autoPingIntervalMs}ms');
 
     // Start countdown display (with skip reason if applicable)
     // The AutoPingTimer in countdown_timer_service.dart handles the display
@@ -576,25 +576,25 @@ class PingService {
 
     // Schedule the next ping
     _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
-      debugLog('[TX/RX AUTO] Auto ping timer fired');
+      debugLog('[ACTIVE MODE] Auto ping timer fired');
 
       // Double-check guards before sending ping
-      if (!_autoPingEnabled || _rxOnlyMode) {
-        debugLog('[TX/RX AUTO] Auto mode no longer running, ignoring timer');
+      if (!_autoPingEnabled || _passiveModeEnabled) {
+        debugLog('[ACTIVE MODE] Auto mode no longer running, ignoring timer');
         return;
       }
       if (_pingInProgress) {
-        debugLog('[TX/RX AUTO] Ping already in progress, ignoring timer');
+        debugLog('[ACTIVE MODE] Ping already in progress, ignoring timer');
         return;
       }
 
       // Clear skip reason before next attempt
       _skipReason = null;
-      debugLog('[TX/RX AUTO] Sending auto ping');
+      debugLog('[ACTIVE MODE] Sending auto ping');
       _sendAutoPing();
     });
 
-    debugLog('[TX/RX AUTO] New timer scheduled');
+    debugLog('[ACTIVE MODE] New timer scheduled');
   }
 
   /// Callback for auto ping scheduling (for UI countdown display)
@@ -605,7 +605,7 @@ class PingService {
     try {
       await sendTxPing(manual: false);
     } catch (e) {
-      debugLog('[TX/RX AUTO] Auto ping error: $e');
+      debugLog('[ACTIVE MODE] Auto ping error: $e');
     }
   }
 
@@ -614,28 +614,28 @@ class PingService {
     try {
       await sendTxPing(manual: false);
     } catch (e) {
-      debugLog('[TX/RX AUTO] Initial auto ping error: $e');
+      debugLog('[ACTIVE MODE] Initial auto ping error: $e');
       // Even on error, schedule next ping
       _scheduleNextAutoPing();
     }
   }
 
-  /// Enable TX/RX Auto mode (timer-based auto ping)
+  /// Enable Active Mode (timer-based auto ping) or Passive Mode (listen-only)
   /// Reference: startAutoPing() in wardrive.js
-  /// @param rxOnly - If true, only listens for RX (no TX pings) - this is RX Auto mode
-  Future<bool> enableAutoPing({bool rxOnly = false}) async {
-    debugLog('[TX/RX AUTO] enableAutoPing called (rxOnly=$rxOnly)');
+  /// @param passiveMode - If true, only listens for RX (no TX pings) - this is Passive Mode
+  Future<bool> enableAutoPing({bool passiveMode = false}) async {
+    debugLog('[ACTIVE MODE] enableAutoPing called (passiveMode=$passiveMode)');
 
     if (_autoPingEnabled) {
-      debugLog('[TX/RX AUTO] Auto mode already enabled');
+      debugLog('[ACTIVE MODE] Auto mode already enabled');
       return false;
     }
 
     // Check if we're in cooldown (can't start during cooldown)
     // Reference: isInCooldown() check in startAutoPing() in wardrive.js
-    if (!rxOnly && isInCooldown()) {
+    if (!passiveMode && isInCooldown()) {
       final remainingSec = getRemainingCooldownSeconds();
-      debugLog('[TX/RX AUTO] Auto ping start blocked by cooldown (${remainingSec}s remaining)');
+      debugLog('[ACTIVE MODE] Start blocked by cooldown (${remainingSec}s remaining)');
       return false;
     }
 
@@ -647,28 +647,28 @@ class PingService {
     _skipReason = null;
 
     _autoPingEnabled = true;
-    _rxOnlyMode = rxOnly;
+    _passiveModeEnabled = passiveMode;
 
     // Enable wake lock to keep screen on during auto mode
     // Reference: acquireWakeLock() in wardrive.js
-    debugLog('[TX/RX AUTO] Acquiring wake lock for auto mode');
+    debugLog('[ACTIVE MODE] Acquiring wake lock for auto mode');
     await _wakelockService.enable();
 
-    if (rxOnly) {
-      // RX Auto mode: send discovery requests instead of TX pings
-      debugLog('[RX AUTO] RX Auto mode started - using discovery protocol');
+    if (passiveMode) {
+      // Passive Mode: send discovery requests instead of TX pings
+      debugLog('[PASSIVE MODE] Passive Mode started - using discovery protocol');
       await _startDiscoveryMode();
     } else {
-      // TX/RX Auto mode: send first ping immediately, then schedule timer
+      // Active Mode: send first ping immediately, then schedule timer
       // Reference: sendPing(false) called immediately in startAutoPing() in wardrive.js
-      debugLog('[TX/RX AUTO] Sending initial auto ping');
+      debugLog('[ACTIVE MODE] Sending initial auto ping');
       _sendInitialAutoPing();
     }
 
     return true;
   }
 
-  /// Disable auto-ping mode (TX/RX Auto or RX Auto)
+  /// Disable auto-ping mode (Active Mode or Passive Mode)
   /// Reference: stopAutoPing() and stopRxAuto() in wardrive.js
   Future<bool> disableAutoPing() async {
     debugLog('[PING] disableAutoPing called');
@@ -688,9 +688,9 @@ class PingService {
 
     // Check cooldown before stopping (unless forced)
     // Reference: isInCooldown() check in stopAutoPing() in wardrive.js
-    if (!_rxOnlyMode && isInCooldown()) {
+    if (!_passiveModeEnabled && isInCooldown()) {
       final remainingSec = getRemainingCooldownSeconds();
-      debugLog('[TX/RX AUTO] Auto ping stop blocked by cooldown (${remainingSec}s remaining)');
+      debugLog('[ACTIVE MODE] Stop blocked by cooldown (${remainingSec}s remaining)');
       return false;
     }
 
@@ -702,7 +702,7 @@ class PingService {
     _skipReason = null;
 
     _autoPingEnabled = false;
-    _rxOnlyMode = false;
+    _passiveModeEnabled = false;
 
     // Disable wake lock when auto mode stops
     // Reference: releaseWakeLock() in wardrive.js
@@ -720,7 +720,7 @@ class PingService {
     _autoTimer = null;
     _skipReason = null;
     _autoPingEnabled = false;
-    _rxOnlyMode = false;
+    _passiveModeEnabled = false;
     _stopDiscoveryMode();
     await _wakelockService.disable();
   }
@@ -732,7 +732,7 @@ class PingService {
   }
 
   // ============================================
-  // Discovery Mode (RX Auto)
+  // Discovery Mode (Passive Mode)
   // ============================================
 
   /// Start discovery mode - subscribes to control data and sends discovery requests
@@ -775,8 +775,8 @@ class PingService {
 
   /// Send a discovery request and start listening window
   Future<void> _sendDiscoveryRequest() async {
-    if (!_autoPingEnabled || !_rxOnlyMode) {
-      debugLog('[DISC] Not in RX Auto mode, skipping discovery request');
+    if (!_autoPingEnabled || !_passiveModeEnabled) {
+      debugLog('[DISC] Not in Passive Mode, skipping discovery request');
       return;
     }
 
@@ -901,15 +901,15 @@ class PingService {
   /// Schedule next discovery request
   /// Uses fixed 30-second interval (repeaters only respond 4 times per 2 minutes)
   void _scheduleNextDiscovery() {
-    if (!_autoPingEnabled || !_rxOnlyMode) {
-      debugLog('[DISC] Not in RX Auto mode, not scheduling next discovery');
+    if (!_autoPingEnabled || !_passiveModeEnabled) {
+      debugLog('[DISC] Not in Passive Mode, not scheduling next discovery');
       return;
     }
 
     _discoveryTimer?.cancel();
     _discoveryTimer = Timer(_discoveryInterval, () {
       debugLog('[DISC] Discovery timer fired');
-      if (_autoPingEnabled && _rxOnlyMode) {
+      if (_autoPingEnabled && _passiveModeEnabled) {
         _sendDiscoveryRequest();
       }
     });

@@ -31,7 +31,6 @@ import '../services/meshcore/rx_logger.dart';
 import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
-import '../services/status_message_service.dart';
 import '../services/countdown_timer_service.dart';
 import '../utils/constants.dart';
 import '../services/wakelock_service.dart';
@@ -39,10 +38,10 @@ import '../utils/debug_logger_io.dart';
 
 /// Auto-ping mode (matches MeshMapper_WebClient behavior)
 enum AutoMode {
-  /// TX/RX Auto: Sends pings on movement, listens for RX responses
-  txRx,
-  /// RX Auto: Passive listening only (no transmit)
-  rxOnly,
+  /// Active Mode: Sends pings on movement, listens for RX responses
+  active,
+  /// Passive Mode: Listening only (no transmit)
+  passive,
 }
 
 /// Result of uploading an offline session
@@ -67,8 +66,7 @@ class AppStateProvider extends ChangeNotifier {
   late final ApiQueueService _apiQueueService;
   late final OfflineSessionService _offlineSessionService;
   late final DeviceModelService _deviceModelService;
-  late final StatusMessageService _statusMessageService;
-  late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and TX/RX Auto
+  late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
   late final AutoPingTimer _autoPingTimer;
   late final RxWindowTimer _rxWindowTimer;
   late final DiscoveryWindowTimer _discoveryWindowTimer; // Discovery listening window (Passive Mode)
@@ -105,7 +103,7 @@ class AppStateProvider extends ChangeNotifier {
   // Ping state
   PingStats _pingStats = const PingStats();
   bool _autoPingEnabled = false;
-  AutoMode _autoMode = AutoMode.txRx;
+  AutoMode _autoMode = AutoMode.active;
   bool _isPingSending = false; // True immediately when ping button clicked
   int _queueSize = 0;
   int? _currentNoiseFloor;
@@ -240,7 +238,7 @@ class AppStateProvider extends ChangeNotifier {
   bool get txAllowed => _apiService.txAllowed;
   bool get rxAllowed => _apiService.rxAllowed;
   bool get hasApiSession => _apiService.hasSession;
-  bool get isRxOnlyMode => hasApiSession && !txAllowed && rxAllowed;
+  bool get isApiRxOnlyMode => hasApiSession && !txAllowed && rxAllowed;
 
   // Offline mode
   bool get offlineMode => _preferences.offlineMode;
@@ -258,9 +256,8 @@ class AppStateProvider extends ChangeNotifier {
     return dist == double.infinity ? null : dist;
   }
 
-  // Status message and countdown timers
-  StatusMessageService get statusMessageService => _statusMessageService;
-  CooldownTimer get cooldownTimer => _cooldownTimer; // Shared cooldown for TX Ping and TX/RX Auto
+  // Countdown timers
+  CooldownTimer get cooldownTimer => _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
   AutoPingTimer get autoPingTimer => _autoPingTimer;
   RxWindowTimer get rxWindowTimer => _rxWindowTimer;
   DiscoveryWindowTimer get discoveryWindowTimer => _discoveryWindowTimer; // Discovery listening window (Passive Mode)
@@ -285,13 +282,11 @@ class AppStateProvider extends ChangeNotifier {
     _offlineSessionService = OfflineSessionService();
     _deviceModelService = DeviceModelService();
 
-    // Initialize status message and countdown timers
-    _statusMessageService = StatusMessageService();
-    // Pass notifyListeners callback to timers for smooth UI updates
-    _cooldownTimer = CooldownTimer(_statusMessageService, onUpdate: notifyListeners);
-    _autoPingTimer = AutoPingTimer(_statusMessageService, onUpdate: notifyListeners);
-    _rxWindowTimer = RxWindowTimer(_statusMessageService, onUpdate: notifyListeners);
-    _discoveryWindowTimer = DiscoveryWindowTimer(_statusMessageService, onUpdate: notifyListeners);
+    // Initialize countdown timers with notifyListeners callback for smooth UI updates
+    _cooldownTimer = CooldownTimer(onUpdate: notifyListeners);
+    _autoPingTimer = AutoPingTimer(onUpdate: notifyListeners);
+    _rxWindowTimer = RxWindowTimer(onUpdate: notifyListeners);
+    _discoveryWindowTimer = DiscoveryWindowTimer(onUpdate: notifyListeners);
 
     // Auto-enable debug logging for development builds
     await _autoEnableDebugLogsIfDevelopmentBuild();
@@ -308,7 +303,7 @@ class AppStateProvider extends ChangeNotifier {
 
       // Update background service notification with queue size
       if (_autoPingEnabled) {
-        final modeName = _autoMode == AutoMode.rxOnly ? 'RX Auto' : 'TX/RX Auto';
+        final modeName = _autoMode == AutoMode.passive ? 'Passive Mode' : 'Active Mode';
         BackgroundServiceManager.updateNotification(
           mode: modeName,
           txCount: _pingStats.txCount,
@@ -587,11 +582,7 @@ class AppStateProvider extends ChangeNotifier {
         );
         // TODO: Persist to SharedPreferences when implemented
         notifyListeners();
-        _statusMessageService.setDynamicStatus(
-          'Power auto-configured: ${device.power}W (${device.shortName})',
-          StatusColor.info,
-        );
-        debugLog('[APP] Auto-power preferences updated: ${device.power}W/${device.txPower}dBm');
+        debugLog('[MODEL] Power auto-configured: ${device.power}W (${device.shortName})');
       }
 
       // Note: API session acquisition is now handled by the auth callback
@@ -695,7 +686,7 @@ class AppStateProvider extends ChangeNotifier {
 
         // Update background service notification with current stats
         if (_autoPingEnabled) {
-          final modeName = _autoMode == AutoMode.rxOnly ? 'RX Auto' : 'TX/RX Auto';
+          final modeName = _autoMode == AutoMode.passive ? 'Passive Mode' : 'Active Mode';
           BackgroundServiceManager.updateNotification(
             mode: modeName,
             txCount: _pingStats.txCount,
@@ -762,7 +753,7 @@ class AppStateProvider extends ChangeNotifier {
         _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
       };
 
-      // Wire up discovery complete callback for RX Auto mode
+      // Wire up discovery complete callback for Passive Mode
       _pingService!.onDiscoveryComplete = (entry) {
         _addDiscLogEntry(entry);
       };
@@ -802,59 +793,24 @@ class AppStateProvider extends ChangeNotifier {
       // Save this device for quick reconnection (mobile only)
       await _saveRememberedDevice(device);
 
-      // Show connection status based on TX/RX permissions
+      // Log connection status based on TX/RX permissions
       if (hasApiSession) {
         if (txAllowed && rxAllowed) {
-          _statusMessageService.setDynamicStatus(
-            'Connected - Full Access',
-            StatusColor.success,
-          );
-          debugLog('[APP] Connected with full access (TX + RX allowed)');
+          debugLog('[CONN] Connected with full access (TX + RX allowed)');
         } else if (rxAllowed) {
-          _statusMessageService.setDynamicStatus(
-            'Connected - RX Only (zone at TX capacity)',
-            StatusColor.warning,
-          );
-          debugLog('[APP] Connected with RX-only access (TX not allowed)');
+          debugLog('[CONN] Connected with RX-only access (TX not allowed, zone at TX capacity)');
         } else {
-          _statusMessageService.setDynamicStatus(
-            'Connected - Limited Access',
-            StatusColor.warning,
-          );
-          debugLog('[APP] Connected with limited access');
+          debugLog('[CONN] Connected with limited access');
         }
       } else {
         // No API session - offline mode or auth skipped
-        _statusMessageService.setDynamicStatus(
-          'Connected - Offline Mode',
-          StatusColor.info,
-        );
-        debugLog('[APP] Connected without API session');
+        debugLog('[CONN] Connected without API session (offline mode)');
       }
 
-      // Check ping validation and warn about configuration issues
-      // This helps users understand why buttons might be disabled after connection
+      // Log ping validation status after connection
       final validation = pingValidation;
       if (validation != PingValidation.valid) {
-        debugLog('[APP] Ping validation after connect: $validation');
-        // Show configuration warnings that require user action (delayed to not override connection status)
-        Future.delayed(const Duration(seconds: 3), () {
-          // Re-check validation in case user configured during the delay
-          final currentValidation = pingValidation;
-          if (_connectionStep == ConnectionStep.connected) {
-            if (currentValidation == PingValidation.externalAntennaRequired) {
-              _statusMessageService.setDynamicStatus(
-                'Select antenna option before pinging',
-                StatusColor.warning,
-              );
-            } else if (currentValidation == PingValidation.powerLevelRequired) {
-              _statusMessageService.setDynamicStatus(
-                'Set power level before pinging',
-                StatusColor.warning,
-              );
-            }
-          }
-        });
+        debugLog('[CONN] Ping validation after connect: $validation');
       }
 
     } catch (e) {
@@ -899,7 +855,7 @@ class AppStateProvider extends ChangeNotifier {
     // Create TX tracker (stored for use by PingService)
     _txTracker = TxTracker();
 
-    // Create RX logger (stored for use when enabling RX Auto mode)
+    // Create RX logger (stored for use when enabling Passive Mode)
     _rxLogger = RxLogger(
       // Function to check if repeater should be ignored (carpeater filter)
       shouldIgnoreRepeater: (String repeaterId) {
@@ -1225,23 +1181,19 @@ class AppStateProvider extends ChangeNotifier {
     );
 
     if (!result.isValid) {
-      debugWarn('[APP] Session check failed before action: ${result.reason} - ${result.message}');
-      _statusMessageService.setDynamicStatus(
-        result.message ?? 'Session expired',
-        StatusColor.error,
-      );
+      debugWarn('[API] Session check failed: ${result.reason} - ${result.message ?? "Session expired"}');
       // Note: onSessionError callback will trigger disconnect for critical errors
       return false;
     }
     return true;
   }
 
-  /// Toggle auto-ping mode (TX/RX or RX-only)
-  /// Returns false if blocked by cooldown (TX/RX Auto only - RX Auto ignores cooldown)
+  /// Toggle auto-ping mode (Active or Passive)
+  /// Returns false if blocked by cooldown (Active Mode only - Passive Mode ignores cooldown)
   Future<bool> toggleAutoPing(AutoMode mode) async {
     if (_pingService == null) return false;
 
-    final isRxOnly = mode == AutoMode.rxOnly;
+    final isPassive = mode == AutoMode.passive;
 
     // If currently running the same mode, stop it (always allow stopping)
     if (_autoPingEnabled && _autoMode == mode) {
@@ -1284,13 +1236,13 @@ class AppStateProvider extends ChangeNotifier {
 
       _autoPingEnabled = false;
 
-      // Start 7-second shared cooldown ONLY for TX/RX Auto (not RX Auto)
-      // RX Auto is passive listening, no cooldown needed
-      if (!isRxOnly) {
+      // Start 7-second shared cooldown ONLY for Active Mode (not Passive Mode)
+      // Passive Mode is listening only, no cooldown needed
+      if (!isPassive) {
         _cooldownTimer.start(7000);
-        debugLog('[PING] Shared cooldown started (7s) - blocks TX Ping and TX/RX Auto');
+        debugLog('[ACTIVE MODE] Shared cooldown started (7s) - blocks TX Ping and Active Mode');
       } else {
-        debugLog('[RX AUTO] Stopped - no cooldown (passive mode)');
+        debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
       }
     } else {
       // Check session validity before starting (skip in offline mode)
@@ -1299,10 +1251,10 @@ class AppStateProvider extends ChangeNotifier {
         if (!sessionCheck) return false;
       }
 
-      // Block starting if shared cooldown is active (TX/RX Auto only)
-      // RX Auto is passive listening and can start during cooldown
-      if (!isRxOnly && _cooldownTimer.isRunning) {
-        debugLog('[PING] TX/RX Auto start blocked by shared cooldown');
+      // Block starting if shared cooldown is active (Active Mode only)
+      // Passive Mode is listening only and can start during cooldown
+      if (!isPassive && _cooldownTimer.isRunning) {
+        debugLog('[ACTIVE MODE] Start blocked by shared cooldown');
         return false;
       }
 
@@ -1331,19 +1283,17 @@ class AppStateProvider extends ChangeNotifier {
       _pingService!.setAutoPingInterval(intervalMs);
       debugLog('[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
 
-      final started = await _pingService!.enableAutoPing(rxOnly: isRxOnly);
+      final started = await _pingService!.enableAutoPing(passiveMode: isPassive);
       if (!started) {
         // Blocked by cooldown or already enabled
-        debugLog('[PING] Auto mode start blocked');
         if (_pingService!.isInCooldown()) {
-          _statusMessageService.setDynamicStatus(
-            'Wait ${_pingService!.getRemainingCooldownSeconds()}s before starting auto mode',
-            StatusColor.warning,
-          );
+          debugLog('[PING] Auto mode start blocked by cooldown (${_pingService!.getRemainingCooldownSeconds()}s remaining)');
+        } else {
+          debugLog('[PING] Auto mode start blocked');
         }
         return false;
       }
-      // Start RX wardriving for both TX/RX Auto and RX Auto modes
+      // Start RX wardriving for both Active Mode and Passive Mode
       // Reference: state.rxTracking.isWardriving = true in wardrive.js
       _rxLogger?.startWardriving();
       _autoPingEnabled = true;
@@ -1362,7 +1312,7 @@ class AppStateProvider extends ChangeNotifier {
       }
 
       // Start background service for continuous operation
-      final modeName = isRxOnly ? 'RX Auto' : 'TX/RX Auto';
+      final modeName = isPassive ? 'Passive Mode' : 'Active Mode';
       await BackgroundServiceManager.startService(
         mode: modeName,
         txCount: _pingStats.txCount,
@@ -1392,7 +1342,7 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Add a discovery log entry (from RX Auto mode)
+  /// Add a discovery log entry (from Passive Mode)
   void _addDiscLogEntry(DiscLogEntry entry) {
     _discLogEntries.insert(0, entry);
     // Keep max 100 entries
@@ -1507,26 +1457,14 @@ class AppStateProvider extends ChangeNotifier {
       if (success) {
         // Delete the session file on successful upload
         await _offlineSessionService.deleteSession(filename);
-        debugLog('[APP] Uploaded and deleted offline session: $filename');
-        _statusMessageService.setDynamicStatus(
-          'Uploaded ${pings.length} pings from $filename',
-          StatusColor.success,
-        );
+        debugLog('[API] Uploaded and deleted offline session: $filename (${pings.length} pings)');
       } else {
-        debugLog('[APP] Failed to upload offline session: $filename');
-        _statusMessageService.setDynamicStatus(
-          'Failed to upload $filename',
-          StatusColor.error,
-        );
+        debugError('[API] Failed to upload offline session: $filename');
       }
       notifyListeners();
       return success;
     } catch (e) {
-      debugLog('[APP] Error uploading offline session: $e');
-      _statusMessageService.setDynamicStatus(
-        'Error uploading $filename',
-        StatusColor.error,
-      );
+      debugError('[API] Error uploading offline session $filename: $e');
       return false;
     }
   }
@@ -1579,11 +1517,7 @@ class AppStateProvider extends ChangeNotifier {
 
     if (authResult == null || authResult['success'] != true) {
       final reason = authResult?['reason'] as String? ?? 'unknown';
-      debugLog('[APP] Offline upload auth failed: $reason');
-      _statusMessageService.setDynamicStatus(
-        'Auth failed: $reason',
-        StatusColor.error,
-      );
+      debugError('[API] Offline upload auth failed: $reason');
       return OfflineUploadResult.authFailed;
     }
 
@@ -1622,17 +1556,11 @@ class AppStateProvider extends ChangeNotifier {
     // 6. Mark session as uploaded (don't delete) if all batches succeeded
     if (failedBatches == 0) {
       await _offlineSessionService.markAsUploaded(filename);
-      _statusMessageService.setDynamicStatus(
-        'Uploaded ${pings.length} pings from $filename',
-        StatusColor.success,
-      );
+      debugLog('[API] Uploaded ${pings.length} pings from $filename');
       notifyListeners();
       return OfflineUploadResult.success;
     } else {
-      _statusMessageService.setDynamicStatus(
-        'Partial upload: $uploadedCount/${pings.length} pings',
-        StatusColor.warning,
-      );
+      debugWarn('[API] Partial upload: $uploadedCount/${pings.length} pings from $filename');
       notifyListeners();
       return OfflineUploadResult.partialFailure;
     }
@@ -1742,45 +1670,34 @@ class AppStateProvider extends ChangeNotifier {
 
     // Special handling for zone_full - this is actually a partial success
     if (reason == 'zone_full') {
-      _statusMessageService.setDynamicStatus(userMessage, StatusColor.warning);
-      debugLog('[API] Auth returned zone_full - RX-only mode allowed');
+      debugLog('[API] Auth returned zone_full - RX-only mode allowed: $userMessage');
       return;
     }
 
     // Special case: outofdate is a critical error requiring app update
     if (reason == 'outofdate') {
-      _statusMessageService.setPersistentError(userMessage, StatusColor.error);
-      debugLog('[API] App version outdated - update required');
+      debugError('[API] App version outdated - update required: $userMessage');
       return;
     }
 
     // Log error and add to error log
     debugError('[API] Auth error: $reason - $userMessage');
     logError(userMessage, severity: ErrorSeverity.error);
-
-    // Show persistent error for zone-related issues
-    if (reason == 'outside_zone' || reason == 'zone_disabled') {
-      _statusMessageService.setPersistentError(userMessage, StatusColor.error);
-    } else {
-      _statusMessageService.setDynamicStatus(userMessage, StatusColor.error);
-    }
   }
 
   /// Handle session error from wardrive/heartbeat API calls
   /// This may trigger auto-disconnect
   Future<void> handleSessionError(String? reason, String? message) async {
     final userMessage = _getErrorMessage(reason, message);
-    debugError('[API] Session error: $reason - $userMessage');
 
     // Rate limiting should warn but not disconnect (per PORTED_APP behavior)
     if (reason == 'rate_limited') {
-      _statusMessageService.setDynamicStatus(userMessage, StatusColor.warning);
-      debugLog('[API] Rate limited - continuing without disconnect');
+      debugWarn('[API] Rate limited - continuing without disconnect: $userMessage');
       return;
     }
 
-    // Show error message
-    _statusMessageService.setDynamicStatus(userMessage, StatusColor.error);
+    // Log error
+    debugError('[API] Session error: $reason - $userMessage');
     logError(userMessage, severity: ErrorSeverity.error);
 
     // Session errors that require disconnect
@@ -1916,7 +1833,6 @@ class AppStateProvider extends ChangeNotifier {
 
       if (result == null) {
         debugError('[GEOFENCE] Zone status check failed: no response');
-        _statusMessageService.setDynamicStatus('Zone check failed', StatusColor.error);
         return;
       }
 
@@ -1926,7 +1842,6 @@ class AppStateProvider extends ChangeNotifier {
       final success = result['success'] == true;
       if (!success) {
         debugError('[GEOFENCE] Zone status check failed: ${result['message']}');
-        _statusMessageService.setDynamicStatus('Zone check failed', StatusColor.error);
         return;
       }
 
@@ -1938,7 +1853,6 @@ class AppStateProvider extends ChangeNotifier {
         final zoneName = _currentZone?['name'] ?? 'Unknown';
         final zoneCode = _currentZone?['code'] as String? ?? '';
         debugLog('[GEOFENCE] In zone: $zoneName ($zoneCode)');
-        _statusMessageService.setDynamicStatus('Zone: $zoneName ($zoneCode)', StatusColor.success);
 
         // Fetch repeaters for this zone
         if (zoneCode.isNotEmpty) {
@@ -1949,11 +1863,7 @@ class AppStateProvider extends ChangeNotifier {
         _nearestZone = result['nearest_zone'] as Map<String, dynamic>?;
         final nearestName = _nearestZone?['name'] ?? 'Unknown';
         final distanceKm = (_nearestZone?['distance_km'] as num?)?.toStringAsFixed(1) ?? '?';
-        debugLog('[GEOFENCE] Outside zone. Nearest: $nearestName (${distanceKm}km away)');
-        _statusMessageService.setPersistentError(
-          'Outside zone. Nearest: $nearestName (${distanceKm}km)',
-          StatusColor.warning,
-        );
+        debugWarn('[GEOFENCE] Outside zone. Nearest: $nearestName (${distanceKm}km away)');
 
         // Clear repeaters when exiting zone
         _repeaters = [];
@@ -1962,7 +1872,6 @@ class AppStateProvider extends ChangeNotifier {
       }
     } catch (e) {
       debugError('[GEOFENCE] Zone status check error: $e');
-      _statusMessageService.setDynamicStatus('Zone check error', StatusColor.error);
     } finally {
       _isCheckingZone = false;
       notifyListeners();
@@ -2030,10 +1939,6 @@ class AppStateProvider extends ChangeNotifier {
       debugLog('[DEBUG] Debug file logging enabled');
     } catch (e) {
       debugError('[DEBUG] Failed to enable debug file logging: $e');
-      _statusMessageService.setDynamicStatus(
-        'Failed to enable debug logging',
-        StatusColor.error,
-      );
     }
   }
 
@@ -2075,16 +1980,9 @@ class AppStateProvider extends ChangeNotifier {
     try {
       await DebugFileLogger.deleteAll();
       await _refreshDebugLogFiles();
-      _statusMessageService.setDynamicStatus(
-        'All debug logs deleted',
-        StatusColor.info,
-      );
+      debugLog('[DEBUG] All debug logs deleted');
     } catch (e) {
       debugError('[DEBUG] Failed to delete all debug logs: $e');
-      _statusMessageService.setDynamicStatus(
-        'Failed to delete debug logs',
-        StatusColor.error,
-      );
     }
   }
 
@@ -2100,10 +1998,6 @@ class AppStateProvider extends ChangeNotifier {
       debugLog('[DEBUG] Shared log: ${file.path}, status: ${result.status}');
     } catch (e) {
       debugError('[DEBUG] Failed to share log: $e');
-      _statusMessageService.setDynamicStatus(
-        'Failed to share log file',
-        StatusColor.error,
-      );
     }
   }
 
@@ -2116,11 +2010,7 @@ class AppStateProvider extends ChangeNotifier {
       _viewingLogContent = await file.readAsString();
       notifyListeners();
     } catch (e) {
-      debugError('[DEBUG] Failed to view log: $e');
-      _statusMessageService.setDynamicStatus(
-        'Failed to read log file',
-        StatusColor.error,
-      );
+      debugError('[DEBUG] Failed to read log file: $e');
     }
   }
 
@@ -2363,7 +2253,6 @@ class AppStateProvider extends ChangeNotifier {
     _offlineSessionService.dispose();
     _apiService.dispose();
     _bluetoothService.dispose();
-    _statusMessageService.dispose();
     _cooldownTimer.dispose();
     _autoPingTimer.dispose();
     _rxWindowTimer.dispose();

@@ -781,7 +781,7 @@ class _RxLogTab extends StatelessWidget {
   }
 }
 
-/// DISC Log Tab (Discovery observations from RX Auto mode)
+/// DISC Log Tab (Discovery observations from Passive Mode)
 class _DiscLogTab extends StatelessWidget {
   final List<DiscLogEntry> entries;
 
@@ -798,7 +798,7 @@ class _DiscLogTab extends StatelessWidget {
             SizedBox(height: 16),
             Text('No discovery observations yet', style: TextStyle(color: Colors.grey)),
             SizedBox(height: 8),
-            Text('Enable RX Auto mode to discover nearby nodes',
+            Text('Enable Passive Mode to discover nearby nodes',
                 style: TextStyle(color: Colors.grey, fontSize: 12)),
           ],
         ),

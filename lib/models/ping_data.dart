@@ -177,7 +177,7 @@ class RepeaterInfo {
 class PingStats {
   final int txCount;
   final int rxCount;
-  final int discCount; // Discovery count (RX Auto mode)
+  final int discCount; // Discovery count (Passive Mode)
   final int successfulUploads;
   final int failedUploads;
   final int queuedCount;
