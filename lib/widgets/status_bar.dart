@@ -215,40 +215,40 @@ class _StatusBarState extends State<StatusBar> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // TX count chip
-        _buildStatChip(
+        // TX count chip (animated)
+        _AnimatedStatChip(
           icon: Icons.arrow_upward,
-          value: '${appState.pingStats.txCount}',
+          value: appState.pingStats.txCount,
           color: Colors.green,
           onTap: () => _showInfoPopup(context, 'tx'),
         ),
 
         const SizedBox(width: 8),
 
-        // RX count chip
-        _buildStatChip(
+        // RX count chip (animated)
+        _AnimatedStatChip(
           icon: Icons.arrow_downward,
-          value: '${appState.pingStats.rxCount}',
+          value: appState.pingStats.rxCount,
           color: Colors.blue,
           onTap: () => _showInfoPopup(context, 'rx'),
         ),
 
         const SizedBox(width: 8),
 
-        // DISC count chip
-        _buildStatChip(
+        // DISC count chip (animated)
+        _AnimatedStatChip(
           icon: Icons.radar,
-          value: '${appState.pingStats.discCount}',
+          value: appState.pingStats.discCount,
           color: const Color(0xFF7B68EE),  // DISC purple
           onTap: () => _showInfoPopup(context, 'disc'),
         ),
 
         const SizedBox(width: 8),
 
-        // Uploaded count chip
-        _buildStatChip(
+        // Uploaded count chip (animated)
+        _AnimatedStatChip(
           icon: Icons.cloud_done,
-          value: '${appState.pingStats.successfulUploads}',
+          value: appState.pingStats.successfulUploads,
           color: Colors.teal[400]!,
           onTap: () => _showInfoPopup(context, 'upload'),
         ),
@@ -286,6 +286,103 @@ class _StatusBarState extends State<StatusBar> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Animated stat chip that bounces and highlights when value increments
+class _AnimatedStatChip extends StatefulWidget {
+  final IconData icon;
+  final int value;
+  final Color color;
+  final VoidCallback? onTap;
+
+  const _AnimatedStatChip({
+    required this.icon,
+    required this.value,
+    required this.color,
+    this.onTap,
+  });
+
+  @override
+  State<_AnimatedStatChip> createState() => _AnimatedStatChipState();
+}
+
+class _AnimatedStatChipState extends State<_AnimatedStatChip>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _highlightAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+
+    _scaleAnimation = TweenSequence<double>([
+      TweenSequenceItem(tween: Tween(begin: 1.0, end: 1.15), weight: 40),
+      TweenSequenceItem(tween: Tween(begin: 1.15, end: 1.0), weight: 60),
+    ]).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
+
+    _highlightAnimation = TweenSequence<double>([
+      TweenSequenceItem(tween: Tween(begin: 0.15, end: 0.5), weight: 30),
+      TweenSequenceItem(tween: Tween(begin: 0.5, end: 0.15), weight: 70),
+    ]).animate(_controller);
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedStatChip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Trigger animation only on increment
+    if (widget.value > oldWidget.value) {
+      _controller.forward(from: 0.0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: widget.onTap,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          return Transform.scale(
+            scale: _scaleAnimation.value,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: widget.color.withValues(alpha: _highlightAnimation.value),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: widget.color.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(widget.icon, size: 14, color: widget.color),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${widget.value}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: widget.color,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
