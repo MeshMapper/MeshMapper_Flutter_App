@@ -7,6 +7,7 @@ import '../models/log_entry.dart';
 import '../models/ping_data.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_queue_service.dart';
+import 'audio_service.dart';
 import 'countdown_timer_service.dart';
 import 'gps_service.dart';
 import 'meshcore/connection.dart';
@@ -54,6 +55,7 @@ class PingService {
   final DiscoveryWindowTimer _discoveryWindowCountdown;
   final String _deviceId;
   final TxTracker? _txTracker;
+  final AudioService? _audioService;
 
   PingStats _stats = const PingStats();
   DateTime? _lastTxTime;
@@ -122,6 +124,7 @@ class PingService {
     required DiscoveryWindowTimer discoveryWindowTimer,
     required String deviceId,
     TxTracker? txTracker,
+    AudioService? audioService,
   })  : _gpsService = gpsService,
         _connection = connection,
         _apiQueue = apiQueue,
@@ -130,7 +133,8 @@ class PingService {
         _rxWindowCountdown = rxWindowTimer,
         _discoveryWindowCountdown = discoveryWindowTimer,
         _deviceId = deviceId,
-        _txTracker = txTracker;
+        _txTracker = txTracker,
+        _audioService = audioService;
 
   /// Get current ping statistics
   PingStats get stats => _stats;
@@ -422,6 +426,9 @@ class PingService {
       } else {
         debugWarn('[PING] TX tracking not available - channel info missing or no tracker');
       }
+
+      // Play transmit sound immediately before sending
+      _audioService?.playTransmitSound();
 
       // Send ping via BLE - uses watts format like "1.0w"
       await _connection.sendPing(position.latitude, position.longitude, powerWatts);
@@ -818,6 +825,9 @@ class PingService {
     debugLog('[DISC] Sending discovery request at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
 
     try {
+      // Play transmit sound immediately before sending
+      _audioService?.playTransmitSound();
+
       // Send discovery request and get tag
       final tag = await _connection.sendDiscoveryRequest();
 

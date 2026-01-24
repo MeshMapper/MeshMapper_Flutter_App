@@ -693,99 +693,265 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     });
   }
 
-  /// Show map legend popup explaining marker colors
+  /// Show map legend popup explaining marker colors and types
   void _showLegendPopup() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => Container(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+      builder: (context) => SizedBox(
+        height: MediaQuery.of(context).size.height * 0.92,
         child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Header
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    ),
+                    child: const Icon(Icons.map, color: Colors.blue, size: 24),
                   ),
-                  child: const Icon(Icons.map, color: Colors.blue, size: 24),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Map Legend',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w600,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Map Legend',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 20),
-                  onPressed: () => Navigator.pop(context),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            // Legend items
-            Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                children: [
-                  _buildLegendItem(
-                    color: const Color(0xFF7EE094),
-                    label: 'BIDIR',
-                    description: 'Heard repeats from the mesh AND successfully routed through it',
-                  ),
-                  Divider(height: 1, color: Colors.grey.shade700),
-                  _buildLegendItem(
-                    color: const Color(0xFF51D4E9),
-                    label: 'DISC',
-                    description: 'Wardriving app sent a discovery packet and heard a reply',
-                  ),
-                  Divider(height: 1, color: Colors.grey.shade700),
-                  _buildLegendItem(
-                    color: const Color(0xFFFD8928),
-                    label: 'TX',
-                    description: 'Successfully routed through, but no repeats heard back',
-                  ),
-                  Divider(height: 1, color: Colors.grey.shade700),
-                  _buildLegendItem(
-                    color: const Color(0xFF7D54C7),
-                    label: 'RX',
-                    description: 'Heard mesh traffic but did not transmit',
-                  ),
-                  Divider(height: 1, color: Colors.grey.shade700),
-                  _buildLegendItem(
-                    color: const Color(0xFF9E9689),
-                    label: 'DEAD',
-                    description: 'Repeater heard it, but no other radio received the repeat',
-                  ),
-                  Divider(height: 1, color: Colors.grey.shade700),
-                  _buildLegendItem(
-                    color: const Color(0xFFE04F5D),
-                    label: 'DROP',
-                    description: 'No repeats heard AND no successful route',
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
             ),
+            const Divider(height: 1),
+
+            // Scrollable content
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Map Markers section
+              Text(
+                'Map Markers',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade300,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    _buildLegendItem(
+                      color: const Color(0xFF22C55E),
+                      label: 'TX',
+                      description: 'Location where you sent a ping and heard a repeater',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLegendItem(
+                      color: const Color(0xFF0EA5E9),
+                      label: 'RX',
+                      description: 'Location where you received a message from the mesh',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLegendItem(
+                      color: const Color(0xFF7D54C7),
+                      label: 'DISC',
+                      description: 'Location where you sent a discovery request and a repeater responded',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLegendItem(
+                      color: Colors.grey,
+                      label: 'NONE',
+                      description: 'No repeaters heard or no response to discovery request',
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // Coverage Layer section
+              Text(
+                'Coverage Layer',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade300,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    _buildLayerItem(
+                      color: const Color(0xFF7EE094),
+                      label: 'BIDIR',
+                      description: 'Heard repeats from the mesh AND successfully routed through it',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLayerItem(
+                      color: const Color(0xFF51D4E9),
+                      label: 'DISC',
+                      description: 'Wardriving app sent a discovery packet and heard a reply',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLayerItem(
+                      color: const Color(0xFFFD8928),
+                      label: 'TX',
+                      description: 'Successfully routed through, but no repeats heard back',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLayerItem(
+                      color: const Color(0xFF7D54C7),
+                      label: 'RX',
+                      description: 'Heard mesh traffic but did not transmit',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLayerItem(
+                      color: const Color(0xFF9E9689),
+                      label: 'DEAD',
+                      description: 'Repeater heard it, but no other radio received the repeat',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLayerItem(
+                      color: const Color(0xFFE04F5D),
+                      label: 'DROP',
+                      description: 'No repeats heard AND no successful route',
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // Sound Notifications section
+              Text(
+                'Sound Notifications',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade300,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    _buildSoundItem(
+                      context: context,
+                      icon: Icons.cell_tower,
+                      label: 'TX Sound',
+                      description: 'Plays when sending a ping or discovery request',
+                      onPlay: () {
+                        final appState = context.read<AppStateProvider>();
+                        appState.audioService.playTransmitSound();
+                      },
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildSoundItem(
+                      context: context,
+                      icon: Icons.hearing,
+                      label: 'RX Sound',
+                      description: 'Plays when a repeater echo or mesh message is received',
+                      onPlay: () {
+                        final appState = context.read<AppStateProvider>();
+                        appState.audioService.playReceiveSound();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Build a sound item row with play button, label, and description
+  Widget _buildSoundItem({
+    required BuildContext context,
+    required IconData icon,
+    required String label,
+    required String description,
+    required VoidCallback onPlay,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        children: [
+          // Play button
+          GestureDetector(
+            onTap: onPlay,
+            child: Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: Colors.blue.withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.blue.withValues(alpha: 0.5)),
+              ),
+              child: const Icon(Icons.play_arrow, size: 18, color: Colors.blue),
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Icon and label
+          Icon(icon, size: 16, color: Colors.grey.shade400),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 70,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade200,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Description
+          Expanded(
+            child: Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade400,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -807,6 +973,56 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 1.5),
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Label
+          SizedBox(
+            width: 48,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+                color: Colors.grey.shade200,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Description
+          Expanded(
+            child: Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade400,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Build a layer item row with colored square, label, and description
+  Widget _buildLayerItem({
+    required Color color,
+    required String label,
+    required String description,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        children: [
+          // Colored square indicator
+          Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(2),
               border: Border.all(color: Colors.white, width: 1.5),
             ),
           ),

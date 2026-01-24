@@ -193,31 +193,39 @@ class PingControls extends StatelessWidget {
           ],
         ),
 
-        // Status hint area - fixed height to prevent layout shift
-        SizedBox(
-          height: 24,
-          child: blockingHint != null
-              ? Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(blockingIcon, size: 14, color: blockingColor),
-                    const SizedBox(width: 6),
-                    Text(
-                      blockingHint,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: blockingColor,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                )
-              : null,
-        ),
+        // Status hint area - only show when there's a hint
+        if (blockingHint != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 2),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(blockingIcon, size: 14, color: blockingColor),
+                const SizedBox(width: 6),
+                Text(
+                  blockingHint,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: blockingColor,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          const SizedBox(height: 8),
 
-        // Offline Mode toggle
-        const SizedBox(height: 4),
-        const _OfflineModeToggle(),
+        // Offline Mode and Sound toggles row
+        const Row(
+          children: [
+            // Offline Mode toggle (expanded)
+            Expanded(child: _OfflineModeToggle()),
+            SizedBox(width: 8),
+            // Sound toggle (compact, right side)
+            _SoundToggle(),
+          ],
+        ),
       ],
     );
   }
@@ -419,6 +427,88 @@ class _ActionButtonState extends State<_ActionButton>
           ),
         );
       },
+    );
+  }
+}
+
+/// Compact sound notification toggle - matches height of _OfflineModeToggle
+class _SoundToggle extends StatelessWidget {
+  const _SoundToggle();
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppStateProvider>();
+    final soundEnabled = appState.isSoundEnabled;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => appState.toggleSoundEnabled(),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          // Match _OfflineModeToggle: padding 10v + icon container (6+18+6) + text adds more height
+          // _OfflineModeToggle content: icon 30px, text column ~34px, toggle 26px
+          // Use same padding and let IntrinsicHeight from Row handle matching
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: soundEnabled
+                ? Colors.blue.withValues(alpha: 0.15)
+                : Colors.grey.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: soundEnabled
+                  ? Colors.blue.withValues(alpha: 0.4)
+                  : Colors.grey.withValues(alpha: 0.2),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: soundEnabled
+                      ? Colors.blue.withValues(alpha: 0.2)
+                      : Colors.grey.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Icon(
+                  soundEnabled ? Icons.volume_up : Icons.volume_off,
+                  size: 18,
+                  color: soundEnabled ? Colors.blue.shade700 : Colors.grey.shade500,
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Add text column to match offline mode toggle height
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Sound',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: soundEnabled
+                          ? Colors.blue.shade800
+                          : Colors.grey.shade700,
+                    ),
+                  ),
+                  Text(
+                    soundEnabled ? 'On' : 'Off',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: soundEnabled
+                          ? Colors.blue.shade600
+                          : Colors.grey.shade500,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

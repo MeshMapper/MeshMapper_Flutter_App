@@ -35,6 +35,7 @@ dependencies:
   url_launcher: ^6.2.0
   flutter_background_service: ^5.0.10
   flutter_local_notifications: ^17.0.0
+  just_audio: ^0.9.40
 
 dev_dependencies:
   flutter_test:
@@ -58,3 +59,5 @@ flutter:
   assets:
     - assets/device-models.json
     - assets/wardrive.png
+    - assets/transmitted_packet.mp3
+    - assets/received_packet.mp3

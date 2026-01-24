@@ -16,6 +16,7 @@ import '../models/repeater.dart';
 import '../models/user_preferences.dart';
 import '../services/api_queue_service.dart';
 import '../services/api_service.dart';
+import '../services/audio_service.dart';
 import '../services/background_service.dart';
 import '../services/debug_file_logger.dart';
 import '../services/offline_session_service.dart';
@@ -66,6 +67,7 @@ class AppStateProvider extends ChangeNotifier {
   late final ApiQueueService _apiQueueService;
   late final OfflineSessionService _offlineSessionService;
   late final DeviceModelService _deviceModelService;
+  final AudioService _audioService = AudioService();
   late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
   late final AutoPingTimer _autoPingTimer;
   late final RxWindowTimer _rxWindowTimer;
@@ -230,6 +232,10 @@ class AppStateProvider extends ChangeNotifier {
   // Regional channels getter (for UI)
   List<String> get regionalChannels => List.unmodifiable(_regionalChannels);
 
+  // Audio service getters
+  bool get isSoundEnabled => _audioService.isEnabled;
+  AudioService get audioService => _audioService;
+
   bool get isConnected => _connectionStep == ConnectionStep.connected;
   bool get hasGpsLock => _gpsStatus == GpsStatus.locked;
   bool get canPing => isConnected && hasGpsLock;
@@ -389,6 +395,9 @@ class AppStateProvider extends ChangeNotifier {
 
     // Start GPS (may skip if permissions not yet granted - disclosure flow handles that)
     await _gpsService.startWatching();
+
+    // Initialize audio service for sound notifications
+    await _audioService.initialize();
 
     notifyListeners();
   }
@@ -625,6 +634,7 @@ class AppStateProvider extends ChangeNotifier {
         discoveryWindowTimer: _discoveryWindowTimer,
         deviceId: _deviceId,
         txTracker: _txTracker,
+        audioService: _audioService,
       );
 
       // Set validation callbacks
@@ -719,6 +729,8 @@ class AppStateProvider extends ChangeNotifier {
             if (isNew) {
               // Add new event
               existingEvents.add(newEvent);
+              // Play receive sound for new repeater echo
+              _audioService.playReceiveSound();
             } else {
               // Update existing event's SNR
               final idx = existingEvents.indexWhere((e) => e.repeaterId == repeater.repeaterId);
@@ -901,6 +913,8 @@ class AppStateProvider extends ChangeNotifier {
             debugLog('[APP] Created IMMEDIATE RX pin for repeater: ${observation.repeaterId} '
                 'at ${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)} '
                 '(batch tracking: ${_currentBatchRepeaters.length} repeaters, rxCount: ${_pingStats.rxCount})');
+            // Play receive sound for new RX observation
+            _audioService.playReceiveSound();
             notifyListeners();
           } else {
             debugLog('[APP] Repeater ${observation.repeaterId} already has pin in current batch, SNR will update on flush if better');
@@ -1599,6 +1613,18 @@ class AppStateProvider extends ChangeNotifier {
     _savePreferences();
   }
 
+  /// Toggle sound notifications on/off
+  Future<void> toggleSoundEnabled() async {
+    await _audioService.toggle();
+    notifyListeners();
+  }
+
+  /// Set sound notifications enabled state
+  Future<void> setSoundEnabled(bool enabled) async {
+    await _audioService.setEnabled(enabled);
+    notifyListeners();
+  }
+
   /// Navigate to coordinates on map (triggered from log entries)
   void navigateToMapCoordinates(double latitude, double longitude) {
     _mapNavigationTarget = (lat: latitude, lon: longitude);
@@ -2253,6 +2279,7 @@ class AppStateProvider extends ChangeNotifier {
     _offlineSessionService.dispose();
     _apiService.dispose();
     _bluetoothService.dispose();
+    _audioService.dispose();
     _cooldownTimer.dispose();
     _autoPingTimer.dispose();
     _rxWindowTimer.dispose();

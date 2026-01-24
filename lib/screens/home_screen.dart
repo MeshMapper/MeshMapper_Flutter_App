@@ -148,17 +148,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
           // Compact connection info
           const Padding(
-            padding: EdgeInsets.all(12),
+            padding: EdgeInsets.fromLTRB(12, 12, 12, 4),
             child: ConnectionPanel(compact: true),
           ),
 
           // Ping controls
           const Padding(
-            padding: EdgeInsets.all(12),
+            padding: EdgeInsets.fromLTRB(12, 4, 12, 12),
             child: PingControls(),
           ),
-
-          const SizedBox(height: 8),
         ],
       ),
     );
@@ -225,7 +223,7 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.6,
+        initialChildSize: 0.85,
         minChildSize: 0.3,
         maxChildSize: 0.9,
         expand: false,
@@ -302,6 +300,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: Colors.orange,
                 title: 'Offline Mode',
                 description: 'Save pings locally instead of uploading immediately. Useful when you have poor connectivity. Upload saved sessions later from the Settings tab.',
+              ),
+
+              // Sound toggle
+              _buildHelpItem(
+                icon: Icons.volume_up,
+                color: Colors.blue,
+                title: 'Sound',
+                description: 'Sonar tone when sending TX/Discovery pings. Message tone when receiving valid RX packets, heard repeaters, or discovery responses.',
               ),
 
               const SizedBox(height: 8),
