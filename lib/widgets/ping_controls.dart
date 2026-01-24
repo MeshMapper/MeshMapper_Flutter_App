@@ -730,6 +730,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
     // Check if any button is actively expanded (showing label)
     final anyExpanded = sendPingExpanded || activeModeExpanded || passiveModeExpanded;
+    // Check if all buttons are disabled (no color) - used to split space equally in initial state
+    final allDisabled = !sendPingShowColor && !activeModeShowColor && !passiveModeShowColor;
 
     // Build the buttons
     final sendPingButton = _CompactActionButton(
@@ -808,7 +810,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         // Send Ping - expanded buttons stay big even when grey (cooldown)
         if (sendPingExpanded)
           Expanded(child: sendPingButton)
-        else if (!anyExpanded && sendPingShowColor)
+        else if (!anyExpanded && (sendPingShowColor || allDisabled))
           Expanded(child: sendPingButton)
         else
           sendPingButton,
@@ -817,7 +819,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         // Active Mode
         if (activeModeExpanded)
           Expanded(child: activeModeButton)
-        else if (!anyExpanded && activeModeShowColor)
+        else if (!anyExpanded && (activeModeShowColor || allDisabled))
           Expanded(child: activeModeButton)
         else
           activeModeButton,
@@ -826,7 +828,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         // Passive Mode
         if (passiveModeExpanded)
           Expanded(child: passiveModeButton)
-        else if (!anyExpanded && passiveModeShowColor)
+        else if (!anyExpanded && (passiveModeShowColor || allDisabled))
           Expanded(child: passiveModeButton)
         else
           passiveModeButton,

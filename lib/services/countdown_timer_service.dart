@@ -17,7 +17,7 @@ class CountdownResult {
 /// Reference: createCountdownTimer() in wardrive.js
 ///
 /// Features:
-/// - 1-second update interval
+/// - 500ms update interval for responsive countdown display
 /// - First update respects minimum visibility
 /// - Subsequent updates are immediate for smooth countdown
 /// - Auto-stops when countdown reaches zero
@@ -57,8 +57,8 @@ class CountdownTimerService {
     _endTime = DateTime.now().add(Duration(milliseconds: durationMs));
     _isFirstUpdate = true;
 
-    // Start 1-second update timer
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _update());
+    // Start 500ms update timer for responsive countdown
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (_) => _update());
 
     // Trigger immediate update
     _update();
@@ -201,8 +201,8 @@ class AutoPingTimer extends CountdownTimerService {
     _endTime = DateTime.now().add(Duration(milliseconds: durationMs));
     _isFirstUpdate = true;
 
-    // Start 1-second update timer with custom update logic
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _updateWithSkipReason());
+    // Start 500ms update timer with custom update logic
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (_) => _updateWithSkipReason());
 
     // Trigger immediate update
     _updateWithSkipReason();
