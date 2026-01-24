@@ -1195,6 +1195,12 @@ class AppStateProvider extends ChangeNotifier {
   Future<bool> sendPing() async {
     if (_pingService == null) return false;
 
+    // Check session validity before starting (skip in offline mode)
+    if (!_preferences.offlineMode) {
+      final sessionCheck = await _checkSessionBeforeAction();
+      if (!sessionCheck) return false;
+    }
+
     // Set sending state immediately for instant UI feedback
     _isPingSending = true;
     notifyListeners();
@@ -1207,6 +1213,27 @@ class AppStateProvider extends ChangeNotifier {
       _isPingSending = false;
       notifyListeners();
     }
+  }
+
+  /// Check session validity before starting a wardrive action
+  /// Returns true if session is valid, false if expired (triggers disconnect)
+  Future<bool> _checkSessionBeforeAction() async {
+    final pos = _gpsService?.lastPosition;
+    final result = await _apiService.checkSessionValid(
+      lat: pos?.latitude,
+      lon: pos?.longitude,
+    );
+
+    if (!result.isValid) {
+      debugWarn('[APP] Session check failed before action: ${result.reason} - ${result.message}');
+      _statusMessageService.setDynamicStatus(
+        result.message ?? 'Session expired',
+        StatusColor.error,
+      );
+      // Note: onSessionError callback will trigger disconnect for critical errors
+      return false;
+    }
+    return true;
   }
 
   /// Toggle auto-ping mode (TX/RX or RX-only)
@@ -1266,6 +1293,12 @@ class AppStateProvider extends ChangeNotifier {
         debugLog('[RX AUTO] Stopped - no cooldown (passive mode)');
       }
     } else {
+      // Check session validity before starting (skip in offline mode)
+      if (!_preferences.offlineMode) {
+        final sessionCheck = await _checkSessionBeforeAction();
+        if (!sessionCheck) return false;
+      }
+
       // Block starting if shared cooldown is active (TX/RX Auto only)
       // RX Auto is passive listening and can start during cooldown
       if (!isRxOnly && _cooldownTimer.isRunning) {
@@ -2257,6 +2290,11 @@ class AppStateProvider extends ChangeNotifier {
       id: _rememberedDevice!.id,
       name: _rememberedDevice!.name,
     );
+
+    // Pre-populate the BLE scan cache with remembered device info
+    // This ensures the device name is available during connect()
+    // (normally populated by scanning, but we're skipping the scan)
+    _bluetoothService.cacheDeviceInfo(device);
 
     await connectToDevice(device);
   }

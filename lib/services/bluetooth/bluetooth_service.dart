@@ -69,6 +69,10 @@ abstract class BluetoothService {
   /// Write data to device
   Future<void> write(Uint8List data);
 
+  /// Pre-populate device cache with known device info
+  /// Used for remembered devices to ensure name is available during connect
+  void cacheDeviceInfo(DiscoveredDevice device);
+
   /// Dispose of resources
   void dispose();
 }

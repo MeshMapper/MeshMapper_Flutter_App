@@ -409,6 +409,12 @@ class MobileBluetoothService implements BluetoothService {
   }
 
   @override
+  void cacheDeviceInfo(DiscoveredDevice device) {
+    _scannedDevices[device.id] = device;
+    print('[BLE] Cached device info: ${device.name} (${device.id})');
+  }
+
+  @override
   void dispose() {
     _isDisposed = true;
     _scanSubscription?.cancel();

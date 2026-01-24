@@ -253,9 +253,9 @@ class ApiService {
         };
       }
 
-      // Log the full request payload
-      debugLog('[HEARTBEAT] POST $wardriveEndpoint');
-      debugLog('[HEARTBEAT] Payload: ${json.encode(payload)}');
+      // Log heartbeat request (hide sensitive payload details)
+      final hasCoords = lat != null && lon != null;
+      debugLog('[HEARTBEAT] POST (with GPS: $hasCoords)');
 
       final response = await _client.post(
         Uri.parse(wardriveEndpoint),
@@ -280,6 +280,50 @@ class ApiService {
       debugError('[HEARTBEAT] Request failed: $e');
       return null;
     }
+  }
+
+  /// Check if session is still valid by sending a heartbeat
+  /// Use this before starting any wardrive action (Send Ping, Active Mode, Passive Mode)
+  /// Returns (isValid, errorReason, errorMessage)
+  Future<({bool isValid, String? reason, String? message})> checkSessionValid({
+    double? lat,
+    double? lon,
+  }) async {
+    if (_sessionId == null) {
+      debugWarn('[SESSION] No session to validate');
+      return (isValid: false, reason: 'no_session', message: 'No active session');
+    }
+
+    debugLog('[SESSION] Checking session validity via heartbeat...');
+    final result = await sendHeartbeat(lat: lat, lon: lon);
+
+    if (result == null) {
+      debugWarn('[SESSION] Session check failed: no response');
+      return (isValid: false, reason: 'no_response', message: 'Server did not respond');
+    }
+
+    if (result['success'] == true) {
+      debugLog('[SESSION] Session is valid (expires_at: ${result['expires_at']})');
+      return (isValid: true, reason: null, message: null);
+    }
+
+    // Session is invalid - check reason
+    final reason = result['reason'] as String?;
+    final message = result['message'] as String?;
+    debugWarn('[SESSION] Session invalid: $reason - $message');
+
+    // Trigger session error callback for critical errors
+    const criticalErrors = {
+      'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
+      'invalid_key', 'unauthorized', 'bad_key',
+      'outside_zone', 'zone_full',
+    };
+    if (criticalErrors.contains(reason)) {
+      _clearSession();
+      onSessionError?.call(reason, message);
+    }
+
+    return (isValid: false, reason: reason, message: message);
   }
 
   /// Enable heartbeat mode (called when auto mode starts)

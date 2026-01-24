@@ -251,6 +251,12 @@ class WebBluetoothService implements BluetoothService {
   }
 
   @override
+  void cacheDeviceInfo(DiscoveredDevice device) {
+    // Web Bluetooth uses _pendingDevice from requestDevice dialog
+    // No caching needed - this method is for mobile remembered devices
+  }
+
+  @override
   void dispose() {
     _notificationSubscription?.cancel();
     _connectionController.close();
