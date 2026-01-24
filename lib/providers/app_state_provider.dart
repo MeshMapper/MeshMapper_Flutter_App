@@ -105,6 +105,7 @@ class AppStateProvider extends ChangeNotifier {
   PingStats _pingStats = const PingStats();
   bool _autoPingEnabled = false;
   AutoMode _autoMode = AutoMode.txRx;
+  bool _isPingSending = false; // True immediately when ping button clicked
   int _queueSize = 0;
   int? _currentNoiseFloor;
   int? _currentBatteryPercent;
@@ -184,6 +185,7 @@ class AppStateProvider extends ChangeNotifier {
   PingStats get pingStats => _pingStats;
   bool get autoPingEnabled => _autoPingEnabled;
   AutoMode get autoMode => _autoMode;
+  bool get isPingSending => _isPingSending;
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
   int? get currentBatteryPercent => _currentBatteryPercent;
@@ -1152,8 +1154,19 @@ class AppStateProvider extends ChangeNotifier {
   /// Send a manual TX ping
   Future<bool> sendPing() async {
     if (_pingService == null) return false;
+
+    // Set sending state immediately for instant UI feedback
+    _isPingSending = true;
+    notifyListeners();
+
     debugLog('[PING] Sending manual TX ping');
-    return await _pingService!.sendTxPing(manual: true);
+    try {
+      return await _pingService!.sendTxPing(manual: true);
+    } finally {
+      // Clear sending state when done (RX window timer will show listening state)
+      _isPingSending = false;
+      notifyListeners();
+    }
   }
 
   /// Toggle auto-ping mode (TX/RX or RX-only)

@@ -22,6 +22,9 @@ class PingControls extends StatelessWidget {
     final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
     final cooldownActive = appState.cooldownTimer.isRunning; // Shared cooldown for both TX Ping and TX/RX Auto
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
+    final rxWindowActive = appState.rxWindowTimer.isRunning; // RX listening window after ping
+    final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
+    final isPingSending = appState.isPingSending; // True immediately when button clicked
 
     // TX is blocked when offline mode is active and connected
     final txBlockedByOffline = appState.offlineMode && appState.isConnected;
@@ -78,17 +81,23 @@ class PingControls extends StatelessWidget {
         Row(
           children: [
             // Send Ping button - disabled when offline mode is active, but works during Passive Mode
+            // Shows active state with pulse animation during sending and RX listening window
             Expanded(
               child: _ActionButton(
                 icon: Icons.cell_tower,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : (cooldownActive && !isTxRxAutoRunning ? '$cooldownRemaining s' : 'Send Ping'),
+                    : isPingSending
+                        ? 'Sending...'
+                        : rxWindowActive
+                            ? 'Listening ${rxWindowRemaining}s'
+                            : (cooldownActive && !isTxRxAutoRunning ? '$cooldownRemaining s' : 'Send Ping'),
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline,
+                enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline && !rxWindowActive && !isPingSending,
+                isActive: isPingSending || rxWindowActive,
                 onPressed: () => _sendPing(context, appState),
                 showCooldown: cooldownActive && !isTxRxAutoRunning && !txBlockedByOffline,
-                subtitle: txBlockedByOffline ? 'Offline Mode' : moveSubtitle,
+                subtitle: txBlockedByOffline ? 'Offline Mode' : ((isPingSending || rxWindowActive) ? null : moveSubtitle),
                 subtitleColor: txBlockedByOffline ? Colors.orange : Colors.orange.shade600,
               ),
             ),
@@ -256,7 +265,10 @@ class _ActionButtonState extends State<_ActionButton>
 
   @override
   Widget build(BuildContext context) {
-    final effectiveColor = widget.enabled ? widget.color : Colors.grey;
+    // Use color when enabled, active (RX listening), or during cooldown
+    // This prevents the button from going grey during cooldown
+    final showColor = widget.enabled || widget.isActive || widget.showCooldown;
+    final effectiveColor = showColor ? widget.color : Colors.grey;
     final borderOpacity = widget.isActive ? 0.6 : 0.3;
 
     return AnimatedBuilder(
@@ -294,7 +306,7 @@ class _ActionButtonState extends State<_ActionButton>
                         Icon(
                           widget.icon,
                           size: 26,
-                          color: widget.enabled
+                          color: showColor
                               ? effectiveColor
                               : Colors.grey.shade400,
                         ),
@@ -326,7 +338,7 @@ class _ActionButtonState extends State<_ActionButton>
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                      color: widget.enabled
+                      color: showColor
                           ? (widget.isActive ? effectiveColor : Colors.grey.shade700)
                           : Colors.grey.shade400,
                     ),

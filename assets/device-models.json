@@ -212,6 +212,14 @@
       "notes": "OLED display variant"
     },
     {
+      "manufacturer": "Seeed SenseCAP Indicator",
+      "shortName": "Seeed SenseCAP Indicator",
+      "power": 0.3,
+      "platform": "ESP32S3",
+      "txPower": 22,
+      "notes": "Seeed SenseCAP ESP32S3"
+    },
+    {
       "manufacturer": "Seeed Wio E5 Dev Board",
       "shortName": "Wio E5 Dev Board",
       "power": 0.3,
