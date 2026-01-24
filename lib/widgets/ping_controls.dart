@@ -20,6 +20,7 @@ class PingControls extends StatelessWidget {
     final canStartAuto = autoValidation == PingValidation.valid;
     final isTxRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.txRx;
     final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
+    final isPendingDisable = appState.isPendingDisable; // Disable pending, waiting for RX window to complete
     final cooldownActive = appState.cooldownTimer.isRunning; // Shared cooldown after disabling Active Mode
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning; // RX listening window after ping
@@ -106,7 +107,8 @@ class PingControls extends StatelessWidget {
                                         ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
                                         : 'Send Ping',
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline && !rxWindowActive && !isPingSending && !discoveryWindowActive,
+                enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline &&
+                         !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
                 isActive: (isPingSending || rxWindowActive) && !isTxRxAutoRunning,  // Only active during manual ping flow
                 onPressed: () => _sendPing(context, appState),
                 showCooldown: false, // No longer needed - countdown shown in label
@@ -125,27 +127,34 @@ class PingControls extends StatelessWidget {
                 icon: Icons.sensors,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : isTxRxAutoRunning
-                        ? (isPingInProgress && !rxWindowActive
-                            ? 'Sending...'  // Brief moment while ping is being sent
+                    : isPendingDisable
+                        ? (rxWindowActive
+                            ? 'Stopping ${rxWindowRemaining}s'  // Show remaining time until disable completes
+                            : 'Stopping...')  // Brief transition state
+                        : isTxRxAutoRunning
+                            ? (isPingInProgress && !rxWindowActive
+                                ? 'Sending...'  // Brief moment while ping is being sent
+                                : rxWindowActive
+                                    ? 'Listening ${rxWindowRemaining}s'  // During RX window
+                                    : autoPingWaiting
+                                        ? 'Next ping ${autoPingRemaining}s'  // Waiting for next auto ping
+                                        : 'Active Mode')  // Initial state before first ping
                             : rxWindowActive
-                                ? 'Listening ${rxWindowRemaining}s'  // During RX window
-                                : autoPingWaiting
-                                    ? 'Next ping ${autoPingRemaining}s'  // Waiting for next auto ping
-                                    : 'Active Mode')  // Initial state before first ping
-                        : rxWindowActive
-                            ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping
-                            : cooldownActive
-                                ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
-                                : 'Active Mode',
-                color: isTxRxAutoRunning
-                    ? const Color(0xFF22C55E) // green-500
-                    : const Color(0xFF6366F1), // indigo-500
-                enabled: (isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline,
-                isActive: isTxRxAutoRunning && (isPingInProgress || rxWindowActive || autoPingWaiting),  // Active during sending/listening/waiting phases
+                                ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping
+                                : cooldownActive
+                                    ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
+                                    : 'Active Mode',
+                color: isPendingDisable
+                    ? Colors.orange  // Orange when stopping
+                    : isTxRxAutoRunning
+                        ? const Color(0xFF22C55E) // green-500
+                        : const Color(0xFF6366F1), // indigo-500
+                // When pending disable, button is disabled but still shows stopping state
+                enabled: !isPendingDisable && ((isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline),
+                isActive: isPendingDisable || (isTxRxAutoRunning && (isPingInProgress || rxWindowActive || autoPingWaiting)),  // Active during stopping or sending/listening/waiting phases
                 onPressed: () => _toggleTxRxAuto(context, appState),
                 showCooldown: false, // No longer needed - countdown shown in label
-                subtitle: txBlockedByOffline ? 'Offline Mode' : null,
+                subtitle: txBlockedByOffline ? 'Offline Mode' : (isPendingDisable ? 'Stopping' : null),
                 subtitleColor: Colors.orange,
               ),
             ),
@@ -165,8 +174,8 @@ class PingControls extends StatelessWidget {
                         : autoPingWaiting
                             ? 'Next Disc ${autoPingRemaining}s'  // Waiting for next discovery
                             : 'Passive Mode')  // Initial state before first discovery
-                    : isTxRxAutoRunning
-                        ? 'Passive Mode'  // Just disabled when Active Mode is running
+                    : isTxRxAutoRunning || isPendingDisable
+                        ? 'Passive Mode'  // Just disabled when Active Mode is running or stopping
                         : rxWindowActive
                             ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping listening
                             : cooldownActive
@@ -175,7 +184,7 @@ class PingControls extends StatelessWidget {
                 color: isRxAutoRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500
-                enabled: isRxAutoRunning || (appState.isConnected && !isTxRxAutoRunning &&
+                enabled: isRxAutoRunning || (appState.isConnected && !isTxRxAutoRunning && !isPendingDisable &&
                     !isPingSending && !rxWindowActive && !cooldownActive &&
                     prefs.externalAntennaSet && isPowerSet),
                 isActive: isRxAutoRunning && (discoveryWindowActive || autoPingWaiting),  // Active during listening/waiting phases
@@ -628,6 +637,345 @@ class _OfflineModeToggle extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Compact ping controls for minimized panel view
+/// Shows 3 small horizontal pill buttons in a row
+class CompactPingControls extends StatelessWidget {
+  const CompactPingControls({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppStateProvider>();
+    final validation = appState.pingValidation;
+    final autoValidation = appState.autoModeValidation;
+    final canPing = validation == PingValidation.valid;
+    final canStartAuto = autoValidation == PingValidation.valid;
+    final isTxRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.txRx;
+    final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
+    final isPendingDisable = appState.isPendingDisable; // Disable pending, waiting for RX window to complete
+    final cooldownActive = appState.cooldownTimer.isRunning;
+    final cooldownRemaining = appState.cooldownTimer.remainingSec;
+    final rxWindowActive = appState.rxWindowTimer.isRunning;
+    final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
+    final isPingSending = appState.isPingSending;
+    final isPingInProgress = appState.isPingInProgress;
+    final autoPingWaiting = appState.autoPingTimer.isRunning;
+    final autoPingRemaining = appState.autoPingTimer.remainingSec;
+    final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
+    final discoveryWindowRemaining = appState.discoveryWindowTimer.remainingSec;
+
+    // TX is blocked when offline mode is active and connected
+    final txBlockedByOffline = appState.offlineMode && appState.isConnected;
+
+    final prefs = appState.preferences;
+    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
+
+    return Row(
+      children: [
+        // Send Ping button (compact)
+        Expanded(
+          child: _CompactActionButton(
+            icon: Icons.cell_tower,
+            label: _getSendPingLabel(
+              txBlockedByOffline: txBlockedByOffline,
+              isTxRxAutoRunning: isTxRxAutoRunning,
+              isPingSending: isPingSending,
+              rxWindowActive: rxWindowActive,
+              rxWindowRemaining: rxWindowRemaining,
+              discoveryWindowActive: discoveryWindowActive,
+              discoveryWindowRemaining: discoveryWindowRemaining,
+              cooldownActive: cooldownActive,
+              cooldownRemaining: cooldownRemaining,
+              isPendingDisable: isPendingDisable,
+            ),
+            color: const Color(0xFF0EA5E9), // sky-500
+            enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline &&
+                     !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
+            isActive: (isPingSending || rxWindowActive) && !isTxRxAutoRunning && !cooldownActive,
+            onPressed: () => _sendPing(context, appState),
+          ),
+        ),
+        const SizedBox(width: 8),
+
+        // Active Mode button (compact)
+        Expanded(
+          child: _CompactActionButton(
+            icon: Icons.sensors,
+            label: _getActiveModeLabel(
+              txBlockedByOffline: txBlockedByOffline,
+              isTxRxAutoRunning: isTxRxAutoRunning,
+              isPingInProgress: isPingInProgress,
+              rxWindowActive: rxWindowActive,
+              rxWindowRemaining: rxWindowRemaining,
+              autoPingWaiting: autoPingWaiting,
+              autoPingRemaining: autoPingRemaining,
+              cooldownActive: cooldownActive,
+              cooldownRemaining: cooldownRemaining,
+              isPendingDisable: isPendingDisable,
+            ),
+            color: isPendingDisable
+                ? Colors.orange  // Orange when stopping
+                : isTxRxAutoRunning
+                    ? const Color(0xFF22C55E) // green-500
+                    : const Color(0xFF6366F1), // indigo-500
+            enabled: !isPendingDisable && ((isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline),
+            isActive: isPendingDisable || (isTxRxAutoRunning && (isPingInProgress || rxWindowActive || autoPingWaiting)),
+            onPressed: () => _toggleTxRxAuto(context, appState),
+          ),
+        ),
+        const SizedBox(width: 8),
+
+        // Passive Mode button (compact)
+        Expanded(
+          child: _CompactActionButton(
+            icon: Icons.hearing,
+            label: _getPassiveModeLabel(
+              isRxAutoRunning: isRxAutoRunning,
+              discoveryWindowActive: discoveryWindowActive,
+              discoveryWindowRemaining: discoveryWindowRemaining,
+              autoPingWaiting: autoPingWaiting,
+              autoPingRemaining: autoPingRemaining,
+              isTxRxAutoRunning: isTxRxAutoRunning,
+              rxWindowActive: rxWindowActive,
+              rxWindowRemaining: rxWindowRemaining,
+              cooldownActive: cooldownActive,
+              cooldownRemaining: cooldownRemaining,
+              isPendingDisable: isPendingDisable,
+            ),
+            color: isRxAutoRunning
+                ? const Color(0xFF22C55E) // green-500
+                : const Color(0xFF6366F1), // indigo-500
+            enabled: isRxAutoRunning || (appState.isConnected && !isTxRxAutoRunning && !isPendingDisable &&
+                !isPingSending && !rxWindowActive && !cooldownActive &&
+                prefs.externalAntennaSet && isPowerSet),
+            isActive: isRxAutoRunning && (discoveryWindowActive || autoPingWaiting),
+            onPressed: () => _toggleRxAuto(context, appState),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Get abbreviated label for Send Ping button in compact mode
+  String? _getSendPingLabel({
+    required bool txBlockedByOffline,
+    required bool isTxRxAutoRunning,
+    required bool isPingSending,
+    required bool rxWindowActive,
+    required int rxWindowRemaining,
+    required bool discoveryWindowActive,
+    required int discoveryWindowRemaining,
+    required bool cooldownActive,
+    required int cooldownRemaining,
+    required bool isPendingDisable,
+  }) {
+    if (txBlockedByOffline) return null;
+    if (isTxRxAutoRunning) return null;
+    if (isPendingDisable) return null;  // Disabled while stopping
+    if (isPingSending) return '...';
+    if (rxWindowActive) return '${rxWindowRemaining}s';
+    if (discoveryWindowActive) return '${discoveryWindowRemaining}s';
+    if (cooldownActive) return '${cooldownRemaining}s';
+    return null; // Icon only when idle
+  }
+
+  /// Get abbreviated label for Active Mode button in compact mode
+  String? _getActiveModeLabel({
+    required bool txBlockedByOffline,
+    required bool isTxRxAutoRunning,
+    required bool isPingInProgress,
+    required bool rxWindowActive,
+    required int rxWindowRemaining,
+    required bool autoPingWaiting,
+    required int autoPingRemaining,
+    required bool cooldownActive,
+    required int cooldownRemaining,
+    required bool isPendingDisable,
+  }) {
+    if (txBlockedByOffline) return null;
+    // Show stopping countdown when pending disable
+    if (isPendingDisable) {
+      if (rxWindowActive) return '${rxWindowRemaining}s';  // Show remaining time
+      return '...';  // Brief transition
+    }
+    if (isTxRxAutoRunning) {
+      if (isPingInProgress && !rxWindowActive) return '...';
+      if (rxWindowActive) return '${rxWindowRemaining}s';
+      if (autoPingWaiting) return '${autoPingRemaining}s';
+      return null;
+    }
+    if (rxWindowActive) return '${rxWindowRemaining}s';
+    if (cooldownActive) return '${cooldownRemaining}s';
+    return null; // Icon only when idle
+  }
+
+  /// Get abbreviated label for Passive Mode button in compact mode
+  String? _getPassiveModeLabel({
+    required bool isRxAutoRunning,
+    required bool discoveryWindowActive,
+    required int discoveryWindowRemaining,
+    required bool autoPingWaiting,
+    required int autoPingRemaining,
+    required bool isTxRxAutoRunning,
+    required bool rxWindowActive,
+    required int rxWindowRemaining,
+    required bool cooldownActive,
+    required int cooldownRemaining,
+    required bool isPendingDisable,
+  }) {
+    if (isRxAutoRunning) {
+      if (discoveryWindowActive) return '${discoveryWindowRemaining}s';
+      if (autoPingWaiting) return '${autoPingRemaining}s';
+      return null;
+    }
+    if (isTxRxAutoRunning || isPendingDisable) return null;  // Disabled while Active Mode is running or stopping
+    if (rxWindowActive) return '${rxWindowRemaining}s';
+    if (cooldownActive) return '${cooldownRemaining}s';
+    return null; // Icon only when idle
+  }
+
+  Future<void> _sendPing(BuildContext context, AppStateProvider appState) async {
+    HapticFeedback.mediumImpact();
+
+    final success = await appState.sendPing();
+
+    if (success) {
+      appState.statusMessageService.setDynamicStatus(
+        'Ping sent!',
+        StatusColor.success,
+      );
+    }
+  }
+
+  Future<void> _toggleTxRxAuto(BuildContext context, AppStateProvider appState) async {
+    HapticFeedback.lightImpact();
+    await appState.toggleAutoPing(AutoMode.txRx);
+  }
+
+  Future<void> _toggleRxAuto(BuildContext context, AppStateProvider appState) async {
+    HapticFeedback.lightImpact();
+    await appState.toggleAutoPing(AutoMode.rxOnly);
+  }
+}
+
+/// Compact action button for minimized panel - horizontal pill layout
+class _CompactActionButton extends StatefulWidget {
+  final IconData icon;
+  final String? label; // null = icon only
+  final Color color;
+  final bool enabled;
+  final bool isActive;
+  final VoidCallback onPressed;
+
+  const _CompactActionButton({
+    required this.icon,
+    this.label,
+    required this.color,
+    required this.enabled,
+    required this.onPressed,
+    this.isActive = false,
+  });
+
+  @override
+  State<_CompactActionButton> createState() => _CompactActionButtonState();
+}
+
+class _CompactActionButtonState extends State<_CompactActionButton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      duration: const Duration(milliseconds: 1200),
+      vsync: this,
+    );
+    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+
+    if (widget.isActive) {
+      _pulseController.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(_CompactActionButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive) {
+      _pulseController.repeat(reverse: true);
+    } else if (!widget.isActive && oldWidget.isActive) {
+      _pulseController.stop();
+      _pulseController.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showColor = widget.enabled || widget.isActive;
+    final effectiveColor = showColor ? widget.color : Colors.grey;
+
+    return AnimatedBuilder(
+      animation: _pulseAnimation,
+      builder: (context, child) {
+        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.12;
+
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.enabled ? widget.onPressed : null,
+            borderRadius: BorderRadius.circular(14),
+            child: Container(
+              height: 32,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: effectiveColor.withValues(alpha: bgOpacity),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: effectiveColor.withValues(alpha: widget.isActive ? 0.5 : 0.3),
+                  width: widget.isActive ? 1.5 : 1,
+                ),
+              ),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      widget.icon,
+                      size: 18,
+                      color: showColor ? effectiveColor : Colors.grey.shade400,
+                    ),
+                    if (widget.label != null) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        widget.label!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
+                          color: showColor ? effectiveColor : Colors.grey.shade400,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

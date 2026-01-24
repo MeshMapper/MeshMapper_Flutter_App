@@ -189,6 +189,8 @@ class AppStateProvider extends ChangeNotifier {
   bool get isPingSending => _isPingSending;
   bool get isPingInProgress => _pingService?.pingInProgress ?? false;  // True during entire ping + RX window (for auto pings)
   bool get isDiscoveryListening => _pingService?.isDiscoveryListening ?? false;  // True during discovery listening window (for Passive Mode)
+  /// Check if auto-ping disable is pending (waiting for RX window)
+  bool get isPendingDisable => _pingService?.pendingDisable ?? false;
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
   int? get currentBatteryPercent => _currentBatteryPercent;
@@ -765,6 +767,38 @@ class AppStateProvider extends ChangeNotifier {
         _addDiscLogEntry(entry);
       };
 
+      // Wire up pending disable complete callback
+      // Called when user disables Active Mode during sending/listening and the RX window ends
+      _pingService!.onPendingDisableComplete = () async {
+        debugLog('[APP] Pending disable completed, cleaning up');
+
+        // Stop TX echo tracking
+        _pingService!.stopEchoTracking();
+        // Stop RX wardriving (flushes batches)
+        _rxLogger?.stopWardriving(trigger: 'pending_disable');
+
+        // Stop background service
+        await BackgroundServiceManager.stopService();
+
+        // Stop countdown timers
+        _autoPingTimer.stop();
+        _rxWindowTimer.stop();
+
+        // Save offline session if offline mode is enabled
+        if (_preferences.offlineMode) {
+          await _saveOfflineSession();
+        }
+
+        // Disable heartbeat
+        _apiService.disableHeartbeat();
+
+        // Update local state
+        _autoPingEnabled = false;
+
+        debugLog('[APP] Pending disable cleanup complete, cooldown running');
+        notifyListeners();
+      };
+
       // Save this device for quick reconnection (mobile only)
       await _saveRememberedDevice(device);
 
@@ -1185,7 +1219,24 @@ class AppStateProvider extends ChangeNotifier {
     // If currently running the same mode, stop it (always allow stopping)
     if (_autoPingEnabled && _autoMode == mode) {
       debugLog('[PING] Stopping auto mode: ${mode.name}');
-      await _pingService!.forceDisableAutoPing();
+
+      // Try graceful disable first - this queues disable if ping is in progress
+      await _pingService!.disableAutoPing();
+
+      // If ping was in progress, disableAutoPing() queued the disable
+      // Just update UI state - actual disable happens after RX window
+      if (_pingService!.pendingDisable) {
+        debugLog('[PING] Disable pending, will complete after RX window');
+        // Don't change _autoPingEnabled yet - let RX window complete
+        // But notify listeners so UI can grey out buttons and show "Stopping..."
+        notifyListeners();
+        return true;
+      }
+
+      // No ping in progress - immediate disable path
+      // Stop TX echo tracking to prevent late timer callbacks from triggering pings
+      // This fixes race condition where RX window timer fires after mode is disabled
+      _pingService!.stopEchoTracking();
       // Stop RX wardriving (flushes batches)
       _rxLogger?.stopWardriving(trigger: 'user_stop');
 
@@ -1225,6 +1276,8 @@ class AppStateProvider extends ChangeNotifier {
       // Stop any existing mode first
       if (_autoPingEnabled) {
         await _pingService!.forceDisableAutoPing();
+        // Stop TX echo tracking to prevent late timer callbacks
+        _pingService!.stopEchoTracking();
         _rxLogger?.stopWardriving(trigger: 'mode_switch');
         await BackgroundServiceManager.stopService();
         // Stop countdown timers when switching modes

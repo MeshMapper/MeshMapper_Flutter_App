@@ -72,6 +72,9 @@ class PingService {
   bool _rxOnlyMode = false;
   Timer? _autoTimer;
 
+  // Pending disable flag - when true, disable will execute after RX window ends
+  bool _pendingDisable = false;
+
   // Auto-ping interval in milliseconds (default 30s, options: 15s, 30s, 60s)
   // Reference: getSelectedIntervalMs() in wardrive.js
   int _autoPingIntervalMs = 30000;
@@ -101,6 +104,10 @@ class PingService {
   /// Callback for discovery events (RX Auto mode)
   /// Called when a discovery window completes with the log entry
   void Function(DiscLogEntry)? onDiscoveryComplete;
+
+  /// Callback when pending disable completes after RX window
+  /// AppStateProvider uses this to update its state and cleanup
+  Future<void> Function()? onPendingDisableComplete;
 
   /// Last TX ping sent (for updating with heard repeaters)
   TxPing? _lastTxPing;
@@ -142,6 +149,9 @@ class PingService {
 
   /// Get current auto-ping interval in milliseconds
   int get autoPingIntervalMs => _autoPingIntervalMs;
+
+  /// Check if a disable is pending (waiting for RX window to complete)
+  bool get pendingDisable => _pendingDisable;
 
   /// Get current skip reason (for auto mode display)
   String? get skipReason => _skipReason;
@@ -301,11 +311,12 @@ class PingService {
     _pingInProgress = true;
 
     try {
-      // Check cooldown only for manual pings
-      // Reference: manual && isInCooldown() check in wardrive.js
-      if (manual && isInCooldown()) {
+      // Check cooldown for ALL pings (manual and auto)
+      // This fixes a race condition where disabling Active Mode during cooldown
+      // could still trigger an auto-ping from a late RX window timer callback
+      if (isInCooldown()) {
         final remainingSec = getRemainingCooldownSeconds();
-        debugLog('[PING] Manual ping blocked by cooldown (${remainingSec}s remaining)');
+        debugLog('[PING] Ping blocked by cooldown (${remainingSec}s remaining), manual=$manual');
         _pingInProgress = false;
         return false;
       }
@@ -464,7 +475,7 @@ class PingService {
 
   /// End RX listening window and finalize results from TxTracker
   /// Reference: setTimeout callback at RX_LOG_LISTEN_WINDOW_MS in wardrive.js
-  void _endRxListeningWindow(Position txPosition) {
+  Future<void> _endRxListeningWindow(Position txPosition) async {
     debugLog('[PING] RX listening window ended');
 
     // Format heard_repeats string from TxTracker results
@@ -514,11 +525,31 @@ class PingService {
     // Reference: unlockPingControls("after RX listening window completion") in wardrive.js
     _pingInProgress = false;
 
-    // Schedule next auto ping if in TX/RX Auto mode
+    // After RX window ends, check if disable was requested during the window
+    if (_pendingDisable) {
+      debugLog('[PING] Executing pending disable after RX window');
+      _pendingDisable = false;
+      _autoPingEnabled = false;
+      _rxOnlyMode = false;
+      _autoTimer?.cancel();
+      _autoTimer = null;
+      // Start cooldown immediately
+      _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
+      debugLog('[PING] Pending disable complete, cooldown started');
+      // Notify AppStateProvider to update its state and cleanup
+      await onPendingDisableComplete?.call();
+      return;  // Don't schedule next auto ping
+    }
+
+    // Schedule next auto ping if in TX/RX Auto mode AND not in cooldown
+    // The cooldown check prevents scheduling when user disabled auto mode during RX window
+    // (the cooldown timer started when auto mode was disabled)
     // Reference: scheduleNextAutoPing() called after RX window in wardrive.js
-    if (_autoPingEnabled && !_rxOnlyMode) {
+    if (_autoPingEnabled && !_rxOnlyMode && !isInCooldown()) {
       debugLog('[TX/RX AUTO] Scheduling next auto ping after RX window completion');
       _scheduleNextAutoPing();
+    } else if (isInCooldown()) {
+      debugLog('[PING] Skipping auto-ping scheduling - cooldown active');
     }
 
     // TxTracker automatically stops after window duration
@@ -647,6 +678,14 @@ class PingService {
       return true;
     }
 
+    // If ping is in progress (sending or listening), queue the disable
+    // Let the RX window complete naturally, then disable + start cooldown
+    if (_pingInProgress) {
+      debugLog('[PING] Ping in progress, queuing disable for after RX window');
+      _pendingDisable = true;
+      return true;  // Return true to indicate disable was accepted (pending)
+    }
+
     // Check cooldown before stopping (unless forced)
     // Reference: isInCooldown() check in stopAutoPing() in wardrive.js
     if (!_rxOnlyMode && isInCooldown()) {
@@ -676,6 +715,7 @@ class PingService {
   /// Force disable auto-ping (ignores cooldown, used for disconnect)
   Future<void> forceDisableAutoPing() async {
     debugLog('[PING] Force disabling auto-ping');
+    _pendingDisable = false;  // Clear any pending disable
     _autoTimer?.cancel();
     _autoTimer = null;
     _skipReason = null;
@@ -878,6 +918,21 @@ class PingService {
     onAutoPingScheduled?.call(_discoveryInterval.inMilliseconds, _skipReason);
 
     debugLog('[DISC] Next discovery scheduled in ${_discoveryInterval.inSeconds}s');
+  }
+
+  /// Stop any active TX echo tracking window
+  /// Called when disabling auto mode to prevent late timer callbacks from
+  /// triggering pings during cooldown (race condition fix)
+  void stopEchoTracking() {
+    debugLog('[PING] Stopping TX echo tracking and RX window timer');
+    _rxWindowTimer?.cancel();
+    _rxWindowTimer = null;
+    _txTracker?.stopTracking();
+    // Clear pending TX context since we're aborting the window
+    _pendingTxTimestamp = null;
+    _pendingTxNoiseFloor = null;
+    // Unlock ping controls if the window was in progress
+    _pingInProgress = false;
   }
 
   /// Dispose of resources

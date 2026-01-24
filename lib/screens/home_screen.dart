@@ -19,6 +19,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _showControlPanel = true;
+  bool _isControlsMinimized = false;
   bool _showStatusIsland = false; // Default to closed
 
   @override
@@ -121,7 +122,9 @@ class _HomeScreenState extends State<HomeScreen> {
             bottom: 0,
             left: 0,
             right: 0,
-            child: _buildControlPanel(),
+            child: _isControlsMinimized
+                ? _buildCompactControlPanel()
+                : _buildControlPanel(),
           ),
       ],
     );
@@ -133,7 +136,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Header with help and close buttons
+          // Header with help, minimize, and close buttons
           ListTile(
             title: const Text('Controls', style: TextStyle(fontWeight: FontWeight.bold)),
             trailing: Row(
@@ -145,8 +148,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   tooltip: 'Help',
                 ),
                 IconButton(
+                  icon: const Icon(Icons.close_fullscreen),
+                  onPressed: () => setState(() => _isControlsMinimized = true),
+                  tooltip: 'Minimize',
+                ),
+                IconButton(
                   icon: const Icon(Icons.close),
                   onPressed: () => setState(() => _showControlPanel = false),
+                  tooltip: 'Close',
                 ),
               ],
             ),
@@ -167,6 +176,44 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const SizedBox(height: 8),
         ],
+      ),
+    );
+  }
+
+  /// Build compact minimized control panel
+  Widget _buildCompactControlPanel() {
+    return Card(
+      margin: const EdgeInsets.all(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Row(
+          children: [
+            // Compact controls
+            const Expanded(
+              child: CompactPingControls(),
+            ),
+            const SizedBox(width: 8),
+            // Compact status indicator
+            const _CompactStatusIndicator(),
+            const SizedBox(width: 4),
+            // Maximize button
+            IconButton(
+              icon: const Icon(Icons.open_in_full, size: 20),
+              onPressed: () => setState(() => _isControlsMinimized = false),
+              tooltip: 'Expand',
+              padding: const EdgeInsets.all(4),
+              constraints: const BoxConstraints(),
+            ),
+            // Close button
+            IconButton(
+              icon: const Icon(Icons.close, size: 20),
+              onPressed: () => setState(() => _showControlPanel = false),
+              tooltip: 'Close',
+              padding: const EdgeInsets.all(4),
+              constraints: const BoxConstraints(),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -520,6 +567,141 @@ class _StatusIslandToggle extends StatelessWidget {
           color: Colors.grey.shade300,
         ),
       ),
+    );
+  }
+}
+
+/// Compact status indicator for minimized control panel
+/// Shows current state: listening, waiting, or idle
+class _CompactStatusIndicator extends StatelessWidget {
+  const _CompactStatusIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppStateProvider>();
+
+    final rxWindowActive = appState.rxWindowTimer.isRunning;
+    final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
+    final autoPingWaiting = appState.autoPingTimer.isRunning;
+    final isPingSending = appState.isPingSending;
+    final isPingInProgress = appState.isPingInProgress;
+    final isTxRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.txRx;
+    final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
+
+    // Determine current state and icon/color
+    IconData icon;
+    Color color;
+    bool shouldPulse;
+
+    // Show cell tower when sending ping (manual or auto)
+    // Auto mode: isPingInProgress && !rxWindowActive means ping is being sent
+    final isSendingPing = isPingSending || (isTxRxAutoRunning && isPingInProgress && !rxWindowActive);
+
+    if (isSendingPing) {
+      icon = Icons.cell_tower;
+      color = const Color(0xFF0EA5E9); // sky-500
+      shouldPulse = true;
+    } else if (rxWindowActive) {
+      icon = Icons.hearing;
+      color = const Color(0xFF22C55E); // green-500
+      shouldPulse = true;
+    } else if (discoveryWindowActive) {
+      icon = Icons.radar;
+      color = const Color(0xFF22C55E); // green-500
+      shouldPulse = true;
+    } else if (autoPingWaiting && (isTxRxAutoRunning || isRxAutoRunning)) {
+      icon = Icons.schedule;
+      color = const Color(0xFF6366F1); // indigo-500
+      shouldPulse = false;
+    } else if (isTxRxAutoRunning || isRxAutoRunning) {
+      icon = Icons.check_circle_outline;
+      color = const Color(0xFF22C55E); // green-500
+      shouldPulse = false;
+    } else {
+      // Idle - no indicator needed
+      return const SizedBox.shrink();
+    }
+
+    return _PulsingIcon(
+      icon: icon,
+      color: color,
+      shouldPulse: shouldPulse,
+    );
+  }
+}
+
+/// Small pulsing icon indicator
+class _PulsingIcon extends StatefulWidget {
+  final IconData icon;
+  final Color color;
+  final bool shouldPulse;
+
+  const _PulsingIcon({
+    required this.icon,
+    required this.color,
+    required this.shouldPulse,
+  });
+
+  @override
+  State<_PulsingIcon> createState() => _PulsingIconState();
+}
+
+class _PulsingIconState extends State<_PulsingIcon>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+    _animation = Tween<double>(begin: 0.5, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+
+    if (widget.shouldPulse) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(_PulsingIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.shouldPulse && !oldWidget.shouldPulse) {
+      _controller.repeat(reverse: true);
+    } else if (!widget.shouldPulse && oldWidget.shouldPulse) {
+      _controller.stop();
+      _controller.value = 1.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, child) {
+        return Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: widget.color.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Icon(
+            widget.icon,
+            size: 16,
+            color: widget.color.withValues(alpha: widget.shouldPulse ? _animation.value : 1.0),
+          ),
+        );
+      },
     );
   }
 }
