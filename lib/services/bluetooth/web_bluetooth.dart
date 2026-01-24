@@ -79,10 +79,14 @@ class WebBluetoothService implements BluetoothService {
         // Store the device for later connection (avoid requesting twice)
         _pendingDevice = device;
         debugLog('[BLE] Device selected: ${device.name ?? device.id}');
-        
+
+        final deviceName = device.name ?? 'MeshCore Device';
+        if (device.name == null) {
+          debugWarn('[BLE] WARNING: Device ${device.id} has no name during scan, using fallback "MeshCore Device"');
+        }
         yield DiscoveredDevice(
           id: device.id,
-          name: device.name ?? 'MeshCore Device',
+          name: deviceName,
         );
       }
     } catch (e) {
@@ -197,13 +201,21 @@ class WebBluetoothService implements BluetoothService {
         throw Exception('Failed to enable BLE notifications: $e');
       }
 
+      final deviceName = _device!.name ?? 'MeshCore Device';
+      if (_device!.name == null) {
+        debugWarn('[BLE] WARNING: Device ${_device!.id} has no name during connect, using fallback "MeshCore Device"');
+      }
       _connectedDevice = DiscoveredDevice(
         id: _device!.id,
-        name: _device!.name ?? 'MeshCore Device',
+        name: deviceName,
       );
 
       _updateStatus(ConnectionStatus.connected);
-      debugLog('[BLE] Connected successfully!');
+      if (deviceName == 'MeshCore Device') {
+        debugWarn('[BLE] WARNING: Connected device name is "MeshCore Device"');
+      } else {
+        debugLog('[BLE] Connected successfully as: $deviceName');
+      }
     } catch (e) {
       debugError('[BLE] Connection failed: $e');
       _updateStatus(ConnectionStatus.error);

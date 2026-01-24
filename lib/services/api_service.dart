@@ -25,8 +25,8 @@ class ApiService {
   /// API key (matching wardrive.js)
   static const String apiKey = '59C7754DABDF5C11CA5F5D8368F89';
 
-  /// Heartbeat idle timeout (send keepalive after 3 minutes of no API activity)
-  static const Duration heartbeatIdleTimeout = Duration(minutes: 3);
+  /// Heartbeat buffer - schedule heartbeat 1 minute before session expiry
+  static const Duration heartbeatBuffer = Duration(minutes: 1);
 
   final http.Client _client;
   bool _heartbeatEnabled = false;  // Track if heartbeat mode is active
@@ -215,12 +215,10 @@ class ApiService {
 
       final data = json.decode(response.body) as Map<String, dynamic>;
 
-      // Update expires_at if provided and reset heartbeat idle timer
-      if (data['success'] == true) {
-        if (data['expires_at'] != null) {
-          _sessionExpiresAt = data['expires_at'] as int;
-        }
-        _resetHeartbeatTimer();  // Resets 3-min idle timer on each successful upload
+      // Update expires_at and schedule heartbeat if provided
+      if (data['success'] == true && data['expires_at'] != null) {
+        _sessionExpiresAt = data['expires_at'] as int;
+        scheduleHeartbeat(_sessionExpiresAt!);
       }
 
       return data;
@@ -236,6 +234,7 @@ class ApiService {
     double? lon,
   }) async {
     if (_sessionId == null) {
+      debugLog('[HEARTBEAT] Cannot send heartbeat: no session_id');
       return null;
     }
 
@@ -254,6 +253,10 @@ class ApiService {
         };
       }
 
+      // Log the full request payload
+      debugLog('[HEARTBEAT] POST $wardriveEndpoint');
+      debugLog('[HEARTBEAT] Payload: ${json.encode(payload)}');
+
       final response = await _client.post(
         Uri.parse(wardriveEndpoint),
         headers: {'Content-Type': 'application/json'},
@@ -262,25 +265,34 @@ class ApiService {
 
       final data = json.decode(response.body) as Map<String, dynamic>;
 
-      // Update expires_at if provided (timer reset handled by _resetHeartbeatTimer in caller)
+      // Log the response (matching wardrive.js logging)
+      debugLog('[HEARTBEAT] Response status: ${response.statusCode}');
+      debugLog('[HEARTBEAT] Response data: ${json.encode(data)}');
+
+      // Update expires_at and schedule next heartbeat if provided
       if (data['success'] == true && data['expires_at'] != null) {
         _sessionExpiresAt = data['expires_at'] as int;
+        scheduleHeartbeat(_sessionExpiresAt!);
       }
 
       return data;
     } catch (e) {
+      debugError('[HEARTBEAT] Request failed: $e');
       return null;
     }
   }
 
   /// Enable heartbeat mode (called when auto mode starts)
-  /// Heartbeat fires after 3 minutes of API inactivity to keep session alive
+  /// Heartbeat is scheduled based on expires_at from API responses
   /// @param gpsProvider Callback to get current GPS coordinates for heartbeat
   void enableHeartbeat({({double lat, double lon})? Function()? gpsProvider}) {
     _heartbeatEnabled = true;
     _gpsProvider = gpsProvider;
-    _resetHeartbeatTimer();
-    debugLog('[API] Heartbeat mode enabled (3 min idle timeout)');
+    // Schedule initial heartbeat if we have an expiry time
+    if (_sessionExpiresAt != null) {
+      scheduleHeartbeat(_sessionExpiresAt!);
+    }
+    debugLog('[HEARTBEAT] Heartbeat mode enabled');
   }
 
   /// Disable heartbeat mode (called when auto mode stops)
@@ -289,30 +301,52 @@ class ApiService {
     _gpsProvider = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
-    debugLog('[API] Heartbeat mode disabled');
+    debugLog('[HEARTBEAT] Heartbeat mode disabled');
   }
 
-  /// Reset the heartbeat timer (call after any API activity)
-  /// Timer fires 3 minutes after last API post to send keepalive
-  void _resetHeartbeatTimer() {
+  /// Schedule heartbeat to fire before session expires
+  /// Matches scheduleHeartbeat() in wardrive.js
+  /// @param expiresAt Unix timestamp when session expires
+  void scheduleHeartbeat(int expiresAt) {
+    // Cancel any existing heartbeat timer
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+
     if (!_heartbeatEnabled) return;
 
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer(heartbeatIdleTimeout, () async {
-      debugLog('[API] Heartbeat timer fired (3 min idle), sending keepalive');
+    // Calculate when to send heartbeat (1 minute before expiry)
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final secondsUntilExpiry = expiresAt - now;
+    final secondsUntilHeartbeat = secondsUntilExpiry - heartbeatBuffer.inSeconds;
 
-      // Get GPS coordinates from provider (matching wardrive.js behavior)
-      final coords = _gpsProvider?.call();
-      final result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
+    if (secondsUntilHeartbeat <= 0) {
+      // Session is about to expire or already expired - send heartbeat immediately
+      debugWarn('[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
+      _sendScheduledHeartbeat();
+      return;
+    }
 
-      if (result?['success'] == true) {
-        debugLog('[API] Heartbeat successful');
-        _resetHeartbeatTimer();  // Schedule next heartbeat
-      } else {
-        debugWarn('[API] Heartbeat failed: ${result?['message']}');
-        _onSessionExpiring?.call();
-      }
+    debugLog('[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
+
+    _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
+      debugLog('[HEARTBEAT] Timer fired, sending keepalive');
+      _sendScheduledHeartbeat();
     });
+  }
+
+  /// Send scheduled heartbeat with GPS coordinates
+  Future<void> _sendScheduledHeartbeat() async {
+    // Get GPS coordinates from provider (matching wardrive.js behavior)
+    final coords = _gpsProvider?.call();
+    final result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
+
+    if (result?['success'] == true) {
+      debugLog('[HEARTBEAT] Heartbeat successful');
+      // Next heartbeat will be scheduled when we get new expires_at
+    } else {
+      debugWarn('[HEARTBEAT] Heartbeat failed: ${result?['message']}');
+      _onSessionExpiring?.call();
+    }
   }
 
   /// Clear session data and cancel heartbeat timer

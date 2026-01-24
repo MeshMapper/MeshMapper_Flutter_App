@@ -46,6 +46,10 @@ class MobileBluetoothService implements BluetoothService {
   StreamSubscription? _notificationSubscription;
   StreamSubscription? _scanSubscription;
 
+  // Store scanned device info for use in connect()
+  // This preserves the device name from scan results
+  final Map<String, DiscoveredDevice> _scannedDevices = {};
+
   @override
   Stream<ConnectionStatus> get connectionStream {
     _ensureControllers();
@@ -165,13 +169,18 @@ class MobileBluetoothService implements BluetoothService {
       // Listen for scan results
       _scanSubscription = fbp.FlutterBluePlus.scanResults.listen((results) {
         for (final result in results) {
+          final hasName = result.device.platformName.isNotEmpty;
+          final deviceName = hasName ? result.device.platformName : 'MeshCore Device';
+          if (!hasName) {
+            print('[BLE] WARNING: Device ${result.device.remoteId.str} has no platformName during scan, using fallback "MeshCore Device"');
+          }
           final device = DiscoveredDevice(
             id: result.device.remoteId.str,
-            name: result.device.platformName.isNotEmpty 
-                ? result.device.platformName 
-                : 'MeshCore Device',
+            name: deviceName,
             rssi: result.rssi,
           );
+          // Store device info for use in connect() - preserves name from scan
+          _scannedDevices[device.id] = device;
           controller.add(device);
         }
       });
@@ -308,12 +317,26 @@ class MobileBluetoothService implements BluetoothService {
         });
         print('[BLE] Notifications enabled');
 
+        // Use device name from scan results if available, fallback to platformName
+        final scannedDevice = _scannedDevices[deviceId];
+        String deviceName;
+        if (scannedDevice != null) {
+          deviceName = scannedDevice.name;
+        } else if (_bleDevice!.platformName.isNotEmpty) {
+          deviceName = _bleDevice!.platformName;
+        } else {
+          deviceName = 'MeshCore Device';
+          print('[BLE] WARNING: No device name available for $deviceId during connect - no scan cache, empty platformName. Using fallback "MeshCore Device"');
+        }
         _connectedDevice = DiscoveredDevice(
           id: deviceId,
-          name: _bleDevice!.platformName.isNotEmpty
-              ? _bleDevice!.platformName
-              : 'MeshCore Device',
+          name: deviceName,
         );
+        if (deviceName == 'MeshCore Device') {
+          print('[BLE] WARNING: Connected device name is "MeshCore Device" (from scan: ${scannedDevice != null}, scanName: ${scannedDevice?.name}, platformName: ${_bleDevice!.platformName})');
+        } else {
+          print('[BLE] Device name: $deviceName (from scan: ${scannedDevice != null}, platformName: ${_bleDevice!.platformName})');
+        }
 
         print('[BLE] Connection complete');
         _updateStatus(ConnectionStatus.connected);
@@ -358,6 +381,7 @@ class MobileBluetoothService implements BluetoothService {
     _bleDevice = null;
     _rxCharacteristic = null;
     _txCharacteristic = null;
+    _scannedDevices.clear(); // Clear scan cache on disconnect
     _notificationSubscription?.cancel();
     _notificationSubscription = null;
     _connectionStateSubscription?.cancel();
