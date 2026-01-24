@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
-import '../services/status_message_service.dart';
 import '../widgets/connection_panel.dart';
 import '../widgets/map_widget.dart';
 import '../widgets/ping_controls.dart';
@@ -20,7 +19,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _showControlPanel = true;
   bool _isControlsMinimized = false;
-  bool _showStatusIsland = false; // Default to closed
 
   @override
   Widget build(BuildContext context) {
@@ -102,20 +100,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
 
-        // Dynamic status island (floating on bottom left - stationary)
-        Positioned(
-          bottom: 16,
-          left: 12,
-          child: _showStatusIsland
-              ? _DynamicStatusIsland(
-                  statusService: appState.statusMessageService,
-                  onClose: () => setState(() => _showStatusIsland = false),
-                )
-              : _StatusIslandToggle(
-                  onOpen: () => setState(() => _showStatusIsland = true),
-                ),
-        ),
-
         // Control panel overlay
         if (_showControlPanel)
           Positioned(
@@ -185,32 +169,45 @@ class _HomeScreenState extends State<HomeScreen> {
     return Card(
       margin: const EdgeInsets.all(8),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(
           children: [
-            // Compact controls
+            // Compact controls (expands to fill available space)
             const Expanded(
               child: CompactPingControls(),
             ),
-            const SizedBox(width: 8),
-            // Compact status indicator
-            const _CompactStatusIndicator(),
-            const SizedBox(width: 4),
-            // Maximize button
-            IconButton(
-              icon: const Icon(Icons.open_in_full, size: 20),
-              onPressed: () => setState(() => _isControlsMinimized = false),
-              tooltip: 'Expand',
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(),
+            // Vertical divider
+            Container(
+              height: 24,
+              width: 1,
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              color: Colors.grey.withValues(alpha: 0.3),
+            ),
+            // Expand button
+            GestureDetector(
+              onTap: () => setState(() => _isControlsMinimized = false),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(
+                  Icons.open_in_full,
+                  size: 20,
+                  color: Colors.grey.shade500,
+                ),
+              ),
             ),
             // Close button
-            IconButton(
-              icon: const Icon(Icons.close, size: 20),
-              onPressed: () => setState(() => _showControlPanel = false),
-              tooltip: 'Close',
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(),
+            GestureDetector(
+              onTap: () => setState(() => _showControlPanel = false),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(
+                  Icons.close,
+                  size: 20,
+                  color: Colors.grey.shade500,
+                ),
+              ),
             ),
           ],
         ),
@@ -428,280 +425,3 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// Floating status island widget
-class _DynamicStatusIsland extends StatelessWidget {
-  final StatusMessageService statusService;
-  final VoidCallback onClose;
-
-  const _DynamicStatusIsland({
-    required this.statusService,
-    required this.onClose,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<StatusMessage?>(
-      stream: statusService.stream,
-      initialData: statusService.currentMessage,
-      builder: (context, snapshot) {
-        final message = snapshot.data;
-        final color = message != null ? _getColor(message.color) : Colors.grey.shade400;
-        final text = message?.text ?? 'Ready';
-
-        return Container(
-          padding: const EdgeInsets.only(left: 14, right: 6, top: 8, bottom: 8),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade900.withOpacity(0.9),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: color.withOpacity(0.4),
-              width: 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.25),
-                blurRadius: 10,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Status indicator dot
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: color,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: color.withOpacity(0.5),
-                      blurRadius: 4,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 10),
-              // Status text
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 180),
-                child: Text(
-                  text,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.grey.shade100,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 4),
-              // Close button
-              GestureDetector(
-                onTap: onClose,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade800,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Icon(
-                    Icons.close,
-                    size: 14,
-                    color: Colors.grey.shade400,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Color _getColor(StatusColor statusColor) {
-    switch (statusColor) {
-      case StatusColor.idle:
-        return Colors.grey.shade400;
-      case StatusColor.info:
-        return Colors.blue.shade400;
-      case StatusColor.success:
-        return Colors.green.shade400;
-      case StatusColor.warning:
-        return Colors.amber.shade400;
-      case StatusColor.error:
-        return Colors.red.shade400;
-    }
-  }
-}
-
-/// Small toggle button to re-open the status island
-class _StatusIslandToggle extends StatelessWidget {
-  final VoidCallback onOpen;
-
-  const _StatusIslandToggle({required this.onOpen});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onOpen,
-      child: Container(
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: Colors.grey.shade900.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(10),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.25),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Icon(
-          Icons.info_outline,
-          size: 18,
-          color: Colors.grey.shade300,
-        ),
-      ),
-    );
-  }
-}
-
-/// Compact status indicator for minimized control panel
-/// Shows current state: listening, waiting, or idle
-class _CompactStatusIndicator extends StatelessWidget {
-  const _CompactStatusIndicator();
-
-  @override
-  Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
-
-    final rxWindowActive = appState.rxWindowTimer.isRunning;
-    final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
-    final autoPingWaiting = appState.autoPingTimer.isRunning;
-    final isPingSending = appState.isPingSending;
-    final isPingInProgress = appState.isPingInProgress;
-    final isTxRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.txRx;
-    final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
-
-    // Determine current state and icon/color
-    IconData icon;
-    Color color;
-    bool shouldPulse;
-
-    // Show cell tower when sending ping (manual or auto)
-    // Auto mode: isPingInProgress && !rxWindowActive means ping is being sent
-    final isSendingPing = isPingSending || (isTxRxAutoRunning && isPingInProgress && !rxWindowActive);
-
-    if (isSendingPing) {
-      icon = Icons.cell_tower;
-      color = const Color(0xFF0EA5E9); // sky-500
-      shouldPulse = true;
-    } else if (rxWindowActive) {
-      icon = Icons.hearing;
-      color = const Color(0xFF22C55E); // green-500
-      shouldPulse = true;
-    } else if (discoveryWindowActive) {
-      icon = Icons.radar;
-      color = const Color(0xFF22C55E); // green-500
-      shouldPulse = true;
-    } else if (autoPingWaiting && (isTxRxAutoRunning || isRxAutoRunning)) {
-      icon = Icons.schedule;
-      color = const Color(0xFF6366F1); // indigo-500
-      shouldPulse = false;
-    } else if (isTxRxAutoRunning || isRxAutoRunning) {
-      icon = Icons.check_circle_outline;
-      color = const Color(0xFF22C55E); // green-500
-      shouldPulse = false;
-    } else {
-      // Idle - no indicator needed
-      return const SizedBox.shrink();
-    }
-
-    return _PulsingIcon(
-      icon: icon,
-      color: color,
-      shouldPulse: shouldPulse,
-    );
-  }
-}
-
-/// Small pulsing icon indicator
-class _PulsingIcon extends StatefulWidget {
-  final IconData icon;
-  final Color color;
-  final bool shouldPulse;
-
-  const _PulsingIcon({
-    required this.icon,
-    required this.color,
-    required this.shouldPulse,
-  });
-
-  @override
-  State<_PulsingIcon> createState() => _PulsingIconState();
-}
-
-class _PulsingIconState extends State<_PulsingIcon>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _animation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 1000),
-      vsync: this,
-    );
-    _animation = Tween<double>(begin: 0.5, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-
-    if (widget.shouldPulse) {
-      _controller.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(_PulsingIcon oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.shouldPulse && !oldWidget.shouldPulse) {
-      _controller.repeat(reverse: true);
-    } else if (!widget.shouldPulse && oldWidget.shouldPulse) {
-      _controller.stop();
-      _controller.value = 1.0;
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _animation,
-      builder: (context, child) {
-        return Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: widget.color.withValues(alpha: 0.15),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Icon(
-            widget.icon,
-            size: 16,
-            color: widget.color.withValues(alpha: widget.shouldPulse ? _animation.value : 1.0),
-          ),
-        );
-      },
-    );
-  }
-}

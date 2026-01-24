@@ -643,8 +643,20 @@ class _OfflineModeToggle extends StatelessWidget {
 
 /// Compact ping controls for minimized panel view
 /// Shows 3 small horizontal pill buttons in a row
-class CompactPingControls extends StatelessWidget {
+/// Active button expands to show context (e.g., "Listening 5s")
+class CompactPingControls extends StatefulWidget {
   const CompactPingControls({super.key});
+
+  @override
+  State<CompactPingControls> createState() => _CompactPingControlsState();
+}
+
+/// Tracks which button should stay expanded during cooldown
+enum _LastActiveButton { none, sendPing, activeMode, passiveMode }
+
+class _CompactPingControlsState extends State<CompactPingControls> {
+  // Static so it persists across widget rebuilds (e.g., expand/minimize panel)
+  static _LastActiveButton _lastActiveButton = _LastActiveButton.none;
 
   @override
   Widget build(BuildContext context) {
@@ -655,7 +667,7 @@ class CompactPingControls extends StatelessWidget {
     final canStartAuto = autoValidation == PingValidation.valid;
     final isTxRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.txRx;
     final isRxAutoRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.rxOnly;
-    final isPendingDisable = appState.isPendingDisable; // Disable pending, waiting for RX window to complete
+    final isPendingDisable = appState.isPendingDisable;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning;
@@ -673,96 +685,158 @@ class CompactPingControls extends StatelessWidget {
     final prefs = appState.preferences;
     final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
 
+    // Determine which button is currently active (not during cooldown)
+    final sendPingCurrentlyActive = (isPingSending || rxWindowActive) && !isTxRxAutoRunning;
+    final activeModeCurrentlyActive = isPendingDisable || (isTxRxAutoRunning && (isPingInProgress || rxWindowActive || autoPingWaiting));
+    final passiveModeCurrentlyActive = isRxAutoRunning && (discoveryWindowActive || autoPingWaiting);
+
+    // Track the last active button for cooldown
+    if (sendPingCurrentlyActive) {
+      _lastActiveButton = _LastActiveButton.sendPing;
+    } else if (activeModeCurrentlyActive) {
+      _lastActiveButton = _LastActiveButton.activeMode;
+    } else if (passiveModeCurrentlyActive) {
+      _lastActiveButton = _LastActiveButton.passiveMode;
+    }
+    // Reset when no cooldown and no activity
+    if (!cooldownActive && !sendPingCurrentlyActive && !activeModeCurrentlyActive && !passiveModeCurrentlyActive) {
+      _lastActiveButton = _LastActiveButton.none;
+    }
+
+    // Determine which button should be expanded
+    // During cooldown, the last active button stays expanded
+    final sendPingExpanded = sendPingCurrentlyActive ||
+        (cooldownActive && _lastActiveButton == _LastActiveButton.sendPing);
+    final activeModeExpanded = activeModeCurrentlyActive ||
+        (cooldownActive && _lastActiveButton == _LastActiveButton.activeMode);
+    final passiveModeExpanded = passiveModeCurrentlyActive ||
+        (cooldownActive && _lastActiveButton == _LastActiveButton.passiveMode);
+
+    // Determine which buttons are colored (enabled or active)
+    final sendPingEnabled = canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline &&
+                     !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable;
+    final sendPingActive = (isPingSending || rxWindowActive) && !isTxRxAutoRunning && !cooldownActive;
+    final sendPingShowColor = sendPingEnabled || sendPingActive;
+
+    final activeModeEnabled = !isPendingDisable && ((isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline);
+    final activeModeActive = isPendingDisable || (isTxRxAutoRunning && (isPingInProgress || rxWindowActive || autoPingWaiting));
+    final activeModeShowColor = activeModeEnabled || activeModeActive;
+
+    final passiveModeEnabled = isRxAutoRunning || (appState.isConnected && !isTxRxAutoRunning && !isPendingDisable &&
+                !isPingSending && !rxWindowActive && !cooldownActive &&
+                prefs.externalAntennaSet && isPowerSet);
+    final passiveModeActive = isRxAutoRunning && (discoveryWindowActive || autoPingWaiting);
+    final passiveModeShowColor = passiveModeEnabled || passiveModeActive;
+
+    // Check if any button is actively expanded (showing label)
+    final anyExpanded = sendPingExpanded || activeModeExpanded || passiveModeExpanded;
+
+    // Build the buttons
+    final sendPingButton = _CompactActionButton(
+      icon: Icons.cell_tower,
+      label: _getSendPingLabel(
+        isPingSending: isPingSending,
+        rxWindowActive: rxWindowActive,
+        rxWindowRemaining: rxWindowRemaining,
+        discoveryWindowActive: discoveryWindowActive,
+        discoveryWindowRemaining: discoveryWindowRemaining,
+        cooldownActive: cooldownActive,
+        cooldownRemaining: cooldownRemaining,
+        showFullText: sendPingExpanded,
+      ),
+      color: const Color(0xFF0EA5E9), // sky-500
+      enabled: sendPingEnabled,
+      isActive: sendPingActive,
+      isExpanded: sendPingExpanded,
+      onPressed: () => _sendPing(context, appState),
+    );
+
+    final activeModeButton = _CompactActionButton(
+      icon: Icons.sensors,
+      label: _getActiveModeLabel(
+        isTxRxAutoRunning: isTxRxAutoRunning,
+        isPingInProgress: isPingInProgress,
+        rxWindowActive: rxWindowActive,
+        rxWindowRemaining: rxWindowRemaining,
+        autoPingWaiting: autoPingWaiting,
+        autoPingRemaining: autoPingRemaining,
+        isPendingDisable: isPendingDisable,
+        showFullText: activeModeExpanded,
+        cooldownActive: cooldownActive,
+        cooldownRemaining: cooldownRemaining,
+        isExpandedDuringCooldown: activeModeExpanded && cooldownActive,
+      ),
+      color: isPendingDisable
+          ? Colors.orange
+          : isTxRxAutoRunning
+              ? const Color(0xFF22C55E) // green-500
+              : const Color(0xFF6366F1), // indigo-500
+      enabled: activeModeEnabled,
+      isActive: activeModeActive,
+      isExpanded: activeModeExpanded,
+      onPressed: () => _toggleTxRxAuto(context, appState),
+    );
+
+    final passiveModeButton = _CompactActionButton(
+      icon: Icons.hearing,
+      label: _getPassiveModeLabel(
+        isRxAutoRunning: isRxAutoRunning,
+        discoveryWindowActive: discoveryWindowActive,
+        discoveryWindowRemaining: discoveryWindowRemaining,
+        autoPingWaiting: autoPingWaiting,
+        autoPingRemaining: autoPingRemaining,
+        showFullText: passiveModeExpanded,
+        cooldownActive: cooldownActive,
+        cooldownRemaining: cooldownRemaining,
+        isExpandedDuringCooldown: passiveModeExpanded && cooldownActive,
+      ),
+      color: isRxAutoRunning
+          ? const Color(0xFF22C55E) // green-500
+          : const Color(0xFF6366F1), // indigo-500
+      enabled: passiveModeEnabled,
+      isActive: passiveModeActive,
+      isExpanded: passiveModeExpanded,
+      onPressed: () => _toggleRxAuto(context, appState),
+    );
+
+    // Layout logic:
+    // - If button is expanded (including during cooldown): stays big
+    // - If no button is expanded: all colored buttons share space equally
+    // - Grey non-expanded buttons are icon-only
     return Row(
       children: [
-        // Send Ping button (compact)
-        Expanded(
-          child: _CompactActionButton(
-            icon: Icons.cell_tower,
-            label: _getSendPingLabel(
-              txBlockedByOffline: txBlockedByOffline,
-              isTxRxAutoRunning: isTxRxAutoRunning,
-              isPingSending: isPingSending,
-              rxWindowActive: rxWindowActive,
-              rxWindowRemaining: rxWindowRemaining,
-              discoveryWindowActive: discoveryWindowActive,
-              discoveryWindowRemaining: discoveryWindowRemaining,
-              cooldownActive: cooldownActive,
-              cooldownRemaining: cooldownRemaining,
-              isPendingDisable: isPendingDisable,
-            ),
-            color: const Color(0xFF0EA5E9), // sky-500
-            enabled: canPing && !isTxRxAutoRunning && !cooldownActive && !txBlockedByOffline &&
-                     !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
-            isActive: (isPingSending || rxWindowActive) && !isTxRxAutoRunning && !cooldownActive,
-            onPressed: () => _sendPing(context, appState),
-          ),
-        ),
-        const SizedBox(width: 8),
+        // Send Ping - expanded buttons stay big even when grey (cooldown)
+        if (sendPingExpanded)
+          Expanded(child: sendPingButton)
+        else if (!anyExpanded && sendPingShowColor)
+          Expanded(child: sendPingButton)
+        else
+          sendPingButton,
+        const SizedBox(width: 6),
 
-        // Active Mode button (compact)
-        Expanded(
-          child: _CompactActionButton(
-            icon: Icons.sensors,
-            label: _getActiveModeLabel(
-              txBlockedByOffline: txBlockedByOffline,
-              isTxRxAutoRunning: isTxRxAutoRunning,
-              isPingInProgress: isPingInProgress,
-              rxWindowActive: rxWindowActive,
-              rxWindowRemaining: rxWindowRemaining,
-              autoPingWaiting: autoPingWaiting,
-              autoPingRemaining: autoPingRemaining,
-              cooldownActive: cooldownActive,
-              cooldownRemaining: cooldownRemaining,
-              isPendingDisable: isPendingDisable,
-            ),
-            color: isPendingDisable
-                ? Colors.orange  // Orange when stopping
-                : isTxRxAutoRunning
-                    ? const Color(0xFF22C55E) // green-500
-                    : const Color(0xFF6366F1), // indigo-500
-            enabled: !isPendingDisable && ((isTxRxAutoRunning || (canStartAuto && !isRxAutoRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline),
-            isActive: isPendingDisable || (isTxRxAutoRunning && (isPingInProgress || rxWindowActive || autoPingWaiting)),
-            onPressed: () => _toggleTxRxAuto(context, appState),
-          ),
-        ),
-        const SizedBox(width: 8),
+        // Active Mode
+        if (activeModeExpanded)
+          Expanded(child: activeModeButton)
+        else if (!anyExpanded && activeModeShowColor)
+          Expanded(child: activeModeButton)
+        else
+          activeModeButton,
+        const SizedBox(width: 6),
 
-        // Passive Mode button (compact)
-        Expanded(
-          child: _CompactActionButton(
-            icon: Icons.hearing,
-            label: _getPassiveModeLabel(
-              isRxAutoRunning: isRxAutoRunning,
-              discoveryWindowActive: discoveryWindowActive,
-              discoveryWindowRemaining: discoveryWindowRemaining,
-              autoPingWaiting: autoPingWaiting,
-              autoPingRemaining: autoPingRemaining,
-              isTxRxAutoRunning: isTxRxAutoRunning,
-              rxWindowActive: rxWindowActive,
-              rxWindowRemaining: rxWindowRemaining,
-              cooldownActive: cooldownActive,
-              cooldownRemaining: cooldownRemaining,
-              isPendingDisable: isPendingDisable,
-            ),
-            color: isRxAutoRunning
-                ? const Color(0xFF22C55E) // green-500
-                : const Color(0xFF6366F1), // indigo-500
-            enabled: isRxAutoRunning || (appState.isConnected && !isTxRxAutoRunning && !isPendingDisable &&
-                !isPingSending && !rxWindowActive && !cooldownActive &&
-                prefs.externalAntennaSet && isPowerSet),
-            isActive: isRxAutoRunning && (discoveryWindowActive || autoPingWaiting),
-            onPressed: () => _toggleRxAuto(context, appState),
-          ),
-        ),
+        // Passive Mode
+        if (passiveModeExpanded)
+          Expanded(child: passiveModeButton)
+        else if (!anyExpanded && passiveModeShowColor)
+          Expanded(child: passiveModeButton)
+        else
+          passiveModeButton,
       ],
     );
   }
 
-  /// Get abbreviated label for Send Ping button in compact mode
+  /// Get label for Send Ping button
+  /// When showFullText is true: "Listening 5s", when false: "5s"
   String? _getSendPingLabel({
-    required bool txBlockedByOffline,
-    required bool isTxRxAutoRunning,
     required bool isPingSending,
     required bool rxWindowActive,
     required int rxWindowRemaining,
@@ -770,71 +844,68 @@ class CompactPingControls extends StatelessWidget {
     required int discoveryWindowRemaining,
     required bool cooldownActive,
     required int cooldownRemaining,
-    required bool isPendingDisable,
+    required bool showFullText,
   }) {
-    if (txBlockedByOffline) return null;
-    if (isTxRxAutoRunning) return null;
-    if (isPendingDisable) return null;  // Disabled while stopping
-    if (isPingSending) return '...';
-    if (rxWindowActive) return '${rxWindowRemaining}s';
-    if (discoveryWindowActive) return '${discoveryWindowRemaining}s';
-    if (cooldownActive) return '${cooldownRemaining}s';
-    return null; // Icon only when idle
+    if (isPingSending) return showFullText ? 'Sending...' : '...';
+    if (rxWindowActive) return showFullText ? 'Listening ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
+    if (discoveryWindowActive) return showFullText ? 'Cooldown ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
+    if (cooldownActive) return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
+    return null;
   }
 
-  /// Get abbreviated label for Active Mode button in compact mode
+  /// Get label for Active Mode button
+  /// When showFullText is true: "Listening 5s", when false: "5s"
   String? _getActiveModeLabel({
-    required bool txBlockedByOffline,
     required bool isTxRxAutoRunning,
     required bool isPingInProgress,
     required bool rxWindowActive,
     required int rxWindowRemaining,
     required bool autoPingWaiting,
     required int autoPingRemaining,
+    required bool isPendingDisable,
+    required bool showFullText,
     required bool cooldownActive,
     required int cooldownRemaining,
-    required bool isPendingDisable,
+    required bool isExpandedDuringCooldown,
   }) {
-    if (txBlockedByOffline) return null;
-    // Show stopping countdown when pending disable
     if (isPendingDisable) {
-      if (rxWindowActive) return '${rxWindowRemaining}s';  // Show remaining time
-      return '...';  // Brief transition
+      if (rxWindowActive) return showFullText ? 'Stopping ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
+      return showFullText ? 'Stopping...' : '...';
     }
     if (isTxRxAutoRunning) {
-      if (isPingInProgress && !rxWindowActive) return '...';
-      if (rxWindowActive) return '${rxWindowRemaining}s';
-      if (autoPingWaiting) return '${autoPingRemaining}s';
-      return null;
+      if (isPingInProgress && !rxWindowActive) return showFullText ? 'Sending...' : '...';
+      if (rxWindowActive) return showFullText ? 'Listening ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
+      if (autoPingWaiting) return showFullText ? 'Waiting ${autoPingRemaining}s' : '${autoPingRemaining}s';
     }
-    if (rxWindowActive) return '${rxWindowRemaining}s';
-    if (cooldownActive) return '${cooldownRemaining}s';
-    return null; // Icon only when idle
+    // Show cooldown if this button caused it
+    if (cooldownActive && isExpandedDuringCooldown) {
+      return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
+    }
+    return null;
   }
 
-  /// Get abbreviated label for Passive Mode button in compact mode
+  /// Get label for Passive Mode button
+  /// When showFullText is true: "Listening 5s", when false: "5s"
   String? _getPassiveModeLabel({
     required bool isRxAutoRunning,
     required bool discoveryWindowActive,
     required int discoveryWindowRemaining,
     required bool autoPingWaiting,
     required int autoPingRemaining,
-    required bool isTxRxAutoRunning,
-    required bool rxWindowActive,
-    required int rxWindowRemaining,
+    required bool showFullText,
     required bool cooldownActive,
     required int cooldownRemaining,
-    required bool isPendingDisable,
+    required bool isExpandedDuringCooldown,
   }) {
     if (isRxAutoRunning) {
-      if (discoveryWindowActive) return '${discoveryWindowRemaining}s';
-      if (autoPingWaiting) return '${autoPingRemaining}s';
-      return null;
+      if (discoveryWindowActive) return showFullText ? 'Listening ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
+      if (autoPingWaiting) return showFullText ? 'Waiting ${autoPingRemaining}s' : '${autoPingRemaining}s';
     }
-    if (isTxRxAutoRunning || isPendingDisable) return null;  // Disabled while Active Mode is running or stopping
-    if (rxWindowActive) return '${rxWindowRemaining}s';
-    if (cooldownActive) return '${cooldownRemaining}s';
-    return null; // Icon only when idle
+    // Show cooldown if this button caused it
+    if (cooldownActive && isExpandedDuringCooldown) {
+      return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
+    }
+    return null;
   }
 
   Future<void> _sendPing(BuildContext context, AppStateProvider appState) async {
@@ -862,12 +933,14 @@ class CompactPingControls extends StatelessWidget {
 }
 
 /// Compact action button for minimized panel - horizontal pill layout
+/// Supports expanding to show label when active
 class _CompactActionButton extends StatefulWidget {
   final IconData icon;
-  final String? label; // null = icon only
+  final String? label; // Label text (shown when expanded)
   final Color color;
   final bool enabled;
   final bool isActive;
+  final bool isExpanded; // When true, show icon + label with wider width
   final VoidCallback onPressed;
 
   const _CompactActionButton({
@@ -877,6 +950,7 @@ class _CompactActionButton extends StatefulWidget {
     required this.enabled,
     required this.onPressed,
     this.isActive = false,
+    this.isExpanded = false,
   });
 
   @override
@@ -925,6 +999,8 @@ class _CompactActionButtonState extends State<_CompactActionButton>
   Widget build(BuildContext context) {
     final showColor = widget.enabled || widget.isActive;
     final effectiveColor = showColor ? widget.color : Colors.grey;
+    // Show label if colored OR if expanded (shows countdown on grey button during cooldown)
+    final hasLabel = widget.label != null && (showColor || widget.isExpanded);
 
     return AnimatedBuilder(
       animation: _pulseAnimation,
@@ -936,9 +1012,14 @@ class _CompactActionButtonState extends State<_CompactActionButton>
           child: InkWell(
             onTap: widget.enabled ? widget.onPressed : null,
             borderRadius: BorderRadius.circular(14),
-            child: Container(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeInOut,
               height: 32,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              padding: EdgeInsets.symmetric(
+                horizontal: hasLabel ? 10 : 8,
+                vertical: 6,
+              ),
               decoration: BoxDecoration(
                 color: effectiveColor.withValues(alpha: bgOpacity),
                 borderRadius: BorderRadius.circular(16),
@@ -958,17 +1039,27 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                       size: 18,
                       color: showColor ? effectiveColor : Colors.grey.shade400,
                     ),
-                    if (widget.label != null) ...[
-                      const SizedBox(width: 6),
-                      Text(
-                        widget.label!,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                          color: showColor ? effectiveColor : Colors.grey.shade400,
-                        ),
-                      ),
-                    ],
+                    // Animated label - show when label is provided
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: hasLabel
+                          ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(width: 5),
+                                Text(
+                                  widget.label!,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
+                                    color: showColor ? effectiveColor : Colors.grey.shade400,
+                                  ),
+                                ),
+                              ],
+                            )
+                          : const SizedBox.shrink(),
+                    ),
                   ],
                 ),
               ),
