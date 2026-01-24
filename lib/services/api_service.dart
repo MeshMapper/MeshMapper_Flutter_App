@@ -358,7 +358,18 @@ class ApiService {
 
       // Check for session errors that require disconnect
       final reason = result['reason'] as String?;
-      if (reason == 'session_expired' || reason == 'bad_session' || reason == 'outside_zone') {
+
+      // All errors that require session invalidation and disconnect
+      const criticalErrors = {
+        // Session errors
+        'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
+        // Auth errors
+        'invalid_key', 'unauthorized', 'bad_key',
+        // Zone errors
+        'outside_zone', 'zone_full',
+      };
+
+      if (criticalErrors.contains(reason)) {
         debugError('[API] Upload batch session error: $reason');
         final message = result['message'] as String?;
         // Clear session locally since it's invalid on server

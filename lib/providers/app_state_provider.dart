@@ -1605,6 +1605,18 @@ class AppStateProvider extends ChangeNotifier {
         return 'Session has expired. Please reconnect.';
       case 'bad_session':
         return 'Invalid session. Please reconnect.';
+      case 'outofdate':
+        return 'App version outdated. Please update to the latest version.';
+      case 'session_invalid':
+        return 'Session is invalid. Please reconnect.';
+      case 'session_revoked':
+        return 'Session was revoked. Please reconnect.';
+      case 'invalid_key':
+        return 'Invalid API key. Please check configuration.';
+      case 'unauthorized':
+        return 'Unauthorized. Please reconnect.';
+      case 'rate_limited':
+        return 'Rate limited. Please slow down.';
       default:
         return serverMessage ?? 'Unknown error occurred.';
     }
@@ -1620,6 +1632,13 @@ class AppStateProvider extends ChangeNotifier {
     if (reason == 'zone_full') {
       _statusMessageService.setDynamicStatus(userMessage, StatusColor.warning);
       debugLog('[API] Auth returned zone_full - RX-only mode allowed');
+      return;
+    }
+
+    // Special case: outofdate is a critical error requiring app update
+    if (reason == 'outofdate') {
+      _statusMessageService.setPersistentError(userMessage, StatusColor.error);
+      debugLog('[API] App version outdated - update required');
       return;
     }
 
@@ -1641,12 +1660,42 @@ class AppStateProvider extends ChangeNotifier {
     final userMessage = _getErrorMessage(reason, message);
     debugError('[API] Session error: $reason - $userMessage');
 
+    // Rate limiting should warn but not disconnect (per PORTED_APP behavior)
+    if (reason == 'rate_limited') {
+      _statusMessageService.setDynamicStatus(userMessage, StatusColor.warning);
+      debugLog('[API] Rate limited - continuing without disconnect');
+      return;
+    }
+
     // Show error message
     _statusMessageService.setDynamicStatus(userMessage, StatusColor.error);
     logError(userMessage, severity: ErrorSeverity.error);
 
+    // Session errors that require disconnect
+    const sessionErrors = {
+      'session_expired',
+      'session_invalid',
+      'session_revoked',
+      'bad_session',
+    };
+
+    // Authorization errors that require disconnect
+    const authErrors = {
+      'invalid_key',
+      'unauthorized',
+      'bad_key',
+    };
+
+    // Zone errors that require disconnect
+    const zoneErrors = {
+      'outside_zone',
+      'zone_full',
+    };
+
     // Handle errors that require disconnect
-    if (reason == 'session_expired' || reason == 'bad_session' || reason == 'outside_zone') {
+    if (sessionErrors.contains(reason) ||
+        authErrors.contains(reason) ||
+        zoneErrors.contains(reason)) {
       debugLog('[API] Session error requires disconnect: $reason');
       // Don't call requestAuth disconnect - session is already invalid on server
       // Just cleanup locally and disconnect
