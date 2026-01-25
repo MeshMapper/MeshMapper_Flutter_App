@@ -739,14 +739,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
             const Divider(height: 1),
 
-            // Scrollable content
+            // Scrollable content with fade indicator
             Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Map Markers section
+              child: Stack(
+                children: [
+                  SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Map Markers section
               Text(
                 'Map Markers',
                 style: TextStyle(
@@ -770,6 +772,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     ),
                     Divider(height: 1, color: Colors.grey.shade700),
                     _buildLegendItem(
+                      color: Colors.red,
+                      label: 'TX',
+                      description: 'Location where you sent a ping but no repeater was heard',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildLegendItem(
                       color: const Color(0xFF0EA5E9),
                       label: 'RX',
                       description: 'Location where you received a message from the mesh',
@@ -783,8 +791,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     Divider(height: 1, color: Colors.grey.shade700),
                     _buildLegendItem(
                       color: Colors.grey,
-                      label: 'NONE',
-                      description: 'No repeaters heard or no response to discovery request',
+                      label: 'DISC',
+                      description: 'Location where you sent a discovery request but no repeater responded',
                     ),
                   ],
                 ),
@@ -889,8 +897,37 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   ],
                 ),
               ),
-                  ],
-                ),
+                      ],
+                    ),
+                  ),
+                  // Bottom fade gradient to indicate scrollable content
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: IgnorePointer(
+                      child: Container(
+                        height: 40,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0),
+                              Theme.of(context).colorScheme.surfaceContainerHighest,
+                            ],
+                          ),
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(
+                          Icons.keyboard_arrow_down,
+                          color: Colors.grey.shade500,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1066,7 +1103,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           onTap: () => _showTxPingDetails(ping),
           child: Container(
             decoration: BoxDecoration(
-              color: ping.heardRepeaters.isEmpty ? Colors.grey : Colors.green,
+              color: ping.heardRepeaters.isEmpty ? Colors.red : Colors.green,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: [
