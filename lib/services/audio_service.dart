@@ -1,5 +1,6 @@
 import 'package:just_audio/just_audio.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:audio_session/audio_session.dart';
 
 import '../utils/debug_logger_io.dart';
 
@@ -29,6 +30,34 @@ class AudioService {
 
       // Load enabled state from preferences
       await _loadEnabledState();
+
+      // Configure audio session for notification mixing (play over music)
+      try {
+        final session = await AudioSession.instance;
+        await session.configure(
+          const AudioSessionConfiguration(
+            // iOS: ambient category plays alongside other audio
+            avAudioSessionCategory: AVAudioSessionCategory.ambient,
+            avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.none,
+            avAudioSessionMode: AVAudioSessionMode.defaultMode,
+            avAudioSessionRouteSharingPolicy:
+                AVAudioSessionRouteSharingPolicy.defaultPolicy,
+            avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
+            // Android: transient focus allows other audio to continue
+            androidAudioAttributes: AndroidAudioAttributes(
+              contentType: AndroidAudioContentType.sonification,
+              usage: AndroidAudioUsage.notification,
+            ),
+            androidAudioFocusGainType:
+                AndroidAudioFocusGainType.gainTransientMayDuck,
+            androidWillPauseWhenDucked: false,
+          ),
+        );
+        debugLog('[AUDIO] Audio session configured for notification mixing');
+      } catch (e) {
+        debugError('[AUDIO] Failed to configure audio session: $e');
+        // Continue initialization - audio will still work, just may interrupt music
+      }
 
       // Create audio players
       _txPlayer = AudioPlayer();

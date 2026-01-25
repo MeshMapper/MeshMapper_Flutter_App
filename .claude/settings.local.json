@@ -14,7 +14,8 @@
       "Bash(flutter create:*)",
       "Bash(find:*)",
       "Bash(grep:*)",
-      "Bash(flutter clean:*)"
+      "Bash(flutter clean:*)",
+      "WebFetch(domain:pub.dev)"
     ]
   }
 }
