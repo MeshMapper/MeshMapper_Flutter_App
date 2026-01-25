@@ -39,13 +39,13 @@ class ConnectionPanel extends StatelessWidget {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isSet
-            ? Colors.grey.withOpacity(0.06)
-            : Colors.orange.withOpacity(0.08),
+            ? Colors.grey.withValues(alpha:0.06)
+            : Colors.orange.withValues(alpha:0.08),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isSet
-              ? Colors.grey.withOpacity(0.15)
-              : Colors.orange.withOpacity(0.3),
+              ? Colors.grey.withValues(alpha:0.15)
+              : Colors.orange.withValues(alpha:0.3),
         ),
       ),
       child: Row(
@@ -55,8 +55,8 @@ class ConnectionPanel extends StatelessWidget {
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
               color: isSet
-                  ? Colors.grey.withOpacity(0.1)
-                  : Colors.orange.withOpacity(0.15),
+                  ? Colors.grey.withValues(alpha:0.1)
+                  : Colors.orange.withValues(alpha:0.15),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(

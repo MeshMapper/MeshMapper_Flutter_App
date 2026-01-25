@@ -13,6 +13,7 @@ import '../utils/debug_logger_io.dart';
 class CountdownTimerService {
   Timer? _timer;
   DateTime? _endTime;
+  int? _durationMs;  // Original duration for progress calculation
   final VoidCallback? onUpdate;  // Callback for UI refresh on each timer tick
 
   CountdownTimerService({this.onUpdate});
@@ -31,10 +32,17 @@ class CountdownTimerService {
   /// Get remaining seconds (rounded up)
   int get remainingSec => (remainingMs / 1000).ceil();
 
+  /// Get progress as 0.0 to 1.0 (1.0 = full, 0.0 = complete)
+  double get progress {
+    if (_durationMs == null || _durationMs == 0) return 0.0;
+    return remainingMs / _durationMs!;
+  }
+
   /// Start countdown timer
   /// @param durationMs - Duration in milliseconds
   void start(int durationMs) {
     stop();
+    _durationMs = durationMs;  // Track original duration for progress
     _endTime = DateTime.now().add(Duration(milliseconds: durationMs));
 
     // Start 500ms update timer for responsive countdown
@@ -65,6 +73,7 @@ class CountdownTimerService {
     _timer?.cancel();
     _timer = null;
     _endTime = null;
+    _durationMs = null;
   }
 
   /// Dispose resources
@@ -76,7 +85,7 @@ class CountdownTimerService {
 /// Specialized countdown timer for ping cooldown
 /// Reference: wardrive.js state.cooldownEndTime and cooldownUpdateTimer
 class CooldownTimer extends CountdownTimerService {
-  CooldownTimer({VoidCallback? onUpdate}) : super(onUpdate: onUpdate);
+  CooldownTimer({super.onUpdate});
 
   @override
   void stop() {
@@ -91,19 +100,15 @@ class CooldownTimer extends CountdownTimerService {
 /// Specialized countdown timer for auto-ping interval
 /// Reference: wardrive.js state.nextAutoPingTime and autoCountdownTimer
 class AutoPingTimer extends CountdownTimerService {
-  String? _skipReason;
+  /// Skip reason (e.g., "too close", "gps too old")
+  String? skipReason;
 
-  AutoPingTimer({VoidCallback? onUpdate}) : super(onUpdate: onUpdate);
-
-  /// Set skip reason (e.g., "too close", "gps too old")
-  set skipReason(String? reason) {
-    _skipReason = reason;
-  }
+  AutoPingTimer({super.onUpdate});
 
   /// Start countdown with optional skip reason
   /// Reference: startAutoCountdown() in wardrive.js with state.skipReason
   void startWithSkipReason(int durationMs, String? reason) {
-    _skipReason = reason;
+    skipReason = reason;
     start(durationMs);
   }
 }
@@ -111,10 +116,10 @@ class AutoPingTimer extends CountdownTimerService {
 /// Specialized countdown timer for RX listening window
 /// Reference: wardrive.js state.rxListeningEndTime
 class RxWindowTimer extends CountdownTimerService {
-  RxWindowTimer({VoidCallback? onUpdate}) : super(onUpdate: onUpdate);
+  RxWindowTimer({super.onUpdate});
 }
 
 /// Specialized countdown timer for discovery listening window (Passive Mode)
 class DiscoveryWindowTimer extends CountdownTimerService {
-  DiscoveryWindowTimer({VoidCallback? onUpdate}) : super(onUpdate: onUpdate);
+  DiscoveryWindowTimer({super.onUpdate});
 }

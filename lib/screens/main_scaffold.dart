@@ -27,10 +27,10 @@ class _MainScaffoldState extends State<MainScaffold> {
   bool _hasCheckedDisclosure = false;
 
   final List<Widget> _screens = [
-    HomeScreen(),
-    LogScreen(),
-    ConnectionScreen(),
-    SettingsScreen(),
+    const HomeScreen(),
+    const LogScreen(),
+    const ConnectionScreen(),
+    const SettingsScreen(),
   ];
 
   @override

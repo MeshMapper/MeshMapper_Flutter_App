@@ -90,7 +90,7 @@ class StatsPanel extends StatelessWidget {
             LinearProgressIndicator(
               value: stats.successRate,
               backgroundColor: Colors.red.shade100,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+              valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
             ),
             const SizedBox(height: 4),
             Text(

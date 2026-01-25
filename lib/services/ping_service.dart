@@ -384,14 +384,15 @@ class PingService {
         debugLog('[PING] Starting TX echo tracking for: "$pingMessage"');
 
         // Wire up real-time echo callback before starting tracking
-        _txTracker!.onEchoReceived = (repeaterId, snr, rssi, isNew) {
+        final txTracker = _txTracker;
+        txTracker.onEchoReceived = (repeaterId, snr, rssi, isNew) {
           debugLog('[PING] onEchoReceived callback fired: $repeaterId, SNR=$snr, RSSI=$rssi, isNew=$isNew');
           if (_lastTxPing != null) {
             final repeater = HeardRepeater(
               repeaterId: repeaterId,
               snr: snr,
               rssi: rssi,
-              seenCount: _txTracker!.repeaters[repeaterId]?.seenCount ?? 1,
+              seenCount: txTracker.repeaters[repeaterId]?.seenCount ?? 1,
             );
 
             if (isNew) {
@@ -416,7 +417,7 @@ class PingService {
           }
         };
 
-        _txTracker!.startTracking(
+        txTracker.startTracking(
           payload: pingMessage,
           channelIdx: channelIndex,
           channelHash: channelHash,
@@ -489,13 +490,14 @@ class PingService {
     // Format: "4e(12.25),77(12.25)" or "None" if no echoes
     String heardRepeats = 'None';
 
-    if (_txTracker != null && _txTracker!.repeaters.isNotEmpty) {
-      debugLog('[PING] TxTracker collected ${_txTracker!.repeaters.length} repeater echoes');
+    final txTracker = _txTracker;
+    if (txTracker != null && txTracker.repeaters.isNotEmpty) {
+      debugLog('[PING] TxTracker collected ${txTracker.repeaters.length} repeater echoes');
 
       // Format heard_repeats: "repeaterId(snr),repeaterId(snr)"
       // Reference: buildHeardRepeatsString() in wardrive.js
       final repeaterStrings = <String>[];
-      for (final entry in _txTracker!.repeaters.entries) {
+      for (final entry in txTracker.repeaters.entries) {
         final repeaterId = entry.key;
         final echo = entry.value;
         // Format SNR with 2 decimal places
@@ -505,7 +507,7 @@ class PingService {
       heardRepeats = repeaterStrings.join(',');
 
       // Update RX count stat for the echoes heard
-      _stats = _stats.copyWith(rxCount: _stats.rxCount + _txTracker!.repeaters.length);
+      _stats = _stats.copyWith(rxCount: _stats.rxCount + txTracker.repeaters.length);
       onStatsUpdated?.call(_stats);
     } else {
       debugLog('[PING] No repeater echoes detected during listening window');

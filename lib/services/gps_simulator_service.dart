@@ -47,7 +47,7 @@ class GpsSimulatorService {
   int _updateIntervalMs;
 
   /// For circle pattern
-  double _circleRadius = 0.002; // ~200m in lat/lon degrees
+  final double _circleRadius = 0.002; // ~200m in lat/lon degrees
   double _circleAngle = 0;
   double _circleCenterLat;
   double _circleCenterLon;
@@ -61,7 +61,7 @@ class GpsSimulatorService {
   int _routeIndex = 0;
   double _routeProgress = 0; // 0-1 progress between current and next point
   String? _routeName;
-  bool _routeLoop = true; // Loop back to start when done
+  final bool _routeLoop = true; // Loop back to start when done
 
   /// State
   bool _isRunning = false;
@@ -492,7 +492,7 @@ class GpsSimulatorService {
     final y = sin(dLon) * cos(lat2Rad);
     final x = cos(lat1Rad) * sin(lat2Rad) -
         sin(lat1Rad) * cos(lat2Rad) * cos(dLon);
-    var bearing = atan2(y, x) * 180 / pi;
+    final bearing = atan2(y, x) * 180 / pi;
     return (bearing + 360) % 360; // Normalize to 0-360
   }
 

@@ -13,6 +13,7 @@ import '../utils/web_file_helpers_stub.dart'
     if (dart.library.html) '../utils/web_file_helpers.dart';
 
 import '../providers/app_state_provider.dart';
+import '../utils/debug_logger_io.dart';
 import '../models/user_preferences.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/offline_session_service.dart';
@@ -222,8 +223,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // About section
           _buildSectionHeader(context, 'About'),
-          ListTile(
-            leading: const Icon(Icons.info_outline),
+          const ListTile(
+            leading: Icon(Icons.info_outline),
             title: Text(AppConstants.appName),
           ),
           GestureDetector(
@@ -753,7 +754,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _pickRouteFile(BuildContext context, AppStateProvider appState) async {
     try {
-      print('[SETTINGS] Opening file picker...');
+      debugLog('[SETTINGS] Opening file picker...');
 
       if (kIsWeb) {
         // Use dart:html directly on web to avoid file_picker initialization issues
@@ -767,21 +768,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
 
         if (result != null && result.files.isNotEmpty) {
-          print('[SETTINGS] File picked: ${result.files.first.name}');
+          debugLog('[SETTINGS] File picked: ${result.files.first.name}');
           final file = result.files.first;
           final content = file.bytes != null
               ? String.fromCharCodes(file.bytes!)
               : null;
 
-          if (content != null) {
-            print('[SETTINGS] File content loaded, ${content.length} chars');
+          if (content != null && context.mounted) {
+            debugLog('[SETTINGS] File content loaded, ${content.length} chars');
             _processRouteFile(context, appState, content, file.name);
           }
         }
       }
     } catch (e, stackTrace) {
-      print('[SETTINGS] Error: $e');
-      print('[SETTINGS] Stack trace: $stackTrace');
+      debugLog('[SETTINGS] Error: $e');
+      debugLog('[SETTINGS] Stack trace: $stackTrace');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -798,20 +799,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     pickFileWeb(
       accept: '.kml,.gpx,.xml',
       onFilePicked: (content, filename) {
-        print('[SETTINGS] File picked: $filename');
-        print('[SETTINGS] File content loaded, ${content.length} chars');
+        debugLog('[SETTINGS] File picked: $filename');
+        debugLog('[SETTINGS] File content loaded, ${content.length} chars');
         _processRouteFile(context, appState, content, filename);
       },
     );
   }
 
   void _processRouteFile(BuildContext context, AppStateProvider appState, String content, String filename) {
-    print('[SETTINGS] Calling loadSimulatorRoute...');
+    debugLog('[SETTINGS] Calling loadSimulatorRoute...');
     final success = appState.loadSimulatorRoute(
       content,
       filename: filename,
     );
-    print('[SETTINGS] loadSimulatorRoute returned: $success');
+    debugLog('[SETTINGS] loadSimulatorRoute returned: $success');
 
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -28,7 +28,7 @@ class ApiQueueService {
   bool _isUploading = false;
 
   // Offline mode
-  bool _offlineMode = false;
+  bool offlineMode = false;
   final List<Map<String, dynamic>> _offlinePings = [];
 
   // RX buffer for grouping by repeater
@@ -40,16 +40,8 @@ class ApiQueueService {
   /// Callback for successful uploads (passes count of items uploaded)
   void Function(int uploadedCount)? onUploadSuccess;
 
-  /// Offline mode status
-  bool get offlineMode => _offlineMode;
-
   /// Number of pings accumulated in current offline session
   int get offlinePingCount => _offlinePings.length;
-
-  /// Set offline mode
-  set offlineMode(bool value) {
-    _offlineMode = value;
-  }
 
   ApiQueueService({required ApiService apiService}) : _apiService = apiService;
 
@@ -96,7 +88,7 @@ class ApiQueueService {
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
-    if (_offlineMode) {
+    if (offlineMode) {
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] TX enqueued (offline): $heardRepeats');
       return;
@@ -127,7 +119,7 @@ class ApiQueueService {
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
-    if (_offlineMode) {
+    if (offlineMode) {
       _offlinePings.add(item.toApiJson());
       return;
     }
@@ -171,7 +163,7 @@ class ApiQueueService {
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
-    if (_offlineMode) {
+    if (offlineMode) {
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] DISC enqueued (offline): $repeaterId');
       return;

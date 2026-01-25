@@ -8,10 +8,11 @@ int getChannelHash(String name) {
 }
 
 void main() {
-  final target = 0xd8;
-  
+  const target = 0xd8;
+
+  // ignore: avoid_print
   print('Looking for channel that hashes to 0xd8 ($target decimal)\n');
-  
+
   // Test common variations
   final tests = [
     '#wartest',
@@ -28,10 +29,11 @@ void main() {
     '#test',
     '#war',
   ];
-  
+
   for (final name in tests) {
     final hash = getChannelHash(name);
     final match = hash == target ? '✅ MATCH!' : '';
+    // ignore: avoid_print
     print('${name.padRight(20)} -> 0x${hash.toRadixString(16).padLeft(2, '0')} ($hash) $match');
   }
 }

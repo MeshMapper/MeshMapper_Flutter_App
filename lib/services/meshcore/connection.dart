@@ -339,7 +339,7 @@ class MeshCoreConnection {
       final reader = BufferReader(frame);
       final responseCode = reader.readByte();
       
-      debugLog('[CONN] Response code: 0x${responseCode.toRadixString(16).padLeft(2, '0')} (${responseCode})');
+      debugLog('[CONN] Response code: 0x${responseCode.toRadixString(16).padLeft(2, '0')} ($responseCode)');
 
       switch (responseCode) {
         case ResponseCodes.ok:
@@ -389,7 +389,7 @@ class MeshCoreConnection {
           break;
         default:
           // Log unhandled response codes (like JS implementation)
-          debugLog('[CONN] Unhandled frame: code=${responseCode} (0x${responseCode.toRadixString(16).padLeft(2, '0')})');
+          debugLog('[CONN] Unhandled frame: code=$responseCode (0x${responseCode.toRadixString(16).padLeft(2, '0')})');
           break;
       }
     } catch (e, stack) {
@@ -415,7 +415,7 @@ class MeshCoreConnection {
 
     if (firmwareVer >= 7) {
       // Protocol v7+ format
-      final reserved = reader.readBytes(6); // reserved bytes
+      reader.readBytes(6); // skip reserved bytes
       final buildDate = reader.readCString(12); // e.g. "04-Jan-2026"
       final manufacturerModel = reader.readString(); // remainder of frame
       
@@ -433,8 +433,8 @@ class MeshCoreConnection {
     } else {
       // Old protocol v1-v6 format
       final manufacturer = reader.readCString(64);
-      final publicKey = reader.readBytes(32);
-      
+      reader.readBytes(32); // skip public key
+
       debugLog('[CONN] Manufacturer: $manufacturer');
       
       final response = DeviceQueryResponse(
@@ -600,7 +600,7 @@ class MeshCoreConnection {
       }
 
       _batteryController.add(percent); // Emit percentage to stream
-      debugLog('[CONN] Battery updated: ${milliVolts}mV (${percent}%)');
+      debugLog('[CONN] Battery updated: ${milliVolts}mV ($percent%)');
     } catch (e) {
       debugError('[CONN] Error parsing battery response: $e');
     }

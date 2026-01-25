@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 
 import '../models/connection_state.dart';
 import '../models/device_model.dart';
@@ -26,7 +26,6 @@ import '../services/gps_service.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/meshcore/channel_service.dart';
 import '../services/meshcore/connection.dart';
-import '../services/meshcore/crypto_service.dart';
 import '../services/meshcore/packet_validator.dart' show PacketValidator, ChannelInfo;
 import '../services/meshcore/rx_logger.dart';
 import '../services/meshcore/tx_tracker.dart';
@@ -154,7 +153,6 @@ class AppStateProvider extends ChangeNotifier {
   bool? _inZone; // null = not checked yet, true/false = checked
   Map<String, dynamic>? _currentZone; // Zone info when inZone == true
   Map<String, dynamic>? _nearestZone; // Nearest zone info when inZone == false
-  DateTime? _lastZoneCheck;
   Position? _lastZoneCheckPosition;
   bool _isCheckingZone = false;
 
@@ -1205,7 +1203,7 @@ class AppStateProvider extends ChangeNotifier {
   /// Check session validity before starting a wardrive action
   /// Returns true if session is valid, false if expired (triggers disconnect)
   Future<bool> _checkSessionBeforeAction() async {
-    final pos = _gpsService?.lastPosition;
+    final pos = _gpsService.lastPosition;
     final result = await _apiService.checkSessionValid(
       lat: pos?.latitude,
       lon: pos?.longitude,
@@ -1335,7 +1333,7 @@ class AppStateProvider extends ChangeNotifier {
         _apiService.enableHeartbeat(
           gpsProvider: () {
             // Provide current GPS coordinates for heartbeat (matching wardrive.js)
-            final pos = _gpsService?.lastPosition;
+            final pos = _gpsService.lastPosition;
             if (pos == null) return null;
             return (lat: pos.latitude, lon: pos.longitude);
           },
@@ -1432,7 +1430,6 @@ class AppStateProvider extends ChangeNotifier {
       _inZone = null;
       _currentZone = null;
       _nearestZone = null;
-      _lastZoneCheck = null;
       _lastZoneCheckPosition = null;
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
     } else {
@@ -1705,29 +1702,6 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
-  /// Handle auth error response and show appropriate status
-  void _handleAuthError(Map<String, dynamic> result) {
-    final reason = result['reason'] as String?;
-    final message = result['message'] as String?;
-    final userMessage = _getErrorMessage(reason, message);
-
-    // Special handling for zone_full - this is actually a partial success
-    if (reason == 'zone_full') {
-      debugLog('[API] Auth returned zone_full - RX-only mode allowed: $userMessage');
-      return;
-    }
-
-    // Special case: outofdate is a critical error requiring app update
-    if (reason == 'outofdate') {
-      debugError('[API] App version outdated - update required: $userMessage');
-      return;
-    }
-
-    // Log error and add to error log
-    debugError('[API] Auth error: $reason - $userMessage');
-    logError(userMessage, severity: ErrorSeverity.error);
-  }
-
   /// Handle session error from wardrive/heartbeat API calls
   /// This may trigger auto-disconnect
   Future<void> handleSessionError(String? reason, String? message) async {
@@ -1879,7 +1853,6 @@ class AppStateProvider extends ChangeNotifier {
         return;
       }
 
-      _lastZoneCheck = DateTime.now();
       _lastZoneCheckPosition = _currentPosition;
 
       final success = result['success'] == true;
@@ -2034,9 +2007,11 @@ class AppStateProvider extends ChangeNotifier {
   /// Uses the native share sheet to allow users to share logs via email, messaging, etc.
   Future<void> shareDebugLog(File file) async {
     try {
-      final result = await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'MeshMapper Debug Log',
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          subject: 'MeshMapper Debug Log',
+        ),
       );
       debugLog('[DEBUG] Shared log: ${file.path}, status: ${result.status}');
     } catch (e) {

@@ -836,6 +836,11 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       enabled: sendPingEnabled,
       isActive: sendPingActive,
       isExpanded: sendPingExpanded,
+      progress: rxWindowActive && !isActiveModeRunning
+          ? appState.rxWindowTimer.progress
+          : cooldownActive && _lastActiveButton == _LastActiveButton.sendPing
+              ? appState.cooldownTimer.progress
+              : null,
       onPressed: () => _sendPing(context, appState),
     );
 
@@ -862,6 +867,13 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       enabled: activeModeEnabled,
       isActive: activeModeActive,
       isExpanded: activeModeExpanded,
+      progress: rxWindowActive && isActiveModeRunning
+          ? appState.rxWindowTimer.progress
+          : autoPingWaiting && isActiveModeRunning
+              ? appState.autoPingTimer.progress
+              : cooldownActive && _lastActiveButton == _LastActiveButton.activeMode
+                  ? appState.cooldownTimer.progress
+                  : null,
       onPressed: () => _toggleTxRxAuto(context, appState),
     );
 
@@ -884,6 +896,13 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       enabled: passiveModeEnabled,
       isActive: passiveModeActive,
       isExpanded: passiveModeExpanded,
+      progress: discoveryWindowActive && isPassiveModeRunning
+          ? appState.discoveryWindowTimer.progress
+          : autoPingWaiting && isPassiveModeRunning
+              ? appState.autoPingTimer.progress
+              : cooldownActive && _lastActiveButton == _LastActiveButton.passiveMode
+                  ? appState.cooldownTimer.progress
+                  : null,
       onPressed: () => _toggleRxAuto(context, appState),
     );
 
@@ -1027,6 +1046,7 @@ class _CompactActionButton extends StatefulWidget {
   final bool isActive;
   final bool isExpanded; // When true, show icon + label with wider width
   final VoidCallback onPressed;
+  final double? progress; // 0.0 to 1.0 for progress bar fill, null = no progress bar
 
   const _CompactActionButton({
     required this.icon,
@@ -1036,6 +1056,7 @@ class _CompactActionButton extends StatefulWidget {
     required this.onPressed,
     this.isActive = false,
     this.isExpanded = false,
+    this.progress,
   });
 
   @override
@@ -1101,10 +1122,6 @@ class _CompactActionButtonState extends State<_CompactActionButton>
               duration: const Duration(milliseconds: 200),
               curve: Curves.easeInOut,
               height: 32,
-              padding: EdgeInsets.symmetric(
-                horizontal: hasLabel ? 10 : 8,
-                vertical: 6,
-              ),
               decoration: BoxDecoration(
                 color: effectiveColor.withValues(alpha: bgOpacity),
                 borderRadius: BorderRadius.circular(16),
@@ -1113,40 +1130,65 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                   width: widget.isActive ? 1.5 : 1,
                 ),
               ),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      widget.icon,
-                      size: 18,
-                      color: showColor ? effectiveColor : Colors.grey.shade400,
+              child: Stack(
+                children: [
+                  // Progress fill (behind content)
+                  if (widget.progress != null && widget.progress! > 0)
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(15),
+                        child: FractionallySizedBox(
+                          alignment: Alignment.centerLeft,
+                          widthFactor: widget.progress!,
+                          child: Container(
+                            color: effectiveColor.withValues(alpha: 0.3),
+                          ),
+                        ),
+                      ),
                     ),
-                    // Animated label - show when label is provided
-                    AnimatedSize(
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: hasLabel
-                          ? Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const SizedBox(width: 5),
-                                Text(
-                                  widget.label!,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                                    color: showColor ? effectiveColor : Colors.grey.shade400,
-                                  ),
-                                ),
-                              ],
-                            )
-                          : const SizedBox.shrink(),
+                  // Existing button content
+                  Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: hasLabel ? 10 : 8,
+                      vertical: 6,
                     ),
-                  ],
-                ),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            widget.icon,
+                            size: 18,
+                            color: showColor ? effectiveColor : Colors.grey.shade400,
+                          ),
+                          // Animated label - show when label is provided
+                          AnimatedSize(
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: hasLabel
+                                ? Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const SizedBox(width: 5),
+                                      Text(
+                                        widget.label!,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
+                                          color: showColor ? effectiveColor : Colors.grey.shade400,
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

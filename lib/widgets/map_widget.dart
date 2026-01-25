@@ -103,6 +103,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   // MeshMapper overlay toggle (on by default)
   bool _showMeshMapperOverlay = true;
 
+  // Rotation lock (disable rotation gestures while keeping pinch-to-zoom)
+  bool _rotationLocked = false;
+
   // Map navigation trigger tracking (from log screen)
   int _lastNavigationTrigger = 0;
 
@@ -190,7 +193,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     _animationController?.dispose();
 
     // Create new animation controller
-    final duration = const Duration(milliseconds: 500); // Smooth zoom + pan
+    const duration = Duration(milliseconds: 500); // Smooth zoom + pan
 
     _animationController = AnimationController(
       duration: duration,
@@ -237,13 +240,21 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     double targetRotation = -targetHeading;
 
     // Normalize angles to -180 to 180 range
-    while (targetRotation > 180) targetRotation -= 360;
-    while (targetRotation < -180) targetRotation += 360;
+    while (targetRotation > 180) {
+      targetRotation -= 360;
+    }
+    while (targetRotation < -180) {
+      targetRotation += 360;
+    }
 
     // Calculate shortest rotation path
     double delta = targetRotation - currentRotation;
-    while (delta > 180) delta -= 360;
-    while (delta < -180) delta += 360;
+    while (delta > 180) {
+      delta -= 360;
+    }
+    while (delta < -180) {
+      delta += 360;
+    }
 
     // Skip if rotation change is very small (less than 2 degrees)
     if (delta.abs() < 2) return;
@@ -376,19 +387,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           initialZoom: _defaultZoom,
           minZoom: 3,
           maxZoom: 18,
+          interactionOptions: InteractionOptions(
+            flags: _rotationLocked
+                ? InteractiveFlag.all & ~InteractiveFlag.rotate
+                : InteractiveFlag.all,
+          ),
           onMapReady: () {
             _isMapReady = true;
             // Initial center on GPS if available
             if (appState.currentPosition != null) {
               _mapController.move(center, _defaultZoom);
-            }
-          },
-          // Detect user interaction - disable auto-follow when user drags
-          onPositionChanged: (position, hasGesture) {
-            if (hasGesture && _autoFollow) {
-              setState(() {
-                _autoFollow = false;
-              });
             }
           },
         ),
@@ -551,6 +559,18 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: _toggleNorthMode,
             isActive: !_alwaysNorth,
           ),
+          Container(
+            height: 1,
+            width: 32,
+            color: Colors.white24,
+          ),
+          // Rotation lock toggle
+          _buildControlButton(
+            icon: _rotationLocked ? Icons.screen_lock_rotation : Icons.screen_rotation,
+            tooltip: _rotationLocked ? 'Unlock Rotation' : 'Lock Rotation',
+            onPressed: _toggleRotationLock,
+            isActive: _rotationLocked,
+          ),
           // MeshMapper overlay toggle (only show when zone code available)
           if (appState.zoneCode != null) ...[
             Container(
@@ -610,20 +630,28 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   void _cycleMapStyle() {
     setState(() {
-      final styles = MapStyle.values;
+      const styles = MapStyle.values;
       final currentIndex = styles.indexOf(_mapStyle);
       _mapStyle = styles[(currentIndex + 1) % styles.length];
     });
   }
 
   void _centerOnPosition() {
+    // If already following, toggle off
+    if (_autoFollow) {
+      setState(() {
+        _autoFollow = false;
+      });
+      return;
+    }
+
+    // Otherwise, enable auto-follow and center on position
     final appState = context.read<AppStateProvider>();
     if (appState.currentPosition != null) {
       final targetPosition = LatLng(
         appState.currentPosition!.latitude,
         appState.currentPosition!.longitude,
       );
-      // Re-enable auto-follow and animate to position with zoom
       setState(() {
         _autoFollow = true;
         _lastGpsPosition = targetPosition;
@@ -655,7 +683,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           _rotationAnimationController?.dispose();
 
           // Create animation to rotate back to north
-          final duration = Duration(milliseconds: 500);
+          const duration = Duration(milliseconds: 500);
           _rotationAnimationController = AnimationController(
             duration: duration,
             vsync: this,
@@ -689,6 +717,50 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             _animateToRotation(appState.currentPosition!.heading);
           }
         });
+      }
+    });
+  }
+
+  void _toggleRotationLock() {
+    setState(() {
+      _rotationLocked = !_rotationLocked;
+
+      // When enabling lock in "Always North" mode, rotate back to north
+      // When in "Rotate with Heading" mode, keep current rotation
+      if (_rotationLocked && _isMapReady && _alwaysNorth) {
+        final currentRotation = _mapController.camera.rotation;
+        if (currentRotation.abs() > 2) {
+          // Cancel any running rotation animation
+          _rotationAnimationController?.stop();
+          _rotationAnimationController?.dispose();
+
+          // Create animation to rotate back to north
+          const duration = Duration(milliseconds: 500);
+          _rotationAnimationController = AnimationController(
+            duration: duration,
+            vsync: this,
+          );
+
+          _rotationAnimation = CurvedAnimation(
+            parent: _rotationAnimationController!,
+            curve: Curves.easeInOutCubic,
+          );
+
+          _rotationStartAngle = currentRotation;
+          _rotationEndAngle = 0.0; // North
+
+          _rotationAnimation!.addListener(() {
+            if (!mounted || _rotationStartAngle == null || _rotationEndAngle == null) return;
+
+            final t = _rotationAnimation!.value;
+            final rotation = _rotationStartAngle! +
+                ((_rotationEndAngle! - _rotationStartAngle!) * t);
+
+            _mapController.rotate(rotation);
+          });
+
+          _rotationAnimationController!.forward();
+        }
       }
     });
   }
@@ -1106,8 +1178,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               color: ping.heardRepeaters.isEmpty ? Colors.red : Colors.green,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
-              boxShadow: [
-                const BoxShadow(
+              boxShadow: const [
+                BoxShadow(
                   color: Colors.black26,
                   blurRadius: 4,
                   offset: Offset(0, 2),
@@ -1137,8 +1209,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               color: color,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
-              boxShadow: [
-                const BoxShadow(
+              boxShadow: const [
+                BoxShadow(
                   color: Colors.black26,
                   blurRadius: 4,
                   offset: Offset(0, 2),
@@ -1165,8 +1237,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               color: entry.nodeCount == 0 ? Colors.grey : _discMarkerColor,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
-              boxShadow: [
-                const BoxShadow(
+              boxShadow: const [
+                BoxShadow(
                   color: Colors.black26,
                   blurRadius: 4,
                   offset: Offset(0, 2),
@@ -1236,8 +1308,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               color: markerColor,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
-              boxShadow: [
-                const BoxShadow(
+              boxShadow: const [
+                BoxShadow(
                   color: Colors.black26,
                   blurRadius: 4,
                   offset: Offset(0, 2),
@@ -2123,31 +2195,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  /// Build a labeled chip with prefix (e.g., "L: 5.2" for Local SNR)
-  Widget _buildLabeledChip({
-    required String label,
-    required String value,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        label.isEmpty ? value : '$label: $value',
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: color,
-          fontFamily: 'monospace',
         ),
       ),
     );

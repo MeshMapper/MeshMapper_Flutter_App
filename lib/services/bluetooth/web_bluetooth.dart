@@ -75,20 +75,18 @@ class WebBluetoothService implements BluetoothService {
         ]),
       );
 
-      if (device != null) {
-        // Store the device for later connection (avoid requesting twice)
-        _pendingDevice = device;
-        debugLog('[BLE] Device selected: ${device.name ?? device.id}');
+      // Store the device for later connection (avoid requesting twice)
+      _pendingDevice = device;
+      debugLog('[BLE] Device selected: ${device.name ?? device.id}');
 
-        final deviceName = device.name ?? 'MeshCore Device';
-        if (device.name == null) {
-          debugWarn('[BLE] WARNING: Device ${device.id} has no name during scan, using fallback "MeshCore Device"');
-        }
-        yield DiscoveredDevice(
-          id: device.id,
-          name: deviceName,
-        );
+      final deviceName = device.name ?? 'MeshCore Device';
+      if (device.name == null) {
+        debugWarn('[BLE] WARNING: Device ${device.id} has no name during scan, using fallback "MeshCore Device"');
       }
+      yield DiscoveredDevice(
+        id: device.id,
+        name: deviceName,
+      );
     } catch (e) {
       debugError('[BLE] Device picker error: $e');
       // Only set disconnected on error - successful scan will proceed to connect()

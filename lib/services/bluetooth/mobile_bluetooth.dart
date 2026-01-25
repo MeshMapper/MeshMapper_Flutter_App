@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../models/connection_state.dart';
+import '../../utils/debug_logger_io.dart';
 import '../meshcore/protocol_constants.dart';
 import 'bluetooth_service.dart';
 
@@ -103,11 +104,11 @@ class MobileBluetoothService implements BluetoothService {
       //
       // For location, we CHECK permissions but don't REQUEST them here.
       // Location permission requests are handled by the disclosure flow in MainScaffold.
-      LocationPermission locationPermission = await Geolocator.checkPermission();
-      print('[BLE] iOS location permission check: $locationPermission');
+      final locationPermission = await Geolocator.checkPermission();
+      debugLog('[BLE] iOS location permission check: $locationPermission');
 
       if (locationPermission == LocationPermission.deniedForever) {
-        print('[BLE] iOS location permission permanently denied - user must enable in Settings');
+        debugLog('[BLE] iOS location permission permanently denied - user must enable in Settings');
         throw BlePermissionDeniedException(
           'Location permission required for Bluetooth scanning. '
           'Please enable in Settings > Privacy & Security > Location Services > MeshMapper'
@@ -115,11 +116,11 @@ class MobileBluetoothService implements BluetoothService {
       }
 
       if (locationPermission == LocationPermission.denied) {
-        print('[BLE] iOS location permission not yet granted (disclosure flow will handle)');
+        debugLog('[BLE] iOS location permission not yet granted (disclosure flow will handle)');
         return false;
       }
 
-      print('[BLE] iOS permissions OK - Core Bluetooth will prompt for Bluetooth access when scanning');
+      debugLog('[BLE] iOS permissions OK - Core Bluetooth will prompt for Bluetooth access when scanning');
       return true;
     } else {
       // Android: Use bluetoothScan and bluetoothConnect (Android 12+)
@@ -129,7 +130,7 @@ class MobileBluetoothService implements BluetoothService {
       final bluetoothConnect = await Permission.bluetoothConnect.request();
       final location = await Permission.locationWhenInUse.status; // CHECK only, don't request
 
-      print('[BLE] Android permission check - scan: $bluetoothScan, connect: $bluetoothConnect, location: $location');
+      debugLog('[BLE] Android permission check - scan: $bluetoothScan, connect: $bluetoothConnect, location: $location');
 
       // Check for permanently denied permissions
       if (bluetoothScan.isPermanentlyDenied || bluetoothConnect.isPermanentlyDenied || location.isPermanentlyDenied) {
@@ -137,7 +138,7 @@ class MobileBluetoothService implements BluetoothService {
         if (bluetoothScan.isPermanentlyDenied) denied.add('Bluetooth Scan');
         if (bluetoothConnect.isPermanentlyDenied) denied.add('Bluetooth Connect');
         if (location.isPermanentlyDenied) denied.add('Location');
-        print('[BLE] Android permissions permanently denied: ${denied.join(", ")}');
+        debugLog('[BLE] Android permissions permanently denied: ${denied.join(", ")}');
         throw BlePermissionDeniedException('${denied.join(", ")} permission(s) denied. Please enable in Settings');
       }
 
@@ -146,7 +147,7 @@ class MobileBluetoothService implements BluetoothService {
           location.isGranted;
 
       if (!granted) {
-        print('[BLE] Android permissions not fully granted');
+        debugLog('[BLE] Android permissions not fully granted');
       }
 
       return granted;
@@ -172,7 +173,7 @@ class MobileBluetoothService implements BluetoothService {
           final hasName = result.device.platformName.isNotEmpty;
           final deviceName = hasName ? result.device.platformName : 'MeshCore Device';
           if (!hasName) {
-            print('[BLE] WARNING: Device ${result.device.remoteId.str} has no platformName during scan, using fallback "MeshCore Device"');
+            debugLog('[BLE] WARNING: Device ${result.device.remoteId.str} has no platformName during scan, using fallback "MeshCore Device"');
           }
           final device = DiscoveredDevice(
             id: result.device.remoteId.str,
@@ -210,7 +211,7 @@ class MobileBluetoothService implements BluetoothService {
     while (attempt < _maxRetries) {
       attempt++;
       try {
-        print('[BLE] Connection attempt $attempt/$_maxRetries to $deviceId');
+        debugLog('[BLE] Connection attempt $attempt/$_maxRetries to $deviceId');
         _updateStatus(ConnectionStatus.connecting);
 
         // Cancel any existing subscriptions from a previous connection
@@ -225,26 +226,26 @@ class MobileBluetoothService implements BluetoothService {
 
         // Disconnect any previously connected device
         if (_bleDevice != null) {
-          print('[BLE] Disconnecting previous device');
+          debugLog('[BLE] Disconnecting previous device');
           try {
             await _bleDevice!.disconnect();
           } catch (e) {
-            print('[BLE] Previous disconnect error (ignoring): $e');
+            debugLog('[BLE] Previous disconnect error (ignoring): $e');
           }
           _bleDevice = null;
         }
 
         // Get the device
         _bleDevice = fbp.BluetoothDevice.fromId(deviceId);
-        print('[BLE] Device reference created');
+        debugLog('[BLE] Device reference created');
 
         // Connect to GATT server FIRST (before subscribing to state changes)
-        print('[BLE] Connecting to GATT...');
+        debugLog('[BLE] Connecting to GATT...');
         await _bleDevice!.connect(
           timeout: const Duration(seconds: 15),
           mtu: null,  // Disable automatic MTU negotiation during connect to avoid race condition errors on Android
         );
-        print('[BLE] GATT connected');
+        debugLog('[BLE] GATT connected');
 
         // Request larger MTU AFTER connection is established
         // SelfInfo response needs ~60 bytes, ChannelInfo needs ~50 bytes
@@ -253,18 +254,18 @@ class MobileBluetoothService implements BluetoothService {
         if (Platform.isAndroid) {
           try {
             final mtu = await _bleDevice!.requestMtu(512);
-            print('[BLE] MTU negotiated: $mtu bytes');
+            debugLog('[BLE] MTU negotiated: $mtu bytes');
             // Small delay to ensure MTU takes effect on Android
             await Future.delayed(const Duration(milliseconds: 100));
           } catch (e) {
             // MTU negotiation failure is not fatal - continue with default MTU
             // Some older devices may not support MTU negotiation
-            print('[BLE] MTU negotiation failed (continuing with default): $e');
+            debugLog('[BLE] MTU negotiation failed (continuing with default): $e');
           }
         } else {
           // iOS auto-negotiates MTU, just log the current value
           final mtu = await _bleDevice!.mtu.first;
-          print('[BLE] iOS MTU: $mtu bytes');
+          debugLog('[BLE] iOS MTU: $mtu bytes');
         }
 
         // NOW subscribe to connection state changes (after we're connected)
@@ -273,33 +274,33 @@ class MobileBluetoothService implements BluetoothService {
         // but we only want to react to CHANGES, not the initial state.
         // This prevents false disconnection triggers during connection setup.
         _connectionStateSubscription = _bleDevice!.connectionState.skip(1).listen((state) {
-          print('[BLE] Connection state changed: $state');
+          debugLog('[BLE] Connection state changed: $state');
           if (state == fbp.BluetoothConnectionState.disconnected) {
             _handleDisconnection();
           }
         });
 
         // Discover services
-        print('[BLE] Discovering services...');
+        debugLog('[BLE] Discovering services...');
         final services = await _bleDevice!.discoverServices();
-        print('[BLE] Found ${services.length} services');
+        debugLog('[BLE] Found ${services.length} services');
 
         // Find our service
         final service = services.firstWhere(
           (s) => s.uuid.toString().toUpperCase() == BleUuids.serviceUuid,
           orElse: () => throw Exception('MeshCore service not found'),
         );
-        print('[BLE] Found MeshCore service');
+        debugLog('[BLE] Found MeshCore service');
 
         // Find characteristics
         for (final char in service.characteristics) {
           final uuid = char.uuid.toString().toUpperCase();
           if (uuid == BleUuids.characteristicRxUuid) {
             _rxCharacteristic = char;
-            print('[BLE] Found RX characteristic');
+            debugLog('[BLE] Found RX characteristic');
           } else if (uuid == BleUuids.characteristicTxUuid) {
             _txCharacteristic = char;
-            print('[BLE] Found TX characteristic');
+            debugLog('[BLE] Found TX characteristic');
           }
         }
 
@@ -308,14 +309,14 @@ class MobileBluetoothService implements BluetoothService {
         }
 
         // Enable notifications on TX characteristic
-        print('[BLE] Enabling notifications...');
+        debugLog('[BLE] Enabling notifications...');
         await _txCharacteristic!.setNotifyValue(true);
         _notificationSubscription = _txCharacteristic!.lastValueStream.listen((value) {
           if (value.isNotEmpty && _dataController != null && !_dataController!.isClosed) {
             _dataController!.add(Uint8List.fromList(value));
           }
         });
-        print('[BLE] Notifications enabled');
+        debugLog('[BLE] Notifications enabled');
 
         // Use device name from scan results if available, fallback to platformName
         final scannedDevice = _scannedDevices[deviceId];
@@ -326,19 +327,19 @@ class MobileBluetoothService implements BluetoothService {
           deviceName = _bleDevice!.platformName;
         } else {
           deviceName = 'MeshCore Device';
-          print('[BLE] WARNING: No device name available for $deviceId during connect - no scan cache, empty platformName. Using fallback "MeshCore Device"');
+          debugLog('[BLE] WARNING: No device name available for $deviceId during connect - no scan cache, empty platformName. Using fallback "MeshCore Device"');
         }
         _connectedDevice = DiscoveredDevice(
           id: deviceId,
           name: deviceName,
         );
         if (deviceName == 'MeshCore Device') {
-          print('[BLE] WARNING: Connected device name is "MeshCore Device" (from scan: ${scannedDevice != null}, scanName: ${scannedDevice?.name}, platformName: ${_bleDevice!.platformName})');
+          debugLog('[BLE] WARNING: Connected device name is "MeshCore Device" (from scan: ${scannedDevice != null}, scanName: ${scannedDevice?.name}, platformName: ${_bleDevice!.platformName})');
         } else {
-          print('[BLE] Device name: $deviceName (from scan: ${scannedDevice != null}, platformName: ${_bleDevice!.platformName})');
+          debugLog('[BLE] Device name: $deviceName (from scan: ${scannedDevice != null}, platformName: ${_bleDevice!.platformName})');
         }
 
-        print('[BLE] Connection complete');
+        debugLog('[BLE] Connection complete');
         _updateStatus(ConnectionStatus.connected);
         return; // Success - exit retry loop
 
@@ -348,7 +349,7 @@ class MobileBluetoothService implements BluetoothService {
         final isError133 = Platform.isAndroid && e.toString().contains('android-code: 133');
 
         if (isError133 && attempt < _maxRetries) {
-          print('[BLE] Error 133 on attempt $attempt, retrying after delay...');
+          debugLog('[BLE] Error 133 on attempt $attempt, retrying after delay...');
           await Future.delayed(_retryDelay);
           // Force cleanup before retry
           try {
@@ -361,8 +362,8 @@ class MobileBluetoothService implements BluetoothService {
         }
 
         // Final attempt failed or non-retryable error
-        print('[BLE] Connection error: $e');
-        print('[BLE] Stack trace: $stackTrace');
+        debugLog('[BLE] Connection error: $e');
+        debugLog('[BLE] Stack trace: $stackTrace');
         _updateStatus(ConnectionStatus.error);
         rethrow;
       }
@@ -411,7 +412,7 @@ class MobileBluetoothService implements BluetoothService {
   @override
   void cacheDeviceInfo(DiscoveredDevice device) {
     _scannedDevices[device.id] = device;
-    print('[BLE] Cached device info: ${device.name} (${device.id})');
+    debugLog('[BLE] Cached device info: ${device.name} (${device.id})');
   }
 
   @override

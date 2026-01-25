@@ -43,7 +43,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
 
     return Container(
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.8),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha:0.8),
         border: Border.all(color: Colors.grey.shade700),
         borderRadius: BorderRadius.circular(12),
       ),

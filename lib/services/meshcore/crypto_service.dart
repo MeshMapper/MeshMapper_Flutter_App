@@ -174,27 +174,6 @@ class CryptoService {
     return padded;
   }
 
-  /// Remove PKCS7 padding from data
-  static Uint8List _removePkcs7Padding(Uint8List data) {
-    if (data.isEmpty) return data;
-    
-    final paddingLength = data[data.length - 1];
-    if (paddingLength < 1 || paddingLength > data.length) {
-      debugWarn('[CRYPTO] Invalid padding length: $paddingLength');
-      return data; // Return as-is if padding is invalid
-    }
-    
-    // Verify padding bytes
-    for (var i = data.length - paddingLength; i < data.length; i++) {
-      if (data[i] != paddingLength) {
-        debugWarn('[CRYPTO] Invalid padding bytes');
-        return data; // Return as-is if padding is invalid
-      }
-    }
-    
-    return Uint8List.fromList(data.sublist(0, data.length - paddingLength));
-  }
-
   /// Parse channel message to extract text content
   /// 
   /// Decrypts and decodes the message, returning the text if printable

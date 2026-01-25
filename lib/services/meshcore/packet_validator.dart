@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import '../../utils/debug_logger_io.dart';
 import 'crypto_service.dart';
 import 'packet_metadata.dart';
-import 'protocol_constants.dart';
 
 /// Packet validation logic for RX wardriving
 /// Reference: validateRxPacket() in wardrive.js (lines 3419-3515)
@@ -208,7 +207,7 @@ class PacketValidator {
       const appDataOffset = pubkeySize + timestampSize + signatureSize; // 100
 
       if (payload.length <= appDataOffset) {
-        return AdvertNameResult(
+        return const AdvertNameResult(
           valid: false,
           reason: 'payload too short for appData',
           name: null,
@@ -225,7 +224,7 @@ class PacketValidator {
 
       // Check if name is present in flags
       if ((flags & advNameMask) == 0) {
-        return AdvertNameResult(
+        return const AdvertNameResult(
           valid: false,
           reason: 'no name in advert',
           name: null,
@@ -240,7 +239,7 @@ class PacketValidator {
       }
 
       if (payload.length <= nameOffset) {
-        return AdvertNameResult(
+        return const AdvertNameResult(
           valid: false,
           reason: 'no name data',
           name: null,
@@ -258,7 +257,7 @@ class PacketValidator {
       debugLog('[RX FILTER] ADVERT name extracted: "$name" (${name.length} chars)');
 
       if (name.isEmpty) {
-        return AdvertNameResult(
+        return const AdvertNameResult(
           valid: false,
           reason: 'name empty',
           name: null,
@@ -293,7 +292,7 @@ class PacketValidator {
       );
     } catch (e) {
       debugError('[RX FILTER] Error parsing ADVERT name: $e');
-      return AdvertNameResult(
+      return const AdvertNameResult(
         valid: false,
         reason: 'parse error',
         name: null,

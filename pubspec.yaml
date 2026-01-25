@@ -37,6 +37,7 @@ dependencies:
   flutter_local_notifications: ^17.0.0
   just_audio: ^0.9.40
   audio_session: ^0.1.21
+  dio: ^5.0.0
 
 dev_dependencies:
   flutter_test:

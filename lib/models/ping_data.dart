@@ -150,8 +150,8 @@ class RepeaterInfo {
     if (s == 0) {
       r = g = b = l;
     } else {
-      double q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      double p = 2 * l - q;
+      final q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      final p = 2 * l - q;
       r = _hueToRgb(p, q, h + 1 / 3);
       g = _hueToRgb(p, q, h);
       b = _hueToRgb(p, q, h - 1 / 3);
