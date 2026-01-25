@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -12,8 +13,59 @@ import '../services/bluetooth/bluetooth_service.dart';
 import '../widgets/regional_config_card.dart';
 
 /// BLE device selection and connection screen
-class ConnectionScreen extends StatelessWidget {
+class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({super.key});
+
+  @override
+  State<ConnectionScreen> createState() => _ConnectionScreenState();
+}
+
+class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Re-check GPS permissions when app returns from settings
+      final appState = context.read<AppStateProvider>();
+      if (appState.gpsStatus == GpsStatus.permissionDenied) {
+        appState.restartGpsAfterPermission();
+      }
+    }
+  }
+
+  /// Request location permission - tries to request first, opens settings if permanently denied
+  Future<void> _requestLocationPermission(AppStateProvider appState) async {
+    // Check current permission status
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    // If denied (not permanently), try requesting again
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    // If permanently denied, open app settings
+    if (permission == LocationPermission.deniedForever) {
+      await Geolocator.openAppSettings();
+      return;
+    }
+
+    // If granted, restart GPS service
+    if (permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse) {
+      await appState.restartGpsAfterPermission();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -34,7 +86,9 @@ class ConnectionScreen extends StatelessWidget {
               icon: const Icon(Icons.bluetooth_searching),
               label: Text(appState.offlineMode
                   ? 'Scan'
-                  : (appState.inZone == true ? 'Scan' : 'Outside Zone')),
+                  : appState.gpsStatus == GpsStatus.permissionDenied
+                      ? 'GPS Required'
+                      : (appState.inZone == true ? 'Scan' : 'Outside Zone')),
               backgroundColor: (appState.inZone == true || appState.offlineMode)
                   ? null
                   : Colors.grey,
@@ -721,6 +775,51 @@ class ConnectionScreen extends StatelessWidget {
           children: [
             _buildZoneStatusBar(context, appState),
             Expanded(child: _buildRememberedDeviceView(context, appState, remembered, canConnect: canConnect)),
+          ],
+        );
+      }
+
+      // Show GPS permission required message when permissions are denied
+      if (appState.gpsStatus == GpsStatus.permissionDenied) {
+        return Column(
+          children: [
+            _buildZoneStatusBar(context, appState),
+            Expanded(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.location_off,
+                        size: 64,
+                        color: Colors.orange.withValues(alpha: 0.7),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'GPS Permission Required',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Location access is needed to verify you\'re in an allowed wardriving zone.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                      ),
+                      const SizedBox(height: 24),
+                      ElevatedButton.icon(
+                        onPressed: () => _requestLocationPermission(appState),
+                        icon: const Icon(Icons.location_on),
+                        label: const Text('Enable Location'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ],
         );
       }
