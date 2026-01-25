@@ -744,7 +744,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               child: Stack(
                 children: [
                   SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 140),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -907,7 +907,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     bottom: 0,
                     child: IgnorePointer(
                       child: Container(
-                        height: 40,
+                        height: 120,
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
                             begin: Alignment.topCenter,

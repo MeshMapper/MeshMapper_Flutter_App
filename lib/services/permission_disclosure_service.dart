@@ -115,13 +115,8 @@ class PermissionDisclosureService {
               _BulletPoint(text: 'Send automatic pings during extended wardriving sessions'),
               SizedBox(height: 16),
               Text(
-                'Your location will be collected even when the app is closed or not in use.',
+                'This grants "always on" location access, but we only collect what\'s needed: tagging pings while wardriving and checking if you\'re in a supported zone.',
                 style: TextStyle(fontSize: 14),
-              ),
-              SizedBox(height: 12),
-              Text(
-                'You can disable this anytime in Settings.',
-                style: TextStyle(fontSize: 13, fontStyle: FontStyle.italic),
               ),
             ],
           ),
