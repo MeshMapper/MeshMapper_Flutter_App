@@ -97,8 +97,8 @@ class ConnectionScreen extends StatelessWidget {
   }
 
   Widget _buildConnectedInfo(BuildContext context, AppStateProvider appState) {
-    // Get device name like we show in the app bar subtitle
-    final deviceName = appState.connectedDeviceName?.replaceFirst('MeshCore-', '') ?? 'Unknown';
+    // Get device name - uses displayDeviceName which prefers SelfInfo name over BLE advertisement name
+    final deviceName = appState.displayDeviceName ?? 'Unknown';
 
     // Parse version from manufacturer string and use shortName from device model for hardware
     // Format examples:

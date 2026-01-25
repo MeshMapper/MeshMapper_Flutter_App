@@ -102,6 +102,14 @@ class AppStateProvider extends ChangeNotifier {
   /// BLE device name (e.g., "MeshCore-MrAlders0n_Elecrow")
   String? get connectedDeviceName => _bluetoothService.connectedDevice?.name;
 
+  /// Display name from SelfInfo (reflects user's chosen name in MeshCore)
+  /// BLE advertisement name may be cached/stale after device rename
+  String? _displayDeviceName;
+
+  /// The device name to display (prefers SelfInfo name over BLE advertisement name)
+  /// SelfInfo name reflects user's chosen name in MeshCore; BLE name may be cached/stale
+  String? get displayDeviceName => _displayDeviceName ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
+
   // Ping state
   PingStats _pingStats = const PingStats();
   bool _autoPingEnabled = false;
@@ -805,6 +813,14 @@ class AppStateProvider extends ChangeNotifier {
       // Save this device for quick reconnection (mobile only)
       await _saveRememberedDevice(device);
 
+      // Update display name from SelfInfo (reflects user's chosen name)
+      // BLE advertisement name may be cached/stale after device rename
+      final selfInfoName = _meshCoreConnection?.selfInfo?.name;
+      if (selfInfoName != null && selfInfoName.isNotEmpty) {
+        _displayDeviceName = selfInfoName;
+        debugLog('[APP] Display name set from SelfInfo: "$selfInfoName"');
+      }
+
       // Log connection status based on TX/RX permissions
       if (hasApiSession) {
         if (txAllowed && rxAllowed) {
@@ -1133,6 +1149,7 @@ class AppStateProvider extends ChangeNotifier {
     _deviceModel = null;
     _manufacturerString = null;
     _devicePublicKey = null;
+    _displayDeviceName = null;
     _currentNoiseFloor = null;
     _currentBatteryPercent = null;
 

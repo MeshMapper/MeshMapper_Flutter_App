@@ -368,8 +368,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Build subtitle with device name only
+  /// Uses displayDeviceName which prefers SelfInfo name over BLE advertisement name
   String _buildSubtitle(AppStateProvider appState) {
-    return appState.connectedDeviceName!.replaceFirst('MeshCore-', '');
+    return appState.displayDeviceName ?? 'Unknown';
   }
 
   /// Build compact stat indicator for app bar
