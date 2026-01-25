@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -36,9 +38,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Re-check GPS permissions when app returns from settings
+      // Re-check GPS when app returns from settings (permission denied or location disabled)
       final appState = context.read<AppStateProvider>();
-      if (appState.gpsStatus == GpsStatus.permissionDenied) {
+      if (appState.gpsStatus == GpsStatus.permissionDenied ||
+          appState.gpsStatus == GpsStatus.disabled) {
         appState.restartGpsAfterPermission();
       }
     }
@@ -86,9 +89,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               icon: const Icon(Icons.bluetooth_searching),
               label: Text(appState.offlineMode
                   ? 'Scan'
-                  : appState.gpsStatus == GpsStatus.permissionDenied
-                      ? 'GPS Required'
-                      : (appState.inZone == true ? 'Scan' : 'Outside Zone')),
+                  : appState.gpsStatus == GpsStatus.disabled
+                      ? 'GPS Disabled'
+                      : appState.gpsStatus == GpsStatus.permissionDenied
+                          ? 'GPS Required'
+                          : (appState.inZone == true ? 'Scan' : 'Outside Zone')),
               backgroundColor: (appState.inZone == true || appState.offlineMode)
                   ? null
                   : Colors.grey,
@@ -775,6 +780,57 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           children: [
             _buildZoneStatusBar(context, appState),
             Expanded(child: _buildRememberedDeviceView(context, appState, remembered, canConnect: canConnect)),
+          ],
+        );
+      }
+
+      // Show GPS disabled message when location services are off
+      if (appState.gpsStatus == GpsStatus.disabled) {
+        // iOS doesn't allow opening Location Services directly, so no button on iOS
+        final isIOS = !kIsWeb && Platform.isIOS;
+
+        return Column(
+          children: [
+            _buildZoneStatusBar(context, appState),
+            Expanded(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.gps_off,
+                        size: 64,
+                        color: Colors.red.withValues(alpha: 0.7),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Location Services Disabled',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Please enable Location Services on your device to connect and verify you\'re in an allowed wardriving zone.',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                      ),
+                      // Only show button on Android - iOS can't open Location Services directly
+                      if (!isIOS) ...[
+                        const SizedBox(height: 24),
+                        ElevatedButton.icon(
+                          onPressed: () => Geolocator.openLocationSettings(),
+                          icon: const Icon(Icons.settings),
+                          label: const Text('Open Location Settings'),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ],
         );
       }

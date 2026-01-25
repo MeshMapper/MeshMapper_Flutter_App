@@ -148,16 +148,17 @@ class GpsService {
   /// Note: This only CHECKS permissions, does not REQUEST them.
   /// Permission requests are handled by the disclosure flow in MainScaffold.
   Future<void> startWatching() async {
-    // Check permissions first (don't request - disclosure flow handles that)
-    if (!await checkPermissions()) {
-      debugLog('[GPS] Permissions not granted yet, waiting for disclosure flow');
-      _updateStatus(GpsStatus.permissionDenied);
+    // Check if location services are enabled first (system-level setting)
+    if (!await isLocationServiceEnabled()) {
+      debugLog('[GPS] Location services disabled at system level');
+      _updateStatus(GpsStatus.disabled);
       return;
     }
 
-    // Check if location services are enabled
-    if (!await isLocationServiceEnabled()) {
-      _updateStatus(GpsStatus.disabled);
+    // Check permissions (don't request - disclosure flow handles that)
+    if (!await checkPermissions()) {
+      debugLog('[GPS] Permissions not granted yet, waiting for disclosure flow');
+      _updateStatus(GpsStatus.permissionDenied);
       return;
     }
 
