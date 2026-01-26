@@ -35,6 +35,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _onVersionTap(AppStateProvider appState) {
     final now = DateTime.now();
+    final messenger = ScaffoldMessenger.of(context);
 
     // Reset if last tap was more than 2 seconds ago
     if (_lastVersionTap != null &&
@@ -46,32 +47,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _versionTapCount++;
 
     if (appState.developerModeEnabled) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Developer mode already enabled'),
-          duration: Duration(milliseconds: 1500),
-        ),
-      );
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Developer mode already enabled'),
+            duration: Duration(milliseconds: 1500),
+          ),
+        );
       return;
     }
 
     if (_versionTapCount >= 7) {
       appState.setDeveloperMode(true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Developer mode enabled!'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Developer mode enabled!'),
+            duration: Duration(seconds: 2),
+          ),
+        );
       _versionTapCount = 0;
     } else if (_versionTapCount >= 3) {
       final remaining = 7 - _versionTapCount;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$remaining taps to enable developer mode'),
-          duration: const Duration(milliseconds: 500),
-        ),
-      );
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('$remaining taps to enable developer mode'),
+            duration: const Duration(milliseconds: 800),
+          ),
+        );
     }
   }
 

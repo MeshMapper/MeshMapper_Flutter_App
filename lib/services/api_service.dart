@@ -47,6 +47,49 @@ class ApiService {
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
+  /// Sanitize payload by removing sensitive fields for logging
+  Map<String, dynamic> _sanitizePayload(Map<String, dynamic> payload) {
+    final sanitized = Map<String, dynamic>.from(payload);
+    sanitized.remove('key');
+    sanitized.remove('session_id');
+    sanitized.remove('public_key');
+    return sanitized;
+  }
+
+  /// Log API request/response with timing
+  void _logApiCall({
+    required String endpoint,
+    required String method,
+    required Stopwatch stopwatch,
+    required int statusCode,
+    Map<String, dynamic>? request,
+    dynamic response,
+  }) {
+    final durationSec = (stopwatch.elapsedMilliseconds / 1000).toStringAsFixed(2);
+
+    String reqSummary;
+    if (request != null) {
+      reqSummary = json.encode(_sanitizePayload(request));
+    } else {
+      reqSummary = 'none';
+    }
+
+    String resSummary;
+    if (response is Map<String, dynamic>) {
+      resSummary = json.encode(_sanitizePayload(response));
+    } else if (response is List) {
+      resSummary = '[${response.length} items]';
+    } else if (response != null) {
+      resSummary = response.toString();
+    } else {
+      resSummary = 'none';
+    }
+
+    debugLog('[API] $method $endpoint');
+    debugLog('[API]   Request: $reqSummary');
+    debugLog('[API]   Response ($statusCode) in ${durationSec}s: $resSummary');
+  }
+
   /// Check if we have a valid session
   bool get hasSession => _sessionId != null;
   
@@ -75,6 +118,7 @@ class ApiService {
     required double accuracyMeters,
     required String appVersion,
   }) async {
+    final stopwatch = Stopwatch()..start();
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final payload = {
@@ -91,13 +135,26 @@ class ApiService {
         body: json.encode(payload),
       ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
-        return json.decode(response.body) as Map<String, dynamic>;
-      }
+      stopwatch.stop();
+      final data = response.statusCode == 200
+          ? json.decode(response.body) as Map<String, dynamic>
+          : null;
+
+      _logApiCall(
+        endpoint: '/wardrive-api.php/status',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: payload,
+        response: data,
+      );
+
+      return data;
     } catch (e) {
-      // Return null on error
+      stopwatch.stop();
+      debugError('[API] POST /wardrive-api.php/status failed: $e');
+      return null;
     }
-    return null;
   }
 
   /// Request authentication with MeshMapper geo-auth API
@@ -119,6 +176,7 @@ class ApiService {
     double? accuracyMeters,
     bool offlineMode = false,
   }) async {
+    final stopwatch = Stopwatch()..start();
     try {
       final payload = <String, dynamic>{
         'key': apiKey,
@@ -159,7 +217,17 @@ class ApiService {
         body: json.encode(payload),
       ).timeout(const Duration(seconds: 10));
 
+      stopwatch.stop();
       final data = json.decode(response.body) as Map<String, dynamic>;
+
+      _logApiCall(
+        endpoint: '/wardrive-api.php/auth',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: payload,
+        response: data,
+      );
 
       // Store session info on successful connect
       if (reason == 'connect' && data['success'] == true) {
@@ -186,13 +254,15 @@ class ApiService {
 
       return data;
     } catch (e) {
+      stopwatch.stop();
+      debugError('[API] POST /wardrive-api.php/auth failed: $e');
       return null;
     }
   }
 
   /// Submit wardrive data batch to API
   /// Matches submitWardriveData() in wardrive.js
-  /// 
+  ///
   /// @param entries List of wardrive entries (TX/RX)
   /// @returns Map with success, expires_at, reason, message
   Future<Map<String, dynamic>?> submitWardriveData(List<Map<String, dynamic>> entries) async {
@@ -200,6 +270,7 @@ class ApiService {
       throw Exception('Cannot submit: no session_id');
     }
 
+    final stopwatch = Stopwatch()..start();
     try {
       final payload = {
         'key': apiKey,
@@ -213,7 +284,18 @@ class ApiService {
         body: json.encode(payload),
       ).timeout(const Duration(seconds: 30));
 
+      stopwatch.stop();
       final data = json.decode(response.body) as Map<String, dynamic>;
+
+      // Log with data count instead of full payload (which may be large)
+      _logApiCall(
+        endpoint: '/wardrive-api.php/wardrive',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: {'data': '${entries.length} items', 'heartbeat': false},
+        response: data,
+      );
 
       // Update expires_at and schedule heartbeat if provided
       if (data['success'] == true && data['expires_at'] != null) {
@@ -223,6 +305,8 @@ class ApiService {
 
       return data;
     } catch (e) {
+      stopwatch.stop();
+      debugError('[API] POST /wardrive-api.php/wardrive failed: $e');
       return null;
     }
   }
@@ -238,6 +322,7 @@ class ApiService {
       return null;
     }
 
+    final stopwatch = Stopwatch()..start();
     try {
       final payload = <String, dynamic>{
         'key': apiKey,
@@ -253,21 +338,25 @@ class ApiService {
         };
       }
 
-      // Log heartbeat request (hide sensitive payload details)
-      final hasCoords = lat != null && lon != null;
-      debugLog('[HEARTBEAT] POST (with GPS: $hasCoords)');
-
       final response = await _client.post(
         Uri.parse(wardriveEndpoint),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(payload),
       ).timeout(const Duration(seconds: 30));
 
+      stopwatch.stop();
       final data = json.decode(response.body) as Map<String, dynamic>;
 
-      // Log the response (matching wardrive.js logging)
-      debugLog('[HEARTBEAT] Response status: ${response.statusCode}');
-      debugLog('[HEARTBEAT] Response data: ${json.encode(data)}');
+      // Log heartbeat with coords info but not sensitive data
+      final hasCoords = lat != null && lon != null;
+      _logApiCall(
+        endpoint: '/wardrive-api.php/wardrive',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: {'heartbeat': true, 'has_coords': hasCoords},
+        response: data,
+      );
 
       // Update expires_at and schedule next heartbeat if provided
       if (data['success'] == true && data['expires_at'] != null) {
@@ -277,7 +366,8 @@ class ApiService {
 
       return data;
     } catch (e) {
-      debugError('[HEARTBEAT] Request failed: $e');
+      stopwatch.stop();
+      debugError('[API] POST /wardrive-api.php/wardrive (heartbeat) failed: $e');
       return null;
     }
   }
@@ -477,16 +567,25 @@ class ApiService {
   /// Fetch repeaters for a zone from the MeshMapper API
   /// Returns a list of enabled repeaters for the given IATA zone code
   Future<List<Repeater>> fetchRepeaters(String iata) async {
+    final stopwatch = Stopwatch()..start();
+    const endpoint = '/repeaters.json';
     try {
-      final url = 'https://${iata.toLowerCase()}.meshmapper.net/repeaters.json';
-      debugLog('[API] Fetching repeaters from: $url');
+      final url = 'https://${iata.toLowerCase()}.meshmapper.net$endpoint';
 
       final response = await _client.get(
         Uri.parse(url),
       ).timeout(const Duration(seconds: 15));
 
+      stopwatch.stop();
+
       if (response.statusCode != 200) {
-        debugError('[API] Failed to fetch repeaters: HTTP ${response.statusCode}');
+        _logApiCall(
+          endpoint: endpoint,
+          method: 'GET',
+          stopwatch: stopwatch,
+          statusCode: response.statusCode,
+          response: 'error',
+        );
         return [];
       }
 
@@ -505,10 +604,18 @@ class ApiService {
         }
       }
 
-      debugLog('[API] Fetched ${repeaters.length} enabled repeaters');
+      _logApiCall(
+        endpoint: endpoint,
+        method: 'GET',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        response: '${repeaters.length} repeaters',
+      );
+
       return repeaters;
     } catch (e) {
-      debugError('[API] Error fetching repeaters: $e');
+      stopwatch.stop();
+      debugError('[API] GET $endpoint failed: $e');
       return [];
     }
   }

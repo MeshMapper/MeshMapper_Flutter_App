@@ -89,9 +89,9 @@ Future<void> _requestiOSPermissions() async {
     debugLog('[APP] iOS: Error checking Bluetooth: $e');
   }
 
-  // Request notification permission
-  final notificationStatus = await Permission.notification.request();
-  debugLog('[APP] iOS notification permission: $notificationStatus');
+  // Note: iOS doesn't need notification permission for background operation.
+  // iOS uses background modes (bluetooth-central, location) instead of
+  // a foreground service notification like Android.
 }
 
 /// Request permissions on Android
@@ -160,6 +160,17 @@ class MeshMapperApp extends StatelessWidget {
             ),
           ),
           dividerColor: const Color(0xFF334155), // slate-700
+          snackBarTheme: SnackBarThemeData(
+            backgroundColor: const Color(0xFF334155), // slate-700
+            contentTextStyle: const TextStyle(
+              color: Color(0xFFF1F5F9), // slate-100
+              fontSize: 14,
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
           useMaterial3: true,
         ),
         themeMode: ThemeMode.light, // Force our dark theme
