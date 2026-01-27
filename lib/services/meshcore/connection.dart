@@ -224,7 +224,7 @@ class MeshCoreConnection {
           // Throw with reason code prefix for proper error handling
           throw Exception('AUTH_FAILED:$reason:$message');
         }
-        debugLog('[CONN] API session acquired successfully');
+        debugLog('[CONN] API session acquired successfully (session_id: ${authResult['session_id']})');
       } else {
         debugLog('[CONN] No auth callback set, skipping API session acquisition');
       }

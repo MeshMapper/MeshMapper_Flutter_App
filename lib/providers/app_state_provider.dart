@@ -1467,11 +1467,12 @@ class AppStateProvider extends ChangeNotifier {
       return;
     }
 
-    // Include device info for auth during upload (use display name which is SelfInfo name after connection)
+    // Include device info for auth during upload (same priority as online auth: SelfInfo name → BLE name)
+    // Note: Connection already validates device name exists, so this should never be null
     await _offlineSessionService.saveSession(
       pings,
       devicePublicKey: _devicePublicKey,
-      deviceName: _displayDeviceName ?? connectedDeviceName?.replaceFirst('MeshCore-', ''),
+      deviceName: _meshCoreConnection?.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''),
     );
     debugLog('[APP] Saved offline session with ${pings.length} pings');
     notifyListeners();
@@ -1542,12 +1543,18 @@ class AppStateProvider extends ChangeNotifier {
       return OfflineUploadResult.invalidSession;
     }
 
+    final deviceName = session.deviceName;
+    if (deviceName == null || deviceName.isEmpty) {
+      debugLog('[APP] Offline session missing device name: $filename');
+      return OfflineUploadResult.invalidSession;
+    }
+
     // 3. Authenticate with offline_mode: true
-    debugLog('[APP] Authenticating for offline upload with device: ${session.deviceName ?? "unknown"}');
+    debugLog('[APP] Authenticating for offline upload with device: $deviceName');
     final authResult = await _apiService.requestAuth(
       reason: 'connect',
       publicKey: publicKey,
-      who: session.deviceName ?? 'GOME-WarDriver',
+      who: deviceName,
       appVersion: _appVersion,
       power: _preferences.powerLevel,
       iataCode: _preferences.iataCode,
