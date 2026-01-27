@@ -641,6 +641,17 @@ class AppStateProvider extends ChangeNotifier {
         deviceId: _deviceId,
         txTracker: _txTracker,
         audioService: _audioService,
+        shouldIgnoreRepeater: (String repeaterId) {
+          // Same filter as RxLogger - check user preferences for ignored repeater ID
+          final prefs = _preferences;
+          if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
+            // Case-insensitive comparison (both uppercase)
+            final ignored = prefs.ignoreRepeaterId!.toUpperCase();
+            final current = repeaterId.toUpperCase();
+            return current == ignored;
+          }
+          return false;
+        },
       );
 
       // Set validation callbacks

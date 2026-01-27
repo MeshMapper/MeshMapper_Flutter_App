@@ -56,6 +56,7 @@ class PingService {
   final String _deviceId;
   final TxTracker? _txTracker;
   final AudioService? _audioService;
+  final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
   PingStats _stats = const PingStats();
   DateTime? _lastTxTime;
@@ -125,6 +126,7 @@ class PingService {
     required String deviceId,
     TxTracker? txTracker,
     AudioService? audioService,
+    this.shouldIgnoreRepeater,
   })  : _gpsService = gpsService,
         _connection = connection,
         _apiQueue = apiQueue,
@@ -749,7 +751,7 @@ class PingService {
     debugLog('[DISC] Starting discovery mode');
 
     // Create and configure discovery tracker
-    _discTracker = DiscTracker();
+    _discTracker = DiscTracker(shouldIgnoreRepeater: shouldIgnoreRepeater);
     _discTracker!.onNodeDiscovered = (node, isNew) {
       debugLog('[DISC] Node discovered: ${node.repeaterId} (${node.nodeTypeName}), isNew=$isNew');
     };

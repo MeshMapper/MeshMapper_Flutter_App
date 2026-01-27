@@ -1152,39 +1152,41 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                       horizontal: hasLabel ? 10 : 8,
                       vertical: 6,
                     ),
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            widget.icon,
-                            size: 18,
-                            color: showColor ? effectiveColor : Colors.grey.shade400,
-                          ),
-                          // Animated label - show when label is provided
-                          AnimatedSize(
-                            duration: const Duration(milliseconds: 200),
-                            curve: Curves.easeInOut,
-                            child: hasLabel
-                                ? Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const SizedBox(width: 5),
-                                      Text(
-                                        widget.label!,
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                                          color: showColor ? effectiveColor : Colors.grey.shade400,
+                    child: Center(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              widget.icon,
+                              size: 18,
+                              color: showColor ? effectiveColor : Colors.grey.shade400,
+                            ),
+                            // Animated label - show when label is provided
+                            AnimatedSize(
+                              duration: const Duration(milliseconds: 200),
+                              curve: Curves.easeInOut,
+                              child: hasLabel
+                                  ? Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const SizedBox(width: 5),
+                                        Text(
+                                          widget.label!,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
+                                            color: showColor ? effectiveColor : Colors.grey.shade400,
+                                          ),
                                         ),
-                                      ),
-                                    ],
-                                  )
-                                : const SizedBox.shrink(),
-                          ),
-                        ],
+                                      ],
+                                    )
+                                  : const SizedBox.shrink(),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

@@ -16,9 +16,14 @@ class DiscTracker {
 
   Timer? _windowTimer;
 
+  /// Callback to check if a repeater should be ignored (carpeater filter)
+  final bool Function(String repeaterId)? shouldIgnoreRepeater;
+
   /// Callback fired when a new node is discovered
   /// Parameters: (node, isNew) - isNew is true for first time seeing this node
   void Function(DiscoveredNode node, bool isNew)? onNodeDiscovered;
+
+  DiscTracker({this.shouldIgnoreRepeater});
 
   /// Callback fired when discovery window completes
   void Function(List<DiscoveredNode> discoveredNodes)? onWindowComplete;
@@ -123,6 +128,12 @@ class DiscTracker {
 
       // Get repeater ID (first 2 hex chars = first byte)
       final repeaterId = pubkeyHex.substring(0, 2);
+
+      // Check if this repeater should be ignored (user carpeater filter)
+      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
+        debugLog('[DISC] Ignoring repeater $repeaterId (user carpeater filter)');
+        return false;
+      }
 
       final nodeType = lowerNibble == DiscoveryConstants.nodeTypeRepeater ? 'REPEATER' : 'ROOM';
 
