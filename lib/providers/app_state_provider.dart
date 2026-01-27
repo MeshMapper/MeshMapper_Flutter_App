@@ -535,8 +535,12 @@ class AppStateProvider extends ChangeNotifier {
           }
 
           debugLog('[APP] Requesting API auth with public key: ${publicKey.substring(0, 16)}...');
-          // Strip "MeshCore-" prefix from device name for API
-          final deviceName = connectedDeviceName?.replaceFirst('MeshCore-', '') ?? 'GOME-WarDriver';
+          // Use SelfInfo name (user's configured name) if available, otherwise fall back to BLE advertisement name
+          final deviceName = _meshCoreConnection!.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
+          if (deviceName == null || deviceName.isEmpty) {
+            debugError('[APP] Cannot request auth: could not retrieve device name');
+            return {'success': false, 'reason': 'no_device_name', 'message': 'Could not retrieve device name'};
+          }
           return await _apiService.requestAuth(
             reason: 'connect',
             publicKey: publicKey,
@@ -1463,11 +1467,11 @@ class AppStateProvider extends ChangeNotifier {
       return;
     }
 
-    // Include device info for auth during upload
+    // Include device info for auth during upload (use display name which is SelfInfo name after connection)
     await _offlineSessionService.saveSession(
       pings,
       devicePublicKey: _devicePublicKey,
-      deviceName: connectedDeviceName?.replaceFirst('MeshCore-', ''),
+      deviceName: _displayDeviceName ?? connectedDeviceName?.replaceFirst('MeshCore-', ''),
     );
     debugLog('[APP] Saved offline session with ${pings.length} pings');
     notifyListeners();
