@@ -1649,6 +1649,14 @@ class AppStateProvider extends ChangeNotifier {
     _savePreferences();
   }
 
+  /// Set map style (dark, light, satellite) and persist
+  void setMapStyle(String style) {
+    _preferences = _preferences.copyWith(mapStyle: style);
+    debugLog('[MAP] Map style set to $style');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Toggle sound notifications on/off
   Future<void> toggleSoundEnabled() async {
     await _audioService.toggle();

@@ -20,6 +20,15 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showControlPanel = true;
   bool _isControlsMinimized = false;
 
+  /// Calculate the current control panel height for map centering offset
+  double _getControlPanelHeight() {
+    if (!_showControlPanel) return 0;
+    // Approximate heights including Card margins (8px * 2 = 16px)
+    // Minimized: Row padding (12) + content (~32) + margin (16) = ~60px
+    // Expanded: ListTile (56) + Divider (1) + ConnectionPanel (~100) + PingControls (~140) + margin (16) = ~320px
+    return _isControlsMinimized ? 60 : 320;
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
@@ -93,10 +102,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return Stack(
       children: [
         // Map fills entire screen
-        const Column(
+        Column(
           children: [
-            StatusBar(),
-            Expanded(child: MapWidget()),
+            const StatusBar(),
+            Expanded(child: MapWidget(bottomPaddingPixels: _getControlPanelHeight())),
           ],
         ),
 

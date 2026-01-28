@@ -21,6 +21,19 @@ enum MapStyle {
 }
 
 extension MapStyleExtension on MapStyle {
+  /// Convert from stored string preference to MapStyle enum
+  static MapStyle fromString(String value) {
+    switch (value) {
+      case 'light':
+        return MapStyle.light;
+      case 'satellite':
+        return MapStyle.satellite;
+      case 'dark':
+      default:
+        return MapStyle.dark;
+    }
+  }
+
   String get label {
     switch (this) {
       case MapStyle.dark:
@@ -81,7 +94,11 @@ final class SilentCancellableNetworkTileProvider extends CancellableNetworkTileP
 /// Map widget with TX/RX markers
 /// Uses flutter_map with OpenStreetMap tiles
 class MapWidget extends StatefulWidget {
-  const MapWidget({super.key});
+  /// Bottom padding in pixels to account for overlays (e.g., control panel)
+  /// The map will offset its center point upward by half this value
+  final double bottomPaddingPixels;
+
+  const MapWidget({super.key, this.bottomPaddingPixels = 0});
 
   @override
   State<MapWidget> createState() => _MapWidgetState();
@@ -89,7 +106,6 @@ class MapWidget extends StatefulWidget {
 
 class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
-  MapStyle _mapStyle = MapStyle.dark;
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = true;
@@ -130,6 +146,23 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     _animationController?.dispose();
     _rotationAnimationController?.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(MapWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // When bottom padding changes (panel opened/closed/minimized), re-center if auto-following
+    if (widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels &&
+        _autoFollow &&
+        _isMapReady &&
+        _lastGpsPosition != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _autoFollow && _lastGpsPosition != null) {
+          final adjustedPosition = _offsetPositionForPadding(_lastGpsPosition!, widget.bottomPaddingPixels);
+          _animateToPosition(adjustedPosition);
+        }
+      });
+    }
   }
 
   /// Smoothly animate the map to a new position
@@ -294,6 +327,30 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     _rotationAnimationController!.forward();
   }
 
+  /// Offset a lat/lon position by screen pixels (to account for UI overlays)
+  /// Shifts the map center down so the GPS marker appears centered in the
+  /// visible map area above the control panel
+  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding) {
+    if (bottomPadding <= 0 || !_isMapReady) return position;
+
+    // Shift map center down by half the bottom padding
+    // This makes the GPS marker appear higher (centered in visible area)
+    final offsetPixels = bottomPadding / 2;
+
+    // Get meters per pixel at current zoom
+    // Approx: 40075km / (256 * 2^zoom) at equator, adjusted by cos(lat)
+    final zoom = _mapController.camera.zoom;
+    final metersPerPixel = 40075000 / (256 * math.pow(2, zoom)) *
+        math.cos(position.latitude * math.pi / 180);
+
+    // Convert pixel offset to meters, then to latitude offset
+    // Subtract latitude to move map center south, making marker appear higher on screen
+    final meterOffset = offsetPixels * metersPerPixel;
+    final latOffset = meterOffset / 111000; // ~111km per degree latitude
+
+    return LatLng(position.latitude - latOffset, position.longitude);
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
@@ -317,7 +374,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           // Use post frame callback to avoid build-during-build issues
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _autoFollow) {
-              _animateToPosition(newPosition); // Smooth animation instead of jump
+              // Apply offset for bottom padding when control panel is open
+              final adjustedPosition = _offsetPositionForPadding(newPosition, widget.bottomPaddingPixels);
+              _animateToPosition(adjustedPosition); // Smooth animation instead of jump
             }
           });
         }
@@ -348,9 +407,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         // Disable auto-follow when navigating from log
         _autoFollow = false;
         // Navigate to the coordinates with close zoom (18 = street level view)
+        // Apply offset for bottom padding when control panel is open
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
-            _animateToPositionWithZoom(LatLng(target.lat, target.lon), 18.0);
+            final targetPosition = LatLng(target.lat, target.lon);
+            final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels);
+            _animateToPositionWithZoom(adjustedPosition, 18.0);
           }
         });
       }
@@ -401,14 +463,19 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           },
         ),
         children: [
-          // Tile layer (dynamic based on selected style)
-          TileLayer(
-            urlTemplate: _mapStyle.urlTemplate,
-            subdomains: _mapStyle.subdomains ?? const [],
-            userAgentPackageName: 'com.meshmapper.app',
-            maxZoom: 19,
-            retinaMode: RetinaMode.isHighDensity(context), // Enable high-res tiles on retina displays
-            tileProvider: SilentCancellableNetworkTileProvider(), // Silently handles tile errors
+          // Tile layer (dynamic based on selected style from preferences)
+          Builder(
+            builder: (context) {
+              final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+              return TileLayer(
+                urlTemplate: mapStyle.urlTemplate,
+                subdomains: mapStyle.subdomains ?? const [],
+                userAgentPackageName: 'com.meshmapper.app',
+                maxZoom: 19,
+                retinaMode: RetinaMode.isHighDensity(context), // Enable high-res tiles on retina displays
+                tileProvider: SilentCancellableNetworkTileProvider(), // Silently handles tile errors
+              );
+            },
           ),
 
           // MeshMapper coverage overlay (only when zone code available and overlay enabled)
@@ -521,6 +588,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   /// Map controls (top-right corner) - Apple Maps style
   Widget _buildMapControls(AppStateProvider appState) {
+    final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
     return Container(
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.7),
@@ -531,10 +599,24 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         children: [
           // Map style toggle
           _buildControlButton(
-            icon: _mapStyle.icon,
-            tooltip: 'Map Style: ${_mapStyle.label}',
-            onPressed: _cycleMapStyle,
+            icon: mapStyle.icon,
+            tooltip: 'Map Style: ${mapStyle.label}',
+            onPressed: () => _cycleMapStyle(appState),
           ),
+          // MeshMapper overlay toggle (only show when zone code available)
+          if (appState.zoneCode != null) ...[
+            Container(
+              height: 1,
+              width: 32,
+              color: Colors.white24,
+            ),
+            _buildControlButton(
+              icon: Icons.layers,
+              tooltip: _showMeshMapperOverlay ? 'Hide Coverage Overlay' : 'Show Coverage Overlay',
+              onPressed: _toggleMeshMapperOverlay,
+              isActive: _showMeshMapperOverlay,
+            ),
+          ],
           Container(
             height: 1,
             width: 32,
@@ -571,20 +653,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: _toggleRotationLock,
             isActive: _rotationLocked,
           ),
-          // MeshMapper overlay toggle (only show when zone code available)
-          if (appState.zoneCode != null) ...[
-            Container(
-              height: 1,
-              width: 32,
-              color: Colors.white24,
-            ),
-            _buildControlButton(
-              icon: Icons.layers,
-              tooltip: _showMeshMapperOverlay ? 'Hide Coverage Overlay' : 'Show Coverage Overlay',
-              onPressed: _toggleMeshMapperOverlay,
-              isActive: _showMeshMapperOverlay,
-            ),
-          ],
           // Legend button (always visible)
           Container(
             height: 1,
@@ -628,12 +696,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  void _cycleMapStyle() {
-    setState(() {
-      const styles = MapStyle.values;
-      final currentIndex = styles.indexOf(_mapStyle);
-      _mapStyle = styles[(currentIndex + 1) % styles.length];
-    });
+  void _cycleMapStyle(AppStateProvider appState) {
+    const styles = MapStyle.values;
+    final currentStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+    final currentIndex = styles.indexOf(currentStyle);
+    final newStyle = styles[(currentIndex + 1) % styles.length];
+    appState.setMapStyle(newStyle.name);
   }
 
   void _centerOnPosition() {
@@ -656,7 +724,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         _autoFollow = true;
         _lastGpsPosition = targetPosition;
       });
-      _animateToPositionWithZoom(targetPosition, 16.0); // Smooth animation with zoom
+      // Apply offset for bottom padding when control panel is open
+      final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels);
+      _animateToPositionWithZoom(adjustedPosition, 16.0); // Smooth animation with zoom
     }
   }
 

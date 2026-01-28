@@ -40,6 +40,9 @@ class UserPreferences {
   /// Developer mode enabled (unlocked by tapping version 7 times)
   final bool developerModeEnabled;
 
+  /// Map tile style (dark, light, satellite)
+  final String mapStyle;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -54,6 +57,7 @@ class UserPreferences {
     this.iataCode = 'YOW',
     this.backgroundModeEnabled = false,
     this.developerModeEnabled = false,
+    this.mapStyle = 'dark',
   });
 
   /// Create from JSON (for persistence)
@@ -72,6 +76,7 @@ class UserPreferences {
       iataCode: (json['iataCode'] as String?) ?? 'YOW',
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
+      mapStyle: (json['mapStyle'] as String?) ?? 'dark',
     );
   }
 
@@ -91,6 +96,7 @@ class UserPreferences {
       'iataCode': iataCode,
       'backgroundModeEnabled': backgroundModeEnabled,
       'developerModeEnabled': developerModeEnabled,
+      'mapStyle': mapStyle,
     };
   }
 
@@ -109,6 +115,7 @@ class UserPreferences {
     String? iataCode,
     bool? backgroundModeEnabled,
     bool? developerModeEnabled,
+    String? mapStyle,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -124,6 +131,7 @@ class UserPreferences {
       iataCode: iataCode ?? this.iataCode,
       backgroundModeEnabled: backgroundModeEnabled ?? this.backgroundModeEnabled,
       developerModeEnabled: developerModeEnabled ?? this.developerModeEnabled,
+      mapStyle: mapStyle ?? this.mapStyle,
     );
   }
 
@@ -164,7 +172,8 @@ class UserPreferences {
         other.offlineMode == offlineMode &&
         other.iataCode == iataCode &&
         other.backgroundModeEnabled == backgroundModeEnabled &&
-        other.developerModeEnabled == developerModeEnabled;
+        other.developerModeEnabled == developerModeEnabled &&
+        other.mapStyle == mapStyle;
   }
 
   @override
@@ -182,6 +191,7 @@ class UserPreferences {
       iataCode,
       backgroundModeEnabled,
       developerModeEnabled,
+      mapStyle,
     );
   }
 }
