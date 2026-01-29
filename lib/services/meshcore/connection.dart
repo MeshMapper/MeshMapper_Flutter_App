@@ -48,12 +48,12 @@ class SelfInfo {
 
 /// MeshCore connection manager
 /// Ported from content/mc/connection/connection.js in WebClient repo
-/// 
+///
 /// Implements the 10-step connection workflow:
 /// 1. BLE GATT Connect
 /// 2. Protocol Handshake
 /// 3. Device Info Query
-/// 4. Device Model Auto-Power Selection
+/// 4. Device Identification (match device model for display/reporting)
 /// 5. Time Sync
 /// 6. API Capacity Check (slot acquisition)
 /// 7. Channel Setup
@@ -171,9 +171,10 @@ class MeshCoreConnection {
   }
 
   /// Execute the full connection workflow
-  /// Returns (deviceModel, autoPowerConfigured) for preferences update
-  Future<({DeviceModel? deviceModel, bool autoPowerConfigured})> connect(String deviceId, List<DeviceModel> deviceModels) async {
-    bool autoPowerConfigured = false;
+  /// Returns (deviceModel, deviceModelMatched) for display/reporting purposes
+  /// Note: This method does NOT modify radio TX power settings - it only reads device info
+  Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(String deviceId, List<DeviceModel> deviceModels) async {
+    bool deviceModelMatched = false;
     
     try {
       // Step 1: BLE Connect
@@ -199,13 +200,15 @@ class MeshCoreConnection {
         throw Exception('Failed to acquire device public key: $e');
       }
 
-      // Step 4: Power Configuration (auto-select based on device model)
+      // Step 4: Device Identification (match device model for display/reporting purposes)
+      // Note: We do NOT modify the radio's TX power - we only read device info
       _updateStep(ConnectionStep.powerConfiguration);
       _deviceModel = _matchDeviceModel(_deviceInfo!.manufacturer, deviceModels);
       if (_deviceModel != null) {
-        await setTxPower(_deviceModel!.txPower);
-        autoPowerConfigured = true;
-        debugLog('[CONN] Auto-configured power: ${_deviceModel!.power}W (${_deviceModel!.txPower}dBm) for ${_deviceModel!.shortName}');
+        deviceModelMatched = true;
+        debugLog('[CONN] Device identified: ${_deviceModel!.shortName} (reports ${_deviceModel!.power}W / ${_deviceModel!.txPower}dBm)');
+      } else {
+        debugLog('[CONN] Device model not recognized - user must manually select power level for reporting');
       }
 
       // Step 5: Time Sync
@@ -253,7 +256,7 @@ class MeshCoreConnection {
       // This may fail on older firmware (< v1.11.0)
       _startNoiseFloorPolling();
 
-      return (deviceModel: _deviceModel, autoPowerConfigured: autoPowerConfigured);
+      return (deviceModel: _deviceModel, deviceModelMatched: deviceModelMatched);
     } catch (e) {
       debugError('[CONN] Connection failed: $e');
       _updateStep(ConnectionStep.error);

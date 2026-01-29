@@ -8,7 +8,7 @@ Cross-platform wardriving app for MeshCore devices. A Flutter port of the [MeshM
 - **BLE Connectivity**: Connect to MeshCore devices via Bluetooth Low Energy
 - **GPS Tracking**: High-accuracy location tracking with 25m distance filter
 - **Geofencing**: Enforces 150km boundary from Ottawa (service area)
-- **Auto-Power Selection**: Automatically configures TX power based on device model
+- **Device Recognition**: Automatically identifies device model for accurate power reporting
 - **Real-time Map**: View TX/RX ping markers on OpenStreetMap
 - **API Queue**: Persistent queue with batch upload and retry logic
 - **Dark Mode**: System theme support

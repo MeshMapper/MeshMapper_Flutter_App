@@ -75,9 +75,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     final appState = context.watch<AppStateProvider>();
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
-    // Build FAB for scanning
+    // Build FAB for scanning - only show when fully disconnected and idle
     Widget? fab;
-    if (!appState.isScanning && !appState.isConnected) {
+    if (appState.connectionStep == ConnectionStep.disconnected) {
       final canScan = appState.inZone == true || appState.offlineMode;
       fab = isLandscape
           ? FloatingActionButton.small(

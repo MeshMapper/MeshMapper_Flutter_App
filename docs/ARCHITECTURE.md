@@ -34,7 +34,7 @@ lib/
 │   ├── gps_service.dart                # GPS tracking and geofencing
 │   ├── api_service.dart                # HTTP API client
 │   ├── api_queue_service.dart          # Persistent upload queue
-│   ├── device_model_service.dart       # Device database and auto-power
+│   ├── device_model_service.dart       # Device database and model identification
 │   └── ping_service.dart               # TX/RX orchestration
 ├── providers/
 │   └── app_state_provider.dart         # Main app state
@@ -76,7 +76,7 @@ The `MeshCoreConnection` class handles the 10-step connection workflow:
 1. BLE GATT Connect
 2. Protocol Handshake
 3. Device Info Query
-4. Auto-Power Configuration
+4. Device Identification (for display/reporting only - does NOT modify radio settings)
 5. Time Sync
 6. API Slot Acquisition
 7. Channel Setup
@@ -155,13 +155,13 @@ class AppStateProvider extends ChangeNotifier {
 - RX Characteristic: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
 - TX Characteristic: `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
 
-### Power Configuration Safety
-PA amplifier devices require specific power values:
-- 33dBm models: txPower=9, power=2.0
-- 30dBm models: txPower=20, power=1.0
-- Standard: txPower=22, power=0.3
+### Power Level Reporting
+The app identifies device models to determine what power level to report in API calls:
+- 33dBm models: 2.0W
+- 30dBm models: 1.0W
+- Standard (22dBm): 0.3W
 
-**WARNING**: Incorrect power settings can damage PA amplifier hardware.
+**Important**: The app does NOT modify the radio's TX power settings. It only reads device information and reports the appropriate power level to the API. Users configure their radio's actual TX power through the device firmware.
 
 ## Dependencies
 

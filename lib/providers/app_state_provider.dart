@@ -591,17 +591,18 @@ class AppStateProvider extends ChangeNotifier {
         _deviceModelService.models,
       );
 
-      // Update preferences if auto-power was configured
-      if (connectionResult.autoPowerConfigured && connectionResult.deviceModel != null) {
+      // Update preferences if device model was recognized (for display/API reporting)
+      // Note: This does NOT change the radio's TX power - it only sets what power level to REPORT
+      if (connectionResult.deviceModelMatched && connectionResult.deviceModel != null) {
         final device = connectionResult.deviceModel!;
         _preferences = _preferences.copyWith(
           powerLevel: device.power,
           txPower: device.txPower,
-          autoPowerSet: true,
+          autoPowerSet: true, // Indicates power was auto-detected from device model
         );
         // TODO: Persist to SharedPreferences when implemented
         notifyListeners();
-        debugLog('[MODEL] Power auto-configured: ${device.power}W (${device.shortName})');
+        debugLog('[MODEL] Device recognized: ${device.shortName} - reporting ${device.power}W in API calls');
       }
 
       // Note: API session acquisition is now handled by the auth callback

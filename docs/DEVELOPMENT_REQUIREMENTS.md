@@ -47,7 +47,7 @@ All debug log messages **MUST** include a descriptive tag in square brackets at 
 | `[AUTH]` | Authentication API operations |
 | `[HEARTBEAT]` | Session heartbeat operations |
 | `[API]` | General API operations |
-| `[MODEL]` | Device model detection and auto-power |
+| `[MODEL]` | Device model identification and power reporting |
 | `[MAP]` | Map widget operations |
 
 **Examples:**

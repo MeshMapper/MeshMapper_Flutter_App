@@ -77,7 +77,7 @@ The app uses a layered service architecture with clear separation of concerns:
 - `PingService`: TX/RX ping orchestration, coordinates with TxTracker/RxLogger
 - `ApiQueueService`: Hive-based persistent upload queue with batch POST and retry logic
 - `ApiService`: HTTP client for MeshMapper API endpoints
-- `DeviceModelService`: Loads `assets/device-models.json` and auto-configures TX power
+- `DeviceModelService`: Loads `assets/device-models.json` for device identification and power reporting
 
 **State Management** (`lib/providers/`):
 - `AppStateProvider`: Single ChangeNotifier for all app state using Provider pattern
@@ -90,7 +90,7 @@ Critical safety: The connection sequence MUST complete in order. See `docs/CONNE
 1. **BLE GATT Connect**: Platform-specific BLE connection
 2. **Protocol Handshake**: `deviceQuery()` with protocol version
 3. **Device Info**: `getDeviceName()`, `getPublicKey()`, `getDeviceSettings()`
-4. **Auto-Power Configuration**: Parse manufacturer string, match against `device-models.json`, set power level
+4. **Device Identification**: Parse manufacturer string, match against `device-models.json` (does NOT modify radio settings)
 5. **Time Sync**: `sendTime()` syncs device clock
 6. **API Slot Acquisition**: POST to `/capacitycheck.php` to reserve API slot
 7. **Channel Setup**: Create or use existing `#wardriving` channel
@@ -98,7 +98,7 @@ Critical safety: The connection sequence MUST complete in order. See `docs/CONNE
 9. **Start Unified RX Handler**: Begin processing ALL incoming packets
 10. **Connected State**: Ready for wardriving
 
-**Critical Power Safety**: PA amplifier devices (30dBm, 33dBm) require specific input power levels. Incorrect values can damage hardware. Auto-power selection from device-models.json is MANDATORY for these devices.
+**Important**: The app does NOT modify the radio's TX power settings. It only identifies the device model to determine what power level to report in API calls. Users configure their radio's actual TX power through the device firmware.
 
 ### Unified RX Handler Architecture
 
@@ -282,7 +282,7 @@ Contains 30+ MeshCore device variants with manufacturer strings, TX power levels
 - `lib/services/ping_service.dart` - TX/RX ping orchestration
 - `lib/services/gps_service.dart` - GPS tracking and geofencing
 - `lib/services/api_queue_service.dart` - Persistent upload queue
-- `lib/services/device_model_service.dart` - Auto-power configuration
+- `lib/services/device_model_service.dart` - Device model identification
 - `assets/device-models.json` - Device database (30+ models)
 - `docs/CONNECTION_WORKFLOW.md` - Connection sequence documentation
 - `docs/PING_WORKFLOW.md` - Ping lifecycle documentation

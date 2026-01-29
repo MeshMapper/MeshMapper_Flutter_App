@@ -31,7 +31,7 @@ enum ConnectionStep {
   /// Step 3: Device info query
   deviceQuery,
   
-  /// Step 4: Auto-power configuration based on device model
+  /// Step 4: Device identification (match device model for display/reporting)
   powerConfiguration,
   
   /// Step 5: Time synchronization
@@ -87,7 +87,7 @@ extension ConnectionStepExtension on ConnectionStep {
       case ConnectionStep.deviceQuery:
         return 'Querying device info...';
       case ConnectionStep.powerConfiguration:
-        return 'Configuring power...';
+        return 'Identifying device...';
       case ConnectionStep.timeSync:
         return 'Syncing time...';
       case ConnectionStep.slotAcquisition:
