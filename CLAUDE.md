@@ -255,6 +255,20 @@ Contains 30+ MeshCore device variants with manufacturer strings, TX power levels
   - Payload: `[{type:"TX"|"RX", lat, lon, who, power, heard, session_id, iatacode}]`
   - Auth: API key in JSON body (NOT query string)
 
+### Maintenance Mode Response
+
+All API endpoints may return maintenance mode:
+```json
+{
+  "maintenance": true,
+  "maintenance_message": "Scheduled maintenance until 3:00 PM EST",
+  "maintenance_url": "https://meshmapper.net/status"
+}
+```
+- **Disconnected**: Blocks connecting, shows maintenance message on Connection screen with suggestion to use Offline Mode
+- **Connected**: Ends session, logs to error log, navigates to error log tab
+- **Offline Mode**: Users can still wardrive in Offline Mode during maintenance and upload data later when service is restored
+
 ## Common Pitfalls
 
 1. **Unified RX Handler accepts ALL packets** - No header filtering at entry point. Session log tracking filters headers internally.

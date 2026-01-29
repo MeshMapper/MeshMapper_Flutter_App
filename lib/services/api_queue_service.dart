@@ -303,7 +303,13 @@ class ApiQueueService {
 
   /// Clear queue on disconnect - ALWAYS START FRESH
   /// Called when device disconnects to ensure no stale pings remain
+  /// Also stops the batch timer to prevent upload attempts without a session
   Future<void> clearOnDisconnect() async {
+    // Stop the batch timer to prevent upload attempts without session
+    _batchTimer?.cancel();
+    _batchTimer = null;
+    debugLog('[API QUEUE] Batch timer stopped on disconnect');
+
     final count = queueSize + _rxBuffer.length;
     if (count > 0) {
       debugLog('[API QUEUE] Clearing $count items on disconnect (queue: $queueSize, rxBuffer: ${_rxBuffer.length})');
@@ -315,6 +321,7 @@ class ApiQueueService {
 
   /// Clear queue before connecting - ALWAYS START FRESH
   /// Called before establishing a new connection
+  /// Also restarts the batch timer if it was stopped
   Future<void> clearBeforeConnect() async {
     final count = queueSize + _rxBuffer.length;
     if (count > 0) {
@@ -323,6 +330,12 @@ class ApiQueueService {
     await _box?.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
+
+    // Restart batch timer if it was stopped
+    if (_batchTimer == null) {
+      debugLog('[API QUEUE] Restarting batch timer on connect');
+      _startBatchTimer();
+    }
   }
 
   /// Get failed items (exceeded max retries)

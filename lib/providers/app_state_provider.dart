@@ -156,6 +156,12 @@ class AppStateProvider extends ChangeNotifier {
   Position? _lastZoneCheckPosition;
   bool _isCheckingZone = false;
 
+  // Maintenance mode state
+  bool _maintenanceMode = false;
+  String? _maintenanceMessage;
+  String? _maintenanceUrl;
+  Timer? _maintenanceCheckTimer;
+
   // Map navigation trigger (for navigating to log entry coordinates)
   ({double lat, double lon})? _mapNavigationTarget;
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
@@ -232,6 +238,11 @@ class AppStateProvider extends ChangeNotifier {
   String? get nearestZoneName => _nearestZone?['name'] as String?;
   double? get nearestZoneDistanceKm => (_nearestZone?['distance_km'] as num?)?.toDouble();
 
+  // Maintenance mode getters
+  bool get maintenanceMode => _maintenanceMode;
+  String? get maintenanceMessage => _maintenanceMessage;
+  String? get maintenanceUrl => _maintenanceUrl;
+
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
 
@@ -291,6 +302,13 @@ class AppStateProvider extends ChangeNotifier {
       debugError('[APP] Session error from API: $reason - $message');
       await handleSessionError(reason, message);
     };
+
+    // Set up maintenance mode callback (for connected state)
+    _apiService.onMaintenanceMode = (message, url) {
+      debugLog('[MAINTENANCE] Callback triggered: $message');
+      _handleMaintenanceModeConnected(message, url);
+    };
+
     _offlineSessionService = OfflineSessionService();
     _deviceModelService = DeviceModelService();
 
@@ -541,7 +559,7 @@ class AppStateProvider extends ChangeNotifier {
             debugError('[APP] Cannot request auth: could not retrieve device name');
             return {'success': false, 'reason': 'no_device_name', 'message': 'Could not retrieve device name'};
           }
-          return await _apiService.requestAuth(
+          final result = await _apiService.requestAuth(
             reason: 'connect',
             publicKey: publicKey,
             who: deviceName,
@@ -553,6 +571,28 @@ class AppStateProvider extends ChangeNotifier {
             lon: _currentPosition?.longitude,
             accuracyMeters: _currentPosition?.accuracy,
           );
+
+          // Check for maintenance mode BEFORE returning result
+          if (result != null && result['maintenance'] == true) {
+            _maintenanceMode = true;
+            _maintenanceMessage = result['maintenance_message'] as String?;
+            _maintenanceUrl = result['maintenance_url'] as String?;
+            debugLog('[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
+
+            // Start polling to detect when maintenance ends
+            _startMaintenancePolling();
+
+            notifyListeners();
+
+            // Return failure with maintenance reason - connection will abort cleanly
+            return {
+              'success': false,
+              'reason': 'maintenance',
+              'message': _maintenanceMessage ?? 'Service is under maintenance',
+            };
+          }
+
+          return result;
         };
       } else {
         // Offline mode: skip API auth
@@ -1728,6 +1768,8 @@ class AppStateProvider extends ChangeNotifier {
         return 'Unauthorized. Please reconnect.';
       case 'rate_limited':
         return 'Rate limited. Please slow down.';
+      case 'maintenance':
+        return 'Service is under maintenance. Try again later.';
       default:
         return serverMessage ?? 'Unknown error occurred.';
     }
@@ -1778,6 +1820,60 @@ class AppStateProvider extends ChangeNotifier {
       // Just cleanup locally and disconnect
       await disconnect();
     }
+  }
+
+  /// Handle maintenance mode while connected - end session and log error
+  Future<void> _handleMaintenanceModeConnected(String message, String? url) async {
+    debugLog('[MAINTENANCE] Ending session due to maintenance mode');
+
+    // Log to error log (this sets _requestErrorLogSwitch = true)
+    logError('Maintenance Mode Enabled: $message', severity: ErrorSeverity.warning);
+
+    // Disconnect (ends session, cleans up)
+    await disconnect();
+
+    // Update maintenance state for UI
+    _maintenanceMode = true;
+    _maintenanceMessage = message;
+    _maintenanceUrl = url;
+
+    // Start polling to detect when maintenance ends
+    _startMaintenancePolling();
+
+    notifyListeners();
+  }
+
+  /// Clear maintenance mode when API returns normal response
+  void _clearMaintenanceMode() {
+    if (_maintenanceMode) {
+      debugLog('[MAINTENANCE] Mode cleared');
+      _maintenanceMode = false;
+      _maintenanceMessage = null;
+      _maintenanceUrl = null;
+      _stopMaintenancePolling();
+      notifyListeners();
+    }
+  }
+
+  /// Start periodic polling to check if maintenance mode has ended
+  void _startMaintenancePolling() {
+    _maintenanceCheckTimer?.cancel();
+    _maintenanceCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      if (!_maintenanceMode) {
+        _maintenanceCheckTimer?.cancel();
+        _maintenanceCheckTimer = null;
+        return;
+      }
+      debugLog('[MAINTENANCE] Polling to check if maintenance ended...');
+      await checkZoneStatus();
+    });
+    debugLog('[MAINTENANCE] Started 30s polling for maintenance end');
+  }
+
+  /// Stop maintenance polling
+  void _stopMaintenancePolling() {
+    _maintenanceCheckTimer?.cancel();
+    _maintenanceCheckTimer = null;
   }
 
   // ============================================
@@ -1883,6 +1979,23 @@ class AppStateProvider extends ChangeNotifier {
         debugError('[GEOFENCE] Zone status check failed: no response');
         return;
       }
+
+      // Check for maintenance mode FIRST
+      if (result['maintenance'] == true) {
+        _maintenanceMode = true;
+        _maintenanceMessage = result['maintenance_message'] as String?;
+        _maintenanceUrl = result['maintenance_url'] as String?;
+        debugLog('[MAINTENANCE] Zone check returned maintenance: $_maintenanceMessage');
+
+        // Start polling to detect when maintenance ends
+        _startMaintenancePolling();
+
+        notifyListeners();
+        return; // Don't process zone data
+      }
+
+      // Clear maintenance if normal response
+      _clearMaintenanceMode();
 
       _lastZoneCheckPosition = _currentPosition;
 
@@ -2294,6 +2407,7 @@ class AppStateProvider extends ChangeNotifier {
     _logRxDataSubscription?.cancel();
     _noiseFloorSubscription?.cancel();
     _batterySubscription?.cancel();
+    _maintenanceCheckTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
     _pingService?.dispose();

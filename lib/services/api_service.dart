@@ -56,6 +56,18 @@ class ApiService {
     return sanitized;
   }
 
+  /// Check if response indicates maintenance mode, trigger callback if so
+  bool _checkMaintenanceMode(Map<String, dynamic> response) {
+    if (response['maintenance'] == true) {
+      final message = response['maintenance_message'] as String? ?? 'Service is under maintenance';
+      final url = response['maintenance_url'] as String?;
+      debugLog('[MAINTENANCE] Maintenance mode detected: $message');
+      onMaintenanceMode?.call(message, url);
+      return true;
+    }
+    return false;
+  }
+
   /// Log API request/response with timing
   void _logApiCall({
     required String endpoint,
@@ -358,6 +370,11 @@ class ApiService {
         response: data,
       );
 
+      // Check for maintenance mode
+      if (_checkMaintenanceMode(data)) {
+        return data;
+      }
+
       // Update expires_at and schedule next heartbeat if provided
       if (data['success'] == true && data['expires_at'] != null) {
         _sessionExpiresAt = data['expires_at'] as int;
@@ -516,6 +533,9 @@ class ApiService {
   /// Set by AppStateProvider to handle auto-disconnect
   Future<void> Function(String? reason, String? message)? onSessionError;
 
+  /// Callback for maintenance mode detection (while connected)
+  void Function(String message, String? url)? onMaintenanceMode;
+
   /// Legacy: Upload batch (wrapper for submitWardriveData)
   /// Returns true on success, false on failure
   /// Triggers onSessionError callback for session-related errors
@@ -527,6 +547,11 @@ class ApiService {
 
       if (result == null) {
         debugError('[API] Upload batch failed: no response');
+        return false;
+      }
+
+      // Check for maintenance mode first
+      if (_checkMaintenanceMode(result)) {
         return false;
       }
 

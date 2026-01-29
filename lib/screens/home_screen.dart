@@ -912,16 +912,16 @@ class _HomeScreenState extends State<HomeScreen> {
     required Color color,
   }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 5),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 16, color: color),
+          Icon(icon, size: 18, color: color),
           const SizedBox(width: 2),
           Text(
             value,
             style: TextStyle(
-              fontSize: 12,
+              fontSize: 14,
               fontWeight: FontWeight.w600,
               color: color,
             ),
@@ -929,7 +929,7 @@ class _HomeScreenState extends State<HomeScreen> {
           Text(
             unit,
             style: TextStyle(
-              fontSize: 10,
+              fontSize: 11,
               color: color.withValues(alpha: 0.7),
             ),
           ),

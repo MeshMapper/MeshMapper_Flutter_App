@@ -76,9 +76,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
     // Build FAB for scanning - only show when fully disconnected and idle
+    // Hide FAB entirely during maintenance mode (maintenance UI has its own buttons)
     Widget? fab;
-    if (appState.connectionStep == ConnectionStep.disconnected) {
-      final canScan = appState.inZone == true || appState.offlineMode;
+    if (appState.connectionStep == ConnectionStep.disconnected &&
+        (!appState.maintenanceMode || appState.offlineMode)) {
+      // Offline mode bypasses both zone and maintenance checks
+      final canScan = appState.offlineMode || appState.inZone == true;
       fab = isLandscape
           ? FloatingActionButton.small(
               onPressed: canScan ? () => appState.startScan() : null,
@@ -671,6 +674,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationIcon = Icons.gps_off;
       locationText = '-';
       locationColor = Colors.grey;
+    // Check maintenance mode
+    } else if (appState.maintenanceMode) {
+      locationIcon = Icons.engineering;
+      locationText = 'Maintenance';
+      locationColor = Colors.orange;
     // Only show "Checking..." on initial load when we don't have zone info yet
     // After that, keep showing current state while checking happens in background
     } else if (appState.isCheckingZone && appState.inZone == null) {
@@ -747,7 +755,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             // Slots chip
             _buildChip(
               icon: Icons.people_outline,
-              text: hasSlots ? '$slotsAvailable/$slotsMax' : '--',
+              text: hasSlots ? '$slotsAvailable/$slotsMax Open' : '--',
               color: slotsColor,
             ),
           ],
@@ -835,8 +843,92 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   }
 
   Widget _buildDeviceList(BuildContext context, AppStateProvider appState) {
-    // Allow connection when in zone OR when offline mode enabled
-    final canConnect = appState.inZone == true || appState.offlineMode;
+    // Offline mode bypasses both zone and maintenance checks
+    final canConnect = appState.offlineMode || (appState.inZone == true && !appState.maintenanceMode);
+
+    // Show maintenance message (takes priority over zone checks)
+    if (appState.maintenanceMode && !appState.offlineMode) {
+      return Column(
+        children: [
+          _buildZoneStatusBar(context, appState),
+          Expanded(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.engineering,
+                      size: 64,
+                      color: Colors.orange.withValues(alpha: 0.7),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Maintenance Mode',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      appState.maintenanceMessage ?? 'Service is temporarily unavailable.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    // Primary action: Enable Offline Mode
+                    FilledButton.icon(
+                      onPressed: () => appState.setOfflineMode(true),
+                      icon: const Icon(Icons.cloud_off),
+                      label: const Text('Enable Offline Mode'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      ),
+                    ),
+                    if (appState.maintenanceUrl != null) ...[
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () => _launchMaintenanceUrl(appState.maintenanceUrl!),
+                        icon: const Icon(Icons.open_in_new, size: 18),
+                        label: const Text('More Info'),
+                      ),
+                    ],
+                    const SizedBox(height: 32),
+                    // Info note at bottom
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              'Wardrive offline now, upload when service is restored.',
+                              style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
 
     // Show onboarding message when outside zone (but NOT when offline mode is enabled)
     if (appState.inZone == false && !appState.offlineMode) {
@@ -965,6 +1057,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     }
   }
 
+  void _launchMaintenanceUrl(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
   Widget _buildRememberedDeviceView(
     BuildContext context,
     AppStateProvider appState,
@@ -1003,7 +1102,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               ElevatedButton.icon(
                 onPressed: canConnect ? () => appState.reconnectToRememberedDevice() : null,
                 icon: const Icon(Icons.bluetooth_connected),
-                label: Text(canConnect ? 'Reconnect' : 'Outside Zone'),
+                label: Text(canConnect
+                    ? 'Reconnect'
+                    : appState.maintenanceMode
+                        ? 'Maintenance'
+                        : 'Outside Zone'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: canConnect
                       ? Theme.of(context).colorScheme.primary

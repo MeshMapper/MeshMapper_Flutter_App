@@ -713,7 +713,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           _buildControlDivider(),
           // Rotation lock toggle
           _buildControlButton(
-            icon: _rotationLocked ? Icons.screen_lock_rotation : Icons.screen_rotation,
+            icon: _rotationLocked ? Icons.sync_disabled : Icons.rotate_right,
             tooltip: _rotationLocked ? 'Unlock Rotation' : 'Lock Rotation',
             onPressed: _toggleRotationLock,
             isActive: _rotationLocked,

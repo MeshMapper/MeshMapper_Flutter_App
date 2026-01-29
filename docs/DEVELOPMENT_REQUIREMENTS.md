@@ -49,6 +49,7 @@ All debug log messages **MUST** include a descriptive tag in square brackets at 
 | `[API]` | General API operations |
 | `[MODEL]` | Device model identification and power reporting |
 | `[MAP]` | Map widget operations |
+| `[MAINTENANCE]` | Maintenance mode handling |
 
 **Examples:**
 ```dart
