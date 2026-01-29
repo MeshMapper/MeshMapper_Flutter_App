@@ -94,11 +94,28 @@ final class SilentCancellableNetworkTileProvider extends CancellableNetworkTileP
 /// Map widget with TX/RX markers
 /// Uses flutter_map with OpenStreetMap tiles
 class MapWidget extends StatefulWidget {
-  /// Bottom padding in pixels to account for overlays (e.g., control panel)
+  /// Bottom padding in pixels to account for overlays (e.g., control panel in portrait)
   /// The map will offset its center point upward by half this value
   final double bottomPaddingPixels;
 
-  const MapWidget({super.key, this.bottomPaddingPixels = 0});
+  /// Right padding in pixels to account for overlays (e.g., side panel in landscape)
+  /// The map will offset its center point left by half this value
+  final double rightPaddingPixels;
+
+  /// External control for map controls expanded state (landscape mode)
+  /// When null, uses internal state
+  final bool? mapControlsExpanded;
+
+  /// Callback when map controls toggle is tapped (landscape mode)
+  final VoidCallback? onMapControlsToggle;
+
+  const MapWidget({
+    super.key,
+    this.bottomPaddingPixels = 0,
+    this.rightPaddingPixels = 0,
+    this.mapControlsExpanded,
+    this.onMapControlsToggle,
+  });
 
   @override
   State<MapWidget> createState() => _MapWidgetState();
@@ -118,6 +135,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   // MeshMapper overlay toggle (on by default)
   bool _showMeshMapperOverlay = true;
+
+  // Collapsible map controls in landscape
+  bool _mapControlsExpanded = true;
 
   // Rotation lock (disable rotation gestures while keeping pinch-to-zoom)
   bool _rotationLocked = false;
@@ -151,14 +171,19 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   @override
   void didUpdateWidget(MapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // When bottom padding changes (panel opened/closed/minimized), re-center if auto-following
-    if (widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels &&
+    // When padding changes (panel opened/closed/minimized/orientation change), re-center if auto-following
+    if ((widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels ||
+         widget.rightPaddingPixels != oldWidget.rightPaddingPixels) &&
         _autoFollow &&
         _isMapReady &&
         _lastGpsPosition != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _autoFollow && _lastGpsPosition != null) {
-          final adjustedPosition = _offsetPositionForPadding(_lastGpsPosition!, widget.bottomPaddingPixels);
+          final adjustedPosition = _offsetPositionForPadding(
+            _lastGpsPosition!,
+            widget.bottomPaddingPixels,
+            widget.rightPaddingPixels,
+          );
           _animateToPosition(adjustedPosition);
         }
       });
@@ -328,14 +353,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// Offset a lat/lon position by screen pixels (to account for UI overlays)
-  /// Shifts the map center down so the GPS marker appears centered in the
-  /// visible map area above the control panel
-  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding) {
-    if (bottomPadding <= 0 || !_isMapReady) return position;
-
-    // Shift map center down by half the bottom padding
-    // This makes the GPS marker appear higher (centered in visible area)
-    final offsetPixels = bottomPadding / 2;
+  /// Shifts the map center to keep the GPS marker centered in the visible map area
+  /// - bottomPadding: shifts center down (portrait mode with bottom panel)
+  /// - rightPadding: shifts center left (landscape mode with side panel)
+  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding, [double rightPadding = 0]) {
+    if (!_isMapReady) return position;
+    if (bottomPadding <= 0 && rightPadding <= 0) return position;
 
     // Get meters per pixel at current zoom
     // Approx: 40075km / (256 * 2^zoom) at equator, adjusted by cos(lat)
@@ -343,12 +366,23 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     final metersPerPixel = 40075000 / (256 * math.pow(2, zoom)) *
         math.cos(position.latitude * math.pi / 180);
 
-    // Convert pixel offset to meters, then to latitude offset
-    // Subtract latitude to move map center south, making marker appear higher on screen
-    final meterOffset = offsetPixels * metersPerPixel;
-    final latOffset = meterOffset / 111000; // ~111km per degree latitude
+    double latOffset = 0;
+    double lonOffset = 0;
 
-    return LatLng(position.latitude - latOffset, position.longitude);
+    // Bottom padding: shift center south (map moves up, marker appears centered)
+    if (bottomPadding > 0) {
+      final meterOffset = (bottomPadding / 2) * metersPerPixel;
+      latOffset = -(meterOffset / 111000); // ~111km per degree latitude
+    }
+
+    // Right padding: shift center west (map moves right, marker appears centered)
+    if (rightPadding > 0) {
+      final meterOffset = (rightPadding / 2) * metersPerPixel;
+      // Longitude degrees per meter varies with latitude
+      lonOffset = -(meterOffset / (111000 * math.cos(position.latitude * math.pi / 180)));
+    }
+
+    return LatLng(position.latitude + latOffset, position.longitude + lonOffset);
   }
 
   @override
@@ -375,7 +409,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _autoFollow) {
               // Apply offset for bottom padding when control panel is open
-              final adjustedPosition = _offsetPositionForPadding(newPosition, widget.bottomPaddingPixels);
+              final adjustedPosition = _offsetPositionForPadding(newPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels);
               _animateToPosition(adjustedPosition); // Smooth animation instead of jump
             }
           });
@@ -411,31 +445,73 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             final targetPosition = LatLng(target.lat, target.lon);
-            final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels);
+            final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels);
             _animateToPositionWithZoom(adjustedPosition, 18.0);
           }
         });
       }
     }
 
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    // Get safe area padding for dynamic island/notch in landscape
+    final safePadding = MediaQuery.of(context).padding;
+    final topPadding = isLandscape ? 16.0 : 8.0;
+    final leftPadding = isLandscape ? safePadding.left + 8 : 8.0;
+
     return Stack(
       children: [
         // Map
         _buildMap(appState, center),
 
-        // GPS Info overlay (top-left)
+        // GPS Info overlay (top-left, respects dynamic island in landscape)
         Positioned(
-          top: 8,
-          left: 8,
+          top: topPadding,
+          left: leftPadding,
           child: _buildGpsInfoOverlay(appState),
         ),
 
-        // Map controls (top-right) - Apple Maps style
+        // Map controls - top-right in both orientations, collapsible in landscape
         Positioned(
-          top: 8,
+          top: topPadding,
           right: 8,
-          child: _buildMapControls(appState),
+          child: isLandscape
+              ? _buildCollapsibleMapControls(appState)
+              : _buildMapControls(appState),
         ),
+      ],
+    );
+  }
+
+  /// Collapsible map controls for landscape mode (toggle at top, expands downward)
+  Widget _buildCollapsibleMapControls(AppStateProvider appState) {
+    // Use external state if provided, otherwise use internal state
+    final isExpanded = widget.mapControlsExpanded ?? _mapControlsExpanded;
+    final onToggle = widget.onMapControlsToggle ?? () => setState(() => _mapControlsExpanded = !_mapControlsExpanded);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Toggle button (always visible) - at top
+        GestureDetector(
+          onTap: onToggle,
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.7),
+              borderRadius: isExpanded
+                  ? const BorderRadius.vertical(top: Radius.circular(8))
+                  : BorderRadius.circular(8),
+            ),
+            child: Icon(
+              isExpanded ? Icons.expand_less : Icons.expand_more,
+              color: Colors.white,
+              size: 22,
+            ),
+          ),
+        ),
+        // Map controls (only when expanded) - below the toggle button
+        if (isExpanded)
+          _buildMapControls(appState),
       ],
     );
   }
@@ -586,13 +662,18 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return Colors.red;
   }
 
-  /// Map controls (top-right corner) - Apple Maps style
+  /// Map controls (always vertical)
   Widget _buildMapControls(AppStateProvider appState) {
     final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(8),
+        // In landscape, controls are below the toggle button, so rounded bottom only
+        borderRadius: isLandscape
+            ? const BorderRadius.vertical(bottom: Radius.circular(8))
+            : BorderRadius.circular(8),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -605,11 +686,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
           // MeshMapper overlay toggle (only show when zone code available)
           if (appState.zoneCode != null) ...[
-            Container(
-              height: 1,
-              width: 32,
-              color: Colors.white24,
-            ),
+            _buildControlDivider(),
             _buildControlButton(
               icon: Icons.layers,
               tooltip: _showMeshMapperOverlay ? 'Hide Coverage Overlay' : 'Show Coverage Overlay',
@@ -617,11 +694,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               isActive: _showMeshMapperOverlay,
             ),
           ],
-          Container(
-            height: 1,
-            width: 32,
-            color: Colors.white24,
-          ),
+          _buildControlDivider(),
           // Center on position / toggle auto-follow
           _buildControlButton(
             icon: _autoFollow ? Icons.my_location : Icons.location_searching,
@@ -629,11 +702,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: appState.currentPosition != null ? _centerOnPosition : null,
             isActive: _autoFollow,
           ),
-          Container(
-            height: 1,
-            width: 32,
-            color: Colors.white24,
-          ),
+          _buildControlDivider(),
           // Always North toggle
           _buildControlButton(
             icon: _alwaysNorth ? Icons.navigation : Icons.explore,
@@ -641,11 +710,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: _toggleNorthMode,
             isActive: !_alwaysNorth,
           ),
-          Container(
-            height: 1,
-            width: 32,
-            color: Colors.white24,
-          ),
+          _buildControlDivider(),
           // Rotation lock toggle
           _buildControlButton(
             icon: _rotationLocked ? Icons.screen_lock_rotation : Icons.screen_rotation,
@@ -653,12 +718,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: _toggleRotationLock,
             isActive: _rotationLocked,
           ),
-          // Legend button (always visible)
-          Container(
-            height: 1,
-            width: 32,
-            color: Colors.white24,
-          ),
+          _buildControlDivider(),
+          // Legend button
           _buildControlButton(
             icon: Icons.info_outline,
             tooltip: 'Map Legend',
@@ -666,6 +727,15 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
         ],
       ),
+    );
+  }
+
+  /// Divider between control buttons
+  Widget _buildControlDivider() {
+    return Container(
+      height: 1,
+      width: 32,
+      color: Colors.white24,
     );
   }
 
@@ -725,7 +795,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         _lastGpsPosition = targetPosition;
       });
       // Apply offset for bottom padding when control panel is open
-      final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels);
+      final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels);
       _animateToPositionWithZoom(adjustedPosition, 16.0); // Smooth animation with zoom
     }
   }

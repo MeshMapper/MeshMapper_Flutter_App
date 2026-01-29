@@ -123,60 +123,145 @@ class _MainScaffoldState extends State<MainScaffold> {
       });
     }
 
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+
     return Scaffold(
       body: IndexedStack(
         index: _selectedIndex,
         children: _screens,
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-        },
-        backgroundColor: Theme.of(context).colorScheme.surface,
-        selectedItemColor: Theme.of(context).colorScheme.primary,
-        unselectedItemColor: Theme.of(context).colorScheme.onSurfaceVariant,
-        type: BottomNavigationBarType.fixed,
-        selectedFontSize: 11,
-        unselectedFontSize: 11,
-        iconSize: 22,
-        items: [
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.map_outlined),
-            activeIcon: Icon(Icons.map),
-            label: 'Map',
+      bottomNavigationBar: isLandscape
+          ? _buildCompactNavBar(appState)
+          : _buildStandardNavBar(appState),
+    );
+  }
+
+  /// Compact navigation bar for landscape mode (icon-only, shorter height)
+  Widget _buildCompactNavBar(AppStateProvider appState) {
+    return Container(
+      height: 56,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(
+          top: BorderSide(
+            color: Theme.of(context).colorScheme.outlineVariant,
+            width: 0.5,
           ),
-          BottomNavigationBarItem(
-            icon: Badge(
-              isLabelVisible: appState.errorLogEntries.isNotEmpty,
-              child: const Icon(Icons.list_alt_outlined),
-            ),
-            activeIcon: Badge(
-              isLabelVisible: appState.errorLogEntries.isNotEmpty,
-              child: const Icon(Icons.list_alt),
-            ),
-            label: 'Log',
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _buildCompactNavItem(
+            icon: Icons.map_outlined,
+            activeIcon: Icons.map,
+            index: 0,
           ),
-          BottomNavigationBarItem(
-            icon: Icon(
-              appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
-              color: appState.isConnected ? Colors.green : null,
-            ),
-            activeIcon: Icon(
-              appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
-              color: appState.isConnected ? Colors.green : null,
-            ),
-            label: appState.isConnected ? 'Connected' : 'Connect',
+          _buildCompactNavItem(
+            icon: Icons.list_alt_outlined,
+            activeIcon: Icons.list_alt,
+            index: 1,
+            showBadge: appState.errorLogEntries.isNotEmpty,
           ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.settings_outlined),
-            activeIcon: Icon(Icons.settings),
-            label: 'Settings',
+          _buildCompactNavItem(
+            icon: appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
+            activeIcon: appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
+            index: 2,
+            color: appState.isConnected ? Colors.green : null,
+          ),
+          _buildCompactNavItem(
+            icon: Icons.settings_outlined,
+            activeIcon: Icons.settings,
+            index: 3,
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildCompactNavItem({
+    required IconData icon,
+    required IconData activeIcon,
+    required int index,
+    bool showBadge = false,
+    Color? color,
+  }) {
+    final isSelected = _selectedIndex == index;
+    final effectiveColor = color ??
+        (isSelected
+            ? Theme.of(context).colorScheme.primary
+            : Theme.of(context).colorScheme.onSurfaceVariant);
+
+    return GestureDetector(
+      onTap: () => setState(() => _selectedIndex = index),
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 64,
+        height: 56,
+        child: Center(
+          child: Badge(
+            isLabelVisible: showBadge,
+            child: Icon(
+              isSelected ? activeIcon : icon,
+              size: 24,
+              color: effectiveColor,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Standard navigation bar for portrait mode
+  Widget _buildStandardNavBar(AppStateProvider appState) {
+    return BottomNavigationBar(
+      currentIndex: _selectedIndex,
+      onTap: (index) {
+        setState(() {
+          _selectedIndex = index;
+        });
+      },
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      selectedItemColor: Theme.of(context).colorScheme.primary,
+      unselectedItemColor: Theme.of(context).colorScheme.onSurfaceVariant,
+      type: BottomNavigationBarType.fixed,
+      selectedFontSize: 11,
+      unselectedFontSize: 11,
+      iconSize: 22,
+      items: [
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.map_outlined),
+          activeIcon: Icon(Icons.map),
+          label: 'Map',
+        ),
+        BottomNavigationBarItem(
+          icon: Badge(
+            isLabelVisible: appState.errorLogEntries.isNotEmpty,
+            child: const Icon(Icons.list_alt_outlined),
+          ),
+          activeIcon: Badge(
+            isLabelVisible: appState.errorLogEntries.isNotEmpty,
+            child: const Icon(Icons.list_alt),
+          ),
+          label: 'Log',
+        ),
+        BottomNavigationBarItem(
+          icon: Icon(
+            appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
+            color: appState.isConnected ? Colors.green : null,
+          ),
+          activeIcon: Icon(
+            appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
+            color: appState.isConnected ? Colors.green : null,
+          ),
+          label: appState.isConnected ? 'Connected' : 'Connect',
+        ),
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.settings_outlined),
+          activeIcon: Icon(Icons.settings),
+          label: 'Settings',
+        ),
+      ],
     );
   }
 }

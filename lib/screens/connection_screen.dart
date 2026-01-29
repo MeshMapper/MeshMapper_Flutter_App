@@ -73,19 +73,20 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Connection'),
-        automaticallyImplyLeading: false,
-      ),
-      body: _buildBody(context, appState),
-      floatingActionButton: !appState.isScanning && !appState.isConnected
-          ? FloatingActionButton.extended(
-              // Allow scanning when in zone OR when offline mode enabled
-              onPressed: (appState.inZone == true || appState.offlineMode)
-                  ? () => appState.startScan()
-                  : null,
+    // Build FAB for scanning
+    Widget? fab;
+    if (!appState.isScanning && !appState.isConnected) {
+      final canScan = appState.inZone == true || appState.offlineMode;
+      fab = isLandscape
+          ? FloatingActionButton.small(
+              onPressed: canScan ? () => appState.startScan() : null,
+              backgroundColor: canScan ? null : Colors.grey,
+              child: const Icon(Icons.bluetooth_searching),
+            )
+          : FloatingActionButton.extended(
+              onPressed: canScan ? () => appState.startScan() : null,
               icon: const Icon(Icons.bluetooth_searching),
               label: Text(appState.offlineMode
                   ? 'Scan'
@@ -94,11 +95,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       : appState.gpsStatus == GpsStatus.permissionDenied
                           ? 'GPS Required'
                           : (appState.inZone == true ? 'Scan' : 'Outside Zone')),
-              backgroundColor: (appState.inZone == true || appState.offlineMode)
-                  ? null
-                  : Colors.grey,
-            )
-          : null,
+              backgroundColor: canScan ? null : Colors.grey,
+            );
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Connection'),
+        automaticallyImplyLeading: false,
+      ),
+      body: _buildBody(context, appState),
+      floatingActionButton: fab,
     );
   }
 
@@ -127,29 +134,35 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   Widget _buildConnectionProgress(BuildContext context, AppStateProvider appState) {
     final step = appState.connectionStep;
     final totalSteps = ConnectionStepExtension.totalSteps;
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 24),
-            Text(
-              step.description,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 16),
-            LinearProgressIndicator(
-              value: step.stepNumber / totalSteps,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Step ${step.stepNumber} of $totalSteps',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(isLandscape ? 16 : 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              SizedBox(height: isLandscape ? 12 : 24),
+              Text(
+                step.description,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              SizedBox(height: isLandscape ? 8 : 16),
+              SizedBox(
+                width: isLandscape ? 300 : double.infinity,
+                child: LinearProgressIndicator(
+                  value: step.stepNumber / totalSteps,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Step ${step.stepNumber} of $totalSteps',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -178,62 +191,129 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     // Use shortName from device model if available, otherwise fall back to manufacturer string
     final hardware = appState.deviceModel?.shortName ?? manufacturerString ?? 'Unknown';
 
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+
+    // Build device info card
+    final deviceInfoCard = Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.bluetooth_connected,
+                  color: Colors.green,
+                  size: 28,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Connected',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: Colors.green,
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                      Text(
+                        deviceName,
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const Divider(height: 20),
+            _buildInfoRow('Hardware', hardware),
+            _buildInfoRow('Version', version ?? 'Unknown'),
+            if (appState.deviceModel != null)
+              _buildInfoRow('Platform', appState.deviceModel!.platform),
+            if (appState.devicePublicKey != null)
+              _buildPublicKeyRow(context, appState.devicePublicKey!),
+          ],
+        ),
+      ),
+    );
+
+    // Build disconnect button
+    final disconnectButton = ElevatedButton.icon(
+      onPressed: () async {
+        await appState.disconnect();
+      },
+      icon: const Icon(Icons.bluetooth_disabled),
+      label: const Text('Disconnect'),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.red,
+        foregroundColor: Colors.white,
+      ),
+    );
+
+    if (isLandscape) {
+      // Landscape: two-column layout
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Left column: device info + disconnect
+              Expanded(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: deviceInfoCard,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: disconnectButton,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Right column: power + regional config
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      _buildPowerLevelCard(context, appState),
+                      const SizedBox(height: 12),
+                      RegionalConfigCard(
+                        zoneName: appState.offlineMode ? null : appState.zoneName,
+                        zoneCode: appState.offlineMode ? null : appState.zoneCode,
+                        channels: appState.offlineMode ? [] : appState.regionalChannels,
+                        isOfflineMode: appState.offlineMode,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Portrait: vertical layout
     return Column(
       children: [
         Expanded(
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.bluetooth_connected,
-                            color: Colors.green,
-                            size: 32,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Connected',
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                        color: Colors.green,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                ),
-                                Text(
-                                  deviceName,
-                                  style: Theme.of(context).textTheme.bodyLarge,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const Divider(height: 24),
-                      _buildInfoRow('Hardware', hardware),
-                      _buildInfoRow('Version', version ?? 'Unknown'),
-                      if (appState.deviceModel != null)
-                        _buildInfoRow('Platform', appState.deviceModel!.platform),
-                      if (appState.devicePublicKey != null)
-                        _buildPublicKeyRow(context, appState.devicePublicKey!),
-                    ],
-                  ),
-                ),
-              ),
+              deviceInfoCard,
               const SizedBox(height: 16),
-              // Power Level card
               _buildPowerLevelCard(context, appState),
               const SizedBox(height: 16),
-              // Regional Configuration card
               RegionalConfigCard(
                 zoneName: appState.offlineMode ? null : appState.zoneName,
                 zoneCode: appState.offlineMode ? null : appState.zoneCode,
@@ -243,22 +323,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             ],
           ),
         ),
-        // Disconnect button fixed at bottom
         Padding(
           padding: const EdgeInsets.all(16),
           child: SizedBox(
             width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () async {
-                await appState.disconnect();
-              },
-              icon: const Icon(Icons.bluetooth_disabled),
-              label: const Text('Disconnect'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-              ),
-            ),
+            child: disconnectButton,
           ),
         ),
       ],
@@ -549,34 +618,39 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   }
 
   Widget _buildError(BuildContext context, AppStateProvider appState) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.error_outline,
-              size: 64,
-              color: Colors.red,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              appState.isAuthError ? 'Authentication Failed' : 'Connection Failed',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              appState.connectionError ?? 'Unknown error',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: () => appState.startScan(),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Try Again'),
-            ),
-          ],
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(isLandscape ? 16 : 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.error_outline,
+                size: isLandscape ? 48 : 64,
+                color: Colors.red,
+              ),
+              SizedBox(height: isLandscape ? 8 : 16),
+              Text(
+                appState.isAuthError ? 'Authentication Failed' : 'Connection Failed',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                appState.connectionError ?? 'Unknown error',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              SizedBox(height: isLandscape ? 12 : 24),
+              ElevatedButton.icon(
+                onPressed: () => appState.startScan(),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Try Again'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -713,6 +787,53 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     );
   }
 
+  /// Helper to build scrollable centered message content (handles landscape overflow)
+  Widget _buildMessageContent({
+    required BuildContext context,
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String message,
+    Widget? action,
+  }) {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+
+    return SingleChildScrollView(
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(isLandscape ? 16 : 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: isLandscape ? 40 : 64,
+                color: iconColor,
+              ),
+              SizedBox(height: isLandscape ? 8 : 16),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              SizedBox(height: isLandscape ? 6 : 12),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                    ),
+              ),
+              if (action != null) ...[
+                SizedBox(height: isLandscape ? 12 : 24),
+                action,
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildDeviceList(BuildContext context, AppStateProvider appState) {
     // Allow connection when in zone OR when offline mode enabled
     final canConnect = appState.inZone == true || appState.offlineMode;
@@ -723,38 +844,16 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
         children: [
           _buildZoneStatusBar(context, appState),
           Expanded(
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.public_off,
-                      size: 64,
-                      color: Colors.orange.withValues(alpha: 0.7),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Region Not Available',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Your geo zone is not on-boarded into MeshMapper.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                          ),
-                    ),
-                    const SizedBox(height: 24),
-                    OutlinedButton.icon(
-                      onPressed: () => _launchOnboardingUrl(),
-                      icon: const Icon(Icons.open_in_new, size: 18),
-                      label: const Text('Request Region Onboarding'),
-                    ),
-                  ],
-                ),
+            child: _buildMessageContent(
+              context: context,
+              icon: Icons.public_off,
+              iconColor: Colors.orange.withValues(alpha: 0.7),
+              title: 'Region Not Available',
+              message: 'Your geo zone is not on-boarded into MeshMapper.',
+              action: OutlinedButton.icon(
+                onPressed: () => _launchOnboardingUrl(),
+                icon: const Icon(Icons.open_in_new, size: 18),
+                label: const Text('Request Region Onboarding'),
               ),
             ),
           ),
@@ -793,42 +892,19 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           children: [
             _buildZoneStatusBar(context, appState),
             Expanded(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.gps_off,
-                        size: 64,
-                        color: Colors.red.withValues(alpha: 0.7),
+              child: _buildMessageContent(
+                context: context,
+                icon: Icons.gps_off,
+                iconColor: Colors.red.withValues(alpha: 0.7),
+                title: 'Location Services Disabled',
+                message: 'Please enable Location Services to verify you\'re in an allowed zone.',
+                action: isIOS
+                    ? null
+                    : ElevatedButton.icon(
+                        onPressed: () => Geolocator.openLocationSettings(),
+                        icon: const Icon(Icons.settings),
+                        label: const Text('Open Location Settings'),
                       ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Location Services Disabled',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Please enable Location Services on your device to connect and verify you\'re in an allowed wardriving zone.',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                      ),
-                      // Only show button on Android - iOS can't open Location Services directly
-                      if (!isIOS) ...[
-                        const SizedBox(height: 24),
-                        ElevatedButton.icon(
-                          onPressed: () => Geolocator.openLocationSettings(),
-                          icon: const Icon(Icons.settings),
-                          label: const Text('Open Location Settings'),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
               ),
             ),
           ],
@@ -841,38 +917,16 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           children: [
             _buildZoneStatusBar(context, appState),
             Expanded(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.location_off,
-                        size: 64,
-                        color: Colors.orange.withValues(alpha: 0.7),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'GPS Permission Required',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Location access is needed to verify you\'re in an allowed wardriving zone.',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                      ),
-                      const SizedBox(height: 24),
-                      ElevatedButton.icon(
-                        onPressed: () => _requestLocationPermission(appState),
-                        icon: const Icon(Icons.location_on),
-                        label: const Text('Enable Location'),
-                      ),
-                    ],
-                  ),
+              child: _buildMessageContent(
+                context: context,
+                icon: Icons.location_off,
+                iconColor: Colors.orange.withValues(alpha: 0.7),
+                title: 'GPS Permission Required',
+                message: 'Location access is needed to verify you\'re in an allowed zone.',
+                action: ElevatedButton.icon(
+                  onPressed: () => _requestLocationPermission(appState),
+                  icon: const Icon(Icons.location_on),
+                  label: const Text('Enable Location'),
                 ),
               ),
             ),
@@ -884,29 +938,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
         children: [
           _buildZoneStatusBar(context, appState),
           Expanded(
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.bluetooth_searching,
-                    size: 64,
-                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No devices found',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Tap Scan to search for MeshCore devices',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                        ),
-                  ),
-                ],
-              ),
+            child: _buildMessageContent(
+              context: context,
+              icon: Icons.bluetooth_searching,
+              iconColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+              title: 'No devices found',
+              message: 'Tap Scan to search for MeshCore devices',
             ),
           ),
         ],
@@ -934,65 +971,72 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     RememberedDevice remembered, {
     bool canConnect = true,
   }) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.bluetooth,
-              size: 64,
-              color: canConnect
-                  ? Theme.of(context).colorScheme.primary
-                  : Colors.grey,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Last Connected Device',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              remembered.displayName,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: canConnect ? () => appState.reconnectToRememberedDevice() : null,
-              icon: const Icon(Icons.bluetooth_connected),
-              label: Text(canConnect ? 'Reconnect' : 'Outside Zone'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: canConnect
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+
+    return SingleChildScrollView(
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(isLandscape ? 16 : 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.bluetooth,
+                size: isLandscape ? 40 : 64,
+                color: canConnect
                     ? Theme.of(context).colorScheme.primary
                     : Colors.grey,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
               ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextButton.icon(
-                  onPressed: () => appState.startScan(),
-                  icon: const Icon(Icons.bluetooth_searching, size: 18),
-                  label: const Text('Scan for Others'),
-                ),
-                const SizedBox(width: 8),
-                TextButton.icon(
-                  onPressed: () => appState.clearRememberedDevice(),
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  label: const Text('Forget'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.grey,
+              SizedBox(height: isLandscape ? 8 : 16),
+              Text(
+                'Last Connected Device',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                remembered.displayName,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+              ),
+              SizedBox(height: isLandscape ? 12 : 24),
+              ElevatedButton.icon(
+                onPressed: canConnect ? () => appState.reconnectToRememberedDevice() : null,
+                icon: const Icon(Icons.bluetooth_connected),
+                label: Text(canConnect ? 'Reconnect' : 'Outside Zone'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: canConnect
+                      ? Theme.of(context).colorScheme.primary
+                      : Colors.grey,
+                  foregroundColor: Colors.white,
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isLandscape ? 24 : 32,
+                    vertical: isLandscape ? 12 : 16,
                   ),
                 ),
-              ],
-            ),
-          ],
+              ),
+              SizedBox(height: isLandscape ? 8 : 16),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton.icon(
+                    onPressed: () => appState.startScan(),
+                    icon: const Icon(Icons.bluetooth_searching, size: 18),
+                    label: const Text('Scan'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton.icon(
+                    onPressed: () => appState.clearRememberedDevice(),
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('Forget'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.grey,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

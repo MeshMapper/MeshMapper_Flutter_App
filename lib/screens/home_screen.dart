@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../widgets/connection_panel.dart';
 import '../widgets/map_widget.dart';
@@ -20,8 +21,46 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showControlPanel = true;
   bool _isControlsMinimized = false;
 
-  /// Calculate the current control panel height for map centering offset
+  /// Landscape mode: map controls expanded state (mutually exclusive with control panel)
+  bool _mapControlsExpanded = false;
+
+  /// Landscape side panel width (220px gives more room for controls)
+  static const double _landscapePanelWidth = 220.0;
+
+  /// Toggle control panel in landscape mode (closes map controls if open)
+  void _toggleControlPanel() {
+    setState(() {
+      if (_showControlPanel) {
+        // Closing control panel
+        _showControlPanel = false;
+      } else {
+        // Opening control panel - close map controls first
+        _mapControlsExpanded = false;
+        _showControlPanel = true;
+      }
+    });
+  }
+
+  /// Toggle map controls in landscape mode (closes control panel if open)
+  void _toggleMapControls() {
+    setState(() {
+      if (_mapControlsExpanded) {
+        // Closing map controls
+        _mapControlsExpanded = false;
+      } else {
+        // Opening map controls - close control panel first
+        _showControlPanel = false;
+        _mapControlsExpanded = true;
+      }
+    });
+  }
+
+  /// Calculate the current control panel height for map centering offset (portrait mode)
   double _getControlPanelHeight() {
+    // In landscape, panel is on the side, not bottom
+    if (MediaQuery.of(context).orientation == Orientation.landscape) {
+      return 0;
+    }
     if (!_showControlPanel) return 0;
     // Approximate heights including Card margins (8px * 2 = 16px)
     // Minimized: Row padding (12) + content (~32) + margin (16) = ~60px
@@ -29,35 +68,25 @@ class _HomeScreenState extends State<HomeScreen> {
     return _isControlsMinimized ? 60 : 320;
   }
 
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
+    // In landscape: no AppBar, everything on map overlays
+    if (isLandscape) {
+      return Scaffold(
+        body: _buildLayout(appState),
+      );
+    }
+
+    // Portrait: standard AppBar
     return Scaffold(
       appBar: AppBar(
         centerTitle: false,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'MeshMapper',
-              style: TextStyle(fontSize: 18),
-            ),
-              Text(
-                appState.connectedDeviceName != null
-                    ? _buildSubtitle(appState)
-                    : 'Disconnected',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: appState.connectedDeviceName != null
-                      ? Theme.of(context).colorScheme.onSurfaceVariant
-                      : Colors.grey,
-                ),
-            ),
-          ],
-        ),
+        title: _buildPortraitAppBarTitle(appState),
         actions: [
-          // Noise floor indicator (always visible, greyed when disconnected)
           _buildStatIndicator(
             icon: Icons.volume_up,
             value: appState.currentNoiseFloor != null
@@ -68,8 +97,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? _getNoiseFloorColor(appState.currentNoiseFloor!)
                 : Colors.grey,
           ),
-
-          // Battery indicator (always visible, greyed when disconnected)
           _buildStatIndicator(
             icon: appState.currentBatteryPercent != null
                 ? _getBatteryIcon(appState.currentBatteryPercent!)
@@ -82,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? _getBatteryColor(appState.currentBatteryPercent!)
                 : Colors.grey,
           ),
-
           const SizedBox(width: 8),
         ],
       ),
@@ -97,8 +123,226 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Unified layout: full-screen map with collapsible bottom control panel
+  /// Portrait AppBar title (just MeshMapper + device name)
+  Widget _buildPortraitAppBarTitle(AppStateProvider appState) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'MeshMapper',
+          style: TextStyle(fontSize: 18),
+        ),
+        Text(
+          appState.connectedDeviceName != null
+              ? _buildSubtitle(appState)
+              : 'Disconnected',
+          style: TextStyle(
+            fontSize: 12,
+            color: appState.connectedDeviceName != null
+                ? Theme.of(context).colorScheme.onSurfaceVariant
+                : Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Stats row for AppBar/floating status bar (matches StatusBar exactly)
+  Widget _buildAppBarStats(AppStateProvider appState, {bool withTapHandlers = false}) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // TX count
+        _buildAppBarStatChip(
+          Icons.arrow_upward,
+          appState.pingStats.txCount,
+          Colors.green,
+          onTap: withTapHandlers ? () => _showInfoPopup('tx', appState) : null,
+        ),
+        const SizedBox(width: 8),
+        // RX count
+        _buildAppBarStatChip(
+          Icons.arrow_downward,
+          appState.pingStats.rxCount,
+          Colors.blue,
+          onTap: withTapHandlers ? () => _showInfoPopup('rx', appState) : null,
+        ),
+        const SizedBox(width: 8),
+        // DISC count
+        _buildAppBarStatChip(
+          Icons.radar,
+          appState.pingStats.discCount,
+          const Color(0xFF7B68EE),
+          onTap: withTapHandlers ? () => _showInfoPopup('disc', appState) : null,
+        ),
+        const SizedBox(width: 8),
+        // Upload count
+        _buildAppBarStatChip(
+          Icons.cloud_done,
+          appState.pingStats.successfulUploads,
+          Colors.teal.shade400,
+          onTap: withTapHandlers ? () => _showInfoPopup('upload', appState) : null,
+        ),
+      ],
+    );
+  }
+
+  /// Stat chip for AppBar (same style as StatusBar)
+  Widget _buildAppBarStatChip(IconData icon, int value, Color color, {VoidCallback? onTap}) {
+    final chip = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(
+            '$value',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (onTap != null) {
+      return GestureDetector(onTap: onTap, child: chip);
+    }
+    return chip;
+  }
+
+  /// Show info popup as bottom sheet (same as StatusBar)
+  void _showInfoPopup(String id, AppStateProvider appState) {
+    final (title, description, icon, color) = _getPopupContent(id, appState);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Drag handle
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade400,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Content
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, size: 24, color: color),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: color,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        description,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey.shade600,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Get content for the popup based on ID
+  (String, String, IconData, Color) _getPopupContent(String id, AppStateProvider appState) {
+    switch (id) {
+      case 'gps':
+        if (appState.offlineMode) {
+          return ('Offline Mode Active', 'Pings are saved locally. Zone detection is paused until you go back online.', Icons.flight, Colors.grey);
+        }
+        if (appState.inZone == true && appState.zoneCode != null) {
+          return ('${appState.zoneName ?? appState.zoneCode} Zone',
+            'You\'re in an active zone with ${appState.zoneSlotsAvailable ?? "?"} TX slots available. Ready to wardrive!',
+            Icons.flight, Colors.green);
+        }
+        if (appState.inZone == false) {
+          final nearest = appState.nearestZoneName ?? 'Unknown';
+          final dist = appState.nearestZoneDistanceKm?.toStringAsFixed(1) ?? '?';
+          return ('Outside Coverage Area', 'Nearest zone is $nearest, ${dist}km away. Enter a zone to start wardriving.', Icons.flight, Colors.orange);
+        }
+        return ('Locating...', 'Acquiring GPS signal and checking your zone status.', Icons.gps_not_fixed, Colors.blue);
+
+      case 'tx':
+        return ('TX Packets', 'TX packets that have been sent out. These are messages to the #wardriving channel.', Icons.arrow_upward, Colors.green);
+
+      case 'rx':
+        return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, Colors.blue);
+
+      case 'disc':
+        return ('Discovery Requests', 'Discovery request packets we have sent out.', Icons.radar, const Color(0xFF7B68EE));
+
+      case 'upload':
+        return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
+
+      default:
+        return ('Info', '', Icons.info, Colors.grey);
+    }
+  }
+
+  /// Unified layout: orientation-aware with bottom panel (portrait) or side panel (landscape)
   Widget _buildLayout(AppStateProvider appState) {
+    return OrientationBuilder(
+      builder: (context, orientation) {
+        final isLandscape = orientation == Orientation.landscape;
+
+        if (isLandscape) {
+          return _buildLandscapeLayout(appState);
+        } else {
+          return _buildPortraitLayout(appState);
+        }
+      },
+    );
+  }
+
+  /// Portrait layout: StatusBar on top, map below, bottom control panel
+  Widget _buildPortraitLayout(AppStateProvider appState) {
     return Stack(
       children: [
         // Map fills entire screen
@@ -122,6 +366,284 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+
+  /// Landscape layout: No AppBar, floating overlays for status and controls
+  Widget _buildLandscapeLayout(AppStateProvider appState) {
+    // Get safe area padding for dynamic island/notch
+    final safePadding = MediaQuery.of(context).padding;
+    final leftInset = safePadding.left + 8; // Dynamic island + margin
+
+    return Stack(
+      children: [
+        // Map takes full screen - pass map controls state for mutual exclusivity
+        MapWidget(
+          mapControlsExpanded: _mapControlsExpanded,
+          onMapControlsToggle: _toggleMapControls,
+        ),
+
+        // Floating status bar at top center
+        Positioned(
+          top: 16,
+          left: leftInset + 72, // Leave space for GPS info on left
+          right: 60, // Leave space for map controls toggle on right
+          child: Center(
+            child: _buildFloatingStatusBar(appState),
+          ),
+        ),
+
+        // Floating control panel on left side, near bottom
+        if (_showControlPanel)
+          Positioned(
+            bottom: 16,
+            left: leftInset,
+            child: _buildLandscapeControlPanel(appState),
+          ),
+
+        // FAB to open control panel when closed (left side)
+        if (!_showControlPanel)
+          Positioned(
+            bottom: 16,
+            left: leftInset,
+            child: FloatingActionButton.small(
+              onPressed: _toggleControlPanel,
+              child: const Icon(Icons.tune),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Floating status bar for landscape mode (replaces AppBar)
+  Widget _buildFloatingStatusBar(AppStateProvider appState) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.75),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Device name
+          Text(
+            appState.displayDeviceName ?? 'Disconnected',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: appState.connectedDeviceName != null
+                  ? Colors.white
+                  : Colors.grey.shade400,
+            ),
+          ),
+          const SizedBox(width: 12),
+
+          // Zone chip (tappable)
+          GestureDetector(
+            onTap: () => _showInfoPopup('gps', appState),
+            child: _buildZoneChip(appState),
+          ),
+          const SizedBox(width: 8),
+
+          // Stats (with tap handlers in landscape)
+          _buildAppBarStats(appState, withTapHandlers: true),
+          const SizedBox(width: 12),
+
+          // Noise floor
+          _buildFloatingStatIndicator(
+            icon: Icons.volume_up,
+            value: appState.currentNoiseFloor != null
+                ? '${appState.currentNoiseFloor}'
+                : '--',
+            color: appState.currentNoiseFloor != null
+                ? _getNoiseFloorColor(appState.currentNoiseFloor!)
+                : Colors.grey,
+          ),
+          const SizedBox(width: 8),
+
+          // Battery
+          _buildFloatingStatIndicator(
+            icon: appState.currentBatteryPercent != null
+                ? _getBatteryIcon(appState.currentBatteryPercent!)
+                : Icons.battery_unknown,
+            value: appState.currentBatteryPercent != null
+                ? '${appState.currentBatteryPercent}%'
+                : '--%',
+            color: appState.currentBatteryPercent != null
+                ? _getBatteryColor(appState.currentBatteryPercent!)
+                : Colors.grey,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Compact stat indicator for floating status bar
+  Widget _buildFloatingStatIndicator({
+    required IconData icon,
+    required String value,
+    required Color color,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 3),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Landscape floating control panel (compact, top-right corner)
+  Widget _buildLandscapeControlPanel(AppStateProvider appState) {
+    return Container(
+      width: _landscapePanelWidth,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.25),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Header with help and close buttons
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+            child: Row(
+              children: [
+                Text(
+                  'Controls',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: Colors.grey.shade300,
+                  ),
+                ),
+                const Spacer(),
+                // Help button - larger touch target
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => _showControlsHelp(context),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(Icons.help_outline, size: 22, color: Colors.grey.shade400),
+                    ),
+                  ),
+                ),
+                // Close button - larger touch target
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => setState(() => _showControlPanel = false),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(Icons.close, size: 22, color: Colors.grey.shade400),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Colors.grey.withValues(alpha: 0.2)),
+
+          // Controls (no scroll needed, sized to content)
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: LandscapePingControls(
+              onShowHelp: () => _showControlsHelp(context),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Compact zone chip for landscape panel
+  Widget _buildZoneChip(AppStateProvider appState) {
+    IconData icon;
+    Color color;
+    String text;
+
+    // Offline mode: show greyed out with "-"
+    if (appState.offlineMode) {
+      icon = Icons.flight;
+      color = Colors.grey;
+      text = '-';
+    } else {
+      // Show GPS region (e.g., "YOW") when locked and inside a zone
+      switch (appState.gpsStatus) {
+        case GpsStatus.locked:
+          if (appState.inZone == true && appState.zoneCode != null) {
+            icon = Icons.flight;
+            color = Colors.green;
+            text = appState.zoneCode!;
+          } else if (appState.inZone == false) {
+            icon = Icons.flight;
+            color = Colors.orange;
+            text = '—';
+          } else {
+            icon = Icons.flight;
+            color = Colors.green;
+            text = '...';
+          }
+          break;
+        case GpsStatus.searching:
+          icon = Icons.gps_not_fixed;
+          color = Colors.orange;
+          text = '...';
+          break;
+        case GpsStatus.outsideGeofence:
+          icon = Icons.flight;
+          color = Colors.orange;
+          text = '—';
+          break;
+        case GpsStatus.disabled:
+          icon = Icons.location_disabled;
+          color = Colors.grey;
+          text = 'OFF';
+          break;
+        case GpsStatus.permissionDenied:
+          icon = Icons.location_disabled;
+          color = Colors.red;
+          text = '!';
+          break;
+      }
+    }
+
+    // Same styling as stat chips for consistent height
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+        ],
+      ),
+    );
+  }
+
 
   Widget _buildControlPanel() {
     return Card(

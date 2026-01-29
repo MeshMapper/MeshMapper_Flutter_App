@@ -1036,6 +1036,522 @@ class _CompactPingControlsState extends State<CompactPingControls> {
   }
 }
 
+/// Ping controls optimized for landscape side panel
+/// Vertical stack of compact buttons
+class LandscapePingControls extends StatelessWidget {
+  final VoidCallback? onShowHelp;
+
+  const LandscapePingControls({super.key, this.onShowHelp});
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppStateProvider>();
+    final validation = appState.pingValidation;
+    final autoValidation = appState.autoModeValidation;
+    final canPing = validation == PingValidation.valid;
+    final canStartAuto = autoValidation == PingValidation.valid;
+    final isActiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.active;
+    final isPassiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
+    final isPendingDisable = appState.isPendingDisable;
+    final cooldownActive = appState.cooldownTimer.isRunning;
+    final cooldownRemaining = appState.cooldownTimer.remainingSec;
+    final rxWindowActive = appState.rxWindowTimer.isRunning;
+    final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
+    final isPingSending = appState.isPingSending;
+    final isPingInProgress = appState.isPingInProgress;
+    final autoPingWaiting = appState.autoPingTimer.isRunning;
+    final autoPingRemaining = appState.autoPingTimer.remainingSec;
+    final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
+    final discoveryWindowRemaining = appState.discoveryWindowTimer.remainingSec;
+
+    // TX is blocked when offline mode is active and connected
+    final txBlockedByOffline = appState.offlineMode && appState.isConnected;
+
+    final prefs = appState.preferences;
+    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
+
+    // Antenna selector
+    final soundEnabled = appState.isSoundEnabled;
+    final offlineMode = appState.offlineMode;
+    final isConnected = appState.isConnected;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Antenna selector (compact)
+        _LandscapeAntennaSelector(
+          externalAntenna: prefs.externalAntenna,
+          externalAntennaSet: prefs.externalAntennaSet,
+          onChanged: (value) => appState.updatePreferences(
+            prefs.copyWith(externalAntenna: value, externalAntennaSet: true),
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // Action buttons row (icon-only)
+        Row(
+          children: [
+            // TX Ping button
+            Expanded(
+              child: _LandscapeIconButton(
+                icon: Icons.cell_tower,
+                tooltip: 'Send Ping',
+                color: const Color(0xFF0EA5E9), // sky-500
+                enabled: canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline &&
+                         !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
+                isActive: (isPingSending || rxWindowActive) && !isActiveModeRunning,
+                countdown: isPingSending
+                    ? null
+                    : rxWindowActive && !isActiveModeRunning
+                        ? rxWindowRemaining
+                        : discoveryWindowActive
+                            ? discoveryWindowRemaining
+                            : cooldownActive
+                                ? cooldownRemaining
+                                : null,
+                onPressed: () => _sendPing(context, appState),
+              ),
+            ),
+            const SizedBox(width: 8),
+
+            // Active Mode button
+            Expanded(
+              child: _LandscapeIconButton(
+                icon: Icons.sensors,
+                tooltip: 'Active Mode',
+                color: isPendingDisable
+                    ? Colors.orange
+                    : isActiveModeRunning
+                        ? const Color(0xFF22C55E) // green-500
+                        : const Color(0xFF6366F1), // indigo-500
+                enabled: !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline),
+                isActive: isPendingDisable || (isActiveModeRunning && (isPingInProgress || rxWindowActive || autoPingWaiting)),
+                countdown: isActiveModeRunning
+                    ? (rxWindowActive
+                        ? rxWindowRemaining
+                        : autoPingWaiting
+                            ? autoPingRemaining
+                            : null)
+                    : isPendingDisable && rxWindowActive
+                        ? rxWindowRemaining
+                        : null,
+                onPressed: () => _toggleTxRxAuto(context, appState),
+              ),
+            ),
+            const SizedBox(width: 8),
+
+            // Passive Mode button
+            Expanded(
+              child: _LandscapeIconButton(
+                icon: Icons.hearing,
+                tooltip: 'Passive Mode',
+                color: isPassiveModeRunning
+                    ? const Color(0xFF22C55E) // green-500
+                    : const Color(0xFF6366F1), // indigo-500
+                enabled: isPassiveModeRunning || (appState.isConnected && !isActiveModeRunning && !isPendingDisable &&
+                    !isPingSending && !rxWindowActive && !cooldownActive &&
+                    prefs.externalAntennaSet && isPowerSet),
+                isActive: isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting),
+                countdown: isPassiveModeRunning
+                    ? (discoveryWindowActive
+                        ? discoveryWindowRemaining
+                        : autoPingWaiting
+                            ? autoPingRemaining
+                            : null)
+                    : null,
+                onPressed: () => _toggleRxAuto(context, appState),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+
+        // Compact row for toggles
+        Row(
+          children: [
+            Expanded(
+              child: _LandscapeToggle(
+                icon: offlineMode ? Icons.cloud_off : Icons.cloud_queue,
+                label: 'Offline',
+                isOn: offlineMode,
+                color: Colors.orange,
+                onTap: isConnected
+                    ? () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Disconnect before changing offline mode'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    : () => appState.setOfflineMode(!offlineMode),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _LandscapeToggle(
+                icon: soundEnabled ? Icons.volume_up : Icons.volume_off,
+                label: 'Sound',
+                isOn: soundEnabled,
+                color: Colors.blue,
+                onTap: () => appState.toggleSoundEnabled(),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _sendPing(BuildContext context, AppStateProvider appState) async {
+    HapticFeedback.mediumImpact();
+    await appState.sendPing();
+  }
+
+  Future<void> _toggleTxRxAuto(BuildContext context, AppStateProvider appState) async {
+    HapticFeedback.lightImpact();
+    await appState.toggleAutoPing(AutoMode.active);
+  }
+
+  Future<void> _toggleRxAuto(BuildContext context, AppStateProvider appState) async {
+    HapticFeedback.lightImpact();
+    await appState.toggleAutoPing(AutoMode.passive);
+  }
+}
+
+/// Compact antenna selector for landscape panel
+class _LandscapeAntennaSelector extends StatelessWidget {
+  final bool externalAntenna;
+  final bool externalAntennaSet;
+  final ValueChanged<bool> onChanged;
+
+  const _LandscapeAntennaSelector({
+    required this.externalAntenna,
+    required this.externalAntennaSet,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const notSetColor = Colors.orange;
+    final setColor = Colors.grey.shade600;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Label row
+        Padding(
+          padding: const EdgeInsets.only(left: 2, bottom: 4),
+          child: Row(
+            children: [
+              Icon(
+                Icons.settings_input_antenna,
+                size: 12,
+                color: externalAntennaSet ? setColor : notSetColor,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                'Antenna',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w500,
+                  color: externalAntennaSet ? Colors.grey.shade500 : notSetColor,
+                ),
+              ),
+              if (!externalAntennaSet) ...[
+                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: notSetColor.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    'Required',
+                    style: TextStyle(fontSize: 8, fontWeight: FontWeight.w600, color: notSetColor),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        // Toggle buttons
+        Container(
+          height: 32,
+          decoration: BoxDecoration(
+            color: Colors.grey.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.withValues(alpha: 0.15)),
+          ),
+          child: Row(
+            children: [
+              // Internal option
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => onChanged(false),
+                  behavior: HitTestBehavior.opaque,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: (!externalAntenna && externalAntennaSet)
+                          ? Colors.orange.withValues(alpha: 0.25)
+                          : Colors.transparent,
+                      borderRadius: const BorderRadius.horizontal(left: Radius.circular(7)),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      'Internal',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: (!externalAntenna && externalAntennaSet) ? FontWeight.w600 : FontWeight.w500,
+                        color: (!externalAntenna && externalAntennaSet) ? Colors.orange : Colors.grey.shade500,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              // Divider
+              Container(width: 1, height: 18, color: Colors.grey.withValues(alpha: 0.2)),
+              // External option
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => onChanged(true),
+                  behavior: HitTestBehavior.opaque,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: (externalAntenna && externalAntennaSet)
+                          ? Colors.orange.withValues(alpha: 0.25)
+                          : Colors.transparent,
+                      borderRadius: const BorderRadius.horizontal(right: Radius.circular(7)),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      'External',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: (externalAntenna && externalAntennaSet) ? FontWeight.w600 : FontWeight.w500,
+                        color: (externalAntenna && externalAntennaSet) ? Colors.orange : Colors.grey.shade500,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Icon-only action button for landscape panel
+class _LandscapeIconButton extends StatefulWidget {
+  final IconData icon;
+  final String tooltip;
+  final Color color;
+  final bool enabled;
+  final bool isActive;
+  final int? countdown; // Optional countdown number to display
+  final VoidCallback onPressed;
+
+  const _LandscapeIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.color,
+    required this.enabled,
+    required this.onPressed,
+    this.isActive = false,
+    this.countdown,
+  });
+
+  @override
+  State<_LandscapeIconButton> createState() => _LandscapeIconButtonState();
+}
+
+class _LandscapeIconButtonState extends State<_LandscapeIconButton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      duration: const Duration(milliseconds: 1200),
+      vsync: this,
+    );
+    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+
+    if (widget.isActive) {
+      _pulseController.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(_LandscapeIconButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive) {
+      _pulseController.repeat(reverse: true);
+    } else if (!widget.isActive && oldWidget.isActive) {
+      _pulseController.stop();
+      _pulseController.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showColor = widget.enabled || widget.isActive;
+    final effectiveColor = showColor ? widget.color : Colors.grey;
+
+    return AnimatedBuilder(
+      animation: _pulseAnimation,
+      builder: (context, child) {
+        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.10;
+
+        return Tooltip(
+          message: widget.tooltip,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: widget.enabled ? widget.onPressed : null,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                height: 48,
+                decoration: BoxDecoration(
+                  color: effectiveColor.withValues(alpha: bgOpacity),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: effectiveColor.withValues(alpha: widget.isActive ? 0.5 : 0.25),
+                    width: widget.isActive ? 1.5 : 1,
+                  ),
+                ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // Main icon
+                    Icon(
+                      widget.icon,
+                      size: 24,
+                      color: showColor ? effectiveColor : Colors.grey.shade500,
+                    ),
+                    // Countdown badge (bottom right)
+                    if (widget.countdown != null)
+                      Positioned(
+                        bottom: 4,
+                        right: 4,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: effectiveColor,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '${widget.countdown}',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    // Active indicator dot (top right)
+                    if (widget.isActive && widget.countdown == null)
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF22C55E),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 1.5),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Compact toggle button for landscape panel
+class _LandscapeToggle extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isOn;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _LandscapeToggle({
+    required this.icon,
+    required this.label,
+    required this.isOn,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final activeColor = isOn ? color : Colors.grey;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          height: 38,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: isOn
+                ? activeColor.withValues(alpha: 0.12)
+                : Colors.grey.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isOn
+                  ? activeColor.withValues(alpha: 0.35)
+                  : Colors.grey.withValues(alpha: 0.15),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 16,
+                color: isOn ? activeColor : Colors.grey.shade500,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: isOn ? FontWeight.w600 : FontWeight.w500,
+                  color: isOn ? activeColor : Colors.grey.shade500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Compact action button for minimized panel - horizontal pill layout
 /// Supports expanding to show label when active
 class _CompactActionButton extends StatefulWidget {
