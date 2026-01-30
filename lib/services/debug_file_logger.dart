@@ -198,4 +198,66 @@ class DebugFileLogger {
 
   /// Get the current log file path (if logging is enabled)
   static String? get currentLogPath => _currentLogFile?.path;
+
+  /// Rotate the current log file - closes it and starts a new one
+  ///
+  /// This is useful before uploading logs to ensure the files being
+  /// uploaded are complete and not being actively written to.
+  static Future<void> rotateLogFile() async {
+    if (!_enabled) return;
+
+    try {
+      // Close current log file
+      _flushTimer?.cancel();
+      _flushTimer = null;
+
+      if (_logSink != null) {
+        final now = DateTime.now().toIso8601String();
+        _logSink!.writeln('\n=== Log rotated for upload: $now ===');
+        await _logSink!.flush();
+        await _logSink!.close();
+      }
+
+      _logSink = null;
+      _currentLogFile = null;
+
+      // Start a new log file
+      final dir = await getApplicationDocumentsDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final filename = 'meshmapper-debug-$timestamp.txt';
+      _currentLogFile = File('${dir.path}/$filename');
+      _logSink = _currentLogFile!.openWrite(mode: FileMode.append);
+
+      // Write header to new file
+      final nowStr = DateTime.now().toIso8601String();
+      _logSink!.writeln('=== MeshMapper Debug Log Started: $nowStr ===');
+      _logSink!.writeln('=== (Previous log rotated for upload) ===\n');
+
+      // Restart flush timer
+      _flushTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _logSink?.flush();
+      });
+
+      // Clean up old files if needed
+      await _rotateOldFiles(dir);
+    } catch (e) {
+      // If rotation fails, try to continue with existing state
+      rethrow;
+    }
+  }
+
+  /// List log files that are safe to upload (excludes currently active file)
+  ///
+  /// Returns files sorted newest first, excluding the file currently being written to
+  static Future<List<File>> listUploadableLogFiles() async {
+    final allFiles = await listLogFiles();
+    final currentPath = _currentLogFile?.path;
+
+    if (currentPath == null) {
+      return allFiles;
+    }
+
+    // Filter out the current log file
+    return allFiles.where((f) => f.path != currentPath).toList();
+  }
 }

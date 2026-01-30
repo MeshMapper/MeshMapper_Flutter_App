@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 // Conditional import for web file helpers
 import '../utils/web_file_helpers_stub.dart'
@@ -15,10 +16,13 @@ import '../utils/web_file_helpers_stub.dart'
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../models/user_preferences.dart';
+import '../services/debug_submit_service.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/offline_session_service.dart';
 import '../services/permission_disclosure_service.dart';
 import '../utils/constants.dart';
+import '../widgets/bug_report_dialog.dart';
+import '../widgets/app_toast.dart';
 
 /// Settings screen for user preferences and API configuration
 class SettingsScreen extends StatefulWidget {
@@ -33,9 +37,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _versionTapCount = 0;
   DateTime? _lastVersionTap;
 
+  // Debug log upload tracking
+  String? _uploadingFilePath;
+  final Set<String> _uploadedFiles = {};
+
+  Future<void> _uploadSingleLogFile(AppStateProvider appState, File file) async {
+    final filename = file.path.split('/').last;
+
+    setState(() {
+      _uploadingFilePath = file.path;
+    });
+
+    try {
+      final service = DebugSubmitService();
+
+      // Use persistent device info
+      final publicKey = appState.devicePublicKey ??
+          appState.lastConnectedPublicKey ??
+          'not-connected';
+      final deviceName = appState.lastConnectedDeviceName ?? 'not-connected';
+
+      final success = await service.uploadDebugFileOnly(
+        file: file,
+        deviceId: deviceName,
+        publicKey: publicKey,
+        appVersion: AppConstants.appVersion,
+        devicePlatform: DebugSubmitService.getDevicePlatform(),
+        userNotes: 'Direct debug log upload from $deviceName',
+      );
+
+      service.dispose();
+
+      if (!mounted) return;
+
+      if (success) {
+        setState(() {
+          _uploadedFiles.add(file.path);
+          _uploadingFilePath = null;
+        });
+        AppToast.success(context, 'Uploaded $filename');
+      } else {
+        setState(() {
+          _uploadingFilePath = null;
+        });
+        AppToast.error(context, 'Failed to upload $filename');
+      }
+    } catch (e) {
+      debugError('[SETTINGS] Log file upload error: $e');
+      if (mounted) {
+        setState(() {
+          _uploadingFilePath = null;
+        });
+        AppToast.error(context, 'Upload error: $e');
+      }
+    }
+  }
+
   void _onVersionTap(AppStateProvider appState) {
     final now = DateTime.now();
-    final messenger = ScaffoldMessenger.of(context);
 
     // Reset if last tap was more than 2 seconds ago
     if (_lastVersionTap != null &&
@@ -47,38 +106,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _versionTapCount++;
 
     if (appState.developerModeEnabled) {
-      messenger
-        ..clearSnackBars()
-        ..showSnackBar(
-          const SnackBar(
-            content: Text('Developer mode already enabled'),
-            duration: Duration(milliseconds: 1500),
-          ),
-        );
+      AppToast.simple(context, 'Developer mode already enabled');
       return;
     }
 
     if (_versionTapCount >= 7) {
       appState.setDeveloperMode(true);
-      messenger
-        ..clearSnackBars()
-        ..showSnackBar(
-          const SnackBar(
-            content: Text('Developer mode enabled!'),
-            duration: Duration(seconds: 2),
-          ),
-        );
+      AppToast.success(context, 'Developer mode enabled!');
       _versionTapCount = 0;
     } else if (_versionTapCount >= 3) {
       final remaining = 7 - _versionTapCount;
-      messenger
-        ..clearSnackBars()
-        ..showSnackBar(
-          SnackBar(
-            content: Text('$remaining taps to enable developer mode'),
-            duration: const Duration(milliseconds: 800),
-          ),
-        );
+      AppToast.simple(
+        context,
+        '$remaining taps to enable developer mode',
+        duration: const Duration(milliseconds: 800),
+      );
     }
   }
 
@@ -243,9 +285,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.bug_report),
-            title: const Text('Issues & Feedback'),
+            leading: const Icon(Icons.feedback_outlined),
+            title: const Text('Submit Feedback'),
             subtitle: const Text('Report bugs or request features'),
+            onTap: () => _showBugReportDialog(context, appState),
+          ),
+          ListTile(
+            leading: const FaIcon(FontAwesomeIcons.github),
+            title: const Text('GitHub'),
+            subtitle: const Text('View issues and source code'),
             onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
           ),
           ListTile(
@@ -403,12 +451,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       icon: const Icon(Icons.clear),
                       onPressed: () {
                         appState.clearSimulatorRoute();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Route cleared'),
-                            duration: Duration(seconds: 2),
-                          ),
-                        );
+                        AppToast.info(context, 'Route cleared');
                       },
                       tooltip: 'Clear route',
                     ),
@@ -427,13 +470,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: const Icon(Icons.restart_alt),
                 onPressed: () {
                   appState.resetGpsSimulator();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(appState.hasSimulatorRoute
-                          ? 'Reset to route start'
-                          : 'GPS simulator reset to Ottawa downtown'),
-                      duration: const Duration(seconds: 2),
-                    ),
+                  AppToast.info(
+                    context,
+                    appState.hasSimulatorRoute
+                        ? 'Reset to route start'
+                        : 'GPS simulator reset to Ottawa downtown',
                   );
                 },
               ),
@@ -526,17 +567,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 )
               else
-                ...appState.debugLogFiles.map((file) {
+                ...appState.debugLogFiles.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  final file = entry.value;
                   final filename = file.path.split('/').last;
                   final sizeKb = (file.lengthSync() / 1024).toStringAsFixed(1);
+                  final isUploading = _uploadingFilePath == file.path;
+                  final wasUploaded = _uploadedFiles.contains(file.path);
+                  // First file (index 0) is the most recent/active log - can't upload
+                  final isCurrentLog = index == 0;
 
                   return ListTile(
                     leading: const Icon(Icons.description, size: 20),
                     title: Text(filename, style: const TextStyle(fontSize: 13)),
-                    subtitle: Text('$sizeKb KB', style: const TextStyle(fontSize: 11)),
+                    subtitle: Text(
+                      isCurrentLog ? '$sizeKb KB (current)' : '$sizeKb KB',
+                      style: const TextStyle(fontSize: 11),
+                    ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        // Upload button - hidden for current log file
+                        if (!isCurrentLog) ...[
+                          if (wasUploaded)
+                            Container(
+                              width: 40,
+                              height: 40,
+                              alignment: Alignment.center,
+                              child: const Icon(
+                                Icons.check_circle,
+                                size: 20,
+                                color: Colors.green,
+                              ),
+                            )
+                          else if (isUploading)
+                            Container(
+                              width: 40,
+                              height: 40,
+                              alignment: Alignment.center,
+                              child: const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          else
+                            IconButton(
+                              icon: const Icon(Icons.cloud_upload, size: 20),
+                              onPressed: _uploadingFilePath != null
+                                  ? null
+                                  : () => _uploadSingleLogFile(appState, file),
+                              tooltip: 'Upload to developer',
+                            ),
+                        ],
                         // View button
                         IconButton(
                           icon: const Icon(Icons.visibility, size: 20),
@@ -581,6 +664,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {
       debugPrint('[SETTINGS] Failed to launch URL: $url - $e');
+    }
+  }
+
+  Future<void> _showBugReportDialog(BuildContext context, AppStateProvider appState) async {
+    final result = await showBugReportDialog(context, appState);
+
+    if (!context.mounted || result == null) return;
+
+    if (result.success) {
+      // Build success message
+      String message = 'Feedback submitted successfully';
+      if (result.uploadedFileCount > 0) {
+        message += ' with ${result.uploadedFileCount} log file(s)';
+      }
+      if (result.failedFileCount > 0) {
+        message += ' (${result.failedFileCount} failed)';
+      }
+
+      AppToast.success(
+        context,
+        message,
+        duration: const Duration(seconds: 5),
+        actionLabel: result.issueUrl != null ? 'View' : null,
+        onAction: result.issueUrl != null ? () => _launchUrl(result.issueUrl!) : null,
+      );
+    } else if (result.errorMessage != null) {
+      AppToast.error(
+        context,
+        'Failed: ${result.errorMessage}',
+        duration: const Duration(seconds: 4),
+      );
     }
   }
 
@@ -745,11 +859,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
                 Navigator.pop(context);
               } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Invalid hex value. Use 2 digits (00-FF).'),
-                  ),
-                );
+                AppToast.warning(context, 'Invalid hex value. Use 2 digits (00-FF).');
               }
             },
             child: const Text('Save'),

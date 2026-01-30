@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/log_entry.dart';
+import 'app_toast.dart';
 
 /// TX Log Panel Widget
 /// Reference: TX Log section in index.html (wardrive.js)
@@ -307,14 +308,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
   void _copyToClipboard(BuildContext context) {
     final csv = _generateCsv();
     Clipboard.setData(ClipboardData(text: csv));
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('TX log copied to clipboard'),
-        duration: Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    AppToast.success(context, 'TX log copied to clipboard');
   }
 
   String _generateCsv() {

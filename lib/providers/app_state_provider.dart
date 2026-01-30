@@ -149,6 +149,10 @@ class AppStateProvider extends ChangeNotifier {
   List<File> _debugLogFiles = [];
   String? _viewingLogContent;
 
+  // Last connected device info (persistent, for bug reports)
+  String? _lastConnectedDeviceName;
+  String? _lastConnectedPublicKey;
+
   // Zone state for geo-auth
   bool? _inZone; // null = not checked yet, true/false = checked
   Map<String, dynamic>? _currentZone; // Zone info when inZone == true
@@ -225,6 +229,10 @@ class AppStateProvider extends ChangeNotifier {
   bool get debugLogsEnabled => _debugLogsEnabled;
   List<File> get debugLogFiles => List.unmodifiable(_debugLogFiles);
   String? get viewingLogContent => _viewingLogContent;
+
+  // Last connected device info getters (persistent, for bug reports)
+  String? get lastConnectedDeviceName => _lastConnectedDeviceName;
+  String? get lastConnectedPublicKey => _lastConnectedPublicKey;
 
   // Zone state getters
   bool? get inZone => _inZone;
@@ -365,6 +373,9 @@ class AppStateProvider extends ChangeNotifier {
 
     // Load user preferences
     await _loadPreferences();
+
+    // Load last connected device info (for bug reports)
+    await _loadLastConnectedDevice();
 
     // Set device ID for API
     _apiService.setDeviceId(_deviceId);
@@ -609,6 +620,18 @@ class AppStateProvider extends ChangeNotifier {
           _deviceModel = _meshCoreConnection!.deviceModel;
           _devicePublicKey = _meshCoreConnection!.devicePublicKey;
           debugLog('[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
+
+          // Persist device info for bug reports when disconnected
+          // Use companion name (selfInfo.name) or BLE device name with MeshCore- prefix stripped
+          var deviceName = _meshCoreConnection!.selfInfo?.name ??
+              connectedDeviceName;
+          if (deviceName != null) {
+            // Always strip MeshCore- prefix if present
+            deviceName = deviceName.replaceFirst('MeshCore-', '');
+          }
+          if (deviceName != null && deviceName.isNotEmpty && _devicePublicKey != null) {
+            _saveLastConnectedDevice(deviceName, _devicePublicKey!);
+          }
         }
         notifyListeners();
       });
@@ -2132,6 +2155,34 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
+  /// Prepare debug logs for upload by rotating the current log file
+  ///
+  /// This ensures the files being uploaded are complete and not actively being written to.
+  /// Returns the list of files that are safe to upload (excludes the new current log).
+  Future<List<File>> prepareDebugLogsForUpload() async {
+    try {
+      // Rotate the current log file if logging is enabled
+      if (_debugLogsEnabled) {
+        debugLog('[DEBUG] Rotating log file for upload...');
+        await DebugFileLogger.rotateLogFile();
+      }
+
+      // Get uploadable files (excludes current log file)
+      final files = await DebugFileLogger.listUploadableLogFiles();
+      debugLog('[DEBUG] Found ${files.length} log files available for upload');
+
+      // Also refresh the main list
+      _debugLogFiles = await DebugFileLogger.listLogFiles();
+      notifyListeners();
+
+      return files;
+    } catch (e) {
+      debugError('[DEBUG] Failed to prepare debug logs for upload: $e');
+      // Fall back to returning all files
+      return await DebugFileLogger.listLogFiles();
+    }
+  }
+
   /// Delete all debug log files
   ///
   /// Disables logging if active, then deletes all log files.
@@ -2395,6 +2446,38 @@ class AppStateProvider extends ChangeNotifier {
       debugLog('[APP] Saved preferences');
     } catch (e) {
       debugLog('[APP] Failed to save preferences: $e');
+    }
+  }
+
+  // ============================================
+  // Last Connected Device Persistence
+  // ============================================
+
+  /// Load last connected device info from Hive storage
+  Future<void> _loadLastConnectedDevice() async {
+    try {
+      final box = await Hive.openBox(_preferencesBoxName);
+      _lastConnectedDeviceName = box.get('last_connected_device_name') as String?;
+      _lastConnectedPublicKey = box.get('last_connected_public_key') as String?;
+      if (_lastConnectedDeviceName != null) {
+        debugLog('[APP] Loaded last connected device: $_lastConnectedDeviceName');
+      }
+    } catch (e) {
+      debugLog('[APP] Failed to load last connected device: $e');
+    }
+  }
+
+  /// Save last connected device info to Hive storage
+  Future<void> _saveLastConnectedDevice(String deviceName, String publicKey) async {
+    try {
+      final box = await Hive.openBox(_preferencesBoxName);
+      await box.put('last_connected_device_name', deviceName);
+      await box.put('last_connected_public_key', publicKey);
+      _lastConnectedDeviceName = deviceName;
+      _lastConnectedPublicKey = publicKey;
+      debugLog('[APP] Saved last connected device: $deviceName');
+    } catch (e) {
+      debugLog('[APP] Failed to save last connected device: $e');
     }
   }
 

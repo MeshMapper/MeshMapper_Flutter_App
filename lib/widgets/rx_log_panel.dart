@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/log_entry.dart';
+import 'app_toast.dart';
 
 /// RX Log Panel Widget (Passive Observations)
 /// Reference: RX Log section in index.html (wardrive.js)
@@ -322,14 +323,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
   void _copyToClipboard(BuildContext context) {
     final csv = _generateCsv();
     Clipboard.setData(ClipboardData(text: csv));
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('RX log copied to clipboard'),
-        duration: Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    AppToast.success(context, 'RX log copied to clipboard');
   }
 
   String _generateCsv() {

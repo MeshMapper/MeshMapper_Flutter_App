@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../providers/app_state_provider.dart';
 import '../services/ping_service.dart';
 import '../utils/debug_logger_io.dart';
+import 'app_toast.dart';
 
 /// Modern ping control panel with icon-based buttons and animated status
 class PingControls extends StatelessWidget {
@@ -614,12 +615,7 @@ class _OfflineModeToggle extends StatelessWidget {
         onTap: () {
           // Cannot change offline mode while connected
           if (isConnected) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Disconnect from device before changing offline mode'),
-                duration: Duration(seconds: 3),
-              ),
-            );
+            AppToast.warning(context, 'Disconnect from device before changing offline mode');
             return;
           }
           appState.setOfflineMode(!offlineMode);
@@ -1176,14 +1172,7 @@ class LandscapePingControls extends StatelessWidget {
                 isOn: offlineMode,
                 color: Colors.orange,
                 onTap: isConnected
-                    ? () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Disconnect before changing offline mode'),
-                            duration: Duration(seconds: 2),
-                          ),
-                        );
-                      }
+                    ? () => AppToast.warning(context, 'Disconnect before changing offline mode')
                     : () => appState.setOfflineMode(!offlineMode),
               ),
             ),
