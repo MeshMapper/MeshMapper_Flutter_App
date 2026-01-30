@@ -7,10 +7,6 @@ import 'packet_metadata.dart';
 /// Packet validation logic for RX wardriving
 /// Reference: validateRxPacket() in wardrive.js (lines 3419-3515)
 class PacketValidator {
-  /// Maximum allowed path length (9 hops)
-  /// Reference: MAX_RX_PATH_LENGTH in wardrive.js line 330
-  static const int maxPathLength = 9;
-  
   /// RSSI threshold for carpeater detection (-30 dBm)
   /// Packets stronger than this are likely from co-located repeaters
   /// Reference: MAX_RX_RSSI_THRESHOLD in wardrive.js
@@ -39,14 +35,7 @@ class PacketValidator {
       debugLog('[RX FILTER] Header: 0x${metadata.header.toRadixString(16).padLeft(2, '0')} | '
           'PathLength: ${metadata.pathLength} | SNR: ${metadata.snr}');
 
-      // VALIDATION 1: Check path length
-      if (metadata.pathLength > maxPathLength) {
-        debugLog('[RX FILTER] ❌ DROPPED: pathLen>$maxPathLength (${metadata.pathLength} hops)');
-        return ValidationResult.failed('pathLen>$maxPathLength');
-      }
-      debugLog('[RX FILTER] ✓ Path length OK (${metadata.pathLength} ≤ $maxPathLength)');
-
-      // VALIDATION 2: Check RSSI (carpeater filter)
+      // VALIDATION 1: Check RSSI (carpeater filter)
       if (isCarpeater(metadata.rssi)) {
         debugLog('[RX FILTER] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ $maxRssiThreshold) - '
             'possible carpeater (RSSI failsafe)');
@@ -54,7 +43,7 @@ class PacketValidator {
       }
       debugLog('[RX FILTER] ✓ RSSI OK (${metadata.rssi} < $maxRssiThreshold)');
 
-      // VALIDATION 3: Check packet type
+      // VALIDATION 2: Check packet type
       if (metadata.isGroupText) {
         return await _validateGroupText(metadata);
       } else if (metadata.isAdvert) {
