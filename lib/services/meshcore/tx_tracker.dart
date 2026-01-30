@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../utils/debug_logger_io.dart';
@@ -140,7 +141,7 @@ class TxTracker {
           final messageBytes = decryptedBytes.sublist(5);
 
           // Convert bytes to string and strip null terminators
-          var decryptedMessage = String.fromCharCodes(messageBytes);
+          var decryptedMessage = utf8.decode(messageBytes, allowMalformed: true);
           decryptedMessage = decryptedMessage.replaceAll(RegExp(r'\x00+$'), '').trim();
 
           debugLog('[MESSAGE_CORRELATION] Decryption successful, comparing content...');

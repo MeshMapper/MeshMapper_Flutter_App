@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../utils/debug_logger_io.dart';
@@ -108,7 +109,7 @@ class PacketValidator {
     // Convert to string and strip null terminators
     String plaintext;
     try {
-      plaintext = String.fromCharCodes(messageBytes);
+      plaintext = utf8.decode(messageBytes, allowMalformed: true);
       // Remove trailing nulls and trim
       plaintext = plaintext.replaceAll(RegExp(r'\x00+$'), '').trim();
     } catch (e) {
@@ -239,7 +240,7 @@ class PacketValidator {
       final nameBytes = payload.sublist(nameOffset);
 
       // Decode and trim null characters
-      var name = String.fromCharCodes(nameBytes);
+      var name = utf8.decode(nameBytes, allowMalformed: true);
       // Remove trailing nulls and whitespace
       name = name.replaceAll(RegExp(r'\x00+$'), '').trim();
 

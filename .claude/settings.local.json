@@ -15,7 +15,9 @@
       "Bash(find:*)",
       "Bash(grep:*)",
       "Bash(flutter clean:*)",
-      "WebFetch(domain:pub.dev)"
+      "WebFetch(domain:pub.dev)",
+      "Bash(dart run:*)",
+      "Bash(dart analyze:*)"
     ]
   }
 }
