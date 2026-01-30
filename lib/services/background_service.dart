@@ -18,6 +18,7 @@ import '../utils/debug_logger_io.dart';
 /// Web: No-op (Web Bluetooth requires active tab).
 ///
 /// Reference: Option A from background execution plan
+@pragma('vm:entry-point')
 class BackgroundServiceManager {
   static const String _notificationChannelId = 'meshmapper_wardriving';
   static const String _notificationChannelName = 'MeshMapper Wardriving';

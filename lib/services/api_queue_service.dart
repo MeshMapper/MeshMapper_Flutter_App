@@ -147,6 +147,7 @@ class ApiQueueService {
     required double localSnr,
     required int localRssi,
     required double remoteSnr,
+    required String pubkeyFull,
     required int timestamp,
     int? noiseFloor,
   }) async {
@@ -158,6 +159,7 @@ class ApiQueueService {
       localSnr: localSnr,
       localRssi: localRssi,
       remoteSnr: remoteSnr,
+      pubkeyFull: pubkeyFull,
       timestamp: timestamp,
       noiseFloor: noiseFloor,
     );

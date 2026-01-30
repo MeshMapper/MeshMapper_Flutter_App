@@ -102,11 +102,12 @@ class ApiQueueItem extends HiveObject {
     required double localSnr,
     required int localRssi,
     required double remoteSnr,
+    required String pubkeyFull,
     required int timestamp,
     int? noiseFloor,
   }) {
-    // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr"
-    final heardRepeats = '$repeaterId:$nodeType:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
+    // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
+    final heardRepeats = '$repeaterId:$nodeType:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}:$pubkeyFull';
     return ApiQueueItem(
       type: 'DISC',
       latitude: latitude,
@@ -121,7 +122,7 @@ class ApiQueueItem extends HiveObject {
   Map<String, dynamic> toApiJson() {
     // For DISC type, parse the heardRepeats field to extract individual values
     if (type == 'DISC') {
-      // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr"
+      // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
       final parts = heardRepeats.split(':');
       return {
         'type': type,
@@ -133,6 +134,7 @@ class ApiQueueItem extends HiveObject {
         'local_snr': parts.length > 2 ? double.tryParse(parts[2]) ?? 0.0 : 0.0,
         'local_rssi': parts.length > 3 ? int.tryParse(parts[3]) ?? 0 : 0,
         'remote_snr': parts.length > 4 ? double.tryParse(parts[4]) ?? 0.0 : 0.0,
+        'public_key': parts.length > 5 ? parts[5] : '',
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
       };
     }

@@ -894,6 +894,7 @@ class PingService {
         localSnr: node.localSnr,
         localRssi: node.localRssi,
         remoteSnr: node.remoteSnr,
+        pubkeyFull: node.pubkeyFull,
         timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
         noiseFloor: _pendingTxNoiseFloor,
       );
