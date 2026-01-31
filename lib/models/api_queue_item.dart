@@ -43,12 +43,18 @@ class ApiQueueItem extends HiveObject {
   @HiveField(12)
   final String heardRepeats;
 
+  /// Earliest time this item can be uploaded (milliseconds since epoch)
+  /// TX items have 5-second delay; RX/DISC are immediate
+  @HiveField(13)
+  final int canUploadAfter;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
     required this.longitude,
     required this.timestamp,
     required this.heardRepeats,
+    required this.canUploadAfter,
     this.retryCount = 0,
     this.lastRetryAt,
     this.noiseFloor,
@@ -69,6 +75,7 @@ class ApiQueueItem extends HiveObject {
       longitude: longitude,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch + 5000, // 5 seconds from now
       noiseFloor: noiseFloor,
     );
   }
@@ -88,6 +95,7 @@ class ApiQueueItem extends HiveObject {
       longitude: longitude,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
       noiseFloor: noiseFloor,
     );
   }
@@ -114,6 +122,7 @@ class ApiQueueItem extends HiveObject {
       longitude: longitude,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
       noiseFloor: noiseFloor,
     );
   }
@@ -161,6 +170,9 @@ class ApiQueueItem extends HiveObject {
     if (lastRetryAt == null) return true;
     return DateTime.now().difference(lastRetryAt!) >= nextRetryDelay;
   }
+
+  /// Check if item is eligible for upload based on canUploadAfter
+  bool get isUploadEligible => DateTime.now().millisecondsSinceEpoch >= canUploadAfter;
 
   /// Mark as retried
   void markRetried() {

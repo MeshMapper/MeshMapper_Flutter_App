@@ -245,9 +245,19 @@ class ApiQueueService {
     _isUploading = true;
 
     try {
-      // Get items ready for retry
+      // Log if TX items are waiting in hold period
+      final pendingTx = _box!.values.where((item) =>
+          item.type == 'TX' && !item.isUploadEligible).length;
+      if (pendingTx > 0) {
+        debugLog('[API QUEUE] $pendingTx TX items still in hold period');
+      }
+
+      // Get items ready for upload (must pass retry, retry delay, AND upload eligibility checks)
       final items = _box!.values
-          .where((item) => item.retryCount < _maxRetries && item.isReadyForRetry)
+          .where((item) =>
+              item.retryCount < _maxRetries &&
+              item.isReadyForRetry &&
+              item.isUploadEligible)
           .take(_batchSize)
           .toList();
 
