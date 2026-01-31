@@ -210,7 +210,7 @@ class ApiService {
         payload['who'] = who ?? 'GOME-WarDriver';
         payload['ver'] = appVersion ?? 'UNKNOWN';
         payload['power'] = '${power ?? 0.3}w';  // Wattage (0.3w, 0.6w, 1.0w, 2.0w)
-        payload['iata'] = iataCode ?? 'YOW';
+        if (iataCode != null) payload['iata'] = iataCode;
         payload['model'] = model ?? 'Unknown';
         payload['coords'] = {
           'lat': lat,

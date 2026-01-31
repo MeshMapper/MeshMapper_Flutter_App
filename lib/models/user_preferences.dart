@@ -31,8 +31,8 @@ class UserPreferences {
   /// Offline mode enabled (no API uploads, accumulates to session files)
   final bool offlineMode;
 
-  /// IATA zone code for geo-auth (default: 'YOW' for Ottawa)
-  final String iataCode;
+  /// IATA zone code for geo-auth (determined from zone status response)
+  final String? iataCode;
 
   /// Background mode enabled (requests "Always" location permission on iOS)
   final bool backgroundModeEnabled;
@@ -54,7 +54,7 @@ class UserPreferences {
     this.autoPowerSet = false,
     this.powerLevelSet = false,
     this.offlineMode = false,
-    this.iataCode = 'YOW',
+    this.iataCode,
     this.backgroundModeEnabled = false,
     this.developerModeEnabled = false,
     this.mapStyle = 'dark',
@@ -73,7 +73,7 @@ class UserPreferences {
       autoPowerSet: (json['autoPowerSet'] as bool?) ?? false,
       powerLevelSet: (json['powerLevelSet'] as bool?) ?? false,
       offlineMode: false, // Never persist - always off by default
-      iataCode: (json['iataCode'] as String?) ?? 'YOW',
+      iataCode: json['iataCode'] as String?,
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
       mapStyle: (json['mapStyle'] as String?) ?? 'dark',

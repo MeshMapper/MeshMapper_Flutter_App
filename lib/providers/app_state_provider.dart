@@ -576,7 +576,7 @@ class AppStateProvider extends ChangeNotifier {
             who: deviceName,
             appVersion: _appVersion,
             power: _preferences.powerLevel,  // Send wattage (0.3, 1.0, 2.0) to match WebClient
-            iataCode: _preferences.iataCode,
+            iataCode: zoneCode ?? _preferences.iataCode,
             model: _meshCoreConnection!.deviceModel?.manufacturer ?? _meshCoreConnection!.deviceInfo?.manufacturer ?? 'Unknown',
             lat: _currentPosition?.latitude,
             lon: _currentPosition?.longitude,
@@ -1624,7 +1624,7 @@ class AppStateProvider extends ChangeNotifier {
       who: deviceName,
       appVersion: _appVersion,
       power: _preferences.powerLevel,
-      iataCode: _preferences.iataCode,
+      iataCode: zoneCode ?? _preferences.iataCode,
       model: 'Offline Upload',
       lat: _currentPosition?.latitude,
       lon: _currentPosition?.longitude,
