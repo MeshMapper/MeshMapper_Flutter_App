@@ -19,7 +19,17 @@
       "Bash(dart run:*)",
       "Bash(dart analyze:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(flutter pub:*)",
+      "Bash(dart pub global activate:*)",
+      "Bash(dart pub outdated:*)",
+      "Bash(dart pub cache:*)",
+      "Bash(flutter downgrade:*)",
+      "Bash(flutter channel:*)",
+      "Bash(flutter version:*)",
+      "Bash(git checkout:*)",
+      "Bash(git fetch:*)",
+      "Bash(python3:*)"
     ]
   }
 }

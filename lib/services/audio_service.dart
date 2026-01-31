@@ -1,5 +1,7 @@
+import 'dart:async';
+
 import 'package:just_audio/just_audio.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive/hive.dart';
 import 'package:audio_session/audio_session.dart';
 
 import '../utils/debug_logger_io.dart';
@@ -79,8 +81,10 @@ class AudioService {
 
   /// Load enabled state from Hive storage
   Future<void> _loadEnabledState() async {
+    final box = await _openBoxSafely(_prefsBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_prefsBoxName);
       final enabled = box.get(_enabledKey);
       if (enabled != null) {
         _enabled = enabled as bool;
@@ -96,12 +100,48 @@ class AudioService {
 
   /// Save enabled state to Hive storage
   Future<void> _saveEnabledState() async {
+    final box = await _openBoxSafely(_prefsBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_prefsBoxName);
       await box.put(_enabledKey, _enabled);
       debugLog('[AUDIO] Saved enabled state: $_enabled');
     } catch (e) {
       debugError('[AUDIO] Failed to save enabled state: $e');
+    }
+  }
+
+  /// Open Hive box with timeout and automatic recovery from corruption
+  Future<Box<dynamic>?> _openBoxSafely(String boxName) async {
+    const timeout = Duration(seconds: 5);
+
+    debugLog('[AUDIO] Opening Hive box "$boxName"...');
+
+    try {
+      final box = await Hive.openBox(boxName).timeout(timeout);
+      debugLog('[AUDIO] Hive box "$boxName" opened successfully');
+      return box;
+    } on TimeoutException {
+      debugError('[AUDIO] Hive box "$boxName" timed out - attempting recovery');
+      return _attemptRecovery(boxName, timeout);
+    } catch (e) {
+      debugError('[AUDIO] Hive box "$boxName" failed: $e - attempting recovery');
+      return _attemptRecovery(boxName, timeout);
+    }
+  }
+
+  /// Attempt to recover from Hive corruption
+  Future<Box<dynamic>?> _attemptRecovery(String boxName, Duration timeout) async {
+    try {
+      debugLog('[AUDIO] Deleting corrupted box "$boxName"...');
+      await Hive.deleteBoxFromDisk(boxName);
+      debugLog('[AUDIO] Retrying open...');
+      final box = await Hive.openBox(boxName).timeout(timeout);
+      debugLog('[AUDIO] Box "$boxName" opened after recovery');
+      return box;
+    } catch (e) {
+      debugError('[AUDIO] Recovery failed for "$boxName": $e - operating without persistence');
+      return null;
     }
   }
 

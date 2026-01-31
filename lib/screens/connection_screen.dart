@@ -99,7 +99,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       ? 'GPS Disabled'
                       : appState.gpsStatus == GpsStatus.permissionDenied
                           ? 'GPS Required'
-                          : (appState.inZone == true ? 'Scan' : 'Outside Zone')),
+                          : appState.inZone == null
+                              ? 'Checking Zone...'
+                              : appState.inZone == true
+                                  ? 'Scan'
+                                  : 'Outside Zone'),
               backgroundColor: canScan ? null : Colors.grey,
             );
     }

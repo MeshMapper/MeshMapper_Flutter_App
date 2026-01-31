@@ -40,6 +40,12 @@ class ApiQueueService {
   /// Callback for successful uploads (passes count of items uploaded)
   void Function(int uploadedCount)? onUploadSuccess;
 
+  /// Callback when persistence fails (for user-visible error logging)
+  void Function(String errorMessage)? onPersistenceError;
+
+  /// Callback when storage was cleaned up (for user-visible info logging)
+  void Function(String infoMessage)? onStorageCleanup;
+
   /// Number of pings accumulated in current offline session
   int get offlinePingCount => _offlinePings.length;
 
@@ -47,16 +53,22 @@ class ApiQueueService {
 
   /// Initialize the queue (must be called before use)
   Future<void> init() async {
+    debugLog('[API QUEUE] init() starting...');
+
     // Register adapters if not already registered
+    debugLog('[API QUEUE] Checking adapter registration...');
     if (!Hive.isAdapterRegistered(3)) {
+      debugLog('[API QUEUE] Registering ApiQueueItemAdapter...');
       Hive.registerAdapter(ApiQueueItemAdapter());
     }
+    debugLog('[API QUEUE] Adapter check complete');
 
-    _box = await Hive.openBox<ApiQueueItem>(_boxName);
+    // Open Hive box with timeout and recovery
+    _box = await _openBoxSafely();
 
     // ALWAYS START FRESH - clear any leftover pings from previous sessions
     // Pings without a valid session cannot be uploaded, so delete them
-    if (_box!.isNotEmpty) {
+    if (_box != null && _box!.isNotEmpty) {
       debugLog('[API QUEUE] Clearing ${_box!.length} stale items from previous session');
       await _box!.clear();
     }
@@ -64,7 +76,54 @@ class ApiQueueService {
     _offlinePings.clear();
 
     // Start batch timer
+    debugLog('[API QUEUE] Starting batch timer...');
     _startBatchTimer();
+    debugLog('[API QUEUE] init() complete');
+  }
+
+  /// Open Hive box with timeout and automatic recovery from corruption
+  Future<Box<ApiQueueItem>?> _openBoxSafely() async {
+    const timeout = Duration(seconds: 5);
+
+    debugLog('[API QUEUE] Opening Hive box "$_boxName"...');
+
+    try {
+      // First attempt with timeout
+      final box = await Hive.openBox<ApiQueueItem>(_boxName).timeout(timeout);
+      debugLog('[API QUEUE] Hive box "$_boxName" opened successfully');
+      return box;
+    } on TimeoutException {
+      debugError('[API QUEUE] Hive box "$_boxName" open timed out after ${timeout.inSeconds}s - attempting recovery');
+      return _attemptRecovery(timeout);
+    } catch (e) {
+      debugError('[API QUEUE] Hive box "$_boxName" failed to open: $e - attempting recovery');
+      return _attemptRecovery(timeout);
+    }
+  }
+
+  /// Attempt to recover from Hive corruption by deleting and recreating the box
+  Future<Box<ApiQueueItem>?> _attemptRecovery(Duration timeout) async {
+    try {
+      // Delete the corrupted box
+      debugLog('[API QUEUE] Deleting corrupted box "$_boxName"...');
+      await Hive.deleteBoxFromDisk(_boxName);
+      debugLog('[API QUEUE] Corrupted box deleted, retrying open...');
+
+      // Notify user that cleanup happened
+      onStorageCleanup?.call('Queue storage was corrupted and has been reset');
+
+      // Retry opening
+      final box = await Hive.openBox<ApiQueueItem>(_boxName).timeout(timeout);
+      debugLog('[API QUEUE] Hive box "$_boxName" opened after recovery');
+      return box;
+    } catch (e) {
+      debugError('[API QUEUE] Recovery failed for "$_boxName": $e - operating without persistence');
+
+      // Notify user of persistence failure
+      onPersistenceError?.call('Queue storage unavailable - pings will not persist if app closes');
+
+      return null;
+    }
   }
 
   /// Get current queue size

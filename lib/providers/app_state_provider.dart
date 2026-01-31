@@ -343,8 +343,16 @@ class AppStateProvider extends ChangeNotifier {
     await ChannelService.initializePublicChannel();
     debugLog('[APP] Channel service initialized (Public channel only)');
 
-    // Initialize API queue
+    // Initialize API queue with error/cleanup callbacks
+    debugLog('[INIT] Initializing API queue service...');
+    _apiQueueService.onPersistenceError = (errorMessage) {
+      logError(errorMessage);
+    };
+    _apiQueueService.onStorageCleanup = (infoMessage) {
+      logError(infoMessage); // Log cleanup events to error log so user is aware
+    };
     await _apiQueueService.init();
+    debugLog('[INIT] API queue service initialized');
     _apiQueueService.onQueueUpdated = (size) {
       _queueSize = size;
       notifyListeners();
@@ -482,11 +490,16 @@ class AppStateProvider extends ChangeNotifier {
       _currentPosition = position;
       notifyListeners();
 
+      // Diagnostic: log every position received and zone check conditions
+      debugLog('[GPS] Position received in AppState: ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
+
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
       if (_inZone == null && !_preferences.offlineMode) {
         debugLog('[GEOFENCE] First GPS lock, checking zone status');
         await checkZoneStatus();
+      } else if (_inZone == null) {
+        debugLog('[GEOFENCE] Zone check skipped: offlineMode=${_preferences.offlineMode}');
       }
 
       // Check zone every 100m movement (while disconnected)
@@ -506,6 +519,7 @@ class AppStateProvider extends ChangeNotifier {
         );
       }
     });
+    debugLog('[INIT] GPS position listener attached to stream');
 
     // Start GPS (may skip if permissions not yet granted - disclosure flow handles that)
     debugLog('[INIT] Starting GPS service...');
@@ -2443,13 +2457,54 @@ class AppStateProvider extends ChangeNotifier {
   static const String _rememberedDeviceBoxName = 'remembered_device';
   static const String _preferencesBoxName = 'user_preferences';
 
+  /// Open Hive box with timeout and automatic recovery from corruption
+  Future<Box<dynamic>?> _openBoxSafely(String boxName) async {
+    const timeout = Duration(seconds: 5);
+
+    debugLog('[HIVE] Opening box "$boxName"...');
+
+    try {
+      final box = await Hive.openBox(boxName).timeout(timeout);
+      debugLog('[HIVE] Box "$boxName" opened successfully');
+      return box;
+    } on TimeoutException {
+      debugError('[HIVE] Box "$boxName" timed out - attempting recovery');
+      return _attemptHiveRecovery(boxName, timeout);
+    } catch (e) {
+      debugError('[HIVE] Box "$boxName" failed: $e - attempting recovery');
+      return _attemptHiveRecovery(boxName, timeout);
+    }
+  }
+
+  /// Attempt to recover from Hive corruption
+  Future<Box<dynamic>?> _attemptHiveRecovery(String boxName, Duration timeout) async {
+    try {
+      debugLog('[HIVE] Deleting corrupted box "$boxName"...');
+      await Hive.deleteBoxFromDisk(boxName);
+      debugLog('[HIVE] Retrying open...');
+
+      // Notify user that cleanup happened
+      logError('Storage for "$boxName" was corrupted and has been reset');
+
+      final box = await Hive.openBox(boxName).timeout(timeout);
+      debugLog('[HIVE] Box "$boxName" opened after recovery');
+      return box;
+    } catch (e) {
+      debugError('[HIVE] Recovery failed for "$boxName": $e');
+      logError('Storage for "$boxName" unavailable - some settings may not persist');
+      return null;
+    }
+  }
+
   /// Load remembered device from Hive storage
   Future<void> _loadRememberedDevice() async {
     // Skip on web - Web Bluetooth requires user interaction for each connection
     if (kIsWeb) return;
 
+    final box = await _openBoxSafely(_rememberedDeviceBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_rememberedDeviceBoxName);
       final json = box.get('device');
       if (json != null) {
         _rememberedDevice = RememberedDevice.fromJson(Map<String, dynamic>.from(json));
@@ -2466,6 +2521,9 @@ class AppStateProvider extends ChangeNotifier {
     // Skip on web - Web Bluetooth requires user interaction for each connection
     if (kIsWeb) return;
 
+    final box = await _openBoxSafely(_rememberedDeviceBoxName);
+    if (box == null) return;
+
     try {
       final remembered = RememberedDevice(
         id: device.id,
@@ -2473,7 +2531,6 @@ class AppStateProvider extends ChangeNotifier {
         lastConnected: DateTime.now(),
       );
 
-      final box = await Hive.openBox(_rememberedDeviceBoxName);
       await box.put('device', remembered.toJson());
 
       _rememberedDevice = remembered;
@@ -2506,8 +2563,10 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> clearRememberedDevice() async {
     if (kIsWeb) return;
 
+    final box = await _openBoxSafely(_rememberedDeviceBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_rememberedDeviceBoxName);
       await box.delete('device');
       _rememberedDevice = null;
       debugLog('[APP] Cleared remembered device');
@@ -2523,8 +2582,10 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Load user preferences from Hive storage
   Future<void> _loadPreferences() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_preferencesBoxName);
       final json = box.get('preferences');
       if (json != null) {
         _preferences = UserPreferences.fromJson(Map<String, dynamic>.from(json));
@@ -2540,8 +2601,10 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Save user preferences to Hive storage
   Future<void> _savePreferences() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_preferencesBoxName);
       await box.put('preferences', _preferences.toJson());
       debugLog('[APP] Saved preferences');
     } catch (e) {
@@ -2555,8 +2618,10 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Load last connected device info from Hive storage
   Future<void> _loadLastConnectedDevice() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_preferencesBoxName);
       _lastConnectedDeviceName = box.get('last_connected_device_name') as String?;
       _lastConnectedPublicKey = box.get('last_connected_public_key') as String?;
       if (_lastConnectedDeviceName != null) {
@@ -2569,8 +2634,10 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Save last connected device info to Hive storage
   Future<void> _saveLastConnectedDevice(String deviceName, String publicKey) async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
     try {
-      final box = await Hive.openBox(_preferencesBoxName);
       await box.put('last_connected_device_name', deviceName);
       await box.put('last_connected_public_key', publicKey);
       _lastConnectedDeviceName = deviceName;
