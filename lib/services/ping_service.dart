@@ -96,6 +96,9 @@ class PingService {
   bool Function()? checkExternalAntennaConfigured;
   bool Function()? checkPowerLevelConfigured;
 
+  /// Callback to check if TX is allowed by API (zone capacity check)
+  bool Function()? checkTxAllowed;
+
   /// Callback for ping events
   void Function(TxPing)? onTxPing;
   void Function(RxPing)? onRxPing;
@@ -182,6 +185,11 @@ class PingService {
       return PingValidation.notConnected;
     }
 
+    // Check if TX is allowed by API (zone capacity)
+    if (checkTxAllowed != null && !checkTxAllowed!()) {
+      return PingValidation.txNotAllowed;
+    }
+
     // Check external antenna configuration
     if (checkExternalAntennaConfigured != null && !checkExternalAntennaConfigured!()) {
       return PingValidation.externalAntennaRequired;
@@ -239,6 +247,11 @@ class PingService {
     // Check connection
     if (_connection.currentStep != ConnectionStep.connected) {
       return PingValidation.notConnected;
+    }
+
+    // Check if TX is allowed by API (zone capacity)
+    if (checkTxAllowed != null && !checkTxAllowed!()) {
+      return PingValidation.txNotAllowed;
     }
 
     // Check external antenna configuration
@@ -991,6 +1004,9 @@ enum PingValidation {
   
   /// Cooldown period active (< 7s since last ping)
   cooldownActive,
+
+  /// TX not allowed by API (zone at capacity)
+  txNotAllowed,
 }
 
 extension PingValidationExtension on PingValidation {
@@ -1016,6 +1032,8 @@ extension PingValidationExtension on PingValidation {
         return 'Move 25m before next ping';
       case PingValidation.cooldownActive:
         return 'Wait 7 seconds between pings';
+      case PingValidation.txNotAllowed:
+        return 'Zone at TX capacity (Passive Only)';
     }
   }
 }

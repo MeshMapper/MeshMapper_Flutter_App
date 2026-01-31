@@ -736,6 +736,9 @@ class AppStateProvider extends ChangeNotifier {
         return _preferences.autoPowerSet || _preferences.powerLevelSet || _deviceModel != null;
       };
 
+      // Check if TX is allowed by API (zone capacity)
+      _pingService!.checkTxAllowed = () => txAllowed;
+
       _pingService!.onTxPing = (ping) {
         _txPings.add(ping);
 

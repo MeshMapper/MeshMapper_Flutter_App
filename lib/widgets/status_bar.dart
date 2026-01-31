@@ -123,6 +123,16 @@ class _StatusBarState extends State<StatusBar> {
           return ('Offline Mode Active', 'Pings are saved locally. Zone detection is paused until you go back online.', Icons.flight, Colors.grey);
         }
         if (appState.inZone == true && appState.zoneCode != null) {
+          if (!appState.isConnected) {
+            return ('${appState.zoneName ?? appState.zoneCode} Zone',
+              'You\'re in an authorized zone. Connect to a device to start wardriving.',
+              Icons.flight, Colors.grey);
+          }
+          if (!appState.txAllowed) {
+            return ('${appState.zoneName ?? appState.zoneCode} Zone',
+              'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive Mode is allowed.',
+              Icons.flight, Colors.red);
+          }
           return ('${appState.zoneName ?? appState.zoneCode} Zone',
             'You\'re in an active zone with ${appState.zoneSlotsAvailable ?? "?"} TX slots available. Ready to wardrive!',
             Icons.flight, Colors.green);
@@ -170,7 +180,9 @@ class _StatusBarState extends State<StatusBar> {
         // Check if we're in a zone and have zone code from API
         if (appState.inZone == true && appState.zoneCode != null) {
           icon = Icons.flight;
-          color = Colors.green;
+          color = appState.isConnected
+              ? (appState.txAllowed ? Colors.green : Colors.red)
+              : Colors.grey;  // Grey when not connected, red when zone is at TX capacity
           text = appState.zoneCode!;
         } else if (appState.inZone == false) {
           // GPS locked but outside any zone

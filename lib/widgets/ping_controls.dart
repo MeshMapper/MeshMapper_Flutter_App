@@ -35,6 +35,9 @@ class PingControls extends StatelessWidget {
     // TX is blocked when offline mode is active and connected
     final txBlockedByOffline = appState.offlineMode && appState.isConnected;
 
+    // TX not allowed when API says zone is at TX capacity
+    final txNotAllowed = appState.isConnected && !appState.txAllowed;
+
     // Calculate distance feedback for TX Ping button
     final distanceFromLastPing = appState.distanceFromLastPing;
     final needToMove = validation == PingValidation.tooCloseToLastPing && distanceFromLastPing != null;
@@ -95,25 +98,27 @@ class PingControls extends StatelessWidget {
                 icon: Icons.cell_tower,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : isActiveModeRunning
-                        ? 'Send Ping'  // Just disabled when Active Mode is running
-                        : isPingSending
-                            ? 'Sending...'
-                            : rxWindowActive
-                                ? 'Listening ${rxWindowRemaining}s'  // Manual ping listening (works during Passive Mode too)
-                                : discoveryWindowActive
-                                    ? 'Cooldown ${discoveryWindowRemaining}s'  // Cooldown during Passive Mode listening
-                                    : cooldownActive
-                                        ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
-                                        : 'Send Ping',
+                    : txNotAllowed
+                        ? 'Zone Full'
+                        : isActiveModeRunning
+                            ? 'Send Ping'  // Just disabled when Active Mode is running
+                            : isPingSending
+                                ? 'Sending...'
+                                : rxWindowActive
+                                    ? 'Listening ${rxWindowRemaining}s'  // Manual ping listening (works during Passive Mode too)
+                                    : discoveryWindowActive
+                                        ? 'Cooldown ${discoveryWindowRemaining}s'  // Cooldown during Passive Mode listening
+                                        : cooldownActive
+                                            ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
+                                            : 'Send Ping',
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline &&
+                enabled: canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline && !txNotAllowed &&
                          !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
                 isActive: (isPingSending || rxWindowActive) && !isActiveModeRunning,  // Only active during manual ping flow
                 onPressed: () => _sendPing(context, appState),
                 showCooldown: false, // No longer needed - countdown shown in label
-                subtitle: txBlockedByOffline ? 'Offline Mode' : ((isPingSending || rxWindowActive || cooldownActive || discoveryWindowActive) ? null : moveSubtitle),
-                subtitleColor: txBlockedByOffline ? Colors.orange : Colors.orange.shade600,
+                subtitle: txBlockedByOffline ? 'Offline Mode' : txNotAllowed ? 'Passive Only' : ((isPingSending || rxWindowActive || cooldownActive || discoveryWindowActive) ? null : moveSubtitle),
+                subtitleColor: txBlockedByOffline ? Colors.orange : txNotAllowed ? Colors.red : Colors.orange.shade600,
               ),
             ),
             const SizedBox(width: 10),
@@ -127,35 +132,37 @@ class PingControls extends StatelessWidget {
                 icon: Icons.sensors,
                 label: txBlockedByOffline
                     ? 'TX Disabled'
-                    : isPendingDisable
-                        ? (rxWindowActive
-                            ? 'Stopping ${rxWindowRemaining}s'  // Show remaining time until disable completes
-                            : 'Stopping...')  // Brief transition state
-                        : isActiveModeRunning
-                            ? (isPingInProgress && !rxWindowActive
-                                ? 'Sending...'  // Brief moment while ping is being sent
+                    : txNotAllowed
+                        ? 'Zone Full'
+                        : isPendingDisable
+                            ? (rxWindowActive
+                                ? 'Stopping ${rxWindowRemaining}s'  // Show remaining time until disable completes
+                                : 'Stopping...')  // Brief transition state
+                            : isActiveModeRunning
+                                ? (isPingInProgress && !rxWindowActive
+                                    ? 'Sending...'  // Brief moment while ping is being sent
+                                    : rxWindowActive
+                                        ? 'Listening ${rxWindowRemaining}s'  // During RX window
+                                        : autoPingWaiting
+                                            ? 'Next ping ${autoPingRemaining}s'  // Waiting for next auto ping
+                                            : 'Active Mode')  // Initial state before first ping
                                 : rxWindowActive
-                                    ? 'Listening ${rxWindowRemaining}s'  // During RX window
-                                    : autoPingWaiting
-                                        ? 'Next ping ${autoPingRemaining}s'  // Waiting for next auto ping
-                                        : 'Active Mode')  // Initial state before first ping
-                            : rxWindowActive
-                                ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping
-                                : cooldownActive
-                                    ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
-                                    : 'Active Mode',
+                                    ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping
+                                    : cooldownActive
+                                        ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
+                                        : 'Active Mode',
                 color: isPendingDisable
                     ? Colors.orange  // Orange when stopping
                     : isActiveModeRunning
                         ? const Color(0xFF22C55E) // green-500
                         : const Color(0xFF6366F1), // indigo-500
                 // When pending disable, button is disabled but still shows stopping state
-                enabled: !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline),
+                enabled: !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed),
                 isActive: isPendingDisable || (isActiveModeRunning && (isPingInProgress || rxWindowActive || autoPingWaiting)),  // Active during stopping or sending/listening/waiting phases
                 onPressed: () => _toggleTxRxAuto(context, appState),
                 showCooldown: false, // No longer needed - countdown shown in label
-                subtitle: txBlockedByOffline ? 'Offline Mode' : (isPendingDisable ? 'Stopping' : null),
-                subtitleColor: Colors.orange,
+                subtitle: txBlockedByOffline ? 'Offline Mode' : txNotAllowed ? 'Passive Only' : (isPendingDisable ? 'Stopping' : null),
+                subtitleColor: txBlockedByOffline ? Colors.orange : txNotAllowed ? Colors.red : Colors.orange,
               ),
             ),
             const SizedBox(width: 10),
@@ -764,6 +771,9 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     // TX is blocked when offline mode is active and connected
     final txBlockedByOffline = appState.offlineMode && appState.isConnected;
 
+    // TX not allowed when API says zone is at TX capacity
+    final txNotAllowed = appState.isConnected && !appState.txAllowed;
+
     final prefs = appState.preferences;
     final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
 
@@ -795,12 +805,12 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         (cooldownActive && _lastActiveButton == _LastActiveButton.passiveMode);
 
     // Determine which buttons are colored (enabled or active)
-    final sendPingEnabled = canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline &&
+    final sendPingEnabled = canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline && !txNotAllowed &&
                      !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable;
     final sendPingActive = (isPingSending || rxWindowActive) && !isActiveModeRunning && !cooldownActive;
     final sendPingShowColor = sendPingEnabled || sendPingActive;
 
-    final activeModeEnabled = !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline);
+    final activeModeEnabled = !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed);
     final activeModeActive = isPendingDisable || (isActiveModeRunning && (isPingInProgress || rxWindowActive || autoPingWaiting));
     final activeModeShowColor = activeModeEnabled || activeModeActive;
 
@@ -1063,6 +1073,9 @@ class LandscapePingControls extends StatelessWidget {
     // TX is blocked when offline mode is active and connected
     final txBlockedByOffline = appState.offlineMode && appState.isConnected;
 
+    // TX not allowed when API says zone is at TX capacity
+    final txNotAllowed = appState.isConnected && !appState.txAllowed;
+
     final prefs = appState.preferences;
     final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
 
@@ -1091,9 +1104,9 @@ class LandscapePingControls extends StatelessWidget {
             Expanded(
               child: _LandscapeIconButton(
                 icon: Icons.cell_tower,
-                tooltip: 'Send Ping',
+                tooltip: txNotAllowed ? 'Zone Full (Passive Only)' : 'Send Ping',
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline &&
+                enabled: canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline && !txNotAllowed &&
                          !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
                 isActive: (isPingSending || rxWindowActive) && !isActiveModeRunning,
                 countdown: isPingSending
@@ -1114,13 +1127,13 @@ class LandscapePingControls extends StatelessWidget {
             Expanded(
               child: _LandscapeIconButton(
                 icon: Icons.sensors,
-                tooltip: 'Active Mode',
+                tooltip: txNotAllowed ? 'Zone Full (Passive Only)' : 'Active Mode',
                 color: isPendingDisable
                     ? Colors.orange
                     : isActiveModeRunning
                         ? const Color(0xFF22C55E) // green-500
                         : const Color(0xFF6366F1), // indigo-500
-                enabled: !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline),
+                enabled: !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed),
                 isActive: isPendingDisable || (isActiveModeRunning && (isPingInProgress || rxWindowActive || autoPingWaiting)),
                 countdown: isActiveModeRunning
                     ? (rxWindowActive
