@@ -17,7 +17,9 @@
       "Bash(flutter clean:*)",
       "WebFetch(domain:pub.dev)",
       "Bash(dart run:*)",
-      "Bash(dart analyze:*)"
+      "Bash(dart analyze:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

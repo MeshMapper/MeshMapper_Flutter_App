@@ -694,15 +694,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationColor = Colors.green;
     } else if (appState.inZone == false) {
       locationIcon = Icons.location_off;
-      // Show nearest zone with distance
-      final nearestName = appState.nearestZoneName;
-      final distKm = appState.nearestZoneDistanceKm?.toStringAsFixed(0);
-      if (nearestName != null && distKm != null) {
-        locationText = '$nearestName ${distKm}km';
-        iataCode = appState.nearestZoneCode;
-      } else {
-        locationText = 'Outside Zone';
-      }
+      locationText = 'Outside Zone';
       locationColor = Colors.orange;
     } else {
       locationIcon = Icons.gps_not_fixed;
@@ -961,6 +953,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
     // Show onboarding message when outside zone (but NOT when offline mode is enabled)
     if (appState.inZone == false && !appState.offlineMode) {
+      // Build message with nearest zone info if available
+      final nearestName = appState.nearestZoneName;
+      final nearestCode = appState.nearestZoneCode;
+      final distKm = appState.nearestZoneDistanceKm?.toStringAsFixed(0);
+
+      String message = 'Your geo zone is not on-boarded into MeshMapper.';
+      if (nearestName != null && distKm != null) {
+        final zoneDisplay = nearestCode != null ? '$nearestName ($nearestCode)' : nearestName;
+        message += '\n\nNearest zone is $zoneDisplay, ${distKm}km away.';
+      }
+
       return Column(
         children: [
           _buildZoneStatusBar(context, appState),
@@ -970,7 +973,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               icon: Icons.public_off,
               iconColor: Colors.orange.withValues(alpha: 0.7),
               title: 'Region Not Available',
-              message: 'Your geo zone is not on-boarded into MeshMapper.',
+              message: message,
               action: OutlinedButton.icon(
                 onPressed: () => _launchOnboardingUrl(),
                 icon: const Icon(Icons.open_in_new, size: 18),
@@ -1081,15 +1084,19 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
   void _launchOnboardingUrl() async {
     final uri = Uri.parse('https://meshmapper.net/?onboarding');
-    if (await canLaunchUrl(uri)) {
+    try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint('[URL] Failed to launch onboarding URL: $e');
     }
   }
 
   void _launchMaintenanceUrl(String url) async {
     final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
+    try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint('[URL] Failed to launch maintenance URL: $e');
     }
   }
 
