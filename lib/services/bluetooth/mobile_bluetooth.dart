@@ -100,8 +100,11 @@ class MobileBluetoothService implements BluetoothService {
   @override
   Future<bool> isAvailable() async {
     try {
-      return await fbp.FlutterBluePlus.isSupported;
+      final supported = await fbp.FlutterBluePlus.isSupported;
+      debugLog('[BLE] isAvailable: $supported');
+      return supported;
     } catch (e) {
+      debugLog('[BLE] isAvailable error: $e');
       return false;
     }
   }
@@ -110,8 +113,11 @@ class MobileBluetoothService implements BluetoothService {
   Future<bool> isEnabled() async {
     try {
       final state = await fbp.FlutterBluePlus.adapterState.first;
-      return state == fbp.BluetoothAdapterState.on;
+      final enabled = state == fbp.BluetoothAdapterState.on;
+      debugLog('[BLE] isEnabled: $enabled (adapter state: $state)');
+      return enabled;
     } catch (e) {
+      debugLog('[BLE] isEnabled error: $e');
       return false;
     }
   }

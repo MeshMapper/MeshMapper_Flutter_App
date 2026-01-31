@@ -305,6 +305,8 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================
 
   Future<void> _initialize() async {
+    debugLog('[INIT] AppStateProvider initialization starting...');
+
     // Generate or load device ID
     _deviceId = const Uuid().v4();
 
@@ -379,6 +381,7 @@ class AppStateProvider extends ChangeNotifier {
     await _loadRememberedDevice();
 
     // Load user preferences
+    debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
 
     // Load last connected device info (for bug reports)
@@ -388,6 +391,7 @@ class AppStateProvider extends ChangeNotifier {
     _apiService.setDeviceId(_deviceId);
 
     // Listen to Bluetooth adapter state changes (on/off)
+    debugLog('[INIT] Setting up Bluetooth adapter state listener...');
     _adapterStateSubscription = _bluetoothService.adapterStateStream.listen((state) {
       final previousState = _bluetoothAdapterState;
       _bluetoothAdapterState = state;
@@ -402,6 +406,7 @@ class AppStateProvider extends ChangeNotifier {
     });
 
     // Listen to Bluetooth connection changes
+    debugLog('[INIT] Setting up BLE connection listener...');
     _bluetoothService.connectionStream.listen((status) async {
       _connectionStatus = status;
       if (status == ConnectionStatus.disconnected) {
@@ -462,11 +467,16 @@ class AppStateProvider extends ChangeNotifier {
     });
 
     // Listen to GPS changes
+    debugLog('[INIT] Setting up GPS status listener...');
     _gpsService.statusStream.listen((status) {
+      debugLog('[GPS] Status changed: $_gpsStatus → $status');
       _gpsStatus = status;
       notifyListeners();
     });
+    _gpsStatus = _gpsService.status;  // Sync initial status
+    debugLog('[INIT] Initial GPS status: $_gpsStatus');
 
+    debugLog('[INIT] Setting up GPS position listener...');
     _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
       notifyListeners();
@@ -497,11 +507,14 @@ class AppStateProvider extends ChangeNotifier {
     });
 
     // Start GPS (may skip if permissions not yet granted - disclosure flow handles that)
+    debugLog('[INIT] Starting GPS service...');
     await _gpsService.startWatching();
+    debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
 
     // Initialize audio service for sound notifications
     await _audioService.initialize();
 
+    debugLog('[INIT] AppStateProvider initialization complete');
     notifyListeners();
   }
 
@@ -510,6 +523,8 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> restartGpsAfterPermission() async {
     debugLog('[APP] Restarting GPS after permission granted');
     await _gpsService.startWatching();
+    _gpsStatus = _gpsService.status;  // Sync after restart
+    debugLog('[APP] GPS restarted, status: $_gpsStatus');
     notifyListeners();
   }
 
@@ -519,25 +534,32 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Start scanning for MeshCore devices
   Future<void> startScan() async {
+    debugLog('[SCAN] startScan() called');
     if (_isScanning) return;
 
     // Check permissions
     try {
       final hasPermission = await _bluetoothService.requestPermissions();
+      debugLog('[SCAN] BLE permissions: $hasPermission');
       if (!hasPermission) {
+        debugLog('[SCAN] Bluetooth permissions not granted');
         _connectionError = 'Bluetooth permissions not granted';
         notifyListeners();
         return;
       }
     } on BlePermissionDeniedException catch (e) {
       // Permissions are permanently denied - user must enable in Settings
+      debugLog('[SCAN] BLE permission permanently denied: ${e.message}');
       _connectionError = e.message;
       notifyListeners();
       return;
     }
 
     // Check if Bluetooth is available
-    if (!await _bluetoothService.isAvailable()) {
+    final isAvailable = await _bluetoothService.isAvailable();
+    debugLog('[SCAN] BLE available: $isAvailable');
+    if (!isAvailable) {
+      debugLog('[SCAN] Bluetooth not available on this device');
       _connectionError = 'Bluetooth not available';
       notifyListeners();
       return;
@@ -547,15 +569,17 @@ class AppStateProvider extends ChangeNotifier {
     // After granting Bluetooth permission on iOS, there's a brief delay before
     // the adapter state updates. Retry a few times to handle this.
     bool isEnabled = await _bluetoothService.isEnabled();
+    debugLog('[SCAN] BLE enabled: $isEnabled');
     if (!isEnabled) {
-      debugLog('[BLE] Bluetooth not enabled, retrying...');
+      debugLog('[SCAN] Bluetooth not enabled, retrying...');
       for (int i = 0; i < 3 && !isEnabled; i++) {
         await Future.delayed(const Duration(milliseconds: 500));
         isEnabled = await _bluetoothService.isEnabled();
-        debugLog('[BLE] Retry ${i + 1}: isEnabled=$isEnabled');
+        debugLog('[SCAN] Retry ${i + 1}: isEnabled=$isEnabled');
       }
     }
     if (!isEnabled) {
+      debugLog('[SCAN] Bluetooth still disabled after retries');
       _connectionError = 'Bluetooth is disabled. Please enable Bluetooth and try again.';
       notifyListeners();
       return;

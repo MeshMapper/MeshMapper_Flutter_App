@@ -72,28 +72,35 @@ class GpsService {
   /// Check if GPS permissions are granted
   Future<bool> checkPermissions() async {
     final permission = await Geolocator.checkPermission();
+    debugLog('[GPS] checkPermissions: $permission');
     return permission == LocationPermission.always ||
         permission == LocationPermission.whileInUse;
   }
 
   /// Request GPS permissions (When In Use)
   Future<bool> requestPermissions() async {
+    debugLog('[GPS] Requesting location permission...');
     LocationPermission permission = await Geolocator.checkPermission();
+    debugLog('[GPS] Current permission: $permission');
 
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
+      debugLog('[GPS] Permission result after request: $permission');
     }
 
     if (permission == LocationPermission.deniedForever) {
+      debugLog('[GPS] Permission denied forever - user must enable in Settings');
       _updateStatus(GpsStatus.permissionDenied);
       return false;
     }
 
     if (permission == LocationPermission.denied) {
+      debugLog('[GPS] Permission denied by user');
       _updateStatus(GpsStatus.permissionDenied);
       return false;
     }
 
+    debugLog('[GPS] Permission granted: $permission');
     return true;
   }
 
@@ -148,20 +155,27 @@ class GpsService {
   /// Note: This only CHECKS permissions, does not REQUEST them.
   /// Permission requests are handled by the disclosure flow in MainScaffold.
   Future<void> startWatching() async {
+    debugLog('[GPS] startWatching() called');
+
     // Check if location services are enabled first (system-level setting)
-    if (!await isLocationServiceEnabled()) {
-      debugLog('[GPS] Location services disabled at system level');
+    final serviceEnabled = await isLocationServiceEnabled();
+    debugLog('[GPS] Location services enabled: $serviceEnabled');
+    if (!serviceEnabled) {
+      debugLog('[GPS] Location services DISABLED at system level');
       _updateStatus(GpsStatus.disabled);
       return;
     }
 
     // Check permissions (don't request - disclosure flow handles that)
-    if (!await checkPermissions()) {
-      debugLog('[GPS] Permissions not granted yet, waiting for disclosure flow');
+    final hasPermission = await checkPermissions();
+    debugLog('[GPS] Has permission: $hasPermission');
+    if (!hasPermission) {
+      debugLog('[GPS] Waiting for disclosure flow to request permission');
       _updateStatus(GpsStatus.permissionDenied);
       return;
     }
 
+    debugLog('[GPS] Starting position stream listener...');
     _updateStatus(GpsStatus.searching);
 
     // Configure location settings for position stream
@@ -204,6 +218,7 @@ class GpsService {
 
   /// Stop watching position
   void stopWatching() {
+    debugLog('[GPS] stopWatching() called');
     _positionSubscription?.cancel();
     _positionSubscription = null;
   }
@@ -296,10 +311,12 @@ class GpsService {
   /// Get current position (single request)
   Future<Position?> getCurrentPosition() async {
     if (!await requestPermissions()) {
+      debugLog('[GPS] getCurrentPosition failed: permission denied');
       return null;
     }
 
     if (!await isLocationServiceEnabled()) {
+      debugLog('[GPS] getCurrentPosition failed: location services disabled');
       return null;
     }
 
@@ -309,6 +326,7 @@ class GpsService {
         timeLimit: const Duration(seconds: 15),
       );
     } catch (e) {
+      debugLog('[GPS] getCurrentPosition failed: $e');
       return null;
     }
   }
