@@ -306,6 +306,36 @@ class ApiQueueService {
     await _uploadBatch();
   }
 
+  /// Force upload after waiting for any TX items in hold period
+  /// Used during BLE disconnect to ensure all data is uploaded before session release
+  Future<void> forceUploadWithHoldWait() async {
+    await _flushRxBuffer();
+
+    // Check if any TX items are still in hold period
+    if (_box != null && _box!.isNotEmpty) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      int maxWaitMs = 0;
+
+      for (final item in _box!.values) {
+        if (item.type == 'TX' && !item.isUploadEligible) {
+          final waitMs = item.canUploadAfter - now;
+          if (waitMs > maxWaitMs) {
+            maxWaitMs = waitMs;
+          }
+        }
+      }
+
+      if (maxWaitMs > 0) {
+        // Cap wait time at 6 seconds (slightly more than 5s hold period)
+        final cappedWaitMs = maxWaitMs.clamp(0, 6000);
+        debugLog('[API QUEUE] Waiting ${cappedWaitMs}ms for TX hold period to expire');
+        await Future.delayed(Duration(milliseconds: cappedWaitMs));
+      }
+    }
+
+    await _uploadBatch();
+  }
+
   /// Clear all queued items
   Future<void> clear() async {
     await _box?.clear();

@@ -381,10 +381,57 @@ class AppStateProvider extends ChangeNotifier {
     _apiService.setDeviceId(_deviceId);
 
     // Listen to Bluetooth connection changes
-    _bluetoothService.connectionStream.listen((status) {
+    _bluetoothService.connectionStream.listen((status) async {
       _connectionStatus = status;
       if (status == ConnectionStatus.disconnected) {
         _connectionStep = ConnectionStep.disconnected;
+
+        // Stop heartbeat immediately on BLE disconnect
+        _apiService.disableHeartbeat();
+        debugLog('[CONN] Heartbeat disabled due to BLE disconnect');
+
+        // Stop auto-ping timers
+        _autoPingTimer.stop();
+        _rxWindowTimer.stop();
+        _cooldownTimer.stop();
+        if (_autoPingEnabled) {
+          _autoPingEnabled = false;
+          debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
+        }
+
+        // Stop RX logger
+        _rxLogger?.stopWardriving(trigger: 'ble_disconnect');
+
+        // Force upload any pending items BEFORE releasing session
+        // This ensures data is submitted while session is still valid
+        // Waits for TX items in hold period (up to 6 seconds) to become eligible
+        if (_apiService.hasSession) {
+          debugLog('[CONN] Flushing API queue before session release');
+          try {
+            await _apiQueueService.forceUploadWithHoldWait();
+          } catch (e) {
+            debugError('[CONN] Failed to flush API queue: $e');
+          }
+        }
+
+        // Clear any remaining items and stop batch timer
+        await _apiQueueService.clearOnDisconnect();
+
+        // Release API session (best effort - don't block on failure)
+        if (_devicePublicKey != null && _apiService.hasSession) {
+          debugLog('[CONN] Releasing API session due to BLE disconnect');
+          try {
+            await _apiService.requestAuth(
+              reason: 'disconnect',
+              publicKey: _devicePublicKey!,
+            );
+            debugLog('[CONN] API session released successfully');
+          } catch (e) {
+            debugError('[CONN] Failed to release API session: $e');
+          }
+        }
+
+        // Existing cleanup
         _meshCoreConnection?.dispose();
         _meshCoreConnection = null;
         _pingService?.dispose();
@@ -1409,9 +1456,10 @@ class AppStateProvider extends ChangeNotifier {
       _rxLogger?.startWardriving();
       _autoPingEnabled = true;
 
-      // Enable heartbeat if not in offline mode
-      // Heartbeat fires after 3 minutes of API inactivity to keep session alive
-      if (!_preferences.offlineMode) {
+      // Enable heartbeat ONLY for Passive Mode (not offline mode)
+      // Active Mode renews session via auto-pings every 15/30/60s
+      // Manual Mode has natural 5-minute timeout
+      if (isPassive && !_preferences.offlineMode) {
         _apiService.enableHeartbeat(
           gpsProvider: () {
             // Provide current GPS coordinates for heartbeat (matching wardrive.js)
@@ -1420,6 +1468,9 @@ class AppStateProvider extends ChangeNotifier {
             return (lat: pos.latitude, lon: pos.longitude);
           },
         );
+        debugLog('[HEARTBEAT] Enabled for Passive Mode');
+      } else if (!isPassive) {
+        debugLog('[HEARTBEAT] Not enabled - Active Mode renews via auto-pings');
       }
 
       // Start background service for continuous operation
