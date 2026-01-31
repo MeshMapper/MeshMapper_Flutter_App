@@ -694,7 +694,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationColor = Colors.green;
     } else if (appState.inZone == false) {
       locationIcon = Icons.location_off;
-      locationText = 'Outside Zone';
+      // Show nearest zone with distance
+      final nearestName = appState.nearestZoneName;
+      final distKm = appState.nearestZoneDistanceKm?.toStringAsFixed(0);
+      if (nearestName != null && distKm != null) {
+        locationText = '$nearestName ${distKm}km';
+        iataCode = appState.nearestZoneCode;
+      } else {
+        locationText = 'Outside Zone';
+      }
       locationColor = Colors.orange;
     } else {
       locationIcon = Icons.gps_not_fixed;

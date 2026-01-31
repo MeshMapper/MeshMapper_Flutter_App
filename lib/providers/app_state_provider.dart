@@ -251,6 +251,7 @@ class AppStateProvider extends ChangeNotifier {
   int? get zoneSlotsAvailable => _currentZone?['slots_available'] as int?;
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
   String? get nearestZoneName => _nearestZone?['name'] as String?;
+  String? get nearestZoneCode => _nearestZone?['code'] as String?;
   double? get nearestZoneDistanceKm => (_nearestZone?['distance_km'] as num?)?.toDouble();
 
   // Maintenance mode getters
