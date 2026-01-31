@@ -29,6 +29,16 @@ class DiscoveredDevice {
   String toString() => 'DiscoveredDevice($name, $id, rssi=$rssi)';
 }
 
+/// Bluetooth adapter state
+enum BluetoothAdapterState {
+  unknown,
+  on,
+  off,
+  turningOn,
+  turningOff,
+  unavailable,
+}
+
 /// Abstract Bluetooth service interface
 /// Platform implementations provided by MobileBluetoothService and WebBluetoothService
 abstract class BluetoothService {
@@ -37,6 +47,9 @@ abstract class BluetoothService {
 
   /// Stream of received data from device
   Stream<Uint8List> get dataStream;
+
+  /// Stream of Bluetooth adapter state changes (on/off)
+  Stream<BluetoothAdapterState> get adapterStateStream;
 
   /// Current connection status
   ConnectionStatus get connectionStatus;

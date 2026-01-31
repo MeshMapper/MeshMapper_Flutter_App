@@ -64,6 +64,26 @@ class MobileBluetoothService implements BluetoothService {
   }
 
   @override
+  Stream<BluetoothAdapterState> get adapterStateStream {
+    return fbp.FlutterBluePlus.adapterState.map((state) {
+      switch (state) {
+        case fbp.BluetoothAdapterState.on:
+          return BluetoothAdapterState.on;
+        case fbp.BluetoothAdapterState.off:
+          return BluetoothAdapterState.off;
+        case fbp.BluetoothAdapterState.turningOn:
+          return BluetoothAdapterState.turningOn;
+        case fbp.BluetoothAdapterState.turningOff:
+          return BluetoothAdapterState.turningOff;
+        case fbp.BluetoothAdapterState.unavailable:
+          return BluetoothAdapterState.unavailable;
+        default:
+          return BluetoothAdapterState.unknown;
+      }
+    });
+  }
+
+  @override
   ConnectionStatus get connectionStatus => _connectionStatus;
 
   @override

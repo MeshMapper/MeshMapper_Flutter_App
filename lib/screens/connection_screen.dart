@@ -77,9 +77,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
     // Build FAB for scanning - only show when fully disconnected and idle
     // Hide FAB entirely during maintenance mode (maintenance UI has its own buttons)
+    // Hide FAB when Bluetooth is off (shows full-screen message instead)
     Widget? fab;
     if (appState.connectionStep == ConnectionStep.disconnected &&
-        (!appState.maintenanceMode || appState.offlineMode)) {
+        (!appState.maintenanceMode || appState.offlineMode) &&
+        !appState.isBluetoothOff) {
       // Offline mode bypasses both zone and maintenance checks
       final canScan = appState.offlineMode || appState.inZone == true;
       fab = isLandscape
@@ -806,8 +808,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   }) {
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
-    return SingleChildScrollView(
-      child: Center(
+    // Use Center with CustomScrollView for both vertical centering and scroll capability
+    return Center(
+      child: SingleChildScrollView(
         child: Padding(
           padding: EdgeInsets.all(isLandscape ? 16 : 32),
           child: Column(
@@ -924,6 +927,24 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                   ],
                 ),
               ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Show Bluetooth off message (takes priority over zone checks)
+    if (appState.isBluetoothOff) {
+      return Column(
+        children: [
+          _buildZoneStatusBar(context, appState),
+          Expanded(
+            child: _buildMessageContent(
+              context: context,
+              icon: Icons.bluetooth_disabled,
+              iconColor: Colors.red.withValues(alpha: 0.7),
+              title: 'Bluetooth is Off',
+              message: 'Please enable Bluetooth to scan for MeshCore devices.',
             ),
           ),
         ],

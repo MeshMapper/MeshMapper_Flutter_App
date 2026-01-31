@@ -30,6 +30,14 @@ class WebBluetoothService implements BluetoothService {
   Stream<Uint8List> get dataStream => _dataController.stream;
 
   @override
+  Stream<BluetoothAdapterState> get adapterStateStream {
+    // Web Bluetooth availability stream (true = available, false = not available)
+    return _webBluetooth.isAvailable.map((available) {
+      return available ? BluetoothAdapterState.on : BluetoothAdapterState.off;
+    });
+  }
+
+  @override
   ConnectionStatus get connectionStatus => _connectionStatus;
 
   @override

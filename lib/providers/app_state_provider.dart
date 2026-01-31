@@ -89,6 +89,10 @@ class AppStateProvider extends ChangeNotifier {
   String? _connectionError;
   bool _isAuthError = false;  // Track if connection failed due to auth
 
+  // Bluetooth adapter state (on/off)
+  BluetoothAdapterState _bluetoothAdapterState = BluetoothAdapterState.unknown;
+  StreamSubscription? _adapterStateSubscription;
+
   // GPS state
   GpsStatus _gpsStatus = GpsStatus.permissionDenied;
   Position? _currentPosition;
@@ -194,6 +198,9 @@ class AppStateProvider extends ChangeNotifier {
   ConnectionStep get connectionStep => _connectionStep;
   String? get connectionError => _connectionError;
   bool get isAuthError => _isAuthError;
+  BluetoothAdapterState get bluetoothAdapterState => _bluetoothAdapterState;
+  bool get isBluetoothOn => _bluetoothAdapterState == BluetoothAdapterState.on;
+  bool get isBluetoothOff => _bluetoothAdapterState == BluetoothAdapterState.off;
   GpsStatus get gpsStatus => _gpsStatus;
   Position? get currentPosition => _currentPosition;
   DeviceModel? get deviceModel => _deviceModel;
@@ -379,6 +386,20 @@ class AppStateProvider extends ChangeNotifier {
 
     // Set device ID for API
     _apiService.setDeviceId(_deviceId);
+
+    // Listen to Bluetooth adapter state changes (on/off)
+    _adapterStateSubscription = _bluetoothService.adapterStateStream.listen((state) {
+      final previousState = _bluetoothAdapterState;
+      _bluetoothAdapterState = state;
+
+      if (state != previousState) {
+        debugLog('[BLE] Adapter state changed: $state');
+
+        // If Bluetooth was turned off while connected, the BLE disconnect handler
+        // will take care of session cleanup via connectionStream
+        notifyListeners();
+      }
+    });
 
     // Listen to Bluetooth connection changes
     _bluetoothService.connectionStream.listen((status) async {
@@ -2541,6 +2562,7 @@ class AppStateProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _adapterStateSubscription?.cancel();
     _logRxDataSubscription?.cancel();
     _noiseFloorSubscription?.cancel();
     _batterySubscription?.cancel();
