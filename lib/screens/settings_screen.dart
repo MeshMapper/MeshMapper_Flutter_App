@@ -93,6 +93,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// Upload the current (active) log file by rotating it first
+  Future<void> _uploadCurrentLogFile(AppStateProvider appState, File currentFile) async {
+    final originalPath = currentFile.path;
+
+    setState(() {
+      _uploadingFilePath = originalPath;
+    });
+
+    try {
+      // Rotate the log: closes current file, starts a new one
+      // The original file is now closed and safe to upload
+      await appState.prepareDebugLogsForUpload();
+
+      if (!mounted) return;
+
+      // The original file still exists at the same path, now closed
+      final closedFile = File(originalPath);
+      if (!closedFile.existsSync()) {
+        throw Exception('Log file not found after rotation');
+      }
+
+      // Now upload the closed file
+      await _uploadSingleLogFile(appState, closedFile);
+    } catch (e) {
+      debugError('[SETTINGS] Current log upload error: $e');
+      if (mounted) {
+        setState(() {
+          _uploadingFilePath = null;
+        });
+        AppToast.error(context, 'Upload error: $e');
+      }
+    }
+  }
+
   void _onVersionTap(AppStateProvider appState) {
     final now = DateTime.now();
 
@@ -587,39 +621,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Upload button - hidden for current log file
-                        if (!isCurrentLog) ...[
-                          if (wasUploaded)
-                            Container(
-                              width: 40,
-                              height: 40,
-                              alignment: Alignment.center,
-                              child: const Icon(
-                                Icons.check_circle,
-                                size: 20,
-                                color: Colors.green,
-                              ),
-                            )
-                          else if (isUploading)
-                            Container(
-                              width: 40,
-                              height: 40,
-                              alignment: Alignment.center,
-                              child: const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              ),
-                            )
-                          else
-                            IconButton(
-                              icon: const Icon(Icons.cloud_upload, size: 20),
-                              onPressed: _uploadingFilePath != null
-                                  ? null
-                                  : () => _uploadSingleLogFile(appState, file),
-                              tooltip: 'Upload to developer',
+                        // Upload button
+                        if (wasUploaded)
+                          Container(
+                            width: 40,
+                            height: 40,
+                            alignment: Alignment.center,
+                            child: const Icon(
+                              Icons.check_circle,
+                              size: 20,
+                              color: Colors.green,
                             ),
-                        ],
+                          )
+                        else if (isUploading)
+                          Container(
+                            width: 40,
+                            height: 40,
+                            alignment: Alignment.center,
+                            child: const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          )
+                        else
+                          IconButton(
+                            icon: const Icon(Icons.cloud_upload, size: 20),
+                            onPressed: _uploadingFilePath != null
+                                ? null
+                                : () => isCurrentLog
+                                    ? _uploadCurrentLogFile(appState, file)
+                                    : _uploadSingleLogFile(appState, file),
+                            tooltip: isCurrentLog
+                                ? 'Close log and upload'
+                                : 'Upload to developer',
+                          ),
                         // View button
                         IconButton(
                           icon: const Icon(Icons.visibility, size: 20),
