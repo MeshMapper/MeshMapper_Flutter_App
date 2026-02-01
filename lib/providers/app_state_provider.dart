@@ -18,6 +18,7 @@ import '../models/user_preferences.dart';
 import '../services/api_queue_service.dart';
 import '../services/api_service.dart';
 import '../services/audio_service.dart';
+import '../services/connectivity_service.dart';
 import '../services/background_service.dart';
 import '../services/debug_file_logger.dart';
 import '../services/offline_session_service.dart';
@@ -67,6 +68,7 @@ class AppStateProvider extends ChangeNotifier {
   late final ApiQueueService _apiQueueService;
   late final OfflineSessionService _offlineSessionService;
   late final DeviceModelService _deviceModelService;
+  late final ConnectivityService _connectivityService;
   final AudioService _audioService = AudioService();
   late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
   late final ManualPingCooldownTimer _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
@@ -172,6 +174,9 @@ class AppStateProvider extends ChangeNotifier {
   String? _maintenanceUrl;
   Timer? _maintenanceCheckTimer;
 
+  // Internet connectivity state
+  bool _hasInternet = true; // Optimistic default
+
   // Map navigation trigger (for navigating to log entry coordinates)
   ({double lat, double lon})? _mapNavigationTarget;
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
@@ -260,6 +265,9 @@ class AppStateProvider extends ChangeNotifier {
   bool get maintenanceMode => _maintenanceMode;
   String? get maintenanceMessage => _maintenanceMessage;
   String? get maintenanceUrl => _maintenanceUrl;
+
+  // Internet connectivity getter
+  bool get hasInternet => _hasInternet;
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
@@ -529,6 +537,31 @@ class AppStateProvider extends ChangeNotifier {
     debugLog('[INIT] Starting GPS service...');
     await _gpsService.startWatching();
     debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
+
+    // Initialize connectivity service
+    debugLog('[INIT] Setting up connectivity monitoring...');
+    _connectivityService = ConnectivityService();
+    await _connectivityService.initialize();
+    _connectivityService.internetStream.listen((hasInternet) async {
+      _hasInternet = hasInternet;
+      notifyListeners();
+
+      // Re-check zone when internet becomes available
+      if (hasInternet && _inZone == null && !_preferences.offlineMode) {
+        debugLog('[CONNECTIVITY] Internet restored, rechecking zone');
+
+        // If we have GPS position, check zone immediately
+        if (_currentPosition != null) {
+          checkZoneStatus();
+        } else {
+          // GPS not providing positions - try to restart it
+          debugLog('[CONNECTIVITY] No GPS position available, restarting GPS service');
+          await _gpsService.startWatching();
+          // Zone check will be triggered by GPS position listener when position arrives
+        }
+      }
+    });
+    _hasInternet = _connectivityService.hasInternet;
 
     // Initialize audio service for sound notifications
     await _audioService.initialize();
@@ -2116,6 +2149,12 @@ class AppStateProvider extends ChangeNotifier {
   /// Check zone status via API
   /// Should be called on app launch and every 100m of GPS movement while disconnected
   Future<void> checkZoneStatus() async {
+    // Skip if no internet (avoids stuck "Checking..." state)
+    if (!_hasInternet) {
+      debugLog('[GEOFENCE] Skipping zone check: no internet');
+      return;
+    }
+
     if (_currentPosition == null) {
       debugLog('[GEOFENCE] Cannot check zone status: no GPS position');
       return;
@@ -2710,6 +2749,7 @@ class AppStateProvider extends ChangeNotifier {
     _meshCoreConnection?.dispose();
     _pingService?.dispose();
     _gpsService.dispose();
+    _connectivityService.dispose();
     _apiQueueService.dispose();
     _offlineSessionService.dispose();
     _apiService.dispose();

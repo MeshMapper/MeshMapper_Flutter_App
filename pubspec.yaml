@@ -38,6 +38,7 @@ dependencies:
   audio_session: ^0.1.21
   dio: ^5.0.0
   font_awesome_flutter: ^10.7.0
+  connectivity_plus: ^6.0.0
 
 dev_dependencies:
   flutter_test:

@@ -95,15 +95,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               icon: const Icon(Icons.bluetooth_searching),
               label: Text(appState.offlineMode
                   ? 'Scan'
-                  : appState.gpsStatus == GpsStatus.disabled
-                      ? 'GPS Disabled'
-                      : appState.gpsStatus == GpsStatus.permissionDenied
-                          ? 'GPS Required'
-                          : appState.inZone == null
-                              ? 'Checking Zone...'
-                              : appState.inZone == true
-                                  ? 'Scan'
-                                  : 'Outside Zone'),
+                  : !appState.hasInternet
+                      ? 'No Internet'
+                      : appState.gpsStatus == GpsStatus.disabled
+                          ? 'GPS Disabled'
+                          : appState.gpsStatus == GpsStatus.permissionDenied
+                              ? 'GPS Required'
+                              : appState.inZone == null
+                                  ? 'Checking Zone...'
+                                  : appState.inZone == true
+                                      ? 'Scan'
+                                      : 'Outside Zone'),
               backgroundColor: canScan ? null : Colors.grey,
             );
     }
@@ -680,6 +682,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationIcon = Icons.gps_off;
       locationText = '-';
       locationColor = Colors.grey;
+    // No internet: show clear indicator
+    } else if (!appState.hasInternet) {
+      locationIcon = Icons.wifi_off;
+      locationText = 'No Internet';
+      locationColor = Colors.red;
     // Check maintenance mode
     } else if (appState.maintenanceMode) {
       locationIcon = Icons.engineering;
@@ -955,6 +962,24 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       );
     }
 
+    // Show no internet message (but NOT when offline mode is enabled)
+    if (!appState.hasInternet && !appState.offlineMode) {
+      return Column(
+        children: [
+          _buildZoneStatusBar(context, appState),
+          Expanded(
+            child: _buildMessageContent(
+              context: context,
+              icon: Icons.wifi_off,
+              iconColor: Colors.red.withValues(alpha: 0.7),
+              title: 'No Internet Connection',
+              message: 'Please connect to the internet to check zone availability and start wardriving.\n\nAlternatively, enable Offline Mode in Settings to wardrive without internet.',
+            ),
+          ),
+        ],
+      );
+    }
+
     // Show onboarding message when outside zone (but NOT when offline mode is enabled)
     if (appState.inZone == false && !appState.offlineMode) {
       // Build message with nearest zone info if available
@@ -1144,9 +1169,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 icon: const Icon(Icons.bluetooth_connected),
                 label: Text(canConnect
                     ? 'Reconnect'
-                    : appState.maintenanceMode
-                        ? 'Maintenance'
-                        : 'Outside Zone'),
+                    : !appState.hasInternet
+                        ? 'No Internet'
+                        : appState.maintenanceMode
+                            ? 'Maintenance'
+                            : 'Outside Zone'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: canConnect
                       ? Theme.of(context).colorScheme.primary
