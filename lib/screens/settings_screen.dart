@@ -1,7 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show File;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
@@ -342,6 +342,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('Support MeshMapper development'),
             onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
           ),
+
+          // Exit Options (Android only)
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
+            const Divider(),
+            _buildSectionHeader(context, 'Exit Options'),
+
+            // Auto-close toggle
+            SwitchListTile(
+              secondary: const Icon(Icons.exit_to_app),
+              title: const Text('Close App After Disconnect'),
+              subtitle: const Text('Automatically exit the app when disconnecting'),
+              value: prefs.closeAppAfterDisconnect,
+              onChanged: (value) => appState.setCloseAppAfterDisconnect(value),
+            ),
+
+            // Manual close button
+            ListTile(
+              leading: const Icon(Icons.power_settings_new, color: Colors.red),
+              title: const Text('Close App'),
+              subtitle: const Text('Exit the app completely'),
+              onTap: () => _showCloseAppConfirmation(context, appState),
+            ),
+          ],
 
           // Developer Tools section - only visible when developer mode is enabled
           if (appState.developerModeEnabled) ...[
@@ -1175,6 +1198,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Navigator.pop(context);
             },
             child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showCloseAppConfirmation(BuildContext context, AppStateProvider appState) {
+    final isConnected = appState.isConnected;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Close App'),
+        content: Text(
+          isConnected
+              ? 'This will disconnect from the device and close the app. Continue?'
+              : 'This will close the app. Continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              appState.exitApp();
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Close App'),
           ),
         ],
       ),

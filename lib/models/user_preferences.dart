@@ -43,6 +43,9 @@ class UserPreferences {
   /// Map tile style (dark, light, satellite)
   final String mapStyle;
 
+  /// Close app after disconnect (Android only)
+  final bool closeAppAfterDisconnect;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -58,6 +61,7 @@ class UserPreferences {
     this.backgroundModeEnabled = false,
     this.developerModeEnabled = false,
     this.mapStyle = 'dark',
+    this.closeAppAfterDisconnect = false,
   });
 
   /// Create from JSON (for persistence)
@@ -77,6 +81,7 @@ class UserPreferences {
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
       mapStyle: (json['mapStyle'] as String?) ?? 'dark',
+      closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
     );
   }
 
@@ -97,6 +102,7 @@ class UserPreferences {
       'backgroundModeEnabled': backgroundModeEnabled,
       'developerModeEnabled': developerModeEnabled,
       'mapStyle': mapStyle,
+      'closeAppAfterDisconnect': closeAppAfterDisconnect,
     };
   }
 
@@ -116,6 +122,7 @@ class UserPreferences {
     bool? backgroundModeEnabled,
     bool? developerModeEnabled,
     String? mapStyle,
+    bool? closeAppAfterDisconnect,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -132,6 +139,7 @@ class UserPreferences {
       backgroundModeEnabled: backgroundModeEnabled ?? this.backgroundModeEnabled,
       developerModeEnabled: developerModeEnabled ?? this.developerModeEnabled,
       mapStyle: mapStyle ?? this.mapStyle,
+      closeAppAfterDisconnect: closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
     );
   }
 
@@ -173,7 +181,8 @@ class UserPreferences {
         other.iataCode == iataCode &&
         other.backgroundModeEnabled == backgroundModeEnabled &&
         other.developerModeEnabled == developerModeEnabled &&
-        other.mapStyle == mapStyle;
+        other.mapStyle == mapStyle &&
+        other.closeAppAfterDisconnect == closeAppAfterDisconnect;
   }
 
   @override
@@ -192,6 +201,7 @@ class UserPreferences {
       backgroundModeEnabled,
       developerModeEnabled,
       mapStyle,
+      closeAppAfterDisconnect,
     );
   }
 }

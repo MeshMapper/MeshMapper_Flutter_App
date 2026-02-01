@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -1352,6 +1353,15 @@ class AppStateProvider extends ChangeNotifier {
     _discoveredDevices = [];
 
     notifyListeners();
+
+    // Auto-exit app if preference is enabled (Android only)
+    if (_preferences.closeAppAfterDisconnect && Platform.isAndroid) {
+      debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
+      // Small delay to ensure cleanup completes
+      Future.delayed(const Duration(milliseconds: 500), () {
+        SystemNavigator.pop();
+      });
+    }
   }
 
   // ============================================
@@ -1840,6 +1850,14 @@ class AppStateProvider extends ChangeNotifier {
   void setMapStyle(String style) {
     _preferences = _preferences.copyWith(mapStyle: style);
     debugLog('[MAP] Map style set to $style');
+    notifyListeners();
+    _savePreferences();
+  }
+
+  /// Set close app after disconnect preference (Android only)
+  void setCloseAppAfterDisconnect(bool value) {
+    _preferences = _preferences.copyWith(closeAppAfterDisconnect: value);
+    debugLog('[APP] Close app after disconnect set to: $value');
     notifyListeners();
     _savePreferences();
   }
@@ -2654,6 +2672,26 @@ class AppStateProvider extends ChangeNotifier {
       debugLog('[APP] Saved last connected device: $deviceName');
     } catch (e) {
       debugLog('[APP] Failed to save last connected device: $e');
+    }
+  }
+
+  // ============================================
+  // App Exit (Android only)
+  // ============================================
+
+  /// Exit the app completely (Android only)
+  /// Uses SystemNavigator.pop() which is the recommended way to exit on Android
+  Future<void> exitApp() async {
+    debugLog('[APP] Exit app requested');
+
+    // Disconnect first if connected
+    if (isConnected) {
+      await disconnect();
+    }
+
+    // Exit the app (Android only - iOS doesn't allow programmatic app exit)
+    if (Platform.isAndroid) {
+      SystemNavigator.pop();
     }
   }
 
