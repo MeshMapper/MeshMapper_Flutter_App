@@ -68,6 +68,7 @@ class AppStateProvider extends ChangeNotifier {
   late final DeviceModelService _deviceModelService;
   final AudioService _audioService = AudioService();
   late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
+  late final ManualPingCooldownTimer _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
   late final AutoPingTimer _autoPingTimer;
   late final RxWindowTimer _rxWindowTimer;
   late final DiscoveryWindowTimer _discoveryWindowTimer; // Discovery listening window (Passive Mode)
@@ -297,6 +298,7 @@ class AppStateProvider extends ChangeNotifier {
 
   // Countdown timers
   CooldownTimer get cooldownTimer => _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
+  ManualPingCooldownTimer get manualPingCooldownTimer => _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
   AutoPingTimer get autoPingTimer => _autoPingTimer;
   RxWindowTimer get rxWindowTimer => _rxWindowTimer;
   DiscoveryWindowTimer get discoveryWindowTimer => _discoveryWindowTimer; // Discovery listening window (Passive Mode)
@@ -332,6 +334,7 @@ class AppStateProvider extends ChangeNotifier {
 
     // Initialize countdown timers with notifyListeners callback for smooth UI updates
     _cooldownTimer = CooldownTimer(onUpdate: notifyListeners);
+    _manualPingCooldownTimer = ManualPingCooldownTimer(onUpdate: notifyListeners);
     _autoPingTimer = AutoPingTimer(onUpdate: notifyListeners);
     _rxWindowTimer = RxWindowTimer(onUpdate: notifyListeners);
     _discoveryWindowTimer = DiscoveryWindowTimer(onUpdate: notifyListeners);
@@ -811,6 +814,7 @@ class AppStateProvider extends ChangeNotifier {
         apiQueue: _apiQueueService,
         wakelockService: WakelockService(),
         cooldownTimer: _cooldownTimer,
+        manualPingCooldownTimer: _manualPingCooldownTimer,
         rxWindowTimer: _rxWindowTimer,
         discoveryWindowTimer: _discoveryWindowTimer,
         deviceId: _deviceId,
@@ -1354,9 +1358,14 @@ class AppStateProvider extends ChangeNotifier {
   // Ping Controls
   // ============================================
 
-  /// Get current ping validation status
+  /// Get current ping validation status (for auto mode - uses 25m distance check)
   PingValidation get pingValidation {
     return _pingService?.canPing() ?? PingValidation.notConnected;
+  }
+
+  /// Get manual ping validation status (no distance check, 15s cooldown)
+  PingValidation get manualPingValidation {
+    return _pingService?.canPingManual() ?? PingValidation.notConnected;
   }
 
   /// Get auto mode validation status (excludes distance check)

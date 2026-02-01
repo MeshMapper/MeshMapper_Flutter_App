@@ -123,3 +123,8 @@ class RxWindowTimer extends CountdownTimerService {
 class DiscoveryWindowTimer extends CountdownTimerService {
   DiscoveryWindowTimer({super.onUpdate});
 }
+
+/// Specialized countdown timer for manual ping cooldown (15 seconds)
+class ManualPingCooldownTimer extends CountdownTimerService {
+  ManualPingCooldownTimer({super.onUpdate});
+}

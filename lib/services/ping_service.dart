@@ -45,12 +45,15 @@ class PingService {
   static const Duration _discoveryListeningWindow = Duration(seconds: 7);
   /// Discovery request interval (30 seconds - repeaters only respond 4 times per 2 minutes)
   static const Duration _discoveryInterval = Duration(seconds: 30);
+  /// Cooldown period between manual pings (15 seconds)
+  static const Duration _manualPingCooldown = Duration(seconds: 15);
 
   final GpsService _gpsService;
   final MeshCoreConnection _connection;
   final ApiQueueService _apiQueue;
   final WakelockService _wakelockService;
   final CooldownTimer _cooldownTimer;
+  final ManualPingCooldownTimer _manualPingCooldownTimer;
   final RxWindowTimer _rxWindowCountdown;
   final DiscoveryWindowTimer _discoveryWindowCountdown;
   final String _deviceId;
@@ -60,6 +63,8 @@ class PingService {
 
   PingStats _stats = const PingStats();
   DateTime? _lastTxTime;
+  /// Last manual TX ping time (for 15-second manual cooldown)
+  DateTime? _lastManualTxTime;
   Timer? _rxWindowTimer;
 
   // TX ping context for queueing after RX window ends
@@ -124,6 +129,7 @@ class PingService {
     required ApiQueueService apiQueue,
     required WakelockService wakelockService,
     required CooldownTimer cooldownTimer,
+    required ManualPingCooldownTimer manualPingCooldownTimer,
     required RxWindowTimer rxWindowTimer,
     required DiscoveryWindowTimer discoveryWindowTimer,
     required String deviceId,
@@ -135,6 +141,7 @@ class PingService {
         _apiQueue = apiQueue,
         _wakelockService = wakelockService,
         _cooldownTimer = cooldownTimer,
+        _manualPingCooldownTimer = manualPingCooldownTimer,
         _rxWindowCountdown = rxWindowTimer,
         _discoveryWindowCountdown = discoveryWindowTimer,
         _deviceId = deviceId,
@@ -164,6 +171,9 @@ class PingService {
 
   /// Get current skip reason (for auto mode display)
   String? get skipReason => _skipReason;
+
+  /// Get the manual ping cooldown timer (for UI display)
+  ManualPingCooldownTimer get manualPingCooldownTimer => _manualPingCooldownTimer;
 
   /// Set auto-ping interval (15000, 30000, or 60000 ms)
   /// Reference: getSelectedIntervalMs() in wardrive.js
@@ -234,6 +244,58 @@ class PingService {
       final elapsed = DateTime.now().difference(_lastTxTime!);
       if (elapsed < _autoPingCooldown) {
         return PingValidation.cooldownActive;
+      }
+    }
+
+    return PingValidation.valid;
+  }
+
+  /// Check if we can send a manual TX ping now
+  /// Same as canPing() but WITHOUT the distance check and uses 15-second manual cooldown
+  PingValidation canPingManual() {
+    // Check connection
+    if (_connection.currentStep != ConnectionStep.connected) {
+      return PingValidation.notConnected;
+    }
+
+    // Check if TX is allowed by API (zone capacity)
+    if (checkTxAllowed != null && !checkTxAllowed!()) {
+      return PingValidation.txNotAllowed;
+    }
+
+    // Check external antenna configuration
+    if (checkExternalAntennaConfigured != null && !checkExternalAntennaConfigured!()) {
+      return PingValidation.externalAntennaRequired;
+    }
+
+    // Check power level configuration (for unknown devices)
+    if (checkPowerLevelConfigured != null && !checkPowerLevelConfigured!()) {
+      return PingValidation.powerLevelRequired;
+    }
+
+    // Check GPS status
+    if (_gpsService.status != GpsStatus.locked) {
+      return PingValidation.noGpsLock;
+    }
+
+    // Check GPS position
+    final position = _gpsService.lastPosition;
+    if (position == null) {
+      return PingValidation.noGpsLock;
+    }
+
+    // Check GPS accuracy (< 100m)
+    if (!_gpsService.isAccuracyAcceptableForPing(position)) {
+      return PingValidation.gpsInaccurate;
+    }
+
+    // NO distance check - removed for manual pings
+
+    // 15-second manual cooldown check
+    if (_lastManualTxTime != null) {
+      final elapsed = DateTime.now().difference(_lastManualTxTime!);
+      if (elapsed < _manualPingCooldown) {
+        return PingValidation.manualCooldownActive;
       }
     }
 
@@ -314,6 +376,21 @@ class PingService {
     return remaining.inSeconds.clamp(0, _autoPingCooldown.inSeconds);
   }
 
+  /// Check if currently in manual ping cooldown period
+  bool isInManualCooldown() {
+    if (_lastManualTxTime == null) return false;
+    final elapsed = DateTime.now().difference(_lastManualTxTime!);
+    return elapsed < _manualPingCooldown;
+  }
+
+  /// Get remaining manual cooldown seconds
+  int getRemainingManualCooldownSeconds() {
+    if (_lastManualTxTime == null) return 0;
+    final elapsed = DateTime.now().difference(_lastManualTxTime!);
+    final remaining = _manualPingCooldown - elapsed;
+    return remaining.inSeconds.clamp(0, _manualPingCooldown.inSeconds);
+  }
+
   /// Send a TX ping
   /// @param manual - Whether this is a manual ping (true) or auto ping (false)
   /// Returns true if ping was sent successfully
@@ -330,28 +407,46 @@ class PingService {
     _pingInProgress = true;
 
     try {
-      // Check cooldown for ALL pings (manual and auto)
-      // This fixes a race condition where disabling Active Mode during cooldown
-      // could still trigger an auto-ping from a late RX window timer callback
-      if (isInCooldown()) {
-        final remainingSec = getRemainingCooldownSeconds();
-        debugLog('[PING] Ping blocked by cooldown (${remainingSec}s remaining), manual=$manual');
-        _pingInProgress = false;
-        return false;
-      }
-
-      final validation = canPing();
-      if (validation != PingValidation.valid) {
-        // For auto mode, schedule next attempt if distance check failed
-        if (!manual && _autoPingEnabled && !_passiveModeEnabled) {
-          if (validation == PingValidation.tooCloseToLastPing) {
-            _skipReason = 'too close';
-            debugLog('[PING] Auto ping blocked: too close to last ping, scheduling next');
-          }
-          _scheduleNextAutoPing();
+      // Use different validation and cooldown for manual vs auto pings
+      if (manual) {
+        // Manual ping: 15-second cooldown, no distance check
+        if (isInManualCooldown()) {
+          final remainingSec = getRemainingManualCooldownSeconds();
+          debugLog('[PING] Manual ping blocked by cooldown (${remainingSec}s remaining)');
+          _pingInProgress = false;
+          return false;
         }
-        _pingInProgress = false;
-        return false;
+
+        final validation = canPingManual();
+        if (validation != PingValidation.valid) {
+          debugLog('[PING] Manual ping blocked by validation: $validation');
+          _pingInProgress = false;
+          return false;
+        }
+      } else {
+        // Auto ping: 7-second cooldown, 25m distance check
+        // This fixes a race condition where disabling Active Mode during cooldown
+        // could still trigger an auto-ping from a late RX window timer callback
+        if (isInCooldown()) {
+          final remainingSec = getRemainingCooldownSeconds();
+          debugLog('[PING] Auto ping blocked by cooldown (${remainingSec}s remaining)');
+          _pingInProgress = false;
+          return false;
+        }
+
+        final validation = canPing();
+        if (validation != PingValidation.valid) {
+          // For auto mode, schedule next attempt if distance check failed
+          if (_autoPingEnabled && !_passiveModeEnabled) {
+            if (validation == PingValidation.tooCloseToLastPing) {
+              _skipReason = 'too close';
+              debugLog('[PING] Auto ping blocked: too close to last ping, scheduling next');
+            }
+            _scheduleNextAutoPing();
+          }
+          _pingInProgress = false;
+          return false;
+        }
       }
 
       // Clear skip reason on successful validation
@@ -453,8 +548,15 @@ class PingService {
       _lastTxTime = DateTime.now();
       _gpsService.markPingPosition(position);
 
-      // Start cooldown timer (7 seconds)
-      _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
+      // Track manual ping time and start appropriate cooldown timer
+      if (manual) {
+        // Manual ping: 15-second cooldown, no distance check
+        _lastManualTxTime = DateTime.now();
+        _manualPingCooldownTimer.start(_manualPingCooldown.inMilliseconds);
+      } else {
+        // Auto ping: 7-second cooldown
+        _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
+      }
 
       // Store TX context for queueing after RX window ends
       // TX entry is queued AFTER RX window so heard_repeats can be populated
@@ -1005,6 +1107,9 @@ enum PingValidation {
   /// Cooldown period active (< 7s since last ping)
   cooldownActive,
 
+  /// Manual ping cooldown period active (< 15s since last manual ping)
+  manualCooldownActive,
+
   /// TX not allowed by API (zone at capacity)
   txNotAllowed,
 }
@@ -1032,6 +1137,8 @@ extension PingValidationExtension on PingValidation {
         return 'Move 25m before next ping';
       case PingValidation.cooldownActive:
         return 'Wait 7 seconds between pings';
+      case PingValidation.manualCooldownActive:
+        return 'Wait 15 seconds between manual pings';
       case PingValidation.txNotAllowed:
         return 'Zone at TX capacity (Passive Only)';
     }

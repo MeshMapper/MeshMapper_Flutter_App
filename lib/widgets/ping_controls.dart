@@ -15,14 +15,17 @@ class PingControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final validation = appState.pingValidation;
+    final manualValidation = appState.manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
-    final canPing = validation == PingValidation.valid;
+    final canPingManual = manualValidation == PingValidation.valid; // For Send Ping button
     final canStartAuto = autoValidation == PingValidation.valid;
     final isActiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.active;
     final isPassiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
     final isPendingDisable = appState.isPendingDisable; // Disable pending, waiting for RX window to complete
     final cooldownActive = appState.cooldownTimer.isRunning; // Shared cooldown after disabling Active Mode
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
+    final manualCooldownActive = appState.manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
+    final manualCooldownRemaining = appState.manualPingCooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning; // RX listening window after ping
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
     final isPingSending = appState.isPingSending; // True immediately when manual ping button clicked
@@ -38,15 +41,9 @@ class PingControls extends StatelessWidget {
     // TX not allowed when API says zone is at TX capacity
     final txNotAllowed = appState.isConnected && !appState.txAllowed;
 
-    // Calculate distance feedback for TX Ping button
-    final distanceFromLastPing = appState.distanceFromLastPing;
-    final needToMove = validation == PingValidation.tooCloseToLastPing && distanceFromLastPing != null;
-    final distanceRemaining = needToMove ? (25.0 - distanceFromLastPing).ceil() : 0;
-    final moveSubtitle = needToMove && !cooldownActive ? 'Move ${distanceRemaining}m' : null;
-
     // Log validation state when buttons are disabled (helps debug "buttons never enable" issues)
-    if (!canPing && appState.isConnected && !isActiveModeRunning && !isPassiveModeRunning) {
-      debugLog('[UI] Ping buttons disabled: validation=$validation');
+    if (!canPingManual && appState.isConnected && !isActiveModeRunning && !isPassiveModeRunning) {
+      debugLog('[UI] Ping buttons disabled: manualValidation=$manualValidation');
     }
 
     // Determine blocking reason for status hint (in priority order)
@@ -90,9 +87,9 @@ class PingControls extends StatelessWidget {
         Row(
           children: [
             // Send Ping button
-            // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Send Ping"
-            // Also shows cooldown countdown when Active Mode is disabled or Passive Mode is listening
-            // When Active/Passive Mode is running, just shows "Send Ping" or "Cooldown" (disabled)
+            // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Cooldown Xs" → "Send Ping"
+            // Manual pings use 15-second cooldown, no distance requirement
+            // When Active/Passive Mode is running, just shows "Send Ping" (disabled)
             Expanded(
               child: _ActionButton(
                 icon: Icons.cell_tower,
@@ -106,19 +103,21 @@ class PingControls extends StatelessWidget {
                                 ? 'Sending...'
                                 : rxWindowActive
                                     ? 'Listening ${rxWindowRemaining}s'  // Manual ping listening (works during Passive Mode too)
-                                    : discoveryWindowActive
-                                        ? 'Cooldown ${discoveryWindowRemaining}s'  // Cooldown during Passive Mode listening
-                                        : cooldownActive
-                                            ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
-                                            : 'Send Ping',
+                                    : manualCooldownActive
+                                        ? 'Cooldown ${manualCooldownRemaining}s'  // Manual ping 15-second cooldown
+                                        : discoveryWindowActive
+                                            ? 'Cooldown ${discoveryWindowRemaining}s'  // Cooldown during Passive Mode listening
+                                            : cooldownActive
+                                                ? 'Cooldown ${cooldownRemaining}s'  // After Active Mode disabled
+                                                : 'Send Ping',
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline && !txNotAllowed &&
+                enabled: canPingManual && !isActiveModeRunning && !cooldownActive && !manualCooldownActive && !txBlockedByOffline && !txNotAllowed &&
                          !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
                 isActive: (isPingSending || rxWindowActive) && !isActiveModeRunning,  // Only active during manual ping flow
                 onPressed: () => _sendPing(context, appState),
                 showCooldown: false, // No longer needed - countdown shown in label
-                subtitle: txBlockedByOffline ? 'Offline Mode' : txNotAllowed ? 'Passive Only' : ((isPingSending || rxWindowActive || cooldownActive || discoveryWindowActive) ? null : moveSubtitle),
-                subtitleColor: txBlockedByOffline ? Colors.orange : txNotAllowed ? Colors.red : Colors.orange.shade600,
+                subtitle: txBlockedByOffline ? 'Offline Mode' : txNotAllowed ? 'Passive Only' : null,  // No "Move Xm" - manual pings have no distance requirement
+                subtitleColor: txBlockedByOffline ? Colors.orange : txNotAllowed ? Colors.red : null,
               ),
             ),
             const SizedBox(width: 10),
@@ -750,15 +749,17 @@ class _CompactPingControlsState extends State<CompactPingControls> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
-    final validation = appState.pingValidation;
+    final manualValidation = appState.manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
-    final canPing = validation == PingValidation.valid;
+    final canPingManual = manualValidation == PingValidation.valid; // For Send Ping button
     final canStartAuto = autoValidation == PingValidation.valid;
     final isActiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.active;
     final isPassiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
     final isPendingDisable = appState.isPendingDisable;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
+    final manualCooldownActive = appState.manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
+    final manualCooldownRemaining = appState.manualPingCooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning;
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
     final isPingSending = appState.isPingSending;
@@ -778,7 +779,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
 
     // Determine which button is currently active (not during cooldown)
-    final sendPingCurrentlyActive = (isPingSending || rxWindowActive) && !isActiveModeRunning;
+    final sendPingCurrentlyActive = (isPingSending || rxWindowActive || manualCooldownActive) && !isActiveModeRunning;
     final activeModeCurrentlyActive = isPendingDisable || (isActiveModeRunning && (isPingInProgress || rxWindowActive || autoPingWaiting));
     final passiveModeCurrentlyActive = isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
 
@@ -791,13 +792,14 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       _lastActiveButton = _LastActiveButton.passiveMode;
     }
     // Reset when no cooldown and no activity
-    if (!cooldownActive && !sendPingCurrentlyActive && !activeModeCurrentlyActive && !passiveModeCurrentlyActive) {
+    if (!cooldownActive && !manualCooldownActive && !sendPingCurrentlyActive && !activeModeCurrentlyActive && !passiveModeCurrentlyActive) {
       _lastActiveButton = _LastActiveButton.none;
     }
 
     // Determine which button should be expanded
     // During cooldown, the last active button stays expanded
     final sendPingExpanded = sendPingCurrentlyActive ||
+        (manualCooldownActive && _lastActiveButton == _LastActiveButton.sendPing) ||
         (cooldownActive && _lastActiveButton == _LastActiveButton.sendPing);
     final activeModeExpanded = activeModeCurrentlyActive ||
         (cooldownActive && _lastActiveButton == _LastActiveButton.activeMode);
@@ -805,9 +807,9 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         (cooldownActive && _lastActiveButton == _LastActiveButton.passiveMode);
 
     // Determine which buttons are colored (enabled or active)
-    final sendPingEnabled = canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline && !txNotAllowed &&
+    final sendPingEnabled = canPingManual && !isActiveModeRunning && !cooldownActive && !manualCooldownActive && !txBlockedByOffline && !txNotAllowed &&
                      !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable;
-    final sendPingActive = (isPingSending || rxWindowActive) && !isActiveModeRunning && !cooldownActive;
+    final sendPingActive = (isPingSending || rxWindowActive) && !isActiveModeRunning && !cooldownActive && !manualCooldownActive;
     final sendPingShowColor = sendPingEnabled || sendPingActive;
 
     final activeModeEnabled = !isPendingDisable && ((isActiveModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed);
@@ -832,6 +834,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         isPingSending: isPingSending,
         rxWindowActive: rxWindowActive,
         rxWindowRemaining: rxWindowRemaining,
+        manualCooldownActive: manualCooldownActive,
+        manualCooldownRemaining: manualCooldownRemaining,
         discoveryWindowActive: discoveryWindowActive,
         discoveryWindowRemaining: discoveryWindowRemaining,
         cooldownActive: cooldownActive,
@@ -844,9 +848,11 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       isExpanded: sendPingExpanded,
       progress: rxWindowActive && !isActiveModeRunning
           ? appState.rxWindowTimer.progress
-          : cooldownActive && _lastActiveButton == _LastActiveButton.sendPing
-              ? appState.cooldownTimer.progress
-              : null,
+          : manualCooldownActive && _lastActiveButton == _LastActiveButton.sendPing
+              ? appState.manualPingCooldownTimer.progress
+              : cooldownActive && _lastActiveButton == _LastActiveButton.sendPing
+                  ? appState.cooldownTimer.progress
+                  : null,
       onPressed: () => _sendPing(context, appState),
     );
 
@@ -953,6 +959,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool isPingSending,
     required bool rxWindowActive,
     required int rxWindowRemaining,
+    required bool manualCooldownActive,
+    required int manualCooldownRemaining,
     required bool discoveryWindowActive,
     required int discoveryWindowRemaining,
     required bool cooldownActive,
@@ -961,6 +969,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
   }) {
     if (isPingSending) return showFullText ? 'Sending...' : '...';
     if (rxWindowActive) return showFullText ? 'Listening ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
+    if (manualCooldownActive) return showFullText ? 'Cooldown ${manualCooldownRemaining}s' : '${manualCooldownRemaining}s';
     if (discoveryWindowActive) return showFullText ? 'Cooldown ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
     if (cooldownActive) return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
     return null;
@@ -1052,15 +1061,17 @@ class LandscapePingControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
-    final validation = appState.pingValidation;
+    final manualValidation = appState.manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
-    final canPing = validation == PingValidation.valid;
+    final canPingManual = manualValidation == PingValidation.valid; // For Send Ping button
     final canStartAuto = autoValidation == PingValidation.valid;
     final isActiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.active;
     final isPassiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
     final isPendingDisable = appState.isPendingDisable;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
+    final manualCooldownActive = appState.manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
+    final manualCooldownRemaining = appState.manualPingCooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning;
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
     final isPingSending = appState.isPingSending;
@@ -1106,18 +1117,20 @@ class LandscapePingControls extends StatelessWidget {
                 icon: Icons.cell_tower,
                 tooltip: txNotAllowed ? 'Zone Full (Passive Only)' : 'Send Ping',
                 color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPing && !isActiveModeRunning && !cooldownActive && !txBlockedByOffline && !txNotAllowed &&
+                enabled: canPingManual && !isActiveModeRunning && !cooldownActive && !manualCooldownActive && !txBlockedByOffline && !txNotAllowed &&
                          !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
                 isActive: (isPingSending || rxWindowActive) && !isActiveModeRunning,
                 countdown: isPingSending
                     ? null
                     : rxWindowActive && !isActiveModeRunning
                         ? rxWindowRemaining
-                        : discoveryWindowActive
-                            ? discoveryWindowRemaining
-                            : cooldownActive
-                                ? cooldownRemaining
-                                : null,
+                        : manualCooldownActive
+                            ? manualCooldownRemaining
+                            : discoveryWindowActive
+                                ? discoveryWindowRemaining
+                                : cooldownActive
+                                    ? cooldownRemaining
+                                    : null,
                 onPressed: () => _sendPing(context, appState),
               ),
             ),
