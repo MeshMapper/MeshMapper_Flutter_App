@@ -470,19 +470,17 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           child: _buildGpsInfoOverlay(appState),
         ),
 
-        // Map controls - top-right in both orientations, collapsible in landscape
+        // Map controls - top-right in both orientations, collapsible
         Positioned(
           top: topPadding,
           right: 8,
-          child: isLandscape
-              ? _buildCollapsibleMapControls(appState)
-              : _buildMapControls(appState),
+          child: _buildCollapsibleMapControls(appState),
         ),
       ],
     );
   }
 
-  /// Collapsible map controls for landscape mode (toggle at top, expands downward)
+  /// Collapsible map controls (toggle at top, expands downward)
   Widget _buildCollapsibleMapControls(AppStateProvider appState) {
     // Use external state if provided, otherwise use internal state
     final isExpanded = widget.mapControlsExpanded ?? _mapControlsExpanded;
@@ -662,18 +660,15 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return Colors.red;
   }
 
-  /// Map controls (always vertical)
+  /// Map controls (always vertical, used inside collapsible wrapper)
   Widget _buildMapControls(AppStateProvider appState) {
     final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Container(
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.7),
-        // In landscape, controls are below the toggle button, so rounded bottom only
-        borderRadius: isLandscape
-            ? const BorderRadius.vertical(bottom: Radius.circular(8))
-            : BorderRadius.circular(8),
+        // Controls are below the toggle button, so rounded bottom only
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(8)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -722,7 +717,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           // Legend button
           _buildControlButton(
             icon: Icons.info_outline,
-            tooltip: 'Map Legend',
+            tooltip: 'Legend & Info',
             onPressed: _showLegendPopup,
           ),
         ],
@@ -936,7 +931,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      'Map Legend',
+                      'Legend & Info',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
@@ -1109,6 +1104,63 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   ],
                 ),
               ),
+              const SizedBox(height: 20),
+
+              // Map Controls section
+              Text(
+                'Map Controls',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade300,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    _buildHelpItem(
+                      icon: Icons.dark_mode,
+                      label: 'Map Style',
+                      description: 'Cycle between Dark, Light, and Satellite map styles',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildHelpItem(
+                      icon: Icons.layers,
+                      label: 'Coverage Overlay',
+                      description: 'Toggle MeshMapper coverage overlay showing community-reported mesh coverage',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildHelpItem(
+                      icon: Icons.my_location,
+                      label: 'Center/Follow',
+                      description: 'Center map on GPS position. Tap again to toggle auto-follow mode',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildHelpItem(
+                      icon: Icons.navigation,
+                      label: 'Always North',
+                      description: 'Toggle between always-north orientation or rotate with heading',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildHelpItem(
+                      icon: Icons.sync_disabled,
+                      label: 'Lock Rotation',
+                      description: 'Prevent accidental rotation of the map',
+                    ),
+                    Divider(height: 1, color: Colors.grey.shade700),
+                    _buildHelpItem(
+                      icon: Icons.info_outline,
+                      label: 'Legend & Info',
+                      description: 'Show this help popup with legend and control explanations',
+                    ),
+                  ],
+                ),
+              ),
                       ],
                     ),
                   ),
@@ -1156,52 +1208,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     required String description,
     required VoidCallback onPlay,
   }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Row(
-        children: [
-          // Play button
-          GestureDetector(
-            onTap: onPlay,
-            child: Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: Colors.blue.withValues(alpha: 0.2),
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.blue.withValues(alpha: 0.5)),
-              ),
-              child: const Icon(Icons.play_arrow, size: 18, color: Colors.blue),
-            ),
-          ),
-          const SizedBox(width: 12),
-          // Icon and label
-          Icon(icon, size: 16, color: Colors.grey.shade400),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 70,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: Colors.grey.shade200,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          // Description
-          Expanded(
-            child: Text(
-              description,
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey.shade400,
-              ),
-            ),
-          ),
-        ],
-      ),
+    return _SoundItemWidget(
+      icon: icon,
+      label: label,
+      description: description,
+      onPlay: onPlay,
     );
   }
 
@@ -1285,6 +1296,55 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 fontFamily: 'monospace',
+                color: Colors.grey.shade200,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Description
+          Expanded(
+            child: Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade400,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Build a help item row with icon, label, and description for map controls
+  Widget _buildHelpItem({
+    required IconData icon,
+    required String label,
+    required String description,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        children: [
+          // Icon indicator
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: Colors.grey.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Icon(icon, size: 16, color: Colors.grey.shade300),
+          ),
+          const SizedBox(width: 12),
+          // Label
+          SizedBox(
+            width: 100,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
                 color: Colors.grey.shade200,
               ),
             ),
@@ -2407,4 +2467,96 @@ class _ArrowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// A stateful widget for sound item with play button visual feedback
+class _SoundItemWidget extends StatefulWidget {
+  final IconData icon;
+  final String label;
+  final String description;
+  final VoidCallback onPlay;
+
+  const _SoundItemWidget({
+    required this.icon,
+    required this.label,
+    required this.description,
+    required this.onPlay,
+  });
+
+  @override
+  State<_SoundItemWidget> createState() => _SoundItemWidgetState();
+}
+
+class _SoundItemWidgetState extends State<_SoundItemWidget> {
+  bool _isPlaying = false;
+
+  void _handlePlay() {
+    setState(() => _isPlaying = true);
+    widget.onPlay();
+    // Reset after short delay
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) setState(() => _isPlaying = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        children: [
+          // Play button with visual feedback
+          GestureDetector(
+            onTap: _handlePlay,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: _isPlaying
+                    ? Colors.blue.withValues(alpha: 0.5)
+                    : Colors.blue.withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: _isPlaying ? Colors.blue : Colors.blue.withValues(alpha: 0.5),
+                  width: _isPlaying ? 2 : 1,
+                ),
+              ),
+              child: Icon(
+                _isPlaying ? Icons.volume_up : Icons.play_arrow,
+                size: 18,
+                color: Colors.blue,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Icon and label
+          Icon(widget.icon, size: 16, color: Colors.grey.shade400),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 70,
+            child: Text(
+              widget.label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade200,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Description
+          Expanded(
+            child: Text(
+              widget.description,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade400,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

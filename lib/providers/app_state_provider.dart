@@ -1108,6 +1108,14 @@ class AppStateProvider extends ChangeNotifier {
     // Create TX tracker (stored for use by PingService)
     _txTracker = TxTracker();
 
+    // Log TX carpeater drops to error log (without navigating to error tab)
+    _txTracker!.onCarpeaterDrop = (String repeaterId, String reason) {
+      debugLog('[APP] TX carpeater drop: repeater=$repeaterId, reason=$reason');
+      logError('TX Echo Dropped\nPossible carpeater: $repeaterId\n$reason',
+          severity: ErrorSeverity.warning, autoSwitch: false);
+    };
+    debugLog('[APP] TxTracker.onCarpeaterDrop callback SET');
+
     // Create RX logger (stored for use when enabling Passive Mode)
     _rxLogger = RxLogger(
       // Function to check if repeater should be ignored (carpeater filter)
@@ -1268,6 +1276,13 @@ class AppStateProvider extends ChangeNotifier {
         final pos = _gpsService.lastPosition;
         if (pos == null) return null;
         return (lat: pos.latitude, lon: pos.longitude);
+      },
+
+      // Log carpeater drops to error log (without navigating to error tab)
+      onCarpeaterDrop: (String repeaterId, String reason) {
+        debugLog('[APP] Carpeater drop: repeater=$repeaterId, reason=$reason');
+        logError('RX Dropped\nPossible carpeater: $repeaterId\n$reason',
+            severity: ErrorSeverity.warning, autoSwitch: false);
       },
     );
     
@@ -1628,13 +1643,16 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   /// Log a user-facing error message
-  void logError(String message, {ErrorSeverity severity = ErrorSeverity.error}) {
+  /// Set [autoSwitch] to false to log without navigating to error log tab
+  void logError(String message, {ErrorSeverity severity = ErrorSeverity.error, bool autoSwitch = true}) {
     _errorLogEntries.add(UserErrorEntry(
       timestamp: DateTime.now(),
       message: message,
       severity: severity,
     ));
-    _requestErrorLogSwitch = true; // Auto-switch to error log
+    if (autoSwitch) {
+      _requestErrorLogSwitch = true; // Auto-switch to error log
+    }
     notifyListeners();
   }
 

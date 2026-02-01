@@ -26,6 +26,10 @@ class TxTracker {
   /// Parameters: (repeaterId, snr, rssi, isNew) - isNew is true for first time seeing this repeater
   void Function(String repeaterId, double snr, int rssi, bool isNew)? onEchoReceived;
 
+  /// Callback for carpeater drops (for quiet error logging)
+  /// Called with repeater ID and reason when an echo is dropped due to carpeater detection
+  void Function(String repeaterId, String reason)? onCarpeaterDrop;
+
   /// Start tracking echoes for a sent ping
   /// 
   /// @param payload - The message text sent (for content verification)
@@ -94,10 +98,23 @@ class TxTracker {
       }
       debugLog('[TX LOG] Header validation passed: 0x${metadata.header.toRadixString(16).padLeft(2, '0')}');
 
-      // VALIDATION STEP 1.5: Check RSSI (carpeater failsafe)
+      // VALIDATION STEP 1.5: Path length check (must have hops to identify repeater)
+      // Moved before RSSI check so we can log the repeater ID on carpeater drops
+      if (metadata.pathLength == 0) {
+        debugLog('[TX LOG] Ignoring: no path (direct transmission, not a repeater echo)');
+        return false;
+      }
+
+      // Extract first hop (first repeater) for use in validation and logging
+      final firstHopId = metadata.firstHop!;
+      final pathHex = firstHopId.toRadixString(16).padLeft(2, '0');
+
+      // VALIDATION STEP 2: Check RSSI (carpeater failsafe)
       if (PacketValidator.isCarpeater(metadata.rssi)) {
         debugLog('[TX LOG] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ ${PacketValidator.maxRssiThreshold}) '
-            '- possible carpeater (RSSI failsafe)');
+            '- possible carpeater (RSSI failsafe), repeater=$pathHex');
+        debugLog('[TX LOG] onCarpeaterDrop callback is ${onCarpeaterDrop != null ? "SET" : "NULL"}');
+        onCarpeaterDrop?.call(pathHex, 'RSSI too strong (${metadata.rssi} dBm)');
         return false; // Mark as handled (dropped)
       }
       debugLog('[TX LOG] ✓ RSSI OK (${metadata.rssi} < ${PacketValidator.maxRssiThreshold})');
@@ -174,15 +191,7 @@ class TxTracker {
         debugWarn('[MESSAGE_CORRELATION] Proceeding without message content verification (less reliable)');
       }
 
-      // VALIDATION STEP 4: Path length check (must have hops)
-      if (metadata.pathLength == 0) {
-        debugLog('[TX LOG] Ignoring: no path (direct transmission, not a repeater echo)');
-        return false;
-      }
-
-      // Extract first hop (first repeater)
-      final firstHopId = metadata.firstHop!;
-      final pathHex = firstHopId.toRadixString(16).padLeft(2, '0');
+      // Path length and first hop already validated/extracted earlier (before RSSI check)
 
       debugLog('[PING] Repeater echo accepted: first_hop=$pathHex, SNR=${metadata.snr}, '
           'full_path_length=${metadata.pathLength}');

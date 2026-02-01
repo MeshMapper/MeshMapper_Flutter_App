@@ -30,11 +30,16 @@ class RxLogger {
   /// Returns true if the repeater should be filtered out
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// Callback for carpeater drops (for quiet error logging)
+  /// Called with repeater ID and reason when a packet is dropped due to carpeater detection
+  final void Function(String repeaterId, String reason)? onCarpeaterDrop;
+
   RxLogger({
     required this.onRxEntry,
     this.onObservation,
     required this.getGpsLocation,
     this.shouldIgnoreRepeater,
+    this.onCarpeaterDrop,
   });
 
   /// Start passive RX wardriving
@@ -67,14 +72,20 @@ class RxLogger {
         debugLog('[RX LOG] Ignoring: no path (direct transmission, not via repeater)');
         return false;
       }
-      
+
+      // Extract LAST hop from path (the repeater that directly delivered to us)
+      // Do this early so we have repeater ID for carpeater logging
+      // Mask to last byte only (0xFF) for consistent 2-character display
+      final lastHopId = metadata.lastHop! & 0xFF;
+      final repeaterId = lastHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
+
       // Get current GPS location
       final gpsLocation = getGpsLocation();
       if (gpsLocation == null) {
         debugLog('[RX LOG] No GPS fix available, skipping entry');
         return false;
       }
-      
+
       // PACKET FILTER: Validate packet before logging
       final validation = await validator.validate(metadata);
       if (!validation.valid) {
@@ -83,12 +94,13 @@ class RxLogger {
             .join(' ');
         debugLog('[RX LOG] ❌ Packet dropped: ${validation.reason}');
         debugLog('[RX LOG] Dropped packet hex: $rawHex');
+
+        // Log carpeater drops to error log (without auto-switching)
+        if (validation.reason == 'carpeater-rssi') {
+          onCarpeaterDrop?.call(repeaterId, 'RSSI too strong (${metadata.rssi} dBm)');
+        }
         return false;
       }
-      
-      // Extract LAST hop from path (the repeater that directly delivered to us)
-      final lastHopId = metadata.lastHop!;
-      final repeaterId = lastHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
 
       debugLog('[RX LOG] Packet heard via last hop: $repeaterId, '
           'SNR=${metadata.snr}, path_length=${metadata.pathLength}');
