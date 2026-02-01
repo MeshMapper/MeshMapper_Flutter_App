@@ -61,6 +61,8 @@ class CountdownTimerService {
     // Stop when countdown reaches zero
     if (remainingMs == 0) {
       stop();
+      // Trigger UI refresh when timer ends so UI updates immediately
+      onUpdate?.call();
       return;
     }
 
@@ -127,4 +129,14 @@ class DiscoveryWindowTimer extends CountdownTimerService {
 /// Specialized countdown timer for manual ping cooldown (15 seconds)
 class ManualPingCooldownTimer extends CountdownTimerService {
   ManualPingCooldownTimer({super.onUpdate});
+
+  @override
+  void stop() {
+    final wasRunning = isRunning;
+    final remaining = remainingMs;
+    super.stop();
+    if (wasRunning) {
+      debugLog('[TIMER] Manual ping cooldown timer stopped (was ${remaining}ms remaining)');
+    }
+  }
 }

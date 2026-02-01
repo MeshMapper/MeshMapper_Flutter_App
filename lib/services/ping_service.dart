@@ -63,8 +63,6 @@ class PingService {
 
   PingStats _stats = const PingStats();
   DateTime? _lastTxTime;
-  /// Last manual TX ping time (for 15-second manual cooldown)
-  DateTime? _lastManualTxTime;
   Timer? _rxWindowTimer;
 
   // TX ping context for queueing after RX window ends
@@ -291,12 +289,10 @@ class PingService {
 
     // NO distance check - removed for manual pings
 
-    // 15-second manual cooldown check
-    if (_lastManualTxTime != null) {
-      final elapsed = DateTime.now().difference(_lastManualTxTime!);
-      if (elapsed < _manualPingCooldown) {
-        return PingValidation.manualCooldownActive;
-      }
+    // 15-second manual cooldown check - use remainingMs for real-time accuracy
+    // (isRunning depends on 500ms timer callback, remainingMs checks actual time)
+    if (_manualPingCooldownTimer.remainingMs > 0) {
+      return PingValidation.manualCooldownActive;
     }
 
     return PingValidation.valid;
@@ -378,17 +374,12 @@ class PingService {
 
   /// Check if currently in manual ping cooldown period
   bool isInManualCooldown() {
-    if (_lastManualTxTime == null) return false;
-    final elapsed = DateTime.now().difference(_lastManualTxTime!);
-    return elapsed < _manualPingCooldown;
+    return _manualPingCooldownTimer.remainingMs > 0;
   }
 
   /// Get remaining manual cooldown seconds
   int getRemainingManualCooldownSeconds() {
-    if (_lastManualTxTime == null) return 0;
-    final elapsed = DateTime.now().difference(_lastManualTxTime!);
-    final remaining = _manualPingCooldown - elapsed;
-    return remaining.inSeconds.clamp(0, _manualPingCooldown.inSeconds);
+    return _manualPingCooldownTimer.remainingSec;
   }
 
   /// Send a TX ping
@@ -548,10 +539,9 @@ class PingService {
       _lastTxTime = DateTime.now();
       _gpsService.markPingPosition(position);
 
-      // Track manual ping time and start appropriate cooldown timer
+      // Start appropriate cooldown timer
       if (manual) {
         // Manual ping: 15-second cooldown, no distance check
-        _lastManualTxTime = DateTime.now();
         _manualPingCooldownTimer.start(_manualPingCooldown.inMilliseconds);
       } else {
         // Auto ping: 7-second cooldown
