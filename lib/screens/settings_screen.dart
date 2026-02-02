@@ -349,6 +349,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
           ),
           ListTile(
+            leading: const FaIcon(FontAwesomeIcons.discord),
+            title: const Text('Discord'),
+            subtitle: const Text('Join our community chat'),
+            onTap: () => _launchUrl('https://discord.gg/D26P6c6QmG'),
+          ),
+          ListTile(
             leading: const Icon(Icons.groups),
             title: const Text('Community'),
             subtitle: const Text('Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
