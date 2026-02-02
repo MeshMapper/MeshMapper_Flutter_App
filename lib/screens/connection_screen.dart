@@ -101,11 +101,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                           ? 'GPS Disabled'
                           : appState.gpsStatus == GpsStatus.permissionDenied
                               ? 'GPS Required'
-                              : appState.inZone == null
+                              : appState.isCheckingZone
                                   ? 'Checking Zone...'
                                   : appState.inZone == true
                                       ? 'Scan'
-                                      : 'Outside Zone'),
+                                      : appState.inZone == false
+                                          ? 'Outside Zone'
+                                          : 'Checking Zone...'),
               backgroundColor: canScan ? null : Colors.grey,
             );
     }
@@ -692,11 +694,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationIcon = Icons.engineering;
       locationText = 'Maintenance';
       locationColor = Colors.orange;
-    // Only show "Checking..." on initial load when we don't have zone info yet
-    // After that, keep showing current state while checking happens in background
-    } else if (appState.isCheckingZone && appState.inZone == null) {
+    // Show "Checking Zone..." whenever a zone check is in progress
+    // This provides consistent UI feedback during both initial and re-checks
+    } else if (appState.isCheckingZone) {
       locationIcon = Icons.location_searching;
-      locationText = 'Checking...';
+      locationText = 'Checking Zone...';
       locationColor = Colors.blue;
     } else if (appState.inZone == true) {
       locationIcon = Icons.location_on;
@@ -1173,7 +1175,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                         ? 'No Internet'
                         : appState.maintenanceMode
                             ? 'Maintenance'
-                            : 'Outside Zone'),
+                            : appState.isCheckingZone
+                                ? 'Checking Zone...'
+                                : 'Outside Zone'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: canConnect
                       ? Theme.of(context).colorScheme.primary

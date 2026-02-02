@@ -65,6 +65,9 @@ class GpsService {
   Position? get lastPingPosition => _lastPingPosition;
 
   void _updateStatus(GpsStatus status) {
+    if (_status != status) {
+      debugLog('[GPS SERVICE] Status update: $_status → $status');
+    }
     _status = status;
     _statusController.add(status);
   }
@@ -155,27 +158,33 @@ class GpsService {
   /// Note: This only CHECKS permissions, does not REQUEST them.
   /// Permission requests are handled by the disclosure flow in MainScaffold.
   Future<void> startWatching() async {
-    debugLog('[GPS] startWatching() called');
+    debugLog('[GPS] startWatching() called, current status: $_status');
 
     // Check if location services are enabled first (system-level setting)
     final serviceEnabled = await isLocationServiceEnabled();
-    debugLog('[GPS] Location services enabled: $serviceEnabled');
+    debugLog('[GPS] Location services check: enabled=$serviceEnabled');
     if (!serviceEnabled) {
-      debugLog('[GPS] Location services DISABLED at system level');
+      debugLog('[GPS] Location services DISABLED at system level - user must enable in Settings');
       _updateStatus(GpsStatus.disabled);
       return;
     }
 
     // Check permissions (don't request - disclosure flow handles that)
-    final hasPermission = await checkPermissions();
-    debugLog('[GPS] Has permission: $hasPermission');
+    final permission = await Geolocator.checkPermission();
+    final hasPermission = permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse;
+    debugLog('[GPS] Permission check: $permission (hasPermission=$hasPermission)');
     if (!hasPermission) {
-      debugLog('[GPS] Waiting for disclosure flow to request permission');
+      if (permission == LocationPermission.deniedForever) {
+        debugLog('[GPS] Permission denied forever - user must enable in Settings');
+      } else {
+        debugLog('[GPS] Permission not granted - waiting for disclosure flow');
+      }
       _updateStatus(GpsStatus.permissionDenied);
       return;
     }
 
-    debugLog('[GPS] Starting position stream listener...');
+    debugLog('[GPS] Starting position stream listener (permission=$permission)...');
     _updateStatus(GpsStatus.searching);
 
     // Configure location settings for position stream
@@ -203,15 +212,19 @@ class GpsService {
     );
 
     // Get initial position
+    debugLog('[GPS] Requesting initial position (15s timeout)...');
     try {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
         timeLimit: const Duration(seconds: 15),
       );
+      debugLog('[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
+          '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
       _lastPosition = position;
       _positionController.add(position);
       _updateStatus(GpsStatus.locked);
     } catch (e) {
+      debugLog('[GPS] Initial position request failed: $e (will wait for stream updates)');
       // Will receive updates from stream
     }
   }

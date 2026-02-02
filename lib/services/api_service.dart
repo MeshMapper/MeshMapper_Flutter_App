@@ -299,13 +299,16 @@ class ApiService {
       stopwatch.stop();
       final data = json.decode(response.body) as Map<String, dynamic>;
 
-      // Log with data count instead of full payload (which may be large)
+      // Log with data summary including external_antenna values
+      final antennaSummary = entries.map((e) =>
+        '${e['type']}:external_antenna=${e['external_antenna']}'
+      ).join(', ');
       _logApiCall(
         endpoint: '/wardrive-api.php/wardrive',
         method: 'POST',
         stopwatch: stopwatch,
         statusCode: response.statusCode,
-        request: {'data': '${entries.length} items', 'heartbeat': false},
+        request: {'data': '${entries.length} items', 'items': antennaSummary},
         response: data,
       );
 

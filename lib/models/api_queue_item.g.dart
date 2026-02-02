@@ -23,6 +23,7 @@ class ApiQueueItemAdapter extends TypeAdapter<ApiQueueItem> {
       timestamp: fields[3] as DateTime,
       heardRepeats: fields[12] as String,
       canUploadAfter: fields[13] as int,
+      externalAntenna: fields[14] as bool,
       retryCount: fields[5] as int,
       lastRetryAt: fields[6] as DateTime?,
       noiseFloor: fields[11] as int?,
@@ -32,7 +33,7 @@ class ApiQueueItemAdapter extends TypeAdapter<ApiQueueItem> {
   @override
   void write(BinaryWriter writer, ApiQueueItem obj) {
     writer
-      ..writeByte(9)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(obj.type)
       ..writeByte(1)
@@ -50,7 +51,9 @@ class ApiQueueItemAdapter extends TypeAdapter<ApiQueueItem> {
       ..writeByte(12)
       ..write(obj.heardRepeats)
       ..writeByte(13)
-      ..write(obj.canUploadAfter);
+      ..write(obj.canUploadAfter)
+      ..writeByte(14)
+      ..write(obj.externalAntenna);
   }
 
   @override

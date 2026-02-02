@@ -490,8 +490,22 @@ class AppStateProvider extends ChangeNotifier {
     // Listen to GPS changes
     debugLog('[INIT] Setting up GPS status listener...');
     _gpsService.statusStream.listen((status) {
-      debugLog('[GPS] Status changed: $_gpsStatus → $status');
+      final previousStatus = _gpsStatus;
       _gpsStatus = status;
+      debugLog('[GPS] Status changed: $previousStatus → $status');
+      debugLog('[GPS] Post-change state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+          'hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}');
+
+      // Log when we transition to locked state (permission granted + GPS available)
+      if (status == GpsStatus.locked && previousStatus != GpsStatus.locked) {
+        debugLog('[GPS] GPS lock acquired - zone check should trigger on first position');
+      }
+      // Log when permission is denied or GPS disabled
+      if (status == GpsStatus.permissionDenied) {
+        debugLog('[GPS] Location permission denied - zone checks will be blocked');
+      } else if (status == GpsStatus.disabled) {
+        debugLog('[GPS] Location services disabled - zone checks will be blocked');
+      }
       notifyListeners();
     });
     _gpsStatus = _gpsService.status;  // Sync initial status
@@ -502,16 +516,23 @@ class AppStateProvider extends ChangeNotifier {
       _currentPosition = position;
       notifyListeners();
 
-      // Diagnostic: log every position received and zone check conditions
-      debugLog('[GPS] Position received in AppState: ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
+      // Comprehensive diagnostic logging for debugging user issues
+      debugLog('[GPS] Position received: ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)} '
+          '(accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
+      debugLog('[GPS] Current state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+          'hasInternet=$_hasInternet, offlineMode=${_preferences.offlineMode}, gpsStatus=$_gpsStatus');
 
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
       if (_inZone == null && !_preferences.offlineMode) {
-        debugLog('[GEOFENCE] First GPS lock, checking zone status');
-        await checkZoneStatus();
-      } else if (_inZone == null) {
-        debugLog('[GEOFENCE] Zone check skipped: offlineMode=${_preferences.offlineMode}');
+        if (!_hasInternet) {
+          debugLog('[GEOFENCE] First GPS lock but no internet - zone check will wait for connectivity');
+        } else {
+          debugLog('[GEOFENCE] First GPS lock with internet, triggering zone check');
+          await checkZoneStatus();
+        }
+      } else if (_inZone == null && _preferences.offlineMode) {
+        debugLog('[GEOFENCE] First GPS lock skipped: offline mode enabled');
       }
 
       // Check zone every 100m movement (while disconnected)
@@ -543,40 +564,64 @@ class AppStateProvider extends ChangeNotifier {
     _connectivityService = ConnectivityService();
     await _connectivityService.initialize();
     _connectivityService.internetStream.listen((hasInternet) async {
+      final previousState = _hasInternet;
       _hasInternet = hasInternet;
+      debugLog('[CONNECTIVITY] Internet status changed: $previousState → $hasInternet');
+      debugLog('[CONNECTIVITY] Current state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+          'gpsStatus=$_gpsStatus, hasPosition=${_currentPosition != null}, offlineMode=${_preferences.offlineMode}');
       notifyListeners();
 
       // Re-check zone when internet becomes available
       if (hasInternet && _inZone == null && !_preferences.offlineMode) {
-        debugLog('[CONNECTIVITY] Internet restored, rechecking zone');
+        debugLog('[CONNECTIVITY] Internet restored and zone unknown, will attempt zone check');
 
         // If we have GPS position, check zone immediately
         if (_currentPosition != null) {
+          debugLog('[CONNECTIVITY] GPS position available, triggering zone check');
           checkZoneStatus();
         } else {
           // GPS not providing positions - try to restart it
           debugLog('[CONNECTIVITY] No GPS position available, restarting GPS service');
           await _gpsService.startWatching();
+          debugLog('[CONNECTIVITY] GPS service restarted, status: ${_gpsService.status}');
           // Zone check will be triggered by GPS position listener when position arrives
         }
+      } else if (!hasInternet) {
+        debugLog('[CONNECTIVITY] Internet lost - zone checks will be blocked until restored');
       }
     });
     _hasInternet = _connectivityService.hasInternet;
+    debugLog('[INIT] Initial internet status: $_hasInternet');
 
     // Initialize audio service for sound notifications
     await _audioService.initialize();
 
     debugLog('[INIT] AppStateProvider initialization complete');
+    debugLog('[INIT] Final init state: gpsStatus=$_gpsStatus, hasInternet=$_hasInternet, '
+        'inZone=$_inZone, isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}, '
+        'offlineMode=${_preferences.offlineMode}');
     notifyListeners();
   }
 
   /// Restart GPS service after permission disclosure is accepted
   /// Called from MainScaffold after user grants location permission
   Future<void> restartGpsAfterPermission() async {
-    debugLog('[APP] Restarting GPS after permission granted');
+    debugLog('[GPS] restartGpsAfterPermission() called');
+    debugLog('[GPS] Pre-restart state: gpsStatus=$_gpsStatus, inZone=$_inZone, '
+        'isCheckingZone=$_isCheckingZone, hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}');
+
     await _gpsService.startWatching();
     _gpsStatus = _gpsService.status;  // Sync after restart
-    debugLog('[APP] GPS restarted, status: $_gpsStatus');
+
+    debugLog('[GPS] GPS restarted, new status: $_gpsStatus');
+    debugLog('[GPS] Post-restart state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+        'hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}');
+
+    // If we now have a position and zone hasn't been checked, trigger check
+    if (_currentPosition != null && _inZone == null && _hasInternet && !_preferences.offlineMode) {
+      debugLog('[GPS] Permission granted with existing position - triggering zone check');
+      await checkZoneStatus();
+    }
     notifyListeners();
   }
 
@@ -880,6 +925,9 @@ class AppStateProvider extends ChangeNotifier {
         // - Device model is known (has default power)
         return _preferences.autoPowerSet || _preferences.powerLevelSet || _deviceModel != null;
       };
+
+      // Get external antenna value for API payloads
+      _pingService!.getExternalAntenna = () => _preferences.externalAntenna;
 
       // Check if TX is allowed by API (zone capacity)
       _pingService!.checkTxAllowed = () => txAllowed;
@@ -1261,6 +1309,7 @@ class AppStateProvider extends ChangeNotifier {
             heardRepeats: heardRepeats,
             timestamp: entry.timestamp.millisecondsSinceEpoch ~/ 1000,
             repeaterId: entry.repeaterId,
+            externalAntenna: _preferences.externalAntenna,
             noiseFloor: _meshCoreConnection?.lastNoiseFloor,
           );
 
@@ -2167,27 +2216,33 @@ class AppStateProvider extends ChangeNotifier {
   /// Check zone status via API
   /// Should be called on app launch and every 100m of GPS movement while disconnected
   Future<void> checkZoneStatus() async {
+    debugLog('[GEOFENCE] checkZoneStatus() called');
+    debugLog('[GEOFENCE] Pre-check state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+        'hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}, gpsStatus=$_gpsStatus');
+
     // Skip if no internet (avoids stuck "Checking..." state)
     if (!_hasInternet) {
-      debugLog('[GEOFENCE] Skipping zone check: no internet');
+      debugLog('[GEOFENCE] Skipping zone check: no internet (hasInternet=$_hasInternet)');
       return;
     }
 
     if (_currentPosition == null) {
-      debugLog('[GEOFENCE] Cannot check zone status: no GPS position');
+      debugLog('[GEOFENCE] Cannot check zone status: no GPS position (gpsStatus=$_gpsStatus)');
       return;
     }
 
     if (_isCheckingZone) {
-      debugLog('[GEOFENCE] Zone check already in progress');
+      debugLog('[GEOFENCE] Zone check already in progress, skipping duplicate call');
       return;
     }
 
+    debugLog('[GEOFENCE] Starting zone check - setting isCheckingZone=true (previous inZone=$_inZone)');
     _isCheckingZone = true;
     notifyListeners();
 
     try {
-      debugLog('[GEOFENCE] Checking zone status at ${_currentPosition!.latitude.toStringAsFixed(5)}, ${_currentPosition!.longitude.toStringAsFixed(5)}');
+      debugLog('[GEOFENCE] Making API call to check zone at ${_currentPosition!.latitude.toStringAsFixed(5)}, '
+          '${_currentPosition!.longitude.toStringAsFixed(5)} (accuracy: ${_currentPosition!.accuracy.toStringAsFixed(1)}m)');
 
       final result = await _apiService.checkZoneStatus(
         lat: _currentPosition!.latitude,
@@ -2196,8 +2251,10 @@ class AppStateProvider extends ChangeNotifier {
         appVersion: _appVersion,
       );
 
+      debugLog('[GEOFENCE] API response received: ${result != null ? 'valid' : 'null'}');
+
       if (result == null) {
-        debugError('[GEOFENCE] Zone status check failed: no response');
+        debugError('[GEOFENCE] Zone status check failed: no response from API');
         return;
       }
 
@@ -2255,6 +2312,8 @@ class AppStateProvider extends ChangeNotifier {
       debugError('[GEOFENCE] Zone status check error: $e');
     } finally {
       _isCheckingZone = false;
+      debugLog('[GEOFENCE] Zone check complete - final state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+          'zoneName=${_currentZone?['name']}, zoneCode=${_currentZone?['code']}');
       notifyListeners();
     }
   }

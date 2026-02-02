@@ -48,6 +48,10 @@ class ApiQueueItem extends HiveObject {
   @HiveField(13)
   final int canUploadAfter;
 
+  /// Whether an external antenna is being used
+  @HiveField(14)
+  final bool externalAntenna;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -55,6 +59,7 @@ class ApiQueueItem extends HiveObject {
     required this.timestamp,
     required this.heardRepeats,
     required this.canUploadAfter,
+    required this.externalAntenna,
     this.retryCount = 0,
     this.lastRetryAt,
     this.noiseFloor,
@@ -67,6 +72,7 @@ class ApiQueueItem extends HiveObject {
     required double longitude,
     required String heardRepeats,
     required int timestamp,
+    required bool externalAntenna,
     int? noiseFloor,
   }) {
     return ApiQueueItem(
@@ -76,6 +82,7 @@ class ApiQueueItem extends HiveObject {
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
       canUploadAfter: DateTime.now().millisecondsSinceEpoch + 5000, // 5 seconds from now
+      externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );
   }
@@ -87,6 +94,7 @@ class ApiQueueItem extends HiveObject {
     required double longitude,
     required String heardRepeats,
     required int timestamp,
+    required bool externalAntenna,
     int? noiseFloor,
   }) {
     return ApiQueueItem(
@@ -96,6 +104,7 @@ class ApiQueueItem extends HiveObject {
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
       canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
+      externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );
   }
@@ -112,6 +121,7 @@ class ApiQueueItem extends HiveObject {
     required double remoteSnr,
     required String pubkeyFull,
     required int timestamp,
+    required bool externalAntenna,
     int? noiseFloor,
   }) {
     // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
@@ -123,6 +133,7 @@ class ApiQueueItem extends HiveObject {
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
       canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
+      externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );
   }
@@ -145,6 +156,7 @@ class ApiQueueItem extends HiveObject {
         'remote_snr': parts.length > 4 ? double.tryParse(parts[4]) ?? 0.0 : 0.0,
         'public_key': parts.length > 5 ? parts[5] : '',
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
+        'external_antenna': externalAntenna,
       };
     }
 
@@ -155,6 +167,7 @@ class ApiQueueItem extends HiveObject {
       'noisefloor': noiseFloor,
       'heard_repeats': heardRepeats,
       'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
+      'external_antenna': externalAntenna,
     };
   }
 

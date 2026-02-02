@@ -99,6 +99,9 @@ class PingService {
   bool Function()? checkExternalAntennaConfigured;
   bool Function()? checkPowerLevelConfigured;
 
+  /// Callback to get the external antenna value for API payloads
+  bool Function()? getExternalAntenna;
+
   /// Callback to check if TX is allowed by API (zone capacity check)
   bool Function()? checkTxAllowed;
 
@@ -628,6 +631,7 @@ class PingService {
         longitude: txPosition.longitude,
         heardRepeats: heardRepeats,
         timestamp: _pendingTxTimestamp!,
+        externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
@@ -1001,6 +1005,7 @@ class PingService {
         remoteSnr: node.remoteSnr,
         pubkeyFull: node.pubkeyFull,
         timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
       );
     }

@@ -136,6 +136,7 @@ class ApiQueueService {
     required double longitude,
     required String heardRepeats,
     required int timestamp,
+    required bool externalAntenna,
     int? noiseFloor,
   }) async {
     final item = ApiQueueItem.fromTx(
@@ -143,6 +144,7 @@ class ApiQueueService {
       longitude: longitude,
       heardRepeats: heardRepeats,
       timestamp: timestamp,
+      externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );
 
@@ -167,6 +169,7 @@ class ApiQueueService {
     required String heardRepeats,
     required int timestamp,
     required String repeaterId,
+    required bool externalAntenna,
     int? noiseFloor,
   }) async {
     final item = ApiQueueItem.fromRx(
@@ -174,6 +177,7 @@ class ApiQueueService {
       longitude: longitude,
       heardRepeats: heardRepeats,
       timestamp: timestamp,
+      externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );
 
@@ -208,6 +212,7 @@ class ApiQueueService {
     required double remoteSnr,
     required String pubkeyFull,
     required int timestamp,
+    required bool externalAntenna,
     int? noiseFloor,
   }) async {
     final item = ApiQueueItem.fromDisc(
@@ -220,6 +225,7 @@ class ApiQueueService {
       remoteSnr: remoteSnr,
       pubkeyFull: pubkeyFull,
       timestamp: timestamp,
+      externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );
 
@@ -328,6 +334,12 @@ class ApiQueueService {
 
       // Convert to API format
       final pings = items.map((item) => item.toApiJson()).toList();
+
+      // Log each item with external_antenna value
+      for (int i = 0; i < items.length; i++) {
+        final item = items[i];
+        debugLog('[API QUEUE] Item ${i + 1}/${items.length}: type=${item.type}, external_antenna=${item.externalAntenna}');
+      }
 
       debugLog('[API QUEUE] Uploading ${items.length} items...');
 

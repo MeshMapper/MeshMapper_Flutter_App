@@ -22,23 +22,30 @@ class ConnectivityService {
 
   /// Initialize the connectivity service and start monitoring
   Future<void> initialize() async {
+    debugLog('[CONNECTIVITY] Initializing connectivity service...');
     try {
       // Check initial status
+      debugLog('[CONNECTIVITY] Checking initial connectivity status...');
       await _checkConnectivity();
 
       // Listen for changes
+      debugLog('[CONNECTIVITY] Setting up connectivity change listener...');
       _subscription = _connectivity.onConnectivityChanged.listen((results) {
+        debugLog('[CONNECTIVITY] Network change detected: $results');
         _onConnectivityChanged(results);
       });
+      debugLog('[CONNECTIVITY] Initialization complete, hasInternet=$_hasInternet');
     } on MissingPluginException catch (e) {
       // Plugin not available (e.g., after hot restart without rebuild)
       debugError('[CONNECTIVITY] Plugin not available: $e');
       _pluginAvailable = false;
       // Fall back to HTTP reachability check only
+      debugLog('[CONNECTIVITY] Falling back to HTTP reachability check only');
       await _checkInternetReachability();
     } catch (e) {
       debugError('[CONNECTIVITY] Initialization failed: $e');
       // Keep optimistic default and try HTTP check
+      debugLog('[CONNECTIVITY] Falling back to HTTP reachability check');
       await _checkInternetReachability();
     }
   }
@@ -47,11 +54,15 @@ class ConnectivityService {
     final hasNetwork = results.isNotEmpty &&
         !results.contains(ConnectivityResult.none);
 
+    debugLog('[CONNECTIVITY] Processing connectivity change: hasNetwork=$hasNetwork, results=$results');
+
     if (hasNetwork) {
       // Network available - verify actual internet reachability
+      debugLog('[CONNECTIVITY] Network detected, verifying actual internet reachability...');
       _checkInternetReachability();
     } else {
       // No network at all
+      debugLog('[CONNECTIVITY] No network available');
       _updateStatus(false);
     }
   }
@@ -68,15 +79,18 @@ class ConnectivityService {
   }
 
   Future<void> _checkInternetReachability() async {
+    debugLog('[CONNECTIVITY] Starting HTTP reachability check to MeshMapper API...');
     try {
       // Try to reach MeshMapper API with short timeout
       final response = await http.head(
         Uri.parse('https://yow.meshmapper.net/'),
       ).timeout(const Duration(seconds: 5));
 
-      _updateStatus(response.statusCode < 500);
+      final isReachable = response.statusCode < 500;
+      debugLog('[CONNECTIVITY] HTTP check complete: statusCode=${response.statusCode}, reachable=$isReachable');
+      _updateStatus(isReachable);
     } catch (e) {
-      debugLog('[CONNECTIVITY] Reachability check failed: $e');
+      debugLog('[CONNECTIVITY] HTTP reachability check failed: $e');
       _updateStatus(false);
     }
   }
