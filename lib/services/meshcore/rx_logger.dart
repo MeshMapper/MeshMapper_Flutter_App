@@ -253,8 +253,6 @@ class RxLogger {
   /// Check all active RX batches for distance threshold on GPS position update
   /// Called from GPS service when position changes
   Future<void> checkDistanceTriggers(({double lat, double lon}) currentLocation) async {
-    debugLog('[RX BATCH] checkDistanceTriggers called: active_batches=${_batchBuffer.length}');
-
     if (_batchBuffer.isEmpty) {
       return; // No active batches to check
     }

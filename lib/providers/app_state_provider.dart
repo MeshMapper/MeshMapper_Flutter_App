@@ -509,19 +509,21 @@ class AppStateProvider extends ChangeNotifier {
     _gpsService.statusStream.listen((status) {
       final previousStatus = _gpsStatus;
       _gpsStatus = status;
-      debugLog('[GPS] Status changed: $previousStatus → $status');
-      debugLog('[GPS] Post-change state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
-          'hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}');
 
-      // Log when we transition to locked state (permission granted + GPS available)
-      if (status == GpsStatus.locked && previousStatus != GpsStatus.locked) {
-        debugLog('[GPS] GPS lock acquired - zone check should trigger on first position');
-      }
-      // Log when permission is denied or GPS disabled
-      if (status == GpsStatus.permissionDenied) {
-        debugLog('[GPS] Location permission denied - zone checks will be blocked');
-      } else if (status == GpsStatus.disabled) {
-        debugLog('[GPS] Location services disabled - zone checks will be blocked');
+      // Only log when status actually changes
+      if (previousStatus != status) {
+        debugLog('[GPS] Status changed: $previousStatus → $status');
+
+        // Log when we transition to locked state (permission granted + GPS available)
+        if (status == GpsStatus.locked) {
+          debugLog('[GPS] GPS lock acquired - zone check should trigger on first position');
+        }
+        // Log when permission is denied or GPS disabled
+        if (status == GpsStatus.permissionDenied) {
+          debugLog('[GPS] Location permission denied - zone checks will be blocked');
+        } else if (status == GpsStatus.disabled) {
+          debugLog('[GPS] Location services disabled - zone checks will be blocked');
+        }
       }
       notifyListeners();
     });
@@ -532,12 +534,6 @@ class AppStateProvider extends ChangeNotifier {
     _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
       notifyListeners();
-
-      // Comprehensive diagnostic logging for debugging user issues
-      debugLog('[GPS] Position received: ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)} '
-          '(accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
-      debugLog('[GPS] Current state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
-          'hasInternet=$_hasInternet, offlineMode=${_preferences.offlineMode}, gpsStatus=$_gpsStatus');
 
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
