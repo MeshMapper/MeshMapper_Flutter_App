@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 
 import '../models/connection_state.dart';
 import '../models/device_model.dart';
+import '../models/noise_floor_session.dart';
 import '../models/ping_data.dart';
 import '../models/log_entry.dart';
 import '../models/remembered_device.dart';
@@ -191,6 +192,11 @@ class AppStateProvider extends ChangeNotifier {
   // Regional channels from API (for UI display)
   List<String> _regionalChannels = [];
 
+  // Noise floor session tracking (for graph feature)
+  NoiseFloorSession? _currentNoiseFloorSession;
+  List<NoiseFloorSession> _storedNoiseFloorSessions = [];
+  Box<NoiseFloorSession>? _noiseFloorSessionBox;
+
   AppStateProvider({required BluetoothService bluetoothService})
       : _bluetoothService = bluetoothService {
     _initialize();
@@ -274,6 +280,11 @@ class AppStateProvider extends ChangeNotifier {
 
   // Regional channels getter (for UI)
   List<String> get regionalChannels => List.unmodifiable(_regionalChannels);
+
+  // Noise floor session getters
+  NoiseFloorSession? get currentNoiseFloorSession => _currentNoiseFloorSession;
+  List<NoiseFloorSession> get storedNoiseFloorSessions =>
+      List.unmodifiable(_storedNoiseFloorSessions);
 
   // Audio service getters
   bool get isSoundEnabled => _audioService.isEnabled;
@@ -398,6 +409,9 @@ class AppStateProvider extends ChangeNotifier {
     // Load device models
     await _deviceModelService.loadModels();
 
+    // Load stored noise floor sessions
+    await _loadNoiseFloorSessions();
+
     // Load remembered device (mobile only)
     await _loadRememberedDevice();
 
@@ -445,6 +459,9 @@ class AppStateProvider extends ChangeNotifier {
           _autoPingEnabled = false;
           debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
         }
+
+        // End noise floor session on BLE disconnect
+        await _endNoiseFloorSession();
 
         // Stop RX logger
         _rxLogger?.stopWardriving(trigger: 'ble_disconnect');
@@ -828,6 +845,8 @@ class AppStateProvider extends ChangeNotifier {
       // Listen for noise floor updates
       _noiseFloorSubscription = _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
         _currentNoiseFloor = noiseFloor;
+        // Record sample to current noise floor session (if active)
+        _recordNoiseFloorSample(noiseFloor);
         notifyListeners();
       });
 
@@ -1051,6 +1070,16 @@ class AppStateProvider extends ChangeNotifier {
         _addDiscLogEntry(entry);
       };
 
+      // Wire up TX window complete callback for noise floor graph
+      _pingService!.onTxWindowComplete = (success) {
+        recordPingEvent(success ? PingEventType.txSuccess : PingEventType.txFail);
+      };
+
+      // Wire up discovery window complete callback for noise floor graph
+      _pingService!.onDiscoveryWindowComplete = (success) {
+        recordPingEvent(success ? PingEventType.discSuccess : PingEventType.discFail);
+      };
+
       // Wire up pending disable complete callback
       // Called when user disables Active Mode during sending/listening and the RX window ends
       _pingService!.onPendingDisableComplete = () async {
@@ -1072,6 +1101,9 @@ class AppStateProvider extends ChangeNotifier {
         if (_preferences.offlineMode) {
           await _saveOfflineSession();
         }
+
+        // End noise floor session
+        await _endNoiseFloorSession();
 
         // Disable heartbeat
         _apiService.disableHeartbeat();
@@ -1212,6 +1244,8 @@ class AppStateProvider extends ChangeNotifier {
                 '(batch tracking: ${_currentBatchRepeaters.length} repeaters, rxCount: ${_pingStats.rxCount})');
             // Play receive sound for new RX observation
             _audioService.playReceiveSound();
+            // Record RX event for noise floor graph
+            recordPingEvent(PingEventType.rx);
             notifyListeners();
           } else {
             debugLog('[APP] Repeater ${observation.repeaterId} already has pin in current batch, SNR will update on flush if better');
@@ -1377,6 +1411,9 @@ class AppStateProvider extends ChangeNotifier {
       await _pingService?.forceDisableAutoPing();
       _autoPingEnabled = false;
     }
+
+    // End noise floor session on disconnect
+    await _endNoiseFloorSession();
 
     // Stop background service
     await BackgroundServiceManager.stopService();
@@ -1565,6 +1602,9 @@ class AppStateProvider extends ChangeNotifier {
         await _saveOfflineSession();
       }
 
+      // End noise floor session when mode is disabled
+      await _endNoiseFloorSession();
+
       // Disable heartbeat when stopping auto mode
       _apiService.disableHeartbeat();
 
@@ -1606,6 +1646,8 @@ class AppStateProvider extends ChangeNotifier {
         if (_preferences.offlineMode) {
           await _saveOfflineSession();
         }
+        // End existing noise floor session before starting new mode
+        await _endNoiseFloorSession();
       }
 
       // Start new mode
@@ -1631,6 +1673,9 @@ class AppStateProvider extends ChangeNotifier {
       // Reference: state.rxTracking.isWardriving = true in wardrive.js
       _rxLogger?.startWardriving();
       _autoPingEnabled = true;
+
+      // Start noise floor session for graph tracking
+      _startNoiseFloorSession(isPassive ? 'passive' : 'active');
 
       // Enable heartbeat ONLY for Passive Mode (not offline mode)
       // Active Mode renews session via auto-pings every 15/30/60s
@@ -2809,6 +2854,91 @@ class AppStateProvider extends ChangeNotifier {
     if (Platform.isAndroid) {
       SystemNavigator.pop();
     }
+  }
+
+  // ============================================
+  // Noise Floor Session Tracking (Graph Feature)
+  // ============================================
+
+  /// Load stored noise floor sessions from Hive
+  Future<void> _loadNoiseFloorSessions() async {
+    try {
+      _noiseFloorSessionBox = await Hive.openBox<NoiseFloorSession>('noise_floor_sessions');
+      _storedNoiseFloorSessions = _noiseFloorSessionBox!.values.toList()
+        ..sort((a, b) => b.startTime.compareTo(a.startTime)); // Newest first
+      debugLog('[GRAPH] Loaded ${_storedNoiseFloorSessions.length} stored noise floor sessions');
+    } catch (e) {
+      debugError('[GRAPH] Failed to load noise floor sessions: $e');
+      _storedNoiseFloorSessions = [];
+    }
+  }
+
+  /// Start a new noise floor session when mode is enabled
+  void _startNoiseFloorSession(String mode) {
+    _currentNoiseFloorSession = NoiseFloorSession(
+      id: const Uuid().v4(),
+      startTime: DateTime.now(),
+      mode: mode,
+    );
+    debugLog('[GRAPH] Started $mode noise floor session');
+    notifyListeners();
+  }
+
+  /// Record a noise floor sample to the current session
+  void _recordNoiseFloorSample(int noiseFloor) {
+    if (_currentNoiseFloorSession != null) {
+      _currentNoiseFloorSession!.samples.add(NoiseFloorSample(
+        timestamp: DateTime.now(),
+        noiseFloor: noiseFloor,
+      ));
+      // Don't notify on every sample - too frequent
+    }
+  }
+
+  /// Record a ping event to the current session
+  void recordPingEvent(PingEventType type) {
+    if (_currentNoiseFloorSession != null && _currentNoiseFloor != null) {
+      _currentNoiseFloorSession!.markers.add(PingEventMarker(
+        timestamp: DateTime.now(),
+        type: type,
+        noiseFloor: _currentNoiseFloor!,
+      ));
+      debugLog('[GRAPH] Recorded ${type.name} event at ${_currentNoiseFloor}dBm');
+      notifyListeners();
+    }
+  }
+
+  /// End the current session and save to storage
+  Future<void> _endNoiseFloorSession() async {
+    if (_currentNoiseFloorSession == null) return;
+
+    _currentNoiseFloorSession!.endTime = DateTime.now();
+    debugLog('[GRAPH] Ended session: ${_currentNoiseFloorSession!.durationDisplay}, '
+        '${_currentNoiseFloorSession!.samples.length} samples, '
+        '${_currentNoiseFloorSession!.markers.length} markers');
+
+    // Save to Hive
+    try {
+      await _noiseFloorSessionBox?.put(
+        _currentNoiseFloorSession!.id,
+        _currentNoiseFloorSession!,
+      );
+
+      // Update stored list
+      _storedNoiseFloorSessions.insert(0, _currentNoiseFloorSession!);
+
+      // Keep only last 10 sessions
+      while (_storedNoiseFloorSessions.length > 10) {
+        final oldest = _storedNoiseFloorSessions.removeLast();
+        await _noiseFloorSessionBox?.delete(oldest.id);
+        debugLog('[GRAPH] Deleted oldest session: ${oldest.id}');
+      }
+    } catch (e) {
+      debugError('[GRAPH] Failed to save noise floor session: $e');
+    }
+
+    _currentNoiseFloorSession = null;
+    notifyListeners();
   }
 
   // ============================================

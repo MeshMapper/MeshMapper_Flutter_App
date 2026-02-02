@@ -7,6 +7,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import 'models/noise_floor_session.dart';
 import 'providers/app_state_provider.dart';
 import 'screens/main_scaffold.dart';
 import 'services/background_service.dart';
@@ -33,6 +34,21 @@ void main() async {
   // Initialize Hive for local storage
   await Hive.initFlutter();
   debugLog('[APP] Hive initialized');
+
+  // Register noise floor session adapters before opening any boxes
+  if (!Hive.isAdapterRegistered(10)) {
+    Hive.registerAdapter(NoiseFloorSampleAdapter());
+  }
+  if (!Hive.isAdapterRegistered(11)) {
+    Hive.registerAdapter(PingEventTypeAdapter());
+  }
+  if (!Hive.isAdapterRegistered(12)) {
+    Hive.registerAdapter(PingEventMarkerAdapter());
+  }
+  if (!Hive.isAdapterRegistered(13)) {
+    Hive.registerAdapter(NoiseFloorSessionAdapter());
+  }
+  debugLog('[APP] Noise floor session adapters registered');
 
   // Request permissions on startup for mobile platforms
   if (!kIsWeb) {

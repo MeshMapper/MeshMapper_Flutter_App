@@ -1,0 +1,711 @@
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import '../models/noise_floor_session.dart';
+
+/// Interactive noise floor chart with pinch-to-zoom and pan
+class InteractiveNoiseFloorChart extends StatefulWidget {
+  final NoiseFloorSession session;
+
+  const InteractiveNoiseFloorChart({super.key, required this.session});
+
+  @override
+  State<InteractiveNoiseFloorChart> createState() => InteractiveNoiseFloorChartState();
+}
+
+class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> {
+  // View window in seconds
+  late double _viewStart;
+  late double _viewEnd;
+  late double _totalDuration;
+
+  // Gesture state
+  double? _gestureStartViewStart;
+  double? _gestureStartViewEnd;
+  double? _gestureStartFocalX;
+
+  static const double _minVisibleSeconds = 10.0;
+  static const double _markerTapRadius = 20.0; // Tap target radius for markers
+
+  @override
+  void initState() {
+    super.initState();
+    _initView();
+  }
+
+  @override
+  void didUpdateWidget(InteractiveNoiseFloorChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session != widget.session) {
+      _initView();
+    }
+  }
+
+  void _initView() {
+    _totalDuration = widget.session.duration.inSeconds.toDouble();
+    if (_totalDuration < 60) _totalDuration = 60;
+    _viewStart = 0;
+    _viewEnd = _totalDuration;
+  }
+
+  void resetZoom() {
+    setState(() {
+      _viewStart = 0;
+      _viewEnd = _totalDuration;
+    });
+  }
+
+  double get _visibleDuration => _viewEnd - _viewStart;
+  double get _zoomLevel => _totalDuration / _visibleDuration;
+
+  void _handleScaleStart(ScaleStartDetails details, double chartWidth, double chartLeft) {
+    _gestureStartViewStart = _viewStart;
+    _gestureStartViewEnd = _viewEnd;
+    _gestureStartFocalX = details.localFocalPoint.dx;
+  }
+
+  void _handleScaleUpdate(ScaleUpdateDetails details, double chartWidth, double chartLeft) {
+    if (_gestureStartViewStart == null || _gestureStartViewEnd == null || _gestureStartFocalX == null) {
+      return;
+    }
+
+    final startDuration = _gestureStartViewEnd! - _gestureStartViewStart!;
+
+    // Calculate new duration based on scale (zoom)
+    var newDuration = startDuration / details.scale;
+    newDuration = newDuration.clamp(_minVisibleSeconds, _totalDuration);
+
+    // Calculate focal point ratio in chart space
+    final focalRatio = ((_gestureStartFocalX! - chartLeft) / chartWidth).clamp(0.0, 1.0);
+
+    // Time at focal point in original view
+    final focalTime = _gestureStartViewStart! + (startDuration * focalRatio);
+
+    // Calculate pan offset from focal point movement
+    final focalDeltaX = details.localFocalPoint.dx - _gestureStartFocalX!;
+    final panSeconds = (focalDeltaX / chartWidth) * startDuration;
+
+    // New view: zoom centered on focal point, then apply pan
+    var newStart = focalTime - (newDuration * focalRatio) - panSeconds;
+    var newEnd = newStart + newDuration;
+
+    // Clamp to valid bounds
+    if (newStart < 0) {
+      newEnd = newEnd - newStart;
+      newStart = 0;
+    }
+    if (newEnd > _totalDuration) {
+      newStart = newStart - (newEnd - _totalDuration);
+      newEnd = _totalDuration;
+    }
+
+    // Final clamp
+    newStart = newStart.clamp(0.0, _totalDuration - newDuration);
+    newEnd = (newStart + newDuration).clamp(newDuration, _totalDuration);
+
+    setState(() {
+      _viewStart = newStart;
+      _viewEnd = newEnd;
+    });
+  }
+
+  void _handleScaleEnd(ScaleEndDetails details) {
+    _gestureStartViewStart = null;
+    _gestureStartViewEnd = null;
+    _gestureStartFocalX = null;
+  }
+
+  /// Check if tap hit a marker and show popup if so
+  void _handleTap(TapUpDetails details, double chartWidth, double chartLeft, double chartHeight, double chartTop) {
+    final session = widget.session;
+    if (session.markers.isEmpty || session.samples.isEmpty) return;
+
+    final range = session.noiseFloorRange;
+    final visibleRange = _viewEnd - _viewStart;
+
+    if (visibleRange <= 0 || chartWidth <= 0 || chartHeight <= 0) return;
+
+    // Find if tap is within any marker
+    for (final marker in session.markers) {
+      final elapsed = marker.timestamp.difference(session.startTime).inSeconds.toDouble();
+
+      if (elapsed < _viewStart || elapsed > _viewEnd) continue;
+
+      final noiseFloorOnLine = _interpolateNoiseFloor(elapsed, session);
+
+      final xRatio = (elapsed - _viewStart) / visibleRange;
+      final yRatio = (noiseFloorOnLine - range.min) / (range.max - range.min);
+
+      final markerX = chartLeft + (xRatio * chartWidth);
+      final markerY = chartTop + chartHeight - (yRatio * chartHeight);
+
+      final tapX = details.localPosition.dx;
+      final tapY = details.localPosition.dy;
+
+      final distance = ((tapX - markerX) * (tapX - markerX) + (tapY - markerY) * (tapY - markerY));
+      if (distance <= _markerTapRadius * _markerTapRadius) {
+        _showMarkerDetails(marker, noiseFloorOnLine.round());
+        return;
+      }
+    }
+  }
+
+  /// Interpolate noise floor at given elapsed time
+  double _interpolateNoiseFloor(double elapsedSeconds, NoiseFloorSession session) {
+    if (session.samples.isEmpty) return widget.session.noiseFloorRange.min.toDouble();
+    if (session.samples.length == 1) return session.samples.first.noiseFloor.toDouble();
+
+    NoiseFloorSample? before;
+    NoiseFloorSample? after;
+    double beforeElapsed = 0;
+    double afterElapsed = 0;
+
+    for (final sample in session.samples) {
+      final sampleElapsed = sample.timestamp.difference(session.startTime).inSeconds.toDouble();
+
+      if (sampleElapsed <= elapsedSeconds) {
+        before = sample;
+        beforeElapsed = sampleElapsed;
+      } else {
+        after = sample;
+        afterElapsed = sampleElapsed;
+        break;
+      }
+    }
+
+    if (before == null) return session.samples.first.noiseFloor.toDouble();
+    if (after == null) return before.noiseFloor.toDouble();
+
+    final timeFraction = (elapsedSeconds - beforeElapsed) / (afterElapsed - beforeElapsed);
+    return before.noiseFloor + (after.noiseFloor - before.noiseFloor) * timeFraction;
+  }
+
+  /// Show marker details popup
+  void _showMarkerDetails(PingEventMarker marker, int interpolatedNoiseFloor) {
+    final eventTypeLabel = switch (marker.type) {
+      PingEventType.txSuccess => 'TX Success',
+      PingEventType.txFail => 'TX Failed',
+      PingEventType.rx => 'RX Received',
+      PingEventType.discSuccess => 'Discovery Success',
+      PingEventType.discFail => 'Discovery Failed',
+    };
+
+    final eventDescription = switch (marker.type) {
+      PingEventType.txSuccess => 'Ping was heard by repeater(s)',
+      PingEventType.txFail => 'Ping was not heard by any repeater',
+      PingEventType.rx => 'Received passive observation',
+      PingEventType.discSuccess => 'Discovery got response',
+      PingEventType.discFail => 'Discovery got no response',
+    };
+
+    final elapsed = marker.timestamp.difference(widget.session.startTime);
+    final elapsedStr = _formatDuration(elapsed);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Container(
+              width: 16,
+              height: 16,
+              decoration: BoxDecoration(
+                color: marker.color,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 1.5),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(eventTypeLabel),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(eventDescription),
+            const SizedBox(height: 16),
+            _detailRow('Time', elapsedStr),
+            _detailRow('Noise Floor', '$interpolatedNoiseFloor dBm'),
+            _detailRow('Timestamp', _formatTimestamp(marker.timestamp)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(fontWeight: FontWeight.w500),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTimestamp(DateTime dt) {
+    return '${dt.hour}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = widget.session;
+
+    if (session.samples.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.show_chart,
+              size: 48,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'No data recorded',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final range = session.noiseFloorRange;
+
+    // Chart layout constants
+    const leftPadding = 44.0;
+    const rightPadding = 16.0;
+    const topPadding = 8.0;
+
+    return Column(
+      children: [
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final chartWidth = constraints.maxWidth - leftPadding - rightPadding;
+
+              final chartHeight = constraints.maxHeight - topPadding - 36.0; // 36 = bottom axis reserved
+
+              return RawGestureDetector(
+                gestures: <Type, GestureRecognizerFactory>{
+                  ScaleGestureRecognizer: GestureRecognizerFactoryWithHandlers<ScaleGestureRecognizer>(
+                    () => ScaleGestureRecognizer(),
+                    (ScaleGestureRecognizer instance) {
+                      instance.onStart = (details) => _handleScaleStart(details, chartWidth, leftPadding);
+                      instance.onUpdate = (details) => _handleScaleUpdate(details, chartWidth, leftPadding);
+                      instance.onEnd = _handleScaleEnd;
+                    },
+                  ),
+                  TapGestureRecognizer: GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                    () => TapGestureRecognizer(),
+                    (TapGestureRecognizer instance) {
+                      instance.onTapUp = (details) => _handleTap(details, chartWidth, leftPadding, chartHeight, topPadding);
+                    },
+                  ),
+                },
+                behavior: HitTestBehavior.opaque,
+                child: Stack(
+                  children: [
+                    // Line chart - wrapped in IgnorePointer so it doesn't steal gestures
+                    Padding(
+                      padding: const EdgeInsets.only(top: topPadding, right: rightPadding),
+                      child: IgnorePointer(
+                        child: LineChart(
+                          LineChartData(
+                            minY: range.min.toDouble(),
+                            maxY: range.max.toDouble(),
+                            minX: _viewStart,
+                            maxX: _viewEnd,
+                            clipData: const FlClipData.all(),
+                            lineBarsData: [_buildLineData(session)],
+                            lineTouchData: const LineTouchData(enabled: false),
+                            titlesData: _buildTitles(context),
+                            gridData: _buildGrid(context),
+                            borderData: _buildBorder(context),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // Marker overlay
+                    Padding(
+                      padding: const EdgeInsets.only(top: topPadding, right: rightPadding),
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          size: Size.infinite,
+                          painter: _MarkerPainter(
+                            session: session,
+                            minY: range.min.toDouble(),
+                            maxY: range.max.toDouble(),
+                            minX: _viewStart,
+                            maxX: _viewEnd,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 4),
+        // Zoom indicator
+        if (_zoomLevel > 1.05)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              '${_zoomLevel.toStringAsFixed(1)}x  •  ${_formatDuration(Duration(seconds: _viewStart.toInt()))} – ${_formatDuration(Duration(seconds: _viewEnd.toInt()))}',
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        _buildLegend(context),
+      ],
+    );
+  }
+
+  LineChartBarData _buildLineData(NoiseFloorSession session) {
+    final spots = session.samples.map((s) {
+      final elapsed = s.timestamp.difference(session.startTime).inSeconds.toDouble();
+      return FlSpot(elapsed, s.noiseFloor.toDouble());
+    }).toList();
+
+    final range = session.noiseFloorRange;
+    final minY = range.min.toDouble();
+    final maxY = range.max.toDouble();
+    final yRange = maxY - minY;
+
+    // Calculate gradient stops based on noise floor thresholds
+    // Green: -120 to -95 (good), Orange: -95 to -85 (medium), Red: -85+ (bad)
+    double yToStop(double dbm) {
+      if (yRange <= 0) return 0.5;
+      return ((dbm - minY) / yRange).clamp(0.0, 1.0);
+    }
+
+    // Smooth gradient with faded transitions
+    final lineColors = [
+      Colors.green,
+      Colors.green,
+      Colors.orange,
+      Colors.red,
+      Colors.red,
+    ];
+    final fillColors = [
+      Colors.green.withValues(alpha: 0.2),
+      Colors.green.withValues(alpha: 0.15),
+      Colors.orange.withValues(alpha: 0.12),
+      Colors.red.withValues(alpha: 0.1),
+      Colors.red.withValues(alpha: 0.08),
+    ];
+    final stops = [
+      0.0,
+      yToStop(-100),  // Start fading from green
+      yToStop(-90),   // Orange in middle
+      yToStop(-80),   // Fade to red
+      1.0,
+    ];
+
+    return LineChartBarData(
+      spots: spots,
+      isCurved: true,
+      curveSmoothness: 0.2,
+      gradient: LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: lineColors,
+        stops: stops,
+      ),
+      barWidth: 2,
+      dotData: const FlDotData(show: false),
+      belowBarData: BarAreaData(
+        show: true,
+        gradient: LinearGradient(
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+          colors: fillColors,
+          stops: stops,
+        ),
+      ),
+    );
+  }
+
+  FlTitlesData _buildTitles(BuildContext context) {
+    final xInterval = _calculateInterval(_visibleDuration);
+
+    return FlTitlesData(
+      bottomTitles: AxisTitles(
+        axisNameWidget: Text(
+          'Elapsed Time',
+          style: TextStyle(
+            fontSize: 10,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        sideTitles: SideTitles(
+          showTitles: true,
+          interval: xInterval,
+          reservedSize: 28,
+          getTitlesWidget: (value, meta) {
+            if (value <= _viewStart || value >= _viewEnd) {
+              return const SizedBox.shrink();
+            }
+            final elapsed = Duration(seconds: value.toInt());
+            return Text(
+              _formatDuration(elapsed),
+              style: TextStyle(
+                fontSize: 10,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            );
+          },
+        ),
+      ),
+      leftTitles: AxisTitles(
+        axisNameWidget: Text(
+          'dBm',
+          style: TextStyle(
+            fontSize: 10,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        sideTitles: SideTitles(
+          showTitles: true,
+          interval: 10,
+          reservedSize: 36,
+          getTitlesWidget: (value, meta) {
+            return Text(
+              '${value.toInt()}',
+              style: TextStyle(
+                fontSize: 10,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            );
+          },
+        ),
+      ),
+      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+    );
+  }
+
+  FlGridData _buildGrid(BuildContext context) {
+    return FlGridData(
+      show: true,
+      drawHorizontalLine: true,
+      drawVerticalLine: true,
+      horizontalInterval: 10,
+      getDrawingHorizontalLine: (value) {
+        return FlLine(
+          color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+          strokeWidth: 1,
+        );
+      },
+      getDrawingVerticalLine: (value) {
+        return FlLine(
+          color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
+          strokeWidth: 1,
+        );
+      },
+    );
+  }
+
+  FlBorderData _buildBorder(BuildContext context) {
+    return FlBorderData(
+      show: true,
+      border: Border.all(
+        color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+      ),
+    );
+  }
+
+  Widget _buildLegend(BuildContext context) {
+    return Wrap(
+      spacing: 16,
+      runSpacing: 8,
+      alignment: WrapAlignment.center,
+      children: [
+        _legendItem(context, Colors.green, 'TX Success'),
+        _legendItem(context, Colors.red, 'TX Fail'),
+        _legendItem(context, Colors.blue, 'RX'),
+        _legendItem(context, Colors.purple, 'DISC Success'),
+        _legendItem(context, Colors.grey, 'DISC Fail'),
+      ],
+    );
+  }
+
+  Widget _legendItem(BuildContext context, Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 1),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  double _calculateInterval(double visibleRange) {
+    if (visibleRange <= 20) return 5;
+    if (visibleRange <= 60) return 10;
+    if (visibleRange <= 120) return 20;
+    if (visibleRange <= 300) return 60;
+    if (visibleRange <= 600) return 120;
+    if (visibleRange <= 1800) return 300;
+    return 600;
+  }
+
+  String _formatDuration(Duration d) {
+    if (d.inHours > 0) {
+      return '${d.inHours}:${(d.inMinutes % 60).toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+    }
+    return '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+  }
+}
+
+/// Custom painter to draw ping event markers on top of the chart
+class _MarkerPainter extends CustomPainter {
+  final NoiseFloorSession session;
+  final double minY;
+  final double maxY;
+  final double minX;
+  final double maxX;
+
+  _MarkerPainter({
+    required this.session,
+    required this.minY,
+    required this.maxY,
+    required this.minX,
+    required this.maxX,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (session.markers.isEmpty || session.samples.isEmpty) return;
+
+    const leftPadding = 44.0;
+    const bottomPadding = 36.0;
+    const topPadding = 0.0;
+    const rightPadding = 0.0;
+
+    final chartWidth = size.width - leftPadding - rightPadding;
+    final chartHeight = size.height - bottomPadding - topPadding;
+    final visibleRange = maxX - minX;
+
+    if (visibleRange <= 0 || chartWidth <= 0 || chartHeight <= 0) return;
+
+    for (final marker in session.markers) {
+      final elapsed = marker.timestamp.difference(session.startTime).inSeconds.toDouble();
+
+      if (elapsed < minX || elapsed > maxX) continue;
+
+      final noiseFloorOnLine = _interpolateNoiseFloor(elapsed);
+
+      final xRatio = (elapsed - minX) / visibleRange;
+      final yRatio = (noiseFloorOnLine - minY) / (maxY - minY);
+
+      final x = leftPadding + (xRatio * chartWidth);
+      final y = topPadding + chartHeight - (yRatio * chartHeight);
+
+      final paint = Paint()
+        ..color = marker.color
+        ..style = PaintingStyle.fill;
+
+      canvas.drawCircle(Offset(x, y), 6, paint);
+
+      final borderPaint = Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5;
+
+      canvas.drawCircle(Offset(x, y), 6, borderPaint);
+    }
+  }
+
+  double _interpolateNoiseFloor(double elapsedSeconds) {
+    if (session.samples.isEmpty) return minY;
+    if (session.samples.length == 1) return session.samples.first.noiseFloor.toDouble();
+
+    NoiseFloorSample? before;
+    NoiseFloorSample? after;
+    double beforeElapsed = 0;
+    double afterElapsed = 0;
+
+    for (final sample in session.samples) {
+      final sampleElapsed = sample.timestamp.difference(session.startTime).inSeconds.toDouble();
+
+      if (sampleElapsed <= elapsedSeconds) {
+        before = sample;
+        beforeElapsed = sampleElapsed;
+      } else {
+        after = sample;
+        afterElapsed = sampleElapsed;
+        break;
+      }
+    }
+
+    if (before == null) return session.samples.first.noiseFloor.toDouble();
+    if (after == null) return before.noiseFloor.toDouble();
+
+    final timeFraction = (elapsedSeconds - beforeElapsed) / (afterElapsed - beforeElapsed);
+    return before.noiseFloor + (after.noiseFloor - before.noiseFloor) * timeFraction;
+  }
+
+  @override
+  bool shouldRepaint(covariant _MarkerPainter oldDelegate) {
+    return oldDelegate.session != session ||
+        oldDelegate.minY != minY ||
+        oldDelegate.maxY != maxY ||
+        oldDelegate.minX != minX ||
+        oldDelegate.maxX != maxX;
+  }
+}
+
+/// Simple chart wrapper for compatibility
+class NoiseFloorChart extends StatelessWidget {
+  final NoiseFloorSession session;
+
+  const NoiseFloorChart({super.key, required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    return InteractiveNoiseFloorChart(session: session);
+  }
+}

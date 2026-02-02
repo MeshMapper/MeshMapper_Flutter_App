@@ -13,6 +13,7 @@ import 'home_screen.dart';
 import 'log_screen.dart';
 import 'connection_screen.dart';
 import 'settings_screen.dart';
+import 'graph_screen.dart';
 
 /// Main scaffold with bottom navigation
 class MainScaffold extends StatefulWidget {
@@ -29,6 +30,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   final List<Widget> _screens = [
     const HomeScreen(),
     const LogScreen(),
+    const GraphScreen(),
     const ConnectionScreen(),
     const SettingsScreen(),
   ];
@@ -164,15 +166,20 @@ class _MainScaffoldState extends State<MainScaffold> {
             showBadge: appState.errorLogEntries.isNotEmpty,
           ),
           _buildCompactNavItem(
+            icon: Icons.show_chart_outlined,
+            activeIcon: Icons.show_chart,
+            index: 2,
+          ),
+          _buildCompactNavItem(
             icon: appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
             activeIcon: appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
-            index: 2,
+            index: 3,
             color: appState.isConnected ? Colors.green : null,
           ),
           _buildCompactNavItem(
             icon: Icons.settings_outlined,
             activeIcon: Icons.settings,
-            index: 3,
+            index: 4,
           ),
         ],
       ),
@@ -244,6 +251,11 @@ class _MainScaffoldState extends State<MainScaffold> {
             child: const Icon(Icons.list_alt),
           ),
           label: 'Log',
+        ),
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.show_chart_outlined),
+          activeIcon: Icon(Icons.show_chart),
+          label: 'Graph',
         ),
         BottomNavigationBarItem(
           icon: Icon(

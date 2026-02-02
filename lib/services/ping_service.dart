@@ -117,6 +117,14 @@ class PingService {
   /// Called when a discovery window completes with the log entry
   void Function(DiscLogEntry)? onDiscoveryComplete;
 
+  /// Callback when TX window ends (for noise floor graph)
+  /// Parameters: (bool success) - true if any repeaters heard, false if none
+  void Function(bool success)? onTxWindowComplete;
+
+  /// Callback when discovery window ends (for noise floor graph)
+  /// Parameters: (bool success) - true if any nodes discovered, false if none
+  void Function(bool success)? onDiscoveryWindowComplete;
+
   /// Callback when pending disable completes after RX window
   /// AppStateProvider uses this to update its state and cleanup
   Future<void> Function()? onPendingDisableComplete;
@@ -601,7 +609,8 @@ class PingService {
     String heardRepeats = 'None';
 
     final txTracker = _txTracker;
-    if (txTracker != null && txTracker.repeaters.isNotEmpty) {
+    final txSuccess = txTracker != null && txTracker.repeaters.isNotEmpty;
+    if (txSuccess) {
       debugLog('[PING] TxTracker collected ${txTracker.repeaters.length} repeater echoes');
 
       // Format heard_repeats: "repeaterId(snr),repeaterId(snr)"
@@ -622,6 +631,9 @@ class PingService {
     } else {
       debugLog('[PING] No repeater echoes detected during listening window');
     }
+
+    // Notify about TX window completion for noise floor graph
+    onTxWindowComplete?.call(txSuccess);
 
     // Queue TX entry with heard_repeats AFTER RX window ends
     // Reference: enqueueTX() called after RX window in wardrive.js
@@ -970,6 +982,20 @@ class PingService {
     final position = _discoveryStartPosition;
     if (position == null) {
       debugLog('[DISC] No position recorded for discovery, skipping');
+      // Notify about discovery failure for noise floor graph
+      onDiscoveryWindowComplete?.call(false);
+      _scheduleNextDiscovery();
+      return;
+    }
+
+    // Check if discovery was successful (any nodes found)
+    final discoverySuccess = nodes.isNotEmpty;
+
+    // Notify about discovery window completion for noise floor graph
+    onDiscoveryWindowComplete?.call(discoverySuccess);
+
+    if (!discoverySuccess) {
+      debugLog('[DISC] No nodes discovered');
       _scheduleNextDiscovery();
       return;
     }
