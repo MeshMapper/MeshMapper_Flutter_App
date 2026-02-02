@@ -25,6 +25,7 @@ class BugReportSheet extends StatefulWidget {
 
 class _BugReportSheetState extends State<BugReportSheet> {
   final _formKey = GlobalKey<FormState>();
+  final _usernameController = TextEditingController();
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
 
@@ -49,6 +50,12 @@ class _BugReportSheetState extends State<BugReportSheet> {
   void initState() {
     super.initState();
     _loadUploadableFiles();
+    // Auto-populate username from remembered device (companion name for reconnect)
+    final rememberedName = widget.appState.rememberedDevice?.name;
+    if (rememberedName != null) {
+      // Strip MeshCore- prefix if present
+      _usernameController.text = rememberedName.replaceFirst('MeshCore-', '');
+    }
   }
 
   Future<void> _loadUploadableFiles() async {
@@ -74,6 +81,7 @@ class _BugReportSheetState extends State<BugReportSheet> {
 
   @override
   void dispose() {
+    _usernameController.dispose();
     _titleController.dispose();
     _descriptionController.dispose();
     super.dispose();
@@ -131,9 +139,16 @@ class _BugReportSheetState extends State<BugReportSheet> {
       // Use last connected device name (companion name without MeshCore- prefix)
       final deviceName = widget.appState.lastConnectedDeviceName ?? 'not-connected';
 
+      // Format description with username if provided
+      final username = _usernameController.text.trim();
+      final descriptionText = _descriptionController.text.trim();
+      final formattedBody = username.isNotEmpty
+          ? 'Username: $username\n\n$descriptionText'
+          : descriptionText;
+
       final result = await service.submitBugReport(
         title: _titleController.text.trim(),
-        body: _descriptionController.text.trim(),
+        body: formattedBody,
         platform: _platform,
         ticketType: _ticketType,
         deviceId: deviceName,
@@ -141,7 +156,7 @@ class _BugReportSheetState extends State<BugReportSheet> {
         appVersion: AppConstants.appVersion,
         devicePlatform: DebugSubmitService.getDevicePlatform(),
         debugFiles: filesToUpload,
-        userNotes: _descriptionController.text.trim(),
+        userNotes: formattedBody,
         onProgress: _onProgressUpdate,
       );
 
@@ -252,6 +267,20 @@ class _BugReportSheetState extends State<BugReportSheet> {
                   showSelectedIcon: false,
                 ),
                 const SizedBox(height: 24),
+
+                // Username field (optional, auto-populated from remembered device)
+                _buildSectionLabel(theme, Icons.person, 'Username (optional)'),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _usernameController,
+                  decoration: _buildInputDecoration(
+                    theme,
+                    hintText: 'Your MeshCore companion name',
+                  ),
+                  maxLength: 50,
+                  enabled: !_isSubmitting,
+                ),
+                const SizedBox(height: 16),
 
                 // Title field
                 _buildSectionLabel(theme, Icons.title, 'Title'),

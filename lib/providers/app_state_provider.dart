@@ -101,6 +101,7 @@ class AppStateProvider extends ChangeNotifier {
   // GPS state
   GpsStatus _gpsStatus = GpsStatus.permissionDenied;
   Position? _currentPosition;
+  ({double lat, double lon})? _lastKnownPosition;
 
   // Device info
   DeviceModel? _deviceModel;
@@ -216,6 +217,7 @@ class AppStateProvider extends ChangeNotifier {
   bool get isBluetoothOff => _bluetoothAdapterState == BluetoothAdapterState.off;
   GpsStatus get gpsStatus => _gpsStatus;
   Position? get currentPosition => _currentPosition;
+  ({double lat, double lon})? get lastKnownPosition => _lastKnownPosition;
   DeviceModel? get deviceModel => _deviceModel;
   String? get manufacturerString => _manufacturerString;
   String? get devicePublicKey => _devicePublicKey;
@@ -419,6 +421,9 @@ class AppStateProvider extends ChangeNotifier {
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
 
+    // Load last known GPS position for map centering
+    await _loadLastPosition();
+
     // Load last connected device info (for bug reports)
     await _loadLastConnectedDevice();
 
@@ -534,6 +539,9 @@ class AppStateProvider extends ChangeNotifier {
     _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
       notifyListeners();
+
+      // Save last position for next app launch
+      _saveLastPosition(position.latitude, position.longitude);
 
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
@@ -1995,6 +2003,14 @@ class AppStateProvider extends ChangeNotifier {
     _savePreferences();
   }
 
+  /// Set app theme mode (dark/light) and persist
+  void setThemeMode(String mode) {
+    _preferences = _preferences.copyWith(themeMode: mode);
+    debugLog('[THEME] Theme mode set to $mode');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Set close app after disconnect preference (Android only)
   void setCloseAppAfterDisconnect(bool value) {
     _preferences = _preferences.copyWith(closeAppAfterDisconnect: value);
@@ -2833,6 +2849,41 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   // ============================================
+  // Last Known GPS Position Persistence
+  // ============================================
+
+  /// Load last known GPS position from Hive storage for map centering
+  Future<void> _loadLastPosition() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      final lat = box.get('last_position_lat') as double?;
+      final lon = box.get('last_position_lon') as double?;
+      if (lat != null && lon != null) {
+        _lastKnownPosition = (lat: lat, lon: lon);
+        debugLog('[GPS] Loaded last position: $lat, $lon');
+        notifyListeners(); // Trigger UI rebuild so map can center on last position
+      }
+    } catch (e) {
+      debugLog('[GPS] Failed to load last position: $e');
+    }
+  }
+
+  /// Save last known GPS position to Hive storage
+  Future<void> _saveLastPosition(double lat, double lon) async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      await box.put('last_position_lat', lat);
+      await box.put('last_position_lon', lon);
+    } catch (e) {
+      debugLog('[GPS] Failed to save last position: $e');
+    }
+  }
+
+  // ============================================
   // App Exit (Android only)
   // ============================================
 
@@ -2856,10 +2907,56 @@ class AppStateProvider extends ChangeNotifier {
   // Noise Floor Session Tracking (Graph Feature)
   // ============================================
 
+  static const String _noiseFloorSessionBoxName = 'noise_floor_sessions';
+
+  /// Open noise floor session box with timeout and automatic recovery from corruption
+  Future<Box<NoiseFloorSession>?> _openNoiseFloorBoxSafely() async {
+    const timeout = Duration(seconds: 5);
+
+    debugLog('[HIVE] Opening typed box "$_noiseFloorSessionBoxName"...');
+
+    try {
+      final box = await Hive.openBox<NoiseFloorSession>(_noiseFloorSessionBoxName).timeout(timeout);
+      debugLog('[HIVE] Typed box "$_noiseFloorSessionBoxName" opened successfully');
+      return box;
+    } on TimeoutException {
+      debugError('[HIVE] Typed box "$_noiseFloorSessionBoxName" timed out - attempting recovery');
+      return _attemptNoiseFloorBoxRecovery(timeout);
+    } catch (e) {
+      debugError('[HIVE] Typed box "$_noiseFloorSessionBoxName" failed: $e - attempting recovery');
+      return _attemptNoiseFloorBoxRecovery(timeout);
+    }
+  }
+
+  /// Attempt to recover from Hive corruption for noise floor box
+  Future<Box<NoiseFloorSession>?> _attemptNoiseFloorBoxRecovery(Duration timeout) async {
+    try {
+      debugLog('[HIVE] Deleting corrupted box "$_noiseFloorSessionBoxName"...');
+      await Hive.deleteBoxFromDisk(_noiseFloorSessionBoxName);
+      debugLog('[HIVE] Retrying open...');
+
+      // Notify user that cleanup happened
+      logError('Storage for "$_noiseFloorSessionBoxName" was corrupted and has been reset');
+
+      final box = await Hive.openBox<NoiseFloorSession>(_noiseFloorSessionBoxName).timeout(timeout);
+      debugLog('[HIVE] Typed box "$_noiseFloorSessionBoxName" opened after recovery');
+      return box;
+    } catch (e) {
+      debugError('[HIVE] Recovery failed for "$_noiseFloorSessionBoxName": $e');
+      logError('Storage for "$_noiseFloorSessionBoxName" unavailable - noise floor graphs will not persist');
+      return null;
+    }
+  }
+
   /// Load stored noise floor sessions from Hive
   Future<void> _loadNoiseFloorSessions() async {
+    _noiseFloorSessionBox = await _openNoiseFloorBoxSafely();
+    if (_noiseFloorSessionBox == null) {
+      _storedNoiseFloorSessions = [];
+      return;
+    }
+
     try {
-      _noiseFloorSessionBox = await Hive.openBox<NoiseFloorSession>('noise_floor_sessions');
       _storedNoiseFloorSessions = _noiseFloorSessionBox!.values.toList()
         ..sort((a, b) => b.startTime.compareTo(a.startTime)); // Newest first
       debugLog('[GRAPH] Loaded ${_storedNoiseFloorSessions.length} stored noise floor sessions');

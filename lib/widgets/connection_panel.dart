@@ -34,18 +34,20 @@ class ConnectionPanel extends StatelessWidget {
   Widget _buildAntennaSelector(BuildContext context, AppStateProvider appState, prefs) {
     final isSet = prefs.externalAntennaSet;
     final hasExternal = prefs.externalAntenna;
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isSet
-            ? Colors.grey.withValues(alpha:0.06)
-            : Colors.orange.withValues(alpha:0.08),
+            ? colorScheme.onSurface.withValues(alpha: 0.04)
+            : Colors.orange.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isSet
-              ? Colors.grey.withValues(alpha:0.15)
-              : Colors.orange.withValues(alpha:0.3),
+              ? colorScheme.outline.withValues(alpha: 0.3)
+              : Colors.orange.withValues(alpha: 0.3),
         ),
       ),
       child: Row(
@@ -55,14 +57,14 @@ class ConnectionPanel extends StatelessWidget {
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
               color: isSet
-                  ? Colors.grey.withValues(alpha:0.1)
-                  : Colors.orange.withValues(alpha:0.15),
+                  ? colorScheme.onSurface.withValues(alpha: 0.08)
+                  : Colors.orange.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
               Icons.settings_input_antenna,
               size: 20,
-              color: isSet ? Colors.grey.shade600 : Colors.orange.shade700,
+              color: isSet ? colorScheme.onSurfaceVariant : Colors.orange.shade700,
             ),
           ),
           const SizedBox(width: 12),
@@ -73,14 +75,16 @@ class ConnectionPanel extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w500,
-                color: Colors.grey.shade800,
+                color: colorScheme.onSurface,
               ),
             ),
           ),
           // Segmented toggle
           Container(
             decoration: BoxDecoration(
-              color: const Color(0xFF334155), // slate-700
+              color: isDark
+                  ? const Color(0xFF334155) // slate-700 for dark
+                  : const Color(0xFFE2E8F0), // slate-200 for light
               borderRadius: BorderRadius.circular(8),
             ),
             padding: const EdgeInsets.all(3),
@@ -123,6 +127,8 @@ class ConnectionPanel extends StatelessWidget {
     required bool isSelected,
     required VoidCallback onTap,
   }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -131,9 +137,14 @@ class ConnectionPanel extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
           color: isSelected
-              ? const Color(0xFF475569) // slate-600
+              ? (isDark
+                  ? const Color(0xFF475569) // slate-600 for dark
+                  : const Color(0xFFFFFFFF)) // white for light
               : Colors.transparent,
           borderRadius: BorderRadius.circular(6),
+          boxShadow: isSelected && !isDark
+              ? [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 2, offset: const Offset(0, 1))]
+              : null,
         ),
         child: Text(
           label,
@@ -141,8 +152,8 @@ class ConnectionPanel extends StatelessWidget {
             fontSize: 13,
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
             color: isSelected
-                ? Colors.white
-                : const Color(0xFF94A3B8), // slate-400
+                ? (isDark ? Colors.white : const Color(0xFF1E293B)) // slate-800 for light
+                : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)), // slate-400/500
           ),
         ),
       ),

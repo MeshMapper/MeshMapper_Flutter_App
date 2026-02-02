@@ -46,6 +46,9 @@ class UserPreferences {
   /// Close app after disconnect (Android only)
   final bool closeAppAfterDisconnect;
 
+  /// App theme mode (dark, light)
+  final String themeMode;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -62,6 +65,7 @@ class UserPreferences {
     this.developerModeEnabled = false,
     this.mapStyle = 'dark',
     this.closeAppAfterDisconnect = false,
+    this.themeMode = 'dark',
   });
 
   /// Create from JSON (for persistence)
@@ -82,6 +86,7 @@ class UserPreferences {
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
       mapStyle: (json['mapStyle'] as String?) ?? 'dark',
       closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
+      themeMode: (json['themeMode'] as String?) ?? 'dark',
     );
   }
 
@@ -103,6 +108,7 @@ class UserPreferences {
       'developerModeEnabled': developerModeEnabled,
       'mapStyle': mapStyle,
       'closeAppAfterDisconnect': closeAppAfterDisconnect,
+      'themeMode': themeMode,
     };
   }
 
@@ -123,6 +129,7 @@ class UserPreferences {
     bool? developerModeEnabled,
     String? mapStyle,
     bool? closeAppAfterDisconnect,
+    String? themeMode,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -140,6 +147,7 @@ class UserPreferences {
       developerModeEnabled: developerModeEnabled ?? this.developerModeEnabled,
       mapStyle: mapStyle ?? this.mapStyle,
       closeAppAfterDisconnect: closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
+      themeMode: themeMode ?? this.themeMode,
     );
   }
 
@@ -182,7 +190,8 @@ class UserPreferences {
         other.backgroundModeEnabled == backgroundModeEnabled &&
         other.developerModeEnabled == developerModeEnabled &&
         other.mapStyle == mapStyle &&
-        other.closeAppAfterDisconnect == closeAppAfterDisconnect;
+        other.closeAppAfterDisconnect == closeAppAfterDisconnect &&
+        other.themeMode == themeMode;
   }
 
   @override
@@ -202,6 +211,7 @@ class UserPreferences {
       developerModeEnabled,
       mapStyle,
       closeAppAfterDisconnect,
+      themeMode,
     );
   }
 }

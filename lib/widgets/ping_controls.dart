@@ -327,10 +327,11 @@ class _ActionButtonState extends State<_ActionButton>
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     // Use color when enabled, active (RX listening), or during cooldown
     // This prevents the button from going grey during cooldown
     final showColor = widget.enabled || widget.isActive || widget.showCooldown;
-    final effectiveColor = showColor ? widget.color : Colors.grey;
+    final effectiveColor = showColor ? widget.color : colorScheme.onSurfaceVariant;
     final borderOpacity = widget.isActive ? 0.6 : 0.3;
 
     return AnimatedBuilder(
@@ -370,7 +371,7 @@ class _ActionButtonState extends State<_ActionButton>
                           size: 26,
                           color: showColor
                               ? effectiveColor
-                              : Colors.grey.shade400,
+                              : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                         ),
                         // Active indicator dot
                         if (widget.isActive)
@@ -384,7 +385,7 @@ class _ActionButtonState extends State<_ActionButton>
                                 color: const Color(0xFF22C55E),
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                  color: Colors.white,
+                                  color: colorScheme.surface,
                                   width: 2,
                                 ),
                               ),
@@ -401,8 +402,8 @@ class _ActionButtonState extends State<_ActionButton>
                       fontSize: 11,
                       fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
                       color: showColor
-                          ? (widget.isActive ? effectiveColor : Colors.grey.shade700)
-                          : Colors.grey.shade400,
+                          ? (widget.isActive ? effectiveColor : colorScheme.onSurface)
+                          : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                     ),
                   ),
                   // Active status text OR subtitle - always reserve space
@@ -446,6 +447,8 @@ class _SoundToggle extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final soundEnabled = appState.isSoundEnabled;
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Material(
       color: Colors.transparent,
@@ -460,12 +463,12 @@ class _SoundToggle extends StatelessWidget {
           decoration: BoxDecoration(
             color: soundEnabled
                 ? Colors.blue.withValues(alpha: 0.15)
-                : Colors.grey.withValues(alpha: 0.08),
+                : colorScheme.onSurface.withValues(alpha: 0.05),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: soundEnabled
                   ? Colors.blue.withValues(alpha: 0.4)
-                  : Colors.grey.withValues(alpha: 0.2),
+                  : colorScheme.outline.withValues(alpha: 0.2),
             ),
           ),
           child: Row(
@@ -476,13 +479,15 @@ class _SoundToggle extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: soundEnabled
                       ? Colors.blue.withValues(alpha: 0.2)
-                      : Colors.grey.withValues(alpha: 0.1),
+                      : colorScheme.onSurface.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   soundEnabled ? Icons.volume_up : Icons.volume_off,
                   size: 18,
-                  color: soundEnabled ? Colors.blue.shade700 : Colors.grey.shade500,
+                  color: soundEnabled
+                      ? (isDark ? Colors.blue.shade400 : Colors.blue.shade700)
+                      : colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(width: 8),
@@ -497,8 +502,8 @@ class _SoundToggle extends StatelessWidget {
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
                       color: soundEnabled
-                          ? Colors.blue.shade800
-                          : Colors.grey.shade700,
+                          ? (isDark ? Colors.blue.shade300 : Colors.blue.shade800)
+                          : colorScheme.onSurface,
                     ),
                   ),
                   Text(
@@ -506,8 +511,8 @@ class _SoundToggle extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 11,
                       color: soundEnabled
-                          ? Colors.blue.shade600
-                          : Colors.grey.shade500,
+                          ? (isDark ? Colors.blue.shade400 : Colors.blue.shade600)
+                          : colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -529,6 +534,9 @@ class _OfflineModeToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     // When disabled, always show as "off" state
     if (!_isEnabled) {
       return Opacity(
@@ -536,10 +544,10 @@ class _OfflineModeToggle extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: Colors.grey.withValues(alpha: 0.08),
+            color: colorScheme.onSurface.withValues(alpha: 0.05),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: Colors.grey.withValues(alpha: 0.2),
+              color: colorScheme.outline.withValues(alpha: 0.2),
             ),
           ),
           child: Row(
@@ -548,13 +556,13 @@ class _OfflineModeToggle extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: Colors.grey.withValues(alpha: 0.1),
+                  color: colorScheme.onSurface.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   Icons.cloud_queue,
                   size: 18,
-                  color: Colors.grey.shade500,
+                  color: colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(width: 12),
@@ -568,7 +576,7 @@ class _OfflineModeToggle extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
-                        color: Colors.grey.shade600,
+                        color: colorScheme.onSurfaceVariant,
                       ),
                     ),
                     Text(
@@ -576,7 +584,7 @@ class _OfflineModeToggle extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 11,
                         fontStyle: FontStyle.italic,
-                        color: Colors.grey.shade500,
+                        color: colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -588,7 +596,7 @@ class _OfflineModeToggle extends StatelessWidget {
                 height: 26,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(13),
-                  color: Colors.grey.shade300,
+                  color: isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1), // slate-600/300
                 ),
                 child: Align(
                   alignment: Alignment.centerLeft,
@@ -632,12 +640,12 @@ class _OfflineModeToggle extends StatelessWidget {
           decoration: BoxDecoration(
             color: offlineMode
                 ? Colors.orange.withValues(alpha: 0.15)
-                : Colors.grey.withValues(alpha: 0.08),
+                : colorScheme.onSurface.withValues(alpha: 0.05),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: offlineMode
                   ? Colors.orange.withValues(alpha: 0.4)
-                  : Colors.grey.withValues(alpha: 0.2),
+                  : colorScheme.outline.withValues(alpha: 0.2),
             ),
           ),
           child: Row(
@@ -648,13 +656,15 @@ class _OfflineModeToggle extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: offlineMode
                       ? Colors.orange.withValues(alpha: 0.2)
-                      : Colors.grey.withValues(alpha: 0.1),
+                      : colorScheme.onSurface.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   offlineMode ? Icons.cloud_off : Icons.cloud_queue,
                   size: 18,
-                  color: offlineMode ? Colors.orange.shade700 : Colors.grey.shade500,
+                  color: offlineMode
+                      ? (isDark ? Colors.orange.shade400 : Colors.orange.shade700)
+                      : colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(width: 12),
@@ -669,8 +679,8 @@ class _OfflineModeToggle extends StatelessWidget {
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                         color: offlineMode
-                            ? Colors.orange.shade800
-                            : Colors.grey.shade700,
+                            ? (isDark ? Colors.orange.shade300 : Colors.orange.shade800)
+                            : colorScheme.onSurface,
                       ),
                     ),
                     if (offlineMode && offlinePingCount > 0)
@@ -678,7 +688,7 @@ class _OfflineModeToggle extends StatelessWidget {
                         '$offlinePingCount pings saved locally',
                         style: TextStyle(
                           fontSize: 11,
-                          color: Colors.orange.shade600,
+                          color: isDark ? Colors.orange.shade400 : Colors.orange.shade600,
                         ),
                       )
                     else
@@ -688,7 +698,7 @@ class _OfflineModeToggle extends StatelessWidget {
                             : 'Uploads immediately',
                         style: TextStyle(
                           fontSize: 11,
-                          color: Colors.grey.shade500,
+                          color: colorScheme.onSurfaceVariant,
                         ),
                       ),
                   ],
@@ -701,8 +711,8 @@ class _OfflineModeToggle extends StatelessWidget {
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(13),
                   color: offlineMode
-                      ? Colors.orange.shade600
-                      : Colors.grey.shade300,
+                      ? (isDark ? Colors.orange.shade600 : Colors.orange.shade500)
+                      : (isDark ? const Color(0xFF475569) : const Color(0xFFCBD5E1)), // slate-600/300
                 ),
                 child: AnimatedAlign(
                   duration: const Duration(milliseconds: 200),
@@ -1249,7 +1259,8 @@ class _LandscapeAntennaSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const notSetColor = Colors.orange;
-    final setColor = Colors.grey.shade600;
+    final colorScheme = Theme.of(context).colorScheme;
+    final setColor = colorScheme.onSurfaceVariant;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1270,7 +1281,7 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w500,
-                  color: externalAntennaSet ? Colors.grey.shade500 : notSetColor,
+                  color: externalAntennaSet ? colorScheme.onSurfaceVariant : notSetColor,
                 ),
               ),
               if (!externalAntennaSet) ...[
@@ -1294,9 +1305,9 @@ class _LandscapeAntennaSelector extends StatelessWidget {
         Container(
           height: 32,
           decoration: BoxDecoration(
-            color: Colors.grey.withValues(alpha: 0.08),
+            color: colorScheme.onSurface.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey.withValues(alpha: 0.15)),
+            border: Border.all(color: colorScheme.outline.withValues(alpha: 0.2)),
           ),
           child: Row(
             children: [
@@ -1318,14 +1329,14 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: (!externalAntenna && externalAntennaSet) ? FontWeight.w600 : FontWeight.w500,
-                        color: (!externalAntenna && externalAntennaSet) ? Colors.orange : Colors.grey.shade500,
+                        color: (!externalAntenna && externalAntennaSet) ? Colors.orange : colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),
                 ),
               ),
               // Divider
-              Container(width: 1, height: 18, color: Colors.grey.withValues(alpha: 0.2)),
+              Container(width: 1, height: 18, color: colorScheme.outline.withValues(alpha: 0.3)),
               // External option
               Expanded(
                 child: GestureDetector(
@@ -1344,7 +1355,7 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: (externalAntenna && externalAntennaSet) ? FontWeight.w600 : FontWeight.w500,
-                        color: (externalAntenna && externalAntennaSet) ? Colors.orange : Colors.grey.shade500,
+                        color: (externalAntenna && externalAntennaSet) ? Colors.orange : colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),
@@ -1422,8 +1433,9 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     final showColor = widget.enabled || widget.isActive;
-    final effectiveColor = showColor ? widget.color : Colors.grey;
+    final effectiveColor = showColor ? widget.color : colorScheme.onSurfaceVariant;
 
     return AnimatedBuilder(
       animation: _pulseAnimation,
@@ -1454,7 +1466,7 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
                     Icon(
                       widget.icon,
                       size: 24,
-                      color: showColor ? effectiveColor : Colors.grey.shade500,
+                      color: showColor ? effectiveColor : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                     ),
                     // Countdown badge (bottom right)
                     if (widget.countdown != null)
@@ -1488,7 +1500,7 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
                           decoration: BoxDecoration(
                             color: const Color(0xFF22C55E),
                             shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 1.5),
+                            border: Border.all(color: colorScheme.surface, width: 1.5),
                           ),
                         ),
                       ),
@@ -1521,7 +1533,8 @@ class _LandscapeToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final activeColor = isOn ? color : Colors.grey;
+    final colorScheme = Theme.of(context).colorScheme;
+    final activeColor = isOn ? color : colorScheme.onSurfaceVariant;
 
     return Material(
       color: Colors.transparent,
@@ -1534,12 +1547,12 @@ class _LandscapeToggle extends StatelessWidget {
           decoration: BoxDecoration(
             color: isOn
                 ? activeColor.withValues(alpha: 0.12)
-                : Colors.grey.withValues(alpha: 0.06),
+                : colorScheme.onSurface.withValues(alpha: 0.04),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: isOn
                   ? activeColor.withValues(alpha: 0.35)
-                  : Colors.grey.withValues(alpha: 0.15),
+                  : colorScheme.outline.withValues(alpha: 0.15),
             ),
           ),
           child: Row(
@@ -1548,7 +1561,7 @@ class _LandscapeToggle extends StatelessWidget {
               Icon(
                 icon,
                 size: 16,
-                color: isOn ? activeColor : Colors.grey.shade500,
+                color: isOn ? activeColor : colorScheme.onSurfaceVariant,
               ),
               const SizedBox(width: 6),
               Text(
@@ -1556,7 +1569,7 @@ class _LandscapeToggle extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: isOn ? FontWeight.w600 : FontWeight.w500,
-                  color: isOn ? activeColor : Colors.grey.shade500,
+                  color: isOn ? activeColor : colorScheme.onSurfaceVariant,
                 ),
               ),
             ],
@@ -1634,8 +1647,9 @@ class _CompactActionButtonState extends State<_CompactActionButton>
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     final showColor = widget.enabled || widget.isActive;
-    final effectiveColor = showColor ? widget.color : Colors.grey;
+    final effectiveColor = showColor ? widget.color : colorScheme.onSurfaceVariant;
     // Show label if colored OR if expanded (shows countdown on grey button during cooldown)
     final hasLabel = widget.label != null && (showColor || widget.isExpanded);
 
@@ -1693,7 +1707,7 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                             Icon(
                               widget.icon,
                               size: 18,
-                              color: showColor ? effectiveColor : Colors.grey.shade400,
+                              color: showColor ? effectiveColor : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                             ),
                             // Animated label - show when label is provided
                             AnimatedSize(
@@ -1709,7 +1723,7 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                                           style: TextStyle(
                                             fontSize: 11,
                                             fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                                            color: showColor ? effectiveColor : Colors.grey.shade400,
+                                            color: showColor ? effectiveColor : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                                           ),
                                         ),
                                       ],

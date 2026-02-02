@@ -35,6 +35,10 @@ void main() async {
   await Hive.initFlutter();
   debugLog('[APP] Hive initialized');
 
+  // Load theme preference BEFORE runApp to avoid flash of wrong theme
+  final initialThemeMode = await _loadInitialThemeMode();
+  debugLog('[APP] Initial theme mode: $initialThemeMode');
+
   // Register noise floor session adapters before opening any boxes
   if (!Hive.isAdapterRegistered(10)) {
     Hive.registerAdapter(NoiseFloorSampleAdapter());
@@ -58,7 +62,24 @@ void main() async {
   // Initialize background service for continuous wardriving (mobile only)
   await BackgroundServiceManager.initialize();
 
-  runApp(const MeshMapperApp());
+  runApp(MeshMapperApp(initialThemeMode: initialThemeMode));
+}
+
+/// Load theme mode from Hive before app starts to avoid flash of wrong theme
+Future<String> _loadInitialThemeMode() async {
+  try {
+    final box = await Hive.openBox('user_preferences');
+    final json = box.get('preferences');
+    if (json != null && json is Map) {
+      final themeMode = json['themeMode'] as String?;
+      if (themeMode != null) {
+        return themeMode;
+      }
+    }
+  } catch (e) {
+    debugLog('[APP] Failed to load initial theme: $e');
+  }
+  return 'dark'; // Default to dark mode
 }
 
 /// Request all required permissions on app startup
@@ -128,14 +149,50 @@ Future<void> _requestAndroidPermissions() async {
   }
 }
 
+// Dark theme - Tailwind Slate palette
+const darkColorScheme = ColorScheme.dark(
+  primary: Color(0xFF059669),       // emerald-600 (main actions)
+  onPrimary: Colors.white,
+  secondary: Color(0xFF0284C7),     // sky-600 (TX ping)
+  onSecondary: Colors.white,
+  tertiary: Color(0xFF4F46E5),      // indigo-600 (auto modes)
+  onTertiary: Colors.white,
+  surface: Color(0xFF1E293B),       // slate-800 (cards/panels)
+  onSurface: Color(0xFFF1F5F9),     // slate-100 (primary text)
+  onSurfaceVariant: Color(0xFF94A3B8), // slate-400 (muted text)
+  surfaceContainerHighest: Color(0xFF0F172A), // slate-900 (main bg)
+  outline: Color(0xFF334155),       // slate-700 (borders)
+  error: Color(0xFFF87171),         // red-400
+  onError: Colors.white,
+);
+
+// Light theme - Tailwind Slate palette (inverted)
+const lightColorScheme = ColorScheme.light(
+  primary: Color(0xFF059669),       // emerald-600
+  onPrimary: Colors.white,
+  secondary: Color(0xFF0284C7),     // sky-600
+  onSecondary: Colors.white,
+  tertiary: Color(0xFF4F46E5),      // indigo-600
+  onTertiary: Colors.white,
+  surface: Color(0xFFF8FAFC),       // slate-50 (cards/panels)
+  onSurface: Color(0xFF1E293B),     // slate-800 (primary text)
+  onSurfaceVariant: Color(0xFF64748B), // slate-500 (muted text)
+  surfaceContainerHighest: Color(0xFFFFFFFF), // white (main bg)
+  outline: Color(0xFFCBD5E1),       // slate-300 (borders)
+  error: Color(0xFFDC2626),         // red-600
+  onError: Colors.white,
+);
+
 class MeshMapperApp extends StatelessWidget {
-  const MeshMapperApp({super.key});
+  final String initialThemeMode;
+
+  const MeshMapperApp({super.key, required this.initialThemeMode});
 
   @override
   Widget build(BuildContext context) {
     // Create platform-appropriate Bluetooth service
-    final BluetoothService bluetoothService = kIsWeb 
-        ? WebBluetoothService() 
+    final BluetoothService bluetoothService = kIsWeb
+        ? WebBluetoothService()
         : MobileBluetoothService();
 
     return MultiProvider(
@@ -144,55 +201,110 @@ class MeshMapperApp extends StatelessWidget {
           create: (_) => AppStateProvider(bluetoothService: bluetoothService),
         ),
       ],
-      child: MaterialApp(
-        title: 'MeshMapper',
-        theme: ThemeData(
-          colorScheme: const ColorScheme.dark(
-            // Tailwind Slate palette
-            primary: Color(0xFF059669),       // emerald-600 (main actions)
-            onPrimary: Colors.white,
-            secondary: Color(0xFF0284C7),     // sky-600 (TX ping)
-            onSecondary: Colors.white,
-            tertiary: Color(0xFF4F46E5),      // indigo-600 (auto modes)
-            onTertiary: Colors.white,
-            surface: Color(0xFF1E293B),       // slate-800 (cards/panels)
-            onSurface: Color(0xFFF1F5F9),     // slate-100 (primary text)
-            onSurfaceVariant: Color(0xFF94A3B8), // slate-400 (muted text)
-            surfaceContainerHighest: Color(0xFF0F172A), // slate-900 (main bg)
-            outline: Color(0xFF334155),       // slate-700 (borders)
-            error: Color(0xFFF87171),         // red-400
-            onError: Colors.white,
-          ),
-          scaffoldBackgroundColor: const Color(0xFF0F172A), // slate-900
-          appBarTheme: const AppBarTheme(
-            backgroundColor: Color(0xFF1E293B), // slate-800
-            foregroundColor: Color(0xFFF1F5F9), // slate-100
-          ),
-          cardTheme: CardThemeData(
-            color: const Color(0xFF1E293B), // slate-800
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: Color(0xFF334155)), // slate-700
+      child: _ThemedApp(initialThemeMode: initialThemeMode),
+    );
+  }
+}
+
+/// Separate widget to handle theme switching with Consumer
+/// Uses initialThemeMode on first build to avoid flash of wrong theme
+class _ThemedApp extends StatefulWidget {
+  final String initialThemeMode;
+
+  const _ThemedApp({required this.initialThemeMode});
+
+  @override
+  State<_ThemedApp> createState() => _ThemedAppState();
+}
+
+class _ThemedAppState extends State<_ThemedApp> {
+  bool _isFirstBuild = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppStateProvider>(
+      builder: (context, appState, child) {
+        String effectiveThemeMode;
+
+        if (_isFirstBuild) {
+          // On first build, use the pre-loaded theme to avoid flash
+          effectiveThemeMode = widget.initialThemeMode;
+          // Schedule switching to provider-managed theme after first frame
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _isFirstBuild) {
+              setState(() => _isFirstBuild = false);
+            }
+          });
+        } else {
+          // After first build, always use provider's value for dynamic updates
+          effectiveThemeMode = appState.preferences.themeMode;
+        }
+
+        final isDarkMode = effectiveThemeMode == 'dark';
+
+        return MaterialApp(
+          title: 'MeshMapper',
+          theme: ThemeData(
+            colorScheme: lightColorScheme,
+            scaffoldBackgroundColor: const Color(0xFFF1F5F9), // slate-100
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Color(0xFFF8FAFC), // slate-50
+              foregroundColor: Color(0xFF1E293B), // slate-800
             ),
-          ),
-          dividerColor: const Color(0xFF334155), // slate-700
-          snackBarTheme: SnackBarThemeData(
-            backgroundColor: const Color(0xFF334155), // slate-700
-            contentTextStyle: const TextStyle(
-              color: Color(0xFFF1F5F9), // slate-100
-              fontSize: 14,
+            cardTheme: CardThemeData(
+              color: const Color(0xFFF8FAFC), // slate-50
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFFCBD5E1)), // slate-300
+              ),
             ),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+            dividerColor: const Color(0xFFCBD5E1), // slate-300
+            snackBarTheme: SnackBarThemeData(
+              backgroundColor: const Color(0xFF334155), // slate-700
+              contentTextStyle: const TextStyle(
+                color: Color(0xFFF1F5F9), // slate-100
+                fontSize: 14,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              behavior: SnackBarBehavior.floating,
             ),
-            behavior: SnackBarBehavior.floating,
+            useMaterial3: true,
           ),
-          useMaterial3: true,
-        ),
-        themeMode: ThemeMode.light, // Force our dark theme
-        home: const MainScaffold(),
-        debugShowCheckedModeBanner: false,
-      ),
+          darkTheme: ThemeData(
+            colorScheme: darkColorScheme,
+            scaffoldBackgroundColor: const Color(0xFF0F172A), // slate-900
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Color(0xFF1E293B), // slate-800
+              foregroundColor: Color(0xFFF1F5F9), // slate-100
+            ),
+            cardTheme: CardThemeData(
+              color: const Color(0xFF1E293B), // slate-800
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFF334155)), // slate-700
+              ),
+            ),
+            dividerColor: const Color(0xFF334155), // slate-700
+            snackBarTheme: SnackBarThemeData(
+              backgroundColor: const Color(0xFF334155), // slate-700
+              contentTextStyle: const TextStyle(
+                color: Color(0xFFF1F5F9), // slate-100
+                fontSize: 14,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              behavior: SnackBarBehavior.floating,
+            ),
+            useMaterial3: true,
+          ),
+          themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
+          home: const MainScaffold(),
+          debugShowCheckedModeBanner: false,
+        );
+      },
     );
   }
 }

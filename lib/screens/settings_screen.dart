@@ -171,6 +171,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       body: ListView(
         children: [
+          // Appearance section
+          _buildSectionHeader(context, 'Appearance'),
+          ListTile(
+            leading: Icon(
+              prefs.themeMode == 'dark' ? Icons.dark_mode : Icons.light_mode,
+            ),
+            title: const Text('Theme'),
+            subtitle: Text(prefs.themeMode == 'dark' ? 'Dark mode' : 'Light mode'),
+            trailing: Switch(
+              value: prefs.themeMode == 'dark',
+              onChanged: (isDark) {
+                appState.setThemeMode(isDark ? 'dark' : 'light');
+              },
+            ),
+          ),
+
+          const Divider(),
+
           // Wardriving Settings section
           _buildSectionHeader(context, 'Wardriving Settings'),
 

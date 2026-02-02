@@ -12,6 +12,7 @@ import '../models/log_entry.dart';
 import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/debug_logger_io.dart';
 
 /// Map style options
 enum MapStyle {
@@ -125,9 +126,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
 
   // Auto-follow GPS like a navigation app
-  bool _autoFollow = true;
+  bool _autoFollow = false; // Disabled by default - users often zoom out first
   bool _isMapReady = false;
   LatLng? _lastGpsPosition;
+  bool _hasInitialZoomed = false; // Track if we've done the one-time initial zoom to GPS
+  bool _hasZoomedToLastKnown = false; // Track if we've zoomed to last known position (before GPS)
 
   // Map rotation mode
   bool _alwaysNorth = true; // true = north always up, false = rotate with heading
@@ -389,13 +392,53 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
 
-    // Determine map center
+    // Determine map center - prefer current GPS, fallback to last known, then Ottawa
     LatLng center = _defaultCenter;
     if (appState.currentPosition != null) {
       center = LatLng(
         appState.currentPosition!.latitude,
         appState.currentPosition!.longitude,
       );
+    } else if (appState.lastKnownPosition != null) {
+      center = LatLng(
+        appState.lastKnownPosition!.lat,
+        appState.lastKnownPosition!.lon,
+      );
+    }
+
+    // One-time zoom to last known position when GPS is not yet available
+    // This runs before GPS locks, so user sees their previous location instead of Ottawa
+    if (appState.currentPosition == null &&
+        appState.lastKnownPosition != null &&
+        !_hasZoomedToLastKnown &&
+        _isMapReady) {
+      _hasZoomedToLastKnown = true;
+      final lastKnownCenter = LatLng(
+        appState.lastKnownPosition!.lat,
+        appState.lastKnownPosition!.lon,
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _animateToPositionWithZoom(lastKnownCenter, 15.0);
+          debugLog('[MAP] Initial zoom to last known position');
+        }
+      });
+    }
+
+    if (appState.currentPosition != null) {
+      // One-time initial zoom to GPS when we first get a position
+      // This happens even with auto-follow disabled so user sees their location
+      // Don't apply panel offset - center directly on GPS so pin is in middle of screen
+      if (!_hasInitialZoomed && _isMapReady) {
+        _hasInitialZoomed = true;
+        final initialPosition = center;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _animateToPositionWithZoom(initialPosition, 16.0); // Initial zoom to GPS, no offset
+            debugLog('[MAP] Initial zoom to GPS position');
+          }
+        });
+      }
 
       // Auto-follow GPS position when enabled - use smooth animation
       if (_autoFollow && _isMapReady) {
@@ -778,7 +821,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       return;
     }
 
-    // Otherwise, enable auto-follow and center on position
+    // Otherwise, enable auto-follow and center on position at street level
     final appState = context.read<AppStateProvider>();
     if (appState.currentPosition != null) {
       final targetPosition = LatLng(
@@ -791,7 +834,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       });
       // Apply offset for bottom padding when control panel is open
       final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels);
-      _animateToPositionWithZoom(adjustedPosition, 16.0); // Smooth animation with zoom
+      _animateToPositionWithZoom(adjustedPosition, 17.0); // Street level zoom when enabling follow
     }
   }
 
@@ -961,42 +1004,48 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade300,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(height: 8),
               Container(
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  color: Theme.of(context).colorScheme.surface,
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                 ),
                 child: Column(
                   children: [
                     _buildLegendItem(
+                      context: context,
                       color: const Color(0xFF22C55E),
                       label: 'TX',
                       description: 'Location where you sent a ping and heard a repeater',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
+                      context: context,
                       color: Colors.red,
                       label: 'TX',
                       description: 'Location where you sent a ping but no repeater was heard',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
+                      context: context,
                       color: const Color(0xFF0EA5E9),
                       label: 'RX',
                       description: 'Location where you received a message from the mesh',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
+                      context: context,
                       color: const Color(0xFF7D54C7),
                       label: 'DISC',
                       description: 'Location where you sent a discovery request and a repeater responded',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
+                      context: context,
                       color: Colors.grey,
                       label: 'DISC',
                       description: 'Location where you sent a discovery request but no repeater responded',
@@ -1012,48 +1061,55 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade300,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(height: 8),
               Container(
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  color: Theme.of(context).colorScheme.surface,
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                 ),
                 child: Column(
                   children: [
                     _buildLayerItem(
+                      context: context,
                       color: const Color(0xFF7EE094),
                       label: 'BIDIR',
                       description: 'Heard repeats from the mesh AND successfully routed through it',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
+                      context: context,
                       color: const Color(0xFF51D4E9),
                       label: 'DISC',
                       description: 'Wardriving app sent a discovery packet and heard a reply',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
+                      context: context,
                       color: const Color(0xFFFD8928),
                       label: 'TX',
                       description: 'Successfully routed through, but no repeats heard back',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
+                      context: context,
                       color: const Color(0xFF7D54C7),
                       label: 'RX',
                       description: 'Heard mesh traffic but did not transmit',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
+                      context: context,
                       color: const Color(0xFF9E9689),
                       label: 'DEAD',
                       description: 'Repeater heard it, but no other radio received the repeat',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
+                      context: context,
                       color: const Color(0xFFE04F5D),
                       label: 'DROP',
                       description: 'No repeats heard AND no successful route',
@@ -1069,14 +1125,15 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade300,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(height: 8),
               Container(
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  color: Theme.of(context).colorScheme.surface,
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                 ),
                 child: Column(
                   children: [
@@ -1090,7 +1147,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         appState.audioService.playTransmitSound();
                       },
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildSoundItem(
                       context: context,
                       icon: Icons.hearing,
@@ -1112,48 +1169,55 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade300,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
               const SizedBox(height: 8),
               Container(
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  color: Theme.of(context).colorScheme.surface,
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                 ),
                 child: Column(
                   children: [
                     _buildHelpItem(
+                      context: context,
                       icon: Icons.dark_mode,
                       label: 'Map Style',
                       description: 'Cycle between Dark, Light, and Satellite map styles',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildHelpItem(
+                      context: context,
                       icon: Icons.layers,
                       label: 'Coverage Overlay',
                       description: 'Toggle MeshMapper coverage overlay showing community-reported mesh coverage',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildHelpItem(
+                      context: context,
                       icon: Icons.my_location,
                       label: 'Center/Follow',
                       description: 'Center map on GPS position. Tap again to toggle auto-follow mode',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildHelpItem(
+                      context: context,
                       icon: Icons.navigation,
                       label: 'Always North',
                       description: 'Toggle between always-north orientation or rotate with heading',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildHelpItem(
+                      context: context,
                       icon: Icons.sync_disabled,
                       label: 'Lock Rotation',
                       description: 'Prevent accidental rotation of the map',
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildHelpItem(
+                      context: context,
                       icon: Icons.info_outline,
                       label: 'Legend & Info',
                       description: 'Show this help popup with legend and control explanations',
@@ -1185,7 +1249,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         alignment: Alignment.center,
                         child: Icon(
                           Icons.keyboard_arrow_down,
-                          color: Colors.grey.shade500,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                           size: 20,
                         ),
                       ),
@@ -1218,10 +1282,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   /// Build a legend item row with colored circle, label, and description
   Widget _buildLegendItem({
+    required BuildContext context,
     required Color color,
     required String label,
     required String description,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
@@ -1233,7 +1299,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 1.5),
+              border: Border.all(color: colorScheme.surface, width: 1.5),
             ),
           ),
           const SizedBox(width: 12),
@@ -1246,7 +1312,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 fontFamily: 'monospace',
-                color: Colors.grey.shade200,
+                color: colorScheme.onSurface,
               ),
             ),
           ),
@@ -1257,7 +1323,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               description,
               style: TextStyle(
                 fontSize: 12,
-                color: Colors.grey.shade400,
+                color: colorScheme.onSurfaceVariant,
               ),
             ),
           ),
@@ -1268,10 +1334,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   /// Build a layer item row with colored square, label, and description
   Widget _buildLayerItem({
+    required BuildContext context,
     required Color color,
     required String label,
     required String description,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
@@ -1283,7 +1351,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             decoration: BoxDecoration(
               color: color,
               borderRadius: BorderRadius.circular(2),
-              border: Border.all(color: Colors.white, width: 1.5),
+              border: Border.all(color: colorScheme.surface, width: 1.5),
             ),
           ),
           const SizedBox(width: 12),
@@ -1296,7 +1364,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 fontFamily: 'monospace',
-                color: Colors.grey.shade200,
+                color: colorScheme.onSurface,
               ),
             ),
           ),
@@ -1307,7 +1375,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               description,
               style: TextStyle(
                 fontSize: 12,
-                color: Colors.grey.shade400,
+                color: colorScheme.onSurfaceVariant,
               ),
             ),
           ),
@@ -1318,10 +1386,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   /// Build a help item row with icon, label, and description for map controls
   Widget _buildHelpItem({
+    required BuildContext context,
     required IconData icon,
     required String label,
     required String description,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
@@ -1331,10 +1401,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: Colors.grey.withValues(alpha: 0.2),
+              color: colorScheme.onSurface.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: Icon(icon, size: 16, color: Colors.grey.shade300),
+            child: Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(width: 12),
           // Label
@@ -1345,7 +1415,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.grey.shade200,
+                color: colorScheme.onSurface,
               ),
             ),
           ),
@@ -1356,7 +1426,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               description,
               style: TextStyle(
                 fontSize: 12,
-                color: Colors.grey.shade400,
+                color: colorScheme.onSurfaceVariant,
               ),
             ),
           ),
@@ -2501,6 +2571,7 @@ class _SoundItemWidgetState extends State<_SoundItemWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
@@ -2531,7 +2602,7 @@ class _SoundItemWidgetState extends State<_SoundItemWidget> {
           ),
           const SizedBox(width: 12),
           // Icon and label
-          Icon(widget.icon, size: 16, color: Colors.grey.shade400),
+          Icon(widget.icon, size: 16, color: colorScheme.onSurfaceVariant),
           const SizedBox(width: 8),
           SizedBox(
             width: 70,
@@ -2540,7 +2611,7 @@ class _SoundItemWidgetState extends State<_SoundItemWidget> {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.grey.shade200,
+                color: colorScheme.onSurface,
               ),
             ),
           ),
@@ -2551,7 +2622,7 @@ class _SoundItemWidgetState extends State<_SoundItemWidget> {
               widget.description,
               style: TextStyle(
                 fontSize: 12,
-                color: Colors.grey.shade400,
+                color: colorScheme.onSurfaceVariant,
               ),
             ),
           ),
