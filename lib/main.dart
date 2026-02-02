@@ -167,6 +167,7 @@ const darkColorScheme = ColorScheme.dark(
 );
 
 // Light theme - Tailwind Slate palette (inverted)
+// Note: Using darker grays for better text contrast
 const lightColorScheme = ColorScheme.light(
   primary: Color(0xFF059669),       // emerald-600
   onPrimary: Colors.white,
@@ -175,8 +176,8 @@ const lightColorScheme = ColorScheme.light(
   tertiary: Color(0xFF4F46E5),      // indigo-600
   onTertiary: Colors.white,
   surface: Color(0xFFF8FAFC),       // slate-50 (cards/panels)
-  onSurface: Color(0xFF1E293B),     // slate-800 (primary text)
-  onSurfaceVariant: Color(0xFF64748B), // slate-500 (muted text)
+  onSurface: Color(0xFF0F172A),     // slate-900 (primary text - darker for contrast)
+  onSurfaceVariant: Color(0xFF475569), // slate-600 (muted text - darker for readability)
   surfaceContainerHighest: Color(0xFFFFFFFF), // white (main bg)
   outline: Color(0xFFCBD5E1),       // slate-300 (borders)
   error: Color(0xFFDC2626),         // red-600
@@ -249,7 +250,7 @@ class _ThemedAppState extends State<_ThemedApp> {
             scaffoldBackgroundColor: const Color(0xFFF1F5F9), // slate-100
             appBarTheme: const AppBarTheme(
               backgroundColor: Color(0xFFF8FAFC), // slate-50
-              foregroundColor: Color(0xFF1E293B), // slate-800
+              foregroundColor: Color(0xFF0F172A), // slate-900 (darker for contrast)
             ),
             cardTheme: CardThemeData(
               color: const Color(0xFFF8FAFC), // slate-50
