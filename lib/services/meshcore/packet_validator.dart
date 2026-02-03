@@ -117,9 +117,13 @@ class PacketValidator {
       return ValidationResult.failed('decode failed');
     }
 
+    // Sanitize for logging: remove replacement characters to avoid Flutter UTF-8 warnings
+    final sanitizedForLog = plaintext
+        .replaceAll('\uFFFD', '')  // Remove replacement characters
+        .replaceAll(RegExp(r'[^\x20-\x7E]'), '');  // Keep only printable ASCII
+    final logPreview = sanitizedForLog.substring(0, sanitizedForLog.length.clamp(0, 60));
     debugLog('[RX FILTER] Decrypted message (${plaintext.length} chars): '
-        '"${plaintext.substring(0, plaintext.length.clamp(0, 60))}'
-        '${plaintext.length > 60 ? '...' : ''}"');
+        '"$logPreview${sanitizedForLog.length > 60 ? '...' : ''}"');
 
     // Check printable ratio
     final printableRatio = getPrintableRatio(plaintext);

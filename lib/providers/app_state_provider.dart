@@ -102,6 +102,8 @@ class AppStateProvider extends ChangeNotifier {
   GpsStatus _gpsStatus = GpsStatus.permissionDenied;
   Position? _currentPosition;
   ({double lat, double lon})? _lastKnownPosition;
+  DateTime? _lastPositionSaveTime; // Throttle position saves to every 30 seconds
+  bool _firstGpsLockLogged = false; // Track if we've logged first GPS lock message
 
   // Device info
   DeviceModel? _deviceModel;
@@ -178,6 +180,10 @@ class AppStateProvider extends ChangeNotifier {
 
   // Internet connectivity state
   bool _hasInternet = true; // Optimistic default
+
+  // Mode switching state (for hot-switching offline/online while connected)
+  bool _isSwitchingMode = false;
+  String? _modeSwitchError; // Error message if mode switch fails
 
   // Map navigation trigger (for navigating to log entry coordinates)
   ({double lat, double lon})? _mapNavigationTarget;
@@ -280,6 +286,10 @@ class AppStateProvider extends ChangeNotifier {
 
   // Internet connectivity getter
   bool get hasInternet => _hasInternet;
+
+  // Mode switching getters
+  bool get isSwitchingMode => _isSwitchingMode;
+  String? get modeSwitchError => _modeSwitchError;
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
@@ -556,8 +566,10 @@ class AppStateProvider extends ChangeNotifier {
           debugLog('[GEOFENCE] First GPS lock with internet, triggering zone check');
           await checkZoneStatus();
         }
-      } else if (_inZone == null && _preferences.offlineMode) {
+        _firstGpsLockLogged = true;
+      } else if (_inZone == null && _preferences.offlineMode && !_firstGpsLockLogged) {
         debugLog('[GEOFENCE] First GPS lock skipped: offline mode enabled');
+        _firstGpsLockLogged = true;
       }
 
       // Check zone every 100m movement (while disconnected)
@@ -1835,14 +1847,34 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================
 
   /// Toggle offline mode
-  /// Returns false if offline mode cannot be changed (e.g., while connected)
-  bool setOfflineMode(bool enabled) {
-    // Cannot change offline mode while connected
-    if (isConnected) {
-      debugLog('[APP] Cannot change offline mode while connected');
-      return false;
+  ///
+  /// Returns a record with:
+  /// - `success`: true if mode was changed successfully
+  /// - `error`: optional error message if mode switch failed
+  ///
+  /// When connected, performs hot-switch between modes:
+  /// - Online → Offline: waits for ping, flushes queue, releases API session
+  /// - Offline → Online: waits for ping, saves offline session, requests new auth
+  Future<({bool success, String? error})> setOfflineMode(bool enabled) async {
+    // If already in requested mode, nothing to do
+    if (_preferences.offlineMode == enabled) {
+      debugLog('[APP] Already in ${enabled ? 'offline' : 'online'} mode');
+      return (success: true, error: null);
     }
 
+    // If not connected, simple mode change
+    if (!isConnected) {
+      return _setOfflineModeSimple(enabled);
+    }
+
+    // Hot-switch while connected
+    return enabled
+        ? await _switchToOfflineMode()
+        : await _switchToOnlineMode();
+  }
+
+  /// Simple offline mode change (when not connected)
+  ({bool success, String? error}) _setOfflineModeSimple(bool enabled) {
     _preferences = _preferences.copyWith(offlineMode: enabled);
     _apiQueueService.offlineMode = enabled;
     debugLog('[APP] Offline mode ${enabled ? 'enabled' : 'disabled'}');
@@ -1863,7 +1895,234 @@ class AppStateProvider extends ChangeNotifier {
     }
 
     notifyListeners();
-    return true;
+    return (success: true, error: null);
+  }
+
+  /// Switch from online to offline mode while connected
+  Future<({bool success, String? error})> _switchToOfflineMode() async {
+    debugLog('[APP] Hot-switching to offline mode while connected');
+    _isSwitchingMode = true;
+    _modeSwitchError = null;
+    notifyListeners();
+
+    try {
+      // 1. Gracefully stop auto-ping if running (waits for RX window to complete)
+      await _stopAutoPingGracefully();
+
+      // 2. Flush API queue (waits for TX hold period)
+      if (_apiService.hasSession) {
+        debugLog('[APP] Flushing API queue before releasing session');
+        try {
+          await _apiQueueService.forceUploadWithHoldWait();
+        } catch (e) {
+          debugError('[APP] Failed to flush API queue: $e');
+          // Continue anyway - don't block mode switch for queue errors
+        }
+      }
+
+      // 4. Release API session
+      if (_devicePublicKey != null && _apiService.hasSession) {
+        debugLog('[APP] Releasing API session for offline mode');
+        try {
+          await _apiService.requestAuth(
+            reason: 'disconnect',
+            publicKey: _devicePublicKey!,
+          );
+          debugLog('[APP] API session released successfully');
+        } catch (e) {
+          debugError('[APP] Failed to release API session: $e');
+          // Continue anyway - session will timeout naturally
+        }
+      }
+
+      // 5. Update preferences and queue service
+      _preferences = _preferences.copyWith(offlineMode: true);
+      _apiQueueService.offlineMode = true;
+
+      // 6. Clear zone data
+      _inZone = null;
+      _currentZone = null;
+      _nearestZone = null;
+      _lastZoneCheckPosition = null;
+      debugLog('[GEOFENCE] Cleared zone data for offline mode');
+
+      debugLog('[APP] Successfully switched to offline mode');
+      return (success: true, error: null);
+    } catch (e) {
+      debugError('[APP] Error switching to offline mode: $e');
+      _modeSwitchError = 'Failed to switch to offline mode: $e';
+      return (success: false, error: _modeSwitchError);
+    } finally {
+      _isSwitchingMode = false;
+      notifyListeners();
+    }
+  }
+
+  /// Switch from offline to online mode while connected
+  Future<({bool success, String? error})> _switchToOnlineMode() async {
+    debugLog('[APP] Hot-switching to online mode while connected');
+    _isSwitchingMode = true;
+    _modeSwitchError = null;
+    notifyListeners();
+
+    try {
+      // 1. Gracefully stop auto-ping if running (waits for RX window to complete)
+      await _stopAutoPingGracefully();
+
+      // 2. Save accumulated offline pings as session file
+      await _saveOfflineSession();
+
+      // 4. Request new auth session
+      final deviceName = _meshCoreConnection?.selfInfo?.name ??
+          connectedDeviceName?.replaceFirst('MeshCore-', '');
+
+      if (deviceName == null || deviceName.isEmpty) {
+        debugError('[APP] Cannot switch to online mode: no device name available');
+        _modeSwitchError = 'Device name not available';
+        return (success: false, error: _modeSwitchError);
+      }
+
+      if (_devicePublicKey == null) {
+        debugError('[APP] Cannot switch to online mode: no public key available');
+        _modeSwitchError = 'Device public key not available';
+        return (success: false, error: _modeSwitchError);
+      }
+
+      if (_currentPosition == null) {
+        debugError('[APP] Cannot switch to online mode: no GPS position');
+        _modeSwitchError = 'GPS position required for online mode';
+        return (success: false, error: _modeSwitchError);
+      }
+
+      debugLog('[APP] Requesting auth for online mode');
+      final result = await _apiService.requestAuth(
+        reason: 'connect',
+        publicKey: _devicePublicKey!,
+        who: deviceName,
+        appVersion: _appVersion,
+        power: _preferences.powerLevel,
+        iataCode: zoneCode ?? _preferences.iataCode,
+        model: _meshCoreConnection?.deviceModel?.manufacturer ??
+               _meshCoreConnection?.deviceInfo?.manufacturer ?? 'Unknown',
+        lat: _currentPosition!.latitude,
+        lon: _currentPosition!.longitude,
+        accuracyMeters: _currentPosition!.accuracy,
+      );
+
+      if (result == null) {
+        debugError('[APP] Auth request failed: no response');
+        _modeSwitchError = 'Unable to connect to server';
+        return (success: false, error: _modeSwitchError);
+      }
+
+      if (result['success'] != true) {
+        final reason = result['reason'] as String?;
+        final message = result['message'] as String?;
+        debugError('[APP] Auth request failed: $reason - $message');
+        _modeSwitchError = message ?? reason ?? 'Authentication failed';
+        return (success: false, error: _modeSwitchError);
+      }
+
+      // 5. Auth successful - update state
+      _preferences = _preferences.copyWith(offlineMode: false);
+      _apiQueueService.offlineMode = false;
+
+      // 6. Update regional channels from auth response
+      final channels = result['channels'];
+      if (channels is List) {
+        _regionalChannels = channels.cast<String>().toList();
+        debugLog('[APP] Regional channels updated: $_regionalChannels');
+
+        // Re-initialize channel service with regional channels
+        await ChannelService.setRegionalChannels(_regionalChannels);
+      }
+
+      // 7. Re-check zone status
+      if (_currentPosition != null) {
+        debugLog('[GEOFENCE] Re-checking zone status after online mode enabled');
+        await checkZoneStatus();
+      }
+
+      debugLog('[APP] Successfully switched to online mode');
+      return (success: true, error: null);
+    } catch (e) {
+      debugError('[APP] Error switching to online mode: $e');
+      _modeSwitchError = 'Failed to switch to online mode: $e';
+      return (success: false, error: _modeSwitchError);
+    } finally {
+      _isSwitchingMode = false;
+      notifyListeners();
+    }
+  }
+
+  /// Gracefully stop auto-ping mode if running, waiting for RX window to complete
+  /// This prevents data loss by letting the TX echo tracking finish naturally
+  Future<void> _stopAutoPingGracefully() async {
+    if (!_autoPingEnabled || _pingService == null) return;
+
+    debugLog('[APP] Gracefully stopping auto-ping mode for mode switch');
+
+    // 1. Request graceful disable (sets pendingDisable if ping in progress)
+    //    This prevents new pings from being scheduled after RX window ends
+    await _pingService!.disableAutoPing();
+    notifyListeners(); // UI shows "Stopping..." state
+
+    // 2. Wait for TX echo tracking / RX window to finish naturally (~7 seconds)
+    //    Don't wait for cooldown - proceed immediately after RX window ends
+    await _waitForPingToComplete();
+
+    // 3. Now do cleanup in order
+    _pingService!.stopEchoTracking();
+
+    // 4. Stop RX wardriving (flushes batches)
+    _rxLogger?.stopWardriving(trigger: 'mode_switch');
+
+    // 5. Stop background service
+    await BackgroundServiceManager.stopService();
+
+    // 6. Stop timers (including any cooldown that may have started)
+    _autoPingTimer.stop();
+    _rxWindowTimer.stop();
+    _discoveryWindowTimer.stop();
+    _cooldownTimer.stop();
+
+    // 7. End noise floor session
+    await _endNoiseFloorSession();
+
+    // 8. Stop heartbeat
+    _apiService.disableHeartbeat();
+
+    // 9. Update state
+    _autoPingEnabled = false;
+    debugLog('[APP] Auto-ping mode stopped gracefully');
+    notifyListeners();
+  }
+
+  /// Wait for any ping operation to complete (TX sending or RX window)
+  Future<void> _waitForPingToComplete() async {
+    const pollInterval = Duration(milliseconds: 100);
+    const maxWaitTime = Duration(seconds: 10); // Safety timeout
+    final startTime = DateTime.now();
+
+    while (isPingInProgress) {
+      if (DateTime.now().difference(startTime) > maxWaitTime) {
+        debugWarn('[APP] Timeout waiting for ping to complete');
+        break;
+      }
+      debugLog('[APP] Waiting for ping to complete...');
+      await Future.delayed(pollInterval);
+    }
+  }
+
+  /// Retry switching to online mode after a failed attempt
+  Future<({bool success, String? error})> retryOnlineMode() async {
+    if (!isConnected) {
+      return (success: false, error: 'Not connected to device');
+    }
+    if (!_preferences.offlineMode) {
+      return (success: true, error: null); // Already online
+    }
+    return _switchToOnlineMode();
   }
 
   /// Save accumulated offline pings to a session file
@@ -2936,14 +3195,22 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
-  /// Save last known GPS position to Hive storage
+  /// Save last known GPS position to Hive storage (throttled to every 30 seconds)
   Future<void> _saveLastPosition(double lat, double lon) async {
+    // Throttle saves to every 30 seconds to avoid excessive Hive operations
+    final now = DateTime.now();
+    if (_lastPositionSaveTime != null &&
+        now.difference(_lastPositionSaveTime!) < const Duration(seconds: 30)) {
+      return; // Skip save, too soon since last save
+    }
+
     final box = await _openBoxSafely(_preferencesBoxName);
     if (box == null) return;
 
     try {
       await box.put('last_position_lat', lat);
       await box.put('last_position_lon', lon);
+      _lastPositionSaveTime = now;
     } catch (e) {
       debugLog('[GPS] Failed to save last position: $e');
     }

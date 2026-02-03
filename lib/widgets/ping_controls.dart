@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 import '../providers/app_state_provider.dart';
 import '../services/ping_service.dart';
 import '../utils/debug_logger_io.dart';
-import 'app_toast.dart';
 
 /// Modern ping control panel with icon-based buttons and animated status
 class PingControls extends StatelessWidget {
@@ -40,11 +39,6 @@ class PingControls extends StatelessWidget {
 
     // TX not allowed when API says zone is at TX capacity
     final txNotAllowed = appState.isConnected && !appState.txAllowed;
-
-    // Log validation state when buttons are disabled (helps debug "buttons never enable" issues)
-    if (!canPingManual && appState.isConnected && !isActiveModeRunning && !isPassiveModeRunning) {
-      debugLog('[UI] Ping buttons disabled: manualValidation=$manualValidation');
-    }
 
     // Determine blocking reason for status hint (in priority order)
     // Skip antenna hint - the antenna selector already shows this
@@ -532,6 +526,77 @@ class _OfflineModeToggle extends StatelessWidget {
   // Offline mode is now enabled
   static const bool _isEnabled = true;
 
+  /// Handle offline mode toggle with progress dialog when connected
+  static Future<void> _handleOfflineModeToggle(
+    BuildContext context,
+    AppStateProvider appState,
+    bool currentOfflineMode,
+    bool isConnected,
+  ) async {
+    final newMode = !currentOfflineMode;
+
+    // If connected, show progress dialog during mode switch
+    if (isConnected) {
+      final statusText = newMode
+          ? 'Switching to offline mode...'
+          : 'Switching to online mode...';
+
+      // Show non-dismissible progress dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text(
+                  statusText,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 14),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Perform the mode switch
+      final result = await appState.setOfflineMode(newMode);
+
+      // Close the progress dialog (check if context is still valid)
+      if (context.mounted) {
+        Navigator.of(context).pop();
+      }
+
+      // Show error dialog if switch failed
+      if (!result.success && context.mounted) {
+        showDialog(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Mode Switch Failed'),
+            content: Text(
+              result.error ?? 'An unknown error occurred',
+              style: const TextStyle(fontSize: 14),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    } else {
+      // Not connected - simple toggle without dialog
+      await appState.setOfflineMode(newMode);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -626,14 +691,7 @@ class _OfflineModeToggle extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () {
-          // Cannot change offline mode while connected
-          if (isConnected) {
-            AppToast.warning(context, 'Disconnect from device before changing offline mode');
-            return;
-          }
-          appState.setOfflineMode(!offlineMode);
-        },
+        onTap: () => _handleOfflineModeToggle(context, appState, offlineMode, isConnected),
         borderRadius: BorderRadius.circular(10),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1207,9 +1265,12 @@ class LandscapePingControls extends StatelessWidget {
                 label: 'Offline',
                 isOn: offlineMode,
                 color: Colors.orange,
-                onTap: isConnected
-                    ? () => AppToast.warning(context, 'Disconnect before changing offline mode')
-                    : () => appState.setOfflineMode(!offlineMode),
+                onTap: () => _OfflineModeToggle._handleOfflineModeToggle(
+                  context,
+                  appState,
+                  offlineMode,
+                  isConnected,
+                ),
               ),
             ),
             const SizedBox(width: 8),

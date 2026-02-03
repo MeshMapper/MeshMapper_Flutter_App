@@ -29,7 +29,8 @@
       "Bash(flutter version:*)",
       "Bash(git checkout:*)",
       "Bash(git fetch:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(flutter test:*)"
     ]
   }
 }
