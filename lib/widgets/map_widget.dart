@@ -475,21 +475,32 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       }
     }
 
-    // Handle navigation trigger from log screen
-    // Disable auto-follow and navigate to the target location
+    // Handle navigation trigger from log screen or graph
+    // Reset map state and navigate to the target location
     if (_isMapReady && appState.mapNavigationTrigger != _lastNavigationTrigger) {
       _lastNavigationTrigger = appState.mapNavigationTrigger;
       final target = appState.mapNavigationTarget;
       if (target != null) {
-        // Disable auto-follow when navigating from log
-        _autoFollow = false;
+        // Reset map controls to default state
+        _autoFollow = false;      // Disable center on GPS
+        _alwaysNorth = true;      // Set to north-up mode
+        _rotationLocked = false;  // Unlock rotation
+        _lastHeading = null;      // Reset heading tracking
+
         // Navigate to the coordinates with close zoom (18 = street level view)
-        // Apply offset for bottom padding when control panel is open
+        // Center directly on target without offset - we want the pin in the middle
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             final targetPosition = LatLng(target.lat, target.lon);
-            final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels);
-            _animateToPositionWithZoom(adjustedPosition, 18.0);
+
+            // Rotate map back to north (0 degrees) first
+            final currentRotation = _mapController.camera.rotation;
+            if (currentRotation.abs() > 2) {
+              _mapController.rotate(0);
+            }
+
+            // Animate to the exact target position (no offset)
+            _animateToPositionWithZoom(targetPosition, 18.0);
           }
         });
       }
@@ -1661,7 +1672,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         _formatTime(ping.timestamp),
                         style: TextStyle(
                           fontSize: 13,
-                          color: Colors.grey.shade400,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
@@ -1683,10 +1694,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
               ),
               child: Row(
                 children: [
-                  Icon(Icons.location_on, size: 16, color: Colors.grey.shade400),
+                  Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1694,7 +1706,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       style: TextStyle(
                         fontSize: 13,
                         fontFamily: 'monospace',
-                        color: Colors.grey.shade300,
+                        color: Theme.of(context).colorScheme.onSurface,
                       ),
                     ),
                   ),
@@ -1709,7 +1721,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
-                color: Colors.grey.shade400,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 letterSpacing: 0.5,
               ),
             ),
@@ -1721,6 +1733,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
                 ),
                 child: Column(
                   children: [
@@ -1736,7 +1749,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade400,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -1747,7 +1760,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade400,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -1758,14 +1771,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade400,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).dividerColor),
                     // Data rows
                     ...heardRepeaters.map((repeater) {
                       // Calculate SNR chip color
@@ -1801,7 +1814,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
                                   fontFamily: 'monospace',
-                                  color: Colors.grey.shade200,
+                                  color: Theme.of(context).colorScheme.onSurface,
                                 ),
                               ),
                             ),
@@ -1899,7 +1912,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         _formatTime(ping.timestamp),
                         style: TextStyle(
                           fontSize: 13,
-                          color: Colors.grey.shade400,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
@@ -1921,10 +1934,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
               ),
               child: Row(
                 children: [
-                  Icon(Icons.location_on, size: 16, color: Colors.grey.shade400),
+                  Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1932,7 +1946,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       style: TextStyle(
                         fontSize: 13,
                         fontFamily: 'monospace',
-                        color: Colors.grey.shade300,
+                        color: Theme.of(context).colorScheme.onSurface,
                       ),
                     ),
                   ),
@@ -1947,7 +1961,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
-                color: Colors.grey.shade400,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 letterSpacing: 0.5,
               ),
             ),
@@ -1958,6 +1972,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
               ),
               child: Column(
                 children: [
@@ -1973,7 +1988,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade400,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -1984,7 +1999,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade400,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -1995,14 +2010,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade400,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ),
                       ],
                     ),
                   ),
-                  Divider(height: 1, color: Colors.grey.shade700),
+                  Divider(height: 1, color: Theme.of(context).dividerColor),
                   // Data row
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -2017,7 +2032,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
                               fontFamily: 'monospace',
-                              color: Colors.grey.shade200,
+                              color: Theme.of(context).colorScheme.onSurface,
                             ),
                           ),
                         ),
@@ -2093,7 +2108,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         _formatTime(entry.timestamp),
                         style: TextStyle(
                           fontSize: 13,
-                          color: Colors.grey.shade400,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
@@ -2115,10 +2130,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
               ),
               child: Row(
                 children: [
-                  Icon(Icons.location_on, size: 16, color: Colors.grey.shade400),
+                  Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -2126,7 +2142,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       style: TextStyle(
                         fontSize: 13,
                         fontFamily: 'monospace',
-                        color: Colors.grey.shade300,
+                        color: Theme.of(context).colorScheme.onSurface,
                       ),
                     ),
                   ),
@@ -2143,7 +2159,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
-                color: Colors.grey.shade400,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 letterSpacing: 0.5,
               ),
             ),
@@ -2155,6 +2171,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
                 ),
                 child: Column(
                   children: [
@@ -2170,7 +2187,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade400,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -2181,7 +2198,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade400,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -2192,7 +2209,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade400,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -2203,14 +2220,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade400,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).dividerColor),
                     // Data rows
                     ...entry.discoveredNodes.map((node) {
                       // Calculate colors
@@ -2256,7 +2273,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
                                       fontFamily: 'monospace',
-                                      color: Colors.grey.shade200,
+                                      color: Theme.of(context).colorScheme.onSurface,
                                     ),
                                   ),
                                   Text(
@@ -2424,13 +2441,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
               ),
               child: Column(
                 children: [
                   // Location row
                   Row(
                     children: [
-                      Icon(Icons.location_on, size: 16, color: Colors.grey.shade400),
+                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -2438,7 +2456,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           style: TextStyle(
                             fontSize: 13,
                             fontFamily: 'monospace',
-                            color: Colors.grey.shade300,
+                            color: Theme.of(context).colorScheme.onSurface,
                           ),
                         ),
                       ),
@@ -2448,14 +2466,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   // Last heard row
                   Row(
                     children: [
-                      Icon(Icons.access_time, size: 16, color: Colors.grey.shade400),
+                      Icon(Icons.access_time, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           repeater.lastHeardFormatted,
                           style: TextStyle(
                             fontSize: 13,
-                            color: Colors.grey.shade300,
+                            color: Theme.of(context).colorScheme.onSurface,
                           ),
                         ),
                       ),

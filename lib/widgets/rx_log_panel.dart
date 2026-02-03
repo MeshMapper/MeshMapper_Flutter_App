@@ -45,7 +45,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha:0.8),
-        border: Border.all(color: Colors.grey.shade700),
+        border: Border.all(color: Theme.of(context).dividerColor),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -67,14 +67,14 @@ class _RxLogPanelState extends State<RxLogPanel> {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            color: Colors.grey.shade300,
+                            color: Theme.of(context).colorScheme.onSurface,
                             letterSpacing: 0.5,
                           ),
                         ),
                         const SizedBox(width: 12),
                         Text(
                           '|',
-                          style: TextStyle(color: Colors.grey.shade500),
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                         ),
                         const SizedBox(width: 12),
                         Text(
@@ -82,7 +82,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            color: Colors.grey.shade300,
+                            color: Theme.of(context).colorScheme.onSurface,
                           ),
                         ),
                         if (lastEntry != null) ...[
@@ -91,7 +91,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
                             lastEntry.timeString,
                             style: TextStyle(
                               fontSize: 11,
-                              color: Colors.grey.shade400,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ],
@@ -107,7 +107,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
                       style: TextStyle(
                         fontSize: 11,
                         fontFamily: 'monospace',
-                        color: Colors.grey.shade400,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
                     const SizedBox(width: 6),
@@ -128,7 +128,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
                           'Copy',
                           style: TextStyle(
                             fontSize: 11,
-                            color: Colors.grey.shade400,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ),
@@ -143,7 +143,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
                     child: Icon(
                       Icons.keyboard_arrow_down,
                       size: 20,
-                      color: Colors.grey.shade400,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -156,7 +156,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
             Container(
               decoration: BoxDecoration(
                 border: Border(
-                  top: BorderSide(color: Colors.grey.shade700),
+                  top: BorderSide(color: Theme.of(context).dividerColor),
                 ),
               ),
               constraints: const BoxConstraints(maxHeight: 256),
@@ -216,13 +216,13 @@ class _RxLogPanelState extends State<RxLogPanel> {
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w500,
-              color: Colors.grey.shade300,
+              color: Theme.of(context).colorScheme.onSurface,
             ),
           ),
           const SizedBox(width: 8),
           Text(
             '|',
-            style: TextStyle(color: Colors.grey.shade600),
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
           const SizedBox(width: 8),
 
@@ -265,7 +265,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
             style: TextStyle(
               fontSize: 10,
               fontFamily: 'monospace',
-              color: Colors.grey.shade500,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
 
@@ -277,7 +277,7 @@ class _RxLogPanelState extends State<RxLogPanel> {
             style: TextStyle(
               fontSize: 10,
               fontFamily: 'monospace',
-              color: Colors.grey.shade500,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
         ],

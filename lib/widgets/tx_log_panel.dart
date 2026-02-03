@@ -46,7 +46,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha:0.8),
-        border: Border.all(color: Colors.grey.shade700),
+        border: Border.all(color: Theme.of(context).dividerColor),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -68,14 +68,14 @@ class _TxLogPanelState extends State<TxLogPanel> {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            color: Colors.grey.shade300,
+                            color: Theme.of(context).colorScheme.onSurface,
                             letterSpacing: 0.5,
                           ),
                         ),
                         const SizedBox(width: 12),
                         Text(
                           '|',
-                          style: TextStyle(color: Colors.grey.shade500),
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                         ),
                         const SizedBox(width: 12),
                         Text(
@@ -83,7 +83,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            color: Colors.grey.shade300,
+                            color: Theme.of(context).colorScheme.onSurface,
                           ),
                         ),
                         if (lastEntry != null) ...[
@@ -92,7 +92,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
                             lastEntry.timeString,
                             style: TextStyle(
                               fontSize: 11,
-                              color: Colors.grey.shade400,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ],
@@ -112,7 +112,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
                       style: TextStyle(
                         fontSize: 11,
                         fontFamily: 'monospace',
-                        color: heardCount > 0 ? Colors.grey.shade300 : Colors.grey.shade500,
+                        color: heardCount > 0 ? Theme.of(context).colorScheme.onSurface : Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -131,7 +131,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
                           'Copy',
                           style: TextStyle(
                             fontSize: 11,
-                            color: Colors.grey.shade400,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ),
@@ -146,7 +146,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
                     child: Icon(
                       Icons.keyboard_arrow_down,
                       size: 20,
-                      color: Colors.grey.shade400,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -159,7 +159,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
             Container(
               decoration: BoxDecoration(
                 border: Border(
-                  top: BorderSide(color: Colors.grey.shade700),
+                  top: BorderSide(color: Theme.of(context).dividerColor),
                 ),
               ),
               constraints: const BoxConstraints(maxHeight: 256),
@@ -207,13 +207,13 @@ class _TxLogPanelState extends State<TxLogPanel> {
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
-                  color: Colors.grey.shade300,
+                  color: Theme.of(context).colorScheme.onSurface,
                 ),
               ),
               const SizedBox(width: 8),
               Text(
                 '|',
-                style: TextStyle(color: Colors.grey.shade600),
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -221,7 +221,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
                   entry.locationString,
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.grey.shade400,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontFamily: 'monospace',
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -246,7 +246,7 @@ class _TxLogPanelState extends State<TxLogPanel> {
               'None',
               style: TextStyle(
                 fontSize: 11,
-                color: Colors.grey.shade500,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 fontStyle: FontStyle.italic,
               ),
             ),

@@ -43,6 +43,46 @@ class NoiseFloorSampleAdapter extends TypeAdapter<NoiseFloorSample> {
           typeId == other.typeId;
 }
 
+class MarkerRepeaterInfoAdapter extends TypeAdapter<MarkerRepeaterInfo> {
+  @override
+  final int typeId = 14;
+
+  @override
+  MarkerRepeaterInfo read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return MarkerRepeaterInfo(
+      repeaterId: fields[0] as String,
+      snr: fields[1] as double,
+      rssi: fields[2] as int,
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, MarkerRepeaterInfo obj) {
+    writer
+      ..writeByte(3)
+      ..writeByte(0)
+      ..write(obj.repeaterId)
+      ..writeByte(1)
+      ..write(obj.snr)
+      ..writeByte(2)
+      ..write(obj.rssi);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MarkerRepeaterInfoAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
 class PingEventMarkerAdapter extends TypeAdapter<PingEventMarker> {
   @override
   final int typeId = 12;
@@ -57,19 +97,28 @@ class PingEventMarkerAdapter extends TypeAdapter<PingEventMarker> {
       timestamp: fields[0] as DateTime,
       type: fields[1] as PingEventType,
       noiseFloor: fields[2] as int,
+      latitude: fields[3] as double?,
+      longitude: fields[4] as double?,
+      repeaters: (fields[5] as List?)?.cast<MarkerRepeaterInfo>(),
     );
   }
 
   @override
   void write(BinaryWriter writer, PingEventMarker obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(6)
       ..writeByte(0)
       ..write(obj.timestamp)
       ..writeByte(1)
       ..write(obj.type)
       ..writeByte(2)
-      ..write(obj.noiseFloor);
+      ..write(obj.noiseFloor)
+      ..writeByte(3)
+      ..write(obj.latitude)
+      ..writeByte(4)
+      ..write(obj.longitude)
+      ..writeByte(5)
+      ..write(obj.repeaters);
   }
 
   @override

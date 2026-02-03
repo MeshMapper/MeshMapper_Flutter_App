@@ -198,6 +198,9 @@ class AppStateProvider extends ChangeNotifier {
   List<NoiseFloorSession> _storedNoiseFloorSessions = [];
   Box<NoiseFloorSession>? _noiseFloorSessionBox;
 
+  // Flag to track if preferences have been loaded from storage
+  bool _preferencesLoaded = false;
+
   AppStateProvider({required BluetoothService bluetoothService})
       : _bluetoothService = bluetoothService {
     _initialize();
@@ -208,6 +211,7 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================
 
   String get deviceId => _deviceId;
+  bool get preferencesLoaded => _preferencesLoaded;
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;
   String? get connectionError => _connectionError;
@@ -1076,12 +1080,58 @@ class AppStateProvider extends ChangeNotifier {
 
       // Wire up TX window complete callback for noise floor graph
       _pingService!.onTxWindowComplete = (success) {
-        recordPingEvent(success ? PingEventType.txSuccess : PingEventType.txFail);
+        // Get location and repeater info from the last TX log entry
+        double? lat;
+        double? lon;
+        List<MarkerRepeaterInfo>? repeaters;
+
+        if (_txLogEntries.isNotEmpty) {
+          final lastTx = _txLogEntries.last;
+          lat = lastTx.latitude;
+          lon = lastTx.longitude;
+          if (lastTx.events.isNotEmpty) {
+            repeaters = lastTx.events.map((e) => MarkerRepeaterInfo(
+              repeaterId: e.repeaterId,
+              snr: e.snr,
+              rssi: e.rssi,
+            )).toList();
+          }
+        }
+
+        recordPingEvent(
+          success ? PingEventType.txSuccess : PingEventType.txFail,
+          latitude: lat,
+          longitude: lon,
+          repeaters: repeaters,
+        );
       };
 
       // Wire up discovery window complete callback for noise floor graph
       _pingService!.onDiscoveryWindowComplete = (success) {
-        recordPingEvent(success ? PingEventType.discSuccess : PingEventType.discFail);
+        // Get location and node info from the last discovery log entry
+        double? lat;
+        double? lon;
+        List<MarkerRepeaterInfo>? repeaters;
+
+        if (_discLogEntries.isNotEmpty) {
+          final lastDisc = _discLogEntries.last;
+          lat = lastDisc.latitude;
+          lon = lastDisc.longitude;
+          if (lastDisc.discoveredNodes.isNotEmpty) {
+            repeaters = lastDisc.discoveredNodes.map((n) => MarkerRepeaterInfo(
+              repeaterId: n.repeaterId,
+              snr: n.localSnr,
+              rssi: n.localRssi,
+            )).toList();
+          }
+        }
+
+        recordPingEvent(
+          success ? PingEventType.discSuccess : PingEventType.discFail,
+          latitude: lat,
+          longitude: lon,
+          repeaters: repeaters,
+        );
       };
 
       // Wire up pending disable complete callback
@@ -1248,8 +1298,19 @@ class AppStateProvider extends ChangeNotifier {
                 '(batch tracking: ${_currentBatchRepeaters.length} repeaters, rxCount: ${_pingStats.rxCount})');
             // Play receive sound for new RX observation
             _audioService.playReceiveSound();
-            // Record RX event for noise floor graph
-            recordPingEvent(PingEventType.rx);
+            // Record RX event for noise floor graph with location and repeater info
+            recordPingEvent(
+              PingEventType.rx,
+              latitude: observation.lat,
+              longitude: observation.lon,
+              repeaters: [
+                MarkerRepeaterInfo(
+                  repeaterId: observation.repeaterId,
+                  snr: observation.snr,
+                  rssi: observation.rssi,
+                ),
+              ],
+            );
             notifyListeners();
           } else {
             debugLog('[APP] Repeater ${observation.repeaterId} already has pin in current batch, SNR will update on flush if better');
@@ -2783,7 +2844,11 @@ class AppStateProvider extends ChangeNotifier {
   /// Load user preferences from Hive storage
   Future<void> _loadPreferences() async {
     final box = await _openBoxSafely(_preferencesBoxName);
-    if (box == null) return;
+    if (box == null) {
+      _preferencesLoaded = true;
+      notifyListeners();
+      return;
+    }
 
     try {
       final json = box.get('preferences');
@@ -2792,11 +2857,12 @@ class AppStateProvider extends ChangeNotifier {
         debugLog('[APP] Loaded preferences: interval=${_preferences.autoPingInterval}s, '
             'ignoreCarpeater=${_preferences.ignoreCarpeater}, '
             'ignoreRepeaterId=${_preferences.ignoreRepeaterId}');
-        notifyListeners();
       }
     } catch (e) {
       debugLog('[APP] Failed to load preferences: $e');
     }
+    _preferencesLoaded = true;
+    notifyListeners();
   }
 
   /// Save user preferences to Hive storage
@@ -2989,14 +3055,23 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   /// Record a ping event to the current session
-  void recordPingEvent(PingEventType type) {
+  void recordPingEvent(
+    PingEventType type, {
+    double? latitude,
+    double? longitude,
+    List<MarkerRepeaterInfo>? repeaters,
+  }) {
     if (_currentNoiseFloorSession != null && _currentNoiseFloor != null) {
       _currentNoiseFloorSession!.markers.add(PingEventMarker(
         timestamp: DateTime.now(),
         type: type,
         noiseFloor: _currentNoiseFloor!,
+        latitude: latitude,
+        longitude: longitude,
+        repeaters: repeaters,
       ));
-      debugLog('[GRAPH] Recorded ${type.name} event at ${_currentNoiseFloor}dBm');
+      debugLog('[GRAPH] Recorded ${type.name} event at ${_currentNoiseFloor}dBm'
+          '${repeaters != null && repeaters.isNotEmpty ? " with ${repeaters.length} repeater(s)" : ""}');
       notifyListeners();
     }
   }

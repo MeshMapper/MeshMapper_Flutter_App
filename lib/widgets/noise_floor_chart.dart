@@ -1,7 +1,9 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../models/noise_floor_session.dart';
+import '../providers/app_state_provider.dart';
 
 /// Interactive noise floor chart with pinch-to-zoom and pan
 class InteractiveNoiseFloorChart extends StatefulWidget {
@@ -24,6 +26,10 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
   double? _gestureStartViewEnd;
   double? _gestureStartFocalX;
 
+  // Cached line data - only rebuild when session changes, not during zoom
+  LineChartBarData? _cachedLineData;
+  NoiseFloorSession? _cachedSession;
+
   static const double _minVisibleSeconds = 10.0;
   static const double _markerTapRadius = 20.0; // Tap target radius for markers
 
@@ -38,6 +44,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session != widget.session) {
       _initView();
+      _cachedLineData = null; // Invalidate cache when session changes
+      _cachedSession = null;
     }
   }
 
@@ -180,7 +188,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     return before.noiseFloor + (after.noiseFloor - before.noiseFloor) * timeFraction;
   }
 
-  /// Show marker details popup
+  /// Show marker details popup as a modern bottom sheet
   void _showMarkerDetails(PingEventMarker marker, int interpolatedNoiseFloor) {
     final eventTypeLabel = switch (marker.type) {
       PingEventType.txSuccess => 'TX Success',
@@ -198,63 +206,267 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       PingEventType.discFail => 'Discovery got no response',
     };
 
-    final elapsed = marker.timestamp.difference(widget.session.startTime);
-    final elapsedStr = _formatDuration(elapsed);
+    final hasLocation = marker.latitude != null && marker.longitude != null;
 
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Container(
-              width: 16,
-              height: 16,
-              decoration: BoxDecoration(
-                color: marker.color,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 1.5),
-              ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Drag handle
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Header with event type
+                Row(
+                  children: [
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: marker.color,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      eventTypeLabel,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      _formatTimestamp(marker.timestamp),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  eventDescription,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Info cards row
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildInfoCard(
+                        context,
+                        icon: Icons.graphic_eq,
+                        label: 'Noise Floor',
+                        value: '$interpolatedNoiseFloor dBm',
+                      ),
+                    ),
+                    if (hasLocation) ...[
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _buildInfoCard(
+                          context,
+                          icon: Icons.location_on,
+                          label: 'Location',
+                          value: '${marker.latitude!.toStringAsFixed(4)}, ${marker.longitude!.toStringAsFixed(4)}',
+                          compact: true,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+
+                // Repeaters section
+                if (marker.repeaters != null && marker.repeaters!.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'Repeaters',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: marker.repeaters!.map((r) => _buildRepeaterChip(context, r)).toList(),
+                  ),
+                ],
+
+                // View on Map button
+                if (hasLocation) ...[
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () {
+                        // Get references before popping
+                        final appState = Provider.of<AppStateProvider>(context, listen: false);
+                        final navigator = Navigator.of(context);
+
+                        // Pop the bottom sheet first
+                        navigator.pop();
+
+                        // Pop back to main scaffold (removes the full-screen graph page)
+                        // Use popUntil to ensure we get back to the root
+                        navigator.popUntil((route) => route.isFirst);
+
+                        // Navigate to map and center on location
+                        appState.navigateToMapCoordinates(marker.latitude!, marker.longitude!);
+                      },
+                      icon: const Icon(Icons.map, size: 18),
+                      label: const Text('View on Map'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 12),
-            Text(eventTypeLabel),
-          ],
+          ),
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(eventDescription),
-            const SizedBox(height: 16),
-            _detailRow('Time', elapsedStr),
-            _detailRow('Noise Floor', '$interpolatedNoiseFloor dBm'),
-            _detailRow('Timestamp', _formatTimestamp(marker.timestamp)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
+      ),
+    );
+  }
+
+  /// Build info card for the bottom sheet
+  Widget _buildInfoCard(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String value,
+    bool compact = false,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                icon,
+                size: 14,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: compact ? 11 : 14,
+              fontWeight: FontWeight.w600,
+              fontFamily: 'monospace',
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _detailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+  /// Build SNR-colored repeater chip
+  Widget _buildRepeaterChip(BuildContext context, MarkerRepeaterInfo repeater) {
+    // Color based on SNR: good (>5), fair (-1 to 5), poor (<-1)
+    Color chipColor;
+    if (repeater.snr <= -1) {
+      chipColor = Colors.red;
+    } else if (repeater.snr <= 5) {
+      chipColor = Colors.orange;
+    } else {
+      chipColor = Colors.green;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: chipColor.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: chipColor.withValues(alpha: 0.3)),
+      ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            label,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: chipColor,
+              shape: BoxShape.circle,
             ),
           ),
+          const SizedBox(width: 8),
           Text(
-            value,
-            style: const TextStyle(fontWeight: FontWeight.w500),
+            repeater.repeaterId,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: chipColor,
+              fontFamily: 'monospace',
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '${repeater.snr.toStringAsFixed(1)} dB',
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).colorScheme.onSurface,
+              fontFamily: 'monospace',
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '${repeater.rssi} dBm',
+            style: TextStyle(
+              fontSize: 11,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontFamily: 'monospace',
+            ),
           ),
         ],
       ),
@@ -389,6 +601,12 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
   }
 
   LineChartBarData _buildLineData(NoiseFloorSession session) {
+    // Return cached data if session hasn't changed (prevents rebuilding during zoom)
+    if (_cachedLineData != null && _cachedSession == session &&
+        _cachedSession!.samples.length == session.samples.length) {
+      return _cachedLineData!;
+    }
+
     final spots = session.samples.map((s) {
       final elapsed = s.timestamp.difference(session.startTime).inSeconds.toDouble();
       return FlSpot(elapsed, s.noiseFloor.toDouble());
@@ -400,7 +618,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     final yRange = maxY - minY;
 
     // Calculate gradient stops based on noise floor thresholds
-    // Green: -120 to -95 (good), Orange: -95 to -85 (medium), Red: -85+ (bad)
+    // Green: -120 to -100 (good), Orange: -100 to -90 (medium), Red: -90+ (bad)
     double yToStop(double dbm) {
       if (yRange <= 0) return 0.5;
       return ((dbm - minY) / yRange).clamp(0.0, 1.0);
@@ -429,7 +647,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       1.0,
     ];
 
-    return LineChartBarData(
+    _cachedLineData = LineChartBarData(
       spots: spots,
       isCurved: true,
       curveSmoothness: 0.2,
@@ -451,6 +669,9 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
         ),
       ),
     );
+    _cachedSession = session;
+
+    return _cachedLineData!;
   }
 
   FlTitlesData _buildTitles(BuildContext context) {

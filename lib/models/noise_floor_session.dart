@@ -37,6 +37,25 @@ enum PingEventType {
   discFail, // Grey: Discovery no response
 }
 
+/// Repeater info for graph markers
+@HiveType(typeId: 14)
+class MarkerRepeaterInfo extends HiveObject {
+  @HiveField(0)
+  final String repeaterId;
+
+  @HiveField(1)
+  final double snr;
+
+  @HiveField(2)
+  final int rssi;
+
+  MarkerRepeaterInfo({
+    required this.repeaterId,
+    required this.snr,
+    required this.rssi,
+  });
+}
+
 /// A ping event marker with timestamp, type, and noise floor at time of event
 @HiveType(typeId: 12)
 class PingEventMarker extends HiveObject {
@@ -49,10 +68,22 @@ class PingEventMarker extends HiveObject {
   @HiveField(2)
   final int noiseFloor; // dBm at time of event
 
+  @HiveField(3)
+  final double? latitude;
+
+  @HiveField(4)
+  final double? longitude;
+
+  @HiveField(5)
+  final List<MarkerRepeaterInfo>? repeaters;
+
   PingEventMarker({
     required this.timestamp,
     required this.type,
     required this.noiseFloor,
+    this.latitude,
+    this.longitude,
+    this.repeaters,
   });
 
   /// Get the color for this event type

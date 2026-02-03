@@ -311,13 +311,13 @@ class _TxLogTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.upload_outlined, size: 48, color: Colors.grey),
-            SizedBox(height: 16),
-            Text('No TX pings logged yet', style: TextStyle(color: Colors.grey)),
+            Icon(Icons.upload_outlined, size: 48, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            const SizedBox(height: 16),
+            Text('No TX pings logged yet', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
           ],
         ),
       );
@@ -358,7 +358,7 @@ class _TxLogTab extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade800,
+                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
@@ -367,7 +367,7 @@ class _TxLogTab extends StatelessWidget {
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       fontFamily: 'monospace',
-                      color: Colors.grey.shade300,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                 ),
@@ -377,7 +377,7 @@ class _TxLogTab extends StatelessWidget {
                   '${entry.power.toStringAsFixed(1)} W',
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.grey.shade500,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontFamily: 'monospace',
                   ),
                 ),
@@ -388,13 +388,13 @@ class _TxLogTab extends StatelessWidget {
             // Location
             Row(
               children: [
-                Icon(Icons.location_on, size: 14, color: Colors.grey.shade500),
+                Icon(Icons.location_on, size: 14, color: Theme.of(context).colorScheme.onSurfaceVariant),
                 const SizedBox(width: 4),
                 Text(
                   entry.locationString,
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.grey.shade400,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontFamily: 'monospace',
                   ),
                 ),
@@ -408,7 +408,7 @@ class _TxLogTab extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade700),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
                 ),
                 child: Column(
                   children: [
@@ -424,7 +424,7 @@ class _TxLogTab extends StatelessWidget {
                               style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade500,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -435,7 +435,7 @@ class _TxLogTab extends StatelessWidget {
                               style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade500,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
@@ -446,14 +446,14 @@ class _TxLogTab extends StatelessWidget {
                               style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.grey.shade500,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    Divider(height: 1, color: Colors.grey.shade700),
+                    Divider(height: 1, color: Theme.of(context).dividerColor),
                     // Data rows
                     ...entry.events.map((event) => _buildRepeaterRow(context, event)),
                   ],
@@ -465,7 +465,7 @@ class _TxLogTab extends StatelessWidget {
                 'No repeaters heard',
                 style: TextStyle(
                   fontSize: 11,
-                  color: Colors.grey.shade500,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                   fontStyle: FontStyle.italic,
                 ),
               ),
@@ -512,7 +512,7 @@ class _TxLogTab extends StatelessWidget {
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
                 fontFamily: 'monospace',
-                color: Colors.grey.shade300,
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
           ),
@@ -564,13 +564,13 @@ class _RxLogTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.download_outlined, size: 48, color: Colors.grey),
-            SizedBox(height: 16),
-            Text('No RX observations yet', style: TextStyle(color: Colors.grey)),
+            Icon(Icons.download_outlined, size: 48, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            const SizedBox(height: 16),
+            Text('No RX observations yet', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
           ],
         ),
       );
@@ -631,7 +631,7 @@ class _RxLogTab extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade800,
+                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
@@ -640,7 +640,7 @@ class _RxLogTab extends StatelessWidget {
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       fontFamily: 'monospace',
-                      color: Colors.grey.shade300,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                 ),
@@ -651,13 +651,13 @@ class _RxLogTab extends StatelessWidget {
             // Location
             Row(
               children: [
-                Icon(Icons.location_on, size: 14, color: Colors.grey.shade500),
+                Icon(Icons.location_on, size: 14, color: Theme.of(context).colorScheme.onSurfaceVariant),
                 const SizedBox(width: 4),
                 Text(
                   entry.locationString,
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.grey.shade400,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontFamily: 'monospace',
                   ),
                 ),
@@ -670,7 +670,7 @@ class _RxLogTab extends StatelessWidget {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade700),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
               ),
               child: Column(
                 children: [
@@ -686,7 +686,7 @@ class _RxLogTab extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade500,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -697,7 +697,7 @@ class _RxLogTab extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade500,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -708,14 +708,14 @@ class _RxLogTab extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade500,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ),
                       ],
                     ),
                   ),
-                  Divider(height: 1, color: Colors.grey.shade700),
+                  Divider(height: 1, color: Theme.of(context).dividerColor),
                   // Data row
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -730,7 +730,7 @@ class _RxLogTab extends StatelessWidget {
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
                               fontFamily: 'monospace',
-                              color: Colors.grey.shade300,
+                              color: Theme.of(context).colorScheme.onSurface,
                             ),
                           ),
                         ),
@@ -790,16 +790,16 @@ class _DiscLogTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.radar_outlined, size: 48, color: Colors.grey),
-            SizedBox(height: 16),
-            Text('No discovery observations yet', style: TextStyle(color: Colors.grey)),
-            SizedBox(height: 8),
+            Icon(Icons.radar_outlined, size: 48, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            const SizedBox(height: 16),
+            Text('No discovery observations yet', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 8),
             Text('Enable Passive Mode to discover nearby nodes',
-                style: TextStyle(color: Colors.grey, fontSize: 12)),
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
           ],
         ),
       );
@@ -838,7 +838,7 @@ class _DiscLogTab extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: Colors.grey.shade800,
+                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
@@ -847,7 +847,7 @@ class _DiscLogTab extends StatelessWidget {
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         fontFamily: 'monospace',
-                        color: Colors.grey.shade300,
+                        color: Theme.of(context).colorScheme.onSurface,
                       ),
                     ),
                   ),
@@ -857,7 +857,7 @@ class _DiscLogTab extends StatelessWidget {
                     '${entry.nodeCount} node${entry.nodeCount == 1 ? '' : 's'}',
                     style: TextStyle(
                       fontSize: 11,
-                      color: Colors.grey.shade500,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontFamily: 'monospace',
                     ),
                   ),
@@ -868,13 +868,13 @@ class _DiscLogTab extends StatelessWidget {
               // Location
               Row(
                 children: [
-                  Icon(Icons.location_on, size: 14, color: Colors.grey.shade500),
+                  Icon(Icons.location_on, size: 14, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   const SizedBox(width: 4),
                   Text(
                     entry.locationString,
                     style: TextStyle(
                       fontSize: 11,
-                      color: Colors.grey.shade400,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontFamily: 'monospace',
                     ),
                   ),
@@ -888,7 +888,7 @@ class _DiscLogTab extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.grey.shade700),
+                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
                   ),
                   child: Column(
                     children: [
@@ -904,7 +904,7 @@ class _DiscLogTab extends StatelessWidget {
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
-                                  color: Colors.grey.shade500,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             ),
@@ -915,7 +915,7 @@ class _DiscLogTab extends StatelessWidget {
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
-                                  color: Colors.grey.shade500,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             ),
@@ -926,7 +926,7 @@ class _DiscLogTab extends StatelessWidget {
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
-                                  color: Colors.grey.shade500,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             ),
@@ -937,14 +937,14 @@ class _DiscLogTab extends StatelessWidget {
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
-                                  color: Colors.grey.shade500,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                             ),
                           ],
                         ),
                       ),
-                      Divider(height: 1, color: Colors.grey.shade700),
+                      Divider(height: 1, color: Theme.of(context).dividerColor),
                       // Data rows
                       ...entry.discoveredNodes.map((node) => _buildNodeRow(context, node)),
                     ],
@@ -956,7 +956,7 @@ class _DiscLogTab extends StatelessWidget {
                   'No nodes discovered',
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.grey.shade500,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontStyle: FontStyle.italic,
                   ),
                 ),
@@ -1016,7 +1016,7 @@ class _DiscLogTab extends StatelessWidget {
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                     fontFamily: 'monospace',
-                    color: Colors.grey.shade300,
+                    color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
                 Text(
@@ -1084,13 +1084,13 @@ class _ErrorLogTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.check_circle_outline, size: 48, color: Colors.green),
-            SizedBox(height: 16),
-            Text('No errors logged', style: TextStyle(color: Colors.grey)),
+            const Icon(Icons.check_circle_outline, size: 48, color: Colors.green),
+            const SizedBox(height: 16),
+            Text('No errors logged', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
           ],
         ),
       );
@@ -1132,7 +1132,7 @@ class _ErrorLogTab extends StatelessWidget {
           style: TextStyle(
             fontSize: 12,
             fontFamily: 'monospace',
-            color: Colors.grey.shade500,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
       ),

@@ -40,11 +40,16 @@ void main() async {
   debugLog('[APP] Initial theme mode: $initialThemeMode');
 
   // Register noise floor session adapters before opening any boxes
+  // Note: MarkerRepeaterInfo (14) must be registered before PingEventMarker (12)
+  // since PingEventMarker contains a list of MarkerRepeaterInfo
   if (!Hive.isAdapterRegistered(10)) {
     Hive.registerAdapter(NoiseFloorSampleAdapter());
   }
   if (!Hive.isAdapterRegistered(11)) {
     Hive.registerAdapter(PingEventTypeAdapter());
+  }
+  if (!Hive.isAdapterRegistered(14)) {
+    Hive.registerAdapter(MarkerRepeaterInfoAdapter());
   }
   if (!Hive.isAdapterRegistered(12)) {
     Hive.registerAdapter(PingEventMarkerAdapter());
@@ -219,27 +224,15 @@ class _ThemedApp extends StatefulWidget {
 }
 
 class _ThemedAppState extends State<_ThemedApp> {
-  bool _isFirstBuild = true;
-
   @override
   Widget build(BuildContext context) {
     return Consumer<AppStateProvider>(
       builder: (context, appState, child) {
-        String effectiveThemeMode;
-
-        if (_isFirstBuild) {
-          // On first build, use the pre-loaded theme to avoid flash
-          effectiveThemeMode = widget.initialThemeMode;
-          // Schedule switching to provider-managed theme after first frame
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _isFirstBuild) {
-              setState(() => _isFirstBuild = false);
-            }
-          });
-        } else {
-          // After first build, always use provider's value for dynamic updates
-          effectiveThemeMode = appState.preferences.themeMode;
-        }
+        // Use initial theme mode until provider has loaded preferences from storage
+        // This prevents flash from default theme to user's actual preference
+        final effectiveThemeMode = appState.preferencesLoaded
+            ? appState.preferences.themeMode
+            : widget.initialThemeMode;
 
         final isDarkMode = effectiveThemeMode == 'dark';
 
