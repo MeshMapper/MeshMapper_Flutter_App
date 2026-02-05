@@ -13,6 +13,7 @@ import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/distance_formatter.dart';
 
 /// Map style options
 enum MapStyle {
@@ -678,7 +679,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
           const SizedBox(width: 6),
           Text(
-            hasGps ? '${position.accuracy.toStringAsFixed(0)}m' : 'No GPS',
+            hasGps ? formatMeters(position.accuracy, isImperial: appState.preferences.isImperial) : 'No GPS',
             style: TextStyle(
               fontSize: 11,
               fontFamily: 'monospace',
@@ -695,7 +696,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
             const SizedBox(width: 4),
             Text(
-              '${distanceFromLastPing.toStringAsFixed(0)}m',
+              formatMeters(distanceFromLastPing, isImperial: appState.preferences.isImperial),
               style: const TextStyle(
                 fontSize: 11,
                 fontFamily: 'monospace',

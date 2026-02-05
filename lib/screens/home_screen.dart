@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/distance_formatter.dart';
 import '../widgets/connection_panel.dart';
 import '../widgets/map_widget.dart';
 import '../widgets/ping_controls.dart';
@@ -225,6 +226,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     showModalBottomSheet(
       context: context,
+      useSafeArea: true,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -314,8 +316,11 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         if (appState.inZone == false) {
           final nearest = appState.nearestZoneName ?? 'Unknown';
-          final dist = appState.nearestZoneDistanceKm?.toStringAsFixed(1) ?? '?';
-          return ('Outside Coverage Area', 'Nearest zone is $nearest, ${dist}km away. Enter a zone to start wardriving.', Icons.flight, Colors.orange);
+          final distKm = appState.nearestZoneDistanceKm;
+          final dist = distKm != null
+              ? formatKilometers(distKm, isImperial: appState.preferences.isImperial)
+              : '?';
+          return ('Outside Coverage Area', 'Nearest zone is $nearest, $dist away. Enter a zone to start wardriving.', Icons.flight, Colors.orange);
         }
         return ('Locating...', 'Acquiring GPS signal and checking your zone status.', Icons.gps_not_fixed, Colors.blue);
 
@@ -760,6 +765,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _showControlsHelp(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      useSafeArea: true,
       isScrollControlled: true,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(

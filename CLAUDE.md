@@ -85,7 +85,7 @@ The app uses a layered service architecture with clear separation of concerns:
 
 ### 10-Step Connection Workflow
 
-Critical safety: The connection sequence MUST complete in order. See `docs/CONNECTION_WORKFLOW.md` for details.
+Critical safety: The connection sequence MUST complete in order.
 
 1. **BLE GATT Connect**: Platform-specific BLE connection
 2. **Protocol Handshake**: `deviceQuery()` with protocol version
@@ -209,10 +209,7 @@ Never log without a tag. See `docs/DEVELOPMENT_REQUIREMENTS.md` for complete lis
 
 When modifying code, you MUST also update relevant documentation:
 
-1. **Connection workflow changes** → Update `docs/CONNECTION_WORKFLOW.md` (steps, states, error handling)
-2. **Ping/auto-ping changes** → Update `docs/PING_WORKFLOW.md` (validation, lifecycle, UI impacts)
-3. **New status messages** → Add to `docs/STATUS_MESSAGES.md` (exact text, trigger, color)
-4. **Architectural changes** → Update this CLAUDE.md file
+1. **Architectural changes** → Update this CLAUDE.md file
 
 ### Code Style
 - Use Dart documentation comments (`///`) for public classes and methods
@@ -298,8 +295,6 @@ All API endpoints may return maintenance mode:
 - `lib/services/api_queue_service.dart` - Persistent upload queue
 - `lib/services/device_model_service.dart` - Device model identification
 - `assets/device-models.json` - Device database (30+ models)
-- `docs/CONNECTION_WORKFLOW.md` - Connection sequence documentation
-- `docs/PING_WORKFLOW.md` - Ping lifecycle documentation
 - `docs/UNIFIED_RX_HANDLER_PLAN.md` - RX handler architecture
 - `docs/DEVELOPMENT_REQUIREMENTS.md` - Coding standards
 

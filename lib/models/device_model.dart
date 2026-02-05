@@ -54,12 +54,6 @@ class DeviceModel {
     };
   }
 
-  /// Check if this is a PA amplifier model (requires careful power management)
-  bool get isPaAmplifier => power >= 1.0;
-
-  /// Check if this is a high-power 2W PA model
-  bool get is2WPaAmplifier => power >= 2.0;
-
   @override
   String toString() => 'DeviceModel($shortName, power=$power, txPower=$txPower)';
 }

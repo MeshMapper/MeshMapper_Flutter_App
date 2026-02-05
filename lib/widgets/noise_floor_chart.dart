@@ -303,22 +303,63 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                   ],
                 ),
 
-                // Repeaters section
+                // Repeaters section (table format like TX log)
                 if (marker.repeaters != null && marker.repeaters!.isNotEmpty) ...[
                   const SizedBox(height: 16),
-                  Text(
-                    'Repeaters',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: marker.repeaters!.map((r) => _buildRepeaterChip(context, r)).toList(),
+                    child: Column(
+                      children: [
+                        // Header row
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 50,
+                                child: Text(
+                                  'Node',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  'SNR',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  'RSSI',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Divider(height: 1, color: Theme.of(context).dividerColor),
+                        // Data rows
+                        ...marker.repeaters!.map((r) => _buildRepeaterRow(context, r)),
+                      ],
+                    ),
                   ),
                 ],
 
@@ -410,65 +451,79 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     );
   }
 
-  /// Build SNR-colored repeater chip
-  Widget _buildRepeaterChip(BuildContext context, MarkerRepeaterInfo repeater) {
-    // Color based on SNR: good (>5), fair (-1 to 5), poor (<-1)
-    Color chipColor;
+  /// Build a table row for a repeater (matching TX log style)
+  Widget _buildRepeaterRow(BuildContext context, MarkerRepeaterInfo repeater) {
+    // SNR color: good (>5), fair (-1 to 5), poor (<-1)
+    Color snrColor;
     if (repeater.snr <= -1) {
-      chipColor = Colors.red;
+      snrColor = Colors.red;
     } else if (repeater.snr <= 5) {
-      chipColor = Colors.orange;
+      snrColor = Colors.orange;
     } else {
-      chipColor = Colors.green;
+      snrColor = Colors.green;
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: chipColor.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: chipColor.withValues(alpha: 0.3)),
-      ),
+    // RSSI color based on signal strength
+    Color rssiColor;
+    if (repeater.rssi >= -70) {
+      rssiColor = Colors.green;
+    } else if (repeater.rssi >= -100) {
+      rssiColor = Colors.orange;
+    } else {
+      rssiColor = Colors.red;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              color: chipColor,
-              shape: BoxShape.circle,
+          // Node ID
+          SizedBox(
+            width: 50,
+            child: Text(
+              repeater.repeaterId,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
             ),
           ),
-          const SizedBox(width: 8),
-          Text(
-            repeater.repeaterId,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: chipColor,
-              fontFamily: 'monospace',
+          // SNR chip
+          Expanded(
+            child: Center(
+              child: _buildValueChip(repeater.snr.toStringAsFixed(1), snrColor),
             ),
           ),
-          const SizedBox(width: 10),
-          Text(
-            '${repeater.snr.toStringAsFixed(1)} dB',
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).colorScheme.onSurface,
-              fontFamily: 'monospace',
-            ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '${repeater.rssi} dBm',
-            style: TextStyle(
-              fontSize: 11,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              fontFamily: 'monospace',
+          // RSSI chip
+          Expanded(
+            child: Center(
+              child: _buildValueChip('${repeater.rssi}', rssiColor),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Build a small colored chip for table cells
+  Widget _buildValueChip(String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        value,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: color,
+          fontFamily: 'monospace',
+        ),
       ),
     );
   }

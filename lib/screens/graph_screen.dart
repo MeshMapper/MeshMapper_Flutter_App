@@ -19,6 +19,14 @@ class GraphScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Noise Floor History'),
         automaticallyImplyLeading: false,
+        actions: [
+          if (sessions.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () => _confirmClearSessions(context, appState),
+              tooltip: 'Clear all sessions',
+            ),
+        ],
       ),
       body: _buildBody(context, currentSession, sessions),
     );
@@ -87,6 +95,29 @@ class GraphScreen extends StatelessWidget {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => _FullScreenGraphPage(session: session),
+      ),
+    );
+  }
+
+  void _confirmClearSessions(BuildContext context, AppStateProvider appState) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear All Sessions?'),
+        content: const Text('This will delete all saved noise floor session graphs. The current active session will not be affected.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              appState.clearStoredNoiseFloorSessions();
+              Navigator.pop(context);
+            },
+            child: const Text('Clear'),
+          ),
+        ],
       ),
     );
   }

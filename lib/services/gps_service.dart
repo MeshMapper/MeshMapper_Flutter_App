@@ -354,16 +354,6 @@ class GpsService {
     return Geolocator.distanceBetween(startLat, startLon, endLat, endLon);
   }
 
-  /// Calculate bearing between two positions in degrees
-  static double bearingBetween(
-    double startLat,
-    double startLon,
-    double endLat,
-    double endLon,
-  ) {
-    return Geolocator.bearingBetween(startLat, startLon, endLat, endLon);
-  }
-
   /// Enable GPS simulator (for testing)
   /// Stops real GPS and starts simulated position updates
   void enableSimulator({

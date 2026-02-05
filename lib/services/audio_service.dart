@@ -159,6 +159,9 @@ class AudioService {
       await _txPlayer?.seek(Duration.zero);
       await _txPlayer?.play();
       debugLog('[AUDIO] Transmit sound played successfully');
+      // Release audio focus after playback completes
+      // Critical for Android Auto - without this, car audio stays ducked
+      await _releaseAudioFocus();
     } catch (e) {
       debugError('[AUDIO] Failed to play transmit sound: $e');
     }
@@ -173,8 +176,25 @@ class AudioService {
       await _rxPlayer?.seek(Duration.zero);
       await _rxPlayer?.play();
       debugLog('[AUDIO] Played receive sound');
+      // Release audio focus after playback completes
+      // Critical for Android Auto - without this, car audio stays ducked
+      await _releaseAudioFocus();
     } catch (e) {
       debugError('[AUDIO] Failed to play receive sound: $e');
+    }
+  }
+
+  /// Release audio focus after playback completes
+  /// This is critical for Android Auto - without explicitly releasing focus,
+  /// the car audio system stays ducked indefinitely
+  Future<void> _releaseAudioFocus() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.setActive(false);
+      debugLog('[AUDIO] Audio focus released');
+    } catch (e) {
+      debugError('[AUDIO] Failed to release audio focus: $e');
+      // Non-critical - audio still works, just may leave other audio ducked
     }
   }
 

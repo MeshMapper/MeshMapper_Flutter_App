@@ -30,6 +30,10 @@ class TxTracker {
   /// Called with repeater ID and reason when an echo is dropped due to carpeater detection
   void Function(String repeaterId, String reason)? onCarpeaterDrop;
 
+  /// Function to check if a repeater ID should be ignored (user carpeater filter)
+  /// Returns true if the repeater should be filtered out
+  bool Function(String repeaterId)? shouldIgnoreRepeater;
+
   /// Start tracking echoes for a sent ping
   /// 
   /// @param payload - The message text sent (for content verification)
@@ -119,7 +123,14 @@ class TxTracker {
       }
       debugLog('[TX LOG] ✓ RSSI OK (${metadata.rssi} < ${PacketValidator.maxRssiThreshold})');
 
-      // VALIDATION STEP 2: Channel hash validation
+      // VALIDATION STEP 2.5: Check user carpeater filter
+      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(pathHex.toUpperCase())) {
+        debugLog('[TX LOG] ❌ DROPPED: Repeater $pathHex ignored by user carpeater filter');
+        onCarpeaterDrop?.call(pathHex, 'User carpeater filter');
+        return false;
+      }
+
+      // VALIDATION STEP 3: Channel hash validation
       if (metadata.encryptedPayload.length < 3) {
         debugLog('[TX LOG] Ignoring: payload too short to contain channel hash');
         return false;

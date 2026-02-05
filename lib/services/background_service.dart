@@ -28,10 +28,6 @@ class BackgroundServiceManager {
   static bool _isInitialized = false;
   static bool _isRunning = false;
 
-  // Callbacks for service events (reserved for future use with bi-directional communication)
-  // ignore: unused_field
-  static Function(int txCount, int rxCount, int queueSize)? _onStatsUpdate;
-
   /// Initialize the background service.
   /// Must be called once at app startup (from main.dart).
   static Future<void> initialize() async {
@@ -197,12 +193,6 @@ class BackgroundServiceManager {
 
   /// Check if the background service is initialized.
   static bool get isInitialized => _isInitialized;
-
-  /// Set callback for stats updates from the background service.
-  static void setOnStatsUpdate(
-      Function(int txCount, int rxCount, int queueSize)? callback) {
-    _onStatsUpdate = callback;
-  }
 
   /// Called when the background service starts (Android).
   @pragma('vm:entry-point')

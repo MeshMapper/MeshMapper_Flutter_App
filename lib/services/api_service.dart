@@ -515,20 +515,6 @@ class ApiService {
     debugLog('[API] Session cleared');
   }
 
-  // ---- Legacy compatibility methods (TODO: remove after migration) ----
-
-  /// Legacy: Set device ID (no-op, kept for compatibility)
-  void setDeviceId(String deviceId) {
-    // No-op: device ID is now the public key in geo-auth system
-  }
-
-  /// Legacy: Acquire API slot (no-op, kept for compatibility)
-  /// Real auth happens via requestAuth() during connection
-  Future<bool> acquireSlot() async {
-    // No-op: slot acquisition is now part of requestAuth('connect')
-    return true;
-  }
-
   /// Legacy: Check if we have a slot (compatibility with old code)
   bool get hasSlot => hasSession;
 

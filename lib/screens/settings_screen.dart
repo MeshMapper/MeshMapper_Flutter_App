@@ -15,6 +15,7 @@ import '../utils/web_file_helpers_stub.dart'
 
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/distance_formatter.dart';
 import '../models/user_preferences.dart';
 import '../services/debug_submit_service.dart';
 import '../services/gps_simulator_service.dart';
@@ -183,6 +184,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               value: prefs.themeMode == 'dark',
               onChanged: (isDark) {
                 appState.setThemeMode(isDark ? 'dark' : 'light');
+              },
+            ),
+          ),
+          ListTile(
+            leading: Icon(
+              prefs.isImperial ? Icons.square_foot : Icons.straighten,
+            ),
+            title: const Text('Units'),
+            subtitle: Text(prefs.isImperial ? 'Imperial (mi, ft)' : 'Metric (km, m)'),
+            trailing: Switch(
+              value: prefs.isImperial,
+              onChanged: (isImperial) {
+                appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
               },
             ),
           ),
@@ -460,13 +474,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 min: 10,
                 max: 120,
                 divisions: 11,
-                label: '${appState.gpsSimulatorSpeed.round()} km/h',
+                label: formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
                 onChanged: (value) {
                   appState.setGpsSimulatorSpeed(value);
                 },
               ),
               trailing: Text(
-                '${appState.gpsSimulatorSpeed.round()} km/h',
+                formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),

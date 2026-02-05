@@ -164,7 +164,7 @@ const darkColorScheme = ColorScheme.dark(
   onTertiary: Colors.white,
   surface: Color(0xFF1E293B),       // slate-800 (cards/panels)
   onSurface: Color(0xFFF1F5F9),     // slate-100 (primary text)
-  onSurfaceVariant: Color(0xFF94A3B8), // slate-400 (muted text)
+  onSurfaceVariant: Color(0xFFCBD5E1), // slate-300 (muted text, brighter for contrast)
   surfaceContainerHighest: Color(0xFF0F172A), // slate-900 (main bg)
   outline: Color(0xFF334155),       // slate-700 (borders)
   error: Color(0xFFF87171),         // red-400

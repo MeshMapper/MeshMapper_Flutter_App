@@ -11,6 +11,7 @@ import '../models/connection_state.dart';
 import '../models/remembered_device.dart';
 import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/distance_formatter.dart';
 import '../services/bluetooth/bluetooth_service.dart';
 import '../widgets/regional_config_card.dart';
 
@@ -987,12 +988,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       // Build message with nearest zone info if available
       final nearestName = appState.nearestZoneName;
       final nearestCode = appState.nearestZoneCode;
-      final distKm = appState.nearestZoneDistanceKm?.toStringAsFixed(0);
+      final distKmValue = appState.nearestZoneDistanceKm;
 
       String message = 'Your geo zone is not on-boarded into MeshMapper.';
-      if (nearestName != null && distKm != null) {
+      if (nearestName != null && distKmValue != null) {
         final zoneDisplay = nearestCode != null ? '$nearestName ($nearestCode)' : nearestName;
-        message += '\n\nNearest zone is $zoneDisplay, ${distKm}km away.';
+        final dist = formatKilometers(distKmValue, isImperial: appState.preferences.isImperial);
+        message += '\n\nNearest zone is $zoneDisplay, $dist away.';
       }
 
       return Column(

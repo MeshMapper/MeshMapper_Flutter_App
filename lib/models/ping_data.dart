@@ -127,50 +127,11 @@ class HeardRepeater {
 class RepeaterInfo {
   final String id;
   final String name;
-  final int colorValue;
 
   const RepeaterInfo({
     required this.id,
     required this.name,
-    required this.colorValue,
   });
-
-  /// Get a stable color for this repeater based on its ID
-  static int colorFromId(String id) {
-    // Generate consistent color from repeater ID hash
-    final hash = id.hashCode;
-    final hue = (hash % 360).abs();
-    // Convert HSL to RGB (simplified)
-    return _hslToRgb(hue / 360.0, 0.7, 0.5);
-  }
-
-  static int _hslToRgb(double h, double s, double l) {
-    double r, g, b;
-
-    if (s == 0) {
-      r = g = b = l;
-    } else {
-      final q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      final p = 2 * l - q;
-      r = _hueToRgb(p, q, h + 1 / 3);
-      g = _hueToRgb(p, q, h);
-      b = _hueToRgb(p, q, h - 1 / 3);
-    }
-
-    return (0xFF << 24) |
-        ((r * 255).round() << 16) |
-        ((g * 255).round() << 8) |
-        (b * 255).round();
-  }
-
-  static double _hueToRgb(double p, double q, double t) {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
-    if (t < 1 / 6) return p + (q - p) * 6 * t;
-    if (t < 1 / 2) return q;
-    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-    return p;
-  }
 }
 
 /// Ping statistics

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/distance_formatter.dart';
 
 /// Status bar showing GPS, connection, and queue status
 class StatusBar extends StatefulWidget {
@@ -50,6 +51,7 @@ class _StatusBarState extends State<StatusBar> {
 
     showModalBottomSheet(
       context: context,
+      useSafeArea: true,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -139,8 +141,11 @@ class _StatusBarState extends State<StatusBar> {
         }
         if (appState.inZone == false) {
           final nearest = appState.nearestZoneName ?? 'Unknown';
-          final dist = appState.nearestZoneDistanceKm?.toStringAsFixed(1) ?? '?';
-          return ('Outside Coverage Area', 'Nearest zone is $nearest, ${dist}km away. Enter a zone to start wardriving.', Icons.flight, Colors.orange);
+          final distKm = appState.nearestZoneDistanceKm;
+          final dist = distKm != null
+              ? formatKilometers(distKm, isImperial: appState.preferences.isImperial)
+              : '?';
+          return ('Outside Coverage Area', 'Nearest zone is $nearest, $dist away. Enter a zone to start wardriving.', Icons.flight, Colors.orange);
         }
         return ('Locating...', 'Acquiring GPS signal and checking your zone status.', Icons.gps_not_fixed, Colors.blue);
 

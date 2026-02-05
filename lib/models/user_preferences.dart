@@ -49,6 +49,9 @@ class UserPreferences {
   /// App theme mode (dark, light)
   final String themeMode;
 
+  /// Unit system for distances (metric, imperial)
+  final String unitSystem;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -66,6 +69,7 @@ class UserPreferences {
     this.mapStyle = 'dark',
     this.closeAppAfterDisconnect = false,
     this.themeMode = 'dark',
+    this.unitSystem = 'metric',
   });
 
   /// Create from JSON (for persistence)
@@ -87,6 +91,7 @@ class UserPreferences {
       mapStyle: (json['mapStyle'] as String?) ?? 'dark',
       closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
+      unitSystem: (json['unitSystem'] as String?) ?? 'metric',
     );
   }
 
@@ -109,6 +114,7 @@ class UserPreferences {
       'mapStyle': mapStyle,
       'closeAppAfterDisconnect': closeAppAfterDisconnect,
       'themeMode': themeMode,
+      'unitSystem': unitSystem,
     };
   }
 
@@ -130,6 +136,7 @@ class UserPreferences {
     String? mapStyle,
     bool? closeAppAfterDisconnect,
     String? themeMode,
+    String? unitSystem,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -148,6 +155,7 @@ class UserPreferences {
       mapStyle: mapStyle ?? this.mapStyle,
       closeAppAfterDisconnect: closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
       themeMode: themeMode ?? this.themeMode,
+      unitSystem: unitSystem ?? this.unitSystem,
     );
   }
 
@@ -191,7 +199,8 @@ class UserPreferences {
         other.developerModeEnabled == developerModeEnabled &&
         other.mapStyle == mapStyle &&
         other.closeAppAfterDisconnect == closeAppAfterDisconnect &&
-        other.themeMode == themeMode;
+        other.themeMode == themeMode &&
+        other.unitSystem == unitSystem;
   }
 
   @override
@@ -212,8 +221,12 @@ class UserPreferences {
       mapStyle,
       closeAppAfterDisconnect,
       themeMode,
+      unitSystem,
     );
   }
+
+  /// Check if using imperial units
+  bool get isImperial => unitSystem == 'imperial';
 }
 
 /// Power level options

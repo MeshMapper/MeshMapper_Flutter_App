@@ -441,9 +441,6 @@ class AppStateProvider extends ChangeNotifier {
     // Load last connected device info (for bug reports)
     await _loadLastConnectedDevice();
 
-    // Set device ID for API
-    _apiService.setDeviceId(_deviceId);
-
     // Listen to Bluetooth adapter state changes (on/off)
     debugLog('[INIT] Setting up Bluetooth adapter state listener...');
     _adapterStateSubscription = _bluetoothService.adapterStateStream.listen((state) {
@@ -1261,6 +1258,17 @@ class AppStateProvider extends ChangeNotifier {
           severity: ErrorSeverity.warning, autoSwitch: false);
     };
     debugLog('[APP] TxTracker.onCarpeaterDrop callback SET');
+
+    // Function to check if repeater should be ignored (carpeater filter)
+    _txTracker!.shouldIgnoreRepeater = (String repeaterId) {
+      final prefs = _preferences;
+      if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
+        final ignored = prefs.ignoreRepeaterId!.toUpperCase();
+        return repeaterId.toUpperCase() == ignored;
+      }
+      return false;
+    };
+    debugLog('[APP] TxTracker.shouldIgnoreRepeater callback SET');
 
     // Create RX logger (stored for use when enabling Passive Mode)
     _rxLogger = RxLogger(
@@ -2331,6 +2339,14 @@ class AppStateProvider extends ChangeNotifier {
     _savePreferences();
   }
 
+  /// Set unit system preference (metric or imperial)
+  void setUnitSystem(String system) {
+    _preferences = _preferences.copyWith(unitSystem: system);
+    debugLog('[UI] Unit system set to $system');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Set close app after disconnect preference (Android only)
   void setCloseAppAfterDisconnect(bool value) {
     _preferences = _preferences.copyWith(closeAppAfterDisconnect: value);
@@ -3374,6 +3390,18 @@ class AppStateProvider extends ChangeNotifier {
 
     _currentNoiseFloorSession = null;
     notifyListeners();
+  }
+
+  /// Clear all stored noise floor sessions
+  Future<void> clearStoredNoiseFloorSessions() async {
+    try {
+      await _noiseFloorSessionBox?.clear();
+      _storedNoiseFloorSessions = [];
+      debugLog('[GRAPH] Cleared all stored noise floor sessions');
+      notifyListeners();
+    } catch (e) {
+      debugError('[GRAPH] Failed to clear noise floor sessions: $e');
+    }
   }
 
   // ============================================

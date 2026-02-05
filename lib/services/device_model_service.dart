@@ -11,7 +11,6 @@ import '../models/device_model.dart';
 /// to prevent hardware damage.
 class DeviceModelService {
   List<DeviceModel> _models = [];
-  Map<String, String> _powerMapping = {};
   bool _isLoaded = false;
 
   /// Check if models are loaded
@@ -30,12 +29,10 @@ class DeviceModelService {
       
       final database = DeviceModelsDatabase.fromJson(jsonData);
       _models = database.devices;
-      _powerMapping = database.powerMapping;
       _isLoaded = true;
     } catch (e) {
       // If loading fails, use empty list (will default to safe power settings)
       _models = [];
-      _powerMapping = {};
       _isLoaded = true;
     }
   }
@@ -87,45 +84,5 @@ class DeviceModelService {
     }
 
     return null;
-  }
-
-  /// Get recommended power setting for a device
-  /// 
-  /// CRITICAL: PA amplifier models require specific power values:
-  /// - 33dBm models: power=2.0, txPower=9dBm
-  /// - 30dBm models: power=1.0, txPower=20dBm
-  /// - Standard models: power=0.3, txPower varies
-  double getRecommendedPower(DeviceModel model) {
-    return model.power;
-  }
-
-  /// Get recommended TX power (dBm) for a device
-  int getRecommendedTxPower(DeviceModel model) {
-    return model.txPower;
-  }
-
-  /// Get default (safe) power value for unknown devices
-  /// Conservative setting to prevent hardware damage
-  static const double defaultPower = 0.3;
-  static const int defaultTxPower = 22;
-
-  /// Get human-readable power description
-  String getPowerDescription(double power) {
-    final key = power.toString();
-    return _powerMapping[key] ?? 'Unknown power level';
-  }
-
-  /// Check if a power level is valid
-  bool isValidPower(double power) {
-    return power == 0.3 || power == 0.6 || power == 1.0 || power == 2.0;
-  }
-
-  /// Get all available power levels
-  List<double> get availablePowerLevels => [0.3, 0.6, 1.0, 2.0];
-
-  /// Warn if trying to set high power on non-PA device
-  bool shouldWarnHighPower(DeviceModel? model, double targetPower) {
-    if (model == null) return targetPower > 0.3;
-    return targetPower > model.power;
   }
 }

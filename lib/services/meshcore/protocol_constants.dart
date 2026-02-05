@@ -116,36 +116,6 @@ class PushCodes {
   static const int controlData = 0x8E; // PUSH_CODE_CONTROL_DATA (discovery response)
 }
 
-/// Error codes from device
-class ErrorCodes {
-  ErrorCodes._();
-
-  static const int unsupportedCmd = 1;
-  static const int notFound = 2;
-  static const int tableFull = 3;
-  static const int badState = 4;
-  static const int fileIoError = 5;
-  static const int illegalArg = 6;
-}
-
-/// Advertisement types
-class AdvType {
-  AdvType._();
-
-  static const int none = 0;
-  static const int chat = 1;
-  static const int repeater = 2;
-  static const int room = 3;
-}
-
-/// Self advertisement types
-class SelfAdvertTypes {
-  SelfAdvertTypes._();
-
-  static const int zeroHop = 0;
-  static const int flood = 1;
-}
-
 /// Text message types
 class TxtTypes {
   TxtTypes._();
@@ -153,16 +123,6 @@ class TxtTypes {
   static const int plain = 0;
   static const int cliData = 1;
   static const int signedPlain = 2;
-}
-
-/// Binary request types
-class BinaryRequestTypes {
-  BinaryRequestTypes._();
-
-  static const int getTelemetryData = 0x03;
-  static const int getAvgMinMax = 0x04;
-  static const int getAccessList = 0x05;
-  static const int getNeighbours = 0x06;
 }
 
 /// Stats types for GetStats command

@@ -30,7 +30,8 @@
       "Bash(git checkout:*)",
       "Bash(git fetch:*)",
       "Bash(python3:*)",
-      "Bash(flutter test:*)"
+      "Bash(flutter test:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

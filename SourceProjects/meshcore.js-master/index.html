@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <title>MeshCore Test Client</title>
+
+    <style>
+        [v-cloak] {
+            display: none;
+        }
+    </style>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+</head>
+<body class="bg-slate-300">
+
+<div id="app" class="space-y-2 p-3" v-cloak>
+
+    <!-- header -->
+    <div class="flex border bg-gray-50 p-3 rounded shadow">
+        <div class="my-auto">
+            <div class="font-bold">MeshCore Test Client</div>
+            <div class="text-sm">Developed by <a target="_blank" href="https://liamcottle.com" class="text-blue-500 hover:underline">Liam Cottle</a></div>
+        </div>
+    </div>
+
+    <!-- connection state -->
+    <div class="border bg-gray-50 rounded shadow">
+        <div class="p-3 space-x-1">
+            <button v-if="!connection" @click="askForSerialPort" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                Connect (Serial)
+            </button>
+            <button v-if="!connection" @click="askForBleDevice" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                Connect (BLE)
+            </button>
+            <button v-if="connection" @click="disconnect" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                Disconnect
+            </button>
+        </div>
+    </div>
+
+    <div v-if="connection" class="space-y-2">
+
+        <!-- self info -->
+        <div v-if="selfInfo" class="border bg-gray-50 rounded shadow">
+            <div class="p-3">
+                <div>Connected to: {{ selfInfo.name }}</div>
+            </div>
+        </div>
+
+        <!-- actions -->
+        <div class="border bg-gray-50 rounded shadow">
+            <div class="p-3 space-x-1">
+                <button @click="getSelfInfo" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    AppStart
+                </button>
+                <button @click="sendZeroHopAdvert" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    Advert (ZeroHop)
+                </button>
+                <button @click="sendFloodAdvert" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    Advert (Flood)
+                </button>
+                <button @click="setAdvertName" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SetAdvertName
+                </button>
+                <button @click="setAdvertLatLon" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SetAdvertLatLon
+                </button>
+                <button @click="addOrUpdateContact" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    AddUpdateContact
+                </button>
+                <button @click="syncNextMessage" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SyncNextMessage
+                </button>
+                <button @click="getDeviceTime" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    GetDeviceTime
+                </button>
+                <button @click="setDeviceTime" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SetDeviceTime
+                </button>
+                <button @click="setRadioParams" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SetRadioParams
+                </button>
+                <button @click="setTxPower" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SetTxPower
+                </button>
+                <button @click="sendChannelTextMessage" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SendChannelTxtMessage
+                </button>
+                <button @click="importContact" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    ImportContact
+                </button>
+                <button @click="exportContact(null)" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    ExportContact
+                </button>
+                <button @click="reboot" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    Reboot
+                </button>
+                <button @click="getBatteryVoltage" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    GetBatteryVoltage
+                </button>
+                <button @click="exportPrivateKey" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    ExportPrivateKey
+                </button>
+                <button @click="importPrivateKey" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    ImportPrivateKey
+                </button>
+                <button @click="getChannels" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    GetChannels
+                </button>
+                <button @click="setChannel" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SetChannel
+                </button>
+                <button @click="deleteChannel" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    DeleteChannel
+                </button>
+                <button @click="sendTrace" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    SendTrace
+                </button>
+                <button @click="setAutoAddContacts" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    setAutoAddContacts
+                </button>
+                <button @click="setManualAddContacts" class="border border-gray-500 px-2 bg-gray-100 hover:bg-gray-200 rounded">
+                    setManualAddContacts
+                </button>
+            </div>
+        </div>
+
+        <!-- contacts -->
+        <div class="flex">
+            <div class="border bg-gray-50 rounded shadow w-full" :class="[ cliContact != null ? 'hidden md:block' : '' ]">
+                <div class="flex border-b p-2">
+                    <div class="font-semibold my-auto mr-auto">Contacts</div>
+                    <div class="my-auto">
+                        <div @click="loadContacts" class="hover:underline cursor-pointer">Reload</div>
+                    </div>
+                </div>
+                <div class="divide-y">
+                    <div v-for="contact of contacts" class="px-2 py-1">
+                        <div class="my-auto mr-auto">
+                            <div class="font-semibold">{{ contact.advName }}</div>
+                            <div class="text-sm text-gray-500"><{{ bytesToHex(contact.publicKey) }}></div>
+                            <div class="text-sm text-gray-500">Type: {{ contactTypeToString(contact.type) }} • Last Advert: {{ contact.lastAdvert }}</div>
+                            <div class="text-sm text-gray-500">
+                                <span v-if="contact.outPathLen === -1">Path: ??? (Flood)</span>
+                                <span v-else-if="contact.outPathLen === 0">Path: Direct</span>
+                                <span v-else>Path: {{ contact.outPathLen }} hops [{{ formatOutPath(contact) }}]</span>
+                            </div>
+                        </div>
+                        <div class="flex my-auto space-x-2">
+                            <div v-if="contact.type === 1" @click="sendMessage(contact)" class="hover:underline cursor-pointer">Message</div>
+                            <div v-if="contact.type === 2" @click="showCommandLine(contact)" class="hover:underline cursor-pointer">CLI</div>
+                            <div v-if="contact.type === 2" @click="statusRequest(contact)" class="hover:underline cursor-pointer">GetStats</div>
+                            <div v-if="contact.type === 2" @click="pingRepeater(contact)" class="hover:underline cursor-pointer">Ping</div>
+                            <div @click="setPath(contact)" class="hover:underline cursor-pointer">Set Path</div>
+                            <div @click="shareContact(contact)" class="hover:underline cursor-pointer">Share (Zero Hop)</div>
+                            <div @click="exportContact(contact)" class="hover:underline cursor-pointer">Export</div>
+                            <div @click="resetPath(contact)" class="hover:underline cursor-pointer">Reset Path</div>
+                            <div @click="removeContact(contact)" class="hover:underline cursor-pointer">Forget</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div v-if="cliContact" class="w-full md:ml-2">
+                <div class="border bg-gray-50 rounded shadow">
+                    <div class="flex border-b p-2">
+                        <div class="font-semibold my-auto mr-auto">{{ cliContact.advName }}</div>
+                        <div class="flex my-auto space-x-2">
+                            <div @click="login(cliContact)" class="hover:underline cursor-pointer">Login</div>
+                            <div @click="cliMessages = []" class="hover:underline cursor-pointer">Clear</div>
+                            <div @click="cliContact = null" class="hover:underline cursor-pointer">Close</div>
+                        </div>
+                    </div>
+                    <div class="flex border-b">
+                        <input v-model="cliCommand" @keyup.enter.native="sendCliCommand" type="text" placeholder="Enter command..." class="p-2 w-full"/>
+                        <button @click="sendCliCommand" type="button" class="px-2">SEND</button>
+                    </div>
+                    <div v-if="cliMessages.length > 0" class="p-2">
+                        <div v-for="cliMessage of cliMessages">
+                            <span v-if="cliMessage.is_outgoing">&gt; <span class="font-semibold">{{ cliMessage.text }}</span></span>
+                            <span v-if="cliMessage.is_incoming">{{ cliMessage.text }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+</div>
+
+<script type="module">
+    import Constants from "./src/constants.js";
+    import WebSerialConnection from "./src/connection/web_serial_connection.js";
+    import WebBleConnection from "./src/connection/web_ble_connection.js";
+    import BufferUtils from "./src/buffer_utils.js";
+    Vue.createApp({
+        data() {
+            return {
+                connection: null,
+                selfInfo: null,
+                contacts: [],
+                cliCommand: null,
+                cliContact: null,
+                cliMessages: [],
+            };
+        },
+        mounted() {
+
+        },
+        methods: {
+            async askForSerialPort() {
+                this.connection = await WebSerialConnection.open();
+                this.connection.on("connected", () => this.onConnected());
+                this.connection.on("disconnected", () => this.onDisconnected());
+                // this.connection.on("tx", (data) => console.log("tx", data));
+                // this.connection.on("rx", (data) => console.log("rx", data));
+            },
+            async askForBleDevice() {
+                this.connection = await WebBleConnection.open();
+                this.connection.on("connected", () => this.onConnected());
+                this.connection.on("disconnected", () => this.onDisconnected());
+                // this.connection.on("tx", (data) => console.log("tx", data));
+                // this.connection.on("rx", (data) => console.log("rx", data));
+            },
+            async disconnect() {
+                if(this.connection){
+                    await this.connection.close();
+                    this.onDisconnected();
+                    this.connection = null;
+                }
+            },
+            async onConnected() {
+
+                console.log("connected");
+
+                try {
+                    await this.loadSelfInfo();
+                } catch(e) {
+                    alert("Disconnected: timed out waiting for self info");
+                    await this.disconnect();
+                    return;
+                }
+
+                await this.loadContacts();
+
+                this.connection.on(Constants.PushCodes.Advert, async (data) => {
+                    console.log("Advert", data);
+                    await this.loadContacts();
+                });
+
+                this.connection.on(Constants.PushCodes.NewAdvert, async (data) => {
+                    console.log("NewAdvert", data);
+                });
+
+                this.connection.on(Constants.PushCodes.PathUpdated, async (event) => {
+                    console.log("PathUpdated", event);
+                    await this.loadContacts();
+                });
+
+                this.connection.on(Constants.PushCodes.MsgWaiting, async (event) => {
+                    console.log("MsgWaiting", event);
+                    await this.syncNextMessage();
+                });
+
+                this.connection.on(Constants.ResponseCodes.ExportContact, async (event) => {
+                    console.log("ExportContact", event);
+                });
+
+                // this.connection.on(Constants.PushCodes.LogRxData, async (event) => {
+                //     console.log("LogRxData", event)
+                //     console.log(this.bytesToHex(event.raw));
+                // });
+
+            },
+            onDisconnected() {
+                console.log("disconnected");
+                this.connection = null;
+            },
+            async loadSelfInfo() {
+                this.selfInfo = await this.connection.getSelfInfo();
+                console.log(this.selfInfo);
+            },
+            async loadContacts() {
+                this.contacts = await this.connection.getContacts();
+            },
+            contactTypeToString(type) {
+                switch(type){
+                    case 0: return "Unknown";
+                    case 1: return "Chat";
+                    case 2: return "Repeater";
+                    case 3: return "Room";
+                }
+            },
+            formatOutPath(contact) {
+
+                // get out path
+                const outPath = contact.outPath.slice(0, contact.outPathLen);
+
+                // convert each path to hex
+                const pathHashes = Array.from(outPath).map((path) => {
+                    return path.toString(16);
+                });
+
+                // return with separator
+                return pathHashes.join(" -> ");
+
+            },
+            async getSelfInfo() {
+                const selfInfo = await this.connection.getSelfInfo();
+                console.log(selfInfo);
+            },
+            async sendZeroHopAdvert() {
+                await this.connection.sendZeroHopAdvert();
+            },
+            async sendFloodAdvert() {
+                await this.connection.sendFloodAdvert();
+            },
+            async getContacts() {
+                this.contacts = await this.connection.getContacts();
+                console.log(this.contacts);
+            },
+            async getDeviceTime() {
+                const deviceTime = await this.connection.getDeviceTime();
+                console.log(deviceTime);
+            },
+            async setDeviceTime() {
+                const timestamp = Math.floor(Date.now() / 1000);
+                await this.connection.setDeviceTime(timestamp);
+            },
+            async setTxPower() {
+
+                // ask user for tx power
+                const txPowerString = prompt("Please enter TX power in dBm");
+                if(!txPowerString){
+                    return;
+                }
+
+                // update tx power
+                const txPower = parseInt(txPowerString);
+                await this.connection.setTxPower(txPower);
+
+            },
+            async setRadioParams() {
+                const radioFreq = 917375;
+                const radioBw = 250000;
+                const radioSf = 11;
+                const radioCr = 5;
+                await this.connection.setRadioParams(radioFreq, radioBw, radioSf, radioCr);
+            },
+            async setAdvertName() {
+
+                // ask user for name
+                const name = prompt("Please enter name");
+                if(!name){
+                    return;
+                }
+
+                // set name
+                await this.connection.setAdvertName(name);
+
+            },
+            async setAdvertLatLon() {
+                const lat = Math.floor(-38.661727955271765 * 1000000);
+                const lon = Math.floor(178.0236810462527 * 1000000);
+                console.log(lat, lon);
+                await this.connection.setAdvertLatLong(lat, lon);
+            },
+            async addOrUpdateContact() {
+                const publicKey = new Uint8Array([148, 63, 175, 162, 88, 212, 192, 40, 214, 185, 213, 140, 42, 145, 194, 186, 70, 71, 112, 68, 0, 192, 65, 4, 105, 143, 230, 50, 162, 79, 247, 192]);
+                const type = Constants.AdvType.Chat;
+                const flags = 0;
+                const outPathLen = 0;
+                const outPath = new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                const advName = "Boaty";
+                const lastAdvert = 1739244825;
+                const advLat = 0;
+                const advLon = 0;
+                await this.connection.addOrUpdateContact(publicKey, type, flags, outPathLen, outPath, advName, lastAdvert, advLat, advLon);
+            },
+            async syncNextMessage() {
+
+                // get next message
+                const message = await this.connection.syncNextMessage();
+                console.log("syncNextMessage", message);
+
+                // check if contact message
+                if(message.contactMessage){
+
+                    // check if from cli contact
+                    if(this.cliContact && BufferUtils.areBuffersEqual(message.contactMessage.pubKeyPrefix, this.cliContact.publicKey.subarray(0, 6))){
+
+                        // add remote response
+                        this.cliMessages.push({
+                            is_incoming: true,
+                            text: message.contactMessage.text,
+                        });
+                    }
+
+                }
+
+            },
+            async sendMessage(contact) {
+
+                // ask user for message
+                const message = prompt("Enter message to send");
+                if(!message){
+                    return;
+                }
+
+                // send message
+                const response = await this.connection.sendTextMessage(contact.publicKey, message);
+                console.log(response);
+
+            },
+            async sendCliCommand() {
+
+                // do nothing if no contact selected
+                if(!this.cliContact){
+                    return;
+                }
+
+                // make sure user provided command
+                const command = this.cliCommand;
+                if(!command){
+                    return;
+                }
+
+                // add local command
+                this.cliMessages.push({
+                    is_outgoing: true,
+                    text: command,
+                });
+
+                // clear input
+                this.cliCommand = null;
+
+                // send command
+                const response = await this.connection.sendTextMessage(this.cliContact.publicKey, command, Constants.TxtTypes.CliData);
+                console.log(response);
+
+            },
+            async sendChannelTextMessage() {
+
+                // ask user for message
+                const message = prompt("Enter message to send");
+                if(!message){
+                    return;
+                }
+
+                await this.connection.sendChannelTextMessage(0, message);
+
+            },
+            async resetPath(contact) {
+
+                // remove contact from device
+                await this.connection.resetPath(contact.publicKey);
+
+                // reload contacts
+                await this.loadContacts();
+
+            },
+            async removeContact(contact) {
+
+                // ask user to confirm action
+                if(!confirm("Are you sure you want to remove this contact?")){
+                    return;
+                }
+
+                // remove contact from device
+                await this.connection.removeContact(contact.publicKey);
+
+                // reload contacts
+                await this.loadContacts();
+
+            },
+            async shareContact(contact) {
+                await this.connection.shareContact(contact.publicKey);
+            },
+            async exportContact(contact) {
+                try {
+                    const response = await this.connection.exportContact(contact?.publicKey);
+                    console.log(response);
+                } catch(e) {
+                    alert("Failed to export contact!");
+                }
+            },
+            async importContact() {
+                await this.connection.importContact(this.hexToBytes("120070b78b64782bffb918da2d6432204a149bd232dd66373415b5f7ba24733ba2efe843b0674dc86210127e259f417a24150af38953dd2eb597a6a75a5c0a86adea7e81dbfc7023e4cc12bfe1b628aeaf76303f456545e555ae6554344b8391c2f07e9b010381506f636b6574204e6f64652031"));
+            },
+            async setPath(contact) {
+                await this.connection.setContactPath(contact, [
+                    0xd2,
+                ]);
+            },
+            async exportPrivateKey() {
+                try {
+                    const response = await this.connection.exportPrivateKey();
+                    console.log(response);
+                    console.log(this.bytesToHex(response.privateKey));
+                } catch(e) {
+                    alert(`Failed to export private key: ${e}`);
+                }
+            },
+            async importPrivateKey() {
+
+                const privateKeyHex = prompt("Enter private key encoded in hex");
+                if(!privateKeyHex){
+                    return;
+                }
+
+                try {
+                    const privateKey = this.hexToBytes(privateKeyHex);
+                    await this.connection.importPrivateKey(privateKey);
+                    alert("Private key imported!")
+                } catch(e) {
+                    alert(`Failed to export private key: ${e}`);
+                }
+
+            },
+            async pingRepeater(contact) {
+                try {
+                    const response = await this.connection.pingRepeaterZeroHop(contact.publicKey);
+                    console.log(response);
+                } catch(e) {
+                    console.log(e);
+                }
+            },
+            async reboot() {
+                try {
+                    await this.connection.reboot();
+                    alert("Device is rebooting!");
+                } catch(e) {
+                    alert("Failed to reboot!");
+                }
+            },
+            async getBatteryVoltage() {
+                try {
+                    const response = await this.connection.getBatteryVoltage();
+                    alert(`Battery Voltage: ${response.batteryMilliVolts}mV`);
+                } catch(e) {
+                    alert("Failed to get battery voltage!");
+                }
+            },
+            async getChannels() {
+                try {
+                    const response = await this.connection.getChannels();
+                    console.log(response);
+                } catch(e) {
+                    alert("Failed to get channels!");
+                }
+            },
+            async setChannel() {
+                try {
+                    await this.connection.setChannel(1, "Test Channel", BufferUtils.base64ToBytes("RQKLcABJ8tLX+7yerzS9Rw=="));
+                } catch(e) {
+                    alert("Failed to set channel!");
+                }
+            },
+            async deleteChannel() {
+                try {
+                    await this.connection.deleteChannel(1);
+                } catch(e) {
+                    alert("Failed to delete channel!");
+                }
+            },
+            getRandomInt(min, max) {
+                min = Math.ceil(min);
+                max = Math.floor(max);
+                return Math.floor(Math.random() * (max - min + 1)) + min;
+            },
+            async sendTrace() {
+
+                // ask user for path
+                const pathString = prompt("Enter path as hex string eg: 12,3f,4d");
+                if(!pathString){
+                    return;
+                }
+
+                const pathHex = pathString.replaceAll(",", "");
+                const pathBytes = BufferUtils.hexToBytes(pathHex);
+                console.log(pathBytes);
+
+                try {
+
+                    console.log(`TRACE request for path: ${pathString}`);
+                    const response = await this.connection.tracePath(pathBytes);
+
+                    console.log("TRACE response", response);
+                    const responseList = [];
+                    for(var i = 0; i < response.pathLen; i++){
+                        const pathHash = response.pathHashes[i];
+                        const pathSnr = response.pathSnrs[i] / 4;
+                        responseList.push(`Hop ${i + 1}: hash=${pathHash.toString(16)}, snr=${pathSnr}`);
+                    }
+                    responseList.push(`Trace Received: snr=${response.lastSnr}`);
+
+                    console.log(responseList.join("\n"));
+                    alert(responseList.join("\n"));
+
+                } catch(e) {
+                    console.log(e);
+                }
+
+            },
+            async login(contact) {
+
+                // ask user for password
+                const password = prompt("Please enter Admin, or Guest password");
+                if(!password){
+                    return;
+                }
+
+                try {
+
+                    // log in to repeater
+                    const response = await this.connection.login(contact.publicKey, password);
+                    console.log("login response", response);
+
+                    // show status response
+                    alert(`login response:\n${JSON.stringify(response, null, 4)}`);
+
+                } catch(e) {
+                    alert(`Failed to login: ${e}`);
+                }
+
+            },
+            async statusRequest(contact) {
+
+                // ask user for password
+                const password = prompt("Please enter Admin, or Guest password");
+                if(!password){
+                    return;
+                }
+
+                try {
+
+                    // log in to repeater
+                    const response = await this.connection.login(contact.publicKey, password);
+                    console.log("login response", response);
+
+                    // request status
+                    const statusResponse = await this.connection.getStatus(contact.publicKey);
+                    console.log("status response", statusResponse);
+
+                    // show status response
+                    alert(`status request success:\n${JSON.stringify(statusResponse, null, 4)}`);
+
+                } catch(e) {
+                    alert(`Failed to login: ${e}`);
+                }
+
+            },
+            async setAutoAddContacts() {
+                try {
+                    await this.connection.setAutoAddContacts();
+                } catch(e) {
+                    console.log(e);
+                    alert("failed to set auto add contacts");
+                }
+            },
+            async setManualAddContacts() {
+                try {
+                    await this.connection.setManualAddContacts();
+                } catch(e) {
+                    console.log(e);
+                    alert("failed to set manual add contacts");
+                }
+            },
+            showCommandLine(contact) {
+
+                // hide cli if clicked same contact
+                if(this.cliContact === contact){
+                    this.cliContact = null;
+                    return;
+                }
+
+                // update ui
+                this.cliContact = contact;
+                this.cliMessages = [];
+
+            },
+            bytesToHex(uint8Array) {
+                return Array.from(uint8Array).map(byte => byte.toString(16).padStart(2, '0')).join('');
+            },
+            hexToBytes(hex) {
+                return Uint8Array.from(hex.match(/.{1,2}/g).map((byte) => parseInt(byte, 16)));
+            },
+        },
+    }).mount('#app');
+</script>
+
+</body>
+</html>

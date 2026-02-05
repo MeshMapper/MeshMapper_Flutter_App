@@ -79,12 +79,6 @@ class BufferReader {
     return bytes[0] | (bytes[1] << 8);
   }
 
-  /// Read unsigned 16-bit integer (big-endian)
-  int readUInt16BE() {
-    final bytes = readBytes(2);
-    return (bytes[0] << 8) | bytes[1];
-  }
-
   /// Read unsigned 32-bit integer (little-endian)
   int readUInt32LE() {
     final bytes = readBytes(4);
@@ -103,12 +97,6 @@ class BufferReader {
     return value > 32767 ? value - 65536 : value;
   }
 
-  /// Read signed 16-bit integer (big-endian)
-  int readInt16BE() {
-    final value = readUInt16BE();
-    return value > 32767 ? value - 65536 : value;
-  }
-
   /// Read signed 32-bit integer (little-endian)
   int readInt32LE() {
     final value = readUInt32LE();
@@ -119,40 +107,6 @@ class BufferReader {
     return value;
   }
 
-  /// Read signed 24-bit integer (big-endian)
-  int readInt24BE() {
-    final bytes = readBytes(3);
-    int value = (bytes[0] << 16) | (bytes[1] << 8) | bytes[2];
-    
-    // Convert 24-bit signed integer to Dart signed integer
-    // 0x800000 is the sign bit for a 24-bit value
-    if ((value & 0x800000) != 0) {
-      value -= 0x1000000;
-    }
-    
-    return value;
-  }
-
-  /// Peek at next byte without advancing pointer
-  int peekByte() {
-    if (_pointer >= _buffer.length) {
-      throw RangeError('Buffer underflow: no more bytes to peek');
-    }
-    return _buffer[_pointer];
-  }
-
-  /// Skip bytes
-  void skip(int count) {
-    _pointer += count;
-    if (_pointer > _buffer.length) {
-      _pointer = _buffer.length;
-    }
-  }
-
-  /// Reset pointer to beginning
-  void reset() {
-    _pointer = 0;
-  }
 }
 
 /// Buffer writer for creating binary data for MeshCore devices
@@ -190,12 +144,6 @@ class BufferWriter {
     _buffer.add((num >> 8) & 0xFF);
     _buffer.add((num >> 16) & 0xFF);
     _buffer.add((num >> 24) & 0xFF);
-  }
-
-  /// Write signed 32-bit integer (little-endian)
-  void writeInt32LE(int num) {
-    // Same byte representation, just different interpretation
-    writeUInt32LE(num);
   }
 
   /// Write UTF-8 string
