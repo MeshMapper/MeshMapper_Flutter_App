@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -76,7 +78,7 @@ class GraphScreen extends StatelessWidget {
           _SessionListTile(
             session: currentSession,
             isActive: true,
-            onTap: () => _openFullScreenGraph(context, currentSession),
+            onTap: () => _openFullScreenGraph(context, currentSession, isLive: true),
           ),
           if (sessions.isNotEmpty) const Divider(),
         ],
@@ -91,10 +93,10 @@ class GraphScreen extends StatelessWidget {
     );
   }
 
-  void _openFullScreenGraph(BuildContext context, NoiseFloorSession session) {
+  void _openFullScreenGraph(BuildContext context, NoiseFloorSession session, {bool isLive = false}) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => _FullScreenGraphPage(session: session),
+        builder: (context) => _FullScreenGraphPage(session: session, isLive: isLive),
       ),
     );
   }
@@ -124,16 +126,82 @@ class GraphScreen extends StatelessWidget {
 }
 
 /// Full-screen graph page with pinch-to-zoom and pan
-class _FullScreenGraphPage extends StatelessWidget {
+class _FullScreenGraphPage extends StatefulWidget {
   final NoiseFloorSession session;
+  final bool isLive;
 
-  const _FullScreenGraphPage({required this.session});
+  const _FullScreenGraphPage({required this.session, this.isLive = false});
+
+  @override
+  State<_FullScreenGraphPage> createState() => _FullScreenGraphPageState();
+}
+
+class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
+  final GlobalKey<InteractiveNoiseFloorChartState> _chartKey = GlobalKey();
+  Timer? _liveTimer;
+  late NoiseFloorSession _session;
+  bool _sessionEnded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _session = widget.session;
+    if (widget.isLive) {
+      _liveTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+        final current = context.read<AppStateProvider>().currentNoiseFloorSession;
+        if (current != null) {
+          setState(() {
+            _session = current;
+          });
+        } else {
+          // Session ended while viewing
+          _liveTimer?.cancel();
+          _liveTimer = null;
+          setState(() {
+            _sessionEnded = true;
+          });
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _liveTimer?.cancel();
+    super.dispose();
+  }
+
+  bool get _showLiveBadge => widget.isLive && !_sessionEnded;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(session.modeDisplay),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_session.modeDisplay),
+            if (_showLiveBadge) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green),
+                ),
+                child: const Text(
+                  'LIVE',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.green,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: () => Navigator.pop(context),
@@ -144,8 +212,7 @@ class _FullScreenGraphPage extends StatelessWidget {
             icon: const Icon(Icons.zoom_out_map),
             tooltip: 'Reset zoom',
             onPressed: () {
-              // The chart handles this internally via key reset
-              _resetKey.currentState?.resetZoom();
+              _chartKey.currentState?.resetZoom();
             },
           ),
         ],
@@ -159,17 +226,17 @@ class _FullScreenGraphPage extends StatelessWidget {
               child: Row(
                 children: [
                   Icon(
-                    session.mode == 'active' ? Icons.send : Icons.hearing,
+                    _session.mode == 'active' ? Icons.send : Icons.hearing,
                     size: 20,
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '${_formatDateTime(session.startTime)} | '
-                      '${session.durationDisplay} | '
-                      '${session.samples.length} samples, '
-                      '${session.markers.length} events',
+                      '${_formatDateTime(_session.startTime)} | '
+                      '${_session.durationDisplay} | '
+                      '${_session.samples.length} samples, '
+                      '${_session.markers.length} events',
                       style: TextStyle(
                         fontSize: 12,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -197,8 +264,9 @@ class _FullScreenGraphPage extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(8, 0, 16, 8),
                 child: InteractiveNoiseFloorChart(
-                  key: _resetKey,
-                  session: session,
+                  key: _chartKey,
+                  session: _session,
+                  isLive: _showLiveBadge,
                 ),
               ),
             ),
@@ -212,8 +280,6 @@ class _FullScreenGraphPage extends StatelessWidget {
     return '${dt.month}/${dt.day} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}';
   }
 }
-
-final GlobalKey<InteractiveNoiseFloorChartState> _resetKey = GlobalKey();
 
 /// List tile showing a session summary
 class _SessionListTile extends StatelessWidget {

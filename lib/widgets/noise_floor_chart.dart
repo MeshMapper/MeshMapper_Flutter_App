@@ -8,8 +8,9 @@ import '../providers/app_state_provider.dart';
 /// Interactive noise floor chart with pinch-to-zoom and pan
 class InteractiveNoiseFloorChart extends StatefulWidget {
   final NoiseFloorSession session;
+  final bool isLive;
 
-  const InteractiveNoiseFloorChart({super.key, required this.session});
+  const InteractiveNoiseFloorChart({super.key, required this.session, this.isLive = false});
 
   @override
   State<InteractiveNoiseFloorChart> createState() => InteractiveNoiseFloorChartState();
@@ -29,6 +30,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
   // Cached line data - only rebuild when session changes, not during zoom
   LineChartBarData? _cachedLineData;
   NoiseFloorSession? _cachedSession;
+  int _cachedSampleCount = 0;
 
   static const double _minVisibleSeconds = 10.0;
   static const double _markerTapRadius = 20.0; // Tap target radius for markers
@@ -44,8 +46,11 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session != widget.session) {
       _initView();
-      _cachedLineData = null; // Invalidate cache when session changes
+      _cachedLineData = null;
       _cachedSession = null;
+      _cachedSampleCount = 0;
+    } else if (widget.isLive) {
+      _updateLiveView();
     }
   }
 
@@ -56,8 +61,27 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     _viewEnd = _totalDuration;
   }
 
+  void _updateLiveView() {
+    final newTotal = widget.session.duration.inSeconds.toDouble();
+    final effectiveTotal = newTotal < 60 ? 60.0 : newTotal;
+
+    // Detect if user is at full (unzoomed) view: start near 0 and end near total
+    final isFullView = _viewStart < 2.0 && (_totalDuration - _viewEnd).abs() < 2.0;
+
+    _totalDuration = effectiveTotal;
+
+    if (isFullView) {
+      // Follow new data
+      _viewStart = 0;
+      _viewEnd = _totalDuration;
+    }
+    // If user has zoomed, leave their view window alone
+  }
+
   void resetZoom() {
     setState(() {
+      _totalDuration = widget.session.duration.inSeconds.toDouble();
+      if (_totalDuration < 60) _totalDuration = 60;
       _viewStart = 0;
       _viewEnd = _totalDuration;
     });
@@ -611,6 +635,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                             gridData: _buildGrid(context),
                             borderData: _buildBorder(context),
                           ),
+                          duration: Duration.zero,
                         ),
                       ),
                     ),
@@ -626,6 +651,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                             maxY: range.max.toDouble(),
                             minX: _viewStart,
                             maxX: _viewEnd,
+                            markerCount: session.markers.length,
                           ),
                         ),
                       ),
@@ -658,7 +684,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
   LineChartBarData _buildLineData(NoiseFloorSession session) {
     // Return cached data if session hasn't changed (prevents rebuilding during zoom)
     if (_cachedLineData != null && _cachedSession == session &&
-        _cachedSession!.samples.length == session.samples.length) {
+        _cachedSampleCount == session.samples.length) {
       return _cachedLineData!;
     }
 
@@ -725,6 +751,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       ),
     );
     _cachedSession = session;
+    _cachedSampleCount = session.samples.length;
 
     return _cachedLineData!;
   }
@@ -883,6 +910,7 @@ class _MarkerPainter extends CustomPainter {
   final double maxY;
   final double minX;
   final double maxX;
+  final int markerCount;
 
   _MarkerPainter({
     required this.session,
@@ -890,6 +918,7 @@ class _MarkerPainter extends CustomPainter {
     required this.maxY,
     required this.minX,
     required this.maxX,
+    required this.markerCount,
   });
 
   @override
@@ -966,7 +995,7 @@ class _MarkerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MarkerPainter oldDelegate) {
-    return oldDelegate.session != session ||
+    return oldDelegate.markerCount != markerCount ||
         oldDelegate.minY != minY ||
         oldDelegate.maxY != maxY ||
         oldDelegate.minX != minX ||
