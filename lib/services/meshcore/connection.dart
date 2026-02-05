@@ -81,6 +81,7 @@ class MeshCoreConnection {
   Completer<void>? _sentCompleter;
   Completer<ChannelInfo>? _channelInfoCompleter;
   Completer<int>? _statsCompleter;
+  Completer<String>? _exportContactCompleter;
 
   // Device self info (contains public key)
   SelfInfo? _selfInfo;
@@ -359,6 +360,8 @@ class MeshCoreConnection {
           _channelInfoCompleter = null;
           _deviceQueryCompleter?.completeError(errException);
           _deviceQueryCompleter = null;
+          _exportContactCompleter?.completeError(errException);
+          _exportContactCompleter = null;
           break;
         case ResponseCodes.deviceInfo:
           _onDeviceInfoResponse(reader);
@@ -389,6 +392,9 @@ class MeshCoreConnection {
           break;
         case ResponseCodes.batteryVoltage:
           _onBatteryVoltageResponse(reader);
+          break;
+        case ResponseCodes.exportContact:
+          _onExportContactResponse(reader);
           break;
         default:
           // Log unhandled response codes (like JS implementation)
@@ -616,6 +622,23 @@ class MeshCoreConnection {
     const maxVoltage = 4200; // 4.2V = 100%
     final clamped = milliVolts.clamp(minVoltage, maxVoltage);
     return ((clamped - minVoltage) / (maxVoltage - minVoltage) * 100).round();
+  }
+
+  void _onExportContactResponse(BufferReader reader) {
+    try {
+      final advertPacketBytes = reader.readRemainingBytes();
+      final hexString = advertPacketBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+      final contactUri = 'meshcore://$hexString';
+
+      debugLog('[CONN] Received export contact: ${contactUri.substring(0, 50)}...');
+
+      _exportContactCompleter?.complete(contactUri);
+      _exportContactCompleter = null;
+    } catch (e) {
+      debugError('[CONN] Error parsing export contact response: $e');
+      _exportContactCompleter?.completeError(e);
+      _exportContactCompleter = null;
+    }
   }
 
   /// Write frame to device
@@ -873,6 +896,22 @@ class MeshCoreConnection {
     final data = BufferWriter();
     data.writeByte(CommandCodes.getBatteryVoltage);
     await _sendToRadio(data);
+  }
+
+  /// Export signed contact URI for API authentication
+  /// Returns meshcore:// URI containing signed ADVERT packet
+  Future<String> exportContact({Duration timeout = const Duration(seconds: 5)}) async {
+    _exportContactCompleter = Completer<String>();
+    final future = _exportContactCompleter!.future;
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.exportContact);  // 0x11
+    await _sendToRadio(data);
+
+    return future.timeout(
+      timeout,
+      onTimeout: () => throw TimeoutException('Export contact timed out'),
+    );
   }
 
   /// Get radio statistics (noise floor)

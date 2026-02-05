@@ -30,6 +30,10 @@ class Repeater {
   /// Created at timestamp (Unix seconds), nullable for backwards compatibility
   final int? createdAt;
 
+  /// Server-provided staleness cutoff (Unix seconds).
+  /// The repeater is active while `now < staleTime`.
+  final int? staleTime;
+
   const Repeater({
     required this.id,
     required this.hexId,
@@ -40,6 +44,7 @@ class Repeater {
     required this.enabled,
     this.iata,
     this.createdAt,
+    this.staleTime,
   });
 
   /// Parse from JSON object in repeaters.json
@@ -53,6 +58,15 @@ class Repeater {
       createdAt = int.tryParse(rawCreatedAt);
     }
 
+    // Parse stale_time which may be int or String
+    int? staleTime;
+    final rawStaleTime = json['stale_time'];
+    if (rawStaleTime is int) {
+      staleTime = rawStaleTime;
+    } else if (rawStaleTime is String) {
+      staleTime = int.tryParse(rawStaleTime);
+    }
+
     return Repeater(
       id: json['id'] as String,
       hexId: json['hex_id'] as String? ?? '',
@@ -63,6 +77,7 @@ class Repeater {
       enabled: json['enabled'] as int? ?? 0,
       iata: json['iata'] as String?,
       createdAt: createdAt,
+      staleTime: staleTime,
     );
   }
 
@@ -77,6 +92,7 @@ class Repeater {
       'enabled': enabled,
       'iata': iata,
       'created_at': createdAt,
+      'stale_time': staleTime,
     };
   }
 
@@ -97,8 +113,15 @@ class Repeater {
     return DateTime.now().difference(created).inDays < 7;
   }
 
-  /// Check if the repeater was heard within the past 24 hours
+  /// Check if the repeater is active.
+  /// Uses server-provided [staleTime] when available, otherwise falls back
+  /// to a 24-hour threshold from [lastHeard].
   bool get isActive {
+    if (staleTime != null) {
+      final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      return nowSeconds < staleTime!;
+    }
+    // Fallback: 24-hour threshold from lastHeard
     if (lastHeard == 0) return false;
     final heard = DateTime.fromMillisecondsSinceEpoch(lastHeard * 1000);
     return DateTime.now().difference(heard).inHours < 24;

@@ -53,6 +53,7 @@ class ApiService {
     sanitized.remove('key');
     sanitized.remove('session_id');
     sanitized.remove('public_key');
+    sanitized.remove('contact_uri');
     return sanitized;
   }
 
@@ -172,12 +173,15 @@ class ApiService {
   /// Request authentication with MeshMapper geo-auth API
   /// Matches requestAuth() in wardrive.js
   ///
-  /// @param reason Either "connect" (acquire session) or "disconnect" (release session)
+  /// @param reason Either "connect" (acquire session), "register" (new device), or "disconnect" (release session)
+  /// @param publicKey Device public key (for existing auth flow)
+  /// @param contactUri Signed contact URI (for registration flow)
   /// @param offlineMode Set to true when uploading offline session data
   /// @returns Map with success, session_id, tx_allowed, rx_allowed, expires_at, reason, message
   Future<Map<String, dynamic>?> requestAuth({
     required String reason,
-    required String publicKey,
+    String? publicKey,        // Now optional - either publicKey or contactUri required
+    String? contactUri,       // NEW: for registration flow
     String? who,
     String? appVersion,
     double? power,
@@ -192,26 +196,34 @@ class ApiService {
     try {
       final payload = <String, dynamic>{
         'key': apiKey,
-        'public_key': publicKey,
         'reason': reason,
       };
+
+      // Prefer contact_uri (signed) over public_key (unsigned)
+      if (contactUri != null) {
+        payload['contact_uri'] = contactUri;
+      } else if (publicKey != null) {
+        payload['public_key'] = publicKey;
+      } else if (reason != 'disconnect') {
+        throw Exception('Either contactUri or publicKey must be provided');
+      }
 
       // Add offline_mode flag for offline session uploads
       if (offlineMode) {
         payload['offline_mode'] = true;
       }
 
-      // For connect: add device metadata and GPS coords
-      if (reason == 'connect') {
+      // For connect/register: add device metadata and GPS coords
+      if (reason == 'connect' || reason == 'register') {
         if (lat == null || lon == null) {
-          throw Exception('GPS coordinates required for connect');
+          throw Exception('GPS coordinates required for $reason');
         }
 
-        payload['who'] = who ?? 'GOME-WarDriver';
+        if (who != null) payload['who'] = who;
         payload['ver'] = appVersion ?? 'UNKNOWN';
-        payload['power'] = '${power ?? 0.3}w';  // Wattage (0.3w, 0.6w, 1.0w, 2.0w)
+        if (power != null) payload['power'] = '${power}w';  // Wattage (0.3w, 0.6w, 1.0w, 2.0w)
         if (iataCode != null) payload['iata'] = iataCode;
-        payload['model'] = model ?? 'Unknown';
+        if (model != null) payload['model'] = model;
         payload['coords'] = {
           'lat': lat,
           'lng': lon, // Convert lon → lng for API
@@ -241,8 +253,9 @@ class ApiService {
         response: data,
       );
 
-      // Store session info on successful connect
-      if (reason == 'connect' && data['success'] == true) {
+      // Store session info on successful connect or register
+      // Note: 'register' now returns full auth response directly (no retry needed)
+      if ((reason == 'connect' || reason == 'register') && data['success'] == true) {
         _sessionId = data['session_id'] as String?;
         _txAllowed = data['tx_allowed'] == true;
         _rxAllowed = data['rx_allowed'] == true;

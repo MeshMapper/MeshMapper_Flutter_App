@@ -13,6 +13,7 @@ class ConnectivityService {
   bool _hasInternet = true; // Optimistic default
   Timer? _recheckTimer;
   bool _pluginAvailable = true; // Track if native plugin is available
+  int _checkEpoch = 0; // Epoch counter to discard stale HTTP check results
 
   /// Stream of internet connectivity status changes
   Stream<bool> get internetStream => _statusController.stream;
@@ -79,6 +80,7 @@ class ConnectivityService {
   }
 
   Future<void> _checkInternetReachability() async {
+    final epoch = ++_checkEpoch;
     debugLog('[CONNECTIVITY] Starting HTTP reachability check to MeshMapper API...');
     try {
       // Try to reach MeshMapper API with short timeout
@@ -86,13 +88,29 @@ class ConnectivityService {
         Uri.parse('https://yow.meshmapper.net/'),
       ).timeout(const Duration(seconds: 5));
 
+      if (epoch != _checkEpoch) {
+        debugLog('[CONNECTIVITY] Discarding stale HTTP check result (epoch $epoch, current $_checkEpoch)');
+        return;
+      }
+
       final isReachable = response.statusCode < 500;
       debugLog('[CONNECTIVITY] HTTP check complete: statusCode=${response.statusCode}, reachable=$isReachable');
       _updateStatus(isReachable);
     } catch (e) {
+      if (epoch != _checkEpoch) {
+        debugLog('[CONNECTIVITY] Discarding stale HTTP check error (epoch $epoch, current $_checkEpoch)');
+        return;
+      }
       debugLog('[CONNECTIVITY] HTTP reachability check failed: $e');
       _updateStatus(false);
     }
+  }
+
+  /// Call when app returns to foreground to force fresh connectivity check
+  void onAppResumed() {
+    debugLog('[CONNECTIVITY] App resumed - forcing fresh connectivity check');
+    _recheckTimer?.cancel();
+    _checkInternetReachability();
   }
 
   void _updateStatus(bool hasInternet) {

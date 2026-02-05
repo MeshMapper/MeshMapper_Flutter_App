@@ -250,6 +250,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               _buildInfoRow('Platform', appState.deviceModel!.platform),
             if (appState.devicePublicKey != null)
               _buildPublicKeyRow(context, appState.devicePublicKey!),
+            if (appState.authType != null && !appState.offlineMode)
+              _buildAuthTypeRow(context, appState.authType!),
           ],
         ),
       ),
@@ -378,18 +380,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
         children: [
           const SizedBox(
             width: 120,
-            child: Row(
-              children: [
-                Text(
-                  'Public Key',
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-                SizedBox(width: 4),
-                Tooltip(
-                  message: 'Used for geo-auth API authentication',
-                  child: Icon(Icons.info_outline, size: 14, color: Colors.grey),
-                ),
-              ],
+            child: Text(
+              'Public Key',
+              style: TextStyle(fontWeight: FontWeight.w500),
             ),
           ),
           Expanded(
@@ -427,6 +420,238 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                   ],
                 ),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAuthTypeRow(BuildContext context, String authType) {
+    // Icon and color based on auth type
+    IconData icon;
+    Color color;
+    String displayText;
+
+    switch (authType) {
+      case 'API':
+        icon = Icons.cloud_done;
+        color = Colors.blue;
+        displayText = 'API';
+      case 'Mesh':
+        icon = Icons.cell_tower;
+        color = Colors.green;
+        displayText = 'Mesh';
+      case 'Manual':
+        icon = Icons.person;
+        color = Colors.orange;
+        displayText = 'Manual';
+      default:
+        icon = Icons.verified_user;
+        color = Colors.grey;
+        displayText = authType;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: InkWell(
+        onTap: () => _showAuthMethodInfo(context, authType),
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 120,
+                child: Text(
+                  'Registered via',
+                  style: TextStyle(fontWeight: FontWeight.w500),
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 16, color: color),
+                  const SizedBox(width: 4),
+                  Text(
+                    displayText,
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.info_outline, size: 14, color: Colors.grey),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showAuthMethodInfo(BuildContext context, String currentType) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header with close button
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 8, 12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    ),
+                    child: const Icon(Icons.verified_user, color: Colors.blue, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Registration Methods',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // Content
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildAuthMethodItem(
+                      context: context,
+                      icon: Icons.cell_tower,
+                      color: Colors.green,
+                      title: 'Mesh',
+                      trustLevel: 'Most trusted',
+                      description: 'Your companion\'s signed advert was heard over the mesh by a LetsMesh Observer and collected via MQTT. This confirms your radio is actively participating in the network.',
+                      isCurrentType: currentType == 'Mesh',
+                    ),
+                    const SizedBox(height: 12),
+                    _buildAuthMethodItem(
+                      context: context,
+                      icon: Icons.cloud_done,
+                      color: Colors.blue,
+                      title: 'API',
+                      trustLevel: 'Trusted',
+                      description: 'We registered your companion using a signed advert via the MeshMapper API. We haven\'t heard you over the mesh yet, but your device identity is verified.',
+                      isCurrentType: currentType == 'API',
+                    ),
+                    const SizedBox(height: 12),
+                    _buildAuthMethodItem(
+                      context: context,
+                      icon: Icons.person,
+                      color: Colors.orange,
+                      title: 'Manual',
+                      trustLevel: 'Basic',
+                      description: 'An administrator manually added your device. Go wardriving to upgrade to Mesh verification!',
+                      isCurrentType: currentType == 'Manual',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAuthMethodItem({
+    required BuildContext context,
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String trustLevel,
+    required String description,
+    required bool isCurrentType,
+  }) {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: isCurrentType ? color.withValues(alpha: 0.1) : null,
+        borderRadius: BorderRadius.circular(8),
+        border: isCurrentType ? Border.all(color: color.withValues(alpha: 0.4)) : null,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: color,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      trustLevel,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                      ),
+                    ),
+                    if (isCurrentType) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: color,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'Current',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  description,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

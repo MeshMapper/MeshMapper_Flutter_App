@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
+import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -62,7 +63,7 @@ enum OfflineUploadResult {
 }
 
 /// Main application state provider
-class AppStateProvider extends ChangeNotifier {
+class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final BluetoothService _bluetoothService;
   final GpsService _gpsService = GpsService(); // Initialize immediately
   late final ApiService _apiService;
@@ -178,6 +179,9 @@ class AppStateProvider extends ChangeNotifier {
   String? _maintenanceUrl;
   Timer? _maintenanceCheckTimer;
 
+  // Auth type from API response (API, Mesh, Manual)
+  String? _authType;
+
   // Internet connectivity state
   bool _hasInternet = true; // Optimistic default
 
@@ -209,7 +213,16 @@ class AppStateProvider extends ChangeNotifier {
 
   AppStateProvider({required BluetoothService bluetoothService})
       : _bluetoothService = bluetoothService {
+    WidgetsBinding.instance.addObserver(this);
     _initialize();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      debugLog('[APP] App resumed from background');
+      _connectivityService.onAppResumed();
+    }
   }
 
   // ============================================
@@ -283,6 +296,9 @@ class AppStateProvider extends ChangeNotifier {
   bool get maintenanceMode => _maintenanceMode;
   String? get maintenanceMessage => _maintenanceMessage;
   String? get maintenanceUrl => _maintenanceUrl;
+
+  // Auth type getter (API, Mesh, Manual)
+  String? get authType => _authType;
 
   // Internet connectivity getter
   bool get hasInternet => _hasInternet;
@@ -777,6 +793,7 @@ class AppStateProvider extends ChangeNotifier {
       _meshCoreConnection = MeshCoreConnection(bluetooth: _bluetoothService);
 
       // Set auth callback for Step 6 (called during connect, after public key is acquired)
+      // Implements two-stage auth flow with registration fallback
       // Skip auth when offline mode is enabled
       if (!_preferences.offlineMode) {
         _meshCoreConnection!.onRequestAuth = () async {
@@ -786,19 +803,24 @@ class AppStateProvider extends ChangeNotifier {
             return {'success': false, 'reason': 'no_public_key', 'message': 'Device public key not available'};
           }
 
-          debugLog('[APP] Requesting API auth with public key: ${publicKey.substring(0, 16)}...');
           // Use SelfInfo name (user's configured name) if available, otherwise fall back to BLE advertisement name
           final deviceName = _meshCoreConnection!.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
           if (deviceName == null || deviceName.isEmpty) {
             debugError('[APP] Cannot request auth: could not retrieve device name');
             return {'success': false, 'reason': 'no_device_name', 'message': 'Could not retrieve device name'};
           }
+
+          // ============================================================
+          // STAGE 1: Try existing public_key authentication
+          // ============================================================
+          debugLog('[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
+
           final result = await _apiService.requestAuth(
             reason: 'connect',
             publicKey: publicKey,
             who: deviceName,
             appVersion: _appVersion,
-            power: _preferences.powerLevel,  // Send wattage (0.3, 1.0, 2.0) to match WebClient
+            power: _preferences.powerLevel,
             iataCode: zoneCode ?? _preferences.iataCode,
             model: _meshCoreConnection!.deviceModel?.manufacturer ?? _meshCoreConnection!.deviceInfo?.manufacturer ?? 'Unknown',
             lat: _currentPosition?.latitude,
@@ -806,19 +828,14 @@ class AppStateProvider extends ChangeNotifier {
             accuracyMeters: _currentPosition?.accuracy,
           );
 
-          // Check for maintenance mode BEFORE returning result
+          // Check for maintenance mode
           if (result != null && result['maintenance'] == true) {
             _maintenanceMode = true;
             _maintenanceMessage = result['maintenance_message'] as String?;
             _maintenanceUrl = result['maintenance_url'] as String?;
             debugLog('[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
-
-            // Start polling to detect when maintenance ends
             _startMaintenancePolling();
-
             notifyListeners();
-
-            // Return failure with maintenance reason - connection will abort cleanly
             return {
               'success': false,
               'reason': 'maintenance',
@@ -826,7 +843,75 @@ class AppStateProvider extends ChangeNotifier {
             };
           }
 
-          return result;
+          // Check if Stage 1 succeeded
+          if (result != null && result['success'] == true) {
+            debugLog('[APP] Stage 1 succeeded: authenticated via public_key');
+
+            // Store the auth type from response
+            if (result['type'] != null) {
+              _authType = result['type'] as String;
+              debugLog('[APP] Auth type: $_authType');
+              notifyListeners();
+            }
+
+            return result;
+          }
+
+          debugLog('[APP] Stage 1 failed: ${result?['message'] ?? 'Unknown error'}');
+
+          // ============================================================
+          // STAGE 2: Auth failed, attempt registration via signed contact_uri
+          // ============================================================
+          debugLog('[APP] Stage 2: Attempting registration via contact_uri...');
+
+          String? contactUri;
+          try {
+            debugLog('[APP] Requesting signed contact URI from device...');
+            contactUri = await _meshCoreConnection!.exportContact();
+            debugLog('[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
+          } catch (e) {
+            debugError('[APP] Failed to get contact URI from device: $e');
+            return {
+              'success': false,
+              'reason': 'registration_failed',
+              'message': 'Companion not found in backend and failed to register via API'
+            };
+          }
+
+          // Call API with contact_uri for registration
+          final registerResult = await _apiService.requestAuth(
+            reason: 'register',
+            contactUri: contactUri,
+            who: deviceName,
+            appVersion: _appVersion,
+            power: _preferences.powerLevel,
+            iataCode: zoneCode ?? _preferences.iataCode,
+            model: _meshCoreConnection!.deviceModel?.manufacturer ?? _meshCoreConnection!.deviceInfo?.manufacturer ?? 'Unknown',
+            lat: _currentPosition?.latitude,
+            lon: _currentPosition?.longitude,
+            accuracyMeters: _currentPosition?.accuracy,
+          );
+
+          if (registerResult == null || registerResult['success'] != true) {
+            debugError('[APP] Stage 2 failed: registration unsuccessful');
+            return {
+              'success': false,
+              'reason': 'registration_failed',
+              'message': 'Companion not found in backend and failed to register via API'
+            };
+          }
+
+          // Registration successful - response contains full auth data directly
+          debugLog('[APP] Stage 2 succeeded: registered and authenticated');
+
+          // Store the auth type from response
+          if (registerResult['type'] != null) {
+            _authType = registerResult['type'] as String;
+            debugLog('[APP] Auth type: $_authType');
+            notifyListeners();
+          }
+
+          return registerResult;
         };
       } else {
         // Offline mode: skip API auth
@@ -1563,6 +1648,7 @@ class AppStateProvider extends ChangeNotifier {
     _displayDeviceName = null;
     _currentNoiseFloor = null;
     _currentBatteryPercent = null;
+    _authType = null;
 
     // Clear regional channels (keeps only Public)
     ChannelService.clearRegionalChannels();
@@ -3410,6 +3496,7 @@ class AppStateProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();
     _logRxDataSubscription?.cancel();
     _noiseFloorSubscription?.cancel();
