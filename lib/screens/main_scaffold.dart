@@ -59,14 +59,10 @@ class _MainScaffoldState extends State<MainScaffold> {
     // Show the disclosure dialog
     if (!mounted) return;
     debugLog('[DISCLOSURE] Showing location disclosure dialog');
-    final accepted = await PermissionDisclosureService.showLocationDisclosure(context);
+    await PermissionDisclosureService.showLocationDisclosure(context);
 
-    if (accepted) {
-      debugLog('[DISCLOSURE] User accepted, requesting permissions');
-      await _requestPermissionsAfterDisclosure();
-    } else {
-      debugLog('[DISCLOSURE] User declined location access');
-    }
+    debugLog('[DISCLOSURE] User acknowledged, requesting permissions');
+    await _requestPermissionsAfterDisclosure();
   }
 
   /// Request permissions after user accepts disclosure

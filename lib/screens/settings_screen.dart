@@ -3,6 +3,7 @@ import 'dart:io' show File;
 
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:geolocator/geolocator.dart';
@@ -23,6 +24,7 @@ import '../services/offline_session_service.dart';
 import '../services/permission_disclosure_service.dart';
 import '../utils/constants.dart';
 import '../widgets/bug_report_dialog.dart';
+import 'package:intl/intl.dart';
 import '../widgets/app_toast.dart';
 
 /// Settings screen for user preferences and API configuration
@@ -129,6 +131,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _onVersionTap(AppStateProvider appState) {
+    // Copy version to clipboard on every tap
+    Clipboard.setData(ClipboardData(text: AppConstants.appVersion));
+
     final now = DateTime.now();
 
     // Reset if last tap was more than 2 seconds ago
@@ -141,7 +146,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _versionTapCount++;
 
     if (appState.developerModeEnabled) {
-      AppToast.simple(context, 'Developer mode already enabled');
+      AppToast.simple(context, 'Version copied to clipboard');
       return;
     }
 
@@ -156,6 +161,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         '$remaining taps to enable developer mode',
         duration: const Duration(milliseconds: 800),
       );
+    } else {
+      AppToast.simple(context, 'Version copied to clipboard');
     }
   }
 

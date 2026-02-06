@@ -19,9 +19,9 @@ class PermissionDisclosureService {
   }
 
   /// Show the prominent disclosure dialog
-  /// Returns true if user accepts, false if they decline
-  static Future<bool> showLocationDisclosure(BuildContext context) async {
-    final result = await showDialog<bool>(
+  /// Always proceeds to system permission prompt after user taps Continue
+  static Future<void> showLocationDisclosure(BuildContext context) async {
+    await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
@@ -66,23 +66,15 @@ class PermissionDisclosureService {
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Decline'),
-          ),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(context).pop(),
             child: const Text('Continue'),
           ),
         ],
       ),
     );
 
-    if (result == true) {
-      await markDisclosureShown();
-    }
-
-    return result ?? false;
+    await markDisclosureShown();
   }
 
   /// Show the background location disclosure (for "Always" permission)
