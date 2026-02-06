@@ -79,8 +79,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     // Build FAB for scanning - only show when fully disconnected and idle
     // Hide FAB entirely during maintenance mode (maintenance UI has its own buttons)
     // Hide FAB when Bluetooth is off (shows full-screen message instead)
+    // Hide FAB during auto-reconnect
     Widget? fab;
     if (appState.connectionStep == ConnectionStep.disconnected &&
+        !appState.isAutoReconnecting &&
         (!appState.maintenanceMode || appState.offlineMode) &&
         !appState.isBluetoothOff) {
       // Offline mode bypasses both zone and maintenance checks
@@ -124,6 +126,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   }
 
   Widget _buildBody(BuildContext context, AppStateProvider appState) {
+    // Show reconnecting UI
+    if (appState.connectionStep == ConnectionStep.reconnecting) {
+      return _buildReconnectingView(context, appState);
+    }
+
     // Show connection progress
     if (appState.connectionStep != ConnectionStep.disconnected &&
         appState.connectionStep != ConnectionStep.connected &&
@@ -174,6 +181,49 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               Text(
                 'Step ${step.stepNumber} of $totalSteps',
                 style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReconnectingView(BuildContext context, AppStateProvider appState) {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final deviceName = appState.rememberedDevice?.displayName ?? 'device';
+
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(isLandscape ? 16 : 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              SizedBox(height: isLandscape ? 12 : 24),
+              Text(
+                'Reconnecting...',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Attempt ${appState.reconnectAttempt} of 3',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                deviceName,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+              ),
+              SizedBox(height: isLandscape ? 16 : 24),
+              OutlinedButton(
+                onPressed: () => appState.cancelAutoReconnect(),
+                child: const Text('Cancel'),
               ),
             ],
           ),

@@ -368,6 +368,17 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
 
+        // Reconnecting overlay
+        if (appState.isAutoReconnecting)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black54,
+              child: Center(
+                child: _buildReconnectingOverlay(appState),
+              ),
+            ),
+          ),
+
         // Control panel overlay
         if (_showControlPanel)
           Positioned(
@@ -405,6 +416,17 @@ class _HomeScreenState extends State<HomeScreen> {
             child: _buildFloatingStatusBar(appState),
           ),
         ),
+
+        // Reconnecting overlay
+        if (appState.isAutoReconnecting)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black54,
+              child: Center(
+                child: _buildReconnectingOverlay(appState),
+              ),
+            ),
+          ),
 
         // Floating control panel on left side, near bottom
         if (_showControlPanel)
@@ -661,6 +683,71 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+
+  /// Reconnecting overlay shown centered over the map during auto-reconnect
+  Widget _buildReconnectingOverlay(AppStateProvider appState) {
+    final deviceName = appState.rememberedDevice?.displayName ?? 'device';
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 260),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(
+              color: Colors.orange.shade400,
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Reconnecting...',
+              style: TextStyle(
+                color: Colors.grey.shade100,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Attempt ${appState.reconnectAttempt} of 3',
+              style: TextStyle(
+                color: Colors.grey.shade400,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              deviceName,
+              style: TextStyle(
+                color: Colors.grey.shade500,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton(
+              onPressed: () => appState.cancelAutoReconnect(),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.orange.shade400,
+                side: BorderSide(color: Colors.orange.shade400),
+              ),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildControlPanel() {
     return Card(

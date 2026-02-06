@@ -189,6 +189,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isSwitchingMode = false;
   String? _modeSwitchError; // Error message if mode switch fails
 
+  // Auto-reconnect state
+  bool _userRequestedDisconnect = false;
+  bool _isAutoReconnecting = false;
+  int _reconnectAttempt = 0;
+  Timer? _reconnectTimer;
+  Timer? _reconnectTimeoutTimer;
+  bool _autoPingWasEnabled = false;
+  AutoMode _autoModeBeforeReconnect = AutoMode.active;
+  static const int _maxReconnectAttempts = 3;
+  static const Duration _reconnectDelay = Duration(seconds: 3);
+
   // Map navigation trigger (for navigating to log entry coordinates)
   ({double lat, double lon})? _mapNavigationTarget;
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
@@ -306,6 +317,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Mode switching getters
   bool get isSwitchingMode => _isSwitchingMode;
   String? get modeSwitchError => _modeSwitchError;
+
+  // Auto-reconnect getters
+  bool get isAutoReconnecting => _isAutoReconnecting;
+  int get reconnectAttempt => _reconnectAttempt;
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
@@ -477,61 +492,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _bluetoothService.connectionStream.listen((status) async {
       _connectionStatus = status;
       if (status == ConnectionStatus.disconnected) {
-        _connectionStep = ConnectionStep.disconnected;
+        // Check if this is an unexpected disconnect during active wardriving
+        final wasConnected = _connectionStep == ConnectionStep.connected;
+        final hasRemembered = _rememberedDevice != null;
+        final isUnexpected = !_userRequestedDisconnect && !_isAutoReconnecting;
 
-        // Stop heartbeat immediately on BLE disconnect
-        _apiService.disableHeartbeat();
-        debugLog('[CONN] Heartbeat disabled due to BLE disconnect');
-
-        // Stop auto-ping timers
-        _autoPingTimer.stop();
-        _rxWindowTimer.stop();
-        _cooldownTimer.stop();
-        if (_autoPingEnabled) {
-          _autoPingEnabled = false;
-          debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
+        if (wasConnected && hasRemembered && isUnexpected && !kIsWeb) {
+          debugLog('[CONN] Unexpected BLE disconnect detected - starting auto-reconnect');
+          await _startAutoReconnect();
+        } else if (!_isAutoReconnecting) {
+          // Normal disconnect (user-requested or no remembered device)
+          await _fullDisconnectCleanup();
+        } else {
+          // Disconnected during a reconnect attempt - _attemptReconnect handles retry
+          debugLog('[CONN] BLE disconnect during reconnect attempt - will retry');
         }
-
-        // End noise floor session on BLE disconnect
-        await _endNoiseFloorSession();
-
-        // Stop RX logger
-        _rxLogger?.stopWardriving(trigger: 'ble_disconnect');
-
-        // Force upload any pending items BEFORE releasing session
-        // This ensures data is submitted while session is still valid
-        // Waits for TX items in hold period (up to 6 seconds) to become eligible
-        if (_apiService.hasSession) {
-          debugLog('[CONN] Flushing API queue before session release');
-          try {
-            await _apiQueueService.forceUploadWithHoldWait();
-          } catch (e) {
-            debugError('[CONN] Failed to flush API queue: $e');
-          }
-        }
-
-        // Clear any remaining items and stop batch timer
-        await _apiQueueService.clearOnDisconnect();
-
-        // Release API session (best effort - don't block on failure)
-        if (_devicePublicKey != null && _apiService.hasSession) {
-          debugLog('[CONN] Releasing API session due to BLE disconnect');
-          try {
-            await _apiService.requestAuth(
-              reason: 'disconnect',
-              publicKey: _devicePublicKey!,
-            );
-            debugLog('[CONN] API session released successfully');
-          } catch (e) {
-            debugError('[CONN] Failed to release API session: $e');
-          }
-        }
-
-        // Existing cleanup
-        _meshCoreConnection?.dispose();
-        _meshCoreConnection = null;
-        _pingService?.dispose();
-        _pingService = null;
       }
       notifyListeners();
     });
@@ -1571,8 +1546,237 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Unified RX handler created and listening');
   }
 
+  /// Full disconnect cleanup - called on normal BLE disconnect (user-requested or no remembered device)
+  /// Extracted from the original BLE disconnect listener
+  Future<void> _fullDisconnectCleanup() async {
+    _connectionStep = ConnectionStep.disconnected;
+
+    // Stop heartbeat immediately on BLE disconnect
+    _apiService.disableHeartbeat();
+    debugLog('[CONN] Heartbeat disabled due to BLE disconnect');
+
+    // Stop auto-ping timers
+    _autoPingTimer.stop();
+    _rxWindowTimer.stop();
+    _cooldownTimer.stop();
+    if (_autoPingEnabled) {
+      _autoPingEnabled = false;
+      debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
+    }
+
+    // End noise floor session on BLE disconnect
+    await _endNoiseFloorSession();
+
+    // Stop RX logger
+    _rxLogger?.stopWardriving(trigger: 'ble_disconnect');
+
+    // Force upload any pending items BEFORE releasing session
+    if (_apiService.hasSession) {
+      debugLog('[CONN] Flushing API queue before session release');
+      try {
+        await _apiQueueService.forceUploadWithHoldWait();
+      } catch (e) {
+        debugError('[CONN] Failed to flush API queue: $e');
+      }
+    }
+
+    // Clear any remaining items and stop batch timer
+    await _apiQueueService.clearOnDisconnect();
+
+    // Release API session (best effort - don't block on failure)
+    if (_devicePublicKey != null && _apiService.hasSession) {
+      debugLog('[CONN] Releasing API session due to BLE disconnect');
+      try {
+        await _apiService.requestAuth(
+          reason: 'disconnect',
+          publicKey: _devicePublicKey!,
+        );
+        debugLog('[CONN] API session released successfully');
+      } catch (e) {
+        debugError('[CONN] Failed to release API session: $e');
+      }
+    }
+
+    // Existing cleanup
+    _meshCoreConnection?.dispose();
+    _meshCoreConnection = null;
+    _pingService?.dispose();
+    _pingService = null;
+  }
+
+  /// Start auto-reconnect after unexpected BLE disconnect
+  Future<void> _startAutoReconnect() async {
+    _isAutoReconnecting = true;
+    _reconnectAttempt = 0;
+    _connectionStep = ConnectionStep.reconnecting;
+
+    // Remember auto-ping state before cleanup
+    _autoPingWasEnabled = _autoPingEnabled;
+    _autoModeBeforeReconnect = _autoMode;
+
+    // Stop auto-ping timers (don't dispose)
+    _autoPingTimer.stop();
+    _rxWindowTimer.stop();
+    _cooldownTimer.stop();
+    _autoPingEnabled = false;
+
+    // Stop heartbeat
+    _apiService.disableHeartbeat();
+
+    // End noise floor session
+    await _endNoiseFloorSession();
+
+    // Flush RX logger
+    _rxLogger?.stopWardriving(trigger: 'reconnect');
+
+    // Stop background service
+    await BackgroundServiceManager.stopService();
+
+    // Clean up dead BLE-dependent objects
+    _logRxDataSubscription?.cancel();
+    _logRxDataSubscription = null;
+    _unifiedRxHandler?.dispose();
+    _unifiedRxHandler = null;
+    _txTracker = null;
+    _rxLogger = null;
+    await _noiseFloorSubscription?.cancel();
+    _noiseFloorSubscription = null;
+    await _batterySubscription?.cancel();
+    _batterySubscription = null;
+    _meshCoreConnection?.dispose();
+    _meshCoreConnection = null;
+    _pingService?.dispose();
+    _pingService = null;
+
+    // Do NOT release API session or clear API queue
+    debugLog('[CONN] Auto-reconnect: preserved API session, cleaned up BLE objects');
+
+    notifyListeners();
+
+    // Start overall timeout (30 seconds)
+    _reconnectTimeoutTimer = Timer(const Duration(seconds: 30), () {
+      debugLog('[CONN] Auto-reconnect timed out after 30s');
+      _abandonAutoReconnect();
+    });
+
+    // Start first attempt
+    _attemptReconnect();
+  }
+
+  /// Attempt a single reconnection
+  void _attemptReconnect() {
+    if (_reconnectAttempt >= _maxReconnectAttempts) {
+      debugLog('[CONN] Auto-reconnect: max attempts reached ($_maxReconnectAttempts)');
+      _abandonAutoReconnect();
+      return;
+    }
+
+    _reconnectAttempt++;
+    debugLog('[CONN] Auto-reconnect attempt $_reconnectAttempt of $_maxReconnectAttempts');
+    notifyListeners();
+
+    // Delay before attempting reconnection
+    _reconnectTimer = Timer(_reconnectDelay, () async {
+      if (!_isAutoReconnecting) return; // Cancelled while waiting
+
+      try {
+        debugLog('[CONN] Auto-reconnect: calling reconnectToRememberedDevice()');
+        await reconnectToRememberedDevice();
+
+        // If we get here and connection step is 'connected', success!
+        if (_connectionStep == ConnectionStep.connected) {
+          debugLog('[CONN] Auto-reconnect succeeded on attempt $_reconnectAttempt');
+          _onReconnectSuccess();
+        } else if (_isAutoReconnecting) {
+          // Connection failed but didn't throw - try again
+          debugLog('[CONN] Auto-reconnect: connection did not complete, retrying...');
+          _connectionStep = ConnectionStep.reconnecting;
+          notifyListeners();
+          _attemptReconnect();
+        }
+      } catch (e) {
+        debugError('[CONN] Auto-reconnect attempt $_reconnectAttempt failed: $e');
+        if (_isAutoReconnecting) {
+          // Reset step back to reconnecting for UI
+          _connectionStep = ConnectionStep.reconnecting;
+          _connectionError = null;
+          notifyListeners();
+          _attemptReconnect();
+        }
+      }
+    });
+  }
+
+  /// Called when auto-reconnect succeeds
+  void _onReconnectSuccess() {
+    // Cancel timers
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectTimeoutTimer?.cancel();
+    _reconnectTimeoutTimer = null;
+
+    final wasAutoPing = _autoPingWasEnabled;
+    final previousMode = _autoModeBeforeReconnect;
+
+    // Clear reconnect state
+    _isAutoReconnecting = false;
+    _reconnectAttempt = 0;
+    _autoPingWasEnabled = false;
+
+    debugLog('[CONN] Auto-reconnect complete, restoring state (autoPing=$wasAutoPing, mode=$previousMode)');
+
+    // Restore auto-ping if it was active
+    if (wasAutoPing) {
+      // Use a short delay to ensure connection is fully set up
+      Timer(const Duration(milliseconds: 500), () {
+        if (_connectionStep == ConnectionStep.connected) {
+          toggleAutoPing(previousMode);
+          debugLog('[CONN] Auto-ping restored after reconnect (mode=$previousMode)');
+        }
+      });
+    }
+
+    notifyListeners();
+  }
+
+  /// Cancel auto-reconnect (called from UI cancel button)
+  void cancelAutoReconnect() {
+    debugLog('[CONN] Auto-reconnect cancelled by user');
+    _abandonAutoReconnect();
+  }
+
+  /// Abandon auto-reconnect and do full cleanup
+  void _abandonAutoReconnect() {
+    // Cancel timers
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectTimeoutTimer?.cancel();
+    _reconnectTimeoutTimer = null;
+
+    // Clear reconnect state
+    _isAutoReconnecting = false;
+    _reconnectAttempt = 0;
+    _autoPingWasEnabled = false;
+
+    // Do full disconnect cleanup (releases API session, etc.)
+    _fullDisconnectCleanup();
+    notifyListeners();
+  }
+
   /// Disconnect from current device
   Future<void> disconnect() async {
+    // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
+    _userRequestedDisconnect = true;
+
+    // Cancel any active auto-reconnect
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectTimeoutTimer?.cancel();
+    _reconnectTimeoutTimer = null;
+    _isAutoReconnecting = false;
+    _reconnectAttempt = 0;
+    _autoPingWasEnabled = false;
+
     // Disable heartbeat immediately on disconnect
     _apiService.disableHeartbeat();
 
@@ -1656,6 +1860,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Clear discovered devices so user must scan fresh
     _discoveredDevices = [];
+
+    // Reset user-requested flag
+    _userRequestedDisconnect = false;
 
     notifyListeners();
 

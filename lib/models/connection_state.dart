@@ -21,7 +21,10 @@ enum ConnectionStatus {
 enum ConnectionStep {
   /// Initial disconnected state
   disconnected,
-  
+
+  /// Auto-reconnecting after unexpected BLE disconnect
+  reconnecting,
+
   /// Step 1: BLE GATT connect
   bleConnecting,
   
@@ -80,6 +83,8 @@ extension ConnectionStepExtension on ConnectionStep {
     switch (this) {
       case ConnectionStep.disconnected:
         return 'Disconnected';
+      case ConnectionStep.reconnecting:
+        return 'Reconnecting...';
       case ConnectionStep.bleConnecting:
         return 'Connecting to device...';
       case ConnectionStep.protocolHandshake:
@@ -107,6 +112,8 @@ extension ConnectionStepExtension on ConnectionStep {
   int get stepNumber {
     switch (this) {
       case ConnectionStep.disconnected:
+        return 0;
+      case ConnectionStep.reconnecting:
         return 0;
       case ConnectionStep.bleConnecting:
         return 1;
