@@ -94,6 +94,8 @@ class MeshCoreConnection {
   // Noise floor tracking
   int? _lastNoiseFloor; // dBm or null if not supported
   Timer? _noiseFloorTimer;
+  bool _isFetchingNoiseFloor = false;
+  int _noiseFloorFailCount = 0;
 
   // Battery tracking
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
@@ -944,6 +946,8 @@ class MeshCoreConnection {
     // Check if firmware supports noise floor (v1.11.0+)
     // For now, we'll try and handle errors gracefully
     _noiseFloorTimer?.cancel();
+    _isFetchingNoiseFloor = false;
+    _noiseFloorFailCount = 0;
 
     // Get initial reading immediately
     _fetchNoiseFloor();
@@ -956,14 +960,21 @@ class MeshCoreConnection {
   }
 
   Future<void> _fetchNoiseFloor() async {
+    if (_isFetchingNoiseFloor) return; // Skip if previous fetch still in flight
+    _isFetchingNoiseFloor = true;
     try {
       debugLog('[CONN] Fetching noise floor...');
       await getNoiseFloor();
+      _noiseFloorFailCount = 0; // Reset on success
     } catch (e) {
-      // Firmware may not support noise floor - don't spam logs
-      debugLog('[CONN] Noise floor fetch failed: $e');
-      // Stop polling if consistently failing
-      _stopNoiseFloorPolling();
+      _noiseFloorFailCount++;
+      debugLog('[CONN] Noise floor fetch failed ($_noiseFloorFailCount/3): $e');
+      if (_noiseFloorFailCount >= 3) {
+        debugLog('[CONN] Noise floor polling stopped after 3 consecutive failures');
+        _stopNoiseFloorPolling();
+      }
+    } finally {
+      _isFetchingNoiseFloor = false;
     }
   }
 
@@ -971,6 +982,7 @@ class MeshCoreConnection {
   void _stopNoiseFloorPolling() {
     _noiseFloorTimer?.cancel();
     _noiseFloorTimer = null;
+    _isFetchingNoiseFloor = false;
     debugLog('[CONN] Stopped noise floor polling');
   }
 
