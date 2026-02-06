@@ -829,6 +829,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Show help bottom sheet explaining each control
   void _showControlsHelp(BuildContext context) {
+    final prefs = Provider.of<AppStateProvider>(context, listen: false).preferences;
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
@@ -893,12 +894,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 description: 'Send a single ping to #wardriving and track which repeaters heard it.',
               ),
 
-              // Active Mode button
+              // Active Mode / Hybrid Mode button
               _buildHelpItem(
-                icon: Icons.sensors,
+                icon: prefs.hybridModeEnabled ? Icons.compare_arrows : Icons.sensors,
                 color: const Color(0xFF6366F1),
-                title: 'Active Mode',
-                description: 'Auto-pings #wardriving at your set interval, tracks repeaters from pings and received mesh traffic.',
+                title: prefs.hybridModeEnabled ? 'Hybrid Mode' : 'Active Mode',
+                description: prefs.hybridModeEnabled
+                    ? 'Alternates between auto-pinging #wardriving and sending zero-hop discovery pings each interval, tracks repeaters from pings, nearby repeaters, and received mesh traffic.'
+                    : 'Auto-pings #wardriving at your set interval, tracks repeaters from pings and received mesh traffic.',
               ),
 
               // Passive Mode button

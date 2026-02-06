@@ -52,6 +52,9 @@ class UserPreferences {
   /// Unit system for distances (metric, imperial)
   final String unitSystem;
 
+  /// Hybrid mode enabled (alternates Active + Discovery pings)
+  final bool hybridModeEnabled;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -70,6 +73,7 @@ class UserPreferences {
     this.closeAppAfterDisconnect = false,
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
+    this.hybridModeEnabled = false,
   });
 
   /// Create from JSON (for persistence)
@@ -92,6 +96,7 @@ class UserPreferences {
       closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
+      hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? false,
     );
   }
 
@@ -115,6 +120,7 @@ class UserPreferences {
       'closeAppAfterDisconnect': closeAppAfterDisconnect,
       'themeMode': themeMode,
       'unitSystem': unitSystem,
+      'hybridModeEnabled': hybridModeEnabled,
     };
   }
 
@@ -137,6 +143,7 @@ class UserPreferences {
     bool? closeAppAfterDisconnect,
     String? themeMode,
     String? unitSystem,
+    bool? hybridModeEnabled,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -156,6 +163,7 @@ class UserPreferences {
       closeAppAfterDisconnect: closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
       themeMode: themeMode ?? this.themeMode,
       unitSystem: unitSystem ?? this.unitSystem,
+      hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
     );
   }
 
@@ -200,7 +208,8 @@ class UserPreferences {
         other.mapStyle == mapStyle &&
         other.closeAppAfterDisconnect == closeAppAfterDisconnect &&
         other.themeMode == themeMode &&
-        other.unitSystem == unitSystem;
+        other.unitSystem == unitSystem &&
+        other.hybridModeEnabled == hybridModeEnabled;
   }
 
   @override
@@ -222,6 +231,7 @@ class UserPreferences {
       closeAppAfterDisconnect,
       themeMode,
       unitSystem,
+      hybridModeEnabled,
     );
   }
 

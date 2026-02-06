@@ -223,6 +223,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: isAutoMode ? null : () => _showIntervalSelector(context, appState),
           ),
 
+          // Hybrid Mode Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.compare_arrows),
+            title: Row(
+              children: [
+                const Text('Hybrid Mode'),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: () => _showHybridModeInfo(context),
+                  child: Icon(
+                    Icons.info_outline,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            subtitle: const Text('Combines Active and Passive modes'),
+            value: prefs.hybridModeEnabled,
+            onChanged: isAutoMode ? null : (value) {
+              appState.updatePreferences(prefs.copyWith(hybridModeEnabled: value));
+            },
+          ),
+
           // Carpeater Ignore Setting
           SwitchListTile(
             secondary: const Icon(Icons.filter_alt),
@@ -852,6 +876,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Navigator.pop(context);
             },
             child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showHybridModeInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.compare_arrows, size: 24),
+            SizedBox(width: 8),
+            Text('Hybrid Mode'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Replaces Active Mode. Alternates between auto-pinging #wardriving and sending zero-hop discovery pings each interval, tracking repeaters from pings, nearby repeaters, and received mesh traffic.',
+              style: TextStyle(fontSize: 14),
+            ),
+            SizedBox(height: 12),
+            Text('How it works:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            SizedBox(height: 4),
+            Text(
+              'Discovery \u2192 wait \u2192 TX Ping \u2192 wait \u2192 Discovery \u2192 ...',
+              style: TextStyle(fontSize: 13, fontFamily: 'monospace'),
+            ),
+            SizedBox(height: 12),
+            Text('Interval timing:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            SizedBox(height: 4),
+            Text(
+              'At 15s interval, each ping type fires every 30s. Discovery\'s 30s firmware rate limit is naturally respected.',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 12),
+            Text('When enabled:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            SizedBox(height: 4),
+            Text(
+              '\u2022 Replaces the Active button with Hybrid\n'
+              '\u2022 50% less TX airtime vs Active Mode\n'
+              '\u2022 Discovery finds nearby repeaters\n'
+              '\u2022 TX pings test coverage through them',
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
           ),
         ],
       ),

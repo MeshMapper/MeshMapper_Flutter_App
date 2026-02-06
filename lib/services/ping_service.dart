@@ -76,6 +76,8 @@ class PingService {
   // Auto-ping mode
   bool _autoPingEnabled = false;
   bool _passiveModeEnabled = false;
+  bool _hybridModeEnabled = false;
+  bool _nextPingIsDiscovery = true;  // Start hybrid with discovery
   Timer? _autoTimer;
 
   // Pending disable flag - when true, disable will execute after RX window ends
@@ -168,6 +170,9 @@ class PingService {
 
   /// Check if Passive Mode is active (listen-only, no transmit)
   bool get isPassiveMode => _passiveModeEnabled;
+
+  /// Check if Hybrid Mode is active (alternates discovery + TX)
+  bool get isHybridMode => _hybridModeEnabled;
 
   /// Check if discovery tracker is currently listening (for Passive Mode UI)
   bool get isDiscoveryListening => _discTracker?.isListening ?? false;
@@ -661,10 +666,17 @@ class PingService {
     if (_pendingDisable) {
       debugLog('[PING] Executing pending disable after RX window');
       _pendingDisable = false;
+      final wasHybrid = _hybridModeEnabled;
       _autoPingEnabled = false;
       _passiveModeEnabled = false;
+      _hybridModeEnabled = false;
+      _nextPingIsDiscovery = true;
       _autoTimer?.cancel();
       _autoTimer = null;
+      // Clean up discovery infrastructure if hybrid was enabled
+      if (wasHybrid) {
+        _stopDiscoveryMode();
+      }
       // Start cooldown immediately
       _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
       debugLog('[PING] Pending disable complete, cooldown started');
@@ -673,13 +685,18 @@ class PingService {
       return;  // Don't schedule next auto ping
     }
 
-    // Schedule next auto ping if in Active Mode AND not in cooldown
+    // Schedule next ping based on mode
     // The cooldown check prevents scheduling when user disabled auto mode during RX window
     // (the cooldown timer started when auto mode was disabled)
     // Reference: scheduleNextAutoPing() called after RX window in wardrive.js
-    if (_autoPingEnabled && !_passiveModeEnabled && !isInCooldown()) {
-      debugLog('[ACTIVE MODE] Scheduling next auto ping after RX window completion');
-      _scheduleNextAutoPing();
+    if (_autoPingEnabled && !isInCooldown()) {
+      if (_hybridModeEnabled) {
+        debugLog('[HYBRID] Scheduling next hybrid ping after RX window completion');
+        _scheduleNextHybridPing();
+      } else if (!_passiveModeEnabled) {
+        debugLog('[ACTIVE MODE] Scheduling next auto ping after RX window completion');
+        _scheduleNextAutoPing();
+      }
     } else if (isInCooldown()) {
       debugLog('[PING] Skipping auto-ping scheduling - cooldown active');
     }
@@ -752,22 +769,24 @@ class PingService {
     }
   }
 
-  /// Enable Active Mode (timer-based auto ping) or Passive Mode (listen-only)
+  /// Enable Active Mode (timer-based auto ping), Passive Mode (listen-only), or Hybrid Mode
   /// Reference: startAutoPing() in wardrive.js
   /// @param passiveMode - If true, only listens for RX (no TX pings) - this is Passive Mode
-  Future<bool> enableAutoPing({bool passiveMode = false}) async {
-    debugLog('[ACTIVE MODE] enableAutoPing called (passiveMode=$passiveMode)');
+  /// @param hybridMode - If true, alternates discovery + TX pings each interval
+  Future<bool> enableAutoPing({bool passiveMode = false, bool hybridMode = false}) async {
+    debugLog('[AUTO] enableAutoPing called (passiveMode=$passiveMode, hybridMode=$hybridMode)');
 
     if (_autoPingEnabled) {
-      debugLog('[ACTIVE MODE] Auto mode already enabled');
+      debugLog('[AUTO] Auto mode already enabled');
       return false;
     }
 
     // Check if we're in cooldown (can't start during cooldown)
+    // Hybrid and Active modes are blocked by cooldown, Passive is not
     // Reference: isInCooldown() check in startAutoPing() in wardrive.js
     if (!passiveMode && isInCooldown()) {
       final remainingSec = getRemainingCooldownSeconds();
-      debugLog('[ACTIVE MODE] Start blocked by cooldown (${remainingSec}s remaining)');
+      debugLog('[AUTO] Start blocked by cooldown (${remainingSec}s remaining)');
       return false;
     }
 
@@ -780,13 +799,21 @@ class PingService {
 
     _autoPingEnabled = true;
     _passiveModeEnabled = passiveMode;
+    _hybridModeEnabled = hybridMode;
+    _nextPingIsDiscovery = true;  // Always start hybrid with discovery
 
     // Enable wake lock to keep screen on during auto mode
     // Reference: acquireWakeLock() in wardrive.js
-    debugLog('[ACTIVE MODE] Acquiring wake lock for auto mode');
+    debugLog('[AUTO] Acquiring wake lock for auto mode');
     await _wakelockService.enable();
 
-    if (passiveMode) {
+    if (hybridMode) {
+      // Hybrid Mode: set up discovery infrastructure, then start with discovery
+      debugLog('[HYBRID] Hybrid Mode started - alternating discovery + TX pings');
+      await _startDiscoveryMode();
+      // First ping was discovery, so next should be TX
+      _nextPingIsDiscovery = false;
+    } else if (passiveMode) {
       // Passive Mode: send discovery requests instead of TX pings
       debugLog('[PASSIVE MODE] Passive Mode started - using discovery protocol');
       await _startDiscoveryMode();
@@ -833,8 +860,15 @@ class PingService {
     // Clear skip reason
     _skipReason = null;
 
+    // Clean up discovery infrastructure if hybrid was enabled
+    if (_hybridModeEnabled) {
+      _stopDiscoveryMode();
+    }
+
     _autoPingEnabled = false;
     _passiveModeEnabled = false;
+    _hybridModeEnabled = false;
+    _nextPingIsDiscovery = true;
 
     // Disable wake lock when auto mode stops
     // Reference: releaseWakeLock() in wardrive.js
@@ -853,6 +887,8 @@ class PingService {
     _skipReason = null;
     _autoPingEnabled = false;
     _passiveModeEnabled = false;
+    _hybridModeEnabled = false;
+    _nextPingIsDiscovery = true;
     _stopDiscoveryMode();
     await _wakelockService.disable();
   }
@@ -907,8 +943,8 @@ class PingService {
 
   /// Send a discovery request and start listening window
   Future<void> _sendDiscoveryRequest() async {
-    if (!_autoPingEnabled || !_passiveModeEnabled) {
-      debugLog('[DISC] Not in Passive Mode, skipping discovery request');
+    if (!_autoPingEnabled || (!_passiveModeEnabled && !_hybridModeEnabled)) {
+      debugLog('[DISC] Not in Passive/Hybrid Mode, skipping discovery request');
       return;
     }
 
@@ -1052,6 +1088,12 @@ class PingService {
   /// Schedule next discovery request
   /// Uses fixed 30-second interval (repeaters only respond 4 times per 2 minutes)
   void _scheduleNextDiscovery() {
+    // In hybrid mode, route to hybrid scheduler instead
+    if (_hybridModeEnabled) {
+      _scheduleNextHybridPing();
+      return;
+    }
+
     if (!_autoPingEnabled || !_passiveModeEnabled) {
       debugLog('[DISC] Not in Passive Mode, not scheduling next discovery');
       return;
@@ -1069,6 +1111,38 @@ class PingService {
     onAutoPingScheduled?.call(_discoveryInterval.inMilliseconds, _skipReason);
 
     debugLog('[DISC] Next discovery scheduled in ${_discoveryInterval.inSeconds}s');
+  }
+
+  /// Schedule next hybrid ping (alternates discovery ↔ TX)
+  /// Uses user-configured interval for both ping types
+  void _scheduleNextHybridPing() {
+    if (!_autoPingEnabled || !_hybridModeEnabled) return;
+
+    _autoTimer?.cancel();
+    _autoTimer = null;
+
+    final isNextDisc = _nextPingIsDiscovery;
+    debugLog('[HYBRID] Scheduling next ${isNextDisc ? "discovery" : "TX"} ping in ${_autoPingIntervalMs}ms');
+
+    onAutoPingScheduled?.call(_autoPingIntervalMs, _skipReason);
+
+    _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
+      if (!_autoPingEnabled || !_hybridModeEnabled) return;
+      if (_pingInProgress) {
+        debugLog('[HYBRID] Ping already in progress, skipping');
+        return;
+      }
+      _skipReason = null;
+
+      if (_nextPingIsDiscovery) {
+        debugLog('[HYBRID] Sending discovery ping');
+        _sendDiscoveryRequest();
+      } else {
+        debugLog('[HYBRID] Sending TX ping');
+        _sendAutoPing();
+      }
+      _nextPingIsDiscovery = !_nextPingIsDiscovery;
+    });
   }
 
   /// Stop any active TX echo tracking window

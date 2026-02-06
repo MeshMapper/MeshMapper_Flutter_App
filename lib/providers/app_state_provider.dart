@@ -46,6 +46,8 @@ enum AutoMode {
   active,
   /// Passive Mode: Listening only (no transmit)
   passive,
+  /// Hybrid Mode: Alternates Discovery + Active pings each interval
+  hybrid,
 }
 
 /// Result of uploading an offline session
@@ -263,6 +265,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isDiscoveryListening => _pingService?.isDiscoveryListening ?? false;  // True during discovery listening window (for Passive Mode)
   /// Check if auto-ping disable is pending (waiting for RX window)
   bool get isPendingDisable => _pingService?.pendingDisable ?? false;
+  /// True when running any mode that does TX (Active or Hybrid)
+  bool get isTxModeRunning => _autoPingEnabled && (_autoMode == AutoMode.active || _autoMode == AutoMode.hybrid);
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
   int? get currentBatteryPercent => _currentBatteryPercent;
@@ -1937,12 +1941,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
-  /// Toggle auto-ping mode (Active or Passive)
-  /// Returns false if blocked by cooldown (Active Mode only - Passive Mode ignores cooldown)
+  /// Toggle auto-ping mode (Active, Passive, or Hybrid)
+  /// Returns false if blocked by cooldown (Active/Hybrid Mode only - Passive Mode ignores cooldown)
   Future<bool> toggleAutoPing(AutoMode mode) async {
     if (_pingService == null) return false;
 
     final isPassive = mode == AutoMode.passive;
+    final isHybrid = mode == AutoMode.hybrid;
+    final isTxMode = !isPassive; // Active and Hybrid both do TX
 
     // If currently running the same mode, stop it (always allow stopping)
     if (_autoPingEnabled && _autoMode == mode) {
@@ -1988,11 +1994,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _autoPingEnabled = false;
 
-      // Start 7-second shared cooldown ONLY for Active Mode (not Passive Mode)
+      // Start 7-second shared cooldown for TX modes (Active/Hybrid), not Passive Mode
       // Passive Mode is listening only, no cooldown needed
-      if (!isPassive) {
+      if (isTxMode) {
         _cooldownTimer.start(7000);
-        debugLog('[ACTIVE MODE] Shared cooldown started (7s) - blocks TX Ping and Active Mode');
+        debugLog('[${mode.name.toUpperCase()} MODE] Shared cooldown started (7s) - blocks TX Ping and TX modes');
       } else {
         debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
       }
@@ -2003,10 +2009,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!sessionCheck) return false;
       }
 
-      // Block starting if shared cooldown is active (Active Mode only)
+      // Block starting if shared cooldown is active (TX modes only)
       // Passive Mode is listening only and can start during cooldown
-      if (!isPassive && _cooldownTimer.isRunning) {
-        debugLog('[ACTIVE MODE] Start blocked by shared cooldown');
+      if (isTxMode && _cooldownTimer.isRunning) {
+        debugLog('[${mode.name.toUpperCase()} MODE] Start blocked by shared cooldown');
         return false;
       }
 
@@ -2037,7 +2043,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pingService!.setAutoPingInterval(intervalMs);
       debugLog('[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
 
-      final started = await _pingService!.enableAutoPing(passiveMode: isPassive);
+      final started = await _pingService!.enableAutoPing(passiveMode: isPassive, hybridMode: isHybrid);
       if (!started) {
         // Blocked by cooldown or already enabled
         if (_pingService!.isInCooldown()) {
@@ -2047,16 +2053,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         return false;
       }
-      // Start RX wardriving for both Active Mode and Passive Mode
+      // Start RX wardriving for all modes
       // Reference: state.rxTracking.isWardriving = true in wardrive.js
       _rxLogger?.startWardriving();
       _autoPingEnabled = true;
 
       // Start noise floor session for graph tracking
-      _startNoiseFloorSession(isPassive ? 'passive' : 'active');
+      final sessionLabel = isPassive ? 'passive' : isHybrid ? 'hybrid' : 'active';
+      _startNoiseFloorSession(sessionLabel);
 
       // Enable heartbeat ONLY for Passive Mode (not offline mode)
-      // Active Mode renews session via auto-pings every 15/30/60s
+      // Active/Hybrid Mode renews session via auto-pings every 15/30/60s
       // Manual Mode has natural 5-minute timeout
       if (isPassive && !_preferences.offlineMode) {
         _apiService.enableHeartbeat(
@@ -2068,12 +2075,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           },
         );
         debugLog('[HEARTBEAT] Enabled for Passive Mode');
-      } else if (!isPassive) {
-        debugLog('[HEARTBEAT] Not enabled - Active Mode renews via auto-pings');
+      } else if (isTxMode) {
+        debugLog('[HEARTBEAT] Not enabled - ${mode.name} Mode renews via auto-pings');
       }
 
       // Start background service for continuous operation
-      final modeName = isPassive ? 'Passive Mode' : 'Active Mode';
+      final modeName = isPassive ? 'Passive Mode' : isHybrid ? 'Hybrid Mode' : 'Active Mode';
       await BackgroundServiceManager.startService(
         mode: modeName,
         txCount: _pingStats.txCount,
