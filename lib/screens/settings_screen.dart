@@ -678,10 +678,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   final wasUploaded = _uploadedFiles.contains(file.path);
                   // First file (index 0) is the most recent/active log - can't upload
                   final isCurrentLog = index == 0;
+                  // Parse unix timestamp from filename (meshmapper-debug-{timestamp}.txt)
+                  final timestampMatch = RegExp(r'meshmapper-debug-(\d+)\.txt').firstMatch(filename);
+                  final fileDate = timestampMatch != null
+                      ? DateTime.fromMillisecondsSinceEpoch(int.parse(timestampMatch.group(1)!) * 1000)
+                      : null;
+                  final dateStr = fileDate != null ? DateFormat('MMM d, h:mm a').format(fileDate) : filename;
 
                   return ListTile(
                     leading: const Icon(Icons.description, size: 20),
-                    title: Text(filename, style: const TextStyle(fontSize: 13)),
+                    title: Text(dateStr, style: const TextStyle(fontSize: 13)),
                     subtitle: Text(
                       isCurrentLog ? '$sizeKb KB (current)' : '$sizeKb KB',
                       style: const TextStyle(fontSize: 11),
