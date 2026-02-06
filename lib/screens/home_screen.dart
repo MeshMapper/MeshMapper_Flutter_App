@@ -49,8 +49,7 @@ class _HomeScreenState extends State<HomeScreen> {
         // Closing map controls
         _mapControlsExpanded = false;
       } else {
-        // Opening map controls - close control panel first
-        _showControlPanel = false;
+        // Opening map controls
         _mapControlsExpanded = true;
       }
     });
@@ -62,7 +61,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (MediaQuery.of(context).orientation == Orientation.landscape) {
       return 0;
     }
-    if (!_showControlPanel) return 0;
     // Approximate heights including Card margins (8px * 2 = 16px)
     // Minimized: Row padding (12) + content (~32) + margin (16) = ~60px
     // Expanded: ListTile (56) + Divider (1) + ConnectionPanel (~100) + PingControls (~140) + margin (16) = ~320px
@@ -379,9 +377,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-        // Control panel overlay
-        if (_showControlPanel)
-          Positioned(
+        // Control panel overlay (always visible in portrait)
+        Positioned(
             bottom: 0,
             left: 0,
             right: 0,
@@ -755,7 +752,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Header with help, minimize, and close buttons
+          // Header with help and minimize buttons
           ListTile(
             title: const Text('Controls', style: TextStyle(fontWeight: FontWeight.bold)),
             trailing: Row(
@@ -770,11 +767,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   icon: const Icon(Icons.close_fullscreen),
                   onPressed: () => setState(() => _isControlsMinimized = true),
                   tooltip: 'Minimize',
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => setState(() => _showControlPanel = false),
-                  tooltip: 'Close',
                 ),
               ],
             ),
@@ -824,19 +816,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.all(6),
                 child: Icon(
                   Icons.open_in_full,
-                  size: 20,
-                  color: Colors.grey.shade500,
-                ),
-              ),
-            ),
-            // Close button
-            GestureDetector(
-              onTap: () => setState(() => _showControlPanel = false),
-              behavior: HitTestBehavior.opaque,
-              child: Padding(
-                padding: const EdgeInsets.all(6),
-                child: Icon(
-                  Icons.close,
                   size: 20,
                   color: Colors.grey.shade500,
                 ),
