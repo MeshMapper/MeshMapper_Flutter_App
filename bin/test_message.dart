@@ -13,6 +13,9 @@
 ///   --snr=<value>     SNR in dB (default: 8.0)
 ///   --channel=<name>  Channel name (default: #wardriving)
 ///                     Supported: #wardriving, #testing, #ottawa, #wartest, Public
+library;
+
+// ignore_for_file: avoid_print
 
 import 'dart:convert';
 import 'dart:typed_data';
@@ -237,7 +240,7 @@ class PacketMetadata {
 
     if (raw.length <= pathLengthOffset) {
       throw ArgumentError(
-          'Packet too short for path length (need >${pathLengthOffset} bytes, got ${raw.length})');
+          'Packet too short for path length (need >$pathLengthOffset bytes, got ${raw.length})');
     }
 
     final int pathLength = raw[pathLengthOffset];
@@ -410,9 +413,9 @@ void main(List<String> arguments) {
 
   // Print header
   print('');
-  print('${'=' * 60}');
+  print('=' * 60);
   print('              PACKET VALIDATION TEST');
-  print('${'=' * 60}');
+  print('=' * 60);
   print('');
 
   // Print input
@@ -472,7 +475,7 @@ void main(List<String> arguments) {
   }
 
   // VALIDATION 2: Payload length check
-  final minPayloadLength = 3;
+  const minPayloadLength = 3;
   final payloadPassed = metadata.encryptedPayload.length >= minPayloadLength;
   steps.add(ValidationStep(
     name: 'Payload Length',
@@ -658,13 +661,13 @@ void printValidationResults(
   }
 
   print('');
-  print('${'=' * 60}');
+  print('=' * 60);
   if (allPassed) {
     print('  RESULT: + PASSED');
   } else {
     print('  RESULT: X FAILED - $failReason');
   }
-  print('${'=' * 60}');
+  print('=' * 60);
 }
 
 Uint8List parseHex(String hex) {
@@ -677,7 +680,7 @@ Uint8List parseHex(String hex) {
   }
 
   if (clean.length % 2 != 0) {
-    throw FormatException('Hex string must have even length');
+    throw const FormatException('Hex string must have even length');
   }
 
   final bytes = <int>[];

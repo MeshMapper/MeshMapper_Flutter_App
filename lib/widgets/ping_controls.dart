@@ -1353,7 +1353,7 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                     color: notSetColor.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: Text(
+                  child: const Text(
                     'Required',
                     style: TextStyle(fontSize: 8, fontWeight: FontWeight.w600, color: notSetColor),
                   ),

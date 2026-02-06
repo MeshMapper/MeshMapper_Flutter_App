@@ -844,33 +844,38 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               ),
 
             // Power level options
-            ...PowerLevel.values.map((power) {
-              final isSelected = power == currentPower;
-              final isRecommended = prefs.autoPowerSet && deviceModel != null && power == deviceModel.power;
+            RadioGroup<double>(
+              groupValue: currentPower ?? -1,
+              onChanged: (value) {
+                if (value != null) {
+                  selectPower(value);
+                }
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: PowerLevel.values.map((power) {
+                  final isSelected = power == currentPower;
+                  final isRecommended = prefs.autoPowerSet && deviceModel != null && power == deviceModel.power;
 
-              // Create a temp preferences object to get the display string with dBm
-              final tempPrefs = UserPreferences(powerLevel: power);
+                  // Create a temp preferences object to get the display string with dBm
+                  final tempPrefs = UserPreferences(powerLevel: power);
 
-              return RadioListTile<double>(
-                title: Row(
-                  children: [
-                    Flexible(child: Text(tempPrefs.powerLevelDisplayWithDbm)),
-                    if (isRecommended) ...[
-                      const SizedBox(width: 8),
-                      const Icon(Icons.check_circle, size: 16, color: Colors.green),
-                    ],
-                  ],
-                ),
-                value: power,
-                groupValue: currentPower,
-                selected: isSelected,
-                onChanged: (value) {
-                  if (value != null) {
-                    selectPower(value);
-                  }
-                },
-              );
-            }),
+                  return RadioListTile<double>(
+                    title: Row(
+                      children: [
+                        Flexible(child: Text(tempPrefs.powerLevelDisplayWithDbm)),
+                        if (isRecommended) ...[
+                          const SizedBox(width: 8),
+                          const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                        ],
+                      ],
+                    ),
+                    value: power,
+                    selected: isSelected,
+                  );
+                }).toList(),
+              ),
+            ),
 
             // Info note
             const SizedBox(height: 12),

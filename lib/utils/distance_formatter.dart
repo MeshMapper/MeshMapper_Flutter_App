@@ -1,4 +1,5 @@
 /// Utility functions for formatting distances in metric or imperial units
+library;
 
 /// Format a distance in meters for display
 /// Returns string like "150m" (metric) or "492ft" (imperial)

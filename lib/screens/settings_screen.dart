@@ -865,31 +865,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Select Auto-Ping Interval'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: AutoPingInterval.values.map((interval) {
-            final isSelected = interval == currentInterval;
+        content: RadioGroup<int>(
+          groupValue: currentInterval,
+          onChanged: (value) {
+            if (value != null) {
+              appState.updatePreferences(
+                appState.preferences.copyWith(autoPingInterval: value),
+              );
+              Navigator.pop(context);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: AutoPingInterval.values.map((interval) {
+              final isSelected = interval == currentInterval;
 
-            return RadioListTile<int>(
-              title: Text('$interval seconds'),
-              subtitle: Text(interval == 15
-                  ? 'Fast (More coverage, causes more mesh load)'
-                  : interval == 30
-                      ? 'Normal (Balanced coverage and mesh load)'
-                      : 'Slow (Less coverage, little mesh load)'),
-              value: interval,
-              groupValue: currentInterval,
-              selected: isSelected,
-              onChanged: (value) {
-                if (value != null) {
-                  appState.updatePreferences(
-                    appState.preferences.copyWith(autoPingInterval: value),
-                  );
-                  Navigator.pop(context);
-                }
-              },
-            );
-          }).toList(),
+              return RadioListTile<int>(
+                title: Text('$interval seconds'),
+                subtitle: Text(interval == 15
+                    ? 'Fast (More coverage, causes more mesh load)'
+                    : interval == 30
+                        ? 'Normal (Balanced coverage and mesh load)'
+                        : 'Slow (Less coverage, little mesh load)'),
+                value: interval,
+                selected: isSelected,
+              );
+            }).toList(),
+          ),
         ),
         actions: [
           TextButton(
