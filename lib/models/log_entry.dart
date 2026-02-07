@@ -161,7 +161,7 @@ class DiscLogEntry {
   final double latitude;
   final double longitude;
   final int? noiseFloor;
-  final List<DiscoveredNodeEntry> discoveredNodes;
+  List<DiscoveredNodeEntry> discoveredNodes;
 
   DiscLogEntry({
     required this.timestamp,

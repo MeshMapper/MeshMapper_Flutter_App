@@ -171,8 +171,8 @@ class ChannelService {
   static Future<ChannelInfo> ensureWardrivingChannel(MeshCoreConnection connection) async {
     debugLog('[CHANNEL] Looking up channel: $wardrivingChannelName');
 
-    // Scan channels one-by-one to find #wardriving or first empty slot
-    // This is much faster than scanning all 40+ channels
+    // Scan ALL channels to find #wardriving or first empty slot
+    // Full scan prevents duplicates from orphaned channels after unexpected disconnects
     int? firstEmptySlot;
     var channelIdx = 0;
 
@@ -204,12 +204,8 @@ class ChannelService {
         if (channel.name.isEmpty && firstEmptySlot == null) {
           firstEmptySlot = channelIdx;
           debugLog('[CHANNEL] Found empty slot at index $firstEmptySlot');
-          // Continue scanning 3 more channels to check if #wardriving exists elsewhere
-          // This balances speed vs thoroughness
-        } else if (firstEmptySlot != null && channelIdx >= firstEmptySlot + 3) {
-          // We found empty slot and scanned 3 more channels - stop here
-          debugLog('[CHANNEL] Stopping scan after ${channelIdx + 1} channels (checked 3 channels after empty slot)');
-          break;
+          // Continue scanning ALL remaining channels to find orphaned #wardriving
+          // This prevents duplicates after unexpected disconnects where channel wasn't deleted
         }
 
         channelIdx++;
@@ -228,7 +224,7 @@ class ChannelService {
       );
     }
 
-    debugLog('[CHANNEL] #wardriving not found, creating at index $firstEmptySlot');
+    debugLog('[CHANNEL] #wardriving not found in $channelIdx channels, creating at index $firstEmptySlot');
     final channelKey = CryptoService.deriveChannelKey(wardrivingChannelName);
     await connection.setChannel(firstEmptySlot, wardrivingChannelName, channelKey);
     debugLog('[CHANNEL] Channel $wardrivingChannelName created successfully at index $firstEmptySlot');

@@ -31,7 +31,9 @@
       "Bash(git fetch:*)",
       "Bash(python3:*)",
       "Bash(flutter test:*)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(file:*)",
+      "Bash(wc:*)"
     ]
   }
 }

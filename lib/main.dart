@@ -10,7 +10,6 @@ import 'package:provider/provider.dart';
 import 'models/noise_floor_session.dart';
 import 'providers/app_state_provider.dart';
 import 'screens/main_scaffold.dart';
-import 'services/background_service.dart';
 import 'services/bluetooth/bluetooth_service.dart';
 import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
@@ -63,9 +62,6 @@ void main() async {
   if (!kIsWeb) {
     await _requestPermissions();
   }
-
-  // Initialize background service for continuous wardriving (mobile only)
-  await BackgroundServiceManager.initialize();
 
   runApp(MeshMapperApp(initialThemeMode: initialThemeMode));
 }

@@ -158,7 +158,7 @@ class PingControls extends StatelessWidget {
                         ? const Color(0xFF22C55E) // green-500
                         : const Color(0xFF6366F1), // indigo-500
                 enabled: !isPendingDisable && ((isTxModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed),
-                isActive: isPendingDisable || (isTxModeRunning && (isPingInProgress || rxWindowActive || discoveryWindowActive || autoPingWaiting)),
+                isActive: isPendingDisable || isTxModeRunning,
                 onPressed: () => hybridEnabled ? _toggleHybridAuto(context, appState) : _toggleTxRxAuto(context, appState),
                 showCooldown: false,
                 subtitle: txBlockedByOffline ? 'Offline Mode' : txNotAllowed ? 'Passive Only' : (isPendingDisable ? 'Stopping' : null),
@@ -863,7 +863,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
     // Determine which button is currently active (not during cooldown)
     final sendPingCurrentlyActive = (isPingSending || rxWindowActive || manualCooldownActive) && !isTxModeRunning;
-    final activeModeCurrentlyActive = isPendingDisable || (isTxModeRunning && (isPingInProgress || rxWindowActive || discoveryWindowActive || autoPingWaiting));
+    final activeModeCurrentlyActive = isPendingDisable || isTxModeRunning;
     final passiveModeCurrentlyActive = isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
 
     // Track the last active button for cooldown
@@ -896,7 +896,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     final sendPingShowColor = sendPingEnabled || sendPingActive;
 
     final activeModeEnabled = !isPendingDisable && ((isTxModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed);
-    final activeModeActive = isPendingDisable || (isTxModeRunning && (isPingInProgress || rxWindowActive || discoveryWindowActive || autoPingWaiting));
+    final activeModeActive = isPendingDisable || isTxModeRunning;
     final activeModeShowColor = activeModeEnabled || activeModeActive;
 
     final passiveModeEnabled = isPassiveModeRunning || (appState.isConnected && !isTxModeRunning && !isPendingDisable &&
@@ -1172,7 +1172,6 @@ class LandscapePingControls extends StatelessWidget {
     final rxWindowActive = appState.rxWindowTimer.isRunning;
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
     final isPingSending = appState.isPingSending;
-    final isPingInProgress = appState.isPingInProgress;
     final autoPingWaiting = appState.autoPingTimer.isRunning;
     final autoPingRemaining = appState.autoPingTimer.remainingSec;
     final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
@@ -1244,7 +1243,7 @@ class LandscapePingControls extends StatelessWidget {
                         ? const Color(0xFF22C55E) // green-500
                         : const Color(0xFF6366F1), // indigo-500
                 enabled: !isPendingDisable && ((isTxModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed),
-                isActive: isPendingDisable || (isTxModeRunning && (isPingInProgress || rxWindowActive || discoveryWindowActive || autoPingWaiting)),
+                isActive: isPendingDisable || isTxModeRunning,
                 countdown: isTxModeRunning
                     ? (discoveryWindowActive
                         ? discoveryWindowRemaining

@@ -386,6 +386,20 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       lonOffset = -(meterOffset / (111000 * math.cos(position.latitude * math.pi / 180)));
     }
 
+    // When the map is rotated (heading mode), geographic "south" no longer maps
+    // to "screen down". Rotate the offset vector by the camera rotation so the
+    // shift always points in the correct screen direction.
+    final rotationDeg = _mapController.camera.rotation;
+    if (rotationDeg.abs() > 0.1) {
+      final rotationRad = -rotationDeg * math.pi / 180;
+      final cosR = math.cos(rotationRad);
+      final sinR = math.sin(rotationRad);
+      final rotatedLat = latOffset * cosR - lonOffset * sinR;
+      final rotatedLon = latOffset * sinR + lonOffset * cosR;
+      latOffset = rotatedLat;
+      lonOffset = rotatedLon;
+    }
+
     return LatLng(position.latitude + latOffset, position.longitude + lonOffset);
   }
 

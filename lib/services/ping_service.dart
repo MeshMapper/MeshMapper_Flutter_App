@@ -91,6 +91,7 @@ class PingService {
   String? _skipReason;
 
   // Discovery tracking
+  DiscLogEntry? _lastDiscPing;
   DiscTracker? _discTracker;
   StreamSubscription? _controlDataSubscription;
   Timer? _discoveryTimer;
@@ -116,8 +117,12 @@ class PingService {
   void Function(TxPing, HeardRepeater, bool isNew)? onEchoReceived;
 
   /// Callback for discovery events (Passive Mode)
-  /// Called when a discovery window completes with the log entry
-  void Function(DiscLogEntry)? onDiscoveryComplete;
+  /// Fires immediately when disc ping is created (like onTxPing)
+  void Function(DiscLogEntry)? onDiscPing;
+
+  /// Called in real-time when each node is discovered during tracking window
+  /// Parameters: (DiscLogEntry discPing, DiscoveredNodeEntry nodeEntry, bool isNew)
+  void Function(DiscLogEntry, DiscoveredNodeEntry, bool isNew)? onDiscNodeDiscovered;
 
   /// Callback when TX window ends (for noise floor graph)
   /// Parameters: (bool success) - true if any repeaters heard, false if none
@@ -126,6 +131,9 @@ class PingService {
   /// Callback when discovery window ends (for noise floor graph)
   /// Parameters: (bool success) - true if any nodes discovered, false if none
   void Function(bool success)? onDiscoveryWindowComplete;
+
+  /// Callback when pingInProgress changes (for immediate UI refresh)
+  void Function()? onPingProgressChanged;
 
   /// Callback when pending disable completes after RX window
   /// AppStateProvider uses this to update its state and cleanup
@@ -608,6 +616,7 @@ class PingService {
   /// Reference: setTimeout callback at RX_LOG_LISTEN_WINDOW_MS in wardrive.js
   Future<void> _endRxListeningWindow(Position txPosition) async {
     debugLog('[PING] RX listening window ended');
+    _rxWindowCountdown.stop();
 
     // Format heard_repeats string from TxTracker results
     // Format: "4e(12.25),77(12.25)" or "None" if no echoes
@@ -911,6 +920,22 @@ class PingService {
     _discTracker = DiscTracker(shouldIgnoreRepeater: shouldIgnoreRepeater);
     _discTracker!.onNodeDiscovered = (node, isNew) {
       debugLog('[DISC] Node discovered: ${node.repeaterId} (${node.nodeTypeName}), isNew=$isNew');
+      if (_lastDiscPing != null) {
+        final nodeEntry = DiscoveredNodeEntry(
+          repeaterId: node.repeaterId,
+          nodeType: node.nodeTypeName,
+          localSnr: node.localSnr,
+          localRssi: node.localRssi,
+          remoteSnr: node.remoteSnr,
+        );
+        if (isNew) {
+          _lastDiscPing!.discoveredNodes.add(nodeEntry);
+        } else {
+          final idx = _lastDiscPing!.discoveredNodes.indexWhere((n) => n.repeaterId == node.repeaterId);
+          if (idx >= 0) _lastDiscPing!.discoveredNodes[idx] = nodeEntry;
+        }
+        onDiscNodeDiscovered?.call(_lastDiscPing!, nodeEntry, isNew);
+      }
     };
     _discTracker!.onWindowComplete = (nodes) {
       debugLog('[DISC] Window complete: ${nodes.length} nodes discovered');
@@ -939,6 +964,7 @@ class PingService {
     _discTracker = null;
     _discoveryStartPosition = null;
     _lastDiscoveryPosition = null;  // Reset so first discovery always sends on next start
+    _lastDiscPing = null;
   }
 
   /// Send a discovery request and start listening window
@@ -952,6 +978,7 @@ class PingService {
     final position = _gpsService.lastPosition;
     if (position == null) {
       debugLog('[DISC] No GPS position, skipping discovery request');
+      _pingInProgress = false;
       _scheduleNextDiscovery();
       return;
     }
@@ -967,6 +994,7 @@ class PingService {
       if (distance < GpsService.minDistanceMeters) {
         debugLog('[DISC] Too close to last discovery (${distance.toStringAsFixed(1)}m < 25m), skipping');
         _skipReason = 'too close';
+        _pingInProgress = false;
         _scheduleNextDiscovery();
         return;
       }
@@ -975,6 +1003,10 @@ class PingService {
     // Clear skip reason since we're proceeding
     _skipReason = null;
 
+    // Signal "Sending..." to UI (matches TX flow which sets flag before setup work)
+    _pingInProgress = true;
+    onPingProgressChanged?.call();
+
     // Note: Zone validation is now handled server-side by the API
 
     // Store position at discovery start
@@ -982,6 +1014,19 @@ class PingService {
 
     // Capture noise floor
     final noiseFloor = _connection.lastNoiseFloor;
+    _pendingTxNoiseFloor = noiseFloor;
+
+    // Create disc ping entry IMMEDIATELY (mirrors TX flow)
+    final discPing = DiscLogEntry(
+      timestamp: DateTime.now(),
+      latitude: position.latitude,
+      longitude: position.longitude,
+      noiseFloor: noiseFloor,
+      discoveredNodes: [],
+    );
+    _lastDiscPing = discPing;
+    debugLog('[DISC] Created DiscLogEntry, ready for node tracking');
+    onDiscPing?.call(discPing);
 
     debugLog('[DISC] Sending discovery request at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
 
@@ -1001,13 +1046,14 @@ class PingService {
       // Start discovery window countdown display (7 seconds)
       _discoveryWindowCountdown.start(_discoveryListeningWindow.inMilliseconds);
 
-      // Store noise floor for later use
-      _pendingTxNoiseFloor = noiseFloor;
+      // Clear pingInProgress now that discovery window is active
+      _pingInProgress = false;
 
       // Update last discovery position for 25m check
       _lastDiscoveryPosition = position;
 
     } catch (e) {
+      _pingInProgress = false;
       debugError('[DISC] Failed to send discovery request: $e');
       _scheduleNextDiscovery();
     }
@@ -1015,73 +1061,55 @@ class PingService {
 
   /// Handle discovery window completion
   void _handleDiscoveryWindowComplete(List<DiscoveredNode> nodes) {
+    _discoveryWindowCountdown.stop();
     final position = _discoveryStartPosition;
     if (position == null) {
       debugLog('[DISC] No position recorded for discovery, skipping');
       // Notify about discovery failure for noise floor graph
       onDiscoveryWindowComplete?.call(false);
+      _lastDiscPing = null;
       _scheduleNextDiscovery();
       return;
     }
 
-    // Check if discovery was successful (any nodes found)
-    final discoverySuccess = nodes.isNotEmpty;
+    // Use _lastDiscPing which was already created and added to log in _sendDiscoveryRequest
+    final discoverySuccess = _lastDiscPing != null && _lastDiscPing!.discoveredNodes.isNotEmpty;
 
-    // Notify about discovery window completion for noise floor graph
+    if (discoverySuccess) {
+      debugLog('[DISC] Processing ${nodes.length} discovered nodes');
+
+      // Queue API payloads for each discovered node (uses nodes for pubkeyFull)
+      for (final node in nodes) {
+        _apiQueue.enqueueDisc(
+          latitude: position.latitude,
+          longitude: position.longitude,
+          repeaterId: node.repeaterId,
+          nodeType: node.nodeTypeName,
+          localSnr: node.localSnr,
+          localRssi: node.localRssi,
+          remoteSnr: node.remoteSnr,
+          pubkeyFull: node.pubkeyFull,
+          timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          externalAntenna: getExternalAntenna?.call() ?? false,
+          noiseFloor: _pendingTxNoiseFloor,
+        );
+      }
+
+      // Update stats
+      _stats = _stats.copyWith(discCount: _stats.discCount + 1);
+      onStatsUpdated?.call(_stats);
+    } else {
+      debugLog('[DISC] No nodes discovered');
+    }
+
+    // Entry already added to log via onDiscPing - no need to fire onDiscoveryComplete
+
+    // Fire noise floor callback (entry already in _discLogEntries via onDiscPing)
     onDiscoveryWindowComplete?.call(discoverySuccess);
 
-    if (!discoverySuccess) {
-      debugLog('[DISC] No nodes discovered');
-      _scheduleNextDiscovery();
-      return;
-    }
+    debugLog('[DISC] Discovery window complete: ${nodes.length} nodes${discoverySuccess ? ', queued ${nodes.length} API payloads' : ''}');
 
-    debugLog('[DISC] Processing ${nodes.length} discovered nodes');
-
-    // Create log entry
-    final discoveredNodes = nodes.map((n) => DiscoveredNodeEntry(
-      repeaterId: n.repeaterId,
-      nodeType: n.nodeTypeName,
-      localSnr: n.localSnr,
-      localRssi: n.localRssi,
-      remoteSnr: n.remoteSnr,
-    )).toList();
-
-    final logEntry = DiscLogEntry(
-      timestamp: DateTime.now(),
-      latitude: position.latitude,
-      longitude: position.longitude,
-      noiseFloor: _pendingTxNoiseFloor,
-      discoveredNodes: discoveredNodes,
-    );
-
-    // Queue API payloads for each discovered node
-    for (final node in nodes) {
-      _apiQueue.enqueueDisc(
-        latitude: position.latitude,
-        longitude: position.longitude,
-        repeaterId: node.repeaterId,
-        nodeType: node.nodeTypeName,
-        localSnr: node.localSnr,
-        localRssi: node.localRssi,
-        remoteSnr: node.remoteSnr,
-        pubkeyFull: node.pubkeyFull,
-        timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-        externalAntenna: getExternalAntenna?.call() ?? false,
-        noiseFloor: _pendingTxNoiseFloor,
-      );
-    }
-
-    // Update stats
-    _stats = _stats.copyWith(discCount: _stats.discCount + 1);
-    onStatsUpdated?.call(_stats);
-
-    // Notify callback
-    onDiscoveryComplete?.call(logEntry);
-
-    debugLog('[DISC] Discovery window complete: ${nodes.length} nodes, queued ${nodes.length} API payloads');
-
-    // Schedule next discovery
+    _lastDiscPing = null;
     _scheduleNextDiscovery();
   }
 
@@ -1121,12 +1149,17 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
 
+    // Subtract listening window so interval is measured start-to-start
+    // At 15s: wait = 15000 - 7000 = 8000ms. Clamp to min 1s.
+    final listenMs = _rxListeningWindow.inMilliseconds; // 7000
+    final waitMs = (_autoPingIntervalMs - listenMs).clamp(1000, _autoPingIntervalMs);
+
     final isNextDisc = _nextPingIsDiscovery;
-    debugLog('[HYBRID] Scheduling next ${isNextDisc ? "discovery" : "TX"} ping in ${_autoPingIntervalMs}ms');
+    debugLog('[HYBRID] Scheduling next ${isNextDisc ? "discovery" : "TX"} ping in ${waitMs}ms');
 
-    onAutoPingScheduled?.call(_autoPingIntervalMs, _skipReason);
+    onAutoPingScheduled?.call(waitMs, _skipReason);
 
-    _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
+    _autoTimer = Timer(Duration(milliseconds: waitMs), () {
       if (!_autoPingEnabled || !_hybridModeEnabled) return;
       if (_pingInProgress) {
         debugLog('[HYBRID] Ping already in progress, skipping');

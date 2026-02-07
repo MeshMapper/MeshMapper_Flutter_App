@@ -29,7 +29,9 @@ class BackgroundServiceManager {
   static bool _isRunning = false;
 
   /// Initialize the background service.
-  /// Must be called once at app startup (from main.dart).
+  /// Called lazily on first startService() call.
+  /// On Android, configure() may start the foreground service as a side effect,
+  /// so this should NOT be called eagerly at app startup.
   static Future<void> initialize() async {
     // Skip on web - no background service support
     if (kIsWeb) {
@@ -86,6 +88,14 @@ class BackgroundServiceManager {
           onBackground: _onIosBackground,
         ),
       );
+
+      // Defense-in-depth: configure() may unexpectedly start the service
+      // (e.g., Android resurrecting a previously-killed foreground service).
+      final isRunning = await _service!.isRunning();
+      if (isRunning) {
+        debugLog('[BACKGROUND] Service unexpectedly running after configure(), stopping it');
+        _service!.invoke('stop');
+      }
 
       _isInitialized = true;
       debugLog('[BACKGROUND] Background service initialized');

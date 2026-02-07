@@ -1141,14 +1141,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       };
 
+      // Wire up ping progress callback for immediate UI refresh (e.g. "Sending..." on disc)
+      _pingService!.onPingProgressChanged = notifyListeners;
+
       // Wire up auto ping scheduled callback for countdown display
       _pingService!.onAutoPingScheduled = (intervalMs, skipReason) {
         _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
       };
 
-      // Wire up discovery complete callback for Passive Mode
-      _pingService!.onDiscoveryComplete = (entry) {
+      // Wire up discovery ping callback - fires immediately (like onTxPing)
+      _pingService!.onDiscPing = (entry) {
         _addDiscLogEntry(entry);
+      };
+
+      // Wire up real-time disc node discovery callback (like onEchoReceived)
+      _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
+        debugLog('[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
+        if (isNew) {
+          _audioService.playReceiveSound();
+        }
+        notifyListeners();
       };
 
       // Wire up TX window complete callback for noise floor graph
@@ -1181,13 +1193,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Wire up discovery window complete callback for noise floor graph
       _pingService!.onDiscoveryWindowComplete = (success) {
-        // Get location and node info from the last discovery log entry
+        // Get location and node info from the most recent discovery log entry
+        // Note: _discLogEntries uses insert(0,...) so .first is newest
         double? lat;
         double? lon;
         List<MarkerRepeaterInfo>? repeaters;
 
         if (_discLogEntries.isNotEmpty) {
-          final lastDisc = _discLogEntries.last;
+          final lastDisc = _discLogEntries.first;
           lat = lastDisc.latitude;
           lon = lastDisc.longitude;
           if (lastDisc.discoveredNodes.isNotEmpty) {
@@ -1275,6 +1288,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     } catch (e) {
       debugError('[APP] Connection failed: $e');
+
+      // Ensure channel is cleaned up if it was created during connection
+      // Must happen BEFORE BLE disconnect while connection is still alive
+      try {
+        await _meshCoreConnection?.deleteWardrivingChannelEarly();
+      } catch (channelError) {
+        debugError('[APP] Cleanup channel delete failed: $channelError');
+      }
 
       // Ensure BLE is disconnected on any connection failure
       // (connection.dart should have done this, but be defensive)
@@ -1627,8 +1648,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Stop heartbeat
     _apiService.disableHeartbeat();
 
-    // End noise floor session
-    await _endNoiseFloorSession();
+    // Preserve noise floor session for continuation after reconnect
+    // (will be ended by _fullDisconnectCleanup if reconnect fails)
 
     // Flush RX logger
     _rxLogger?.stopWardriving(trigger: 'reconnect');
@@ -3617,6 +3638,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Start a new noise floor session when mode is enabled
   void _startNoiseFloorSession(String mode) {
+    // Continue existing session if same mode (e.g., after auto-reconnect)
+    if (_currentNoiseFloorSession != null &&
+        _currentNoiseFloorSession!.isActive &&
+        _currentNoiseFloorSession!.mode == mode) {
+      debugLog('[GRAPH] Continuing existing $mode noise floor session');
+      return;
+    }
     _currentNoiseFloorSession = NoiseFloorSession(
       id: const Uuid().v4(),
       startTime: DateTime.now(),
