@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../providers/app_state_provider.dart';
+import '../services/debug_file_logger.dart';
 import '../services/debug_submit_service.dart';
 import '../utils/constants.dart';
 import '../utils/debug_logger_io.dart';
@@ -421,8 +422,18 @@ class _BugReportSheetState extends State<BugReportSheet> {
                           ...List.generate(_availableLogFiles.length, (index) {
                             final file = _availableLogFiles[index];
                             final filename = file.path.split('/').last;
-                            final sizeKb = (file.lengthSync() / 1024).toStringAsFixed(1);
+                            final sizeBytes = file.lengthSync();
                             final isSelected = _selectedLogFiles.contains(file.path);
+
+                            // Format size and show part count for oversized files
+                            String sizeDisplay;
+                            final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
+                            if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
+                              final sizeMb = (sizeBytes / 1024 / 1024).toStringAsFixed(1);
+                              sizeDisplay = '$sizeMb MB ($partCount parts)';
+                            } else {
+                              sizeDisplay = '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                            }
 
                             return ListTile(
                               dense: true,
@@ -443,7 +454,7 @@ class _BugReportSheetState extends State<BugReportSheet> {
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: Text(
-                                  '$sizeKb KB',
+                                  sizeDisplay,
                                   style: theme.textTheme.bodySmall?.copyWith(
                                     color: theme.colorScheme.onSurfaceVariant,
                                   ),

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models/log_entry.dart';
 import '../providers/app_state_provider.dart';
+import '../widgets/repeater_id_chip.dart';
 
 /// Log screen with tabs for TX Log, RX Log, and User Errors
 class LogScreen extends StatefulWidget {
@@ -499,36 +500,28 @@ class _TxLogTab extends StatelessWidget {
       rssiColor = Colors.red;
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      child: Row(
-        children: [
-          // Repeater ID
-          SizedBox(
-            width: 50,
-            child: Text(
-              event.repeaterId,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'monospace',
-                color: Theme.of(context).colorScheme.onSurface,
+    return InkWell(
+      onTap: () => RepeaterIdChip.showRepeaterPopup(context, event.repeaterId),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          children: [
+            // Repeater ID
+            RepeaterIdChip(repeaterId: event.repeaterId, fontSize: 11, width: 50),
+            // SNR
+            Expanded(
+              child: Center(
+                child: _buildTxChip(event.snr.toStringAsFixed(1), snrColor),
               ),
             ),
-          ),
-          // SNR
-          Expanded(
-            child: Center(
-              child: _buildTxChip(event.snr.toStringAsFixed(1), snrColor),
+            // RSSI
+            Expanded(
+              child: Center(
+                child: _buildTxChip('${event.rssi}', rssiColor),
+              ),
             ),
-          ),
-          // RSSI
-          Expanded(
-            child: Center(
-              child: _buildTxChip('${event.rssi}', rssiColor),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -717,36 +710,28 @@ class _RxLogTab extends StatelessWidget {
                   ),
                   Divider(height: 1, color: Theme.of(context).dividerColor),
                   // Data row
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    child: Row(
-                      children: [
-                        // Repeater ID
-                        SizedBox(
-                          width: 50,
-                          child: Text(
-                            entry.repeaterId,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              fontFamily: 'monospace',
-                              color: Theme.of(context).colorScheme.onSurface,
+                  InkWell(
+                    onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.repeaterId),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      child: Row(
+                        children: [
+                          // Repeater ID
+                          RepeaterIdChip(repeaterId: entry.repeaterId, fontSize: 11, width: 50),
+                          // SNR
+                          Expanded(
+                            child: Center(
+                              child: _buildRxChip(entry.snr.toStringAsFixed(1), snrColor),
                             ),
                           ),
-                        ),
-                        // SNR
-                        Expanded(
-                          child: Center(
-                            child: _buildRxChip(entry.snr.toStringAsFixed(1), snrColor),
+                          // RSSI
+                          Expanded(
+                            child: Center(
+                              child: _buildRxChip('${entry.rssi}', rssiColor),
+                            ),
                           ),
-                        ),
-                        // RSSI
-                        Expanded(
-                          child: Center(
-                            child: _buildRxChip('${entry.rssi}', rssiColor),
-                          ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ],
@@ -1001,54 +986,49 @@ class _DiscLogTab extends StatelessWidget {
       rssiColor = Colors.red;
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      child: Row(
-        children: [
-          // Node ID with type
-          SizedBox(
-            width: 50,
-            child: Row(
-              children: [
-                Text(
-                  node.repeaterId,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'monospace',
-                    color: Theme.of(context).colorScheme.onSurface,
+    return InkWell(
+      onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          children: [
+            // Node ID with type
+            SizedBox(
+              width: 50,
+              child: Row(
+                children: [
+                  RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 11),
+                  Text(
+                    node.nodeTypeLabel,
+                    style: const TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF7B68EE),
+                    ),
                   ),
-                ),
-                Text(
-                  node.nodeTypeLabel,
-                  style: const TextStyle(
-                    fontSize: 9,
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF7B68EE),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          // RX SNR
-          Expanded(
-            child: Center(
-              child: _buildChip(node.localSnr.toStringAsFixed(1), rxSnrColor),
+            // RX SNR
+            Expanded(
+              child: Center(
+                child: _buildChip(node.localSnr.toStringAsFixed(1), rxSnrColor),
+              ),
             ),
-          ),
-          // RSSI
-          Expanded(
-            child: Center(
-              child: _buildChip('${node.localRssi}', rssiColor),
+            // RSSI
+            Expanded(
+              child: Center(
+                child: _buildChip('${node.localRssi}', rssiColor),
+              ),
             ),
-          ),
-          // TX SNR
-          Expanded(
-            child: Center(
-              child: _buildChip(node.remoteSnr.toStringAsFixed(1), txSnrColor),
+            // TX SNR
+            Expanded(
+              child: Center(
+                child: _buildChip(node.remoteSnr.toStringAsFixed(1), txSnrColor),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

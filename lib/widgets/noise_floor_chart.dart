@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/noise_floor_session.dart';
 import '../providers/app_state_provider.dart';
+import 'repeater_id_chip.dart';
 
 /// Interactive noise floor chart with pinch-to-zoom and pan
 class InteractiveNoiseFloorChart extends StatefulWidget {
@@ -497,36 +498,28 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       rssiColor = Colors.red;
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      child: Row(
-        children: [
-          // Node ID
-          SizedBox(
-            width: 50,
-            child: Text(
-              repeater.repeaterId,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'monospace',
-                color: Theme.of(context).colorScheme.onSurface,
+    return InkWell(
+      onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          children: [
+            // Node ID
+            RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 11, width: 50),
+            // SNR chip
+            Expanded(
+              child: Center(
+                child: _buildValueChip(repeater.snr.toStringAsFixed(1), snrColor),
               ),
             ),
-          ),
-          // SNR chip
-          Expanded(
-            child: Center(
-              child: _buildValueChip(repeater.snr.toStringAsFixed(1), snrColor),
+            // RSSI chip
+            Expanded(
+              child: Center(
+                child: _buildValueChip('${repeater.rssi}', rssiColor),
+              ),
             ),
-          ),
-          // RSSI chip
-          Expanded(
-            child: Center(
-              child: _buildValueChip('${repeater.rssi}', rssiColor),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

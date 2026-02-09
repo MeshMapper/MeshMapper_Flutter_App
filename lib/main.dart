@@ -13,6 +13,7 @@ import 'screens/main_scaffold.dart';
 import 'services/bluetooth/bluetooth_service.dart';
 import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
+import 'services/background_service.dart';
 import 'services/debug_file_logger.dart';
 import 'utils/constants.dart';
 import 'utils/debug_logger_io.dart';
@@ -61,6 +62,12 @@ void main() async {
   // Request permissions on startup for mobile platforms
   if (!kIsWeb) {
     await _requestPermissions();
+  }
+
+  // Clean up any orphaned background service from a previous session
+  // (Android foreground service can survive app process death)
+  if (!kIsWeb) {
+    await BackgroundServiceManager.cleanupOrphanedService();
   }
 
   runApp(MeshMapperApp(initialThemeMode: initialThemeMode));

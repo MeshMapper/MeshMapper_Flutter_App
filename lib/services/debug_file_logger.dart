@@ -11,6 +11,8 @@ import 'package:path_provider/path_provider.dart';
 /// - Non-persistent (always starts disabled on app launch)
 class DebugFileLogger {
   static const int maxLogFiles = 10;
+  /// Maximum file size for upload (4.5MB, 0.5MB safety margin under 5MB server limit)
+  static const int maxUploadSizeBytes = 4718592;
   static File? _currentLogFile;
   static IOSink? _logSink;
   static bool _enabled = false;
@@ -259,5 +261,78 @@ class DebugFileLogger {
 
     // Filter out the current log file
     return allFiles.where((f) => f.path != currentPath).toList();
+  }
+
+  /// Split a file into chunks that fit within the upload size limit.
+  ///
+  /// Returns `[file]` if the file is already small enough.
+  /// Otherwise, splits at newline boundaries into chunks <= [maxUploadSizeBytes],
+  /// writing temp files named `{basename}-part1of3.txt`, etc.
+  static Future<List<File>> splitFileIntoChunks(File file) async {
+    final fileSize = await file.length();
+    if (fileSize <= maxUploadSizeBytes) {
+      return [file];
+    }
+
+    final content = await file.readAsString();
+    final lines = content.split('\n');
+    final basename = file.path.split('/').last.replaceAll('.txt', '');
+    final tempDir = await getTemporaryDirectory();
+
+    // First pass: determine how many chunks we need
+    final List<List<String>> chunkLines = [];
+    List<String> currentChunk = [];
+    int currentSize = 0;
+
+    for (final line in lines) {
+      final lineBytes = line.length + 1; // +1 for newline
+      if (currentSize + lineBytes > maxUploadSizeBytes && currentChunk.isNotEmpty) {
+        chunkLines.add(currentChunk);
+        currentChunk = [];
+        currentSize = 0;
+      }
+      currentChunk.add(line);
+      currentSize += lineBytes;
+    }
+    if (currentChunk.isNotEmpty) {
+      chunkLines.add(currentChunk);
+    }
+
+    final totalParts = chunkLines.length;
+    final List<File> chunkFiles = [];
+
+    for (int i = 0; i < totalParts; i++) {
+      final partNum = i + 1;
+      final chunkFilename = '$basename-part${partNum}of$totalParts.txt';
+      final chunkFile = File('${tempDir.path}/$chunkFilename');
+      await chunkFile.writeAsString(chunkLines[i].join('\n'));
+      chunkFiles.add(chunkFile);
+    }
+
+    return chunkFiles;
+  }
+
+  /// Delete temp chunk files created by [splitFileIntoChunks].
+  ///
+  /// Only deletes files with `-part` in the filename (temp chunks).
+  /// Silently ignores errors on individual files.
+  static Future<void> cleanupChunkFiles(List<File> files) async {
+    for (final file in files) {
+      if (file.path.contains('-part')) {
+        try {
+          if (await file.exists()) {
+            await file.delete();
+          }
+        } catch (_) {
+          // Silently ignore cleanup errors
+        }
+      }
+    }
+  }
+
+  /// Calculate the number of upload parts needed for a file of given size.
+  static int estimatePartCount(int fileSizeBytes) {
+    if (fileSizeBytes <= maxUploadSizeBytes) return 1;
+    return (fileSizeBytes / maxUploadSizeBytes).ceil();
   }
 }

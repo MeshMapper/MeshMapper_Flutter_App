@@ -1,0 +1,221 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../models/repeater.dart';
+import '../providers/app_state_provider.dart';
+
+/// A styled repeater ID text with a dotted underline hint that it's tappable.
+///
+/// Displays the 2-char hex repeater ID in monospace style. Use together with
+/// [RepeaterIdChip.showRepeaterPopup] on the parent row's `InkWell` so the
+/// entire row is the tap target.
+class RepeaterIdChip extends StatelessWidget {
+  /// The 2-char hex repeater ID (e.g., "4e")
+  final String repeaterId;
+
+  /// Font size for the ID text (11 for log screens, 13 for map popups)
+  final double fontSize;
+
+  /// Optional SizedBox width constraint (e.g., 50 or 60)
+  final double? width;
+
+  const RepeaterIdChip({
+    super.key,
+    required this.repeaterId,
+    this.fontSize = 11,
+    this.width,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final child = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          repeaterId,
+          style: TextStyle(
+            fontSize: fontSize,
+            fontWeight: FontWeight.w600,
+            fontFamily: 'monospace',
+            color: Theme.of(context).colorScheme.onSurface,
+          ),
+        ),
+        const SizedBox(width: 2),
+        Icon(
+          Icons.info_outline,
+          size: fontSize - 1,
+          color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+        ),
+      ],
+    );
+
+    if (width != null) {
+      return SizedBox(width: width, child: child);
+    }
+    return child;
+  }
+
+  /// Show a dialog with matching repeater names for the given [repeaterId].
+  ///
+  /// Call this from the parent row's `InkWell.onTap` so the entire row is
+  /// tappable, not just the tiny ID text.
+  static void showRepeaterPopup(BuildContext context, String repeaterId) {
+    final appState = Provider.of<AppStateProvider>(context, listen: false);
+    final repeaters = appState.repeaters;
+
+    final Widget content;
+
+    if (repeaters.isEmpty) {
+      content = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text(
+          'Repeater data not available',
+          style: TextStyle(
+            fontStyle: FontStyle.italic,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontSize: 13,
+          ),
+        ),
+      );
+    } else {
+      final matches = repeaters
+          .where((r) => r.hexId.toLowerCase().startsWith(repeaterId.toLowerCase()))
+          .toList();
+
+      if (matches.isEmpty) {
+        content = Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Text(
+            'Unknown repeater',
+            style: TextStyle(
+              fontStyle: FontStyle.italic,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 13,
+            ),
+          ),
+        );
+      } else {
+        content = Column(
+          mainAxisSize: MainAxisSize.min,
+          children: matches.map((r) => _buildRepeaterRow(context, r)).toList(),
+        );
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+          ),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header
+                Row(
+                  children: [
+                    Icon(
+                      Icons.cell_tower,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Node ${repeaterId.toUpperCase()}',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'monospace',
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Divider(height: 1, color: Theme.of(context).dividerColor),
+                const SizedBox(height: 12),
+                // Content
+                content,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static Widget _buildRepeaterRow(BuildContext context, Repeater repeater) {
+    final isActive = repeater.isActive;
+    final badgeColor = isActive ? Colors.green : Colors.grey;
+    final statusText = isActive ? 'Active' : 'Stale';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          // Colored circle badge
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: badgeColor,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              repeater.hexId.length >= 2
+                  ? repeater.hexId.substring(0, 2).toUpperCase()
+                  : repeater.hexId.toUpperCase(),
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Repeater name
+          Expanded(
+            child: Text(
+              repeater.name,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Active/Stale chip
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: badgeColor.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: badgeColor.withValues(alpha: 0.4)),
+            ),
+            child: Text(
+              statusText,
+              style: TextStyle(
+                fontSize: 11,
+                color: badgeColor,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

@@ -55,6 +55,15 @@ class UserPreferences {
   /// Hybrid mode enabled (alternates Active + Discovery pings)
   final bool hybridModeEnabled;
 
+  /// Map auto-follow GPS position
+  final bool mapAutoFollow;
+
+  /// Map always north up (false = rotate with heading)
+  final bool mapAlwaysNorth;
+
+  /// Map rotation lock (disable rotation gestures)
+  final bool mapRotationLocked;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -74,6 +83,9 @@ class UserPreferences {
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
     this.hybridModeEnabled = false,
+    this.mapAutoFollow = false,
+    this.mapAlwaysNorth = true,
+    this.mapRotationLocked = false,
   });
 
   /// Create from JSON (for persistence)
@@ -97,6 +109,9 @@ class UserPreferences {
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? false,
+      mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
+      mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
+      mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
     );
   }
 
@@ -121,6 +136,9 @@ class UserPreferences {
       'themeMode': themeMode,
       'unitSystem': unitSystem,
       'hybridModeEnabled': hybridModeEnabled,
+      'mapAutoFollow': mapAutoFollow,
+      'mapAlwaysNorth': mapAlwaysNorth,
+      'mapRotationLocked': mapRotationLocked,
     };
   }
 
@@ -144,6 +162,9 @@ class UserPreferences {
     String? themeMode,
     String? unitSystem,
     bool? hybridModeEnabled,
+    bool? mapAutoFollow,
+    bool? mapAlwaysNorth,
+    bool? mapRotationLocked,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -164,6 +185,9 @@ class UserPreferences {
       themeMode: themeMode ?? this.themeMode,
       unitSystem: unitSystem ?? this.unitSystem,
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
+      mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
+      mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
+      mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
     );
   }
 
@@ -209,7 +233,10 @@ class UserPreferences {
         other.closeAppAfterDisconnect == closeAppAfterDisconnect &&
         other.themeMode == themeMode &&
         other.unitSystem == unitSystem &&
-        other.hybridModeEnabled == hybridModeEnabled;
+        other.hybridModeEnabled == hybridModeEnabled &&
+        other.mapAutoFollow == mapAutoFollow &&
+        other.mapAlwaysNorth == mapAlwaysNorth &&
+        other.mapRotationLocked == mapRotationLocked;
   }
 
   @override
@@ -232,6 +259,9 @@ class UserPreferences {
       themeMode,
       unitSystem,
       hybridModeEnabled,
+      mapAutoFollow,
+      mapAlwaysNorth,
+      mapRotationLocked,
     );
   }
 

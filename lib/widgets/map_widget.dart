@@ -14,6 +14,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import 'repeater_id_chip.dart';
 
 /// Map style options
 enum MapStyle {
@@ -128,6 +129,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = false; // Disabled by default - users often zoom out first
+  bool _prefsApplied = false; // Guard to load saved prefs only once
   bool _isMapReady = false;
   LatLng? _lastGpsPosition;
   bool _hasInitialZoomed = false; // Track if we've done the one-time initial zoom to GPS
@@ -360,13 +362,13 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   /// Shifts the map center to keep the GPS marker centered in the visible map area
   /// - bottomPadding: shifts center down (portrait mode with bottom panel)
   /// - rightPadding: shifts center left (landscape mode with side panel)
-  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding, [double rightPadding = 0]) {
+  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding, [double rightPadding = 0, double? atZoom]) {
     if (!_isMapReady) return position;
     if (bottomPadding <= 0 && rightPadding <= 0) return position;
 
-    // Get meters per pixel at current zoom
+    // Get meters per pixel at current zoom (or at a specific zoom if provided)
     // Approx: 40075km / (256 * 2^zoom) at equator, adjusted by cos(lat)
-    final zoom = _mapController.camera.zoom;
+    final zoom = atZoom ?? _mapController.camera.zoom;
     final metersPerPixel = 40075000 / (256 * math.pow(2, zoom)) *
         math.cos(position.latitude * math.pi / 180);
 
@@ -406,6 +408,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+
+    // Load saved map toggle preferences once, after Hive has finished loading
+    if (!_prefsApplied && appState.preferencesLoaded) {
+      _prefsApplied = true;
+      _autoFollow = appState.preferences.mapAutoFollow;
+      _alwaysNorth = appState.preferences.mapAlwaysNorth;
+      _rotationLocked = appState.preferences.mapRotationLocked;
+    }
 
     // Determine map center - prefer current GPS, fallback to last known, then Ottawa
     LatLng center = _defaultCenter;
@@ -447,10 +457,19 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       if (!_hasInitialZoomed && _isMapReady) {
         _hasInitialZoomed = true;
         final initialPosition = center;
+        _lastGpsPosition = initialPosition;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
-            _animateToPositionWithZoom(initialPosition, 16.0); // Initial zoom to GPS, no offset
-            debugLog('[MAP] Initial zoom to GPS position');
+            if (_autoFollow) {
+              // Auto-follow is on and panel may be open — apply panel offset so
+              // the marker appears centered in the visible map area.
+              final adjustedPosition = _offsetPositionForPadding(initialPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels, 16.0);
+              _animateToPositionWithZoom(adjustedPosition, 16.0);
+              debugLog('[MAP] Initial zoom to GPS position (with panel offset)');
+            } else {
+              _animateToPositionWithZoom(initialPosition, 16.0);
+              debugLog('[MAP] Initial zoom to GPS position');
+            }
           }
         });
       }
@@ -477,8 +496,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       // Handle map rotation based on heading (when not in Always North mode)
       if (!_alwaysNorth && _isMapReady) {
         final heading = appState.currentPosition!.heading;
-        // Only rotate if heading has changed significantly or is first time
-        if (_lastHeading == null || (heading - _lastHeading!).abs() > 2) {
+        if (_lastHeading == null) {
+          // First heading after startup — store without rotating so the
+          // initial zoom animation can settle at rotation 0 (where the
+          // panel offset was computed). Heading mode will begin rotating
+          // on the next GPS update when heading changes.
+          _lastHeading = heading;
+          debugLog('[MAP] First heading after startup (${heading.toStringAsFixed(1)}°) — stored without rotating');
+        } else if ((heading - _lastHeading!).abs() > 2) {
           _lastHeading = heading;
           // Use post frame callback to avoid build-during-build issues
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -839,16 +864,17 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   void _centerOnPosition() {
+    final appState = context.read<AppStateProvider>();
     // If already following, toggle off
     if (_autoFollow) {
       setState(() {
         _autoFollow = false;
       });
+      appState.setMapAutoFollow(false);
       return;
     }
 
     // Otherwise, enable auto-follow and center on position at street level
-    final appState = context.read<AppStateProvider>();
     if (appState.currentPosition != null) {
       final targetPosition = LatLng(
         appState.currentPosition!.latitude,
@@ -858,6 +884,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         _autoFollow = true;
         _lastGpsPosition = targetPosition;
       });
+      appState.setMapAutoFollow(true);
       // Apply offset for bottom padding when control panel is open
       final adjustedPosition = _offsetPositionForPadding(targetPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels);
       _animateToPositionWithZoom(adjustedPosition, 17.0); // Street level zoom when enabling follow
@@ -923,9 +950,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         });
       }
     });
+    appState.setMapAlwaysNorth(_alwaysNorth);
   }
 
   void _toggleRotationLock() {
+    final appState = context.read<AppStateProvider>();
     setState(() {
       _rotationLocked = !_rotationLocked;
 
@@ -967,6 +996,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         }
       }
     });
+    appState.setMapRotationLocked(_rotationLocked);
   }
 
   /// Show map legend popup explaining marker colors and types
@@ -1817,42 +1847,34 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         rssiColor = Colors.red;
                       }
 
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        child: Row(
-                          children: [
-                            // Repeater ID
-                            SizedBox(
-                              width: 60,
-                              child: Text(
-                                repeater.repeaterId,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  fontFamily: 'monospace',
-                                  color: Theme.of(context).colorScheme.onSurface,
+                      return InkWell(
+                        onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Row(
+                            children: [
+                              // Repeater ID
+                              RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 13, width: 60),
+                              // SNR
+                              Expanded(
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: repeater.snr.toStringAsFixed(1),
+                                    color: snrColor,
+                                  ),
                                 ),
                               ),
-                            ),
-                            // SNR
-                            Expanded(
-                              child: Center(
-                                child: _buildStatChip(
-                                  value: repeater.snr.toStringAsFixed(1),
-                                  color: snrColor,
+                              // RSSI
+                              Expanded(
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: '${repeater.rssi}',
+                                    color: rssiColor,
+                                  ),
                                 ),
                               ),
-                            ),
-                            // RSSI
-                            Expanded(
-                              child: Center(
-                                child: _buildStatChip(
-                                  value: '${repeater.rssi}',
-                                  color: rssiColor,
-                                ),
-                              ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       );
                     }),
@@ -2036,42 +2058,34 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   ),
                   Divider(height: 1, color: Theme.of(context).dividerColor),
                   // Data row
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    child: Row(
-                      children: [
-                        // Repeater ID
-                        SizedBox(
-                          width: 60,
-                          child: Text(
-                            ping.repeaterId,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              fontFamily: 'monospace',
-                              color: Theme.of(context).colorScheme.onSurface,
+                  InkWell(
+                    onTap: () => RepeaterIdChip.showRepeaterPopup(context, ping.repeaterId),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          // Repeater ID
+                          RepeaterIdChip(repeaterId: ping.repeaterId, fontSize: 13, width: 60),
+                          // SNR
+                          Expanded(
+                            child: Center(
+                              child: _buildStatChip(
+                                value: ping.snr.toStringAsFixed(1),
+                                color: snrColor,
+                              ),
                             ),
                           ),
-                        ),
-                        // SNR
-                        Expanded(
-                          child: Center(
-                            child: _buildStatChip(
-                              value: ping.snr.toStringAsFixed(1),
-                              color: snrColor,
-                            ),
-                          ),
-                        ),
-                        // RSSI
-                        Expanded(
-                          child: Center(
-                            child: _buildStatChip(
-                              value: '${ping.rssi}',
+                          // RSSI
+                          Expanded(
+                            child: Center(
+                              child: _buildStatChip(
+                                value: '${ping.rssi}',
                               color: rssiColor,
                             ),
                           ),
                         ),
                       ],
+                    ),
                     ),
                   ),
                 ],
@@ -2276,63 +2290,58 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         txSnrColor = Colors.green;
                       }
 
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        child: Row(
-                          children: [
-                            // Node ID with type
-                            SizedBox(
-                              width: 60,
-                              child: Row(
-                                children: [
-                                  Text(
-                                    node.repeaterId,
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      fontFamily: 'monospace',
-                                      color: Theme.of(context).colorScheme.onSurface,
+                      return InkWell(
+                        onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Row(
+                            children: [
+                              // Node ID with type
+                              SizedBox(
+                                width: 60,
+                                child: Row(
+                                  children: [
+                                    RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 13),
+                                    Text(
+                                      node.nodeTypeLabel,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w500,
+                                        color: _discMarkerColor,
+                                      ),
                                     ),
+                                  ],
+                                ),
+                              ),
+                              // RX SNR
+                              Expanded(
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: node.localSnr.toStringAsFixed(1),
+                                    color: rxSnrColor,
                                   ),
-                                  Text(
-                                    node.nodeTypeLabel,
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w500,
-                                      color: _discMarkerColor,
-                                    ),
+                                ),
+                              ),
+                              // RSSI
+                              Expanded(
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: '${node.localRssi}',
+                                    color: rssiColor,
                                   ),
-                                ],
-                              ),
-                            ),
-                            // RX SNR
-                            Expanded(
-                              child: Center(
-                                child: _buildStatChip(
-                                  value: node.localSnr.toStringAsFixed(1),
-                                  color: rxSnrColor,
                                 ),
                               ),
-                            ),
-                            // RSSI
-                            Expanded(
-                              child: Center(
-                                child: _buildStatChip(
-                                  value: '${node.localRssi}',
-                                  color: rssiColor,
+                              // TX SNR
+                              Expanded(
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: node.remoteSnr.toStringAsFixed(1),
+                                    color: txSnrColor,
+                                  ),
                                 ),
                               ),
-                            ),
-                            // TX SNR
-                            Expanded(
-                              child: Center(
-                                child: _buildStatChip(
-                                  value: node.remoteSnr.toStringAsFixed(1),
-                                  color: txSnrColor,
-                                ),
-                              ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       );
                     }),

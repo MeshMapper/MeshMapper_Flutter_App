@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 import '../utils/debug_logger_io.dart';
+import 'debug_file_logger.dart';
 
 /// Progress update during bug report submission
 class BugReportProgress {
@@ -218,8 +219,78 @@ class DebugSubmitService {
     );
   }
 
-  /// Upload a single file through the 3-step process (request, upload, complete)
+  /// Upload a single file, splitting into chunks if it exceeds the size limit.
+  ///
+  /// For files under 4.5MB, uploads directly via [_uploadSingleChunk].
+  /// For larger files, splits at newline boundaries and uploads each chunk.
   Future<bool> _uploadSingleFile({
+    required File file,
+    required String deviceId,
+    required String publicKey,
+    required String appVersion,
+    required String devicePlatform,
+    int? issueNumber,
+  }) async {
+    final filename = file.path.split('/').last;
+    final fileSize = await file.length();
+
+    // Split file if needed
+    final chunks = await DebugFileLogger.splitFileIntoChunks(file);
+
+    if (chunks.length == 1 && chunks.first.path == file.path) {
+      // No splitting needed - upload directly
+      return _uploadSingleChunk(
+        file: file,
+        deviceId: deviceId,
+        publicKey: publicKey,
+        appVersion: appVersion,
+        devicePlatform: devicePlatform,
+        issueNumber: issueNumber,
+      );
+    }
+
+    // File was split into chunks
+    debugLog('[BUG REPORT] File $filename (${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB) split into ${chunks.length} chunks');
+
+    bool allSucceeded = true;
+    try {
+      for (int i = 0; i < chunks.length; i++) {
+        final chunkName = chunks[i].path.split('/').last;
+        debugLog('[BUG REPORT] Uploading chunk ${i + 1}/${chunks.length}: $chunkName');
+
+        if (i > 0) {
+          // Delay between chunk uploads
+          debugLog('[BUG REPORT] Waiting 1s before next chunk...');
+          await Future.delayed(const Duration(seconds: 1));
+        }
+
+        final success = await _uploadSingleChunk(
+          file: chunks[i],
+          deviceId: deviceId,
+          publicKey: publicKey,
+          appVersion: appVersion,
+          devicePlatform: devicePlatform,
+          issueNumber: issueNumber,
+        );
+
+        if (!success) {
+          debugError('[BUG REPORT] Chunk ${i + 1}/${chunks.length} failed: $chunkName');
+          allSucceeded = false;
+          break;
+        }
+        debugLog('[BUG REPORT] Chunk ${i + 1}/${chunks.length} uploaded successfully');
+      }
+    } finally {
+      // Always clean up temp chunk files
+      debugLog('[BUG REPORT] Cleaning up ${chunks.length} temp chunk files');
+      await DebugFileLogger.cleanupChunkFiles(chunks);
+    }
+
+    return allSucceeded;
+  }
+
+  /// Upload a single file (or chunk) through the 3-step process (request, upload, complete)
+  Future<bool> _uploadSingleChunk({
     required File file,
     required String deviceId,
     required String publicKey,
@@ -561,7 +632,7 @@ class DebugSubmitService {
   }
 
   /// Upload a single debug file without creating a ticket
-  /// Returns true if successful
+  /// Returns true if successful. Automatically splits large files into chunks.
   Future<bool> uploadDebugFileOnly({
     required File file,
     required String deviceId,
@@ -573,15 +644,6 @@ class DebugSubmitService {
   }) async {
     final filename = file.path.split('/').last;
 
-    void reportProgress(String status, double progress) {
-      onProgress?.call(BugReportProgress(
-        status: status,
-        progress: progress.clamp(0.0, 1.0),
-        currentFile: 1,
-        totalFiles: 1,
-      ));
-    }
-
     debugLog('[DEBUG UPLOAD] ========================================');
     debugLog('[DEBUG UPLOAD] Starting single file upload');
     debugLog('[DEBUG UPLOAD] File: $filename');
@@ -589,84 +651,145 @@ class DebugSubmitService {
     debugLog('[DEBUG UPLOAD] ----------------------------------------');
 
     try {
-      // Step 1: Compute hash
-      reportProgress('Preparing file...', 0.1);
-      debugLog('[DEBUG UPLOAD] Computing file hash...');
-      final fileHash = await computeFileHash(file);
-      final fileSize = await file.length();
-      final fileSizeKb = (fileSize / 1024).toStringAsFixed(1);
-      debugLog('[DEBUG UPLOAD] File size: $fileSizeKb KB, Hash: ${fileHash.substring(0, 16)}...');
+      // Split file into chunks if needed
+      final chunks = await DebugFileLogger.splitFileIntoChunks(file);
+      final totalChunks = chunks.length;
+      final isChunked = totalChunks > 1 || chunks.first.path != file.path;
 
-      // Step 2: Request upload URL
-      reportProgress('Requesting upload...', 0.2);
-      debugLog('[DEBUG UPLOAD] Requesting upload URL...');
-      final session = await requestUpload(
-        deviceId: deviceId,
-        publicKey: publicKey,
-        fileSizeBytes: fileSize,
-        fileHash: fileHash,
-        appVersion: appVersion,
-        platform: devicePlatform,
-      );
-
-      if (session == null) {
-        debugError('[DEBUG UPLOAD] FAILED: Could not get upload URL');
-        debugLog('[DEBUG UPLOAD] ========================================');
-        return false;
+      if (isChunked) {
+        final fileSize = await file.length();
+        debugLog('[DEBUG UPLOAD] File (${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB) split into $totalChunks chunks');
       }
-      debugLog('[DEBUG UPLOAD] Got upload session: ${session.sessionId}');
 
-      // Step 3: Upload file
-      reportProgress('Uploading $filename...', 0.4);
-      debugLog('[DEBUG UPLOAD] Uploading file...');
-      var uploadSuccess = false;
-      const maxRetries = 3;
+      // Progress range: 0.1 to 0.9 divided across chunks
+      final progressPerChunk = 0.8 / totalChunks;
+      bool allSucceeded = true;
 
-      for (int attempt = 1; attempt <= maxRetries; attempt++) {
-        uploadSuccess = await uploadFile(
-          uploadUrl: session.uploadUrl,
-          file: file,
-        );
+      try {
+        for (int i = 0; i < totalChunks; i++) {
+          final chunk = chunks[i];
+          final chunkName = chunk.path.split('/').last;
+          final chunkBase = 0.1 + (i * progressPerChunk);
 
-        if (uploadSuccess) {
-          debugLog('[DEBUG UPLOAD] File uploaded successfully');
-          break;
+          if (isChunked) {
+            debugLog('[DEBUG UPLOAD] Chunk ${i + 1}/$totalChunks: $chunkName');
+          }
+
+          void reportChunkProgress(String status, double chunkProgress) {
+            final overallProgress = chunkBase + (chunkProgress * progressPerChunk);
+            onProgress?.call(BugReportProgress(
+              status: isChunked ? '$status (part ${i + 1}/$totalChunks)' : status,
+              progress: overallProgress.clamp(0.0, 1.0),
+              currentFile: isChunked ? i + 1 : 1,
+              totalFiles: isChunked ? totalChunks : 1,
+            ));
+          }
+
+          // Delay between chunks
+          if (i > 0) {
+            debugLog('[DEBUG UPLOAD] Waiting 1s before next chunk...');
+            await Future.delayed(const Duration(seconds: 1));
+          }
+
+          // Step 1: Compute hash
+          reportChunkProgress('Preparing file...', 0.0);
+          debugLog('[DEBUG UPLOAD] Computing file hash...');
+          final fileHash = await computeFileHash(chunk);
+          final chunkSize = await chunk.length();
+          final chunkSizeKb = (chunkSize / 1024).toStringAsFixed(1);
+          debugLog('[DEBUG UPLOAD] Chunk size: $chunkSizeKb KB, Hash: ${fileHash.substring(0, 16)}...');
+
+          // Step 2: Request upload URL
+          reportChunkProgress('Requesting upload...', 0.2);
+          debugLog('[DEBUG UPLOAD] Requesting upload URL...');
+          final session = await requestUpload(
+            deviceId: deviceId,
+            publicKey: publicKey,
+            fileSizeBytes: chunkSize,
+            fileHash: fileHash,
+            appVersion: appVersion,
+            platform: devicePlatform,
+          );
+
+          if (session == null) {
+            debugError('[DEBUG UPLOAD] FAILED: Could not get upload URL for $chunkName');
+            allSucceeded = false;
+            break;
+          }
+          debugLog('[DEBUG UPLOAD] Got upload session: ${session.sessionId}');
+
+          // Step 3: Upload file
+          reportChunkProgress('Uploading $chunkName...', 0.4);
+          debugLog('[DEBUG UPLOAD] Uploading file...');
+          var uploadSuccess = false;
+          const maxRetries = 3;
+
+          for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            uploadSuccess = await uploadFile(
+              uploadUrl: session.uploadUrl,
+              file: chunk,
+            );
+
+            if (uploadSuccess) {
+              debugLog('[DEBUG UPLOAD] File uploaded successfully');
+              break;
+            }
+
+            if (attempt < maxRetries) {
+              final delaySeconds = attempt * 2;
+              debugWarn('[DEBUG UPLOAD] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
+              await Future.delayed(Duration(seconds: delaySeconds));
+            }
+          }
+
+          if (!uploadSuccess) {
+            debugError('[DEBUG UPLOAD] FAILED: Upload failed after $maxRetries attempts for $chunkName');
+            allSucceeded = false;
+            break;
+          }
+
+          // Step 4: Complete upload
+          reportChunkProgress('Confirming upload...', 0.8);
+          debugLog('[DEBUG UPLOAD] Confirming upload...');
+          final completeSuccess = await completeUpload(
+            deviceId: deviceId,
+            publicKey: publicKey,
+            sessionId: session.sessionId,
+            success: true,
+            userNotes: userNotes ?? 'Direct debug log upload',
+          );
+
+          if (!completeSuccess) {
+            debugWarn('[DEBUG UPLOAD] Confirmation failed but file was uploaded');
+          }
+
+          debugLog('[DEBUG UPLOAD] Chunk ${i + 1}/$totalChunks complete');
         }
-
-        if (attempt < maxRetries) {
-          final delaySeconds = attempt * 2;
-          debugWarn('[DEBUG UPLOAD] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
-          await Future.delayed(Duration(seconds: delaySeconds));
+      } finally {
+        // Clean up temp chunk files
+        if (isChunked) {
+          debugLog('[DEBUG UPLOAD] Cleaning up $totalChunks temp chunk files');
+          await DebugFileLogger.cleanupChunkFiles(chunks);
         }
       }
 
-      if (!uploadSuccess) {
-        debugError('[DEBUG UPLOAD] FAILED: Upload failed after $maxRetries attempts');
+      if (allSucceeded) {
+        onProgress?.call(BugReportProgress(
+          status: 'Complete!',
+          progress: 1.0,
+          currentFile: totalChunks,
+          totalFiles: totalChunks,
+        ));
         debugLog('[DEBUG UPLOAD] ========================================');
-        return false;
+        debugLog('[DEBUG UPLOAD] Upload complete: $filename${isChunked ? ' ($totalChunks chunks)' : ''}');
+        debugLog('[DEBUG UPLOAD] ========================================');
+      } else {
+        debugLog('[DEBUG UPLOAD] ========================================');
+        debugLog('[DEBUG UPLOAD] Upload FAILED: $filename');
+        debugLog('[DEBUG UPLOAD] ========================================');
       }
 
-      // Step 4: Complete upload
-      reportProgress('Confirming upload...', 0.9);
-      debugLog('[DEBUG UPLOAD] Confirming upload...');
-      final completeSuccess = await completeUpload(
-        deviceId: deviceId,
-        publicKey: publicKey,
-        sessionId: session.sessionId,
-        success: true,
-        userNotes: userNotes ?? 'Direct debug log upload',
-      );
-
-      if (!completeSuccess) {
-        debugWarn('[DEBUG UPLOAD] Confirmation failed but file was uploaded');
-      }
-
-      reportProgress('Complete!', 1.0);
-      debugLog('[DEBUG UPLOAD] ========================================');
-      debugLog('[DEBUG UPLOAD] Upload complete: $filename');
-      debugLog('[DEBUG UPLOAD] ========================================');
-
-      return true;
+      return allSucceeded;
     } catch (e, stackTrace) {
       debugError('[DEBUG UPLOAD] Exception: $e');
       debugError('[DEBUG UPLOAD] Stack trace: $stackTrace');

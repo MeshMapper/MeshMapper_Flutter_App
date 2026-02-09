@@ -136,6 +136,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Discovered devices
   List<DiscoveredDevice> _discoveredDevices = [];
   bool _isScanning = false;
+  StreamSubscription<DiscoveredDevice>? _activeScanSubscription;
 
   // TX/RX markers for map
   final List<TxPing> _txPings = [];
@@ -433,7 +434,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Update background service notification with queue size
       if (_autoPingEnabled) {
-        final modeName = _autoMode == AutoMode.passive ? 'Passive Mode' : 'Active Mode';
+        final modeName = _autoMode == AutoMode.passive ? 'Passive Mode'
+            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode' : 'Active Mode';
         BackgroundServiceManager.updateNotification(
           mode: modeName,
           txCount: _pingStats.txCount,
@@ -717,31 +719,46 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isAuthError = false;
     notifyListeners();
 
-    // Listen for discovered devices
+    // Listen for discovered devices using subscription so stopScan() can cancel
     DiscoveredDevice? selectedDevice;
-    await for (final device in _bluetoothService.scanForDevices(
+    final completer = Completer<void>();
+    _activeScanSubscription = _bluetoothService.scanForDevices(
       timeout: const Duration(seconds: 15),
-    )) {
-      if (!_discoveredDevices.any((d) => d.id == device.id)) {
-        _discoveredDevices.add(device);
-        selectedDevice = device;
-        notifyListeners();
-      }
-    }
+    ).listen(
+      (device) {
+        if (!_discoveredDevices.any((d) => d.id == device.id)) {
+          _discoveredDevices.add(device);
+          selectedDevice = device;
+          notifyListeners();
+        }
+      },
+      onDone: () {
+        if (!completer.isCompleted) completer.complete();
+      },
+      onError: (e) {
+        debugError('[SCAN] Scan error: $e');
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+    await completer.future;
+    _activeScanSubscription = null;
 
     _isScanning = false;
     notifyListeners();
 
     // On web platform, the Chrome BLE picker already handles device selection,
     // so auto-connect immediately after the picker returns (no second click needed)
-    if (kIsWeb && selectedDevice != null) {
+    final webDevice = selectedDevice;
+    if (kIsWeb && webDevice != null) {
       debugLog('[APP] Web platform: auto-connecting to selected device');
-      await connectToDevice(selectedDevice);
+      await connectToDevice(webDevice);
     }
   }
 
   /// Stop scanning for devices
   Future<void> stopScan() async {
+    await _activeScanSubscription?.cancel();
+    _activeScanSubscription = null;
     await _bluetoothService.stopScan();
     _isScanning = false;
     notifyListeners();
@@ -1077,7 +1094,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Update background service notification with current stats
         if (_autoPingEnabled) {
-          final modeName = _autoMode == AutoMode.passive ? 'Passive Mode' : 'Active Mode';
+          final modeName = _autoMode == AutoMode.passive ? 'Passive Mode'
+            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode' : 'Active Mode';
           BackgroundServiceManager.updateNotification(
             mode: modeName,
             txCount: _pingStats.txCount,
@@ -2083,10 +2101,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final sessionLabel = isPassive ? 'passive' : isHybrid ? 'hybrid' : 'active';
       _startNoiseFloorSession(sessionLabel);
 
-      // Enable heartbeat ONLY for Passive Mode (not offline mode)
-      // Active/Hybrid Mode renews session via auto-pings every 15/30/60s
-      // Manual Mode has natural 5-minute timeout
-      if (isPassive && !_preferences.offlineMode) {
+      // Enable heartbeat for all auto-ping modes (not offline mode)
+      // Heartbeat sends keepalive ~1 min before session expiry (4 min timer)
+      // Active/Hybrid pings renew session when moving, but heartbeat is the
+      // safety net when stationary (25m distance filter skips TX pings)
+      if (!_preferences.offlineMode) {
         _apiService.enableHeartbeat(
           gpsProvider: () {
             // Provide current GPS coordinates for heartbeat (matching wardrive.js)
@@ -2095,9 +2114,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             return (lat: pos.latitude, lon: pos.longitude);
           },
         );
-        debugLog('[HEARTBEAT] Enabled for Passive Mode');
-      } else if (isTxMode) {
-        debugLog('[HEARTBEAT] Not enabled - ${mode.name} Mode renews via auto-pings');
+        debugLog('[HEARTBEAT] Enabled for ${mode.name} Mode');
       }
 
       // Start background service for continuous operation
@@ -2672,6 +2689,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void setCloseAppAfterDisconnect(bool value) {
     _preferences = _preferences.copyWith(closeAppAfterDisconnect: value);
     debugLog('[APP] Close app after disconnect set to: $value');
+    notifyListeners();
+    _savePreferences();
+  }
+
+  /// Set map auto-follow preference and persist
+  void setMapAutoFollow(bool value) {
+    _preferences = _preferences.copyWith(mapAutoFollow: value);
+    debugLog('[MAP] Map auto-follow set to $value');
+    notifyListeners();
+    _savePreferences();
+  }
+
+  /// Set map always-north preference and persist
+  void setMapAlwaysNorth(bool value) {
+    _preferences = _preferences.copyWith(mapAlwaysNorth: value);
+    debugLog('[MAP] Map always-north set to $value');
+    notifyListeners();
+    _savePreferences();
+  }
+
+  /// Set map rotation-locked preference and persist
+  void setMapRotationLocked(bool value) {
+    _preferences = _preferences.copyWith(mapRotationLocked: value);
+    debugLog('[MAP] Map rotation-locked set to $value');
     notifyListeners();
     _savePreferences();
   }

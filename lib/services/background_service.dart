@@ -204,6 +204,20 @@ class BackgroundServiceManager {
   /// Check if the background service is initialized.
   static bool get isInitialized => _isInitialized;
 
+  /// Clean up any orphaned foreground service from a previous app session.
+  /// On Android, the foreground service can survive app process death.
+  /// Call this at app startup to ensure no stale notification persists.
+  static Future<void> cleanupOrphanedService() async {
+    if (kIsWeb) return;
+    try {
+      debugLog('[BACKGROUND] Checking for orphaned service from previous session');
+      await initialize();
+      // initialize() has a defense check that stops any running service
+    } catch (e) {
+      debugError('[BACKGROUND] Failed to cleanup orphaned service: $e');
+    }
+  }
+
   /// Called when the background service starts (Android).
   @pragma('vm:entry-point')
   static Future<void> _onStart(ServiceInstance service) async {

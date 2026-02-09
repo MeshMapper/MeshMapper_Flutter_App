@@ -76,12 +76,26 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     final appState = context.watch<AppStateProvider>();
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
-    // Build FAB for scanning - only show when fully disconnected and idle
+    // Build FAB for scanning - show Cancel during scan, Scan when idle
     // Hide FAB entirely during maintenance mode (maintenance UI has its own buttons)
     // Hide FAB when Bluetooth is off (shows full-screen message instead)
     // Hide FAB during auto-reconnect
     Widget? fab;
-    if (appState.connectionStep == ConnectionStep.disconnected &&
+    if (appState.isScanning) {
+      // Show Cancel FAB during active scan
+      fab = isLandscape
+          ? FloatingActionButton.small(
+              onPressed: () => appState.stopScan(),
+              backgroundColor: Colors.red,
+              child: const Icon(Icons.close),
+            )
+          : FloatingActionButton.extended(
+              onPressed: () => appState.stopScan(),
+              icon: const Icon(Icons.close),
+              label: const Text('Cancel'),
+              backgroundColor: Colors.red,
+            );
+    } else if (appState.connectionStep == ConnectionStep.disconnected &&
         !appState.isAutoReconnecting &&
         (!appState.maintenanceMode || appState.offlineMode) &&
         !appState.isBluetoothOff) {

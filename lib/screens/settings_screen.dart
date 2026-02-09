@@ -18,6 +18,7 @@ import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../models/user_preferences.dart';
+import '../services/debug_file_logger.dart';
 import '../services/debug_submit_service.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/offline_session_service.dart';
@@ -697,7 +698,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   final index = entry.key;
                   final file = entry.value;
                   final filename = file.path.split('/').last;
-                  final sizeKb = (file.lengthSync() / 1024).toStringAsFixed(1);
+                  final sizeBytes = file.lengthSync();
                   final isUploading = _uploadingFilePath == file.path;
                   final wasUploaded = _uploadedFiles.contains(file.path);
                   // First file (index 0) is the most recent/active log - can't upload
@@ -709,11 +710,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       : null;
                   final dateStr = fileDate != null ? DateFormat('MMM d, h:mm a').format(fileDate) : filename;
 
+                  // Format size and show part count for oversized files
+                  String sizeDisplay;
+                  final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
+                  if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
+                    final sizeMb = (sizeBytes / 1024 / 1024).toStringAsFixed(1);
+                    sizeDisplay = '$sizeMb MB ($partCount parts)';
+                  } else {
+                    sizeDisplay = '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                  }
+                  if (isCurrentLog) {
+                    sizeDisplay = '$sizeDisplay (current)';
+                  }
+
                   return ListTile(
                     leading: const Icon(Icons.description, size: 20),
                     title: Text(dateStr, style: const TextStyle(fontSize: 13)),
                     subtitle: Text(
-                      isCurrentLog ? '$sizeKb KB (current)' : '$sizeKb KB',
+                      sizeDisplay,
                       style: const TextStyle(fontSize: 11),
                     ),
                     trailing: Row(
