@@ -140,6 +140,7 @@ class ApiService {
         'accuracy_m': accuracyMeters,
         'ver': appVersion,
         'timestamp': timestamp,
+        'key': apiKey,
       };
 
       final response = await _client.post(
@@ -149,9 +150,24 @@ class ApiService {
       ).timeout(const Duration(seconds: 10));
 
       stopwatch.stop();
-      final data = response.statusCode == 200
-          ? json.decode(response.body) as Map<String, dynamic>
-          : null;
+
+      if (response.statusCode != 200) {
+        debugError('[API] /wardrive-api.php/status returned HTTP ${response.statusCode}');
+        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError('[API]   Response headers: ${response.headers}');
+      }
+
+      Map<String, dynamic>? data;
+      if (response.statusCode == 200) {
+        data = json.decode(response.body) as Map<String, dynamic>;
+      } else if (response.body.isNotEmpty) {
+        // Try to parse structured error responses (e.g., 403 gps_inaccurate)
+        try {
+          data = json.decode(response.body) as Map<String, dynamic>;
+        } catch (_) {
+          // Non-JSON body (HTML error page, etc.) — leave as null
+        }
+      }
 
       _logApiCall(
         endpoint: '/wardrive-api.php/status',
@@ -242,6 +258,12 @@ class ApiService {
       ).timeout(const Duration(seconds: 10));
 
       stopwatch.stop();
+
+      if (response.statusCode != 200) {
+        debugError('[API] /wardrive-api.php/auth returned HTTP ${response.statusCode}');
+        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+
       final data = json.decode(response.body) as Map<String, dynamic>;
 
       _logApiCall(
@@ -310,6 +332,12 @@ class ApiService {
       ).timeout(const Duration(seconds: 30));
 
       stopwatch.stop();
+
+      if (response.statusCode != 200) {
+        debugError('[API] /wardrive-api.php/wardrive returned HTTP ${response.statusCode}');
+        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+
       final data = json.decode(response.body) as Map<String, dynamic>;
 
       // Log with data summary including external_antenna values
@@ -373,6 +401,12 @@ class ApiService {
       ).timeout(const Duration(seconds: 30));
 
       stopwatch.stop();
+
+      if (response.statusCode != 200) {
+        debugError('[API] /wardrive-api.php/wardrive (heartbeat) returned HTTP ${response.statusCode}');
+        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+
       final data = json.decode(response.body) as Map<String, dynamic>;
 
       // Log heartbeat with coords info but not sensitive data

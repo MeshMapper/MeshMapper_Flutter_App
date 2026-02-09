@@ -38,7 +38,6 @@ dependencies:
   audio_session: ^0.1.21
   dio: ^5.0.0
   font_awesome_flutter: ^10.7.0
-  connectivity_plus: ^6.0.0
   fl_chart: ^0.69.0
   web: ^1.1.0
 

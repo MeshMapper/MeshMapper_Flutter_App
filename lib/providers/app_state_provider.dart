@@ -20,7 +20,6 @@ import '../models/user_preferences.dart';
 import '../services/api_queue_service.dart';
 import '../services/api_service.dart';
 import '../services/audio_service.dart';
-import '../services/connectivity_service.dart';
 import '../services/background_service.dart';
 import '../services/debug_file_logger.dart';
 import '../services/offline_session_service.dart';
@@ -72,7 +71,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final ApiQueueService _apiQueueService;
   late final OfflineSessionService _offlineSessionService;
   late final DeviceModelService _deviceModelService;
-  late final ConnectivityService _connectivityService;
   final AudioService _audioService = AudioService();
   late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
   late final ManualPingCooldownTimer _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
@@ -176,6 +174,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Position? _lastZoneCheckPosition;
   bool _isCheckingZone = false;
 
+  // Zone check retry state
+  String? _zoneCheckError;           // Error message from last failed check (null = no error)
+  String? _zoneCheckErrorReason;     // 'network', 'gps_inaccurate', 'gps_stale', 'server_error'
+  int _zoneCheckRetryCountdown = 0;  // Seconds until next retry (0 = not counting)
+  Timer? _zoneCheckRetryTimer;       // Fires to trigger the retry
+  Timer? _zoneCheckCountdownTimer;   // Ticks every 1s for UI countdown
+
   // Maintenance mode state
   bool _maintenanceMode = false;
   String? _maintenanceMessage;
@@ -184,9 +189,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Auth type from API response (API, Mesh, Manual)
   String? _authType;
-
-  // Internet connectivity state
-  bool _hasInternet = true; // Optimistic default
 
   // Mode switching state (for hot-switching offline/online while connected)
   bool _isSwitchingMode = false;
@@ -235,7 +237,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
-      _connectivityService.onAppResumed();
     }
   }
 
@@ -308,6 +309,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get nearestZoneCode => _nearestZone?['code'] as String?;
   double? get nearestZoneDistanceKm => (_nearestZone?['distance_km'] as num?)?.toDouble();
 
+  // Zone check retry getters
+  String? get zoneCheckError => _zoneCheckError;
+  String? get zoneCheckErrorReason => _zoneCheckErrorReason;
+  int get zoneCheckRetryCountdown => _zoneCheckRetryCountdown;
+
   // Maintenance mode getters
   bool get maintenanceMode => _maintenanceMode;
   String? get maintenanceMessage => _maintenanceMessage;
@@ -315,9 +321,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Auth type getter (API, Mesh, Manual)
   String? get authType => _authType;
-
-  // Internet connectivity getter
-  bool get hasInternet => _hasInternet;
 
   // Mode switching getters
   bool get isSwitchingMode => _isSwitchingMode;
@@ -554,12 +557,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
       if (_inZone == null && !_preferences.offlineMode) {
-        if (!_hasInternet) {
-          debugLog('[GEOFENCE] First GPS lock but no internet - zone check will wait for connectivity');
-        } else {
-          debugLog('[GEOFENCE] First GPS lock with internet, triggering zone check');
-          await checkZoneStatus();
-        }
+        debugLog('[GEOFENCE] First GPS lock, triggering zone check');
+        await checkZoneStatus();
         _firstGpsLockLogged = true;
       } else if (_inZone == null && _preferences.offlineMode && !_firstGpsLockLogged) {
         debugLog('[GEOFENCE] First GPS lock skipped: offline mode enabled');
@@ -590,45 +589,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _gpsService.startWatching();
     debugLog('[INIT] GPS service started, status: ${_gpsService.status}');
 
-    // Initialize connectivity service
-    debugLog('[INIT] Setting up connectivity monitoring...');
-    _connectivityService = ConnectivityService();
-    await _connectivityService.initialize();
-    _connectivityService.internetStream.listen((hasInternet) async {
-      final previousState = _hasInternet;
-      _hasInternet = hasInternet;
-      debugLog('[CONNECTIVITY] Internet status changed: $previousState → $hasInternet');
-      debugLog('[CONNECTIVITY] Current state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
-          'gpsStatus=$_gpsStatus, hasPosition=${_currentPosition != null}, offlineMode=${_preferences.offlineMode}');
-      notifyListeners();
-
-      // Re-check zone when internet becomes available
-      if (hasInternet && _inZone == null && !_preferences.offlineMode) {
-        debugLog('[CONNECTIVITY] Internet restored and zone unknown, will attempt zone check');
-
-        // If we have GPS position, check zone immediately
-        if (_currentPosition != null) {
-          debugLog('[CONNECTIVITY] GPS position available, triggering zone check');
-          checkZoneStatus();
-        } else {
-          // GPS not providing positions - try to restart it
-          debugLog('[CONNECTIVITY] No GPS position available, restarting GPS service');
-          await _gpsService.startWatching();
-          debugLog('[CONNECTIVITY] GPS service restarted, status: ${_gpsService.status}');
-          // Zone check will be triggered by GPS position listener when position arrives
-        }
-      } else if (!hasInternet) {
-        debugLog('[CONNECTIVITY] Internet lost - zone checks will be blocked until restored');
-      }
-    });
-    _hasInternet = _connectivityService.hasInternet;
-    debugLog('[INIT] Initial internet status: $_hasInternet');
-
     // Initialize audio service for sound notifications
     await _audioService.initialize();
 
     debugLog('[INIT] AppStateProvider initialization complete');
-    debugLog('[INIT] Final init state: gpsStatus=$_gpsStatus, hasInternet=$_hasInternet, '
+    debugLog('[INIT] Final init state: gpsStatus=$_gpsStatus, '
         'inZone=$_inZone, isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}, '
         'offlineMode=${_preferences.offlineMode}');
     notifyListeners();
@@ -639,17 +604,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> restartGpsAfterPermission() async {
     debugLog('[GPS] restartGpsAfterPermission() called');
     debugLog('[GPS] Pre-restart state: gpsStatus=$_gpsStatus, inZone=$_inZone, '
-        'isCheckingZone=$_isCheckingZone, hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}');
+        'isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}');
 
     await _gpsService.startWatching();
     _gpsStatus = _gpsService.status;  // Sync after restart
 
     debugLog('[GPS] GPS restarted, new status: $_gpsStatus');
     debugLog('[GPS] Post-restart state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
-        'hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}');
+        'hasPosition=${_currentPosition != null}');
 
     // If we now have a position and zone hasn't been checked, trigger check
-    if (_currentPosition != null && _inZone == null && _hasInternet && !_preferences.offlineMode) {
+    if (_currentPosition != null && _inZone == null && !_preferences.offlineMode) {
       debugLog('[GPS] Permission granted with existing position - triggering zone check');
       await checkZoneStatus();
     }
@@ -853,7 +818,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             return result;
           }
 
-          debugLog('[APP] Stage 1 failed: ${result?['message'] ?? 'Unknown error'}');
+          // API unreachable (null = network/timeout error, not an auth rejection)
+          if (result == null) {
+            debugError('[APP] API unreachable - network error');
+            return {
+              'success': false,
+              'reason': 'network_error',
+              'message': 'Unable to reach the MeshMapper server',
+            };
+          }
+
+          debugLog('[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
 
           // ============================================================
           // STAGE 2: Auth failed, attempt registration via signed contact_uri
@@ -888,8 +863,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             accuracyMeters: _currentPosition?.accuracy,
           );
 
-          if (registerResult == null || registerResult['success'] != true) {
-            debugError('[APP] Stage 2 failed: registration unsuccessful');
+          if (registerResult == null) {
+            debugError('[APP] Stage 2 failed: network error (API unreachable)');
+            return {
+              'success': false,
+              'reason': 'network_error',
+              'message': 'Unable to reach the MeshMapper server',
+            };
+          }
+
+          if (registerResult['success'] != true) {
+            debugError('[APP] Stage 2 failed: registration rejected by server');
             return {
               'success': false,
               'reason': 'registration_failed',
@@ -2789,6 +2773,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return 'Rate limited. Please slow down.';
       case 'maintenance':
         return 'Service is under maintenance. Try again later.';
+      case 'network_error':
+        return 'Unable to connect to the MeshMapper server. Please check your internet connection and try again.';
       default:
         return serverMessage ?? 'Unknown error occurred.';
     }
@@ -2968,18 +2954,46 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return distance >= _zoneCheckDistanceThreshold;
   }
 
+  /// Schedule a zone check retry with countdown timer for UI feedback
+  void _scheduleZoneCheckRetry({required int seconds, required String error, required String reason}) {
+    // Cancel any existing timers
+    _zoneCheckRetryTimer?.cancel();
+    _zoneCheckCountdownTimer?.cancel();
+
+    _zoneCheckError = error;
+    _zoneCheckErrorReason = reason;
+    _zoneCheckRetryCountdown = seconds;
+    notifyListeners();
+
+    // Single timer: ticks every 1s, retries at 0
+    _zoneCheckCountdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _zoneCheckRetryCountdown--;
+      notifyListeners();
+      if (_zoneCheckRetryCountdown <= 0) {
+        _clearZoneCheckError();
+        checkZoneStatus();
+      }
+    });
+  }
+
+  /// Clear zone check error state and cancel retry timers
+  void _clearZoneCheckError() {
+    _zoneCheckRetryTimer?.cancel();
+    _zoneCheckCountdownTimer?.cancel();
+    _zoneCheckRetryTimer = null;
+    _zoneCheckCountdownTimer = null;
+    _zoneCheckError = null;
+    _zoneCheckErrorReason = null;
+    _zoneCheckRetryCountdown = 0;
+    // Don't notifyListeners here — caller will do it or checkZoneStatus will
+  }
+
   /// Check zone status via API
   /// Should be called on app launch and every 100m of GPS movement while disconnected
   Future<void> checkZoneStatus() async {
     debugLog('[GEOFENCE] checkZoneStatus() called');
     debugLog('[GEOFENCE] Pre-check state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
-        'hasInternet=$_hasInternet, hasPosition=${_currentPosition != null}, gpsStatus=$_gpsStatus');
-
-    // Skip if no internet (avoids stuck "Checking..." state)
-    if (!_hasInternet) {
-      debugLog('[GEOFENCE] Skipping zone check: no internet (hasInternet=$_hasInternet)');
-      return;
-    }
+        'hasPosition=${_currentPosition != null}, gpsStatus=$_gpsStatus');
 
     if (_currentPosition == null) {
       debugLog('[GEOFENCE] Cannot check zone status: no GPS position (gpsStatus=$_gpsStatus)');
@@ -2993,6 +3007,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     debugLog('[GEOFENCE] Starting zone check - setting isCheckingZone=true (previous inZone=$_inZone)');
     _isCheckingZone = true;
+    _clearZoneCheckError();
     notifyListeners();
 
     try {
@@ -3010,6 +3025,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       if (result == null) {
         debugError('[GEOFENCE] Zone status check failed: no response from API');
+        _scheduleZoneCheckRetry(
+          seconds: 5,
+          error: 'Verify your internet connection',
+          reason: 'network',
+        );
         return;
       }
 
@@ -3034,7 +3054,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       final success = result['success'] == true;
       if (!success) {
-        debugError('[GEOFENCE] Zone status check failed: ${result['message']}');
+        final reason = result['reason'] as String?;
+        final message = result['message'] as String? ?? 'Zone status check failed';
+        debugError('[GEOFENCE] Zone status check failed: reason=$reason, message=$message');
+
+        if (reason == 'gps_inaccurate') {
+          logError('GPS Accuracy Error\n$message');
+          _scheduleZoneCheckRetry(seconds: 5, error: message, reason: 'gps_inaccurate');
+        } else if (reason == 'gps_stale') {
+          logError('GPS Stale Error\n$message');
+          _scheduleZoneCheckRetry(seconds: 5, error: message, reason: 'gps_stale');
+        } else {
+          // 500 server errors, database errors, or unknown failures
+          _scheduleZoneCheckRetry(seconds: 15, error: 'MeshMapper server error', reason: 'server_error');
+        }
+
         return;
       }
 
@@ -3785,11 +3819,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _noiseFloorSubscription?.cancel();
     _batterySubscription?.cancel();
     _maintenanceCheckTimer?.cancel();
+    _zoneCheckRetryTimer?.cancel();
+    _zoneCheckCountdownTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
     _pingService?.dispose();
     _gpsService.dispose();
-    _connectivityService.dispose();
     _apiQueueService.dispose();
     _offlineSessionService.dispose();
     _apiService.dispose();

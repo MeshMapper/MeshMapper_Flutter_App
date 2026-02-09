@@ -76,7 +76,8 @@ void main() async {
 /// Load theme mode from Hive before app starts to avoid flash of wrong theme
 Future<String> _loadInitialThemeMode() async {
   try {
-    final box = await Hive.openBox('user_preferences');
+    final box = await Hive.openBox('user_preferences')
+        .timeout(const Duration(seconds: 5));
     final json = box.get('preferences');
     if (json != null && json is Map) {
       final themeMode = json['themeMode'] as String?;
@@ -85,7 +86,13 @@ Future<String> _loadInitialThemeMode() async {
       }
     }
   } catch (e) {
-    debugLog('[APP] Failed to load initial theme: $e');
+    debugLog('[HIVE] Failed to load initial theme: $e - deleting corrupt box');
+    // Delete corrupt box so AppStateProvider gets a clean start
+    try {
+      await Hive.deleteBoxFromDisk('user_preferences');
+    } catch (_) {
+      // Ignore delete errors
+    }
   }
   return 'dark'; // Default to dark mode
 }

@@ -1478,6 +1478,32 @@ class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
     );
   }
 
+  void _showDisableDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Disable Background Location'),
+        content: const Text(
+          'Background location can only be disabled through your device\'s Settings app.\n\n'
+          'Go to Settings > Location and change permission to "While Using" or "Never".',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Geolocator.openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return SwitchListTile(
@@ -1521,7 +1547,7 @@ class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
                 _requestPermission();
               } else {
                 // Can't revoke - direct to settings
-                _showPermissionDeniedDialog();
+                _showDisableDialog();
               }
             },
     );

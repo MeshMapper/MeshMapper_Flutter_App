@@ -112,19 +112,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               icon: const Icon(Icons.bluetooth_searching),
               label: Text(appState.offlineMode
                   ? 'Scan'
-                  : !appState.hasInternet
-                      ? 'No Internet'
-                      : appState.gpsStatus == GpsStatus.disabled
-                          ? 'GPS Disabled'
-                          : appState.gpsStatus == GpsStatus.permissionDenied
-                              ? 'GPS Required'
-                              : appState.isCheckingZone
-                                  ? 'Checking Zone...'
-                                  : appState.inZone == true
-                                      ? 'Scan'
-                                      : appState.inZone == false
-                                          ? 'Outside Zone'
-                                          : 'Checking Zone...'),
+                  : appState.gpsStatus == GpsStatus.disabled
+                      ? 'GPS Disabled'
+                      : appState.gpsStatus == GpsStatus.permissionDenied
+                          ? 'GPS Required'
+                          : appState.isCheckingZone
+                              ? 'Checking Zone...'
+                              : appState.inZone == true
+                                  ? 'Scan'
+                                  : appState.inZone == false
+                                      ? 'Outside Zone'
+                                      : 'Checking Zone...'),
               backgroundColor: canScan ? null : Colors.grey,
             );
     }
@@ -979,11 +977,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationIcon = Icons.gps_off;
       locationText = '-';
       locationColor = Colors.grey;
-    // No internet: show clear indicator
-    } else if (!appState.hasInternet) {
-      locationIcon = Icons.wifi_off;
-      locationText = 'No Internet';
-      locationColor = Colors.red;
     // Check maintenance mode
     } else if (appState.maintenanceMode) {
       locationIcon = Icons.engineering;
@@ -1006,7 +999,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationColor = Colors.orange;
     } else {
       locationIcon = Icons.gps_not_fixed;
-      locationText = 'GPS...';
+      locationText = '...';
       locationColor = Colors.grey;
     }
 
@@ -1259,24 +1252,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       );
     }
 
-    // Show no internet message (but NOT when offline mode is enabled)
-    if (!appState.hasInternet && !appState.offlineMode) {
-      return Column(
-        children: [
-          _buildZoneStatusBar(context, appState),
-          Expanded(
-            child: _buildMessageContent(
-              context: context,
-              icon: Icons.wifi_off,
-              iconColor: Colors.red.withValues(alpha: 0.7),
-              title: 'No Internet Connection',
-              message: 'Please connect to the internet to check zone availability and start wardriving.\n\nAlternatively, enable Offline Mode in Settings to wardrive without internet.',
-            ),
-          ),
-        ],
-      );
-    }
-
     // Show onboarding message when outside zone (but NOT when offline mode is enabled)
     if (appState.inZone == false && !appState.offlineMode) {
       // Build message with nearest zone info if available
@@ -1306,6 +1281,44 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 icon: const Icon(Icons.open_in_new, size: 18),
                 label: const Text('Request Region Onboarding'),
               ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Show zone checking status on initial startup (before zone is known)
+    if (appState.inZone == null && !appState.offlineMode) {
+      if (appState.zoneCheckError != null) {
+        // Zone check failed — show error with countdown
+        final countdown = appState.zoneCheckRetryCountdown;
+        return Column(
+          children: [
+            _buildZoneStatusBar(context, appState),
+            Expanded(
+              child: _buildMessageContent(
+                context: context,
+                icon: Icons.cloud_off,
+                iconColor: Colors.orange.withValues(alpha: 0.7),
+                title: 'Zone Check Failed',
+                message: '${appState.zoneCheckError}\n\nChecking again in ${countdown}s...',
+              ),
+            ),
+          ],
+        );
+      }
+
+      // Zone check in progress or waiting for GPS
+      return Column(
+        children: [
+          _buildZoneStatusBar(context, appState),
+          Expanded(
+            child: _buildMessageContent(
+              context: context,
+              icon: Icons.location_searching,
+              iconColor: Colors.blue.withValues(alpha: 0.7),
+              title: 'Checking MeshMapper Zone...',
+              message: 'Verifying your location with MeshMapper',
             ),
           ),
         ],
@@ -1467,13 +1480,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 icon: const Icon(Icons.bluetooth_connected),
                 label: Text(canConnect
                     ? 'Reconnect'
-                    : !appState.hasInternet
-                        ? 'No Internet'
-                        : appState.maintenanceMode
-                            ? 'Maintenance'
-                            : appState.isCheckingZone
-                                ? 'Checking Zone...'
-                                : 'Outside Zone'),
+                    : appState.maintenanceMode
+                        ? 'Maintenance'
+                        : appState.isCheckingZone
+                            ? 'Checking Zone...'
+                            : 'Outside Zone'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: canConnect
                       ? Theme.of(context).colorScheme.primary

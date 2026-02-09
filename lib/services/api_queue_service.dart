@@ -26,6 +26,7 @@ class ApiQueueService {
   Box<ApiQueueItem>? _box;
   Timer? _batchTimer;
   bool _isUploading = false;
+  bool _isRecovering = false;
 
   // Offline mode
   bool offlineMode = false;
@@ -68,9 +69,14 @@ class ApiQueueService {
 
     // ALWAYS START FRESH - clear any leftover pings from previous sessions
     // Pings without a valid session cannot be uploaded, so delete them
-    if (_box != null && _box!.isNotEmpty) {
-      debugLog('[API QUEUE] Clearing ${_box!.length} stale items from previous session');
-      await _box!.clear();
+    try {
+      if (_box != null && _box!.isNotEmpty) {
+        debugLog('[API QUEUE] Clearing ${_box!.length} stale items from previous session');
+        await _box!.clear();
+      }
+    } catch (e) {
+      debugError('[API QUEUE] Failed to clear stale items: $e - recovering');
+      await _recoverBox();
     }
     _rxBuffer.clear();
     _offlinePings.clear();
@@ -126,8 +132,82 @@ class ApiQueueService {
     }
   }
 
+  /// Recover from runtime Hive corruption by closing, deleting, and reopening the box
+  Future<void> _recoverBox() async {
+    if (_isRecovering) {
+      debugLog('[API QUEUE] Recovery already in progress, skipping');
+      return;
+    }
+    _isRecovering = true;
+
+    try {
+      debugLog('[API QUEUE] Runtime corruption detected - recovering box "$_boxName"...');
+
+      // Close the corrupt box
+      try {
+        await _box?.close();
+      } catch (_) {
+        // Ignore close errors on corrupt box
+      }
+
+      // Delete from disk and reopen
+      await Hive.deleteBoxFromDisk(_boxName);
+      onStorageCleanup?.call('Queue storage was corrupted and has been reset');
+
+      final box = await Hive.openBox<ApiQueueItem>(_boxName)
+          .timeout(const Duration(seconds: 5));
+      _box = box;
+      debugLog('[API QUEUE] Box recovered successfully');
+    } catch (e) {
+      debugError('[API QUEUE] Runtime recovery failed: $e - operating without persistence');
+      _box = null;
+      onPersistenceError?.call('Queue storage unavailable - pings will not persist if app closes');
+    } finally {
+      _isRecovering = false;
+    }
+  }
+
+  /// Wrap a write operation with corruption recovery and single retry
+  Future<bool> _safeWrite(Future<void> Function(Box<ApiQueueItem> box) operation) async {
+    final box = _box;
+    if (box == null) return false;
+
+    try {
+      await operation(box);
+      return true;
+    } catch (e) {
+      debugError('[API QUEUE] Write failed: $e - attempting recovery');
+      await _recoverBox();
+      // Retry once after recovery
+      final retryBox = _box;
+      if (retryBox == null) return false;
+      try {
+        await operation(retryBox);
+        return true;
+      } catch (e2) {
+        debugError('[API QUEUE] Write failed after recovery: $e2');
+        return false;
+      }
+    }
+  }
+
+  /// Wrap a read operation with corruption recovery, returning fallback on failure
+  T _safeRead<T>(T Function(Box<ApiQueueItem> box) operation, T fallback) {
+    final box = _box;
+    if (box == null) return fallback;
+
+    try {
+      return operation(box);
+    } catch (e) {
+      debugError('[API QUEUE] Read failed: $e - scheduling recovery');
+      // Schedule async recovery, return fallback immediately
+      _recoverBox();
+      return fallback;
+    }
+  }
+
   /// Get current queue size
-  int get queueSize => _box?.length ?? 0;
+  int get queueSize => _safeRead((box) => box.length, 0);
 
   /// Enqueue a TX ping
   /// heardRepeats format: "4e(12.25),77(12.25)" or "None"
@@ -155,7 +235,7 @@ class ApiQueueService {
       return;
     }
 
-    await _box?.add(item);
+    await _safeWrite((box) => box.add(item));
     debugLog('[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
     onQueueUpdated?.call(queueSize);
     _checkBatchUpload();
@@ -236,7 +316,7 @@ class ApiQueueService {
       return;
     }
 
-    await _box?.add(item);
+    await _safeWrite((box) => box.add(item));
     debugLog('[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
     onQueueUpdated?.call(queueSize);
     _checkBatchUpload();
@@ -258,7 +338,8 @@ class ApiQueueService {
 
     // Now add items to the box
     for (final item in itemsToFlush) {
-      await _box?.add(item);
+      final ok = await _safeWrite((box) => box.add(item));
+      if (!ok) break;
     }
 
     debugLog('[API QUEUE] Flushed ${itemsToFlush.length} RX items from $bufferSize repeaters to queue');
@@ -302,7 +383,7 @@ class ApiQueueService {
       debugLog('[API QUEUE] Upload skipped: already uploading');
       return;
     }
-    if (_box == null || _box!.isEmpty) {
+    if (_safeRead((box) => box.isEmpty, true)) {
       debugLog('[API QUEUE] Upload skipped: queue empty');
       return;
     }
@@ -311,20 +392,20 @@ class ApiQueueService {
 
     try {
       // Log if TX items are waiting in hold period
-      final pendingTx = _box!.values.where((item) =>
-          item.type == 'TX' && !item.isUploadEligible).length;
+      final pendingTx = _safeRead((box) => box.values.where((item) =>
+          item.type == 'TX' && !item.isUploadEligible).length, 0);
       if (pendingTx > 0) {
         debugLog('[API QUEUE] $pendingTx TX items still in hold period');
       }
 
       // Get items ready for upload (must pass retry, retry delay, AND upload eligibility checks)
-      final items = _box!.values
+      final items = _safeRead((box) => box.values
           .where((item) =>
               item.retryCount < _maxRetries &&
               item.isReadyForRetry &&
               item.isUploadEligible)
           .take(_batchSize)
-          .toList();
+          .toList(), <ApiQueueItem>[]);
 
       if (items.isEmpty) {
         debugLog('[API QUEUE] Upload skipped: no items ready for upload');
@@ -383,25 +464,30 @@ class ApiQueueService {
     await _flushRxBuffer();
 
     // Check if any TX items are still in hold period
-    if (_box != null && _box!.isNotEmpty) {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      int maxWaitMs = 0;
+    try {
+      if (_box != null && _box!.isNotEmpty) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        int maxWaitMs = 0;
 
-      for (final item in _box!.values) {
-        if (item.type == 'TX' && !item.isUploadEligible) {
-          final waitMs = item.canUploadAfter - now;
-          if (waitMs > maxWaitMs) {
-            maxWaitMs = waitMs;
+        for (final item in _box!.values) {
+          if (item.type == 'TX' && !item.isUploadEligible) {
+            final waitMs = item.canUploadAfter - now;
+            if (waitMs > maxWaitMs) {
+              maxWaitMs = waitMs;
+            }
           }
         }
-      }
 
-      if (maxWaitMs > 0) {
-        // Cap wait time at 6 seconds (slightly more than 5s hold period)
-        final cappedWaitMs = maxWaitMs.clamp(0, 6000);
-        debugLog('[API QUEUE] Waiting ${cappedWaitMs}ms for TX hold period to expire');
-        await Future.delayed(Duration(milliseconds: cappedWaitMs));
+        if (maxWaitMs > 0) {
+          // Cap wait time at 6 seconds (slightly more than 5s hold period)
+          final cappedWaitMs = maxWaitMs.clamp(0, 6000);
+          debugLog('[API QUEUE] Waiting ${cappedWaitMs}ms for TX hold period to expire');
+          await Future.delayed(Duration(milliseconds: cappedWaitMs));
+        }
       }
+    } catch (e) {
+      debugError('[API QUEUE] Failed to check hold period: $e - skipping wait');
+      await _recoverBox();
     }
 
     await _uploadBatch();
@@ -409,7 +495,7 @@ class ApiQueueService {
 
   /// Clear all queued items
   Future<void> clear() async {
-    await _box?.clear();
+    await _safeWrite((box) => box.clear());
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
   }
@@ -427,7 +513,7 @@ class ApiQueueService {
     if (count > 0) {
       debugLog('[API QUEUE] Clearing $count items on disconnect (queue: $queueSize, rxBuffer: ${_rxBuffer.length})');
     }
-    await _box?.clear();
+    await _safeWrite((box) => box.clear());
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
   }
@@ -440,7 +526,7 @@ class ApiQueueService {
     if (count > 0) {
       debugLog('[API QUEUE] Clearing $count stale items before connect');
     }
-    await _box?.clear();
+    await _safeWrite((box) => box.clear());
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
 
@@ -453,9 +539,10 @@ class ApiQueueService {
 
   /// Get failed items (exceeded max retries)
   List<ApiQueueItem> get failedItems {
-    return _box?.values
-        .where((item) => item.retryCount >= _maxRetries)
-        .toList() ?? [];
+    return _safeRead(
+      (box) => box.values.where((item) => item.retryCount >= _maxRetries).toList(),
+      <ApiQueueItem>[],
+    );
   }
 
   /// Get accumulated offline pings and clear the accumulator
