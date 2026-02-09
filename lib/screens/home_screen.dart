@@ -76,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // In landscape: no AppBar, everything on map overlays
     if (isLandscape) {
       return Scaffold(
-        body: _buildLayout(appState),
+        body: _buildLayout(appState, isLandscape: true),
       );
     }
 
@@ -111,7 +111,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(width: 8),
         ],
       ),
-      body: _buildLayout(appState),
+      body: _buildLayout(appState, isLandscape: false),
       floatingActionButton: !_showControlPanel
           ? FloatingActionButton.extended(
               onPressed: () => setState(() => _showControlPanel = true),
@@ -339,34 +339,41 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Unified layout: orientation-aware with bottom panel (portrait) or side panel (landscape)
-  Widget _buildLayout(AppStateProvider appState) {
-    return OrientationBuilder(
-      builder: (context, orientation) {
-        final isLandscape = orientation == Orientation.landscape;
+  /// Unified layout: single widget tree keeps MapWidget at stable position
+  /// across orientation changes, preventing state loss and tile reloads.
+  Widget _buildLayout(AppStateProvider appState, {required bool isLandscape}) {
+    final safePadding = MediaQuery.of(context).padding;
+    final leftInset = safePadding.left + 8;
 
-        if (isLandscape) {
-          return _buildLandscapeLayout(appState);
-        } else {
-          return _buildPortraitLayout(appState);
-        }
-      },
-    );
-  }
-
-  /// Portrait layout: StatusBar on top, map below, bottom control panel
-  Widget _buildPortraitLayout(AppStateProvider appState) {
     return Stack(
       children: [
-        // Map fills entire screen
+        // Child[0]: Column — MapWidget always at stable tree position
+        // StatusBar swaps with SizedBox.shrink() but MapWidget stays at children[1]
         Column(
           children: [
-            const StatusBar(),
-            Expanded(child: MapWidget(bottomPaddingPixels: _getControlPanelHeight())),
+            if (!isLandscape) const StatusBar() else const SizedBox.shrink(),
+            Expanded(
+              child: MapWidget(
+                bottomPaddingPixels: isLandscape ? 0 : _getControlPanelHeight(),
+                mapControlsExpanded: isLandscape ? _mapControlsExpanded : null,
+                onMapControlsToggle: isLandscape ? _toggleMapControls : null,
+              ),
+            ),
           ],
         ),
 
-        // Reconnecting overlay
+        // Landscape: floating status bar overlay
+        if (isLandscape)
+          Positioned(
+            top: 16,
+            left: leftInset + 72,
+            right: 60,
+            child: Center(
+              child: _buildFloatingStatusBar(appState),
+            ),
+          ),
+
+        // Reconnecting overlay (both orientations)
         if (appState.isAutoReconnecting)
           Positioned.fill(
             child: Container(
@@ -377,8 +384,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-        // Control panel overlay (always visible in portrait)
-        Positioned(
+        // Portrait: bottom control panel
+        if (!isLandscape)
+          Positioned(
             bottom: 0,
             left: 0,
             right: 0,
@@ -386,55 +394,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? _buildCompactControlPanel()
                 : _buildControlPanel(),
           ),
-      ],
-    );
-  }
 
-  /// Landscape layout: No AppBar, floating overlays for status and controls
-  Widget _buildLandscapeLayout(AppStateProvider appState) {
-    // Get safe area padding for dynamic island/notch
-    final safePadding = MediaQuery.of(context).padding;
-    final leftInset = safePadding.left + 8; // Dynamic island + margin
-
-    return Stack(
-      children: [
-        // Map takes full screen - pass map controls state for mutual exclusivity
-        MapWidget(
-          mapControlsExpanded: _mapControlsExpanded,
-          onMapControlsToggle: _toggleMapControls,
-        ),
-
-        // Floating status bar at top center
-        Positioned(
-          top: 16,
-          left: leftInset + 72, // Leave space for GPS info on left
-          right: 60, // Leave space for map controls toggle on right
-          child: Center(
-            child: _buildFloatingStatusBar(appState),
-          ),
-        ),
-
-        // Reconnecting overlay
-        if (appState.isAutoReconnecting)
-          Positioned.fill(
-            child: Container(
-              color: Colors.black54,
-              child: Center(
-                child: _buildReconnectingOverlay(appState),
-              ),
-            ),
-          ),
-
-        // Floating control panel on left side, near bottom
-        if (_showControlPanel)
+        // Landscape: side control panel or FAB
+        if (isLandscape && _showControlPanel)
           Positioned(
             bottom: 16,
             left: leftInset,
             child: _buildLandscapeControlPanel(appState),
           ),
-
-        // FAB to open control panel when closed (left side)
-        if (!_showControlPanel)
+        if (isLandscape && !_showControlPanel)
           Positioned(
             bottom: 16,
             left: leftInset,

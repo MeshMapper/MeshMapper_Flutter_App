@@ -178,16 +178,6 @@ class PacketValidator {
     return printableCount / text.length;
   }
 
-  /// Check if text contains only strict ASCII (32-126)
-  static bool isStrictAscii(String text) {
-    for (int i = 0; i < text.length; i++) {
-      final code = text.codeUnitAt(i);
-      if (code < 32 || code > 126) {
-        return false;
-      }
-    }
-    return true;
-  }
 
   /// Parse ADVERT packet name field
   /// Reference: parseAdvertName() in wardrive.js lines 3353-3419
@@ -266,15 +256,6 @@ class PacketValidator {
         return AdvertNameResult(
           valid: false,
           reason: 'name not printable',
-          name: name,
-        );
-      }
-
-      // Validate name is strict ASCII
-      if (!isStrictAscii(name)) {
-        return AdvertNameResult(
-          valid: false,
-          reason: 'name contains non-ASCII chars',
           name: name,
         );
       }

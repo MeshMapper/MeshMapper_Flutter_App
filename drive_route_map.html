@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MeshMapper Drive Route - Feb 8, 2026</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; }
+#map { width: 100%; height: 70vh; border-bottom: 2px solid #16213e; }
+.info-panel { padding: 16px 20px; background: #16213e; }
+.info-panel h1 { font-size: 18px; color: #e94560; margin-bottom: 8px; }
+.info-panel p { font-size: 13px; color: #a0a0b8; line-height: 1.5; margin-bottom: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.legend-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); }
+.legend-line { width: 24px; height: 3px; border-radius: 2px; }
+.stats { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; }
+.stat { background: #1a1a2e; padding: 8px 14px; border-radius: 8px; }
+.stat-val { font-size: 18px; font-weight: 700; color: #e94560; }
+.stat-label { font-size: 11px; color: #808098; text-transform: uppercase; letter-spacing: 0.5px; }
+.session-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-right: 6px; }
+.s1 { background: #0f3460; color: #4fc3f7; }
+.s2 { background: #1b4332; color: #80ed99; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="info-panel">
+  <h1>MeshMapper Drive Route, Feb 8 2026</h1>
+  <p>Hwy 99 to Alex Fraser Bridge corridor. Mode: <strong style="color:#e94560;">Active</strong> (not Passive as intended)</p>
+  <p><span class="session-badge s1">Session 1</span> YVR-20260208-0008 (13:54 - 14:15) <span class="session-badge s2">Session 2</span> YVR-20260208-0009 (15:16 - 15:38)</p>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-line" style="background:#4fc3f7;"></div> GPS Track (Session 1)</div>
+    <div class="legend-item"><div class="legend-line" style="background:#80ed99;"></div> GPS Track (Session 2)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ff6b6b;"></div> Repeater 1B</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ffd93d;"></div> Repeater 1C</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#6bcb77;"></div> Repeater 28</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#4d96ff;"></div> Repeater 26</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ff922b;"></div> Repeater 6B</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#cc5de8;"></div> Repeater 56</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#20c997;"></div> Others (07, 43, AB)</div>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-val">116</div><div class="stat-label">TX Pings Sent</div></div>
+    <div class="stat"><div class="stat-val">14</div><div class="stat-label">TX Got Echoes</div></div>
+    <div class="stat"><div class="stat-val">72</div><div class="stat-label">TX No Response</div></div>
+    <div class="stat"><div class="stat-val">13</div><div class="stat-label">TX Blocked (close)</div></div>
+    <div class="stat"><div class="stat-val">49</div><div class="stat-label">RX Pins</div></div>
+    <div class="stat"><div class="stat-val">9</div><div class="stat-label">Repeaters Heard</div></div>
+    <div class="stat"><div class="stat-val">71</div><div class="stat-label">Packets Dropped</div></div>
+    <div class="stat"><div class="stat-val">583</div><div class="stat-label">GPS Points</div></div>
+  </div>
+  <div style="margin-top:12px; display:flex; gap:16px; flex-wrap:wrap;">
+    <div style="background:#1a1a2e; padding:8px 14px; border-radius:8px; flex:1; min-width:200px;">
+      <div style="font-size:12px; color:#4fc3f7; font-weight:600; margin-bottom:4px;">Session 1 (13:54 - 14:15)</div>
+      <div style="font-size:11px; color:#a0a0b8;">56 TX pings, 5 heard echoes, 37 no response, 13 blocked (too close)</div>
+    </div>
+    <div style="background:#1a1a2e; padding:8px 14px; border-radius:8px; flex:1; min-width:200px;">
+      <div style="font-size:12px; color:#80ed99; font-weight:600; margin-bottom:4px;">Session 2 (15:16 - 15:38)</div>
+      <div style="font-size:11px; color:#a0a0b8;">60 TX pings, 9 heard echoes, 35 no response, 0 blocked</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const map = L.map('map', { zoomControl: true }).setView([49.105, -123.0], 12);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap &copy; CARTO',
+  maxZoom: 19
+}).addTo(map);
+
+// GPS track points (in order from debug log)
+const gpsPoints = [
+[49.12916,-123.19316],[49.12899,-123.19308],[49.12917,-123.19319],[49.12967,-123.19192],[49.13180,-123.19178],[49.12926,-123.18930],[49.12926,-123.18862],[49.12927,-123.18785],[49.12926,-123.18738],[49.12940,-123.18717],[49.12986,-123.18717],[49.13039,-123.18717],[49.13097,-123.18717],[49.13166,-123.18719],[49.13220,-123.18723],[49.13247,-123.18721],[49.13263,-123.18723],[49.13276,-123.18723],[49.13306,-123.18723],[49.13329,-123.18658],[49.13330,-123.18567],[49.13330,-123.18470],[49.13329,-123.18377],[49.13329,-123.18284],[49.13336,-123.18160],[49.13346,-123.18028],[49.13347,-123.17924],[49.13347,-123.17821],[49.13348,-123.17725],[49.13349,-123.17586],[49.13349,-123.17489],[49.13349,-123.17396],[49.13349,-123.17295],[49.13349,-123.17195],[49.13349,-123.17092],[49.13349,-123.16989],[49.13349,-123.16887],[49.13349,-123.16784],[49.13349,-123.16681],[49.13349,-123.16579],[49.13349,-123.16476],[49.13349,-123.16377],[49.13349,-123.16274],[49.13349,-123.16172],[49.13349,-123.16072],[49.13349,-123.15970],[49.13349,-123.15867],[49.13349,-123.15765],[49.13349,-123.15660],[49.13349,-123.15560],[49.13349,-123.15457],[49.13349,-123.15355],[49.13349,-123.15254],[49.13349,-123.15149],[49.13349,-123.15046],[49.13349,-123.14943],[49.13349,-123.14850],[49.13349,-123.14749],[49.13349,-123.14646],[49.13349,-123.14543],[49.13349,-123.14440],[49.13349,-123.14336],[49.13349,-123.14234],[49.13349,-123.14131],[49.13349,-123.14028],[49.13349,-123.13919],[49.13349,-123.13813],[49.13349,-123.13707],[49.13349,-123.13601],[49.13349,-123.13505],[49.13349,-123.13400],[49.13349,-123.13296],[49.13349,-123.13189],[49.13349,-123.13086],[49.13349,-123.12983],[49.13349,-123.12880],[49.13349,-123.12782],[49.13349,-123.12636],[49.13344,-123.12268],[49.13342,-123.12113],[49.13341,-123.11995],[49.13341,-123.11892],[49.13340,-123.11790],[49.13338,-123.11658],[49.13337,-123.11550],[49.13335,-123.11445],[49.13334,-123.11340],[49.13333,-123.11235],[49.13332,-123.11100],[49.13331,-123.10963],[49.13331,-123.10862],[49.13330,-123.10756],[49.13330,-123.10650],[49.13330,-123.10545],[49.13330,-123.10440],[49.13330,-123.10339],[49.13330,-123.10235],[49.13330,-123.10131],[49.13330,-123.10027],[49.13330,-123.09928],[49.13330,-123.09820],[49.13330,-123.09717],[49.13330,-123.09559],[49.13330,-123.09455],[49.13330,-123.09351],[49.13330,-123.09247],[49.13330,-123.09142],[49.13330,-123.09043],[49.13330,-123.08947],[49.13314,-123.08822],[49.13261,-123.08739],[49.13174,-123.08668],[49.13092,-123.08602],[49.13001,-123.08530],[49.12921,-123.08462],[49.12817,-123.08356],[49.12711,-123.08266],[49.12614,-123.08178],[49.12515,-123.08087],[49.12420,-123.07985],[49.12311,-123.07873],[49.12198,-123.07755],[49.12097,-123.07641],[49.11990,-123.07520],[49.11881,-123.07403],[49.11770,-123.07289],[49.11665,-123.07172],[49.11550,-123.07048],[49.11439,-123.06635],[49.11332,-123.06519],[49.11220,-123.06403],[49.11107,-123.06287],[49.10995,-123.06170],[49.10879,-123.06052],[49.10768,-123.05937],[49.10656,-123.05822],[49.10551,-123.05707],[49.10436,-123.05589],[49.10325,-123.05472],[49.10213,-123.05356],[49.10097,-123.04097],[49.09980,-123.03897],[49.09871,-123.03592],[49.09768,-123.03399],[49.09711,-123.03246],[49.09627,-123.03055],[49.09543,-123.02845],[49.09447,-123.02573],[49.09355,-123.02387],[49.09258,-123.02177],[49.09165,-123.01912],[49.09099,-123.00558],[49.09003,-123.00557],[49.09003,-123.00678],[49.09004,-123.00801],[49.09004,-123.00911],[49.09005,-123.01417],[49.09007,-123.01765],[49.08363,-123.02044],[49.08362,-123.02028]
+];
+
+// Session 2 GPS points (approximated from RX pin locations after gap)
+const gpsPointsS2 = [
+[49.08996,-122.99112],[49.08974,-122.96457],[49.09085,-122.95916],[49.09135,-122.95832],[49.09356,-122.94620],[49.09404,-122.94354],[49.09500,-122.93846],[49.09795,-122.91535],[49.10816,-122.85715],[49.10815,-122.84826],[49.10450,-122.82552],[49.10449,-122.82459],[49.10497,-122.80481]
+];
+
+// Draw GPS track lines
+L.polyline(gpsPoints, { color: '#4fc3f7', weight: 3, opacity: 0.8 }).addTo(map);
+L.polyline(gpsPointsS2, { color: '#80ed99', weight: 3, opacity: 0.8, dashArray: '8 6' }).addTo(map);
+
+// RX Pin data: [lat, lon, repeater, snr, rxCount, time]
+const rxPins = [
+  [49.13349,-123.12782,'1C',7.75,1,'13:57:35'],
+  [49.13349,-123.12636,'1C',9.0,2,'13:57:42'],
+  [49.13344,-123.12268,'1C',8.0,3,'13:58:20'],
+  [49.13330,-123.08947,'1B',6.25,4,'14:03:30'],
+  [49.12817,-123.08356,'1B',4.5,5,'14:04:43'],
+  [49.11332,-123.06519,'1B',3.5,6,'14:06:48'],
+  [49.10097,-123.04097,'1B',9.0,7,'14:07:54'],
+  [49.09711,-123.03246,'1B',9.5,8,'14:08:18'],
+  [49.09711,-123.03246,'1C',-1.75,9,'14:08:19'],
+  [49.09627,-123.03055,'1B',10.5,10,'14:08:21'],
+  [49.09099,-123.00558,'1B',7.0,11,'14:09:23'],
+  [49.09003,-123.00557,'28',5.25,12,'14:09:52'],
+  [49.09003,-123.00557,'1B',8.75,13,'14:09:54'],
+  [49.09003,-123.00678,'26',3.0,14,'14:09:57'],
+  [49.09003,-123.00678,'1B',10.25,15,'14:09:58'],
+  [49.09004,-123.00801,'6B',1.5,16,'14:10:03'],
+  [49.09004,-123.00911,'28',4.5,17,'14:10:11'],
+  [49.09005,-123.01417,'1B',7.75,18,'14:10:29'],
+  [49.09007,-123.01765,'1B',6.5,19,'14:10:43'],
+  [49.08363,-123.02044,'1B',10.0,20,'14:12:39'],
+  [49.08362,-123.02028,'56',7.75,21,'14:13:09'],
+  [49.08362,-123.02028,'1B',9.75,22,'14:13:22'],
+  [49.08362,-123.02028,'6B',7.25,23,'14:13:30'],
+  [49.08362,-123.02028,'56',8.0,24,'14:13:40'],
+  [49.08362,-123.02028,'1C',5.75,25,'14:13:48'],
+  [49.08362,-123.02028,'1B',10.5,26,'14:13:58'],
+  [49.08362,-123.02028,'56',8.5,27,'14:14:15'],
+  [49.08362,-123.02028,'6B',6.75,28,'14:14:26'],
+  [49.08362,-123.02028,'1C',4.25,29,'14:14:45'],
+  [49.08362,-123.02028,'1B',9.0,30,'14:14:47'],
+  [49.08996,-122.99112,'1B',8.25,31,'15:22:01'],
+  [49.08974,-122.96457,'1B',6.0,32,'15:23:26'],
+  [49.09085,-122.95916,'28',7.5,33,'15:23:51'],
+  [49.09135,-122.95832,'6B',5.25,34,'15:23:54'],
+  [49.09356,-122.94620,'56',8.75,35,'15:24:39'],
+  [49.09356,-122.94620,'1B',9.25,36,'15:24:40'],
+  [49.09404,-122.94354,'56',7.0,37,'15:24:53'],
+  [49.09500,-122.93846,'1B',8.0,38,'15:25:09'],
+  [49.09795,-122.91535,'1B',5.5,39,'15:26:31'],
+  [49.10816,-122.85715,'1B',7.25,40,'15:30:54'],
+  [49.10816,-122.85715,'07',4.0,41,'15:30:58'],
+  [49.10816,-122.85715,'26',6.5,42,'15:30:59'],
+  [49.10816,-122.85715,'43',3.75,43,'15:31:00'],
+  [49.10816,-122.85715,'AB',5.0,44,'15:31:02'],
+  [49.10815,-122.84826,'6B',6.25,45,'15:31:57'],
+  [49.10450,-122.82552,'6B',4.5,46,'15:33:26'],
+  [49.10449,-122.82459,'1B',7.0,47,'15:33:36'],
+  [49.10449,-122.82459,'6B',5.75,48,'15:33:37'],
+  [49.10497,-122.80481,'6B',3.25,49,'15:37:14']
+];
+
+const repeaterColors = {
+  '1B': '#ff6b6b', '1C': '#ffd93d', '28': '#6bcb77', '26': '#4d96ff',
+  '6B': '#ff922b', '56': '#cc5de8', '07': '#20c997', '43': '#20c997', 'AB': '#20c997'
+};
+
+function snrToRadius(snr) {
+  return Math.max(5, Math.min(14, 6 + snr * 0.7));
+}
+
+rxPins.forEach(p => {
+  const [lat, lon, rep, snr, count, time] = p;
+  const color = repeaterColors[rep] || '#888';
+  const session = count <= 30 ? 1 : 2;
+  L.circleMarker([lat, lon], {
+    radius: snrToRadius(snr),
+    fillColor: color,
+    color: '#fff',
+    weight: 1.5,
+    opacity: 0.9,
+    fillOpacity: 0.75
+  }).bindPopup(
+    `<div style="font-family:monospace;font-size:13px;">
+      <b style="color:${color}">Repeater ${rep}</b><br>
+      SNR: ${snr} dB<br>
+      Time: ${time}<br>
+      RX Pin #${count}<br>
+      Session ${session}
+    </div>`
+  ).addTo(map);
+});
+
+// Start marker
+L.marker([49.12916, -123.19316], {
+  icon: L.divIcon({
+    html: '<div style="background:#4fc3f7;color:#000;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;white-space:nowrap;">START</div>',
+    iconSize: [44, 20], iconAnchor: [22, 10]
+  })
+}).addTo(map);
+
+// End marker
+L.marker([49.10497, -122.80481], {
+  icon: L.divIcon({
+    html: '<div style="background:#80ed99;color:#000;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;white-space:nowrap;">END</div>',
+    iconSize: [34, 20], iconAnchor: [17, 10]
+  })
+}).addTo(map);
+
+// BLE disconnect marker
+L.marker([49.08362, -123.02028], {
+  icon: L.divIcon({
+    html: '<div style="background:#e94560;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap;">BLE DISCONNECT</div>',
+    iconSize: [90, 20], iconAnchor: [45, 10]
+  })
+}).addTo(map);
+
+// Fit bounds to all points
+const allPts = gpsPoints.concat(gpsPointsS2);
+map.fitBounds(L.latLngBounds(allPts.map(p => [p[0], p[1]])).pad(0.05));
+</script>
+</body>
+</html>
