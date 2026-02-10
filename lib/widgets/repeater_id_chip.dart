@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
+import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 
 /// A styled repeater ID text with a dotted underline hint that it's tappable.
@@ -62,7 +63,11 @@ class RepeaterIdChip extends StatelessWidget {
   ///
   /// Call this from the parent row's `InkWell.onTap` so the entire row is
   /// tappable, not just the tiny ID text.
-  static void showRepeaterPopup(BuildContext context, String repeaterId) {
+  ///
+  /// For DISC pings, pass [fullHexId] (the full public key hex) to enable
+  /// exact 4-byte matching against the repeater database instead of the
+  /// ambiguous 1-byte prefix match used for TX/RX pings.
+  static void showRepeaterPopup(BuildContext context, String repeaterId, {String? fullHexId}) {
     final appState = Provider.of<AppStateProvider>(context, listen: false);
     final repeaters = appState.repeaters;
 
@@ -81,8 +86,14 @@ class RepeaterIdChip extends StatelessWidget {
         ),
       );
     } else {
+      // DISC pings provide the full public key — match first 8 hex chars
+      // (4 bytes) against repeater hexId for exact identification.
+      // TX/RX pings only have 1-byte IDs so fall back to prefix matching.
+      final matchKey = fullHexId != null && fullHexId.length >= 8
+          ? fullHexId.substring(0, 8)
+          : repeaterId;
       final matches = repeaters
-          .where((r) => r.hexId.toLowerCase().startsWith(repeaterId.toLowerCase()))
+          .where((r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
           .toList();
 
       if (matches.isEmpty) {
@@ -188,6 +199,10 @@ class RepeaterIdChip extends StatelessWidget {
       final meters = GpsService.distanceBetween(
         position.latitude, position.longitude, repeater.lat, repeater.lon,
       );
+      debugLog('[UI] Distance to ${repeater.name}: '
+          'from (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}) '
+          'to (${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}) '
+          '= ${meters.toStringAsFixed(0)}m');
       final isImperial = Provider.of<AppStateProvider>(context, listen: false)
           .preferences
           .isImperial;

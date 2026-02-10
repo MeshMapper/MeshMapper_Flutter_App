@@ -57,19 +57,22 @@ class MarkerRepeaterInfoAdapter extends TypeAdapter<MarkerRepeaterInfo> {
       repeaterId: fields[0] as String,
       snr: fields[1] as double,
       rssi: fields[2] as int,
+      pubkeyHex: fields[3] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, MarkerRepeaterInfo obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(4)
       ..writeByte(0)
       ..write(obj.repeaterId)
       ..writeByte(1)
       ..write(obj.snr)
       ..writeByte(2)
-      ..write(obj.rssi);
+      ..write(obj.rssi)
+      ..writeByte(3)
+      ..write(obj.pubkeyHex);
   }
 
   @override

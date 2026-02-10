@@ -987,7 +987,7 @@ class _DiscLogTab extends StatelessWidget {
     }
 
     return InkWell(
-      onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId),
+      onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(

@@ -1223,6 +1223,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               repeaterId: n.repeaterId,
               snr: n.localSnr,
               rssi: n.localRssi,
+              pubkeyHex: n.pubkeyHex,
             )).toList();
           }
         }
@@ -1338,7 +1339,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       } else {
         _isAuthError = false;
-        _connectionError = errorStr.replaceFirst('Exception: ', '');
+        // Provide clean user-facing messages for common BLE errors
+        if (errorStr.contains('timeout') || errorStr.contains('Timeout') || errorStr.contains('timed out')) {
+          _connectionError = 'Bluetooth connection scan timed out';
+        } else {
+          _connectionError = errorStr.replaceFirst('Exception: ', '');
+        }
       }
       _connectionStep = ConnectionStep.error;
       notifyListeners();

@@ -927,6 +927,7 @@ class PingService {
           localSnr: node.localSnr,
           localRssi: node.localRssi,
           remoteSnr: node.remoteSnr,
+          pubkeyHex: node.pubkeyFull,
         );
         if (isNew) {
           _lastDiscPing!.discoveredNodes.add(nodeEntry);

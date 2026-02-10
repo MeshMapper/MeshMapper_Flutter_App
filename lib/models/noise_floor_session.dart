@@ -49,10 +49,16 @@ class MarkerRepeaterInfo extends HiveObject {
   @HiveField(2)
   final int rssi;
 
+  /// Full public key hex from DISC responses (64 chars) for exact repeater matching.
+  /// Null for TX/RX pings which only have 1-byte IDs.
+  @HiveField(3)
+  final String? pubkeyHex;
+
   MarkerRepeaterInfo({
     required this.repeaterId,
     required this.snr,
     required this.rssi,
+    this.pubkeyHex,
   });
 }
 

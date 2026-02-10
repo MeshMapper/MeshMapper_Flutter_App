@@ -2291,7 +2291,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       }
 
                       return InkWell(
-                        onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId),
+                        onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           child: Row(

@@ -126,7 +126,6 @@ class TxTracker {
       // VALIDATION STEP 2.5: Check user carpeater filter
       if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(pathHex.toUpperCase())) {
         debugLog('[TX LOG] ❌ DROPPED: Repeater $pathHex ignored by user carpeater filter');
-        onCarpeaterDrop?.call(pathHex, 'User carpeater filter');
         return false;
       }
 

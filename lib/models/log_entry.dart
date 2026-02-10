@@ -202,6 +202,7 @@ class DiscoveredNodeEntry {
   final double localSnr;        // SNR as seen by local device (dB)
   final int localRssi;          // RSSI as seen by local device (dBm)
   final double remoteSnr;       // SNR as seen by remote node (dB)
+  final String? pubkeyHex;      // Full public key hex (64 chars) for exact repeater matching
 
   DiscoveredNodeEntry({
     required this.repeaterId,
@@ -209,6 +210,7 @@ class DiscoveredNodeEntry {
     required this.localSnr,
     required this.localRssi,
     required this.remoteSnr,
+    this.pubkeyHex,
   });
 
   /// Get short display label: "(R)" for REPEATER, "(RM)" for ROOM

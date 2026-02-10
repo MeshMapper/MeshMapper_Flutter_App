@@ -499,7 +499,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     }
 
     return InkWell(
-      onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId),
+      onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId, fullHexId: repeater.pubkeyHex),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(
