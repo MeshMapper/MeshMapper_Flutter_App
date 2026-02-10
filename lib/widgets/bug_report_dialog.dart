@@ -274,6 +274,7 @@ class _BugReportSheetState extends State<BugReportSheet> {
                 const SizedBox(height: 8),
                 TextFormField(
                   controller: _usernameController,
+                  textCapitalization: TextCapitalization.words,
                   decoration: _buildInputDecoration(
                     theme,
                     hintText: 'Your MeshCore companion name',
@@ -288,6 +289,7 @@ class _BugReportSheetState extends State<BugReportSheet> {
                 const SizedBox(height: 8),
                 TextFormField(
                   controller: _titleController,
+                  textCapitalization: TextCapitalization.sentences,
                   decoration: _buildInputDecoration(
                     theme,
                     hintText: 'Brief summary of the issue',
@@ -311,6 +313,7 @@ class _BugReportSheetState extends State<BugReportSheet> {
                 const SizedBox(height: 8),
                 TextFormField(
                   controller: _descriptionController,
+                  textCapitalization: TextCapitalization.sentences,
                   decoration: _buildInputDecoration(
                     theme,
                     hintText: 'Describe the issue or feature request...',

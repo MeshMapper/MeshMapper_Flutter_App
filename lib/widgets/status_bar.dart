@@ -156,7 +156,7 @@ class _StatusBarState extends State<StatusBar> {
         return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, Colors.blue);
 
       case 'disc':
-        return ('Discovery Requests', 'Discovery request packets we have sent out.', Icons.radar, const Color(0xFF7B68EE));
+        return ('Discovery Requests', 'Discovery requests we have heard a response for.', Icons.radar, const Color(0xFF7B68EE));
 
       case 'upload':
         return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
