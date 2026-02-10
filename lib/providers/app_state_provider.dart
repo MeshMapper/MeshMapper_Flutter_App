@@ -830,6 +830,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
           debugLog('[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
 
+          // If Stage 1 failed due to GPS issues, Stage 2 will also fail with same bad data
+          final stage1Reason = result['reason'] as String?;
+          if (stage1Reason == 'gps_inaccurate' || stage1Reason == 'gps_stale') {
+            debugError('[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
+            return {
+              'success': false,
+              'reason': stage1Reason,
+              'message': result['message'] as String?,
+            };
+          }
+
           // ============================================================
           // STAGE 2: Auth failed, attempt registration via signed contact_uri
           // ============================================================
@@ -873,11 +884,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
 
           if (registerResult['success'] != true) {
-            debugError('[APP] Stage 2 failed: registration rejected by server');
+            final serverReason = registerResult['reason'] as String? ?? 'registration_failed';
+            final serverMessage = registerResult['message'] as String?;
+            debugError('[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
             return {
               'success': false,
-              'reason': 'registration_failed',
-              'message': 'Companion not found in backend and failed to register via API'
+              'reason': serverReason,
+              'message': serverMessage ?? 'Registration rejected by server',
             };
           }
 
@@ -1318,7 +1331,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (parts.length > 1) {
           final errorParts = parts[1].split(':');
           final reason = errorParts.isNotEmpty ? errorParts[0] : 'unknown';
-          _connectionError = _getErrorMessage(reason, null);
+          final serverMessage = errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
+          _connectionError = _getErrorMessage(reason, serverMessage);
         } else {
           _connectionError = 'Authentication failed';
         }
@@ -2493,7 +2507,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // Upload the batch
-      final success = await _apiService.uploadBatch(pings);
+      final result = await _apiService.uploadBatch(pings);
+      final success = result == UploadResult.success;
       if (success) {
         // Delete the session file on successful upload
         await _offlineSessionService.deleteSession(filename);
@@ -2579,8 +2594,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     for (var i = 0; i < pings.length; i += batchSize) {
       final batch = pings.skip(i).take(batchSize).toList();
-      final success = await _apiService.uploadBatch(batch);
-      if (success) {
+      final result = await _apiService.uploadBatch(batch);
+      if (result == UploadResult.success) {
         uploadedCount += batch.length;
         debugLog('[APP] Uploaded batch ${(i ~/ batchSize) + 1}: ${batch.length} pings');
       } else {
@@ -2814,6 +2829,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     const zoneErrors = {
       'outside_zone',
       'zone_full',
+      'zone_disabled',
     };
 
     // Handle errors that require disconnect
@@ -3064,9 +3080,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         } else if (reason == 'gps_stale') {
           logError('GPS Stale Error\n$message');
           _scheduleZoneCheckRetry(seconds: 5, error: message, reason: 'gps_stale');
+        } else if (reason == 'zone_disabled') {
+          final errorMsg = _getErrorMessage(reason, message);
+          logError(errorMsg);
+          _scheduleZoneCheckRetry(seconds: 30, error: errorMsg, reason: reason!);
+        } else if (reason == 'bad_key' || reason == 'invalid_request') {
+          final errorMsg = _getErrorMessage(reason, message);
+          logError(errorMsg);
+          _scheduleZoneCheckRetry(seconds: 60, error: errorMsg, reason: reason!);
         } else {
-          // 500 server errors, database errors, or unknown failures
-          _scheduleZoneCheckRetry(seconds: 15, error: 'MeshMapper server error', reason: 'server_error');
+          // Unknown server errors — use server message
+          _scheduleZoneCheckRetry(seconds: 15, error: message, reason: 'server_error');
         }
 
         return;

@@ -6,6 +6,9 @@ import 'package:http/http.dart' as http;
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 
+/// Result of a batch upload attempt
+enum UploadResult { success, retryable, nonRetryable }
+
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
 ///
@@ -473,7 +476,7 @@ class ApiService {
     const criticalErrors = {
       'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
       'invalid_key', 'unauthorized', 'bad_key',
-      'outside_zone', 'zone_full',
+      'outside_zone', 'zone_full', 'zone_disabled',
     };
     if (criticalErrors.contains(reason)) {
       _clearSession();
@@ -544,9 +547,28 @@ class ApiService {
     if (result?['success'] == true) {
       debugLog('[HEARTBEAT] Heartbeat successful');
       // Next heartbeat will be scheduled when we get new expires_at
-    } else {
-      debugWarn('[HEARTBEAT] Heartbeat failed: ${result?['message']}');
+    } else if (result == null) {
+      // Network error — transient, trigger session expiring
+      debugWarn('[HEARTBEAT] Heartbeat failed: network error');
       _onSessionExpiring?.call();
+    } else {
+      // Server returned an error — check if critical
+      final reason = result['reason'] as String?;
+      final message = result['message'] as String?;
+      debugWarn('[HEARTBEAT] Heartbeat failed: $reason - $message');
+
+      const criticalErrors = {
+        'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
+        'invalid_key', 'unauthorized', 'bad_key',
+        'outside_zone', 'zone_full', 'zone_disabled',
+      };
+
+      if (criticalErrors.contains(reason)) {
+        _clearSession();
+        onSessionError?.call(reason, message);
+      } else {
+        _onSessionExpiring?.call();
+      }
     }
   }
 
@@ -572,28 +594,28 @@ class ApiService {
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
 
-  /// Legacy: Upload batch (wrapper for submitWardriveData)
-  /// Returns true on success, false on failure
+  /// Upload batch of wardrive data
+  /// Returns UploadResult indicating success, retryable failure, or non-retryable failure
   /// Triggers onSessionError callback for session-related errors
-  Future<bool> uploadBatch(List<Map<String, dynamic>> pings) async {
-    if (pings.isEmpty) return true;
+  Future<UploadResult> uploadBatch(List<Map<String, dynamic>> pings) async {
+    if (pings.isEmpty) return UploadResult.success;
 
     try {
       final result = await submitWardriveData(pings);
 
       if (result == null) {
         debugError('[API] Upload batch failed: no response');
-        return false;
+        return UploadResult.retryable;
       }
 
       // Check for maintenance mode first
       if (_checkMaintenanceMode(result)) {
-        return false;
+        return UploadResult.retryable;
       }
 
       if (result['success'] == true) {
         debugLog('[API] Upload batch SUCCESS: ${pings.length} items');
-        return true;
+        return UploadResult.success;
       }
 
       // Check for session errors that require disconnect
@@ -606,7 +628,7 @@ class ApiService {
         // Auth errors
         'invalid_key', 'unauthorized', 'bad_key',
         // Zone errors
-        'outside_zone', 'zone_full',
+        'outside_zone', 'zone_full', 'zone_disabled',
       };
 
       if (criticalErrors.contains(reason)) {
@@ -616,12 +638,22 @@ class ApiService {
         _clearSession();
         // Notify listener for auto-disconnect
         onSessionError?.call(reason, message);
+        return UploadResult.nonRetryable;
       }
 
-      return false;
+      // Errors where the batch data itself is invalid — retrying won't help
+      const nonRetryableErrors = {
+        'gps_inaccurate', 'gps_stale', 'invalid_request', 'zone_disabled', 'outofdate',
+      };
+      if (nonRetryableErrors.contains(reason)) {
+        debugWarn('[API] Upload batch non-retryable error: $reason - discarding batch');
+        return UploadResult.nonRetryable;
+      }
+
+      return UploadResult.retryable;
     } catch (e) {
       debugError('[API] Upload batch exception: $e');
-      return false;
+      return UploadResult.retryable;
     }
   }
 

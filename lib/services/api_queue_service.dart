@@ -425,9 +425,9 @@ class ApiQueueService {
       debugLog('[API QUEUE] Uploading ${items.length} items...');
 
       // Attempt upload
-      final success = await _apiService.uploadBatch(pings);
+      final result = await _apiService.uploadBatch(pings);
 
-      if (success) {
+      if (result == UploadResult.success) {
         final uploadedCount = items.length;
         // Remove successful items
         for (final item in items) {
@@ -435,6 +435,12 @@ class ApiQueueService {
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
         onUploadSuccess?.call(uploadedCount);
+      } else if (result == UploadResult.nonRetryable) {
+        // Data is permanently invalid (bad GPS, invalid request, etc.) — discard
+        for (final item in items) {
+          await item.delete();
+        }
+        debugWarn('[API QUEUE] Discarded ${items.length} items (non-retryable error)');
       } else {
         // Mark items as retried
         for (final item in items) {
