@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
+import '../services/gps_service.dart';
+import '../utils/distance_formatter.dart';
 
 /// A styled repeater ID text with a dotted underline hint that it's tappable.
 ///
@@ -95,9 +98,26 @@ class RepeaterIdChip extends StatelessWidget {
           ),
         );
       } else {
+        final position = appState.currentPosition;
+
+        // Sort by distance (closest first) when GPS is available
+        if (position != null) {
+          matches.sort((a, b) {
+            final distA = GpsService.distanceBetween(
+              position.latitude, position.longitude, a.lat, a.lon,
+            );
+            final distB = GpsService.distanceBetween(
+              position.latitude, position.longitude, b.lat, b.lon,
+            );
+            return distA.compareTo(distB);
+          });
+        }
+
         content = Column(
           mainAxisSize: MainAxisSize.min,
-          children: matches.map((r) => _buildRepeaterRow(context, r)).toList(),
+          children: matches
+              .map((r) => _buildRepeaterRow(context, r, position: position))
+              .toList(),
         );
       }
     }
@@ -153,10 +173,31 @@ class RepeaterIdChip extends StatelessWidget {
     );
   }
 
-  static Widget _buildRepeaterRow(BuildContext context, Repeater repeater) {
+  static Widget _buildRepeaterRow(
+    BuildContext context,
+    Repeater repeater, {
+    Position? position,
+  }) {
     final isActive = repeater.isActive;
     final badgeColor = isActive ? Colors.green : Colors.grey;
     final statusText = isActive ? 'Active' : 'Stale';
+
+    // Calculate distance string if GPS is available
+    String? distanceText;
+    if (position != null) {
+      final meters = GpsService.distanceBetween(
+        position.latitude, position.longitude, repeater.lat, repeater.lon,
+      );
+      final isImperial = Provider.of<AppStateProvider>(context, listen: false)
+          .preferences
+          .isImperial;
+      if (meters < 1000) {
+        distanceText = formatMeters(meters, isImperial: isImperial);
+      } else {
+        distanceText =
+            formatKilometers(meters / 1000, isImperial: isImperial);
+      }
+    }
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -184,16 +225,44 @@ class RepeaterIdChip extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          // Repeater name
+          // Repeater name + distance subtitle
           Expanded(
-            child: Text(
-              repeater.name,
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: Theme.of(context).colorScheme.onSurface,
-              ),
-              overflow: TextOverflow.ellipsis,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  repeater.name,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (distanceText != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.near_me,
+                          size: 10,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          distanceText,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ),
           ),
           const SizedBox(width: 8),
