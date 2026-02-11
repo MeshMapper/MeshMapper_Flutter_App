@@ -65,3 +65,21 @@ coverage/
 
 # Test related
 test/.test_coverage.dart
+
+# Platform-generated config (machine-specific)
+android/local.properties
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+
+# Hive generated models (regenerate with build_runner)
+*.g.dart
+
+# Debug logs
+debuglog/
+meshmapper-debug-*.txt
+
+# Test/debug output
+drive_route_map*.html
+
+# Claude Code local settings
+.claude/settings.local.json

@@ -300,15 +300,12 @@ All API endpoints may return maintenance mode:
 
 ## Original WebClient Reference
 
-This Flutter app is a port of the JavaScript-based WebClient. When implementing features:
+This Flutter app is a port of the JavaScript-based [MeshMapper WebClient](https://github.com/MeshMapper/MeshMapper_WebClient). When implementing features:
 
-1. Reference original implementation in `PORTED_APP/content/wardrive.js` (5200+ lines)
-2. Follow same architectural patterns (connection workflow, API queue, channel crypto)
-3. Maintain feature parity where possible
-4. Key differences:
+1. Follow same architectural patterns (connection workflow, API queue, channel crypto)
+2. Maintain feature parity where possible
+3. Key differences:
    - Flutter uses Provider for state (not global state object)
    - Hive for persistent storage (not IndexedDB)
    - Platform-specific BLE implementations (not just Web Bluetooth)
    - Dart type safety (not dynamic JavaScript)
-
-The `PORTED_APP/.github/copilot-instructions.md` file contains detailed documentation of the original WebClient architecture and is a valuable reference for understanding intended behavior.
