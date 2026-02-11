@@ -25,8 +25,8 @@ class ApiService {
   static const String geoAuthStatusUrl = '$baseUrl/wardrive-api.php/status';
   static const String geoAuthUrl = '$baseUrl/wardrive-api.php/auth';
 
-  /// API key (matching wardrive.js)
-  static const String apiKey = '59C7754DABDF5C11CA5F5D8368F89';
+  /// API key — injected at build time via --dart-define=API_KEY=...
+  static const String apiKey = String.fromEnvironment('API_KEY');
 
   /// Heartbeat buffer - schedule heartbeat 1 minute before session expiry
   static const Duration heartbeatBuffer = Duration(minutes: 1);

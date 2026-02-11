@@ -155,6 +155,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // User preferences
   UserPreferences _preferences = const UserPreferences();
 
+  /// Per-device antenna preferences: maps companion name → external antenna bool
+  Map<String, bool> _deviceAntennaPreferences = {};
+
+  /// Whether the current antenna setting was auto-restored from a saved preference
+  bool _antennaRestoredFromDevice = false;
+  bool get antennaRestoredFromDevice => _antennaRestoredFromDevice;
+
   // Remembered device for quick reconnection (mobile only)
   RememberedDevice? _rememberedDevice;
 
@@ -474,6 +481,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Load user preferences
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
+    await _loadDeviceAntennaPreferences();
 
     // Load last known GPS position for map centering
     await _loadLastPosition();
@@ -1282,6 +1290,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[APP] Display name set from SelfInfo: "$selfInfoName"');
       }
 
+      // Restore per-device antenna preference if previously saved
+      final resolvedName = displayDeviceName;
+      if (resolvedName != null && _deviceAntennaPreferences.containsKey(resolvedName)) {
+        final savedAntenna = _deviceAntennaPreferences[resolvedName]!;
+        _preferences = _preferences.copyWith(
+          externalAntenna: savedAntenna,
+          externalAntennaSet: true,
+        );
+        _antennaRestoredFromDevice = true;
+        _savePreferences();
+        debugLog('[APP] Restored antenna preference for "$resolvedName": ${savedAntenna ? "external" : "device"}');
+        notifyListeners();
+      }
+
       // Log connection status based on TX/RX permissions
       if (hasApiSession) {
         if (txAllowed && rxAllowed) {
@@ -1897,6 +1919,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _manufacturerString = null;
     _devicePublicKey = null;
     _displayDeviceName = null;
+    _antennaRestoredFromDevice = false;
     _currentNoiseFloor = null;
     _currentBatteryPercent = null;
     _authType = null;
@@ -2654,6 +2677,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Preferences updated: externalAntennaSet=${preferences.externalAntennaSet}, '
         'externalAntenna=${preferences.externalAntenna}, autoPowerSet=${preferences.autoPowerSet}');
     _preferences = preferences;
+
+    // Clear restored flag — user is making a manual choice now
+    _antennaRestoredFromDevice = false;
+
+    // Persist antenna choice per device name
+    final deviceName = displayDeviceName;
+    if (deviceName != null && preferences.externalAntennaSet) {
+      _deviceAntennaPreferences[deviceName] = preferences.externalAntenna;
+      _saveDeviceAntennaPreferences();
+      debugLog('[APP] Saved antenna preference for "$deviceName": ${preferences.externalAntenna ? "external" : "device"}');
+    }
+
     notifyListeners();
     _savePreferences();
   }
@@ -2992,7 +3027,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _zoneCheckRetryCountdown--;
       notifyListeners();
       if (_zoneCheckRetryCountdown <= 0) {
-        _clearZoneCheckError();
+        // Cancel timers but keep error message visible during retry
+        _zoneCheckCountdownTimer?.cancel();
+        _zoneCheckCountdownTimer = null;
+        _zoneCheckRetryTimer?.cancel();
+        _zoneCheckRetryTimer = null;
         checkZoneStatus();
       }
     });
@@ -3029,8 +3068,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     debugLog('[GEOFENCE] Starting zone check - setting isCheckingZone=true (previous inZone=$_inZone)');
     _isCheckingZone = true;
-    _clearZoneCheckError();
-    notifyListeners();
+    // Don't clear error or notify here — keep current error view visible during retry
+    // to avoid a full-screen flash. Error is cleared in finally block on success,
+    // or overwritten by _scheduleZoneCheckRetry on failure.
 
     try {
       debugLog('[GEOFENCE] Making API call to check zone at ${_currentPosition!.latitude.toStringAsFixed(5)}, '
@@ -3054,6 +3094,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
         return;
       }
+
+      // Got a real response — clear any previous retry error state
+      _clearZoneCheckError();
 
       // Check for maintenance mode FIRST
       if (result['maintenance'] == true) {
@@ -3576,6 +3619,38 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Saved preferences');
     } catch (e) {
       debugLog('[APP] Failed to save preferences: $e');
+    }
+  }
+
+  // ============================================
+  // Device Antenna Preferences Persistence
+  // ============================================
+
+  /// Load per-device antenna preferences from Hive storage
+  Future<void> _loadDeviceAntennaPreferences() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      final raw = box.get('device_antenna_preferences');
+      if (raw != null) {
+        _deviceAntennaPreferences = Map<String, bool>.from(raw as Map);
+        debugLog('[APP] Loaded antenna preferences for ${_deviceAntennaPreferences.length} device(s)');
+      }
+    } catch (e) {
+      debugLog('[APP] Failed to load device antenna preferences: $e');
+    }
+  }
+
+  /// Save per-device antenna preferences to Hive storage
+  Future<void> _saveDeviceAntennaPreferences() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      await box.put('device_antenna_preferences', _deviceAntennaPreferences);
+    } catch (e) {
+      debugLog('[APP] Failed to save device antenna preferences: $e');
     }
   }
 

@@ -70,13 +70,23 @@ class ConnectionPanel extends StatelessWidget {
           const SizedBox(width: 12),
           // Label
           Expanded(
-            child: Text(
-              'External Antenna',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-                color: colorScheme.onSurface,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'External Antenna',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+                if (appState.antennaRestoredFromDevice)
+                  Text(
+                    'Remembered for ${appState.displayDeviceName}',
+                    style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant),
+                  ),
+              ],
             ),
           ),
           // Segmented toggle

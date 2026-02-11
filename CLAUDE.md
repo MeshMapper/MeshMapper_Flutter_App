@@ -20,10 +20,10 @@ flutter pub get
 # Run code generation (for Hive models)
 flutter pub run build_runner build --delete-conflicting-outputs
 
-# Run the app
-flutter run                    # Android/iOS (defaults to connected device)
-flutter run -d chrome          # Web (Chrome required for Web Bluetooth)
-flutter run -d chrome --web-browser-flag="--disable-web-security"  # For local testing with CORS
+# Run the app (API_KEY required — never hardcoded in source)
+flutter run --dart-define=API_KEY=<your-key>                    # Android/iOS
+flutter run -d chrome --dart-define=API_KEY=<your-key>          # Web (Chrome required)
+flutter run -d chrome --dart-define=API_KEY=<your-key> --web-browser-flag="--disable-web-security"  # Web + CORS
 
 # Analyze code
 flutter analyze
@@ -37,14 +37,11 @@ flutter test test/services/gps_service_test.dart
 
 ### Building for Release
 ```bash
-# Android APK
-flutter build apk --release
+# Use Build.sh — prompts for API key and signing passwords
+./Build.sh
 
-# iOS
-flutter build ios --release
-
-# Web
-flutter build web --release
+# Or set API key via environment variable to skip prompt
+MESHMAPPER_API_KEY=<your-key> ./Build.sh
 ```
 
 ### Debug Logging
@@ -242,15 +239,14 @@ Contains 30+ MeshCore device variants with manufacturer strings, TX power levels
 
 ## MeshMapper API Endpoints
 
-**Base URL**: `https://yow.meshmapper.net/`
+**Base URL**: `https://meshmapper.net/`
 
-- **POST /capacitycheck.php**: Acquire API slot before connecting
-  - Payload: `{iatacode: "YOW", apikey: "...", apiver: "1.6.0"}`
-  - Response: `{valid: true|false, reason: null|"outofdate"}`
+**API Key**: Injected at build time via `--dart-define=API_KEY=...`. Never hardcoded in source. `Build.sh` prompts for it, or set `MESHMAPPER_API_KEY` env var.
 
-- **POST /wardriving-api.php**: Batch upload TX/RX coverage data
-  - Payload: `[{type:"TX"|"RX", lat, lon, who, power, heard, session_id, iatacode}]`
-  - Auth: API key in JSON body (NOT query string)
+- **POST /wardrive-api.php/status**: Check zone status (geo-auth)
+- **POST /wardrive-api.php/auth**: Acquire/release session (geo-auth)
+- **POST /wardrive-api.php/wardrive**: Submit wardrive data + heartbeat
+- Auth: API key in JSON body (`key` field), NOT query string
 
 ### Maintenance Mode Response
 

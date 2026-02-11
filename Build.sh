@@ -5,6 +5,17 @@
 
 set -e  # Exit on any error
 
+# API key - prompt if not set via environment variable
+if [ -z "$MESHMAPPER_API_KEY" ]; then
+    echo "Enter MeshMapper API key:"
+    read -s MESHMAPPER_API_KEY
+    if [ -z "$MESHMAPPER_API_KEY" ]; then
+        echo "Error: API key is required."
+        exit 1
+    fi
+    echo ""
+fi
+
 # Android signing - prompt for passwords if not set
 if [ -z "$SIGNING_STORE_PASSWORD" ]; then
     echo "Enter keystore password:"
@@ -40,21 +51,21 @@ mkdir -p "$IOS_DIR"
 
 # Build Android APK
 echo "[1/3] Building Android APK..."
-flutter build apk --release --dart-define=APP_VERSION=APP-$EPOCH
+flutter build apk --release --dart-define=APP_VERSION=APP-$EPOCH --dart-define=API_KEY=$MESHMAPPER_API_KEY
 cp build/app/outputs/flutter-apk/app-release.apk "$ANDROID_DIR/MeshMapper-$EPOCH.apk"
 echo "✓ Built: MeshMapper-$EPOCH.apk"
 echo ""
 
 # Build Android AAB
 echo "[2/3] Building Android AAB..."
-flutter build appbundle --release --build-number=$EPOCH --dart-define=APP_VERSION=APP-$EPOCH
+flutter build appbundle --release --build-number=$EPOCH --dart-define=APP_VERSION=APP-$EPOCH --dart-define=API_KEY=$MESHMAPPER_API_KEY
 cp build/app/outputs/bundle/release/app-release.aab "$ANDROID_DIR/MeshMapper-$EPOCH.aab"
 echo "✓ Built: MeshMapper-$EPOCH.aab"
 echo ""
 
 # Build iOS IPA
 echo "[3/3] Building iOS IPA..."
-flutter build ipa --release --build-number=$EPOCH --dart-define=APP_VERSION=APP-$EPOCH
+flutter build ipa --release --build-number=$EPOCH --dart-define=APP_VERSION=APP-$EPOCH --dart-define=API_KEY=$MESHMAPPER_API_KEY
 cp build/ios/ipa/mesh_mapper.ipa "$IOS_DIR/MeshMapper-$EPOCH.ipa"
 echo "✓ Built: MeshMapper-$EPOCH.ipa"
 echo ""

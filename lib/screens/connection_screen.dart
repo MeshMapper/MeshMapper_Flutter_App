@@ -1301,7 +1301,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 icon: Icons.cloud_off,
                 iconColor: Colors.orange.withValues(alpha: 0.7),
                 title: 'Zone Check Failed',
-                message: '${appState.zoneCheckError}\n\nChecking again in ${countdown}s...',
+                message: countdown > 0
+                    ? '${appState.zoneCheckError}\n\nChecking again in ${countdown}s...'
+                    : '${appState.zoneCheckError}\n\nRetrying...',
               ),
             ),
           ],
