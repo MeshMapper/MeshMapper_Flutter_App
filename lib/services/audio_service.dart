@@ -155,13 +155,18 @@ class AudioService {
 
     try {
       debugLog('[AUDIO] Playing transmit sound...');
-      // Seek to start and play
+      // Seek to start and play with timeout to prevent indefinite hangs
+      // (iOS audio session corruption can cause play() to never complete)
       await _txPlayer?.seek(Duration.zero);
-      await _txPlayer?.play();
+      await _txPlayer?.play().timeout(const Duration(seconds: 3));
       debugLog('[AUDIO] Transmit sound played successfully');
       // Release audio focus after playback completes
       // Critical for Android Auto - without this, car audio stays ducked
       await _releaseAudioFocus();
+    } on TimeoutException {
+      debugWarn('[AUDIO] Transmit play() timed out after 3s — resetting audio session');
+      await _txPlayer?.stop();
+      await _resetAudioSession();
     } catch (e) {
       debugError('[AUDIO] Failed to play transmit sound: $e');
     }
@@ -172,15 +177,57 @@ class AudioService {
     if (!_initialized || !_enabled) return;
 
     try {
-      // Seek to start and play
+      // Seek to start and play with timeout to prevent indefinite hangs
       await _rxPlayer?.seek(Duration.zero);
-      await _rxPlayer?.play();
+      await _rxPlayer?.play().timeout(const Duration(seconds: 3));
       debugLog('[AUDIO] Played receive sound');
       // Release audio focus after playback completes
       // Critical for Android Auto - without this, car audio stays ducked
       await _releaseAudioFocus();
+    } on TimeoutException {
+      debugWarn('[AUDIO] Receive play() timed out after 3s — resetting audio session');
+      await _rxPlayer?.stop();
+      await _resetAudioSession();
     } catch (e) {
       debugError('[AUDIO] Failed to play receive sound: $e');
+    }
+  }
+
+  /// Reset audio session after a play() timeout
+  /// Stops both players, reconfigures the audio session, and reloads assets
+  Future<void> _resetAudioSession() async {
+    try {
+      // Stop both players
+      await _txPlayer?.stop();
+      await _rxPlayer?.stop();
+
+      // Reconfigure audio session (same config as initialize())
+      final session = await AudioSession.instance;
+      await session.configure(
+        const AudioSessionConfiguration(
+          avAudioSessionCategory: AVAudioSessionCategory.ambient,
+          avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.none,
+          avAudioSessionMode: AVAudioSessionMode.defaultMode,
+          avAudioSessionRouteSharingPolicy:
+              AVAudioSessionRouteSharingPolicy.defaultPolicy,
+          avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
+          androidAudioAttributes: AndroidAudioAttributes(
+            contentType: AndroidAudioContentType.sonification,
+            usage: AndroidAudioUsage.notification,
+          ),
+          androidAudioFocusGainType:
+              AndroidAudioFocusGainType.gainTransientMayDuck,
+          androidWillPauseWhenDucked: false,
+        ),
+      );
+
+      // Reload assets so players are ready for next play()
+      await _txPlayer?.setAsset('assets/transmitted_packet.mp3');
+      await _rxPlayer?.setAsset('assets/received_packet.mp3');
+
+      debugLog('[AUDIO] Audio session reset after timeout');
+    } catch (e) {
+      debugError('[AUDIO] Failed to reset audio session: $e');
     }
   }
 

@@ -34,7 +34,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(file:*)",
       "Bash(wc:*)",
-      "Bash(xargs cat:*)"
+      "Bash(xargs cat:*)",
+      "Bash(sort:*)"
     ]
   }
 }

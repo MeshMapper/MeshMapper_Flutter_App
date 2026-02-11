@@ -267,7 +267,14 @@ class ApiService {
         debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
 
-      final data = json.decode(response.body) as Map<String, dynamic>;
+      Map<String, dynamic> data;
+      try {
+        data = json.decode(response.body) as Map<String, dynamic>;
+      } on FormatException {
+        debugError('[API] Non-JSON response from /auth (HTTP ${response.statusCode}): '
+            '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
+        rethrow;
+      }
 
       _logApiCall(
         endpoint: '/wardrive-api.php/auth',
@@ -341,7 +348,14 @@ class ApiService {
         debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
 
-      final data = json.decode(response.body) as Map<String, dynamic>;
+      Map<String, dynamic> data;
+      try {
+        data = json.decode(response.body) as Map<String, dynamic>;
+      } on FormatException {
+        debugError('[API] Non-JSON response from /wardrive (HTTP ${response.statusCode}): '
+            '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
+        rethrow;
+      }
 
       // Log with data summary including external_antenna values
       final antennaSummary = entries.map((e) =>
@@ -410,7 +424,14 @@ class ApiService {
         debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
 
-      final data = json.decode(response.body) as Map<String, dynamic>;
+      Map<String, dynamic> data;
+      try {
+        data = json.decode(response.body) as Map<String, dynamic>;
+      } on FormatException {
+        debugError('[API] Non-JSON response from /wardrive heartbeat (HTTP ${response.statusCode}): '
+            '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
+        rethrow;
+      }
 
       // Log heartbeat with coords info but not sensitive data
       final hasCoords = lat != null && lon != null;

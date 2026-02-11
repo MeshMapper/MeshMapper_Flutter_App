@@ -221,7 +221,9 @@ class GpsService {
       debugLog('[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
       _lastPosition = position;
-      _positionController.add(position);
+      // Note: Don't emit via _positionController here — the stream listener
+      // at line 198 already fires with the initial position, so emitting here
+      // would cause duplicate position events (~0.15ms apart).
       _updateStatus(GpsStatus.locked);
     } catch (e) {
       debugLog('[GPS] Initial position request failed: $e (will wait for stream updates)');
