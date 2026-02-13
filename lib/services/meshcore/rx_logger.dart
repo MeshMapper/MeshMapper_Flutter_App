@@ -86,6 +86,14 @@ class RxLogger {
         return false;
       }
 
+      // Check if this repeater should be ignored (user carpeater filter)
+      // Must run before RSSI check so user never sees confusing "RSSI too strong"
+      // errors for a device they told the app to ignore
+      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
+        debugLog('[RX LOG] ❌ Ignoring repeater $repeaterId (user carpeater filter)');
+        return false;
+      }
+
       // PACKET FILTER: Validate packet before logging
       final validation = await validator.validate(metadata);
       if (!validation.valid) {
@@ -104,12 +112,6 @@ class RxLogger {
 
       debugLog('[RX LOG] Packet heard via last hop: $repeaterId, '
           'SNR=${metadata.snr}, path_length=${metadata.pathLength}');
-
-      // Check if this repeater should be ignored (user carpeater filter)
-      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
-        debugLog('[RX LOG] ❌ Ignoring repeater $repeaterId (user carpeater filter)');
-        return false;
-      }
 
       debugLog('[RX LOG] ✅ Packet validated and passed filter');
 

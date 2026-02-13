@@ -1244,6 +1244,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
       };
 
+      // Wire up discovery carpeater drop callback (for DiscTracker RSSI failsafe)
+      _pingService!.onDiscCarpeaterDrop = (String repeaterId, String reason) {
+        debugLog('[APP] Discovery carpeater drop: repeater=$repeaterId, reason=$reason');
+        logError('Discovery Dropped\nPossible carpeater: $repeaterId\n$reason',
+            severity: ErrorSeverity.warning, autoSwitch: false);
+      };
+
       // Wire up pending disable complete callback
       // Called when user disables Active Mode during sending/listening and the RX window ends
       _pingService!.onPendingDisableComplete = () async {

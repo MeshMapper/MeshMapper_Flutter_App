@@ -113,7 +113,14 @@ class TxTracker {
       final firstHopId = metadata.firstHop!;
       final pathHex = firstHopId.toRadixString(16).padLeft(2, '0');
 
-      // VALIDATION STEP 2: Check RSSI (carpeater failsafe)
+      // VALIDATION STEP 2: Check user carpeater filter (before RSSI check so user
+      // never sees confusing "RSSI too strong" errors for a device they told the app to ignore)
+      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(pathHex.toUpperCase())) {
+        debugLog('[TX LOG] ❌ DROPPED: Repeater $pathHex ignored by user carpeater filter');
+        return false;
+      }
+
+      // VALIDATION STEP 2.5: Check RSSI (carpeater failsafe)
       if (PacketValidator.isCarpeater(metadata.rssi)) {
         debugLog('[TX LOG] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ ${PacketValidator.maxRssiThreshold}) '
             '- possible carpeater (RSSI failsafe), repeater=$pathHex');
@@ -122,12 +129,6 @@ class TxTracker {
         return false; // Mark as handled (dropped)
       }
       debugLog('[TX LOG] ✓ RSSI OK (${metadata.rssi} < ${PacketValidator.maxRssiThreshold})');
-
-      // VALIDATION STEP 2.5: Check user carpeater filter
-      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(pathHex.toUpperCase())) {
-        debugLog('[TX LOG] ❌ DROPPED: Repeater $pathHex ignored by user carpeater filter');
-        return false;
-      }
 
       // VALIDATION STEP 3: Channel hash validation
       if (metadata.encryptedPayload.length < 3) {

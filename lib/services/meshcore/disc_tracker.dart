@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../../utils/debug_logger_io.dart';
+import 'packet_validator.dart';
 import 'protocol_constants.dart';
 
 /// Discovery response tracker for efficient repeater mapping
@@ -18,6 +19,10 @@ class DiscTracker {
 
   /// Callback to check if a repeater should be ignored (carpeater filter)
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
+
+  /// Callback for carpeater drops (for quiet error logging)
+  /// Called with repeater ID and reason when a discovery response is dropped due to carpeater detection
+  void Function(String repeaterId, String reason)? onCarpeaterDrop;
 
   /// Callback fired when a new node is discovered
   /// Parameters: (node, isNew) - isNew is true for first time seeing this node
@@ -132,6 +137,14 @@ class DiscTracker {
       // Check if this repeater should be ignored (user carpeater filter)
       if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
         debugLog('[DISC] Ignoring repeater $repeaterId (user carpeater filter)');
+        return false;
+      }
+
+      // Check RSSI (carpeater failsafe)
+      if (PacketValidator.isCarpeater(localRssi)) {
+        debugLog('[DISC] ❌ DROPPED: RSSI too strong ($localRssi ≥ ${PacketValidator.maxRssiThreshold}) '
+            '- possible carpeater, repeater=$repeaterId');
+        onCarpeaterDrop?.call(repeaterId, 'RSSI too strong ($localRssi dBm)');
         return false;
       }
 

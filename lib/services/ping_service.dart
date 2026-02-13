@@ -139,6 +139,10 @@ class PingService {
   /// AppStateProvider uses this to update its state and cleanup
   Future<void> Function()? onPendingDisableComplete;
 
+  /// Callback for discovery carpeater drops (for quiet error logging)
+  /// Wired to DiscTracker.onCarpeaterDrop when discovery mode starts
+  void Function(String repeaterId, String reason)? onDiscCarpeaterDrop;
+
   /// Last TX ping sent (for updating with heard repeaters)
   TxPing? _lastTxPing;
 
@@ -918,6 +922,7 @@ class PingService {
 
     // Create and configure discovery tracker
     _discTracker = DiscTracker(shouldIgnoreRepeater: shouldIgnoreRepeater);
+    _discTracker!.onCarpeaterDrop = onDiscCarpeaterDrop;
     _discTracker!.onNodeDiscovered = (node, isNew) {
       debugLog('[DISC] Node discovered: ${node.repeaterId} (${node.nodeTypeName}), isNew=$isNew');
       if (_lastDiscPing != null) {
