@@ -1827,6 +1827,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectAttempt = 0;
     _autoPingWasEnabled = false;
 
+    // Reset antenna setting so user must choose again on next connect
+    _antennaRestoredFromDevice = false;
+    _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
+    _savePreferences();
+
     // Do full disconnect cleanup (releases API session, etc.)
     _fullDisconnectCleanup();
     notifyListeners();
@@ -1920,6 +1925,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _devicePublicKey = null;
     _displayDeviceName = null;
     _antennaRestoredFromDevice = false;
+    _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
+    _savePreferences();
     _currentNoiseFloor = null;
     _currentBatteryPercent = null;
     _authType = null;
