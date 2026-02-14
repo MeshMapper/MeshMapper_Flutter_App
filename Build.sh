@@ -139,29 +139,21 @@ mkdir -p "$IOS_DIR"
 
 # Build Android APK
 echo "[1/3] Building Android APK..."
-flutter build apk --release --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
+flutter build apk --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
 cp build/app/outputs/flutter-apk/app-release.apk "$ANDROID_DIR/MeshMapper-$FILE_TAG.apk"
 echo "✓ Built: MeshMapper-$FILE_TAG.apk"
 echo ""
 
 # Build Android AAB
 echo "[2/3] Building Android AAB..."
-if [ "$RELEASE_TYPE" = "2" ]; then
-    flutter build appbundle --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
-else
-    flutter build appbundle --release --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
-fi
+flutter build appbundle --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
 cp build/app/outputs/bundle/release/app-release.aab "$ANDROID_DIR/MeshMapper-$FILE_TAG.aab"
 echo "✓ Built: MeshMapper-$FILE_TAG.aab"
 echo ""
 
 # Build iOS IPA
 echo "[3/3] Building iOS IPA..."
-if [ "$RELEASE_TYPE" = "2" ]; then
-    flutter build ipa --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
-else
-    flutter build ipa --release --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
-fi
+flutter build ipa --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
 cp build/ios/ipa/mesh_mapper.ipa "$IOS_DIR/MeshMapper-$FILE_TAG.ipa"
 echo "✓ Built: MeshMapper-$FILE_TAG.ipa"
 echo ""
