@@ -46,8 +46,16 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   /// Check if location disclosure has been shown, show it if not, then request permissions
   Future<void> _checkAndShowDisclosure() async {
-    if (_hasCheckedDisclosure || kIsWeb) return;
+    if (_hasCheckedDisclosure) return;
     _hasCheckedDisclosure = true;
+
+    if (kIsWeb) {
+      // Web: No disclosure dialog needed, just request permission
+      // This triggers the browser's native location permission prompt
+      debugLog('[DISCLOSURE] Web platform - requesting GPS permission directly');
+      await _requestWebGpsPermission();
+      return;
+    }
 
     // Check if disclosure was already shown
     final hasShown = await PermissionDisclosureService.hasShownDisclosure();
@@ -63,6 +71,26 @@ class _MainScaffoldState extends State<MainScaffold> {
 
     debugLog('[DISCLOSURE] User acknowledged, requesting permissions');
     await _requestPermissionsAfterDisclosure();
+  }
+
+  /// Request GPS permission on web (triggers browser's native prompt)
+  Future<void> _requestWebGpsPermission() async {
+    LocationPermission permission = await Geolocator.checkPermission();
+    debugLog('[DISCLOSURE] Web GPS permission check: $permission');
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      debugLog('[DISCLOSURE] Web GPS permission after request: $permission');
+    }
+
+    final granted = permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse;
+
+    if (granted && mounted) {
+      debugLog('[DISCLOSURE] Web GPS permission granted, starting GPS service');
+      final appState = context.read<AppStateProvider>();
+      await appState.restartGpsAfterPermission();
+    }
   }
 
   /// Request permissions after user accepts disclosure
