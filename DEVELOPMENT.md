@@ -402,12 +402,12 @@ Use the status update methods in `AppStateProvider` for all UI status updates. A
 
 ### Documentation Update Requirements
 
-When modifying code, update `docs/DEVELOPMENT.md` (this file) for architectural changes.
+When modifying code, update `DEVELOPMENT.md` (this file) for architectural changes.
 
 ### Documentation Checklist
 
 - [ ] Added debug logging with tags to new code
-- [ ] Updated `docs/DEVELOPMENT.md` if architecture changed
+- [ ] Updated `DEVELOPMENT.md` if architecture changed
 - [ ] Added inline comments for complex logic
 - [ ] Added Dart doc comments (`///`) for public APIs
 

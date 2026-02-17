@@ -222,17 +222,17 @@ class PingService {
     }
 
     // Check if TX is allowed by API (zone capacity)
-    if (checkTxAllowed != null && !checkTxAllowed!()) {
+    if (checkTxAllowed?.call() == false) {
       return PingValidation.txNotAllowed;
     }
 
     // Check external antenna configuration
-    if (checkExternalAntennaConfigured != null && !checkExternalAntennaConfigured!()) {
+    if (checkExternalAntennaConfigured?.call() == false) {
       return PingValidation.externalAntennaRequired;
     }
 
     // Check power level configuration (for unknown devices)
-    if (checkPowerLevelConfigured != null && !checkPowerLevelConfigured!()) {
+    if (checkPowerLevelConfigured?.call() == false) {
       return PingValidation.powerLevelRequired;
     }
 
@@ -266,8 +266,9 @@ class PingService {
     }
 
     // Check cooldown (7 seconds between pings)
-    if (_lastTxTime != null) {
-      final elapsed = DateTime.now().difference(_lastTxTime!);
+    final lastTx = _lastTxTime;
+    if (lastTx != null) {
+      final elapsed = DateTime.now().difference(lastTx);
       if (elapsed < _autoPingCooldown) {
         return PingValidation.cooldownActive;
       }
@@ -285,17 +286,17 @@ class PingService {
     }
 
     // Check if TX is allowed by API (zone capacity)
-    if (checkTxAllowed != null && !checkTxAllowed!()) {
+    if (checkTxAllowed?.call() == false) {
       return PingValidation.txNotAllowed;
     }
 
     // Check external antenna configuration
-    if (checkExternalAntennaConfigured != null && !checkExternalAntennaConfigured!()) {
+    if (checkExternalAntennaConfigured?.call() == false) {
       return PingValidation.externalAntennaRequired;
     }
 
     // Check power level configuration (for unknown devices)
-    if (checkPowerLevelConfigured != null && !checkPowerLevelConfigured!()) {
+    if (checkPowerLevelConfigured?.call() == false) {
       return PingValidation.powerLevelRequired;
     }
 
@@ -336,17 +337,17 @@ class PingService {
     }
 
     // Check if TX is allowed by API (zone capacity)
-    if (checkTxAllowed != null && !checkTxAllowed!()) {
+    if (checkTxAllowed?.call() == false) {
       return PingValidation.txNotAllowed;
     }
 
     // Check external antenna configuration
-    if (checkExternalAntennaConfigured != null && !checkExternalAntennaConfigured!()) {
+    if (checkExternalAntennaConfigured?.call() == false) {
       return PingValidation.externalAntennaRequired;
     }
 
     // Check power level configuration (for unknown devices)
-    if (checkPowerLevelConfigured != null && !checkPowerLevelConfigured!()) {
+    if (checkPowerLevelConfigured?.call() == false) {
       return PingValidation.powerLevelRequired;
     }
 
@@ -374,8 +375,9 @@ class PingService {
     // Auto mode handles this by setting skipReason='too close' and scheduling next ping
 
     // Check cooldown (7 seconds between pings)
-    if (_lastTxTime != null) {
-      final elapsed = DateTime.now().difference(_lastTxTime!);
+    final lastTx = _lastTxTime;
+    if (lastTx != null) {
+      final elapsed = DateTime.now().difference(lastTx);
       if (elapsed < _autoPingCooldown) {
         return PingValidation.cooldownActive;
       }
@@ -387,15 +389,17 @@ class PingService {
   /// Check if currently in cooldown period
   /// Reference: isInCooldown() in wardrive.js
   bool isInCooldown() {
-    if (_lastTxTime == null) return false;
-    final elapsed = DateTime.now().difference(_lastTxTime!);
+    final lastTx = _lastTxTime;
+    if (lastTx == null) return false;
+    final elapsed = DateTime.now().difference(lastTx);
     return elapsed < _autoPingCooldown;
   }
 
   /// Get remaining cooldown seconds
   int getRemainingCooldownSeconds() {
-    if (_lastTxTime == null) return 0;
-    final elapsed = DateTime.now().difference(_lastTxTime!);
+    final lastTx = _lastTxTime;
+    if (lastTx == null) return 0;
+    final elapsed = DateTime.now().difference(lastTx);
     final remaining = _autoPingCooldown - elapsed;
     return remaining.inSeconds.clamp(0, _autoPingCooldown.inSeconds);
   }
@@ -471,7 +475,12 @@ class PingService {
       // Clear skip reason on successful validation
       _skipReason = null;
 
-      final position = _gpsService.lastPosition!;
+      final position = _gpsService.lastPosition;
+      if (position == null) {
+        debugError('[PING] No GPS position available');
+        _pingInProgress = false;
+        return false;
+      }
       // Use power in watts (0.3, 0.6, 1.0, 2.0) - matches web client buildPayload()
       final powerWatts = _connection.deviceModel?.power ?? 0.3;
       // Also get txPower in dBm for API queue (for database records)
@@ -516,7 +525,8 @@ class PingService {
         final txTracker = _txTracker;
         txTracker.onEchoReceived = (repeaterId, snr, rssi, isNew) {
           debugLog('[PING] onEchoReceived callback fired: $repeaterId, SNR=$snr, RSSI=$rssi, isNew=$isNew');
-          if (_lastTxPing != null) {
+          final txPing = _lastTxPing;
+          if (txPing != null) {
             final repeater = HeardRepeater(
               repeaterId: repeaterId,
               snr: snr,
@@ -526,20 +536,20 @@ class PingService {
 
             if (isNew) {
               // Add new repeater to the list
-              _lastTxPing!.heardRepeaters.add(repeater);
-              debugLog('[PING] Real-time: Added new repeater $repeaterId (SNR: $snr) - total: ${_lastTxPing!.heardRepeaters.length}');
+              txPing.heardRepeaters.add(repeater);
+              debugLog('[PING] Real-time: Added new repeater $repeaterId (SNR: $snr) - total: ${txPing.heardRepeaters.length}');
             } else {
               // Update existing repeater's SNR if better
-              final idx = _lastTxPing!.heardRepeaters.indexWhere((r) => r.repeaterId == repeaterId);
+              final idx = txPing.heardRepeaters.indexWhere((r) => r.repeaterId == repeaterId);
               if (idx >= 0) {
-                _lastTxPing!.heardRepeaters[idx] = repeater;
+                txPing.heardRepeaters[idx] = repeater;
                 debugLog('[PING] Real-time: Updated repeater $repeaterId (SNR: $snr)');
               }
             }
 
             // Notify for real-time UI updates
             debugLog('[PING] Calling onEchoReceived callback (callback=${onEchoReceived != null ? "SET" : "NULL"})');
-            onEchoReceived?.call(_lastTxPing!, repeater, isNew);
+            onEchoReceived?.call(txPing, repeater, isNew);
             debugLog('[PING] onEchoReceived callback completed');
           } else {
             debugWarn('[PING] onEchoReceived: _lastTxPing is null!');
@@ -655,12 +665,13 @@ class PingService {
 
     // Queue TX entry with heard_repeats AFTER RX window ends
     // Reference: enqueueTX() called after RX window in wardrive.js
-    if (_pendingTxTimestamp != null) {
+    final txTimestamp = _pendingTxTimestamp;
+    if (txTimestamp != null) {
       _apiQueue.enqueueTx(
         latitude: txPosition.latitude,
         longitude: txPosition.longitude,
         heardRepeats: heardRepeats,
-        timestamp: _pendingTxTimestamp!,
+        timestamp: txTimestamp,
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
       );
@@ -921,11 +932,13 @@ class PingService {
     debugLog('[DISC] Starting discovery mode');
 
     // Create and configure discovery tracker
-    _discTracker = DiscTracker(shouldIgnoreRepeater: shouldIgnoreRepeater);
-    _discTracker!.onCarpeaterDrop = onDiscCarpeaterDrop;
-    _discTracker!.onNodeDiscovered = (node, isNew) {
+    final tracker = DiscTracker(shouldIgnoreRepeater: shouldIgnoreRepeater);
+    _discTracker = tracker;
+    tracker.onCarpeaterDrop = onDiscCarpeaterDrop;
+    tracker.onNodeDiscovered = (node, isNew) {
       debugLog('[DISC] Node discovered: ${node.repeaterId} (${node.nodeTypeName}), isNew=$isNew');
-      if (_lastDiscPing != null) {
+      final discPing = _lastDiscPing;
+      if (discPing != null) {
         final nodeEntry = DiscoveredNodeEntry(
           repeaterId: node.repeaterId,
           nodeType: node.nodeTypeName,
@@ -935,23 +948,24 @@ class PingService {
           pubkeyHex: node.pubkeyFull,
         );
         if (isNew) {
-          _lastDiscPing!.discoveredNodes.add(nodeEntry);
+          discPing.discoveredNodes.add(nodeEntry);
         } else {
-          final idx = _lastDiscPing!.discoveredNodes.indexWhere((n) => n.repeaterId == node.repeaterId);
-          if (idx >= 0) _lastDiscPing!.discoveredNodes[idx] = nodeEntry;
+          final idx = discPing.discoveredNodes.indexWhere((n) => n.repeaterId == node.repeaterId);
+          if (idx >= 0) discPing.discoveredNodes[idx] = nodeEntry;
         }
-        onDiscNodeDiscovered?.call(_lastDiscPing!, nodeEntry, isNew);
+        onDiscNodeDiscovered?.call(discPing, nodeEntry, isNew);
       }
     };
-    _discTracker!.onWindowComplete = (nodes) {
+    tracker.onWindowComplete = (nodes) {
       debugLog('[DISC] Window complete: ${nodes.length} nodes discovered');
       _handleDiscoveryWindowComplete(nodes);
     };
 
     // Subscribe to control data stream for discovery responses
     _controlDataSubscription = _connection.controlDataStream.listen((data) {
-      if (_discTracker != null && _discTracker!.isListening) {
-        _discTracker!.handlePacket(data.raw, data.snr, data.rssi);
+      final dt = _discTracker;
+      if (dt != null && dt.isListening) {
+        dt.handlePacket(data.raw, data.snr, data.rssi);
       }
     });
 
@@ -990,10 +1004,11 @@ class PingService {
     }
 
     // Check minimum distance from last discovery (25m)
-    if (_lastDiscoveryPosition != null) {
+    final lastDiscPos = _lastDiscoveryPosition;
+    if (lastDiscPos != null) {
       final distance = Geolocator.distanceBetween(
-        _lastDiscoveryPosition!.latitude,
-        _lastDiscoveryPosition!.longitude,
+        lastDiscPos.latitude,
+        lastDiscPos.longitude,
         position.latitude,
         position.longitude,
       );
@@ -1079,7 +1094,7 @@ class PingService {
     }
 
     // Use _lastDiscPing which was already created and added to log in _sendDiscoveryRequest
-    final discoverySuccess = _lastDiscPing != null && _lastDiscPing!.discoveredNodes.isNotEmpty;
+    final discoverySuccess = _lastDiscPing?.discoveredNodes.isNotEmpty ?? false;
 
     if (discoverySuccess) {
       debugLog('[DISC] Processing ${nodes.length} discovered nodes');
@@ -1200,11 +1215,13 @@ class PingService {
   }
 
   /// Dispose of resources
-  void dispose() async {
+  void dispose() {
     _rxWindowTimer?.cancel();
+    _rxWindowTimer = null;
     _autoTimer?.cancel();
+    _autoTimer = null;
     _stopDiscoveryMode();
-    await _wakelockService.dispose();
+    _wakelockService.dispose();
   }
 }
 

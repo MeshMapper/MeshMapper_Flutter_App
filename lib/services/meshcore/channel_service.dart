@@ -73,13 +73,6 @@ class ChannelService {
         .toList();
   }
 
-  /// @deprecated Use initializePublicChannel() instead
-  /// Legacy initialize method - kept for backward compatibility
-  static Future<void> initialize() async {
-    debugLog('[CHANNEL] Legacy initialize called - forwarding to initializePublicChannel');
-    await initializePublicChannel();
-  }
-
   /// Get channel key for a known channel
   static Uint8List? getChannelKey(String channelName) {
     return _allowedChannels[channelName]?.key;

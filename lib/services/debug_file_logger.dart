@@ -33,13 +33,15 @@ class DebugFileLogger {
       final dir = await getApplicationDocumentsDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final filename = 'meshmapper-debug-$timestamp.txt';
-      _currentLogFile = File('${dir.path}/$filename');
-      _logSink = _currentLogFile!.openWrite(mode: FileMode.append);
+      final logFile = File('${dir.path}/$filename');
+      _currentLogFile = logFile;
+      final sink = logFile.openWrite(mode: FileMode.append);
+      _logSink = sink;
       _enabled = true;
 
       // Write header to file
       final now = DateTime.now().toIso8601String();
-      _logSink!.writeln('=== MeshMapper Debug Log Started: $now ===\n');
+      sink.writeln('=== MeshMapper Debug Log Started: $now ===\n');
 
       // Flush any logs that were captured before the sink was ready
       _flushPendingLogs();
@@ -71,11 +73,12 @@ class DebugFileLogger {
       _flushTimer?.cancel();
       _flushTimer = null;
 
-      if (_logSink != null) {
+      final sink = _logSink;
+      if (sink != null) {
         final now = DateTime.now().toIso8601String();
-        _logSink!.writeln('\n=== MeshMapper Debug Log Stopped: $now ===');
-        await _logSink!.flush();
-        await _logSink!.close();
+        sink.writeln('\n=== MeshMapper Debug Log Stopped: $now ===');
+        await sink.flush();
+        await sink.close();
       }
     } finally {
       _logSink = null;
@@ -107,7 +110,7 @@ class DebugFileLogger {
     _flushPendingLogs();
 
     try {
-      _logSink!.writeln(line);
+      _logSink?.writeln(line);
     } catch (e) {
       // Silently fail to avoid recursive logging errors
       // If file writing fails, we don't want to crash the app
@@ -116,12 +119,13 @@ class DebugFileLogger {
 
   /// Flush pending logs that were captured before the sink was ready
   static void _flushPendingLogs() {
-    if (_pendingLogs.isEmpty || _logSink == null) return;
+    final sink = _logSink;
+    if (_pendingLogs.isEmpty || sink == null) return;
     for (final line in _pendingLogs) {
       try {
-        _logSink!.writeln(line);
+        sink.writeln(line);
       } catch (e) {
-        // Silently fail
+        // Silently fail - avoid recursive logging errors
       }
     }
     _pendingLogs.clear();
@@ -213,11 +217,12 @@ class DebugFileLogger {
       _flushTimer?.cancel();
       _flushTimer = null;
 
-      if (_logSink != null) {
+      final oldSink = _logSink;
+      if (oldSink != null) {
         final now = DateTime.now().toIso8601String();
-        _logSink!.writeln('\n=== Log rotated for upload: $now ===');
-        await _logSink!.flush();
-        await _logSink!.close();
+        oldSink.writeln('\n=== Log rotated for upload: $now ===');
+        await oldSink.flush();
+        await oldSink.close();
       }
 
       _logSink = null;
@@ -227,13 +232,15 @@ class DebugFileLogger {
       final dir = await getApplicationDocumentsDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final filename = 'meshmapper-debug-$timestamp.txt';
-      _currentLogFile = File('${dir.path}/$filename');
-      _logSink = _currentLogFile!.openWrite(mode: FileMode.append);
+      final newLogFile = File('${dir.path}/$filename');
+      _currentLogFile = newLogFile;
+      final newSink = newLogFile.openWrite(mode: FileMode.append);
+      _logSink = newSink;
 
       // Write header to new file
       final nowStr = DateTime.now().toIso8601String();
-      _logSink!.writeln('=== MeshMapper Debug Log Started: $nowStr ===');
-      _logSink!.writeln('=== (Previous log rotated for upload) ===\n');
+      newSink.writeln('=== MeshMapper Debug Log Started: $nowStr ===');
+      newSink.writeln('=== (Previous log rotated for upload) ===\n');
 
       // Restart flush timer
       _flushTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -323,8 +330,9 @@ class DebugFileLogger {
           if (await file.exists()) {
             await file.delete();
           }
-        } catch (_) {
-          // Silently ignore cleanup errors
+        } catch (e) {
+          // Non-critical: temp file cleanup failure
+          // Cannot use debugError here (circular dependency with file logger)
         }
       }
     }

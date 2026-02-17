@@ -193,7 +193,7 @@ class GpsService {
       debugLog('[GPS] Web platform - skipping permission pre-check, will prompt via position stream');
     }
 
-    debugLog('[GPS] Starting position stream listener (permission=$permission)...');
+    debugLog('[GPS] Starting position stream listener...');
     _updateStatus(GpsStatus.searching);
 
     // Configure location settings for position stream

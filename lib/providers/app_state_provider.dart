@@ -65,6 +65,11 @@ enum OfflineUploadResult {
 
 /// Main application state provider
 class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
+  // Maximum sizes for in-memory lists to prevent unbounded growth during long sessions
+  static const int _maxLogEntries = 500;
+  static const int _maxMapPins = 500;
+  static const int _maxErrorEntries = 200;
+
   final BluetoothService _bluetoothService;
   final GpsService _gpsService = GpsService(); // Initialize immediately
   late final ApiService _apiService;
@@ -233,6 +238,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Flag to track if preferences have been loaded from storage
   bool _preferencesLoaded = false;
+
+  // Disposed flag to prevent operations after disposal
+  bool _isDisposed = false;
 
   AppStateProvider({required BluetoothService bluetoothService})
       : _bluetoothService = bluetoothService {
@@ -1056,6 +1064,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _pingService!.onTxPing = (ping) {
         _txPings.add(ping);
+        if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
 
         // Add TX log entry (power in watts from preferences)
         _txLogEntries.add(TxLogEntry(
@@ -1065,12 +1074,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           power: _preferences.powerLevel, // Watts (0.3, 0.6, 1.0, 2.0)
           events: [], // Will be updated when RX responses come in
         ));
+        if (_txLogEntries.length > _maxLogEntries) _txLogEntries.removeAt(0);
 
         notifyListeners();
       };
 
       _pingService!.onRxPing = (ping) {
         _rxPings.add(ping);
+        if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
 
         // Add RX log entry
         _rxLogEntries.add(RxLogEntry(
@@ -1083,6 +1094,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           latitude: ping.latitude,
           longitude: ping.longitude,
         ));
+        if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
 
         notifyListeners();
       };
@@ -1444,6 +1456,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               rssi: observation.rssi,
             );
             _rxPings.add(rxPing);
+            if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
             _currentBatchRepeaters.add(repeaterKey);
 
             // Increment RX count immediately when pin is created (not on batch flush)
@@ -1526,6 +1539,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               rssi: entry.rssi,
             );
             _rxPings.add(newRxPing);
+            if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
             debugLog('[APP] Created FALLBACK RX pin for repeater=${entry.repeaterId} '
                 'at ${entry.lat.toStringAsFixed(5)},${entry.lon.toStringAsFixed(5)}');
           }
@@ -1550,6 +1564,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
           // Add to RX log entries
           _rxLogEntries.add(rxLogEntry);
+          if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
           debugLog('[APP] Added RX log entry: repeater=${entry.repeaterId}, '
               'snr=${entry.snr}, pathLen=${entry.pathLength}');
 
@@ -2192,8 +2207,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Add a discovery log entry (from Passive Mode)
   void _addDiscLogEntry(DiscLogEntry entry) {
     _discLogEntries.insert(0, entry);
-    // Keep max 100 entries
-    if (_discLogEntries.length > 100) {
+    if (_discLogEntries.length > _maxLogEntries) {
       _discLogEntries.removeLast();
     }
     debugLog('[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
@@ -2208,6 +2222,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       message: message,
       severity: severity,
     ));
+    if (_errorLogEntries.length > _maxErrorEntries) _errorLogEntries.removeAt(0);
     if (autoSwitch) {
       _requestErrorLogSwitch = true; // Auto-switch to error log
     }
@@ -3931,7 +3946,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ============================================
 
   @override
+  @override
+  void notifyListeners() {
+    if (!_isDisposed) super.notifyListeners();
+  }
+
+  @override
   void dispose() {
+    _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();
     _logRxDataSubscription?.cancel();
@@ -3940,6 +3962,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _maintenanceCheckTimer?.cancel();
     _zoneCheckRetryTimer?.cancel();
     _zoneCheckCountdownTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _reconnectTimeoutTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
     _pingService?.dispose();

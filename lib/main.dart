@@ -90,8 +90,8 @@ Future<String> _loadInitialThemeMode() async {
     // Delete corrupt box so AppStateProvider gets a clean start
     try {
       await Hive.deleteBoxFromDisk('user_preferences');
-    } catch (_) {
-      // Ignore delete errors
+    } catch (e) {
+      debugLog('[INIT] Failed to delete corrupt preferences box: $e');
     }
   }
   return 'dark'; // Default to dark mode

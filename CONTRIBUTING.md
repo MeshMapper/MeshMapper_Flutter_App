@@ -100,7 +100,7 @@ debugLog('[PING] Sending ping to channel 2');
 
 Required tags: `[BLE]`, `[CONN]`, `[GPS]`, `[PING]`, `[API QUEUE]`, `[RX BATCH]`, `[RX]`, `[TX]`, `[DECRYPT]`, `[CRYPTO]`, `[UI]`, `[CHANNEL]`, `[TIMER]`, `[WAKE LOCK]`, `[GEOFENCE]`, `[CAPACITY]`, `[AUTO]`, `[INIT]`, `[MODEL]`, `[MAP]`
 
-See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full list and examples.
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the full list and examples.
 
 ### Dart Style
 
@@ -132,9 +132,9 @@ Generated `*.g.dart` files are excluded from version control and regenerated dur
 
 When modifying code, update the relevant documentation:
 
-- **Architecture, workflow, or coding standard changes** — Update [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+- **Architecture, workflow, or coding standard changes** — Update [`DEVELOPMENT.md`](DEVELOPMENT.md)
 
-See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for detailed architecture documentation and coding standards.
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) for detailed architecture documentation and coding standards.
 
 ---
 

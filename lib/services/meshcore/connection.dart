@@ -145,9 +145,10 @@ class MeshCoreConnection {
   int? get lastNoiseFloor => _lastNoiseFloor;
 
   /// Last battery percentage (0-100) or null if not supported/not connected
-  int? get lastBatteryPercent => _lastBatteryMilliVolts != null
-      ? _milliVoltsToPercent(_lastBatteryMilliVolts!)
-      : null;
+  int? get lastBatteryPercent {
+    final mv = _lastBatteryMilliVolts;
+    return mv != null ? _milliVoltsToPercent(mv) : null;
+  }
 
   /// Wardriving channel info (index, name, secret) - null if not connected
   ChannelInfo? get wardrivingChannel => _wardrivingChannel;
@@ -159,9 +160,10 @@ class MeshCoreConnection {
   Uint8List? get wardrivingChannelKey => _wardrivingChannel?.secret;
 
   /// Wardriving channel hash (for echo correlation) - null if not connected
-  int? get wardrivingChannelHash => _wardrivingChannel != null
-      ? CryptoService.computeChannelHash(_wardrivingChannel!.secret)
-      : null;
+  int? get wardrivingChannelHash {
+    final channel = _wardrivingChannel;
+    return channel != null ? CryptoService.computeChannelHash(channel.secret) : null;
+  }
 
   void _updateStep(ConnectionStep step) {
     _currentStep = step;
@@ -196,7 +198,11 @@ class MeshCoreConnection {
       // This is critical for geo-auth API authentication
       try {
         _selfInfo = await getSelfInfo();
-        debugLog('[CONN] Public key acquired: ${_selfInfo!.publicKeyHex.substring(0, 16)}...');
+        final pubKeyHex = _selfInfo?.publicKeyHex;
+        if (pubKeyHex == null) {
+          throw Exception('getSelfInfo() returned null public key');
+        }
+        debugLog('[CONN] Public key acquired: ${pubKeyHex.substring(0, 16)}...');
       } catch (e) {
         debugError('[CONN] Failed to get self info (public key): $e');
         // Public key is REQUIRED for geo-auth API
@@ -206,10 +212,13 @@ class MeshCoreConnection {
       // Step 4: Device Identification (match device model for display/reporting purposes)
       // Note: We do NOT modify the radio's TX power - we only read device info
       _updateStep(ConnectionStep.powerConfiguration);
-      _deviceModel = _matchDeviceModel(_deviceInfo!.manufacturer, deviceModels);
-      if (_deviceModel != null) {
+      final deviceInfo = _deviceInfo;
+      if (deviceInfo == null) throw Exception('Device query returned null');
+      _deviceModel = _matchDeviceModel(deviceInfo.manufacturer, deviceModels);
+      final matchedModel = _deviceModel;
+      if (matchedModel != null) {
         deviceModelMatched = true;
-        debugLog('[CONN] Device identified: ${_deviceModel!.shortName} (reports ${_deviceModel!.power}W / ${_deviceModel!.txPower}dBm)');
+        debugLog('[CONN] Device identified: ${matchedModel.shortName} (reports ${matchedModel.power}W / ${matchedModel.txPower}dBm)');
       } else {
         debugLog('[CONN] Device model not recognized - user must manually select power level for reporting');
       }
@@ -278,8 +287,9 @@ class MeshCoreConnection {
   /// Delete wardriving channel early (before stopping services)
   /// This should be called FIRST in the disconnect flow to ensure BLE is still connected
   Future<void> deleteWardrivingChannelEarly() async {
-    if (_wardrivingChannel != null) {
-      await ChannelService.deleteWardrivingChannel(this, _wardrivingChannel!.channelIndex);
+    final channel = _wardrivingChannel;
+    if (channel != null) {
+      await ChannelService.deleteWardrivingChannel(this, channel.channelIndex);
       _wardrivingChannel = null;
     }
   }
@@ -843,7 +853,8 @@ class MeshCoreConnection {
   /// Format: @[MapperBot] LAT, LON [power]
   /// Reference: buildPayload() in wardrive.js
   Future<void> sendPing(double lat, double lon, double powerWatts) async {
-    if (_wardrivingChannel == null) {
+    final channel = _wardrivingChannel;
+    if (channel == null) {
       throw Exception('Wardriving channel not initialized');
     }
 
@@ -855,7 +866,7 @@ class MeshCoreConnection {
 
     debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    await sendChannelTextMessage(TxtTypes.plain, _wardrivingChannel!.channelIndex, timestamp, message);
+    await sendChannelTextMessage(TxtTypes.plain, channel.channelIndex, timestamp, message);
   }
 
   /// Send discovery request to find nearby repeaters/rooms

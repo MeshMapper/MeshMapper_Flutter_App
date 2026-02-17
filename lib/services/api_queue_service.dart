@@ -146,8 +146,8 @@ class ApiQueueService {
       // Close the corrupt box
       try {
         await _box?.close();
-      } catch (_) {
-        // Ignore close errors on corrupt box
+      } catch (e) {
+        debugWarn('[API QUEUE] Failed to close corrupt box: $e');
       }
 
       // Delete from disk and reopen
@@ -322,28 +322,36 @@ class ApiQueueService {
     _checkBatchUpload();
   }
 
+  // Guard to prevent concurrent RX buffer flushes
+  bool _isFlushing = false;
+
   /// Flush RX buffer to main queue
   Future<void> _flushRxBuffer() async {
-    // Return early if buffer is empty (avoids concurrent flush issues)
-    if (_rxBuffer.isEmpty) return;
+    // Return early if buffer is empty or flush already in progress
+    if (_rxBuffer.isEmpty || _isFlushing) return;
+    _isFlushing = true;
 
-    // Make a copy of the buffer and clear it immediately
-    // This prevents concurrent calls from trying to add the same items twice
-    final itemsToFlush = <ApiQueueItem>[];
-    for (final items in _rxBuffer.values) {
-      itemsToFlush.addAll(items);
+    try {
+      // Make a copy of the buffer and clear it immediately
+      // This prevents concurrent calls from trying to add the same items twice
+      final itemsToFlush = <ApiQueueItem>[];
+      for (final items in _rxBuffer.values) {
+        itemsToFlush.addAll(items);
+      }
+      final bufferSize = _rxBuffer.length;
+      _rxBuffer.clear();
+
+      // Now add items to the box
+      for (final item in itemsToFlush) {
+        final ok = await _safeWrite((box) => box.add(item));
+        if (!ok) break;
+      }
+
+      debugLog('[API QUEUE] Flushed ${itemsToFlush.length} RX items from $bufferSize repeaters to queue');
+      onQueueUpdated?.call(queueSize);
+    } finally {
+      _isFlushing = false;
     }
-    final bufferSize = _rxBuffer.length;
-    _rxBuffer.clear();
-
-    // Now add items to the box
-    for (final item in itemsToFlush) {
-      final ok = await _safeWrite((box) => box.add(item));
-      if (!ok) break;
-    }
-
-    debugLog('[API QUEUE] Flushed ${itemsToFlush.length} RX items from $bufferSize repeaters to queue');
-    onQueueUpdated?.call(queueSize);
   }
 
   void _checkRxBufferFlush() {

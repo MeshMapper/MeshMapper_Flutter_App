@@ -112,6 +112,33 @@ class _BugReportSheetState extends State<BugReportSheet> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
+    // Warn user about GPS data in debug logs before uploading
+    if (_uploadLogs && _selectedLogFiles.isNotEmpty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Location Data Warning'),
+          content: const Text(
+            'Debug logs may contain your approximate GPS coordinates '
+            'from your wardriving session. This location history will '
+            'be included in the uploaded files.\n\n'
+            'Do you want to continue?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
     setState(() {
       _isSubmitting = true;
       _errorMessage = null;

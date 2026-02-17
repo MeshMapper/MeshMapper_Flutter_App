@@ -380,7 +380,9 @@ class MobileBluetoothService implements BluetoothService {
           // Force cleanup before retry
           try {
             await _bleDevice?.disconnect();
-          } catch (_) {}
+          } catch (e) {
+            debugWarn('[BLE] Failed to disconnect before retry: $e');
+          }
           _bleDevice = null;
           _rxCharacteristic = null;
           _txCharacteristic = null;

@@ -167,8 +167,8 @@ class ApiService {
         // Try to parse structured error responses (e.g., 403 gps_inaccurate)
         try {
           data = json.decode(response.body) as Map<String, dynamic>;
-        } catch (_) {
-          // Non-JSON body (HTML error page, etc.) — leave as null
+        } catch (e) {
+          debugWarn('[API] Non-JSON response body (HTML error page, etc.): $e');
         }
       }
 

@@ -1,14 +1,14 @@
-# :map: MeshMapper Flutter App
+# MeshMapper Flutter App
 
 Cross-platform wardriving app for [MeshCore](https://github.com/meshcore-dev/MeshCore). Connect to MeshCore companions via Bluetooth, map repeater coverage, and contribute data to the community mesh map.
 
 Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
 
-[:globe_with_meridians: View the Map](https://meshmapper.net) | [:books: Wiki](https://wiki.meshmapper.net/) | [:link: Onboard Your Region](https://meshmapper.net/?onboarding) | [:ticket: Submit Bug/Feature](https://github.com/MeshMapper/MeshMapper_Project/issues)
+[View the Map](https://meshmapper.net) | [Wiki](https://wiki.meshmapper.net/) | [Onboard Your Region](https://meshmapper.net/?onboarding) | [Submit Bug/Feature](https://github.com/MeshMapper/MeshMapper_Project/issues)
 
 ---
 
-## :mobile_phone: Get the App
+## Get the App
 
 **App Store Releases**
 - **Android:** [Google Play](https://play.google.com/store/apps/details?id=net.meshmapper.app) or grab the [APK from GitHub](https://github.com/MeshMapper/MeshMapper_Project/releases/)
@@ -19,7 +19,7 @@ Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
 - **iOS:** [TestFlight](https://testflight.apple.com/join/PXxfr5Jr)
 - **Android:** [APK from GitHub](https://github.com/MeshMapper/MeshMapper_Project/releases/)
 
-**:electric_plug: Quick Start** — Power on your MeshCore Companion, open the app, tap Connect, and select your device via Bluetooth.
+**Quick Start** — Power on your MeshCore Companion, open the app, tap Connect, and select your device via Bluetooth.
 
 ---
 
@@ -39,32 +39,9 @@ Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
 
 ---
 
-## Building from Source
+## Development
 
-### Prerequisites
-
-- [Flutter SDK](https://flutter.dev/docs/get-started/install) 3.2.0+
-- For Android: Android SDK with API 21+
-- For iOS: Xcode 14+ with iOS 12+ deployment target
-- For Web: Chrome or Edge (Safari not supported — no Web Bluetooth API)
-
-### Setup
-
-```bash
-git clone https://github.com/MeshMapper/MeshMapper_Flutter_App.git
-cd MeshMapper_Flutter_App
-flutter pub get
-dart run build_runner build --delete-conflicting-outputs
-```
-
-### Running
-
-```bash
-flutter run                        # Android/iOS
-flutter run -d chrome              # Web
-```
-
-> **Note:** The MeshMapper API requires an API key for backend communication (zone checks, data upload). API keys are managed by the maintainers and are not distributed externally. The app runs without one — UI, BLE, GPS, and offline mode all work. Maintainers perform final API integration testing before merging contributions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and PR workflow, and [DEVELOPMENT.md](DEVELOPMENT.md) for architecture docs and coding standards.
 
 ---
 
@@ -118,19 +95,13 @@ Key design decisions:
 - **Hive for persistence** — Local storage for API queue, preferences, and offline sessions
 - **Provider for state** — Single `AppStateProvider` with `ChangeNotifier`
 
-See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for full details.
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) for full details.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please read **[CONTRIBUTING.md](CONTRIBUTING.md)** before submitting a pull request.
-
-Key points:
-- All PRs should target the **`dev`** branch
-- Run `flutter analyze` before submitting
-- API keys are not distributed — maintainers handle final integration testing
-- See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for detailed architecture docs and coding standards
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
 
 ## License
 
