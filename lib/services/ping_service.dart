@@ -61,6 +61,9 @@ class PingService {
   final AudioService? _audioService;
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// When true, skip RSSI carpeater check in DiscTracker (user setting)
+  bool disableRssiFilter;
+
   PingStats _stats = const PingStats();
   DateTime? _lastTxTime;
   Timer? _rxWindowTimer;
@@ -159,6 +162,7 @@ class PingService {
     TxTracker? txTracker,
     AudioService? audioService,
     this.shouldIgnoreRepeater,
+    this.disableRssiFilter = false,
   })  : _gpsService = gpsService,
         _connection = connection,
         _apiQueue = apiQueue,
@@ -884,8 +888,8 @@ class PingService {
     // Clear skip reason
     _skipReason = null;
 
-    // Clean up discovery infrastructure if hybrid was enabled
-    if (_hybridModeEnabled) {
+    // Clean up discovery infrastructure if passive or hybrid was enabled
+    if (_passiveModeEnabled || _hybridModeEnabled) {
       _stopDiscoveryMode();
     }
 
@@ -932,7 +936,10 @@ class PingService {
     debugLog('[DISC] Starting discovery mode');
 
     // Create and configure discovery tracker
-    final tracker = DiscTracker(shouldIgnoreRepeater: shouldIgnoreRepeater);
+    final tracker = DiscTracker(
+      shouldIgnoreRepeater: shouldIgnoreRepeater,
+      disableRssiFilter: disableRssiFilter,
+    );
     _discTracker = tracker;
     tracker.onCarpeaterDrop = onDiscCarpeaterDrop;
     tracker.onNodeDiscovered = (node, isNew) {

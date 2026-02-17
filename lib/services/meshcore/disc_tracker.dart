@@ -20,6 +20,9 @@ class DiscTracker {
   /// Callback to check if a repeater should be ignored (carpeater filter)
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// When true, skip RSSI carpeater check (user setting)
+  final bool disableRssiFilter;
+
   /// Callback for carpeater drops (for quiet error logging)
   /// Called with repeater ID and reason when a discovery response is dropped due to carpeater detection
   void Function(String repeaterId, String reason)? onCarpeaterDrop;
@@ -28,7 +31,7 @@ class DiscTracker {
   /// Parameters: (node, isNew) - isNew is true for first time seeing this node
   void Function(DiscoveredNode node, bool isNew)? onNodeDiscovered;
 
-  DiscTracker({this.shouldIgnoreRepeater});
+  DiscTracker({this.shouldIgnoreRepeater, this.disableRssiFilter = false});
 
   /// Callback fired when discovery window completes
   void Function(List<DiscoveredNode> discoveredNodes)? onWindowComplete;
@@ -141,7 +144,9 @@ class DiscTracker {
       }
 
       // Check RSSI (carpeater failsafe)
-      if (PacketValidator.isCarpeater(localRssi)) {
+      if (disableRssiFilter) {
+        debugLog('[DISC] RSSI filter disabled by user, skipping carpeater check');
+      } else if (PacketValidator.isCarpeater(localRssi)) {
         debugLog('[DISC] ❌ DROPPED: RSSI too strong ($localRssi ≥ ${PacketValidator.maxRssiThreshold}) '
             '- possible carpeater, repeater=$repeaterId');
         onCarpeaterDrop?.call(repeaterId, 'RSSI too strong ($localRssi dBm)');

@@ -64,6 +64,9 @@ class UserPreferences {
   /// Map rotation lock (disable rotation gestures)
   final bool mapRotationLocked;
 
+  /// Disable RSSI carpeater filter (allow all signal strengths)
+  final bool disableRssiFilter;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -86,6 +89,7 @@ class UserPreferences {
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
+    this.disableRssiFilter = false,
   });
 
   /// Create from JSON (for persistence)
@@ -112,6 +116,7 @@ class UserPreferences {
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
+      disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
     );
   }
 
@@ -139,6 +144,7 @@ class UserPreferences {
       'mapAutoFollow': mapAutoFollow,
       'mapAlwaysNorth': mapAlwaysNorth,
       'mapRotationLocked': mapRotationLocked,
+      'disableRssiFilter': disableRssiFilter,
     };
   }
 
@@ -165,6 +171,7 @@ class UserPreferences {
     bool? mapAutoFollow,
     bool? mapAlwaysNorth,
     bool? mapRotationLocked,
+    bool? disableRssiFilter,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -188,6 +195,7 @@ class UserPreferences {
       mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
+      disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
     );
   }
 
@@ -236,12 +244,13 @@ class UserPreferences {
         other.hybridModeEnabled == hybridModeEnabled &&
         other.mapAutoFollow == mapAutoFollow &&
         other.mapAlwaysNorth == mapAlwaysNorth &&
-        other.mapRotationLocked == mapRotationLocked;
+        other.mapRotationLocked == mapRotationLocked &&
+        other.disableRssiFilter == disableRssiFilter;
   }
 
   @override
   int get hashCode {
-    return Object.hash(
+    return Object.hashAll([
       powerLevel,
       txPower,
       externalAntenna,
@@ -262,7 +271,8 @@ class UserPreferences {
       mapAutoFollow,
       mapAlwaysNorth,
       mapRotationLocked,
-    );
+      disableRssiFilter,
+    ]);
   }
 
   /// Check if using imperial units

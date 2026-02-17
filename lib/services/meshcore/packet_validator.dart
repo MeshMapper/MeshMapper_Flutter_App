@@ -21,7 +21,10 @@ class PacketValidator {
   /// Allowed channels for validation
   final Map<int, ChannelInfo> allowedChannels;
 
-  PacketValidator({required this.allowedChannels});
+  /// When true, skip RSSI carpeater check (user setting)
+  final bool disableRssiFilter;
+
+  PacketValidator({required this.allowedChannels, this.disableRssiFilter = false});
 
   /// Validate packet for RX wardriving
   /// Returns ValidationResult with success/failure and reason
@@ -37,12 +40,15 @@ class PacketValidator {
           'PathLength: ${metadata.pathLength} | SNR: ${metadata.snr}');
 
       // VALIDATION 1: Check RSSI (carpeater filter)
-      if (isCarpeater(metadata.rssi)) {
+      if (disableRssiFilter) {
+        debugLog('[RX FILTER] RSSI filter disabled by user, skipping carpeater check');
+      } else if (isCarpeater(metadata.rssi)) {
         debugLog('[RX FILTER] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ $maxRssiThreshold) - '
             'possible carpeater (RSSI failsafe)');
         return ValidationResult.failed('carpeater-rssi');
+      } else {
+        debugLog('[RX FILTER] ✓ RSSI OK (${metadata.rssi} < $maxRssiThreshold)');
       }
-      debugLog('[RX FILTER] ✓ RSSI OK (${metadata.rssi} < $maxRssiThreshold)');
 
       // VALIDATION 2: Check packet type
       if (metadata.isGroupText) {

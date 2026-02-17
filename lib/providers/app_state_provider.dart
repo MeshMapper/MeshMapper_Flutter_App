@@ -1010,7 +1010,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             hash: entry.value.hash,
           );
         }
-        final newValidator = PacketValidator(allowedChannels: allowedChannels);
+        final newValidator = PacketValidator(
+          allowedChannels: allowedChannels,
+          disableRssiFilter: _preferences.disableRssiFilter,
+        );
         _unifiedRxHandler!.updateValidator(newValidator);
         debugLog('[APP] PacketValidator updated with ${allowedChannels.length} channels: '
             '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
@@ -1029,6 +1032,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         deviceId: _deviceId,
         txTracker: _txTracker,
         audioService: _audioService,
+        disableRssiFilter: _preferences.disableRssiFilter,
         shouldIgnoreRepeater: (String repeaterId) {
           // Same filter as RxLogger - check user preferences for ignored repeater ID
           final prefs = _preferences;
@@ -1398,6 +1402,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Create TX tracker (stored for use by PingService)
     _txTracker = TxTracker();
+    _txTracker!.disableRssiFilter = _preferences.disableRssiFilter;
 
     // Log TX carpeater drops to error log (without navigating to error tab)
     _txTracker!.onCarpeaterDrop = (String repeaterId, String reason) {
@@ -1617,8 +1622,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     debugLog('[APP] PacketValidator configured with ${allowedChannels.length} channels: '
         '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
-    final validator = PacketValidator(allowedChannels: allowedChannels);
-    
+    final validator = PacketValidator(
+      allowedChannels: allowedChannels,
+      disableRssiFilter: _preferences.disableRssiFilter,
+    );
+
     // Create unified handler
     _unifiedRxHandler = UnifiedRxHandler(
       txTracker: _txTracker!,
@@ -2718,8 +2726,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Saved antenna preference for "$deviceName": ${preferences.externalAntenna ? "external" : "device"}');
     }
 
+    // Propagate RSSI filter setting to live trackers/validators
+    _syncRssiFilterSetting(preferences.disableRssiFilter);
+
     notifyListeners();
     _savePreferences();
+  }
+
+  /// Propagate disableRssiFilter to all active trackers and validators
+  void _syncRssiFilterSetting(bool disableRssiFilter) {
+    if (_txTracker != null) {
+      _txTracker!.disableRssiFilter = disableRssiFilter;
+    }
+    if (_unifiedRxHandler != null) {
+      final oldValidator = _unifiedRxHandler!.validator;
+      final newValidator = PacketValidator(
+        allowedChannels: oldValidator.allowedChannels,
+        disableRssiFilter: disableRssiFilter,
+      );
+      _unifiedRxHandler!.updateValidator(newValidator);
+    }
+    if (_pingService != null) {
+      _pingService!.disableRssiFilter = disableRssiFilter;
+    }
   }
 
   /// Set developer mode (unlocked by tapping version 7 times)

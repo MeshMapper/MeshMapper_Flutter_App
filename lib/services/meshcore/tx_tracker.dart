@@ -34,6 +34,9 @@ class TxTracker {
   /// Returns true if the repeater should be filtered out
   bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// When true, skip RSSI carpeater check (user setting)
+  bool disableRssiFilter = false;
+
   /// Start tracking echoes for a sent ping
   /// 
   /// @param payload - The message text sent (for content verification)
@@ -121,14 +124,17 @@ class TxTracker {
       }
 
       // VALIDATION STEP 2.5: Check RSSI (carpeater failsafe)
-      if (PacketValidator.isCarpeater(metadata.rssi)) {
+      if (disableRssiFilter) {
+        debugLog('[TX LOG] RSSI filter disabled by user, skipping carpeater check');
+      } else if (PacketValidator.isCarpeater(metadata.rssi)) {
         debugLog('[TX LOG] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ ${PacketValidator.maxRssiThreshold}) '
             '- possible carpeater (RSSI failsafe), repeater=$pathHex');
         debugLog('[TX LOG] onCarpeaterDrop callback is ${onCarpeaterDrop != null ? "SET" : "NULL"}');
         onCarpeaterDrop?.call(pathHex, 'RSSI too strong (${metadata.rssi} dBm)');
         return false; // Mark as handled (dropped)
+      } else {
+        debugLog('[TX LOG] ✓ RSSI OK (${metadata.rssi} < ${PacketValidator.maxRssiThreshold})');
       }
-      debugLog('[TX LOG] ✓ RSSI OK (${metadata.rssi} < ${PacketValidator.maxRssiThreshold})');
 
       // VALIDATION STEP 3: Channel hash validation
       if (metadata.encryptedPayload.length < 3) {

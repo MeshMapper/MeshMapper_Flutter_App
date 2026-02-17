@@ -279,6 +279,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: isAutoMode ? null : () => _showRepeaterIdDialog(context, appState),
             ),
 
+          // Disable RSSI Filter Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.shield_outlined),
+            title: const Text('Disable RSSI Filter'),
+            subtitle: Text(prefs.disableRssiFilter
+                ? 'Allows all signal strengths'
+                : 'Drops signals stronger than -30 dBm'),
+            value: prefs.disableRssiFilter,
+            onChanged: isAutoMode ? null : (value) {
+              if (value) {
+                _showDisableRssiFilterConfirmation(context, appState);
+              } else {
+                appState.updatePreferences(prefs.copyWith(disableRssiFilter: false));
+              }
+            },
+          ),
+
           // Lock indicator
           if (isAutoMode)
             Padding(
@@ -890,6 +907,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Navigator.pop(context);
             },
             child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDisableRssiFilterConfirmation(BuildContext context, AppStateProvider appState) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Disable RSSI Filter?'),
+        content: const Text(
+          'By disabling this filter, you are confirming that you are not operating '
+          'a carpeater (a repeater co-located with your device).\n\n'
+          'If this filter is disabled while a carpeater is present, your device will '
+          'report false coverage data to the MeshMapper community map. This degrades '
+          'map accuracy for everyone.\n\n'
+          'Only disable this if you are certain no co-located repeater is within range.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              appState.updatePreferences(
+                appState.preferences.copyWith(disableRssiFilter: true),
+              );
+              Navigator.pop(context);
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Disable Filter'),
           ),
         ],
       ),
