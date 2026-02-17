@@ -1129,7 +1129,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Handle real-time echo updates - update TxLogEntry as echoes are received
       _pingService!.onEchoReceived = (txPing, repeater, isNew) {
         debugLog('[APP] ========== ECHO CALLBACK RECEIVED ==========');
-        debugLog('[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr}, isNew: $isNew)');
+        debugLog('[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
         debugLog('[APP] TxLogEntries count: ${_txLogEntries.length}');
 
         // Find the matching TxLogEntry and update its events
@@ -1216,8 +1216,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (lastTx.events.isNotEmpty) {
             repeaters = lastTx.events.map((e) => MarkerRepeaterInfo(
               repeaterId: e.repeaterId,
-              snr: e.snr,
-              rssi: e.rssi,
+              snr: e.snr ?? 0.0,
+              rssi: e.rssi ?? 0,
             )).toList();
           }
         }
@@ -1404,6 +1404,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _txTracker = TxTracker();
     _txTracker!.disableRssiFilter = _preferences.disableRssiFilter;
 
+    // Set CARpeater prefix for pass-through (replaces shouldIgnoreRepeater)
+    _txTracker!.carpeaterPrefix = _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
+    debugLog('[APP] TxTracker.carpeaterPrefix set to ${_txTracker!.carpeaterPrefix ?? 'null'}');
+
     // Log TX carpeater drops to error log (without navigating to error tab)
     _txTracker!.onCarpeaterDrop = (String repeaterId, String reason) {
       debugLog('[APP] TX carpeater drop: repeater=$repeaterId, reason=$reason');
@@ -1412,37 +1416,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
     debugLog('[APP] TxTracker.onCarpeaterDrop callback SET');
 
-    // Function to check if repeater should be ignored (carpeater filter)
-    _txTracker!.shouldIgnoreRepeater = (String repeaterId) {
-      final prefs = _preferences;
-      if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
-        final ignored = prefs.ignoreRepeaterId!.toUpperCase();
-        return repeaterId.toUpperCase() == ignored;
-      }
-      return false;
-    };
-    debugLog('[APP] TxTracker.shouldIgnoreRepeater callback SET');
-
     // Create RX logger (stored for use when enabling Passive Mode)
     _rxLogger = RxLogger(
-      // Function to check if repeater should be ignored (carpeater filter)
-      shouldIgnoreRepeater: (String repeaterId) {
-        // Check user preferences for ignored repeater ID
-        final prefs = _preferences;
-        if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
-          // Case-insensitive comparison (both uppercase)
-          final ignored = prefs.ignoreRepeaterId!.toUpperCase();
-          final current = repeaterId.toUpperCase();
-          return current == ignored;
-        }
-        return false;
-      },
+      // CARpeater prefix for pass-through (replaces shouldIgnoreRepeater)
+      carpeaterPrefix: _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null,
       // Immediate observation callback - fires when packet is first validated
       // Creates pin IMMEDIATELY for NEW repeaters (first time in current batch)
       onObservation: (observation) {
         try {
           debugLog('[APP] Immediate RX observation: repeater=${observation.repeaterId}, '
-              'snr=${observation.snr}, location=${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)}');
+              'snr=${observation.snr ?? 'null'}, location=${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)}');
 
           // Log current batch tracking state for debugging
           debugLog('[APP] Current batch tracking: ${_currentBatchRepeaters.length} repeaters: $_currentBatchRepeaters');
@@ -1457,8 +1440,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               longitude: observation.lon,
               repeaterId: observation.repeaterId,
               timestamp: DateTime.now(),
-              snr: observation.snr,
-              rssi: observation.rssi,
+              snr: observation.snr ?? 0.0,
+              rssi: observation.rssi ?? 0,
             );
             _rxPings.add(rxPing);
             if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
@@ -1480,8 +1463,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               repeaters: [
                 MarkerRepeaterInfo(
                   repeaterId: observation.repeaterId,
-                  snr: observation.snr,
-                  rssi: observation.rssi,
+                  snr: observation.snr ?? 0.0,
+                  rssi: observation.rssi ?? 0,
                 ),
               ],
             );
@@ -1501,7 +1484,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         try {
           debugLog('[APP] ========== BATCH FLUSH CALLBACK ==========');
           debugLog('[APP] Finalized RX entry (best SNR): repeater=${entry.repeaterId}, '
-              'snr=${entry.snr}, location=${entry.lat.toStringAsFixed(5)},${entry.lon.toStringAsFixed(5)}');
+              'snr=${entry.snr ?? 'null'}, location=${entry.lat.toStringAsFixed(5)},${entry.lon.toStringAsFixed(5)}');
 
           final repeaterKey = entry.repeaterId.toUpperCase();
 
@@ -1518,20 +1501,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (lastPinIndex != -1) {
             // Update the pin's SNR to the best from this batch
             final existingPin = _rxPings[lastPinIndex];
-            if (entry.snr > existingPin.snr) {
+            // Only update if new SNR is non-null and better (null never replaces non-null)
+            final shouldUpdateSnr = entry.snr != null && entry.snr! > existingPin.snr;
+            if (shouldUpdateSnr) {
               _rxPings[lastPinIndex] = RxPing(
                 latitude: existingPin.latitude,   // KEEP batch start location
                 longitude: existingPin.longitude, // KEEP batch start location
                 repeaterId: entry.repeaterId,
                 timestamp: entry.timestamp,
-                snr: entry.snr,                   // UPDATE to best SNR from batch
-                rssi: entry.rssi,
+                snr: entry.snr ?? existingPin.snr, // UPDATE to best SNR from batch
+                rssi: entry.rssi ?? existingPin.rssi,
               );
               debugLog('[APP] Updated RX pin SNR for repeater=${entry.repeaterId}: '
-                  '${existingPin.snr.toStringAsFixed(2)} -> ${entry.snr.toStringAsFixed(2)}');
+                  '${existingPin.snr.toStringAsFixed(2)} -> ${entry.snr?.toStringAsFixed(2) ?? 'null'}');
             } else {
               debugLog('[APP] RX pin SNR unchanged for repeater=${entry.repeaterId}: '
-                  'batch best ${entry.snr.toStringAsFixed(2)} <= pin ${existingPin.snr.toStringAsFixed(2)}');
+                  'batch best ${entry.snr?.toStringAsFixed(2) ?? 'null'} <= pin ${existingPin.snr.toStringAsFixed(2)}');
             }
           } else {
             // Edge case: pin not found (should have been created in onObservation)
@@ -1540,8 +1525,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               longitude: entry.lon,
               repeaterId: entry.repeaterId,
               timestamp: entry.timestamp,
-              snr: entry.snr,
-              rssi: entry.rssi,
+              snr: entry.snr ?? 0.0,
+              rssi: entry.rssi ?? 0,
             );
             _rxPings.add(newRxPing);
             if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
@@ -1571,13 +1556,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _rxLogEntries.add(rxLogEntry);
           if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
           debugLog('[APP] Added RX log entry: repeater=${entry.repeaterId}, '
-              'snr=${entry.snr}, pathLen=${entry.pathLength}');
+              'snr=${entry.snr ?? 'null'}, pathLen=${entry.pathLength}');
 
           // Note: RX count is incremented in onObservation when pin is created (immediate feedback)
 
           // Enqueue to API with formatted heard_repeats string
-          // Format: "repeaterId(snr)" e.g. "4e(12.25)"
-          final heardRepeats = '${entry.repeaterId}(${entry.snr.toStringAsFixed(2)})';
+          // Format: "repeaterId(snr)" e.g. "4e(12.25)" or "4e(null)" for CARpeater pass-through
+          final heardRepeats = entry.snr != null
+              ? '${entry.repeaterId}(${entry.snr!.toStringAsFixed(2)})'
+              : '${entry.repeaterId}(null)';
           await _apiQueueService.enqueueRx(
             latitude: entry.lat,
             longitude: entry.lon,
@@ -2729,8 +2716,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Propagate RSSI filter setting to live trackers/validators
     _syncRssiFilterSetting(preferences.disableRssiFilter);
 
+    // Propagate CARpeater prefix to live trackers
+    _syncCarpeaterPrefix();
+
     notifyListeners();
     _savePreferences();
+  }
+
+  /// Propagate carpeaterPrefix to live TxTracker and RxLogger
+  void _syncCarpeaterPrefix() {
+    final prefix = _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
+    if (_txTracker != null) {
+      _txTracker!.carpeaterPrefix = prefix;
+      debugLog('[APP] Synced TxTracker.carpeaterPrefix = ${prefix ?? 'null'}');
+    }
+    if (_rxLogger != null) {
+      _rxLogger!.carpeaterPrefix = prefix;
+      debugLog('[APP] Synced RxLogger.carpeaterPrefix = ${prefix ?? 'null'}');
+    }
   }
 
   /// Propagate disableRssiFilter to all active trackers and validators

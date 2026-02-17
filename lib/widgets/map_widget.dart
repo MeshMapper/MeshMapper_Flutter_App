@@ -1829,9 +1829,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     ...heardRepeaters.map((repeater) {
                       // Calculate SNR chip color
                       Color snrColor;
-                      if (repeater.snr <= -1) {
+                      if (repeater.snr == null) {
+                        snrColor = Colors.grey;
+                      } else if (repeater.snr! <= -1) {
                         snrColor = Colors.red;
-                      } else if (repeater.snr <= 5) {
+                      } else if (repeater.snr! <= 5) {
                         snrColor = Colors.orange;
                       } else {
                         snrColor = Colors.green;
@@ -1839,9 +1841,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
                       // Calculate RSSI chip color
                       Color rssiColor;
-                      if (repeater.rssi >= -70) {
+                      if (repeater.rssi == null) {
+                        rssiColor = Colors.grey;
+                      } else if (repeater.rssi! >= -70) {
                         rssiColor = Colors.green;
-                      } else if (repeater.rssi >= -100) {
+                      } else if (repeater.rssi! >= -100) {
                         rssiColor = Colors.orange;
                       } else {
                         rssiColor = Colors.red;
@@ -1859,7 +1863,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               Expanded(
                                 child: Center(
                                   child: _buildStatChip(
-                                    value: repeater.snr.toStringAsFixed(1),
+                                    value: repeater.snr?.toStringAsFixed(1) ?? '-',
                                     color: snrColor,
                                   ),
                                 ),
@@ -1868,7 +1872,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               Expanded(
                                 child: Center(
                                   child: _buildStatChip(
-                                    value: '${repeater.rssi}',
+                                    value: repeater.rssi != null ? '${repeater.rssi}' : '-',
                                     color: rssiColor,
                                   ),
                                 ),

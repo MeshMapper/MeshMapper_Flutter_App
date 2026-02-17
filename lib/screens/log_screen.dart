@@ -488,13 +488,17 @@ class _TxLogTab extends StatelessWidget {
         snrColor = Colors.orange;
       case SnrSeverity.good:
         snrColor = Colors.green;
+      case null:
+        snrColor = Colors.grey;
     }
 
     // RSSI color based on signal strength
     Color rssiColor;
-    if (event.rssi >= -70) {
+    if (event.rssi == null) {
+      rssiColor = Colors.grey;
+    } else if (event.rssi! >= -70) {
       rssiColor = Colors.green;
-    } else if (event.rssi >= -100) {
+    } else if (event.rssi! >= -100) {
       rssiColor = Colors.orange;
     } else {
       rssiColor = Colors.red;
@@ -511,13 +515,13 @@ class _TxLogTab extends StatelessWidget {
             // SNR
             Expanded(
               child: Center(
-                child: _buildTxChip(event.snr.toStringAsFixed(1), snrColor),
+                child: _buildTxChip(event.snr?.toStringAsFixed(1) ?? '-', snrColor),
               ),
             ),
             // RSSI
             Expanded(
               child: Center(
-                child: _buildTxChip('${event.rssi}', rssiColor),
+                child: _buildTxChip(event.rssi != null ? '${event.rssi}' : '-', rssiColor),
               ),
             ),
           ],
@@ -591,13 +595,17 @@ class _RxLogTab extends StatelessWidget {
         snrColor = Colors.orange;
       case SnrSeverity.good:
         snrColor = Colors.green;
+      case null:
+        snrColor = Colors.grey;
     }
 
     // RSSI color based on signal strength
     Color rssiColor;
-    if (entry.rssi >= -70) {
+    if (entry.rssi == null) {
+      rssiColor = Colors.grey;
+    } else if (entry.rssi! >= -70) {
       rssiColor = Colors.green; // Strong: -30 to -70 dBm
-    } else if (entry.rssi >= -100) {
+    } else if (entry.rssi! >= -100) {
       rssiColor = Colors.orange; // Medium: -70 to -100 dBm
     } else {
       rssiColor = Colors.red; // Weak: -100 to -120 dBm
@@ -721,13 +729,13 @@ class _RxLogTab extends StatelessWidget {
                           // SNR
                           Expanded(
                             child: Center(
-                              child: _buildRxChip(entry.snr.toStringAsFixed(1), snrColor),
+                              child: _buildRxChip(entry.snr?.toStringAsFixed(1) ?? '-', snrColor),
                             ),
                           ),
                           // RSSI
                           Expanded(
                             child: Center(
-                              child: _buildRxChip('${entry.rssi}', rssiColor),
+                              child: _buildRxChip(entry.rssi != null ? '${entry.rssi}' : '-', rssiColor),
                             ),
                           ),
                         ],

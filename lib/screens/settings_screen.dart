@@ -248,13 +248,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
 
-          // Carpeater Ignore Setting
+          // CARpeater Filter Setting
           SwitchListTile(
             secondary: const Icon(Icons.filter_alt),
-            title: const Text('Ignore Carpeater'),
+            title: const Text('CARpeater Filter'),
             subtitle: Text(prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
-                ? 'Filtering repeater 0x${prefs.ignoreRepeaterId}'
-                : 'Tap to set repeater ID to ignore'),
+                ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
+                : 'Tap to set CARpeater repeater ID'),
             value: prefs.ignoreCarpeater,
             onChanged: isAutoMode ? null : (value) {
               if (value && prefs.ignoreRepeaterId == null) {
@@ -266,11 +266,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
 
-          // Repeater ID to Ignore - show when enabled
+          // CARpeater ID - show when enabled
           if (prefs.ignoreCarpeater)
             ListTile(
               leading: const SizedBox(width: 24), // Indent
-              title: const Text('Repeater ID'),
+              title: const Text('CARpeater ID'),
               subtitle: Text(prefs.ignoreRepeaterId != null
                   ? '0x${prefs.ignoreRepeaterId}'
                   : 'Not set'),
@@ -1054,17 +1054,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Ignore Repeater ID'),
+        title: const Text('CARpeater Repeater ID'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Enter the repeater ID to ignore (2 hex digits):'),
+            const Text('Enter the repeater ID of your CARpeater (2 hex digits):'),
             const SizedBox(height: 16),
             TextField(
               controller: controller,
               decoration: const InputDecoration(
-                labelText: 'Repeater ID',
+                labelText: 'CARpeater ID',
                 hintText: 'FF',
                 prefixText: '0x',
                 border: OutlineInputBorder(),
@@ -1084,7 +1084,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Enter 2-character hex ID (e.g., FF) to ignore a specific repeater.\nLeave empty to disable.',
+              'Multi-hop packets through your CARpeater will be stripped to report the underlying repeater with null signal data. Single-hop CARpeater packets are still dropped.',
               style: TextStyle(
                 fontSize: 12,
                 color: Colors.grey[600],

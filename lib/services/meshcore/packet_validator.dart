@@ -28,7 +28,8 @@ class PacketValidator {
 
   /// Validate packet for RX wardriving
   /// Returns ValidationResult with success/failure and reason
-  Future<ValidationResult> validate(PacketMetadata metadata) async {
+  /// [skipRssiCheck] - When true, skip the RSSI carpeater check (used for CARpeater pass-through)
+  Future<ValidationResult> validate(PacketMetadata metadata, {bool skipRssiCheck = false}) async {
     try {
       // Log packet for debugging
       final rawHex = metadata.raw
@@ -40,7 +41,9 @@ class PacketValidator {
           'PathLength: ${metadata.pathLength} | SNR: ${metadata.snr}');
 
       // VALIDATION 1: Check RSSI (carpeater filter)
-      if (disableRssiFilter) {
+      if (skipRssiCheck) {
+        debugLog('[RX FILTER] RSSI check skipped (CARpeater pass-through)');
+      } else if (disableRssiFilter) {
         debugLog('[RX FILTER] RSSI filter disabled by user, skipping carpeater check');
       } else if (isCarpeater(metadata.rssi)) {
         debugLog('[RX FILTER] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ $maxRssiThreshold) - '

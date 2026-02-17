@@ -651,8 +651,10 @@ class PingService {
       for (final entry in txTracker.repeaters.entries) {
         final repeaterId = entry.key;
         final echo = entry.value;
-        // Format SNR with 2 decimal places
-        repeaterStrings.add('$repeaterId(${echo.snr.toStringAsFixed(2)})');
+        // Format SNR with 2 decimal places, or "null" for CARpeater pass-through
+        repeaterStrings.add(echo.snr != null
+            ? '$repeaterId(${echo.snr!.toStringAsFixed(2)})'
+            : '$repeaterId(null)');
         debugLog('[PING] Heard repeater: $repeaterId, SNR=${echo.snr}');
       }
       heardRepeats = repeaterStrings.join(',');

@@ -111,14 +111,14 @@ class RxPing {
 /// Repeater that heard a TX ping (from echo tracking)
 class HeardRepeater {
   final String repeaterId; // Hex ID (e.g., "4e", "77")
-  final double snr; // Best SNR observed
-  final int rssi; // RSSI in dBm
+  final double? snr; // Best SNR observed (null for CARpeater pass-through)
+  final int? rssi; // RSSI in dBm (null for CARpeater pass-through)
   final int seenCount; // How many times this repeater was heard
 
   const HeardRepeater({
     required this.repeaterId,
-    required this.snr,
-    this.rssi = 0,
+    this.snr,
+    this.rssi,
     this.seenCount = 1,
   });
 }
