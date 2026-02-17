@@ -1,5 +1,7 @@
 # MeshMapper Flutter App
 
+> **Note:** All issues and feature requests are tracked in the main project repo: [MeshMapper/MeshMapper_Project](https://github.com/MeshMapper/MeshMapper_Project/issues). Please open issues there rather than in this repository.
+
 Cross-platform wardriving app for [MeshCore](https://github.com/meshcore-dev/MeshCore). Connect to MeshCore companions via Bluetooth, map repeater coverage, and contribute data to the community mesh map.
 
 Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
@@ -42,22 +44,6 @@ Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and PR workflow, and [DEVELOPMENT.md](DEVELOPMENT.md) for architecture docs and coding standards.
-
----
-
-## Supported Devices
-
-The app supports 30+ MeshCore device variants:
-
-| Manufacturer | Models |
-|---|---|
-| **Ikoka** | Stick, Nano, Handheld (22dBm, 30dBm, 33dBm variants) |
-| **Heltec** | V2, V3, V4, T114, T190, E213, E290, MeshPocket |
-| **RAK** | 4631, 3x72 |
-| **LilyGo** | T-Echo, T-Deck, T-Beam, T-LoRa |
-| **Seeed** | Wio E5, Wio Tracker, T1000, Xiao variants |
-
-See [`assets/device-models.json`](assets/device-models.json) for the full list.
 
 ---
 
