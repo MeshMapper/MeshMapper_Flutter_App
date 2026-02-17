@@ -982,6 +982,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationIcon = Icons.engineering;
       locationText = 'Maintenance';
       locationColor = Colors.orange;
+    // Network error: show wifi off indicator
+    } else if (appState.zoneCheckErrorReason == 'network') {
+      locationIcon = Icons.wifi_off;
+      locationText = 'No Internet';
+      locationColor = Colors.red;
     // Show "Checking Zone..." whenever a zone check is in progress
     // This provides consistent UI feedback during both initial and re-checks
     } else if (appState.isCheckingZone) {
@@ -1290,8 +1295,94 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     // Show zone checking status on initial startup (before zone is known)
     if (appState.inZone == null && !appState.offlineMode) {
       if (appState.zoneCheckError != null) {
-        // Zone check failed — show error with countdown
         final countdown = appState.zoneCheckRetryCountdown;
+
+        // Network error — show offline mode option (matches maintenance pattern)
+        if (appState.zoneCheckErrorReason == 'network') {
+          return Column(
+            children: [
+              _buildZoneStatusBar(context, appState),
+              Expanded(
+                child: Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.wifi_off,
+                          size: 64,
+                          color: Colors.deepOrange.withValues(alpha: 0.7),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'No Internet Connection',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Unable to reach MeshMapper. Check your connection, or wardrive offline.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          countdown > 0
+                              ? 'Retrying in ${countdown}s...'
+                              : 'Retrying...',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey.shade500,
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+                        FilledButton.icon(
+                          onPressed: () => appState.setOfflineMode(true),
+                          icon: const Icon(Icons.cloud_off),
+                          label: const Text('Enable Offline Mode'),
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  'Wardrive offline now, upload when service is restored.',
+                                  style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+
+        // Non-network errors — show simple error with countdown
         return Column(
           children: [
             _buildZoneStatusBar(context, appState),
