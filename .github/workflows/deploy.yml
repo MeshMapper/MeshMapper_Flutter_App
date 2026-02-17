@@ -27,9 +27,13 @@ jobs:
         with:  
           channel: 'stable'
       
+      - name: Generate build version
+        id: version
+        run: echo "APP_VERSION=APP-$(date +%s)" >> $GITHUB_OUTPUT
+
       - run: flutter pub get
       - run: dart run build_runner build --delete-conflicting-outputs
-      - run: flutter build web --release --base-href "/" --dart-define=API_KEY=${{ secrets.API_KEY }}
+      - run: flutter build web --release --base-href "/" --dart-define=API_KEY=${{ secrets.API_KEY }} --dart-define=APP_VERSION=${{ steps.version.outputs.APP_VERSION }}
       
       - uses: actions/configure-pages@v4
       
