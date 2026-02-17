@@ -28,7 +28,8 @@ jobs:
           channel: 'stable'
       
       - run: flutter pub get
-      - run:  flutter build web --release --base-href "/"
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build web --release --base-href "/" --dart-define=API_KEY=${{ secrets.API_KEY }}
       
       - uses: actions/configure-pages@v4
       
