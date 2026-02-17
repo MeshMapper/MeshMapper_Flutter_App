@@ -122,8 +122,8 @@ else
 fi
 
 # Output directories
-ANDROID_DIR="/Users/schnobbc/Documents/MeshMapper_Apps/Andriod"
-IOS_DIR="/Users/schnobbc/Documents/MeshMapper_Apps/IOS"
+ANDROID_DIR="$HOME/Documents/MeshMapper_Apps/Andriod"
+IOS_DIR="$HOME/Documents/MeshMapper_Apps/IOS"
 
 echo ""
 echo "============================================"

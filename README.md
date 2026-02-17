@@ -1,164 +1,143 @@
-# MeshMapper Flutter App
+# :map: MeshMapper Flutter App
 
-Cross-platform wardriving app for MeshCore devices. A Flutter port of the [MeshMapper WebClient](https://github.com/MeshMapper/MeshMapper_WebClient).
+Cross-platform wardriving app for [MeshCore](https://github.com/meshcore-dev/MeshCore). Connect to MeshCore companions via Bluetooth, map repeater coverage, and contribute data to the community mesh map.
+
+Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
+
+[:globe_with_meridians: View the Map](https://meshmapper.net) | [:books: Wiki](https://wiki.meshmapper.net/) | [:link: Onboard Your Region](https://meshmapper.net/?onboarding) | [:ticket: Submit Bug/Feature](https://github.com/MeshMapper/MeshMapper_Project/issues)
+
+---
+
+## :mobile_phone: Get the App
+
+**App Store Releases**
+- **Android:** [Google Play](https://play.google.com/store/apps/details?id=net.meshmapper.app) or grab the [APK from GitHub](https://github.com/MeshMapper/MeshMapper_Project/releases/)
+- **iOS:** [App Store](https://apps.apple.com/us/app/meshmapper/id6758073991)
+- **Web:** [wd.meshmapper.net](https://wd.meshmapper.net) (Chrome/Edge only)
+
+**Beta Releases**
+- **iOS:** [TestFlight](https://testflight.apple.com/join/PXxfr5Jr)
+- **Android:** [APK from GitHub](https://github.com/MeshMapper/MeshMapper_Project/releases/)
+
+**:electric_plug: Quick Start** — Power on your MeshCore Companion, open the app, tap Connect, and select your device via Bluetooth.
+
+---
 
 ## Features
 
-- **Cross-Platform**: Runs on Android, iOS, and Web (Chrome/Edge)
-- **BLE Connectivity**: Connect to MeshCore devices via Bluetooth Low Energy
-- **GPS Tracking**: High-accuracy location tracking with 25m distance filter
-- **Geofencing**: Enforces 150km boundary from Ottawa (service area)
-- **Device Recognition**: Automatically identifies device model for accurate power reporting
-- **Real-time Map**: View TX/RX ping markers on OpenStreetMap
-- **API Queue**: Persistent queue with batch upload and retry logic
-- **Dark Mode**: System theme support
+- **Cross-Platform** — Android, iOS, and Web (Chrome/Edge)
+- **BLE Connectivity** — Connect to MeshCore companion devices via Bluetooth Low Energy
+- **GPS Tracking** — High-accuracy location tracking with 50m distance filter
+- **Real-time Map** — View TX/RX/DISC ping markers on OpenStreetMap with dark mode tiles
+- **Repeater Echo Detection** — 7-second window detects which repeaters echo your pings
+- **Passive RX Logging** — Continuously monitors mesh traffic and logs observations
+- **Persistent API Queue** — Batch upload with retry logic, survives app restarts
+- **Offline Mode** — Wardrive without connectivity, upload data later
+- **30+ Device Models** — Automatic identification and power reporting for Ikoka, Heltec, RAK, LilyGo, Seeed, and more
+- **Noise Floor Graphing** — Track signal quality over time
+- **Dark/Light Theme** — System theme support
 
-## Screenshots
+---
 
-*Coming soon*
-
-## Getting Started
+## Building from Source
 
 ### Prerequisites
 
-- [Flutter SDK](https://flutter.dev/docs/get-started/install) 3.2.0 or higher
+- [Flutter SDK](https://flutter.dev/docs/get-started/install) 3.2.0+
 - For Android: Android SDK with API 21+
-- For iOS: Xcode 14+ and iOS 12+ deployment target
-- For Web: Chrome or Edge browser (Safari not supported for Web Bluetooth)
+- For iOS: Xcode 14+ with iOS 12+ deployment target
+- For Web: Chrome or Edge (Safari not supported — no Web Bluetooth API)
 
-### Installation
+### Setup
 
-1. Clone the repository:
 ```bash
 git clone https://github.com/MeshMapper/MeshMapper_Flutter_App.git
 cd MeshMapper_Flutter_App
-```
-
-2. Install dependencies:
-```bash
 flutter pub get
+dart run build_runner build --delete-conflicting-outputs
 ```
 
-3. Run the app:
+### Running
+
 ```bash
-# For Android/iOS
-flutter run
-
-# For Web
-flutter run -d chrome
+flutter run                        # Android/iOS
+flutter run -d chrome              # Web
 ```
 
-## Project Structure
+> **Note:** The MeshMapper API requires an API key for backend communication (zone checks, data upload). API keys are managed by the maintainers and are not distributed externally. The app runs without one — UI, BLE, GPS, and offline mode all work. Maintainers perform final API integration testing before merging contributions.
 
-```
-lib/
-├── main.dart                    # App entry point
-├── models/                      # Data models
-├── services/                    # Business logic
-│   ├── bluetooth/               # BLE abstractions
-│   ├── meshcore/                # MeshCore protocol
-│   └── ...                      # GPS, API, etc.
-├── providers/                   # State management
-├── screens/                     # Full-page UI
-└── widgets/                     # Reusable components
-
-assets/
-└── device-models.json           # Device database
-
-docs/
-├── ARCHITECTURE.md              # System design
-└── PORTING_NOTES.md             # JS→Dart translation
-```
+---
 
 ## Supported Devices
 
-The app supports 30+ MeshCore device variants including:
+The app supports 30+ MeshCore device variants:
 
-- **Ikoka**: Stick, Nano, Handheld (22dBm, 30dBm, 33dBm variants)
-- **Heltec**: V2, V3, V4, T114, T190, E213, E290, MeshPocket
-- **RAK**: 4631, 3x72
-- **LilyGo**: T-Echo, T-Deck, T-Beam, T-LoRa
-- **Seeed**: Wio E5, Wio Tracker, T1000, Xiao variants
-- And more...
+| Manufacturer | Models |
+|---|---|
+| **Ikoka** | Stick, Nano, Handheld (22dBm, 30dBm, 33dBm variants) |
+| **Heltec** | V2, V3, V4, T114, T190, E213, E290, MeshPocket |
+| **RAK** | 4631, 3x72 |
+| **LilyGo** | T-Echo, T-Deck, T-Beam, T-LoRa |
+| **Seeed** | Wio E5, Wio Tracker, T1000, Xiao variants |
 
-See `assets/device-models.json` for the full list.
+See [`assets/device-models.json`](assets/device-models.json) for the full list.
 
-## Usage
-
-### Connecting to a Device
-
-1. Tap the Bluetooth icon in the app bar
-2. Tap "Scan" to search for nearby MeshCore devices
-3. Select your device from the list
-4. The app will automatically:
-   - Connect via BLE
-   - Query device info
-   - Configure TX power based on device model
-   - Sync time
-   - Acquire API slot
-
-### Wardriving
-
-1. Ensure GPS is enabled and permissions granted
-2. Wait for GPS lock (green GPS indicator)
-3. Tap the "PING" button to send a TX ping
-4. Or enable "Auto Ping" to automatically ping every 25m of movement
-
-### Understanding the Map
-
-- **Green markers**: Your TX pings
-- **Colored markers**: RX responses from repeaters (color by repeater ID)
-- **Blue circle**: Your current position
-
-## Critical Safety Notes
-
-⚠️ **PA Amplifier Devices**: The app automatically configures TX power for high-power PA amplifier devices. Do NOT manually override power settings as incorrect values can damage hardware.
-
-⚠️ **Geofence**: Pings are only allowed within 150km of Ottawa. This is enforced both client-side and server-side.
-
-## Development
-
-### Running Tests
-
-```bash
-flutter test
-```
-
-### Building for Release
-
-```bash
-# Android
-flutter build apk --release
-
-# iOS
-flutter build ios --release
-
-# Web
-flutter build web --release
-```
+---
 
 ## Architecture
 
-The app follows a service-oriented architecture:
+The app uses a service-oriented architecture with platform-specific BLE abstraction:
 
-- **BluetoothService**: Abstract interface with platform-specific implementations
-- **MeshCoreConnection**: Handles the 10-step connection workflow and protocol
-- **GpsService**: GPS tracking with geofence validation
-- **PingService**: TX/RX ping orchestration
-- **ApiQueueService**: Persistent upload queue with retry logic
+```
+lib/
+├── main.dart                    # App entry point, platform detection
+├── models/                      # Data models (Hive-annotated)
+├── providers/                   # State management (Provider/ChangeNotifier)
+├── screens/                     # Full-page UI screens
+├── widgets/                     # Reusable components
+└── services/
+    ├── bluetooth/               # BLE abstraction layer
+    │   ├── bluetooth_service.dart   # Abstract interface
+    │   ├── mobile_bluetooth.dart    # Android/iOS (flutter_blue_plus)
+    │   └── web_bluetooth.dart       # Web (flutter_web_bluetooth)
+    ├── meshcore/                # MeshCore protocol layer
+    │   ├── connection.dart          # 10-step connection workflow
+    │   ├── packet_parser.dart       # Binary packet parsing
+    │   ├── unified_rx_handler.dart  # Packet routing (TX vs RX)
+    │   ├── tx_tracker.dart          # Repeater echo detection
+    │   └── rx_logger.dart           # Passive observation logging
+    ├── gps_service.dart         # GPS tracking
+    ├── ping_service.dart        # TX/RX ping orchestration
+    ├── api_queue_service.dart   # Persistent upload queue
+    └── device_model_service.dart # Device identification
+```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+Key design decisions:
+- **Unified RX Handler** — All incoming BLE packets are accepted, parsed once, then routed to TX tracking or RX logging
+- **Platform BLE abstraction** — Runtime selection via `kIsWeb` in `main.dart`
+- **Hive for persistence** — Local storage for API queue, preferences, and offline sessions
+- **Provider for state** — Single `AppStateProvider` with `ChangeNotifier`
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full details.
+
+---
 
 ## Contributing
 
-Contributions are welcome! Please read the [PORTING_NOTES.md](docs/PORTING_NOTES.md) for guidance on the JavaScript to Dart translation patterns used.
+Contributions are welcome! Please read **[CONTRIBUTING.md](CONTRIBUTING.md)** before submitting a pull request.
+
+Key points:
+- All PRs should target the **`dev`** branch
+- Run `flutter analyze` before submitting
+- API keys are not distributed — maintainers handle final integration testing
+- See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for detailed architecture docs and [`docs/DEVELOPMENT_REQUIREMENTS.md`](docs/DEVELOPMENT_REQUIREMENTS.md) for coding standards
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
 - Original [MeshMapper WebClient](https://github.com/MeshMapper/MeshMapper_WebClient)
 - [MeshCore](https://github.com/meshcore-dev/MeshCore) firmware project
-- Flutter and Dart teams
+- [The Greater Ottawa Mesh Radio Enthusiasts community](https://ottawamesh.ca/)

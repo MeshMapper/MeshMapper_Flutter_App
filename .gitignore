@@ -81,5 +81,6 @@ meshmapper-debug-*.txt
 # Test/debug output
 drive_route_map*.html
 
-# Claude Code local settings
-.claude/settings.local.json
+# Claude Code
+.claude/
+CLAUDE.md
