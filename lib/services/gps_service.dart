@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -169,19 +170,27 @@ class GpsService {
       return;
     }
 
-    // Check permissions (don't request - disclosure flow handles that)
-    final permission = await Geolocator.checkPermission();
-    final hasPermission = permission == LocationPermission.always ||
-        permission == LocationPermission.whileInUse;
-    debugLog('[GPS] Permission check: $permission (hasPermission=$hasPermission)');
-    if (!hasPermission) {
-      if (permission == LocationPermission.deniedForever) {
-        debugLog('[GPS] Permission denied forever - user must enable in Settings');
-      } else {
-        debugLog('[GPS] Permission not granted - waiting for disclosure flow');
+    // On web, Geolocator.checkPermission() is unreliable — it can return
+    // 'denied' even after the user grants permission via the browser prompt.
+    // Skip the pre-check on web and let the position stream trigger the
+    // browser's native permission prompt directly.
+    if (!kIsWeb) {
+      // Check permissions (don't request - disclosure flow handles that)
+      final permission = await Geolocator.checkPermission();
+      final hasPermission = permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse;
+      debugLog('[GPS] Permission check: $permission (hasPermission=$hasPermission)');
+      if (!hasPermission) {
+        if (permission == LocationPermission.deniedForever) {
+          debugLog('[GPS] Permission denied forever - user must enable in Settings');
+        } else {
+          debugLog('[GPS] Permission not granted - waiting for disclosure flow');
+        }
+        _updateStatus(GpsStatus.permissionDenied);
+        return;
       }
-      _updateStatus(GpsStatus.permissionDenied);
-      return;
+    } else {
+      debugLog('[GPS] Web platform - skipping permission pre-check, will prompt via position stream');
     }
 
     debugLog('[GPS] Starting position stream listener (permission=$permission)...');
