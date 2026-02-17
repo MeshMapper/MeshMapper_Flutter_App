@@ -1,0 +1,67 @@
+name: mesh_mapper
+description: MeshMapper - Cross-platform wardriving app for MeshCore devices
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  flutter_blue_plus: ^1.32.0
+  flutter_web_bluetooth: ^0.2.3
+  geolocator: ^11.0.0
+  flutter_map: ^6.1.0
+  flutter_map_cancellable_tile_provider: ^2.0.0
+  latlong2: ^0.9.0
+  http: ^1.2.0
+  shared_preferences: ^2.2.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  provider: ^6.1.0
+  permission_handler: ^11.3.0
+  uuid: ^4.3.0
+  pointycastle: ^4.0.0
+  intl: ^0.19.0
+  crypto: ^3.0.7
+  wakelock_plus: ^1.4.0
+  share_plus: ^12.0.1
+  path_provider: ^2.1.0
+  xml: ^6.5.0
+  file_picker: ^8.0.0
+  url_launcher: ^6.2.0
+  flutter_background_service: ^5.0.10
+  flutter_local_notifications: ^17.0.0
+  just_audio: ^0.9.40
+  audio_session: ^0.1.21
+  dio: ^5.0.0
+  font_awesome_flutter: ^10.7.0
+  fl_chart: ^0.69.0
+  web: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  build_runner: ^2.4.0
+  hive_generator: ^2.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  image_path: "assets/wardrive.png"
+  image_path_ios: "assets/wardrive_ios.png"
+  adaptive_icon_background: "#0F172A"
+  adaptive_icon_foreground: "assets/wardrive.png"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/device-models.json
+    - assets/wardrive.png
+    - assets/transmitted_packet.mp3
+    - assets/received_packet.mp3
