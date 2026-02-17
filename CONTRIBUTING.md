@@ -100,7 +100,7 @@ debugLog('[PING] Sending ping to channel 2');
 
 Required tags: `[BLE]`, `[CONN]`, `[GPS]`, `[PING]`, `[API QUEUE]`, `[RX BATCH]`, `[RX]`, `[TX]`, `[DECRYPT]`, `[CRYPTO]`, `[UI]`, `[CHANNEL]`, `[TIMER]`, `[WAKE LOCK]`, `[GEOFENCE]`, `[CAPACITY]`, `[AUTO]`, `[INIT]`, `[MODEL]`, `[MAP]`
 
-See [`docs/DEVELOPMENT_REQUIREMENTS.md`](docs/DEVELOPMENT_REQUIREMENTS.md) for the full list and examples.
+See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full list and examples.
 
 ### Dart Style
 
@@ -132,13 +132,9 @@ Generated `*.g.dart` files are excluded from version control and regenerated dur
 
 When modifying code, update the relevant documentation:
 
-- **Architecture changes** — Update [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
-- **Connection workflow changes** — Update [`docs/CONNECTION_WORKFLOW.md`](docs/CONNECTION_WORKFLOW.md)
-- **Ping workflow changes** — Update [`docs/PING_WORKFLOW.md`](docs/PING_WORKFLOW.md)
-- **Status message changes** — Update [`docs/STATUS_MESSAGES.md`](docs/STATUS_MESSAGES.md)
-- **New debug log tags** — Update [`docs/DEVELOPMENT_REQUIREMENTS.md`](docs/DEVELOPMENT_REQUIREMENTS.md)
+- **Architecture, workflow, or coding standard changes** — Update [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 
-See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for detailed architecture documentation and [`docs/DEVELOPMENT_REQUIREMENTS.md`](docs/DEVELOPMENT_REQUIREMENTS.md) for full coding standards.
+See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for detailed architecture documentation and coding standards.
 
 ---
 

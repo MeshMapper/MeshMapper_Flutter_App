@@ -118,7 +118,7 @@ Key design decisions:
 - **Hive for persistence** — Local storage for API queue, preferences, and offline sessions
 - **Provider for state** — Single `AppStateProvider` with `ChangeNotifier`
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full details.
+See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for full details.
 
 ---
 
@@ -130,7 +130,7 @@ Key points:
 - All PRs should target the **`dev`** branch
 - Run `flutter analyze` before submitting
 - API keys are not distributed — maintainers handle final integration testing
-- See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for detailed architecture docs and [`docs/DEVELOPMENT_REQUIREMENTS.md`](docs/DEVELOPMENT_REQUIREMENTS.md) for coding standards
+- See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for detailed architecture docs and coding standards
 
 ## License
 

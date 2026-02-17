@@ -17,7 +17,7 @@ enum ConnectionStatus {
 }
 
 /// Connection workflow step (10-step sequence from WebClient)
-/// Reference: docs/CONNECTION_WORKFLOW.md
+/// Reference: docs/DEVELOPMENT.md
 enum ConnectionStep {
   /// Initial disconnected state
   disconnected,
