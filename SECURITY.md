@@ -15,7 +15,7 @@ If you discover a security vulnerability in MeshMapper Flutter App, please repor
 ### How to Report
 
 1. Open a **private security advisory** at:
-   https://github.com/MeshMapper/MeshMapper_Flutter_App/security/advisories/new
+   https://github.com/MeshMapper/MeshMapper_Project/security/advisories/new
 
 2. Include the following information:
    - Description of the vulnerability
