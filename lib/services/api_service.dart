@@ -682,7 +682,7 @@ class ApiService {
   /// Returns a list of enabled repeaters for the given IATA zone code
   Future<List<Repeater>> fetchRepeaters(String iata) async {
     final stopwatch = Stopwatch()..start();
-    const endpoint = '/repeaters.json';
+    const endpoint = '/get_repeaters.php';
     try {
       final url = 'https://${iata.toLowerCase()}.meshmapper.net$endpoint';
 
