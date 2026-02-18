@@ -160,6 +160,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // User preferences
   UserPreferences _preferences = const UserPreferences();
 
+  // Anonymous mode state
+  String? _originalDeviceName;       // Real name stored before rename
+  bool _isAnonymousRenamed = false;  // Device currently renamed to "Anonymous"
+
   /// Per-device antenna preferences: maps companion name → external antenna bool
   Map<String, bool> _deviceAntennaPreferences = {};
 
@@ -222,6 +226,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
   bool _requestMapTabSwitch = false; // Request switch to map tab
   bool _requestErrorLogSwitch = false; // Request switch to error log tab
+  bool _requestConnectionTabSwitch = false; // Request switch to connection tab
 
   // Repeater markers state
   List<Repeater> _repeaters = [];
@@ -299,6 +304,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int get mapNavigationTrigger => _mapNavigationTrigger;
   bool get requestMapTabSwitch => _requestMapTabSwitch;
   bool get requestErrorLogSwitch => _requestErrorLogSwitch;
+  bool get requestConnectionTabSwitch => _requestConnectionTabSwitch;
   UserPreferences get preferences => _preferences;
   RememberedDevice? get rememberedDevice => _rememberedDevice;
 
@@ -340,6 +346,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Mode switching getters
   bool get isSwitchingMode => _isSwitchingMode;
   String? get modeSwitchError => _modeSwitchError;
+
+  // Anonymous mode getter
+  bool get isAnonymousRenamed => _isAnonymousRenamed;
 
   // Auto-reconnect getters
   bool get isAutoReconnecting => _isAutoReconnecting;
@@ -791,8 +800,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             return {'success': false, 'reason': 'no_public_key', 'message': 'Device public key not available'};
           }
 
-          // Use SelfInfo name (user's configured name) if available, otherwise fall back to BLE advertisement name
-          final deviceName = _meshCoreConnection!.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
+          // Anonymous mode: rename device before auth so mesh pings broadcast as "Anonymous"
+          if (_preferences.anonymousMode && !_isAnonymousRenamed) {
+            final realName = _meshCoreConnection!.selfInfo?.name;
+            if (realName != null && realName.isNotEmpty) {
+              _originalDeviceName = realName;
+              try {
+                await _meshCoreConnection!.setAdvertName('Anonymous');
+                _isAnonymousRenamed = true;
+                _displayDeviceName = 'Anonymous';
+                debugLog('[CONN] Anonymous mode: renamed from "$realName" to "Anonymous"');
+                // Short delay for firmware to process
+                await Future.delayed(const Duration(milliseconds: 300));
+              } catch (e) {
+                debugError('[CONN] Anonymous mode: rename failed: $e');
+                // Continue with real name if rename fails
+              }
+            }
+          }
+
+          // Resolve device name: use "Anonymous" if renamed, otherwise SelfInfo name
+          final deviceName = _isAnonymousRenamed
+              ? 'Anonymous'
+              : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''));
           if (deviceName == null || deviceName.isEmpty) {
             debugError('[APP] Cannot request auth: could not retrieve device name');
             return {'success': false, 'reason': 'no_device_name', 'message': 'Could not retrieve device name'};
@@ -950,9 +980,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
 
           // Persist device info for bug reports when disconnected
-          // Use companion name (selfInfo.name) or BLE device name with MeshCore- prefix stripped
-          var deviceName = _meshCoreConnection!.selfInfo?.name ??
-              connectedDeviceName;
+          // Use original name (not "Anonymous") for bug report identification
+          var deviceName = _isAnonymousRenamed
+              ? _originalDeviceName
+              : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName);
           if (deviceName != null) {
             // Always strip MeshCore- prefix if present
             deviceName = deviceName.replaceFirst('MeshCore-', '');
@@ -1320,13 +1351,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // BLE advertisement name may be cached/stale after device rename
       final selfInfoName = _meshCoreConnection?.selfInfo?.name;
       if (selfInfoName != null && selfInfoName.isNotEmpty) {
-        _displayDeviceName = selfInfoName;
-        debugLog('[APP] Display name set from SelfInfo: "$selfInfoName"');
+        // Keep "Anonymous" display name if anonymous mode is active
+        _displayDeviceName = _isAnonymousRenamed ? 'Anonymous' : selfInfoName;
+        debugLog('[APP] Display name set: "$_displayDeviceName"');
 
-        // Update remembered device with SelfInfo name
+        // Update remembered device with real name (not "Anonymous")
         // BLE advertisement name may be stale after device rename
+        final realName = _isAnonymousRenamed ? (_originalDeviceName ?? selfInfoName) : selfInfoName;
         if (_rememberedDevice != null && _rememberedDevice!.id == device.id) {
-          final updatedName = 'MeshCore-$selfInfoName';
+          final updatedName = 'MeshCore-$realName';
           if (_rememberedDevice!.name != updatedName) {
             await _saveRememberedDevice(DiscoveredDevice(id: device.id, name: updatedName));
             debugLog('[APP] Updated remembered device name from SelfInfo: $updatedName');
@@ -1335,7 +1368,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // Restore per-device antenna preference if previously saved
-      final resolvedName = displayDeviceName;
+      // Use original name for keying, not "Anonymous"
+      final resolvedName = _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
       if (resolvedName != null && _deviceAntennaPreferences.containsKey(resolvedName)) {
         final savedAntenna = _deviceAntennaPreferences[resolvedName]!;
         _preferences = _preferences.copyWith(
@@ -1704,6 +1738,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
+    // Reset anonymous mode state (BLE already gone, can't restore name)
+    _isAnonymousRenamed = false;
+    _originalDeviceName = null;
+
     // Existing cleanup
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
@@ -1870,6 +1908,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
     _savePreferences();
 
+    // Reset anonymous mode state (BLE already gone, can't restore name)
+    _isAnonymousRenamed = false;
+    _originalDeviceName = null;
+
     // Do full disconnect cleanup (releases API session, etc.)
     _fullDisconnectCleanup();
     notifyListeners();
@@ -1929,6 +1971,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugError('[APP] Failed to release API session: $e');
         // Continue with disconnect anyway
       }
+    }
+
+    // Restore original device name if anonymous mode renamed it (BLE must still be connected)
+    if (_isAnonymousRenamed && _originalDeviceName != null) {
+      try {
+        await _meshCoreConnection?.setAdvertName(_originalDeviceName!);
+        debugLog('[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
+      } catch (e) {
+        debugError('[CONN] Anonymous mode: failed to restore name: $e');
+        logError('Anonymous Mode: Failed to restore device name. Device may still show as "Anonymous".',
+            severity: ErrorSeverity.warning, autoSwitch: false);
+      }
+      _isAnonymousRenamed = false;
+      _originalDeviceName = null;
     }
 
     // Delete wardriving channel FIRST, while BLE connection is still active
@@ -2391,8 +2447,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _saveOfflineSession();
 
       // 4. Request new auth session
-      final deviceName = _meshCoreConnection?.selfInfo?.name ??
-          connectedDeviceName?.replaceFirst('MeshCore-', '');
+      // Use "Anonymous" if renamed, otherwise real name
+      final deviceName = _isAnonymousRenamed
+          ? 'Anonymous'
+          : (_meshCoreConnection?.selfInfo?.name ??
+              connectedDeviceName?.replaceFirst('MeshCore-', ''));
 
       if (deviceName == null || deviceName.isEmpty) {
         debugError('[APP] Cannot switch to online mode: no device name available');
@@ -2551,12 +2610,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Include device info for auth during upload (same priority as online auth: SelfInfo name → BLE name)
+    // Include device info for auth during upload (use real name, not "Anonymous" — sessions upload later)
     // Note: Connection already validates device name exists, so this should never be null
+    final offlineDeviceName = _isAnonymousRenamed
+        ? _originalDeviceName
+        : (_meshCoreConnection?.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''));
     await _offlineSessionService.saveSession(
       pings,
       devicePublicKey: _devicePublicKey,
-      deviceName: _meshCoreConnection?.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''),
+      deviceName: offlineDeviceName,
     );
     debugLog('[APP] Saved offline session with ${pings.length} pings');
     notifyListeners();
@@ -2726,8 +2788,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Clear restored flag — user is making a manual choice now
     _antennaRestoredFromDevice = false;
 
-    // Persist antenna choice per device name
-    final deviceName = displayDeviceName;
+    // Persist antenna choice per device name (use original name, not "Anonymous")
+    final deviceName = _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
     if (deviceName != null && preferences.externalAntennaSet) {
       _deviceAntennaPreferences[deviceName] = preferences.externalAntenna;
       _saveDeviceAntennaPreferences();
@@ -2742,6 +2804,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     notifyListeners();
     _savePreferences();
+  }
+
+  /// Set anonymous mode, disconnecting and reconnecting if currently connected
+  Future<void> setAnonymousMode(bool enabled) async {
+    if (enabled == _preferences.anonymousMode) return;
+
+    _preferences = _preferences.copyWith(anonymousMode: enabled);
+    _savePreferences();
+    notifyListeners();
+
+    // If connected, disconnect and reconnect for clean auth session
+    if (_connectionStatus == ConnectionStatus.connected && _meshCoreConnection != null) {
+      final deviceToReconnect = _bluetoothService.connectedDevice;
+      if (deviceToReconnect != null) {
+        _requestConnectionTabSwitch = true;
+        notifyListeners();
+        await disconnect(); // Full cleanup (restores name if previously anonymous)
+        // Short delay for BLE cleanup
+        await Future.delayed(const Duration(milliseconds: 500));
+        await connectToDevice(deviceToReconnect);
+      }
+    }
   }
 
   /// Propagate carpeaterPrefix to live TxTracker and RxLogger
@@ -2867,6 +2951,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Clear the error log switch request (called by log screen after switching)
   void clearErrorLogSwitchRequest() {
     _requestErrorLogSwitch = false;
+  }
+
+  /// Clear the connection tab switch request (called by main scaffold after switching)
+  void clearConnectionTabSwitchRequest() {
+    _requestConnectionTabSwitch = false;
   }
 
   // ============================================

@@ -149,6 +149,18 @@ class _MainScaffoldState extends State<MainScaffold> {
       });
     }
 
+    // Listen for connection tab requests - switch to Connect tab (e.g. anonymous mode reconnect)
+    if (appState.requestConnectionTabSwitch && _selectedIndex != 3) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          setState(() {
+            _selectedIndex = 3; // Switch to Connect tab
+          });
+          appState.clearConnectionTabSwitchRequest();
+        }
+      });
+    }
+
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(

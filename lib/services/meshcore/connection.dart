@@ -725,6 +725,14 @@ class MeshCoreConnection {
     await _sendToRadio(data);
   }
 
+  /// Set the companion advertised name
+  Future<void> setAdvertName(String name) async {
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.setAdvertName);
+    data.writeString(name);
+    await _sendToRadio(data);
+  }
+
   /// Set radio parameters
   Future<void> setRadioParams(int freq, int bw, int sf, int cr) async {
     final data = BufferWriter();

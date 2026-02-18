@@ -67,6 +67,9 @@ class UserPreferences {
   /// Disable RSSI carpeater filter (allow all signal strengths)
   final bool disableRssiFilter;
 
+  /// Anonymous mode: rename companion to "Anonymous" during wardriving
+  final bool anonymousMode;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -90,6 +93,7 @@ class UserPreferences {
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
     this.disableRssiFilter = false,
+    this.anonymousMode = false,
   });
 
   /// Create from JSON (for persistence)
@@ -117,6 +121,7 @@ class UserPreferences {
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
+      anonymousMode: (json['anonymousMode'] as bool?) ?? false,
     );
   }
 
@@ -145,6 +150,7 @@ class UserPreferences {
       'mapAlwaysNorth': mapAlwaysNorth,
       'mapRotationLocked': mapRotationLocked,
       'disableRssiFilter': disableRssiFilter,
+      'anonymousMode': anonymousMode,
     };
   }
 
@@ -172,6 +178,7 @@ class UserPreferences {
     bool? mapAlwaysNorth,
     bool? mapRotationLocked,
     bool? disableRssiFilter,
+    bool? anonymousMode,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -196,6 +203,7 @@ class UserPreferences {
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
+      anonymousMode: anonymousMode ?? this.anonymousMode,
     );
   }
 
@@ -245,7 +253,8 @@ class UserPreferences {
         other.mapAutoFollow == mapAutoFollow &&
         other.mapAlwaysNorth == mapAlwaysNorth &&
         other.mapRotationLocked == mapRotationLocked &&
-        other.disableRssiFilter == disableRssiFilter;
+        other.disableRssiFilter == disableRssiFilter &&
+        other.anonymousMode == anonymousMode;
   }
 
   @override
@@ -272,6 +281,7 @@ class UserPreferences {
       mapAlwaysNorth,
       mapRotationLocked,
       disableRssiFilter,
+      anonymousMode,
     ]);
   }
 

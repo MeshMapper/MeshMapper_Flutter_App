@@ -14,6 +14,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../utils/web_file_helpers_stub.dart'
     if (dart.library.html) '../utils/web_file_helpers.dart';
 
+import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
@@ -278,6 +279,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
               enabled: !isAutoMode,
               onTap: isAutoMode ? null : () => _showRepeaterIdDialog(context, appState),
             ),
+
+          // Anonymous Mode Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.visibility_off),
+            title: const Text('Anonymous Mode'),
+            subtitle: Text(prefs.anonymousMode
+                ? 'Device broadcasts as "Anonymous"'
+                : 'Device uses its real name'),
+            value: prefs.anonymousMode,
+            onChanged: isAutoMode ? null : (value) {
+              if (value) {
+                _showEnableAnonymousConfirmation(context, appState);
+              } else {
+                if (appState.connectionStatus == ConnectionStatus.connected) {
+                  _showDisableAnonymousConfirmation(context, appState);
+                } else {
+                  appState.setAnonymousMode(false);
+                }
+              }
+            },
+          ),
 
           // Disable RSSI Filter Toggle
           SwitchListTile(
@@ -940,6 +962,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
             style: TextButton.styleFrom(foregroundColor: Colors.red),
             child: const Text('Disable Filter'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEnableAnonymousConfirmation(BuildContext context, AppStateProvider appState) {
+    final isConnected = appState.connectionStatus == ConnectionStatus.connected;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enable Anonymous Mode?'),
+        content: Text(
+          'Your device will be renamed to "Anonymous" for all mesh pings. '
+          'Other mesh users will not see your companion name.\n\n'
+          'Your public key is still used to authenticate your session, but '
+          'neither your sessions nor your pings are linked to it on the server.\n\n'
+          '${isConnected ? 'Your device will disconnect and reconnect automatically.\n\n' : ''}'
+          'If the app crashes or BLE disconnects unexpectedly, your device '
+          'may remain named "Anonymous" until you reconnect and properly disconnect. '
+          'Always use the Disconnect button to restore your device name.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              appState.setAnonymousMode(true);
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.orange),
+            child: const Text('Enable'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDisableAnonymousConfirmation(BuildContext context, AppStateProvider appState) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Disable Anonymous Mode?'),
+        content: const Text(
+          'This will disconnect and reconnect your device to restore your companion name. Continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              appState.setAnonymousMode(false);
+            },
+            child: const Text('Continue'),
           ),
         ],
       ),
