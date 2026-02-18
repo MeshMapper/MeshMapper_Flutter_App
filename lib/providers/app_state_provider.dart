@@ -708,8 +708,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     ).listen(
       (device) {
         if (!_discoveredDevices.any((d) => d.id == device.id)) {
-          _discoveredDevices.add(device);
-          selectedDevice = device;
+          // Prefer remembered device name (from SelfInfo) over BLE cache
+          var enrichedDevice = device;
+          if (_rememberedDevice != null && device.id == _rememberedDevice!.id &&
+              device.name != _rememberedDevice!.name) {
+            enrichedDevice = DiscoveredDevice(
+              id: device.id,
+              name: _rememberedDevice!.name,
+              rssi: device.rssi,
+            );
+            debugLog('[SCAN] Using remembered name "${_rememberedDevice!.name}" instead of BLE name "${device.name}"');
+          }
+          _discoveredDevices.add(enrichedDevice);
+          selectedDevice = enrichedDevice;
           notifyListeners();
         }
       },
@@ -1311,6 +1322,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (selfInfoName != null && selfInfoName.isNotEmpty) {
         _displayDeviceName = selfInfoName;
         debugLog('[APP] Display name set from SelfInfo: "$selfInfoName"');
+
+        // Update remembered device with SelfInfo name
+        // BLE advertisement name may be stale after device rename
+        if (_rememberedDevice != null && _rememberedDevice!.id == device.id) {
+          final updatedName = 'MeshCore-$selfInfoName';
+          if (_rememberedDevice!.name != updatedName) {
+            await _saveRememberedDevice(DiscoveredDevice(id: device.id, name: updatedName));
+            debugLog('[APP] Updated remembered device name from SelfInfo: $updatedName');
+          }
+        }
       }
 
       // Restore per-device antenna preference if previously saved
