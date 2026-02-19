@@ -80,6 +80,18 @@ extension MapStyleExtension on MapStyle {
         return null; // ArcGIS doesn't use subdomains
     }
   }
+
+  /// Whether this style supports retina tiles via {r} placeholder
+  bool get supportsRetina {
+    switch (this) {
+      case MapStyle.dark:
+        return true; // Carto supports @2x via {r}
+      case MapStyle.light:
+        return false; // OSM has no retina support
+      case MapStyle.satellite:
+        return false; // ArcGIS has no retina support
+    }
+  }
 }
 
 /// Custom tile provider that silently handles HTTP errors (404, 503, etc.)
@@ -616,7 +628,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           initialCenter: center,
           initialZoom: _defaultZoom,
           minZoom: 3,
-          maxZoom: 18,
+          maxZoom: 17,
           interactionOptions: InteractionOptions(
             flags: _rotationLocked
                 ? InteractiveFlag.all & ~InteractiveFlag.rotate
@@ -639,9 +651,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 urlTemplate: mapStyle.urlTemplate,
                 subdomains: mapStyle.subdomains ?? const [],
                 userAgentPackageName: 'com.meshmapper.app',
-                maxZoom: 19,
-                retinaMode: RetinaMode.isHighDensity(context), // Enable high-res tiles on retina displays
-                tileProvider: SilentCancellableNetworkTileProvider(), // Silently handles tile errors
+                maxZoom: 17,
+                retinaMode: mapStyle.supportsRetina && RetinaMode.isHighDensity(context),
+                tileProvider: SilentCancellableNetworkTileProvider(),
               );
             },
           ),
@@ -649,9 +661,13 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           // MeshMapper coverage overlay (only when zone code available and overlay enabled)
           if (appState.zoneCode != null && _showMeshMapperOverlay)
             TileLayer(
-              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}',
+              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}',
               userAgentPackageName: 'com.meshmapper.app',
-              maxZoom: 19,
+              minZoom: 3,
+              maxZoom: 17,
+              tileDisplay: const TileDisplay.fadeIn(
+                reloadStartOpacity: 1.0, // Keep old tile visible until new one loads
+              ),
               tileProvider: SilentCancellableNetworkTileProvider(),
             ),
 

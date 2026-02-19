@@ -22,7 +22,7 @@ import 'wakelock_service.dart';
 /// 1. Validate GPS lock, 25m min distance (zone validation handled server-side)
 /// 2. Start TxTracker to monitor for repeater echoes
 /// 3. Send @[MapperBot] LAT, LON [POWERw] to #wardriving channel
-/// 4. Start 6-second RX listening window (matches JS RX_LOG_LISTEN_WINDOW_MS)
+/// 4. Start 5-second RX listening window
 /// 5. Post to API queue with type "TX"
 ///
 /// RX Flow (via TxTracker):
@@ -33,16 +33,16 @@ import 'wakelock_service.dart';
 ///
 /// Discovery Flow (Passive Mode only):
 /// 1. In Passive Mode, send discovery request instead of TX ping
-/// 2. Start 7-second listening window via DiscTracker
+/// 2. Start 5-second listening window via DiscTracker
 /// 3. Collect discovery responses (0x8E packets)
 /// 4. After window ends, create log entry and queue DISC API payloads
 class PingService {
-  /// RX listening window duration (7 seconds - matches cooldown duration)
-  static const Duration _rxListeningWindow = Duration(seconds: 7);
-  /// Cooldown period between pings (7 seconds - matches JS COOLDOWN_MS = 7000)
-  static const Duration _autoPingCooldown = Duration(seconds: 7);
-  /// Discovery listening window duration (7 seconds)
-  static const Duration _discoveryListeningWindow = Duration(seconds: 7);
+  /// RX listening window duration (5 seconds - matches cooldown duration)
+  static const Duration _rxListeningWindow = Duration(seconds: 5);
+  /// Cooldown period between pings (5 seconds)
+  static const Duration _autoPingCooldown = Duration(seconds: 5);
+  /// Discovery listening window duration (5 seconds)
+  static const Duration _discoveryListeningWindow = Duration(seconds: 5);
   /// Discovery request interval (30 seconds - repeaters only respond 4 times per 2 minutes)
   static const Duration _discoveryInterval = Duration(seconds: 30);
   /// Cooldown period between manual pings (15 seconds)
@@ -269,7 +269,7 @@ class PingService {
       return PingValidation.tooCloseToLastPing;
     }
 
-    // Check cooldown (7 seconds between pings)
+    // Check cooldown (5 seconds between pings)
     final lastTx = _lastTxTime;
     if (lastTx != null) {
       final elapsed = DateTime.now().difference(lastTx);
@@ -378,7 +378,7 @@ class PingService {
     // NOTE: Skip distance check (tooCloseToLastPing) intentionally
     // Auto mode handles this by setting skipReason='too close' and scheduling next ping
 
-    // Check cooldown (7 seconds between pings)
+    // Check cooldown (5 seconds between pings)
     final lastTx = _lastTxTime;
     if (lastTx != null) {
       final elapsed = DateTime.now().difference(lastTx);
@@ -451,7 +451,7 @@ class PingService {
           return false;
         }
       } else {
-        // Auto ping: 7-second cooldown, 25m distance check
+        // Auto ping: 5-second cooldown, 25m distance check
         // This fixes a race condition where disabling Active Mode during cooldown
         // could still trigger an auto-ping from a late RX window timer callback
         if (isInCooldown()) {
@@ -586,7 +586,7 @@ class PingService {
         // Manual ping: 15-second cooldown, no distance check
         _manualPingCooldownTimer.start(_manualPingCooldown.inMilliseconds);
       } else {
-        // Auto ping: 7-second cooldown
+        // Auto ping: 5-second cooldown
         _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
       }
 
@@ -614,14 +614,13 @@ class PingService {
     }
   }
 
-  /// Start the 6-second RX listening window after TX
+  /// Start the 5-second RX listening window after TX
   /// Note: TxTracker handles the actual echo tracking, we just manage the countdown UI
-  /// Reference: RX_LOG_LISTEN_WINDOW_MS = 6000 in wardrive.js
   void _startRxListeningWindow(Position txPosition) {
     // Cancel previous timer
     _rxWindowTimer?.cancel();
 
-    // Start RX window countdown display (6 seconds - matches JS RX_LOG_LISTEN_WINDOW_MS)
+    // Start RX window countdown display (5 seconds)
     _rxWindowCountdown.start(_rxListeningWindow.inMilliseconds);
 
     // Set timer for window end
@@ -1073,7 +1072,7 @@ class PingService {
         windowDuration: _discoveryListeningWindow,
       );
 
-      // Start discovery window countdown display (7 seconds)
+      // Start discovery window countdown display (5 seconds)
       _discoveryWindowCountdown.start(_discoveryListeningWindow.inMilliseconds);
 
       // Clear pingInProgress now that discovery window is active
@@ -1180,8 +1179,8 @@ class PingService {
     _autoTimer = null;
 
     // Subtract listening window so interval is measured start-to-start
-    // At 15s: wait = 15000 - 7000 = 8000ms. Clamp to min 1s.
-    final listenMs = _rxListeningWindow.inMilliseconds; // 7000
+    // At 15s: wait = 15000 - 5000 = 10000ms. Clamp to min 1s.
+    final listenMs = _rxListeningWindow.inMilliseconds; // 5000
     final waitMs = (_autoPingIntervalMs - listenMs).clamp(1000, _autoPingIntervalMs);
 
     final isNextDisc = _nextPingIsDiscovery;
@@ -1264,7 +1263,7 @@ enum PingValidation {
   /// Too close to last ping (< 25m)
   tooCloseToLastPing,
   
-  /// Cooldown period active (< 7s since last ping)
+  /// Cooldown period active (< 5s since last ping)
   cooldownActive,
 
   /// Manual ping cooldown period active (< 15s since last manual ping)
@@ -1296,7 +1295,7 @@ extension PingValidationExtension on PingValidation {
       case PingValidation.tooCloseToLastPing:
         return 'Move 25m before next ping';
       case PingValidation.cooldownActive:
-        return 'Wait 7 seconds between pings';
+        return 'Wait 5 seconds between pings';
       case PingValidation.manualCooldownActive:
         return 'Wait 15 seconds between manual pings';
       case PingValidation.txNotAllowed:

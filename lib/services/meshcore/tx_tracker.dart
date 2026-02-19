@@ -7,7 +7,7 @@ import 'crypto_service.dart';
 import 'packet_metadata.dart';
 import 'packet_validator.dart';
 
-/// TX echo tracker for repeater detection during 7-second window
+/// TX echo tracker for repeater detection during 5-second window
 /// Reference: handleTxLogging() in wardrive.js (lines 3561-3710)
 class TxTracker {
   bool isListening = false;
@@ -54,7 +54,7 @@ class TxTracker {
     required int channelIdx,
     required int channelHash,
     required Uint8List channelKey,
-    Duration windowDuration = const Duration(seconds: 7),
+    Duration windowDuration = const Duration(seconds: 5),
   }) {
     debugLog('[TX LOG] Starting echo tracking');
     debugLog('[TX LOG] Payload: "$payload"');

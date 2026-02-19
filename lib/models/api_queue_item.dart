@@ -44,7 +44,7 @@ class ApiQueueItem extends HiveObject {
   final String heardRepeats;
 
   /// Earliest time this item can be uploaded (milliseconds since epoch)
-  /// TX items have 5-second delay; RX/DISC are immediate
+  /// All items are immediate; upload timing is controlled by flush timers
   @HiveField(13)
   final int canUploadAfter;
 
@@ -81,7 +81,7 @@ class ApiQueueItem extends HiveObject {
       longitude: longitude,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
-      canUploadAfter: DateTime.now().millisecondsSinceEpoch + 5000, // 5 seconds from now
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate — flush timer controls upload timing
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );

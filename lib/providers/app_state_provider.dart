@@ -203,6 +203,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _maintenanceUrl;
   Timer? _maintenanceCheckTimer;
 
+  // Tile refresh after upload
+  int _overlayCacheBust = 0;
+  Timer? _tileRefreshTimer;
+
   // Auth type from API response (API, Mesh, Manual)
   String? _authType;
 
@@ -324,6 +328,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isCheckingZone => _isCheckingZone;
   String? get zoneName => _currentZone?['name'] as String?;
   String? get zoneCode => _currentZone?['code'] as String?;
+  int get overlayCacheBust => _overlayCacheBust;
   int? get zoneSlotsAvailable => _currentZone?['slots_available'] as int?;
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
   String? get nearestZoneName => _nearestZone?['name'] as String?;
@@ -478,6 +483,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
       debugLog('[APP] Upload success: +$uploadedCount items (total: ${_pingStats.successfulUploads})');
       notifyListeners();
+
+      // Schedule overlay tile refresh after server has time to regenerate tiles
+      // Cache buster change + notifyListeners triggers flutter_map's reloadImages()
+      // which updates tile URLs in-place and refetches cleanly
+      _tileRefreshTimer?.cancel();
+      _tileRefreshTimer = Timer(const Duration(seconds: 5), () {
+        _overlayCacheBust = DateTime.now().millisecondsSinceEpoch;
+        debugLog('[MAP] Refreshing overlay tiles');
+        notifyListeners();
+      });
     };
 
     // Initialize offline session service
@@ -2161,11 +2176,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _autoPingEnabled = false;
 
-      // Start 7-second shared cooldown for TX modes (Active/Hybrid), not Passive Mode
+      // Start 5-second shared cooldown for TX modes (Active/Hybrid), not Passive Mode
       // Passive Mode is listening only, no cooldown needed
       if (isTxMode) {
-        _cooldownTimer.start(7000);
-        debugLog('[${mode.name.toUpperCase()} MODE] Shared cooldown started (7s) - blocks TX Ping and TX modes');
+        _cooldownTimer.start(5000);
+        debugLog('[${mode.name.toUpperCase()} MODE] Shared cooldown started (5s) - blocks TX Ping and TX modes');
       } else {
         debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
       }
@@ -4106,6 +4121,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _zoneCheckCountdownTimer?.cancel();
     _reconnectTimer?.cancel();
     _reconnectTimeoutTimer?.cancel();
+    _tileRefreshTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
     _pingService?.dispose();

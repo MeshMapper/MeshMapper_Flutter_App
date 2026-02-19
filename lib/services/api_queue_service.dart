@@ -25,6 +25,7 @@ class ApiQueueService {
   final ApiService _apiService;
   Box<ApiQueueItem>? _box;
   Timer? _batchTimer;
+  Timer? _pingFlushTimer;
   bool _isUploading = false;
   bool _isRecovering = false;
 
@@ -238,7 +239,12 @@ class ApiQueueService {
     await _safeWrite((box) => box.add(item));
     debugLog('[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
     onQueueUpdated?.call(queueSize);
-    _checkBatchUpload();
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
+      debugLog('[API QUEUE] Ping flush timer fired');
+      _flushRxBuffer();
+      _uploadBatch();
+    });
   }
 
   /// Enqueue an RX observation
@@ -319,7 +325,12 @@ class ApiQueueService {
     await _safeWrite((box) => box.add(item));
     debugLog('[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
     onQueueUpdated?.call(queueSize);
-    _checkBatchUpload();
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
+      debugLog('[API QUEUE] Ping flush timer fired');
+      _flushRxBuffer();
+      _uploadBatch();
+    });
   }
 
   // Guard to prevent concurrent RX buffer flushes
@@ -371,12 +382,6 @@ class ApiQueueService {
       _flushRxBuffer();
       _uploadBatch();
     });
-  }
-
-  void _checkBatchUpload() {
-    if (queueSize >= _batchSize) {
-      _uploadBatch();
-    }
   }
 
   /// Manually flush queue (called by TX-triggered flush timer)
@@ -472,38 +477,11 @@ class ApiQueueService {
     await _uploadBatch();
   }
 
-  /// Force upload after waiting for any TX items in hold period
+  /// Force upload all queued items immediately
   /// Used during BLE disconnect to ensure all data is uploaded before session release
   Future<void> forceUploadWithHoldWait() async {
+    _pingFlushTimer?.cancel();
     await _flushRxBuffer();
-
-    // Check if any TX items are still in hold period
-    try {
-      if (_box != null && _box!.isNotEmpty) {
-        final now = DateTime.now().millisecondsSinceEpoch;
-        int maxWaitMs = 0;
-
-        for (final item in _box!.values) {
-          if (item.type == 'TX' && !item.isUploadEligible) {
-            final waitMs = item.canUploadAfter - now;
-            if (waitMs > maxWaitMs) {
-              maxWaitMs = waitMs;
-            }
-          }
-        }
-
-        if (maxWaitMs > 0) {
-          // Cap wait time at 6 seconds (slightly more than 5s hold period)
-          final cappedWaitMs = maxWaitMs.clamp(0, 6000);
-          debugLog('[API QUEUE] Waiting ${cappedWaitMs}ms for TX hold period to expire');
-          await Future.delayed(Duration(milliseconds: cappedWaitMs));
-        }
-      }
-    } catch (e) {
-      debugError('[API QUEUE] Failed to check hold period: $e - skipping wait');
-      await _recoverBox();
-    }
-
     await _uploadBatch();
   }
 
@@ -518,10 +496,12 @@ class ApiQueueService {
   /// Called when device disconnects to ensure no stale pings remain
   /// Also stops the batch timer to prevent upload attempts without a session
   Future<void> clearOnDisconnect() async {
-    // Stop the batch timer to prevent upload attempts without session
+    // Stop timers to prevent upload attempts without session
     _batchTimer?.cancel();
     _batchTimer = null;
-    debugLog('[API QUEUE] Batch timer stopped on disconnect');
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = null;
+    debugLog('[API QUEUE] Timers stopped on disconnect');
 
     final count = queueSize + _rxBuffer.length;
     if (count > 0) {
@@ -575,6 +555,7 @@ class ApiQueueService {
   /// Dispose of resources
   void dispose() {
     _batchTimer?.cancel();
+    _pingFlushTimer?.cancel();
     _box?.close();
   }
 }

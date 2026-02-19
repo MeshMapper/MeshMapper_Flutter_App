@@ -73,7 +73,7 @@ class UnifiedRxHandler {
           'header=0x${metadata.header.toRadixString(16)}, '
           'pathLength=${metadata.pathLength}');
       
-      // Route to TX tracking if active (during 7s echo window)
+      // Route to TX tracking if active (during 5s echo window)
       if (txTracker.isListening) {
         debugLog('[UNIFIED RX] TX tracking active - checking for echo');
         final wasEcho = await txTracker.handlePacket(metadata);

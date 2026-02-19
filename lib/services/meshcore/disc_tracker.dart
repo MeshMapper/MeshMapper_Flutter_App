@@ -42,7 +42,7 @@ class DiscTracker {
   /// @param windowDuration - How long to listen (default 7 seconds)
   void startTracking({
     required Uint8List tag,
-    Duration windowDuration = const Duration(seconds: 7),
+    Duration windowDuration = const Duration(seconds: 5),
   }) {
     debugLog('[DISC] Starting discovery tracking');
     debugLog('[DISC] Tag: ${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
