@@ -29,6 +29,7 @@ import '../services/gps_service.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/meshcore/channel_service.dart';
 import '../services/meshcore/connection.dart';
+import '../services/meshcore/crypto_service.dart';
 import '../services/meshcore/packet_validator.dart' show PacketValidator, ChannelInfo;
 import '../services/meshcore/rx_logger.dart';
 import '../services/meshcore/tx_tracker.dart';
@@ -240,6 +241,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Regional channels from API (for UI display)
   List<String> _regionalChannels = [];
 
+  // Regional scope from API (for UI display and flood filtering)
+  String? _scope;
+
   // Noise floor session tracking (for graph feature)
   NoiseFloorSession? _currentNoiseFloorSession;
   List<NoiseFloorSession> _storedNoiseFloorSessions = [];
@@ -364,6 +368,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Regional channels getter (for UI)
   List<String> get regionalChannels => List.unmodifiable(_regionalChannels);
+
+  // Regional scope getter (for UI)
+  String? get scope => _scope;
 
   // Noise floor session getters
   NoiseFloorSession? get currentNoiseFloorSession => _currentNoiseFloorSession;
@@ -1074,6 +1081,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _unifiedRxHandler!.updateValidator(newValidator);
         debugLog('[APP] PacketValidator updated with ${allowedChannels.length} channels: '
             '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
+      }
+
+      // Set flood scope from API response (regional TX filtering)
+      // "*" = wildcard/global → no scope (unscoped flood, same as before)
+      // Any other value (e.g., "ottawa") → derive TransportKey and set scope
+      final apiScopes = _apiService.scopes;
+      if (apiScopes.isNotEmpty && apiScopes.first != '*') {
+        final scopeName = apiScopes.first;
+        _scope = scopeName.startsWith('#') ? scopeName : '#$scopeName';
+        final scopeKey = CryptoService.deriveScopeKey(scopeName);
+        debugLog('[CONN] Setting flood scope: $scopeName');
+        await _meshCoreConnection!.setFloodScope(scopeKey);
+        debugLog('[CONN] Flood scope set successfully');
+      } else {
+        _scope = null;
+        debugLog('[CONN] No regional scope — using unscoped flood');
       }
 
       // Create ping service with wakelock (create new instance per connection)
@@ -2002,6 +2025,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _originalDeviceName = null;
     }
 
+    // Clear flood scope before disconnect (safety — BLE disconnect resets radio state anyway)
+    try {
+      await _meshCoreConnection?.clearFloodScope();
+    } catch (e) {
+      debugLog('[CONN] Failed to clear flood scope: $e');
+    }
+
     // Delete wardriving channel FIRST, while BLE connection is still active
     // This prevents "GATT Server is disconnected" errors
     await _meshCoreConnection?.deleteWardrivingChannelEarly();
@@ -2040,9 +2070,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _currentBatteryPercent = null;
     _authType = null;
 
-    // Clear regional channels (keeps only Public)
+    // Clear regional channels (keeps only Public) and scope
     ChannelService.clearRegionalChannels();
     _regionalChannels = [];
+    _scope = null;
 
     // Clear discovered devices so user must scan fresh
     _discoveredDevices = [];

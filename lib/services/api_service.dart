@@ -40,6 +40,7 @@ class ApiService {
   Timer? _heartbeatTimer;
   Function? _onSessionExpiring;
   List<String> _channels = [];
+  List<String> _scopes = [];
 
   /// Callback to get current GPS coordinates for heartbeat
   /// Returns (lat, lon) or null if GPS is not available
@@ -47,6 +48,9 @@ class ApiService {
 
   /// Regional channels from auth response (e.g., ['public', 'ottawa', 'testing'])
   List<String> get channels => List.unmodifiable(_channels);
+
+  /// Regional scopes from auth response (e.g., ['ottawa'])
+  List<String> get scopes => List.unmodifiable(_scopes);
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -300,6 +304,15 @@ class ApiService {
           debugLog('[API] Regional channels: $_channels');
         } else {
           _channels = [];
+        }
+
+        // Parse scopes array from auth response
+        final scopesData = data['scopes'];
+        if (scopesData is List && scopesData.isNotEmpty) {
+          _scopes = scopesData.cast<String>().toList();
+          debugLog('[API] Regional scopes: $_scopes');
+        } else {
+          _scopes = [];
         }
 
         // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
@@ -600,6 +613,7 @@ class ApiService {
     _rxAllowed = false;
     _sessionExpiresAt = null;
     _channels = [];
+    _scopes = [];
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     debugLog('[API] Session cleared');

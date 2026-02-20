@@ -779,6 +779,24 @@ class MeshCoreConnection {
     await _sendToRadio(data);
   }
 
+  /// Set flood scope for regional packet filtering
+  /// TransportKey is 16-byte SHA-256 derived key from scope name
+  Future<void> setFloodScope(Uint8List transportKey) async {
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.setFloodScope);
+    data.writeByte(0); // reserved byte
+    data.writeBytes(transportKey); // 16-byte key
+    await _sendToRadio(data);
+  }
+
+  /// Clear flood scope (return to unscoped global flood)
+  Future<void> clearFloodScope() async {
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.setFloodScope);
+    data.writeByte(0); // reserved byte — no key means clear
+    await _sendToRadio(data);
+  }
+
   /// Delete channel by setting it to empty
   Future<void> deleteChannel(int channelIdx) async {
     await setChannel(channelIdx, '', Uint8List(16));

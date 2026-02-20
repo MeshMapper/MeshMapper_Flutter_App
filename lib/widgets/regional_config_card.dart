@@ -6,6 +6,7 @@ class RegionalConfigCard extends StatelessWidget {
   final String? zoneName;
   final String? zoneCode;
   final List<String> channels;
+  final String? scope;
   final bool isOfflineMode;
 
   const RegionalConfigCard({
@@ -13,6 +14,7 @@ class RegionalConfigCard extends StatelessWidget {
     this.zoneName,
     this.zoneCode,
     this.channels = const [],
+    this.scope,
     this.isOfflineMode = false,
   });
 
@@ -70,6 +72,16 @@ class RegionalConfigCard extends StatelessWidget {
             const SizedBox(height: 8),
             _buildInfoRow(context, Icons.flight, 'IATA', displayZoneCode ?? '-',
                 isOffline: isOfflineMode),
+            const SizedBox(height: 12),
+
+            // Scope
+            _buildInfoRow(
+              context,
+              Icons.filter_alt,
+              'Scope',
+              isOfflineMode ? '-' : (scope ?? 'Global'),
+              isOffline: isOfflineMode,
+            ),
             const SizedBox(height: 12),
 
             // Channels header
