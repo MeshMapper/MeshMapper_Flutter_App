@@ -244,7 +244,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             subtitle: appState.enforceHybrid
                 ? const Text(
-                    'Forced Enabled by Regional Admin',
+                    'Set by Regional Admin — hybrid uses 50% fewer flood packets, improving mesh health.',
                     style: TextStyle(color: Colors.amber),
                   )
                 : const Text('Combines Active and Passive modes'),
@@ -1131,7 +1131,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: Text('$interval seconds'),
                 subtitle: isDisabled
                     ? const Text(
-                        'Disabled by Regional Admin',
+                        'Set by Regional Admin — slower intervals reduce congestion in your region',
                         style: TextStyle(color: Colors.amber),
                       )
                     : Text(description),
