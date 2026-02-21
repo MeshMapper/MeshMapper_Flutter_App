@@ -390,6 +390,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get rxAllowed => _apiService.rxAllowed;
   bool get hasApiSession => _apiService.hasSession;
   bool get isApiRxOnlyMode => hasApiSession && !txAllowed && rxAllowed;
+  bool get enforceHybrid => _apiService.enforceHybrid;
+  int get minModeInterval => _apiService.minModeInterval;
 
   // Offline mode
   bool get offlineMode => _preferences.offlineMode;
@@ -1097,6 +1099,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       } else {
         _scope = null;
         debugLog('[CONN] No regional scope — using unscoped flood');
+      }
+
+      // Enforce hybrid mode if required by regional admin
+      if (_apiService.enforceHybrid && !_preferences.hybridModeEnabled) {
+        _preferences = _preferences.copyWith(hybridModeEnabled: true);
+        debugLog('[CONN] Hybrid mode force-enabled by regional admin');
+      }
+
+      // Enforce minimum auto-ping interval if required by regional admin
+      if (_preferences.autoPingInterval < _apiService.minModeInterval) {
+        _preferences = _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
+        debugLog('[CONN] Auto-ping interval bumped to ${_apiService.minModeInterval}s by regional admin');
       }
 
       // Create ping service with wakelock (create new instance per connection)

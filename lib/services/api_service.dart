@@ -41,6 +41,8 @@ class ApiService {
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
+  bool _enforceHybrid = false;
+  int _minModeInterval = 15;
 
   /// Callback to get current GPS coordinates for heartbeat
   /// Returns (lat, lon) or null if GPS is not available
@@ -51,6 +53,12 @@ class ApiService {
 
   /// Regional scopes from auth response (e.g., ['ottawa'])
   List<String> get scopes => List.unmodifiable(_scopes);
+
+  /// Whether hybrid mode is enforced by regional admin
+  bool get enforceHybrid => _enforceHybrid;
+
+  /// Minimum auto-ping interval enforced by regional admin (seconds)
+  int get minModeInterval => _minModeInterval;
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -313,6 +321,21 @@ class ApiService {
           debugLog('[API] Regional scopes: $_scopes');
         } else {
           _scopes = [];
+        }
+
+        // Parse enforce_hybrid flag from auth response
+        _enforceHybrid = data['enforce_hybrid'] == true;
+        if (_enforceHybrid) {
+          debugLog('[API] Regional admin enforces hybrid mode');
+        }
+
+        // Parse min_mode_interval from auth response
+        final minInterval = data['min_mode_interval'];
+        if (minInterval is int && minInterval > 0) {
+          _minModeInterval = minInterval;
+          debugLog('[API] Regional admin min interval: ${_minModeInterval}s');
+        } else {
+          _minModeInterval = 15;
         }
 
         // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
@@ -614,6 +637,8 @@ class ApiService {
     _sessionExpiresAt = null;
     _channels = [];
     _scopes = [];
+    _enforceHybrid = false;
+    _minModeInterval = 15;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     debugLog('[API] Session cleared');

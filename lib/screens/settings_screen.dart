@@ -242,9 +242,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ),
-            subtitle: const Text('Combines Active and Passive modes'),
-            value: prefs.hybridModeEnabled,
-            onChanged: isAutoMode ? null : (value) {
+            subtitle: appState.enforceHybrid
+                ? const Text(
+                    'Forced Enabled by Regional Admin',
+                    style: TextStyle(color: Colors.amber),
+                  )
+                : const Text('Combines Active and Passive modes'),
+            value: appState.enforceHybrid ? true : prefs.hybridModeEnabled,
+            onChanged: (isAutoMode || appState.enforceHybrid) ? null : (value) {
               appState.updatePreferences(prefs.copyWith(hybridModeEnabled: value));
             },
           ),
@@ -1083,7 +1088,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showIntervalSelector(BuildContext context, AppStateProvider appState) {
-    final currentInterval = appState.preferences.autoPingInterval;
+    final minInterval = appState.minModeInterval;
+    var currentInterval = appState.preferences.autoPingInterval;
+
+    // Auto-bump if current interval is below the admin minimum
+    if (currentInterval < minInterval) {
+      currentInterval = minInterval;
+      appState.updatePreferences(
+        appState.preferences.copyWith(autoPingInterval: minInterval),
+      );
+    }
 
     showDialog(
       context: context,
@@ -1102,18 +1116,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: AutoPingInterval.values.map((interval) {
-              final isSelected = interval == currentInterval;
+              final isDisabled = interval < minInterval;
 
-              return RadioListTile<int>(
+              String description;
+              if (interval == 15) {
+                description = 'Fast (More coverage, causes more mesh load)';
+              } else if (interval == 30) {
+                description = 'Normal (Balanced coverage and mesh load)';
+              } else {
+                description = 'Slow (Less coverage, little mesh load)';
+              }
+
+              final tile = RadioListTile<int>(
                 title: Text('$interval seconds'),
-                subtitle: Text(interval == 15
-                    ? 'Fast (More coverage, causes more mesh load)'
-                    : interval == 30
-                        ? 'Normal (Balanced coverage and mesh load)'
-                        : 'Slow (Less coverage, little mesh load)'),
+                subtitle: isDisabled
+                    ? const Text(
+                        'Disabled by Regional Admin',
+                        style: TextStyle(color: Colors.amber),
+                      )
+                    : Text(description),
                 value: interval,
-                selected: isSelected,
               );
+
+              if (isDisabled) {
+                return IgnorePointer(
+                  child: Opacity(
+                    opacity: 0.5,
+                    child: tile,
+                  ),
+                );
+              }
+              return tile;
             }).toList(),
           ),
         ),
