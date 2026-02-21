@@ -78,31 +78,33 @@ class RxLogger {
         return false;
       }
 
-      // CARpeater pass-through: check firstHop against carpeaterPrefix
-      final firstHopId = metadata.firstHop!;
-      final firstHopHex = firstHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
       bool carpeaterStripped = false;
       String repeaterId;
       double? reportedSnr = metadata.snr;
       int? reportedRssi = metadata.rssi;
 
-      if (carpeaterPrefix != null && firstHopHex == carpeaterPrefix!.toUpperCase()) {
+      // Extract LAST hop from path (the repeater that directly delivered to us)
+      // Mask to last byte only (0xFF) for consistent 2-character display
+      final lastHopId = metadata.lastHop! & 0xFF;
+      final lastHopHex = lastHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
+
+      // CARpeater check: the carpeater is co-located with us, so it only
+      // appears as the last hop (the delivery repeater) on RX packets
+      if (carpeaterPrefix != null && lastHopHex == carpeaterPrefix!.toUpperCase()) {
         if (metadata.pathLength < 2) {
           debugLog('[RX LOG] CARpeater pass-through: single-hop, dropping');
           return false;
         }
-        // Multi-hop: strip CARpeater, report underlying repeater (pathBytes[1])
-        final underlyingHopId = metadata.pathBytes[1] & 0xFF;
+        // Second-to-last hop = the real repeater that forwarded to our carpeater
+        final secondToLastIdx = metadata.pathLength - 2;
+        final underlyingHopId = metadata.pathBytes[secondToLastIdx] & 0xFF;
         repeaterId = underlyingHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
         carpeaterStripped = true;
         reportedSnr = null;
         reportedRssi = null;
-        debugLog('[RX LOG] CARpeater pass-through: stripped $firstHopHex, reporting underlying repeater $repeaterId');
+        debugLog('[RX LOG] CARpeater pass-through: stripped $lastHopHex, reporting underlying repeater $repeaterId');
       } else {
-        // Normal path: extract LAST hop from path (the repeater that directly delivered to us)
-        // Mask to last byte only (0xFF) for consistent 2-character display
-        final lastHopId = metadata.lastHop! & 0xFF;
-        repeaterId = lastHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
+        repeaterId = lastHopHex;
       }
 
       // Get current GPS location
