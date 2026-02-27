@@ -15,15 +15,14 @@ import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
 import 'services/background_service.dart';
 import 'services/debug_file_logger.dart';
-import 'utils/constants.dart';
 import 'utils/debug_logger_io.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Enable debug file logging FIRST on mobile for dev builds
+  // Enable debug file logging FIRST on mobile to capture early logs
   // This must happen before DebugLogger.initialize() to capture early logs
-  if (!kIsWeb && AppConstants.isDevelopmentBuild) {
+  if (!kIsWeb) {
     await DebugFileLogger.enable();
   }
 

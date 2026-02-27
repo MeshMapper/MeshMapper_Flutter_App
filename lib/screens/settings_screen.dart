@@ -689,9 +689,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               subtitle: Text(
                 appState.debugLogsEnabled
-                    ? AppConstants.isDevelopmentBuild
-                        ? 'Auto-enabled for development build'
-                        : 'Writing logs to file'
+                    ? 'Writing logs to file'
                     : 'Enable to save debug logs to device',
               ),
               value: appState.debugLogsEnabled,

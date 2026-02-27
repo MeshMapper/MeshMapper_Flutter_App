@@ -452,8 +452,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer = RxWindowTimer(onUpdate: notifyListeners);
     _discoveryWindowTimer = DiscoveryWindowTimer(onUpdate: notifyListeners);
 
-    // Auto-enable debug logging for development builds
-    await _autoEnableDebugLogsIfDevelopmentBuild();
+    // Initialize debug logging (enabled by default, respects user preference)
+    await _initDebugLogs();
 
     // Initialize channel service with Public channel only (regional channels added after auth)
     await ChannelService.initializePublicChannel();
@@ -3437,21 +3437,38 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Debug File Logging (Mobile Only)
   // ============================================
 
-  /// Auto-enable debug file logging for development builds
-  Future<void> _autoEnableDebugLogsIfDevelopmentBuild() async {
+  /// Initialize debug file logging, respecting persisted user preference.
+  /// Enabled by default on all builds. If the user previously disabled it,
+  /// that preference is restored.
+  Future<void> _initDebugLogs() async {
     if (kIsWeb) return; // File logging not available on web
 
-    if (AppConstants.isDevelopmentBuild) {
-      debugLog('[INIT] Development build detected (${AppConstants.appVersion}), auto-enabling debug logs');
-      try {
-        await DebugFileLogger.enable();
+    try {
+      final box = await _openBoxSafely(_preferencesBoxName);
+      if (box == null) {
+        // Can't read preference — keep default (enabled, already started in main.dart)
         _debugLogsEnabled = true;
         await _refreshDebugLogFiles();
-      } catch (e) {
-        debugError('[INIT] Failed to auto-enable debug logs: $e');
+        return;
       }
-    } else {
-      debugLog('[INIT] Release build (${AppConstants.appVersion}), debug logs disabled by default');
+
+      final userDisabled = box.get('debug_logs_enabled') == false;
+
+      if (userDisabled) {
+        debugLog('[INIT] Debug logs disabled by user preference, turning off');
+        await DebugFileLogger.disable();
+        _debugLogsEnabled = false;
+        DebugLogger.setEnabled(false);
+      } else {
+        debugLog('[INIT] Debug logging enabled (${AppConstants.appVersion})');
+        // DebugFileLogger already enabled in main.dart
+        _debugLogsEnabled = true;
+        await _refreshDebugLogFiles();
+      }
+    } catch (e) {
+      debugError('[INIT] Failed to init debug logs: $e');
+      // Fallback: keep enabled (already started in main.dart)
+      _debugLogsEnabled = true;
     }
   }
 
@@ -3468,6 +3485,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _debugLogsEnabled = true;
       DebugLogger.setEnabled(true);
       await _refreshDebugLogFiles();
+      // Persist user preference
+      final box = await _openBoxSafely(_preferencesBoxName);
+      await box?.put('debug_logs_enabled', true);
       notifyListeners();
       debugLog('[DEBUG] Debug file logging enabled');
     } catch (e) {
@@ -3487,6 +3507,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await DebugFileLogger.disable();
       _debugLogsEnabled = false;
       DebugLogger.setEnabled(false);
+      // Persist user preference
+      final box = await _openBoxSafely(_preferencesBoxName);
+      await box?.put('debug_logs_enabled', false);
       notifyListeners();
     } catch (e) {
       debugError('[DEBUG] Failed to disable debug file logging: $e');
