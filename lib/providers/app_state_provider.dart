@@ -1086,11 +1086,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // Set flood scope from API response (regional TX filtering)
-      // "*" = wildcard/global → no scope (unscoped flood, same as before)
+      // "*" or "#*" = wildcard/global → no scope (unscoped flood, same as before)
       // Any other value (e.g., "ottawa") → derive TransportKey and set scope
       final apiScopes = _apiService.scopes;
-      if (apiScopes.isNotEmpty && apiScopes.first != '*') {
-        final scopeName = apiScopes.first;
+      final firstScope = apiScopes.isNotEmpty ? apiScopes.first : null;
+      final isWildcard = firstScope == null || firstScope == '*' || firstScope == '#*';
+      if (!isWildcard) {
+        final scopeName = firstScope;
         _scope = scopeName.startsWith('#') ? scopeName : '#$scopeName';
         final scopeKey = CryptoService.deriveScopeKey(scopeName);
         debugLog('[CONN] Setting flood scope: $scopeName');
