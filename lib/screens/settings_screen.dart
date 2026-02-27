@@ -20,12 +20,12 @@ import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../models/user_preferences.dart';
 import '../services/debug_file_logger.dart';
-import '../services/debug_submit_service.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/offline_session_service.dart';
 import '../services/permission_disclosure_service.dart';
 import '../utils/constants.dart';
 import '../widgets/bug_report_dialog.dart';
+import '../widgets/upload_logs_dialog.dart';
 import 'package:intl/intl.dart';
 import '../widgets/app_toast.dart';
 
@@ -42,93 +42,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _versionTapCount = 0;
   DateTime? _lastVersionTap;
 
-  // Debug log upload tracking
-  String? _uploadingFilePath;
-  final Set<String> _uploadedFiles = {};
+  Future<void> _showUploadLogsDialog(BuildContext context, AppStateProvider appState) async {
+    final result = await showUploadLogsDialog(context, appState);
 
-  Future<void> _uploadSingleLogFile(AppStateProvider appState, File file) async {
-    final filename = file.path.split('/').last;
+    if (!context.mounted || result == null) return;
 
-    setState(() {
-      _uploadingFilePath = file.path;
-    });
-
-    try {
-      final service = DebugSubmitService();
-
-      // Use persistent device info
-      final publicKey = appState.devicePublicKey ??
-          appState.lastConnectedPublicKey ??
-          'not-connected';
-      final deviceName = appState.lastConnectedDeviceName ?? 'not-connected';
-
-      final success = await service.uploadDebugFileOnly(
-        file: file,
-        deviceId: deviceName,
-        publicKey: publicKey,
-        appVersion: AppConstants.appVersion,
-        devicePlatform: DebugSubmitService.getDevicePlatform(),
-        userNotes: 'Direct debug log upload from $deviceName',
-      );
-
-      service.dispose();
-
-      if (!mounted) return;
-
-      if (success) {
-        setState(() {
-          _uploadedFiles.add(file.path);
-          _uploadingFilePath = null;
-        });
-        AppToast.success(context, 'Uploaded $filename');
-      } else {
-        setState(() {
-          _uploadingFilePath = null;
-        });
-        AppToast.error(context, 'Failed to upload $filename');
+    if (result.success) {
+      String message = 'Uploaded ${result.uploadedCount} log file${result.uploadedCount == 1 ? '' : 's'}';
+      if (result.failedCount > 0) {
+        message += ' (${result.failedCount} failed)';
       }
-    } catch (e) {
-      debugError('[SETTINGS] Log file upload error: $e');
-      if (mounted) {
-        setState(() {
-          _uploadingFilePath = null;
-        });
-        AppToast.error(context, 'Upload error: $e');
-      }
-    }
-  }
-
-  /// Upload the current (active) log file by rotating it first
-  Future<void> _uploadCurrentLogFile(AppStateProvider appState, File currentFile) async {
-    final originalPath = currentFile.path;
-
-    setState(() {
-      _uploadingFilePath = originalPath;
-    });
-
-    try {
-      // Rotate the log: closes current file, starts a new one
-      // The original file is now closed and safe to upload
-      await appState.prepareDebugLogsForUpload();
-
-      if (!mounted) return;
-
-      // The original file still exists at the same path, now closed
-      final closedFile = File(originalPath);
-      if (!closedFile.existsSync()) {
-        throw Exception('Log file not found after rotation');
-      }
-
-      // Now upload the closed file
-      await _uploadSingleLogFile(appState, closedFile);
-    } catch (e) {
-      debugError('[SETTINGS] Current log upload error: $e');
-      if (mounted) {
-        setState(() {
-          _uploadingFilePath = null;
-        });
-        AppToast.error(context, 'Upload error: $e');
-      }
+      AppToast.success(context, message);
+    } else if (result.errorMessage != null) {
+      AppToast.error(context, result.errorMessage!);
     }
   }
 
@@ -716,12 +642,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                     ),
                     const Spacer(),
-                    if (appState.debugLogFiles.isNotEmpty)
+                    if (appState.debugLogFiles.isNotEmpty) ...[
+                      TextButton.icon(
+                        icon: const Icon(Icons.cloud_upload, size: 18),
+                        label: const Text('Upload'),
+                        onPressed: () => _showUploadLogsDialog(context, appState),
+                      ),
                       TextButton.icon(
                         icon: const Icon(Icons.delete_sweep, size: 18),
                         label: const Text('Delete All'),
                         onPressed: () => _confirmDeleteAllLogs(context, appState),
                       ),
+                    ],
                   ],
                 ),
               ),
@@ -741,18 +673,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   final file = entry.value;
                   final filename = file.path.split('/').last;
                   final sizeBytes = file.lengthSync();
-                  final isUploading = _uploadingFilePath == file.path;
-                  final wasUploaded = _uploadedFiles.contains(file.path);
-                  // First file (index 0) is the most recent/active log - can't upload
                   final isCurrentLog = index == 0;
-                  // Parse unix timestamp from filename (meshmapper-debug-{timestamp}.txt)
                   final timestampMatch = RegExp(r'meshmapper-debug-(\d+)\.txt').firstMatch(filename);
                   final fileDate = timestampMatch != null
                       ? DateTime.fromMillisecondsSinceEpoch(int.parse(timestampMatch.group(1)!) * 1000)
                       : null;
                   final dateStr = fileDate != null ? DateFormat('MMM d, h:mm a').format(fileDate) : filename;
 
-                  // Format size and show part count for oversized files
                   String sizeDisplay;
                   final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
                   if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
@@ -775,48 +702,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Upload button
-                        if (wasUploaded)
-                          Container(
-                            width: 40,
-                            height: 40,
-                            alignment: Alignment.center,
-                            child: const Icon(
-                              Icons.check_circle,
-                              size: 20,
-                              color: Colors.green,
-                            ),
-                          )
-                        else if (isUploading)
-                          Container(
-                            width: 40,
-                            height: 40,
-                            alignment: Alignment.center,
-                            child: const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          )
-                        else
-                          IconButton(
-                            icon: const Icon(Icons.cloud_upload, size: 20),
-                            onPressed: _uploadingFilePath != null
-                                ? null
-                                : () => isCurrentLog
-                                    ? _uploadCurrentLogFile(appState, file)
-                                    : _uploadSingleLogFile(appState, file),
-                            tooltip: isCurrentLog
-                                ? 'Close log and upload'
-                                : 'Upload to developer',
-                          ),
-                        // View button
                         IconButton(
                           icon: const Icon(Icons.visibility, size: 20),
                           onPressed: () => _showLogViewer(context, appState, file),
                           tooltip: 'View',
                         ),
-                        // Share button
                         IconButton(
                           icon: const Icon(Icons.share, size: 20),
                           onPressed: () => appState.shareDebugLog(file),
