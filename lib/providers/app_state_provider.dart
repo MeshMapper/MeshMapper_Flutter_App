@@ -104,6 +104,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Bluetooth adapter state (on/off)
   BluetoothAdapterState _bluetoothAdapterState = BluetoothAdapterState.unknown;
   StreamSubscription? _adapterStateSubscription;
+  StreamSubscription? _connectionSubscription;
+  StreamSubscription? _gpsStatusSubscription;
+  StreamSubscription? _gpsPositionSubscription;
 
   // GPS state
   GpsStatus _gpsStatus = GpsStatus.permissionDenied;
@@ -547,7 +550,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Listen to Bluetooth connection changes
     debugLog('[INIT] Setting up BLE connection listener...');
-    _bluetoothService.connectionStream.listen((status) async {
+    await _connectionSubscription?.cancel();
+    _connectionSubscription = _bluetoothService.connectionStream.listen((status) async {
       _connectionStatus = status;
       if (status == ConnectionStatus.disconnected) {
         // Check if this is an unexpected disconnect during active wardriving
@@ -571,7 +575,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Listen to GPS changes
     debugLog('[INIT] Setting up GPS status listener...');
-    _gpsService.statusStream.listen((status) {
+    await _gpsStatusSubscription?.cancel();
+    _gpsStatusSubscription = _gpsService.statusStream.listen((status) {
       final previousStatus = _gpsStatus;
       _gpsStatus = status;
 
@@ -596,7 +601,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] Initial GPS status: $_gpsStatus');
 
     debugLog('[INIT] Setting up GPS position listener...');
-    _gpsService.positionStream.listen((position) async {
+    await _gpsPositionSubscription?.cancel();
+    _gpsPositionSubscription = _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
       notifyListeners();
 
@@ -4183,6 +4189,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    _gpsStatusSubscription?.cancel();
+    _gpsPositionSubscription?.cancel();
     _logRxDataSubscription?.cancel();
     _noiseFloorSubscription?.cancel();
     _batterySubscription?.cancel();
