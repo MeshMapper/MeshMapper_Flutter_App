@@ -42,6 +42,7 @@ class ApiService {
   List<String> _channels = [];
   List<String> _scopes = [];
   bool _enforceHybrid = false;
+  bool _enforceDiscDrop = false;
   int _minModeInterval = 15;
 
   /// Callback to get current GPS coordinates for heartbeat
@@ -56,6 +57,9 @@ class ApiService {
 
   /// Whether hybrid mode is enforced by regional admin
   bool get enforceHybrid => _enforceHybrid;
+
+  /// Whether discovery drop is enforced by regional admin
+  bool get enforceDiscDrop => _enforceDiscDrop;
 
   /// Minimum auto-ping interval enforced by regional admin (seconds)
   int get minModeInterval => _minModeInterval;
@@ -327,6 +331,12 @@ class ApiService {
         _enforceHybrid = data['enforce_hybrid'] == true;
         if (_enforceHybrid) {
           debugLog('[API] Regional admin enforces hybrid mode');
+        }
+
+        // Parse disc_drop flag from auth response
+        _enforceDiscDrop = data['disc_drop'] == true;
+        if (_enforceDiscDrop) {
+          debugLog('[API] Regional admin enforces discovery drop');
         }
 
         // Parse min_mode_interval from auth response
@@ -638,6 +648,7 @@ class ApiService {
     _channels = [];
     _scopes = [];
     _enforceHybrid = false;
+    _enforceDiscDrop = false;
     _minModeInterval = 15;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;

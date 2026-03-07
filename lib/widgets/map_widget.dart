@@ -683,7 +683,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
         // DISC markers (purple circles for discovery observations)
         MarkerLayer(
-          markers: _buildDiscMarkers(appState.discLogEntries),
+          markers: _buildDiscMarkers(appState.discLogEntries, appState.discDropEnabled),
         ),
 
         // Repeater markers (magenta circles with ID)
@@ -1566,7 +1566,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     }).toList();
   }
 
-  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries) {
+  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries, bool discDropEnabled) {
     return entries.map((entry) {
       return Marker(
         point: LatLng(entry.latitude, entry.longitude),
@@ -1576,7 +1576,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           onTap: () => _showDiscPingDetails(entry),
           child: Container(
             decoration: BoxDecoration(
-              color: entry.nodeCount == 0 ? Colors.grey : _discMarkerColor,
+              color: entry.nodeCount == 0
+                  ? (discDropEnabled ? Colors.red : Colors.grey)
+                  : _discMarkerColor,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [

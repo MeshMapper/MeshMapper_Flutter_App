@@ -391,6 +391,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get hasApiSession => _apiService.hasSession;
   bool get isApiRxOnlyMode => hasApiSession && !txAllowed && rxAllowed;
   bool get enforceHybrid => _apiService.enforceHybrid;
+  bool get enforceDiscDrop => _apiService.enforceDiscDrop;
+  bool get discDropEnabled => _preferences.discDropEnabled || _apiService.enforceDiscDrop;
   int get minModeInterval => _apiService.minModeInterval;
 
   // Offline mode
@@ -1109,6 +1111,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[CONN] Hybrid mode force-enabled by regional admin');
       }
 
+      // Enforce discovery drop if required by regional admin
+      if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
+        _preferences = _preferences.copyWith(discDropEnabled: true);
+        debugLog('[CONN] Discovery drop force-enabled by regional admin');
+      }
+
       // Enforce minimum auto-ping interval if required by regional admin
       if (_preferences.autoPingInterval < _apiService.minModeInterval) {
         _preferences = _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
@@ -1161,6 +1169,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Check if TX is allowed by API (zone capacity)
       _pingService!.checkTxAllowed = () => txAllowed;
+
+      // Check if discovery drop is enabled
+      _pingService!.getDiscDropEnabled = () => discDropEnabled;
 
       _pingService!.onTxPing = (ping) {
         _txPings.add(ping);
@@ -1348,8 +1359,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
         }
 
+        PingEventType eventType;
+        if (success) {
+          eventType = PingEventType.discSuccess;
+        } else if (discDropEnabled) {
+          eventType = PingEventType.txFail;
+        } else {
+          eventType = PingEventType.discFail;
+        }
+
         recordPingEvent(
-          success ? PingEventType.discSuccess : PingEventType.discFail,
+          eventType,
           latitude: lat,
           longitude: lon,
           repeaters: repeaters,

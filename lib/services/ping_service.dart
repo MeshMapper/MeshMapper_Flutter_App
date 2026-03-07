@@ -108,6 +108,9 @@ class PingService {
   /// Callback to get the external antenna value for API payloads
   bool Function()? getExternalAntenna;
 
+  /// Callback to check if discovery drop is enabled (failed discoveries → API)
+  bool Function()? getDiscDropEnabled;
+
   /// Callback to check if TX is allowed by API (zone capacity check)
   bool Function()? checkTxAllowed;
 
@@ -1129,6 +1132,18 @@ class PingService {
       onStatsUpdated?.call(_stats);
     } else {
       debugLog('[DISC] No nodes discovered');
+
+      // Queue failed discovery to API if disc drop is enabled
+      if (getDiscDropEnabled?.call() == true) {
+        _apiQueue.enqueueDiscDrop(
+          latitude: position.latitude,
+          longitude: position.longitude,
+          timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          externalAntenna: getExternalAntenna?.call() ?? false,
+          noiseFloor: _pendingTxNoiseFloor,
+        );
+        debugLog('[DISC] Discovery drop queued (no response)');
+      }
     }
 
     // Entry already added to log via onDiscPing - no need to fire onDiscoveryComplete

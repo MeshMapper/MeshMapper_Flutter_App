@@ -180,6 +180,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
 
+          // Discovery Drop Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.signal_wifi_off),
+            title: Row(
+              children: [
+                const Text('Discovery Drop'),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: () => _showDiscDropInfo(context),
+                  child: Icon(
+                    Icons.info_outline,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            subtitle: appState.enforceDiscDrop
+                ? const Text(
+                    'Enabled by Regional Admin',
+                    style: TextStyle(color: Colors.amber),
+                  )
+                : const Text('Count failed discoveries as failed pings'),
+            value: appState.enforceDiscDrop ? true : prefs.discDropEnabled,
+            onChanged: (isAutoMode || appState.enforceDiscDrop) ? null : (value) {
+              appState.updatePreferences(prefs.copyWith(discDropEnabled: value));
+            },
+          ),
+
           // CARpeater Filter Setting
           SwitchListTile(
             secondary: const Icon(Icons.filter_alt),
@@ -962,6 +991,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
               '\u2022 Discovery finds nearby repeaters\n'
               '\u2022 TX pings test coverage through them',
               style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDiscDropInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.signal_wifi_off, size: 24),
+            SizedBox(width: 8),
+            Text('Discovery Drop'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'When enabled, failed discovery requests (no repeater responded) are reported to the API as failed pings, helping identify dead zones in the mesh network.',
+              style: TextStyle(fontSize: 14),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Discovery requests require Repeater firmware 1.10+. If the majority of the mesh is not on this version, it may produce false "no coverage" areas/failed pings.',
+              style: TextStyle(fontSize: 13, color: Colors.amber),
             ),
           ],
         ),

@@ -72,6 +72,7 @@ ios/Flutter/flutter_export_environment.sh
 *.g.dart
 
 # Debug logs
+debug/
 debuglog/
 meshmapper-debug-*.txt
 
