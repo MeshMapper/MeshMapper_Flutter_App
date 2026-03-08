@@ -161,6 +161,14 @@ class GpsService {
   Future<void> startWatching() async {
     debugLog('[GPS] startWatching() called, current status: $_status');
 
+    // Ensure only one active position stream subscription exists.
+    // startWatching() can be called multiple times (e.g. after permission flow).
+    if (_positionSubscription != null) {
+      debugLog('[GPS] Existing position subscription found, restarting watcher');
+      await _positionSubscription?.cancel();
+      _positionSubscription = null;
+    }
+
     // Check if location services are enabled first (system-level setting)
     final serviceEnabled = await isLocationServiceEnabled();
     debugLog('[GPS] Location services check: enabled=$serviceEnabled');
