@@ -10,11 +10,11 @@ import '../utils/distance_formatter.dart';
 
 /// A styled repeater ID text with a dotted underline hint that it's tappable.
 ///
-/// Displays the 2-char hex repeater ID in monospace style. Use together with
-/// [RepeaterIdChip.showRepeaterPopup] on the parent row's `InkWell` so the
-/// entire row is the tap target.
+/// Displays the hex repeater ID (2/4/6 chars) in monospace style. Use together
+/// with [RepeaterIdChip.showRepeaterPopup] on the parent row's `InkWell` so
+/// the entire row is the tap target.
 class RepeaterIdChip extends StatelessWidget {
-  /// The 2-char hex repeater ID (e.g., "4e")
+  /// The hex repeater ID (e.g., "4E", "4F5D", "4F5D82")
   final String repeaterId;
 
   /// Font size for the ID text (11 for log screens, 13 for map popups)
@@ -32,13 +32,16 @@ class RepeaterIdChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Scale font size down for longer IDs (4+ chars)
+    final effectiveFontSize = repeaterId.length > 2 ? fontSize - 1.0 : fontSize;
+
     final child = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
           repeaterId,
           style: TextStyle(
-            fontSize: fontSize,
+            fontSize: effectiveFontSize,
             fontWeight: FontWeight.w600,
             fontFamily: 'monospace',
             color: Theme.of(context).colorScheme.onSurface,

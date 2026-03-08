@@ -209,6 +209,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
 
+          // Path Bytes Setting
+          ListTile(
+            leading: const Icon(Icons.linear_scale),
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Flexible(child: Text('Path Bytes', overflow: TextOverflow.ellipsis)),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: () => _showHopBytesInfo(context),
+                  child: Icon(
+                    Icons.info_outline,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            subtitle: appState.enforceHopBytes
+                ? const Text(
+                    'Enabled at the regional level',
+                    style: TextStyle(color: Colors.amber),
+                  )
+                : (appState.isConnected && !appState.supportsMultiBytePaths)
+                    ? const Text(
+                        'Firmware 1.14+ required',
+                        style: TextStyle(color: Colors.amber),
+                      )
+                    : !appState.isConnected
+                        ? const Text('Must be connected to radio')
+                        : const Text('Repeater ID size in path hops'),
+            trailing: DropdownButton<int>(
+              value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(value: 1, child: Text('1')),
+                DropdownMenuItem(value: 2, child: Text('2')),
+                DropdownMenuItem(value: 3, child: Text('3')),
+              ],
+              onChanged: (!appState.isConnected || isAutoMode || appState.enforceHopBytes || !appState.supportsMultiBytePaths)
+                  ? null
+                  : (value) {
+                      if (value != null) appState.setHopBytes(value);
+                    },
+            ),
+          ),
+
           // CARpeater Filter Setting
           SwitchListTile(
             secondary: const Icon(Icons.filter_alt),
@@ -1040,6 +1087,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  void _showHopBytesInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.linear_scale, size: 24),
+            SizedBox(width: 8),
+            Text('Path Bytes'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Controls how many bytes are used to identify each repeater in the packet path. '
+              'More bytes = more unique IDs, reducing collisions in large networks.',
+              style: TextStyle(fontSize: 14),
+            ),
+            SizedBox(height: 12),
+            Text(
+              '\u2022 1 byte: 256 unique IDs (default)\n'
+              '\u2022 2 bytes: 65,536 unique IDs\n'
+              '\u2022 3 bytes: 16 million unique IDs',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Requires MeshCore firmware v1.14.0+. '
+              'RX always auto-detects the sender\'s byte size.',
+              style: TextStyle(fontSize: 13, color: Colors.amber),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showIntervalSelector(BuildContext context, AppStateProvider appState) {
     final minInterval = appState.minModeInterval;
     var currentInterval = appState.preferences.autoPingInterval;
@@ -1114,6 +1206,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showRepeaterIdDialog(BuildContext context, AppStateProvider appState) {
+    final effectiveBytes = appState.effectiveHopBytes;
+    final maxHexChars = effectiveBytes * 2;
+    final hintText = 'F' * maxHexChars;
+
     final controller = TextEditingController(
       text: appState.preferences.ignoreRepeaterId ?? '',
     );
@@ -1126,17 +1222,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Enter the repeater ID of your CARpeater (2 hex digits):'),
+            Text('Enter the repeater ID of your CARpeater ($maxHexChars hex digits):'),
             const SizedBox(height: 16),
             TextField(
               controller: controller,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'CARpeater ID',
-                hintText: 'FF',
+                hintText: hintText,
                 prefixText: '0x',
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
               ),
-              maxLength: 2,
+              maxLength: maxHexChars,
               textCapitalization: TextCapitalization.characters,
               onChanged: (value) {
                 // Keep only valid hex characters
@@ -1167,8 +1263,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextButton(
             onPressed: () {
               final value = controller.text.trim().toUpperCase();
+              // Accept hex IDs of any valid even length (2, 4, or 6 chars)
               final isValidHex = value.isEmpty ||
-                  (value.length == 2 && RegExp(r'^[0-9A-F]{2}$').hasMatch(value));
+                  (value.length % 2 == 0 && value.length <= 6 &&
+                      RegExp(r'^[0-9A-F]+$').hasMatch(value));
 
               if (isValidHex) {
                 // Enable ignoreCarpeater when setting a repeater ID
@@ -1181,7 +1279,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
                 Navigator.pop(context);
               } else {
-                AppToast.warning(context, 'Invalid hex value. Use 2 digits (00-FF).');
+                AppToast.warning(context, 'Invalid hex value. Use $maxHexChars hex digits.');
               }
             },
             child: const Text('Save'),

@@ -44,6 +44,7 @@ class ApiService {
   bool _enforceHybrid = false;
   bool _enforceDiscDrop = false;
   int _minModeInterval = 15;
+  int _apiHopBytes = 1;
 
   /// Callback to get current GPS coordinates for heartbeat
   /// Returns (lat, lon) or null if GPS is not available
@@ -63,6 +64,12 @@ class ApiService {
 
   /// Minimum auto-ping interval enforced by regional admin (seconds)
   int get minModeInterval => _minModeInterval;
+
+  /// Path hop bytes enforced by regional admin (1, 2, or 3)
+  int get apiHopBytes => _apiHopBytes;
+
+  /// Whether hop bytes are enforced by regional admin (only 2 or 3 enforces)
+  bool get enforceHopBytes => _apiHopBytes > 1;
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -346,6 +353,17 @@ class ApiService {
           debugLog('[API] Regional admin min interval: ${_minModeInterval}s');
         } else {
           _minModeInterval = 15;
+        }
+
+        // Parse hop_bytes from auth response
+        final hopBytes = data['hop_bytes'];
+        if (hopBytes is int && hopBytes >= 1 && hopBytes <= 3) {
+          _apiHopBytes = hopBytes;
+          if (_apiHopBytes > 1) {
+            debugLog('[API] Regional admin enforces $_apiHopBytes-byte paths');
+          }
+        } else {
+          _apiHopBytes = 1;
         }
 
         // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
@@ -650,6 +668,7 @@ class ApiService {
     _enforceHybrid = false;
     _enforceDiscDrop = false;
     _minModeInterval = 15;
+    _apiHopBytes = 1;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     debugLog('[API] Session cleared');

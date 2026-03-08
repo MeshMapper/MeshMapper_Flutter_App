@@ -152,6 +152,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
     // Show connected state
     if (appState.isConnected) {
+      // Show path hash mode warning popup if pending
+      final pathWarning = appState.pendingPathHashWarning;
+      if (pathWarning != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _showPathHashWarning(context, pathWarning.hopBytes, pathWarning.reason);
+          appState.clearPathHashWarning();
+        });
+      }
       return _buildConnectedInfo(context, appState);
     }
 
@@ -1635,6 +1644,84 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
         );
       },
     );
+  }
+
+  void _showPathHashWarning(BuildContext context, int hopBytes, String reason) {
+    if (reason == 'firmware_unsupported') {
+      // Firmware too old to support multi-byte paths
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber, size: 24, color: Colors.amber),
+              SizedBox(width: 8),
+              Flexible(child: Text('Firmware Update Recommended')),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Your regional admin has enabled $hopBytes-byte path mode for this zone, '
+                'but your companion firmware does not support it.',
+                style: const TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'The app will operate in 1-byte mode. Consider updating your companion '
+                'firmware to v1.14.0+ for more accurate repeater identification.',
+                style: TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      // Mode changed successfully
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.linear_scale, size: 24),
+              SizedBox(width: 8),
+              Text('Multi-Byte Paths Enabled'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Your radio has been updated from 1-byte to $hopBytes-byte paths for this session ($reason).',
+                style: const TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'If you disconnect unexpectedly (e.g., Bluetooth drops), your radio will remain '
+                'in multi-byte mode until you reconnect. A clean disconnect will restore your '
+                'radio to its previous setting.',
+                style: TextStyle(fontSize: 13, color: Colors.amber),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 }
 
