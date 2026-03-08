@@ -686,8 +686,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           markers: _buildDiscMarkers(appState.discLogEntries, appState.discDropEnabled),
         ),
 
-        // Repeater markers (magenta circles with ID)
+        // Repeater markers (magenta with ID, rotate with map)
         MarkerLayer(
+          rotate: true,
           markers: _buildRepeaterMarkers(
             appState.repeaters,
             appState.enforceHopBytes ? appState.effectiveHopBytes : null,
