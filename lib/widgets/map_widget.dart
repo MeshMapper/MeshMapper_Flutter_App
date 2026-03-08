@@ -1646,8 +1646,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
       // Display hex ID based on per-repeater hop_bytes (or regional admin override)
       final displayId = repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
+      final effectiveBytes = regionHopBytesOverride ?? repeater.hopBytes;
       final isLongId = displayId.length > 2;
       final markerWidth = displayId.length > 4 ? 48.0 : isLongId ? 40.0 : 28.0;
+
+      // Shape varies by hop bytes: 1=square, 2=rounded rect, 3=more rounded
+      final borderRadius = effectiveBytes >= 3
+          ? BorderRadius.circular(8)
+          : effectiveBytes == 2
+              ? BorderRadius.circular(6)
+              : BorderRadius.circular(4);
 
       return Marker(
         point: LatLng(repeater.lat, repeater.lon),
@@ -1661,7 +1669,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 : EdgeInsets.zero,
             decoration: BoxDecoration(
               color: markerColor,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: borderRadius,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [
                 BoxShadow(

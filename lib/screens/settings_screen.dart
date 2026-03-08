@@ -109,31 +109,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           // Appearance section
           _buildSectionHeader(context, 'Appearance'),
-          ListTile(
-            leading: Icon(
+          SwitchListTile(
+            secondary: Icon(
               prefs.themeMode == 'dark' ? Icons.dark_mode : Icons.light_mode,
             ),
             title: const Text('Theme'),
             subtitle: Text(prefs.themeMode == 'dark' ? 'Dark mode' : 'Light mode'),
-            trailing: Switch(
-              value: prefs.themeMode == 'dark',
-              onChanged: (isDark) {
-                appState.setThemeMode(isDark ? 'dark' : 'light');
-              },
-            ),
+            value: prefs.themeMode == 'dark',
+            onChanged: (isDark) {
+              appState.setThemeMode(isDark ? 'dark' : 'light');
+            },
           ),
-          ListTile(
-            leading: Icon(
+          SwitchListTile(
+            secondary: Icon(
               prefs.isImperial ? Icons.square_foot : Icons.straighten,
             ),
             title: const Text('Units'),
             subtitle: Text(prefs.isImperial ? 'Imperial (mi, ft)' : 'Metric (km, m)'),
-            trailing: Switch(
-              value: prefs.isImperial,
-              onChanged: (isImperial) {
-                appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
-              },
-            ),
+            value: prefs.isImperial,
+            onChanged: (isImperial) {
+              appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
+            },
           ),
 
           const Divider(),
@@ -156,7 +152,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             secondary: const Icon(Icons.compare_arrows),
             title: Row(
               children: [
-                const Text('Hybrid Mode'),
+                const Flexible(child: Text('Hybrid Mode', overflow: TextOverflow.ellipsis)),
                 const SizedBox(width: 4),
                 GestureDetector(
                   onTap: () => _showHybridModeInfo(context),
@@ -185,7 +181,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             secondary: const Icon(Icons.signal_wifi_off),
             title: Row(
               children: [
-                const Text('Discovery Drop'),
+                const Flexible(child: Text('Discovery Drop', overflow: TextOverflow.ellipsis)),
                 const SizedBox(width: 4),
                 GestureDetector(
                   onTap: () => _showDiscDropInfo(context),
@@ -199,7 +195,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             subtitle: appState.enforceDiscDrop
                 ? const Text(
-                    'Enabled by Regional Admin',
+                    'Set by Regional Admin — reports dead zones for network analysis.',
                     style: TextStyle(color: Colors.amber),
                   )
                 : const Text('Count failed discoveries as failed pings'),
@@ -280,19 +276,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // Lock indicator
           if (isAutoMode)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 children: [
-                  Icon(Icons.lock, size: 16, color: Colors.orange.shade700),
-                  const SizedBox(width: 8),
+                  Icon(Icons.lock, size: 16, color: Colors.amber),
+                  SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       'Settings locked during auto-ping mode',
                       style: TextStyle(
                         fontSize: 12,
-                        color: Colors.orange.shade700,
-                        fontStyle: FontStyle.italic,
+                        color: Colors.amber,
                       ),
                     ),
                   ),
@@ -308,7 +303,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.linear_scale),
             title: Row(
-              mainAxisSize: MainAxisSize.min,
               children: [
                 const Flexible(child: Text('Path Bytes', overflow: TextOverflow.ellipsis)),
                 const SizedBox(width: 4),
@@ -324,7 +318,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             subtitle: appState.enforceHopBytes
                 ? const Text(
-                    'Enabled at the regional level',
+                    'Set by Regional Admin — larger IDs reduce collisions in your region.',
                     style: TextStyle(color: Colors.amber),
                   )
                 : (appState.isConnected && !appState.supportsMultiBytePaths)
@@ -333,7 +327,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         style: TextStyle(color: Colors.amber),
                       )
                     : !appState.isConnected
-                        ? const Text('Must be connected to radio')
+                        ? const Text(
+                            'Connect to radio to configure',
+                            style: TextStyle(color: Colors.amber),
+                          )
                         : const Text('Repeater ID size in path hops'),
             trailing: DropdownButton<int>(
               value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
@@ -408,29 +405,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(),
 
-          // Device Info section
-          _buildSectionHeader(context, 'Device'),
+          // About section
+          _buildSectionHeader(context, 'About'),
           ListTile(
             leading: const Icon(Icons.perm_identity),
             title: const Text('Device ID'),
             subtitle: Text(appState.deviceId),
           ),
-
-          const Divider(),
-
-          // About section
-          _buildSectionHeader(context, 'About'),
           const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text(AppConstants.appName),
+            subtitle: Text('Mesh network coverage mapper'),
           ),
-          GestureDetector(
+          ListTile(
+            leading: const Icon(Icons.new_releases_outlined),
+            title: const Text('Version'),
+            subtitle: Text(AppConstants.appVersion),
             onTap: () => _onVersionTap(appState),
-            child: ListTile(
-              leading: const Icon(Icons.new_releases_outlined),
-              title: const Text('Version'),
-              subtitle: Text(AppConstants.appVersion),
-            ),
           ),
           ListTile(
             leading: const Icon(Icons.feedback_outlined),
