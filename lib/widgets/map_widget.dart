@@ -683,12 +683,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
         // DISC markers (purple circles for discovery observations)
         MarkerLayer(
-          markers: _buildDiscMarkers(appState.discLogEntries),
+          markers: _buildDiscMarkers(appState.discLogEntries, appState.discDropEnabled),
         ),
 
-        // Repeater markers (magenta circles with ID)
+        // Repeater markers (magenta with ID, rotate with map)
         MarkerLayer(
-          markers: _buildRepeaterMarkers(appState.repeaters),
+          rotate: true,
+          markers: _buildRepeaterMarkers(
+            appState.repeaters,
+            appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+          ),
         ),
 
         // Current position marker (car icon)
@@ -1566,7 +1570,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     }).toList();
   }
 
-  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries) {
+  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries, bool discDropEnabled) {
     return entries.map((entry) {
       return Marker(
         point: LatLng(entry.latitude, entry.longitude),
@@ -1576,7 +1580,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           onTap: () => _showDiscPingDetails(entry),
           child: Container(
             decoration: BoxDecoration(
-              color: entry.nodeCount == 0 ? Colors.grey : _discMarkerColor,
+              color: entry.nodeCount == 0
+                  ? (discDropEnabled ? Colors.red : Colors.grey)
+                  : _discMarkerColor,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [
@@ -1632,23 +1638,39 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return _repeaterMarkerColor; // Active (default)
   }
 
-  List<Marker> _buildRepeaterMarkers(List<Repeater> repeaters) {
+  List<Marker> _buildRepeaterMarkers(List<Repeater> repeaters, int? regionHopBytesOverride) {
     final duplicateIds = _getDuplicateRepeaterIds(repeaters);
 
     return repeaters.map((repeater) {
       final isDuplicate = duplicateIds.contains(repeater.id);
       final markerColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
+      // Display hex ID based on per-repeater hop_bytes (or regional admin override)
+      final displayId = repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
+      final effectiveBytes = regionHopBytesOverride ?? repeater.hopBytes;
+      final isLongId = displayId.length > 2;
+      final markerWidth = displayId.length > 4 ? 48.0 : isLongId ? 40.0 : 28.0;
+
+      // Shape varies by hop bytes: 1=square, 2=rounded rect, 3=more rounded
+      final borderRadius = effectiveBytes >= 3
+          ? BorderRadius.circular(8)
+          : effectiveBytes == 2
+              ? BorderRadius.circular(6)
+              : BorderRadius.circular(4);
+
       return Marker(
         point: LatLng(repeater.lat, repeater.lon),
-        width: 28,
+        width: markerWidth,
         height: 28,
         child: GestureDetector(
-          onTap: () => _showRepeaterDetails(repeater, isDuplicate: isDuplicate),
+          onTap: () => _showRepeaterDetails(repeater, isDuplicate: isDuplicate, regionHopBytesOverride: regionHopBytesOverride),
           child: Container(
+            padding: isLongId
+                ? const EdgeInsets.symmetric(horizontal: 4)
+                : EdgeInsets.zero,
             decoration: BoxDecoration(
               color: markerColor,
-              shape: BoxShape.circle,
+              borderRadius: borderRadius,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [
                 BoxShadow(
@@ -1660,11 +1682,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
             alignment: Alignment.center,
             child: Text(
-              repeater.id,
-              style: const TextStyle(
-                fontSize: 10,
+              displayId,
+              style: TextStyle(
+                fontSize: displayId.length > 4 ? 8 : isLongId ? 9 : 10,
                 fontWeight: FontWeight.bold,
                 color: Colors.white,
+                fontFamily: 'monospace',
               ),
             ),
           ),
@@ -2412,7 +2435,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// Show repeater details popup
-  void _showRepeaterDetails(Repeater repeater, {bool isDuplicate = false}) {
+  void _showRepeaterDetails(Repeater repeater, {bool isDuplicate = false, int? regionHopBytesOverride}) {
     // Determine icon badge color based on primary status
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
@@ -2446,25 +2469,33 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             // Header with icon badge (containing ID) and name
             Row(
               children: [
-                // Icon badge with ID (mirrors map marker)
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: iconColor,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    repeater.id,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                // Icon badge with hex ID (mirrors map marker)
+                Builder(builder: (context) {
+                  final displayId = repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
+                  final isLongId = displayId.length > 2;
+                  return Container(
+                    constraints: const BoxConstraints(minWidth: 44),
+                    height: 44,
+                    padding: isLongId
+                        ? const EdgeInsets.symmetric(horizontal: 8)
+                        : EdgeInsets.zero,
+                    decoration: BoxDecoration(
+                      color: iconColor,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: Colors.white, width: 2),
                     ),
-                  ),
-                ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      displayId,
+                      style: TextStyle(
+                        fontSize: isLongId ? 13 : 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  );
+                }),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(

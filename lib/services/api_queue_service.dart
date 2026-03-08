@@ -333,6 +333,40 @@ class ApiQueueService {
     });
   }
 
+  /// Enqueue a failed DISC discovery (no nodes responded)
+  Future<void> enqueueDiscDrop({
+    required double latitude,
+    required double longitude,
+    required int timestamp,
+    required bool externalAntenna,
+    int? noiseFloor,
+  }) async {
+    final item = ApiQueueItem.fromDiscDrop(
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: timestamp,
+      externalAntenna: externalAntenna,
+      noiseFloor: noiseFloor,
+    );
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (offlineMode) {
+      _offlinePings.add(item.toApiJson());
+      debugLog('[API QUEUE] DISC drop enqueued (offline)');
+      return;
+    }
+
+    await _safeWrite((box) => box.add(item));
+    debugLog('[API QUEUE] DISC drop enqueued at $latitude, $longitude (queue size: $queueSize)');
+    onQueueUpdated?.call(queueSize);
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
+      debugLog('[API QUEUE] Ping flush timer fired');
+      _flushRxBuffer();
+      _uploadBatch();
+    });
+  }
+
   // Guard to prevent concurrent RX buffer flushes
   bool _isFlushing = false;
 

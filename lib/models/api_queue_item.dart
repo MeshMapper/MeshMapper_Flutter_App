@@ -138,10 +138,43 @@ class ApiQueueItem extends HiveObject {
     );
   }
 
+  /// Create from a failed DISC discovery (no nodes responded)
+  factory ApiQueueItem.fromDiscDrop({
+    required double latitude,
+    required double longitude,
+    required int timestamp,
+    required bool externalAntenna,
+    int? noiseFloor,
+  }) {
+    return ApiQueueItem(
+      type: 'DISC',
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: 'None',
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
+      externalAntenna: externalAntenna,
+      noiseFloor: noiseFloor,
+    );
+  }
+
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
     // For DISC type, parse the heardRepeats field to extract individual values
     if (type == 'DISC') {
+      // Failed discovery (no nodes responded)
+      if (heardRepeats == 'None') {
+        return {
+          'type': type,
+          'lat': latitude,
+          'lon': longitude,
+          'noisefloor': noiseFloor,
+          'repeater_id': 'None',
+          'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
+          'external_antenna': externalAntenna,
+        };
+      }
+
       // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
       final parts = heardRepeats.split(':');
       return {
