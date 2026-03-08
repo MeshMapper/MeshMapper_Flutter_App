@@ -209,53 +209,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
 
-          // Path Bytes Setting
-          ListTile(
-            leading: const Icon(Icons.linear_scale),
-            title: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Flexible(child: Text('Path Bytes', overflow: TextOverflow.ellipsis)),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: () => _showHopBytesInfo(context),
-                  child: Icon(
-                    Icons.info_outline,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-            subtitle: appState.enforceHopBytes
-                ? const Text(
-                    'Enabled at the regional level',
-                    style: TextStyle(color: Colors.amber),
-                  )
-                : (appState.isConnected && !appState.supportsMultiBytePaths)
-                    ? const Text(
-                        'Firmware 1.14+ required',
-                        style: TextStyle(color: Colors.amber),
-                      )
-                    : !appState.isConnected
-                        ? const Text('Must be connected to radio')
-                        : const Text('Repeater ID size in path hops'),
-            trailing: DropdownButton<int>(
-              value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
-              underline: const SizedBox(),
-              items: const [
-                DropdownMenuItem(value: 1, child: Text('1')),
-                DropdownMenuItem(value: 2, child: Text('2')),
-                DropdownMenuItem(value: 3, child: Text('3')),
-              ],
-              onChanged: (!appState.isConnected || isAutoMode || appState.enforceHopBytes || !appState.supportsMultiBytePaths)
-                  ? null
-                  : (value) {
-                      if (value != null) appState.setHopBytes(value);
-                    },
-            ),
-          ),
-
           // CARpeater Filter Setting
           SwitchListTile(
             secondary: const Icon(Icons.filter_alt),
@@ -346,6 +299,57 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
+
+          // Radio Settings section
+          const Divider(),
+          _buildSectionHeader(context, 'Radio Settings'),
+
+          // Path Bytes Setting
+          ListTile(
+            leading: const Icon(Icons.linear_scale),
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Flexible(child: Text('Path Bytes', overflow: TextOverflow.ellipsis)),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: () => _showHopBytesInfo(context),
+                  child: Icon(
+                    Icons.info_outline,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            subtitle: appState.enforceHopBytes
+                ? const Text(
+                    'Enabled at the regional level',
+                    style: TextStyle(color: Colors.amber),
+                  )
+                : (appState.isConnected && !appState.supportsMultiBytePaths)
+                    ? const Text(
+                        'Firmware 1.14+ required',
+                        style: TextStyle(color: Colors.amber),
+                      )
+                    : !appState.isConnected
+                        ? const Text('Must be connected to radio')
+                        : const Text('Repeater ID size in path hops'),
+            trailing: DropdownButton<int>(
+              value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(value: 1, child: Text('1')),
+                DropdownMenuItem(value: 2, child: Text('2')),
+                DropdownMenuItem(value: 3, child: Text('3')),
+              ],
+              onChanged: (!appState.isConnected || isAutoMode || appState.enforceHopBytes || !appState.supportsMultiBytePaths)
+                  ? null
+                  : (value) {
+                      if (value != null) appState.setHopBytes(value);
+                    },
+            ),
+          ),
 
           // Background Mode - for "Always" location permission (iOS and Android)
           if (!kIsWeb) ...[

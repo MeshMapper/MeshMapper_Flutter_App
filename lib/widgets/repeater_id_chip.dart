@@ -32,8 +32,12 @@ class RepeaterIdChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Scale font size down for longer IDs (4+ chars)
-    final effectiveFontSize = repeaterId.length > 2 ? fontSize - 1.0 : fontSize;
+    // Scale font size down for longer IDs
+    final effectiveFontSize = repeaterId.length > 4
+        ? fontSize - 2.0  // 6-char IDs (3-byte)
+        : repeaterId.length > 2
+            ? fontSize - 1.0  // 4-char IDs (2-byte)
+            : fontSize;        // 2-char IDs (1-byte)
 
     final child = Row(
       mainAxisSize: MainAxisSize.min,
@@ -127,10 +131,11 @@ class RepeaterIdChip extends StatelessWidget {
           });
         }
 
+        final regionOverride = appState.enforceHopBytes ? appState.effectiveHopBytes : null;
         content = Column(
           mainAxisSize: MainAxisSize.min,
           children: matches
-              .map((r) => _buildRepeaterRow(context, r, position: position))
+              .map((r) => _buildRepeaterRow(context, r, position: position, regionHopBytesOverride: regionOverride))
               .toList(),
         );
       }
@@ -191,6 +196,7 @@ class RepeaterIdChip extends StatelessWidget {
     BuildContext context,
     Repeater repeater, {
     Position? position,
+    int? regionHopBytesOverride,
   }) {
     final isActive = repeater.isActive;
     final badgeColor = isActive ? Colors.green : Colors.grey;
@@ -221,27 +227,8 @@ class RepeaterIdChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
-          // Colored circle badge
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: badgeColor,
-              shape: BoxShape.circle,
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              repeater.hexId.length >= 2
-                  ? repeater.hexId.substring(0, 2).toUpperCase()
-                  : repeater.hexId.toUpperCase(),
-              style: const TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
+          // Colored badge — circle for short IDs, pill for longer
+          _buildHexBadge(repeater.displayHexId(overrideHopBytes: regionHopBytesOverride), badgeColor),
           const SizedBox(width: 12),
           // Repeater name + distance subtitle
           Expanded(
@@ -302,6 +289,33 @@ class RepeaterIdChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Build a hex ID badge — circle for 2-char, pill for longer IDs
+  static Widget _buildHexBadge(String displayId, Color color) {
+    final isLong = displayId.length > 2;
+
+    return Container(
+      constraints: const BoxConstraints(minWidth: 28),
+      height: 28,
+      padding: isLong
+          ? const EdgeInsets.symmetric(horizontal: 5)
+          : EdgeInsets.zero,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        displayId,
+        style: TextStyle(
+          fontSize: displayId.length > 4 ? 8 : 10,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+          fontFamily: 'monospace',
+        ),
       ),
     );
   }

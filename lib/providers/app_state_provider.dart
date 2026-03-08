@@ -1801,6 +1801,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Need to change the radio's path hash mode
       try {
         await _meshCoreConnection!.setPathHashMode(effective - 1);
+        _hopBytes = effective; // Update runtime state to reflect new mode
         debugLog('[PATH] Set path hash mode: device was $deviceHopBytes-byte, now $effective-byte');
 
         // Show warning popup if changing from 1-byte to multi-byte
@@ -1838,17 +1839,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    final effective = effectiveHopBytes;
-    final deviceMode = _originalPathHashMode!;
-    final deviceHopBytes = deviceMode + 1;
+    final originalMode = _originalPathHashMode!;
+    final originalHopBytes = originalMode + 1;
 
-    if (effective != deviceHopBytes) {
+    // Compare current runtime mode against what the device had before we changed it
+    if (_hopBytes != originalHopBytes) {
       try {
-        await _meshCoreConnection?.setPathHashMode(deviceMode);
-        debugLog('[PATH] Restored path hash mode to original: $deviceHopBytes-byte');
+        await _meshCoreConnection?.setPathHashMode(originalMode);
+        debugLog('[PATH] Restored path hash mode to original: $originalHopBytes-byte');
       } catch (e) {
         debugError('[PATH] Failed to restore path hash mode: $e');
       }
+    } else {
+      debugLog('[PATH] Path mode unchanged from original ($originalHopBytes-byte), no restore needed');
     }
     _originalPathHashMode = null;
     _userChangedPathMode = false;

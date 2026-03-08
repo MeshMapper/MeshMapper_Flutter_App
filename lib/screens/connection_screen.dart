@@ -1693,7 +1693,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             children: [
               Icon(Icons.linear_scale, size: 24),
               SizedBox(width: 8),
-              Text('Multi-Byte Paths Enabled'),
+              Flexible(child: Text('Multi-Byte Paths Enabled')),
             ],
           ),
           content: Column(
@@ -1706,9 +1706,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               ),
               const SizedBox(height: 12),
               const Text(
-                'If you disconnect unexpectedly (e.g., Bluetooth drops), your radio will remain '
-                'in multi-byte mode until you reconnect. A clean disconnect will restore your '
-                'radio to its previous setting.',
+                'Your radio will remain in multi-byte mode until you change it.',
                 style: TextStyle(fontSize: 13, color: Colors.amber),
               ),
             ],
