@@ -112,14 +112,13 @@ class TxTracker {
 
       // VALIDATION STEP 1.5: Path length check (must have hops to identify repeater)
       // Moved before RSSI check so we can log the repeater ID on carpeater drops
-      if (metadata.pathLength == 0) {
+      if (metadata.pathHashCount == 0) {
         debugLog('[TX LOG] Ignoring: no path (direct transmission, not a repeater echo)');
         return false;
       }
 
       // Extract first hop (first repeater) for use in validation and logging
-      final firstHopId = metadata.firstHop!;
-      var pathHex = firstHopId.toRadixString(16).padLeft(2, '0');
+      var pathHex = metadata.firstHopHex!;
 
       // CARpeater pass-through: strip CARpeater hop and report underlying repeater
       bool carpeaterStripped = false;
@@ -127,13 +126,12 @@ class TxTracker {
       int? reportedRssi = metadata.rssi;
 
       if (carpeaterPrefix != null && pathHex.toUpperCase() == carpeaterPrefix!.toUpperCase()) {
-        if (metadata.pathLength < 2) {
+        if (metadata.pathHashCount < 2) {
           debugLog('[TX LOG] CARpeater pass-through: single-hop, dropping');
           return false;
         }
-        // Multi-hop: strip CARpeater, report underlying repeater
-        final underlyingHopId = metadata.pathBytes[1] & 0xFF;
-        final underlyingHex = underlyingHopId.toRadixString(16).padLeft(2, '0');
+        // Multi-hop: strip CARpeater, report underlying repeater (second hop)
+        final underlyingHex = metadata.getHopHex(1)!;
         debugLog('[TX LOG] CARpeater pass-through: stripped $pathHex, reporting underlying repeater $underlyingHex');
         pathHex = underlyingHex;
         carpeaterStripped = true;
@@ -239,7 +237,7 @@ class TxTracker {
       // Path length and first hop already validated/extracted earlier (before RSSI check)
 
       debugLog('[PING] Repeater echo accepted: first_hop=$pathHex, SNR=$reportedSnr, '
-          'full_path_length=${metadata.pathLength}${carpeaterStripped ? ' (CARpeater stripped)' : ''}');
+          'full_path_length=${metadata.pathHashCount}${carpeaterStripped ? ' (CARpeater stripped)' : ''}');
 
       // Deduplication: check if we already have this repeater
       bool isNewRepeater = false;

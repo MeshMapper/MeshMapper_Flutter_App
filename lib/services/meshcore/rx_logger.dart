@@ -73,7 +73,7 @@ class RxLogger {
       
       // VALIDATION: Check path length (need at least one hop)
       // Packets with no path are direct transmissions and don't provide repeater coverage info
-      if (metadata.pathLength == 0) {
+      if (metadata.pathHashCount == 0) {
         debugLog('[RX LOG] Ignoring: no path (direct transmission, not via repeater)');
         return false;
       }
@@ -84,21 +84,17 @@ class RxLogger {
       int? reportedRssi = metadata.rssi;
 
       // Extract LAST hop from path (the repeater that directly delivered to us)
-      // Mask to last byte only (0xFF) for consistent 2-character display
-      final lastHopId = metadata.lastHop! & 0xFF;
-      final lastHopHex = lastHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
+      final lastHopHex = metadata.lastHopHex!;
 
       // CARpeater check: the carpeater is co-located with us, so it only
       // appears as the last hop (the delivery repeater) on RX packets
       if (carpeaterPrefix != null && lastHopHex == carpeaterPrefix!.toUpperCase()) {
-        if (metadata.pathLength < 2) {
+        if (metadata.pathHashCount < 2) {
           debugLog('[RX LOG] CARpeater pass-through: single-hop, dropping');
           return false;
         }
         // Second-to-last hop = the real repeater that forwarded to our carpeater
-        final secondToLastIdx = metadata.pathLength - 2;
-        final underlyingHopId = metadata.pathBytes[secondToLastIdx] & 0xFF;
-        repeaterId = underlyingHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
+        repeaterId = metadata.getHopHex(metadata.pathHashCount - 2)!;
         carpeaterStripped = true;
         reportedSnr = null;
         reportedRssi = null;
@@ -141,7 +137,7 @@ class RxLogger {
       }
 
       debugLog('[RX LOG] Packet heard via ${carpeaterStripped ? 'underlying' : 'last'} hop: $repeaterId, '
-          'SNR=$reportedSnr, path_length=${metadata.pathLength}${carpeaterStripped ? ' (CARpeater stripped)' : ''}');
+          'SNR=$reportedSnr, path_length=${metadata.pathHashCount}${carpeaterStripped ? ' (CARpeater stripped)' : ''}');
 
       debugLog('[RX LOG] ✅ Packet validated and passed filter');
 
@@ -150,7 +146,7 @@ class RxLogger {
         repeaterId: repeaterId,
         snr: reportedSnr,
         rssi: reportedRssi,
-        pathLength: metadata.pathLength,
+        pathLength: metadata.pathHashCount,
         header: metadata.header,
         lat: gpsLocation.lat,
         lon: gpsLocation.lon,
@@ -164,7 +160,7 @@ class RxLogger {
         repeaterId: repeaterId,
         snr: reportedSnr,
         rssi: reportedRssi,
-        pathLength: metadata.pathLength,
+        pathLength: metadata.pathHashCount,
         header: metadata.header,
         currentLocation: gpsLocation,
         metadata: metadata,

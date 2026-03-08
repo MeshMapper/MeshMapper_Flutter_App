@@ -71,7 +71,7 @@ class UnifiedRxHandler {
       
       debugLog('[UNIFIED RX] Packet received: '
           'header=0x${metadata.header.toRadixString(16)}, '
-          'pathLength=${metadata.pathLength}');
+          'pathHashSize=${metadata.pathHashSize}, pathHashCount=${metadata.pathHashCount}');
       
       // Route to TX tracking if active (during 5s echo window)
       if (txTracker.isListening) {
