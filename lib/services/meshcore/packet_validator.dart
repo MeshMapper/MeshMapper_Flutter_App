@@ -38,7 +38,7 @@ class PacketValidator {
       debugLog('[RX FILTER] ========== VALIDATING PACKET ==========');
       debugLog('[RX FILTER] Raw packet (${metadata.raw.length} bytes): $rawHex');
       debugLog('[RX FILTER] Header: 0x${metadata.header.toRadixString(16).padLeft(2, '0')} | '
-          'PathLength: ${metadata.pathLength} | SNR: ${metadata.snr}');
+          'PathHashCount: ${metadata.pathHashCount} | SNR: ${metadata.snr}');
 
       // VALIDATION 1: Check RSSI (carpeater filter)
       if (skipRssiCheck) {

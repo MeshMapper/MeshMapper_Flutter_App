@@ -17,11 +17,13 @@ class DeviceQueryResponse {
   final int protocolVersion;
   final String manufacturer;
   final String? firmwareBuildDate; // Added in protocol v8
+  final int? pathHashMode; // 0=1-byte, 1=2-byte, 2=3-byte (null if old firmware, v10+)
 
   const DeviceQueryResponse({
     required this.protocolVersion,
     required this.manufacturer,
     this.firmwareBuildDate,
+    this.pathHashMode,
   });
 }
 
@@ -438,17 +440,40 @@ class MeshCoreConnection {
       // Protocol v7+ format
       reader.readBytes(6); // skip reserved bytes
       final buildDate = reader.readCString(12); // e.g. "04-Jan-2026"
-      final manufacturerModel = reader.readString(); // remainder of frame
-      
+
+      // Read manufacturer model as CString(40) — fixed-length null-terminated
+      final manufacturerModel = reader.readCString(40);
+
+      // Parse additional fields from v9+ firmware
+      int? pathHashMode;
+      if (reader.remainingBytesCount > 0) {
+        // FIRMWARE_VERSION: 20 bytes (skip)
+        if (reader.remainingBytesCount >= 20) {
+          reader.readBytes(20); // firmware version string
+        }
+
+        // client_repeat: 1 byte (v9+, skip)
+        if (reader.remainingBytesCount >= 1) {
+          reader.readByte(); // client_repeat
+        }
+
+        // path_hash_mode: 1 byte (v10+)
+        if (reader.remainingBytesCount >= 1) {
+          pathHashMode = reader.readByte();
+          debugLog('[CONN] Device path hash mode: $pathHashMode (${pathHashMode + 1}-byte hops)');
+        }
+      }
+
       debugLog('[CONN] Build date: $buildDate');
       debugLog('[CONN] Manufacturer model: $manufacturerModel');
-      
+
       final response = DeviceQueryResponse(
         protocolVersion: firmwareVer,
         manufacturer: manufacturerModel,
         firmwareBuildDate: buildDate,
+        pathHashMode: pathHashMode,
       );
-      
+
       _deviceQueryCompleter?.complete(response);
       _deviceQueryCompleter = null;
     } else {
@@ -1052,6 +1077,17 @@ class MeshCoreConnection {
     _batteryTimer?.cancel();
     _batteryTimer = null;
     debugLog('[CONN] Stopped battery polling');
+  }
+
+  /// Set path hash mode on the radio
+  /// mode: 0=1-byte, 1=2-byte, 2=3-byte (persisted in radio prefs)
+  Future<void> setPathHashMode(int mode) async {
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.setPathHashMode); // 61 (0x3D)
+    data.writeByte(0); // reserved
+    data.writeByte(mode); // 0=1-byte, 1=2-byte, 2=3-byte
+    await _sendToRadio(data);
+    debugLog('[CONN] Sent setPathHashMode: mode=$mode (${mode + 1}-byte hops)');
   }
 
   /// Reboot device

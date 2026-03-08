@@ -247,6 +247,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Regional scope from API (for UI display and flood filtering)
   String? _scope;
 
+  // Path hash mode tracking (for multi-byte path support)
+  int? _originalPathHashMode; // Device's mode BEFORE we changed it (from DeviceInfo)
+  bool _userChangedPathMode = false; // True if user manually changed hopBytes while connected
+  int _hopBytes = 1; // Runtime-only: current hop byte size (read from device, not persisted)
+
   // Noise floor session tracking (for graph feature)
   NoiseFloorSession? _currentNoiseFloorSession;
   List<NoiseFloorSession> _storedNoiseFloorSessions = [];
@@ -394,7 +399,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get hasApiSession => _apiService.hasSession;
   bool get isApiRxOnlyMode => hasApiSession && !txAllowed && rxAllowed;
   bool get enforceHybrid => _apiService.enforceHybrid;
+  bool get enforceDiscDrop => _apiService.enforceDiscDrop;
+  bool get discDropEnabled => _preferences.discDropEnabled || _apiService.enforceDiscDrop;
   int get minModeInterval => _apiService.minModeInterval;
+  bool get enforceHopBytes => _apiService.enforceHopBytes;
+  int get hopBytes => _hopBytes;
+  int get effectiveHopBytes => enforceHopBytes ? _apiService.apiHopBytes : _hopBytes;
+  bool get supportsMultiBytePaths => _originalPathHashMode != null;
 
   // Offline mode
   bool get offlineMode => _preferences.offlineMode;
@@ -1115,11 +1126,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[CONN] Hybrid mode force-enabled by regional admin');
       }
 
+      // Enforce discovery drop if required by regional admin
+      if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
+        _preferences = _preferences.copyWith(discDropEnabled: true);
+        debugLog('[CONN] Discovery drop force-enabled by regional admin');
+      }
+
       // Enforce minimum auto-ping interval if required by regional admin
       if (_preferences.autoPingInterval < _apiService.minModeInterval) {
         _preferences = _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
         debugLog('[CONN] Auto-ping interval bumped to ${_apiService.minModeInterval}s by regional admin');
       }
+
+      // Configure multi-byte path hash mode on radio
+      await _configurePathHashMode();
 
       // Create ping service with wakelock (create new instance per connection)
       _pingService = PingService(
@@ -1137,12 +1157,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         disableRssiFilter: _preferences.disableRssiFilter,
         shouldIgnoreRepeater: (String repeaterId) {
           // Same filter as RxLogger - check user preferences for ignored repeater ID
+          // Uses startsWith() for prefix matching across different hop byte sizes
           final prefs = _preferences;
           if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
-            // Case-insensitive comparison (both uppercase)
             final ignored = prefs.ignoreRepeaterId!.toUpperCase();
             final current = repeaterId.toUpperCase();
-            return current == ignored;
+            return current.startsWith(ignored) || ignored.startsWith(current);
           }
           return false;
         },
@@ -1167,6 +1187,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Check if TX is allowed by API (zone capacity)
       _pingService!.checkTxAllowed = () => txAllowed;
+
+      // Check if discovery drop is enabled
+      _pingService!.getDiscDropEnabled = () => discDropEnabled;
 
       _pingService!.onTxPing = (ping) {
         _txPings.add(ping);
@@ -1354,8 +1377,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
         }
 
+        PingEventType eventType;
+        if (success) {
+          eventType = PingEventType.discSuccess;
+        } else if (discDropEnabled) {
+          eventType = PingEventType.txFail;
+        } else {
+          eventType = PingEventType.discFail;
+        }
+
         recordPingEvent(
-          success ? PingEventType.discSuccess : PingEventType.discFail,
+          eventType,
           latitude: lat,
           longitude: lon,
           repeaters: repeaters,
@@ -1749,6 +1781,129 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Full disconnect cleanup - called on normal BLE disconnect (user-requested or no remembered device)
   /// Extracted from the original BLE disconnect listener
+  /// Configure multi-byte path hash mode on the radio during connection
+  /// Reads device's current mode, determines effective mode, and sends command if needed
+  Future<void> _configurePathHashMode() async {
+    final deviceInfo = _meshCoreConnection?.deviceInfo;
+    if (deviceInfo == null) return;
+
+    // Store the device's current mode (from DeviceInfo response)
+    _originalPathHashMode = deviceInfo.pathHashMode;
+
+    // Sync runtime hopBytes from device's current mode
+    if (_originalPathHashMode != null) {
+      final deviceHopBytes = _originalPathHashMode! + 1;
+      _hopBytes = deviceHopBytes;
+      debugLog('[PATH] Read device path mode: $deviceHopBytes-byte');
+    } else {
+      _hopBytes = 1;
+    }
+
+    final effective = effectiveHopBytes;
+    final deviceMode = _originalPathHashMode ?? 0; // null = old firmware, treat as 0 (1-byte)
+    final deviceHopBytes = deviceMode + 1;
+
+    if (effective != deviceHopBytes && _originalPathHashMode != null) {
+      // Need to change the radio's path hash mode
+      try {
+        await _meshCoreConnection!.setPathHashMode(effective - 1);
+        _hopBytes = effective; // Update runtime state to reflect new mode
+        debugLog('[PATH] Set path hash mode: device was $deviceHopBytes-byte, now $effective-byte');
+
+        // Show warning popup if changing from 1-byte to multi-byte
+        if (deviceMode == 0 && effective > 1) {
+          final reason = enforceHopBytes
+              ? 'set by your regional admin'
+              : 'set in your app preferences';
+          _pendingPathHashWarning = (hopBytes: effective, reason: reason);
+          notifyListeners(); // Trigger UI to show warning
+        }
+      } catch (e) {
+        debugError('[PATH] Failed to set path hash mode: $e');
+      }
+    } else if (_originalPathHashMode == null && effective > 1) {
+      // Old firmware doesn't support multi-byte paths — warn user, fall back to 1-byte
+      debugWarn('[PATH] Device firmware does not report path_hash_mode, cannot set $effective-byte paths');
+      if (enforceHopBytes) {
+        _pendingPathHashWarning = (hopBytes: effective, reason: 'firmware_unsupported');
+        notifyListeners();
+      }
+    } else {
+      debugLog('[PATH] Path hash mode OK: device=$deviceHopBytes-byte, effective=$effective-byte');
+    }
+  }
+
+  /// Restore radio to original path hash mode on clean disconnect
+  /// Skipped if the user manually changed the setting — they know what they're doing
+  Future<void> _restorePathHashMode() async {
+    if (_originalPathHashMode == null) return;
+
+    if (_userChangedPathMode) {
+      debugLog('[PATH] User manually changed path mode, not restoring on disconnect');
+      _originalPathHashMode = null;
+      _userChangedPathMode = false;
+      return;
+    }
+
+    final originalMode = _originalPathHashMode!;
+    final originalHopBytes = originalMode + 1;
+
+    // Compare current runtime mode against what the device had before we changed it
+    if (_hopBytes != originalHopBytes) {
+      try {
+        await _meshCoreConnection?.setPathHashMode(originalMode);
+        debugLog('[PATH] Restored path hash mode to original: $originalHopBytes-byte');
+      } catch (e) {
+        debugError('[PATH] Failed to restore path hash mode: $e');
+      }
+    } else {
+      debugLog('[PATH] Path mode unchanged from original ($originalHopBytes-byte), no restore needed');
+    }
+    _originalPathHashMode = null;
+    _userChangedPathMode = false;
+  }
+
+  /// Send path hash mode to radio immediately when user changes setting while connected
+  void _applyLivePathHashMode(int newHopBytes) {
+    if (_originalPathHashMode == null) {
+      // Old firmware — can't send command, show warning
+      debugWarn('[PATH] Cannot change path mode: firmware does not support it');
+      _pendingPathHashWarning = (hopBytes: newHopBytes, reason: 'firmware_unsupported');
+      _hopBytes = 1; // Force back to 1
+      notifyListeners();
+      return;
+    }
+
+    _hopBytes = newHopBytes;
+    _userChangedPathMode = true;
+    final mode = newHopBytes - 1; // Convert 1/2/3 → mode 0/1/2
+    _meshCoreConnection?.setPathHashMode(mode);
+    debugLog('[PATH] User changed path mode to $newHopBytes-byte (sent to radio)');
+    notifyListeners();
+  }
+
+  /// Set hop bytes (called from settings UI). Each companion device may differ.
+  void setHopBytes(int value) {
+    if (value < 1 || value > 3) return;
+    if (value == _hopBytes) return;
+
+    if (isConnected) {
+      _applyLivePathHashMode(value);
+    } else {
+      _hopBytes = value;
+      notifyListeners();
+    }
+  }
+
+  /// Pending path hash warning data (for UI to show dialog)
+  ({int hopBytes, String reason})? _pendingPathHashWarning;
+  ({int hopBytes, String reason})? get pendingPathHashWarning => _pendingPathHashWarning;
+
+  /// Clear the pending warning after UI has shown it
+  void clearPathHashWarning() {
+    _pendingPathHashWarning = null;
+  }
+
   Future<void> _fullDisconnectCleanup() async {
     _connectionStep = ConnectionStep.disconnected;
 
@@ -2047,6 +2202,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _originalDeviceName = null;
     }
 
+    // Restore original path hash mode before disconnect (while BLE still connected)
+    await _restorePathHashMode();
+
     // Clear flood scope before disconnect (safety — BLE disconnect resets radio state anyway)
     try {
       await _meshCoreConnection?.clearFloodScope();
@@ -2091,6 +2249,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _currentNoiseFloor = null;
     _currentBatteryPercent = null;
     _authType = null;
+    _originalPathHashMode = null;
+    _userChangedPathMode = false;
+    _hopBytes = 1;
 
     // Clear regional channels (keeps only Public) and scope
     ChannelService.clearRegionalChannels();
@@ -2851,6 +3012,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void updatePreferences(UserPreferences preferences) {
     debugLog('[APP] Preferences updated: externalAntennaSet=${preferences.externalAntennaSet}, '
         'externalAntenna=${preferences.externalAntenna}, autoPowerSet=${preferences.autoPowerSet}');
+
     _preferences = preferences;
 
     // Clear restored flag — user is making a manual choice now

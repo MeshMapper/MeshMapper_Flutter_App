@@ -70,6 +70,9 @@ class UserPreferences {
   /// Anonymous mode: rename companion to "Anonymous" during wardriving
   final bool anonymousMode;
 
+  /// Discovery drop: count failed discoveries as failed pings and report to API
+  final bool discDropEnabled;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -94,6 +97,7 @@ class UserPreferences {
     this.mapRotationLocked = false,
     this.disableRssiFilter = false,
     this.anonymousMode = false,
+    this.discDropEnabled = false,
   });
 
   /// Create from JSON (for persistence)
@@ -122,6 +126,7 @@ class UserPreferences {
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
+      discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
     );
   }
 
@@ -151,6 +156,7 @@ class UserPreferences {
       'mapRotationLocked': mapRotationLocked,
       'disableRssiFilter': disableRssiFilter,
       'anonymousMode': anonymousMode,
+      'discDropEnabled': discDropEnabled,
     };
   }
 
@@ -179,6 +185,7 @@ class UserPreferences {
     bool? mapRotationLocked,
     bool? disableRssiFilter,
     bool? anonymousMode,
+    bool? discDropEnabled,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -204,6 +211,7 @@ class UserPreferences {
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
+      discDropEnabled: discDropEnabled ?? this.discDropEnabled,
     );
   }
 
@@ -254,7 +262,8 @@ class UserPreferences {
         other.mapAlwaysNorth == mapAlwaysNorth &&
         other.mapRotationLocked == mapRotationLocked &&
         other.disableRssiFilter == disableRssiFilter &&
-        other.anonymousMode == anonymousMode;
+        other.anonymousMode == anonymousMode &&
+        other.discDropEnabled == discDropEnabled;
   }
 
   @override
@@ -282,6 +291,7 @@ class UserPreferences {
       mapRotationLocked,
       disableRssiFilter,
       anonymousMode,
+      discDropEnabled,
     ]);
   }
 

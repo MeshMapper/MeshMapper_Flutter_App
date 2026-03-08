@@ -10,11 +10,11 @@ import '../utils/distance_formatter.dart';
 
 /// A styled repeater ID text with a dotted underline hint that it's tappable.
 ///
-/// Displays the 2-char hex repeater ID in monospace style. Use together with
-/// [RepeaterIdChip.showRepeaterPopup] on the parent row's `InkWell` so the
-/// entire row is the tap target.
+/// Displays the hex repeater ID (2/4/6 chars) in monospace style. Use together
+/// with [RepeaterIdChip.showRepeaterPopup] on the parent row's `InkWell` so
+/// the entire row is the tap target.
 class RepeaterIdChip extends StatelessWidget {
-  /// The 2-char hex repeater ID (e.g., "4e")
+  /// The hex repeater ID (e.g., "4E", "4F5D", "4F5D82")
   final String repeaterId;
 
   /// Font size for the ID text (11 for log screens, 13 for map popups)
@@ -32,13 +32,20 @@ class RepeaterIdChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Scale font size down for longer IDs
+    final effectiveFontSize = repeaterId.length > 4
+        ? fontSize - 2.0  // 6-char IDs (3-byte)
+        : repeaterId.length > 2
+            ? fontSize - 1.0  // 4-char IDs (2-byte)
+            : fontSize;        // 2-char IDs (1-byte)
+
     final child = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
           repeaterId,
           style: TextStyle(
-            fontSize: fontSize,
+            fontSize: effectiveFontSize,
             fontWeight: FontWeight.w600,
             fontFamily: 'monospace',
             color: Theme.of(context).colorScheme.onSurface,
@@ -124,10 +131,11 @@ class RepeaterIdChip extends StatelessWidget {
           });
         }
 
+        final regionOverride = appState.enforceHopBytes ? appState.effectiveHopBytes : null;
         content = Column(
           mainAxisSize: MainAxisSize.min,
           children: matches
-              .map((r) => _buildRepeaterRow(context, r, position: position))
+              .map((r) => _buildRepeaterRow(context, r, position: position, regionHopBytesOverride: regionOverride))
               .toList(),
         );
       }
@@ -188,6 +196,7 @@ class RepeaterIdChip extends StatelessWidget {
     BuildContext context,
     Repeater repeater, {
     Position? position,
+    int? regionHopBytesOverride,
   }) {
     final isActive = repeater.isActive;
     final badgeColor = isActive ? Colors.green : Colors.grey;
@@ -218,27 +227,8 @@ class RepeaterIdChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
-          // Colored circle badge
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: badgeColor,
-              shape: BoxShape.circle,
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              repeater.hexId.length >= 2
-                  ? repeater.hexId.substring(0, 2).toUpperCase()
-                  : repeater.hexId.toUpperCase(),
-              style: const TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
+          // Colored badge — circle for short IDs, pill for longer
+          _buildHexBadge(repeater.displayHexId(overrideHopBytes: regionHopBytesOverride), badgeColor),
           const SizedBox(width: 12),
           // Repeater name + distance subtitle
           Expanded(
@@ -299,6 +289,33 @@ class RepeaterIdChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Build a hex ID badge — circle for 2-char, pill for longer IDs
+  static Widget _buildHexBadge(String displayId, Color color) {
+    final isLong = displayId.length > 2;
+
+    return Container(
+      constraints: const BoxConstraints(minWidth: 28),
+      height: 28,
+      padding: isLong
+          ? const EdgeInsets.symmetric(horizontal: 5)
+          : EdgeInsets.zero,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        displayId,
+        style: TextStyle(
+          fontSize: displayId.length > 4 ? 8 : 10,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+          fontFamily: 'monospace',
+        ),
       ),
     );
   }
