@@ -202,6 +202,12 @@ class GpsService {
     }
 
     debugLog('[GPS] Starting position stream listener...');
+
+    // Cancel any existing subscription to prevent orphaned listeners
+    // (e.g. restartGpsAfterPermission() racing with _initialize())
+    await _positionSubscription?.cancel();
+    _positionSubscription = null;
+
     _updateStatus(GpsStatus.searching);
 
     // Configure location settings for position stream

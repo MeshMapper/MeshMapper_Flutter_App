@@ -2700,33 +2700,115 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (success: false, error: _modeSwitchError);
       }
 
-      debugLog('[APP] Requesting auth for online mode');
-      final result = await _apiService.requestAuth(
+      // ============================================================
+      // STAGE 1: Try existing public_key authentication
+      // ============================================================
+      debugLog('[APP] Stage 1: Attempting auth with public_key: ${_devicePublicKey!.substring(0, 16)}...');
+
+      final modelString = _meshCoreConnection?.deviceModel?.manufacturer ??
+               _meshCoreConnection?.deviceInfo?.manufacturer ?? 'Unknown';
+
+      var result = await _apiService.requestAuth(
         reason: 'connect',
         publicKey: _devicePublicKey!,
         who: deviceName,
         appVersion: _appVersion,
         power: _preferences.powerLevel,
         iataCode: zoneCode ?? _preferences.iataCode,
-        model: _meshCoreConnection?.deviceModel?.manufacturer ??
-               _meshCoreConnection?.deviceInfo?.manufacturer ?? 'Unknown',
+        model: modelString,
         lat: _currentPosition!.latitude,
         lon: _currentPosition!.longitude,
         accuracyMeters: _currentPosition!.accuracy,
       );
 
-      if (result == null) {
-        debugError('[APP] Auth request failed: no response');
-        _modeSwitchError = 'Unable to connect to server';
+      // Check for maintenance mode
+      if (result != null && result['maintenance'] == true) {
+        _maintenanceMode = true;
+        _maintenanceMessage = result['maintenance_message'] as String?;
+        _maintenanceUrl = result['maintenance_url'] as String?;
+        debugLog('[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
+        _startMaintenancePolling();
+        notifyListeners();
+        _modeSwitchError = _maintenanceMessage ?? 'Service is under maintenance';
         return (success: false, error: _modeSwitchError);
       }
 
-      if (result['success'] != true) {
-        final reason = result['reason'] as String?;
-        final message = result['message'] as String?;
-        debugError('[APP] Auth request failed: $reason - $message');
-        _modeSwitchError = message ?? reason ?? 'Authentication failed';
+      // Check if Stage 1 succeeded
+      if (result != null && result['success'] == true) {
+        debugLog('[APP] Stage 1 succeeded: authenticated via public_key');
+        if (result['type'] != null) {
+          _authType = result['type'] as String;
+          debugLog('[APP] Auth type: $_authType');
+          notifyListeners();
+        }
+      } else if (result == null) {
+        // API unreachable (null = network/timeout error)
+        debugError('[APP] API unreachable - network error');
+        _modeSwitchError = 'Unable to reach the MeshMapper server';
         return (success: false, error: _modeSwitchError);
+      } else {
+        // Stage 1 failed — check if Stage 2 is worth attempting
+        debugLog('[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
+
+        final stage1Reason = result['reason'] as String?;
+        if (stage1Reason == 'gps_inaccurate' || stage1Reason == 'gps_stale') {
+          debugError('[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
+          _modeSwitchError = result['message'] as String? ?? 'GPS error';
+          return (success: false, error: _modeSwitchError);
+        }
+
+        // ============================================================
+        // STAGE 2: Auth failed, attempt registration via signed contact_uri
+        // ============================================================
+        debugLog('[APP] Stage 2: Attempting registration via contact_uri...');
+
+        String? contactUri;
+        try {
+          debugLog('[APP] Requesting signed contact URI from device...');
+          contactUri = await _meshCoreConnection!.exportContact();
+          debugLog('[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
+        } catch (e) {
+          debugError('[APP] Failed to get contact URI from device: $e');
+          _modeSwitchError = 'Companion not found in backend and failed to register via API';
+          return (success: false, error: _modeSwitchError);
+        }
+
+        final registerResult = await _apiService.requestAuth(
+          reason: 'register',
+          contactUri: contactUri,
+          who: deviceName,
+          appVersion: _appVersion,
+          power: _preferences.powerLevel,
+          iataCode: zoneCode ?? _preferences.iataCode,
+          model: modelString,
+          lat: _currentPosition!.latitude,
+          lon: _currentPosition!.longitude,
+          accuracyMeters: _currentPosition!.accuracy,
+        );
+
+        if (registerResult == null) {
+          debugError('[APP] Stage 2 failed: network error (API unreachable)');
+          _modeSwitchError = 'Unable to reach the MeshMapper server';
+          return (success: false, error: _modeSwitchError);
+        }
+
+        if (registerResult['success'] != true) {
+          final serverReason = registerResult['reason'] as String? ?? 'registration_failed';
+          final serverMessage = registerResult['message'] as String?;
+          debugError('[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
+          _modeSwitchError = serverMessage ?? 'Registration rejected by server';
+          return (success: false, error: _modeSwitchError);
+        }
+
+        // Registration successful
+        debugLog('[APP] Stage 2 succeeded: registered and authenticated');
+        if (registerResult['type'] != null) {
+          _authType = registerResult['type'] as String;
+          debugLog('[APP] Auth type: $_authType');
+          notifyListeners();
+        }
+
+        result = registerResult;
       }
 
       // 5. Auth successful - update state
