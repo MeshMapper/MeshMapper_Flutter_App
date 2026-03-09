@@ -29,6 +29,9 @@ class ApiQueueService {
   bool _isUploading = false;
   bool _isRecovering = false;
 
+  // In-memory fallback when Hive is corrupted/unavailable
+  final List<ApiQueueItem> _memoryQueue = [];
+
   // Offline mode
   bool offlineMode = false;
   final List<Map<String, dynamic>> _offlinePings = [];
@@ -79,6 +82,7 @@ class ApiQueueService {
       debugError('[API QUEUE] Failed to clear stale items: $e - recovering');
       await _recoverBox();
     }
+    _memoryQueue.clear();
     _rxBuffer.clear();
     _offlinePings.clear();
 
@@ -207,8 +211,8 @@ class ApiQueueService {
     }
   }
 
-  /// Get current queue size
-  int get queueSize => _safeRead((box) => box.length, 0);
+  /// Get current queue size (Hive + in-memory fallback)
+  int get queueSize => _safeRead((box) => box.length, 0) + _memoryQueue.length;
 
   /// Enqueue a TX ping
   /// heardRepeats format: "4e(12.25),77(12.25)" or "None"
@@ -236,8 +240,13 @@ class ApiQueueService {
       return;
     }
 
-    await _safeWrite((box) => box.add(item));
-    debugLog('[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
+    final wrote = await _safeWrite((box) => box.add(item));
+    if (!wrote) {
+      _memoryQueue.add(item);
+      debugLog('[API QUEUE] TX enqueued (memory fallback): $heardRepeats (queue size: $queueSize)');
+    } else {
+      debugLog('[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
+    }
     onQueueUpdated?.call(queueSize);
     _pingFlushTimer?.cancel();
     _pingFlushTimer = Timer(const Duration(seconds: 5), () {
@@ -322,8 +331,13 @@ class ApiQueueService {
       return;
     }
 
-    await _safeWrite((box) => box.add(item));
-    debugLog('[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
+    final wrote = await _safeWrite((box) => box.add(item));
+    if (!wrote) {
+      _memoryQueue.add(item);
+      debugLog('[API QUEUE] DISC enqueued (memory fallback): $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
+    } else {
+      debugLog('[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
+    }
     onQueueUpdated?.call(queueSize);
     _pingFlushTimer?.cancel();
     _pingFlushTimer = Timer(const Duration(seconds: 5), () {
@@ -356,8 +370,13 @@ class ApiQueueService {
       return;
     }
 
-    await _safeWrite((box) => box.add(item));
-    debugLog('[API QUEUE] DISC drop enqueued at $latitude, $longitude (queue size: $queueSize)');
+    final wrote = await _safeWrite((box) => box.add(item));
+    if (!wrote) {
+      _memoryQueue.add(item);
+      debugLog('[API QUEUE] DISC drop enqueued (memory fallback) at $latitude, $longitude (queue size: $queueSize)');
+    } else {
+      debugLog('[API QUEUE] DISC drop enqueued at $latitude, $longitude (queue size: $queueSize)');
+    }
     onQueueUpdated?.call(queueSize);
     _pingFlushTimer?.cancel();
     _pingFlushTimer = Timer(const Duration(seconds: 5), () {
@@ -386,10 +405,12 @@ class ApiQueueService {
       final bufferSize = _rxBuffer.length;
       _rxBuffer.clear();
 
-      // Now add items to the box
+      // Now add items to the box (or memory fallback)
       for (final item in itemsToFlush) {
         final ok = await _safeWrite((box) => box.add(item));
-        if (!ok) break;
+        if (!ok) {
+          _memoryQueue.add(item);
+        }
       }
 
       debugLog('[API QUEUE] Flushed ${itemsToFlush.length} RX items from $bufferSize repeaters to queue');
@@ -424,13 +445,17 @@ class ApiQueueService {
     await _uploadBatch();
   }
 
-  /// Upload batch of queued items
+  /// Upload batch of queued items (from Hive box or in-memory fallback)
   Future<void> _uploadBatch() async {
     if (_isUploading) {
       debugLog('[API QUEUE] Upload skipped: already uploading');
       return;
     }
-    if (_safeRead((box) => box.isEmpty, true)) {
+
+    final hiveEmpty = _safeRead((box) => box.isEmpty, true);
+    final memoryEmpty = _memoryQueue.isEmpty;
+
+    if (hiveEmpty && memoryEmpty) {
       debugLog('[API QUEUE] Upload skipped: queue empty');
       return;
     }
@@ -438,21 +463,24 @@ class ApiQueueService {
     _isUploading = true;
 
     try {
-      // Log if TX items are waiting in hold period
-      final pendingTx = _safeRead((box) => box.values.where((item) =>
-          item.type == 'TX' && !item.isUploadEligible).length, 0);
-      if (pendingTx > 0) {
-        debugLog('[API QUEUE] $pendingTx TX items still in hold period');
-      }
-
-      // Get items ready for upload (must pass retry, retry delay, AND upload eligibility checks)
-      final items = _safeRead((box) => box.values
+      // Collect items from both Hive and memory queue
+      final hiveItems = _safeRead((box) => box.values
           .where((item) =>
               item.retryCount < _maxRetries &&
               item.isReadyForRetry &&
               item.isUploadEligible)
           .take(_batchSize)
           .toList(), <ApiQueueItem>[]);
+
+      final memoryItems = _memoryQueue
+          .where((item) =>
+              item.retryCount < _maxRetries &&
+              item.isReadyForRetry &&
+              item.isUploadEligible)
+          .take(_batchSize - hiveItems.length)
+          .toList();
+
+      final items = [...hiveItems, ...memoryItems];
 
       if (items.isEmpty) {
         debugLog('[API QUEUE] Upload skipped: no items ready for upload');
@@ -469,29 +497,46 @@ class ApiQueueService {
         debugLog('[API QUEUE] Item ${i + 1}/${items.length}: type=${item.type}, external_antenna=${item.externalAntenna}');
       }
 
-      debugLog('[API QUEUE] Uploading ${items.length} items...');
+      final memoryCount = memoryItems.length;
+      if (memoryCount > 0) {
+        debugLog('[API QUEUE] Uploading ${items.length} items ($memoryCount from memory fallback)...');
+      } else {
+        debugLog('[API QUEUE] Uploading ${items.length} items...');
+      }
 
       // Attempt upload
       final result = await _apiService.uploadBatch(pings);
 
       if (result == UploadResult.success) {
         final uploadedCount = items.length;
-        // Remove successful items
-        for (final item in items) {
-          await item.delete();
+        // Remove successful Hive items
+        for (final item in hiveItems) {
+          try { await item.delete(); } catch (_) {}
+        }
+        // Remove successful memory items
+        for (final item in memoryItems) {
+          _memoryQueue.remove(item);
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
         onUploadSuccess?.call(uploadedCount);
       } else if (result == UploadResult.nonRetryable) {
-        // Data is permanently invalid (bad GPS, invalid request, etc.) — discard
-        for (final item in items) {
-          await item.delete();
+        // Data is permanently invalid — discard
+        for (final item in hiveItems) {
+          try { await item.delete(); } catch (_) {}
+        }
+        for (final item in memoryItems) {
+          _memoryQueue.remove(item);
         }
         debugWarn('[API QUEUE] Discarded ${items.length} items (non-retryable error)');
       } else {
         // Mark items as retried
-        for (final item in items) {
+        for (final item in hiveItems) {
           item.markRetried();
+        }
+        // Memory items: update retry fields directly (no Hive save)
+        for (final item in memoryItems) {
+          item.retryCount++;
+          item.lastRetryAt = DateTime.now();
         }
         debugLog('[API QUEUE] Upload FAILED: ${items.length} items marked for retry');
       }
@@ -522,6 +567,7 @@ class ApiQueueService {
   /// Clear all queued items
   Future<void> clear() async {
     await _safeWrite((box) => box.clear());
+    _memoryQueue.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
   }
@@ -542,6 +588,7 @@ class ApiQueueService {
       debugLog('[API QUEUE] Clearing $count items on disconnect (queue: $queueSize, rxBuffer: ${_rxBuffer.length})');
     }
     await _safeWrite((box) => box.clear());
+    _memoryQueue.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
   }
@@ -555,6 +602,7 @@ class ApiQueueService {
       debugLog('[API QUEUE] Clearing $count stale items before connect');
     }
     await _safeWrite((box) => box.clear());
+    _memoryQueue.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
 
@@ -567,10 +615,12 @@ class ApiQueueService {
 
   /// Get failed items (exceeded max retries)
   List<ApiQueueItem> get failedItems {
-    return _safeRead(
+    final hiveItems = _safeRead(
       (box) => box.values.where((item) => item.retryCount >= _maxRetries).toList(),
       <ApiQueueItem>[],
     );
+    final memoryItems = _memoryQueue.where((item) => item.retryCount >= _maxRetries).toList();
+    return [...hiveItems, ...memoryItems];
   }
 
   /// Get accumulated offline pings and clear the accumulator

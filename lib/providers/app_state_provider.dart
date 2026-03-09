@@ -119,6 +119,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   DeviceModel? _deviceModel;
   String? _manufacturerString;
   String? _devicePublicKey;
+  String? _offlineContactUri;
 
   /// BLE device name (e.g., "MeshCore-MrAlders0n_Elecrow")
   String? get connectedDeviceName => _bluetoothService.connectedDevice?.name;
@@ -1031,6 +1032,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           if (deviceName != null && deviceName.isNotEmpty && _devicePublicKey != null) {
             _saveLastConnectedDevice(deviceName, _devicePublicKey!);
+          }
+
+          // In offline mode, fetch signed contact URI for later registration during upload
+          if (_preferences.offlineMode && _meshCoreConnection != null) {
+            _meshCoreConnection!.exportContact().then((uri) {
+              _offlineContactUri = uri;
+              debugLog('[OFFLINE] Stored contact URI for offline session');
+            }).catchError((e) {
+              debugWarn('[OFFLINE] Failed to get contact URI: $e');
+            });
           }
         }
         notifyListeners();
@@ -2242,6 +2253,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _deviceModel = null;
     _manufacturerString = null;
     _devicePublicKey = null;
+    _offlineContactUri = null;
     _displayDeviceName = null;
     _antennaRestoredFromDevice = false;
     _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
@@ -2930,6 +2942,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       pings,
       devicePublicKey: _devicePublicKey,
       deviceName: offlineDeviceName,
+      contactUri: _offlineContactUri,
     );
     debugLog('[APP] Saved offline session with ${pings.length} pings');
     notifyListeners();
@@ -3023,13 +3036,49 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       offlineMode: true,
     );
 
-    if (authResult == null || authResult['success'] != true) {
-      final reason = authResult?['reason'] as String? ?? 'unknown';
-      debugError('[API] Offline upload auth failed: $reason');
+    Map<String, dynamic>? effectiveAuth = authResult;
+
+    if (authResult == null) {
+      debugError('[API] Offline upload auth failed: network error');
       return OfflineUploadResult.authFailed;
     }
 
-    debugLog('[APP] Offline upload authenticated, session: ${authResult['session_id']}');
+    if (authResult['success'] != true) {
+      final reason = authResult['reason'] as String? ?? 'unknown';
+      debugLog('[API] Offline upload Stage 1 failed: $reason');
+
+      // Stage 2: If unknown_device and we have a stored contactUri, attempt registration
+      if (reason == 'unknown_device' && session.contactUri != null) {
+        debugLog('[APP] Stage 2: Attempting registration via stored contact URI...');
+        final registerResult = await _apiService.requestAuth(
+          reason: 'register',
+          contactUri: session.contactUri,
+          who: deviceName,
+          appVersion: _appVersion,
+          power: _preferences.powerLevel,
+          iataCode: zoneCode ?? _preferences.iataCode,
+          model: 'Offline Upload',
+          lat: _currentPosition?.latitude,
+          lon: _currentPosition?.longitude,
+          accuracyMeters: _currentPosition?.accuracy,
+          offlineMode: true,
+        );
+
+        if (registerResult == null || registerResult['success'] != true) {
+          final regReason = registerResult?['reason'] as String? ?? 'unknown';
+          debugError('[API] Offline upload Stage 2 registration failed: $regReason');
+          return OfflineUploadResult.authFailed;
+        }
+
+        debugLog('[APP] Stage 2 succeeded: device registered for offline upload');
+        effectiveAuth = registerResult;
+      } else {
+        debugError('[API] Offline upload auth failed: $reason');
+        return OfflineUploadResult.authFailed;
+      }
+    }
+
+    debugLog('[APP] Offline upload authenticated, session: ${effectiveAuth!['session_id']}');
 
     // Delay after auth before posting
     await Future.delayed(const Duration(seconds: 1));

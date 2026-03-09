@@ -12,6 +12,7 @@ class OfflineSession {
   final Map<String, dynamic> data;
   final String? devicePublicKey;  // Device public key for auth during upload
   final String? deviceName;       // Device name for display
+  final String? contactUri;       // Signed contact URI for registration during upload
   final bool uploaded;            // Track upload status
 
   OfflineSession({
@@ -21,6 +22,7 @@ class OfflineSession {
     required this.data,
     this.devicePublicKey,
     this.deviceName,
+    this.contactUri,
     this.uploaded = false,
   });
 
@@ -33,6 +35,7 @@ class OfflineSession {
       data: json['data'] as Map<String, dynamic>,
       devicePublicKey: json['devicePublicKey'] as String?,
       deviceName: json['deviceName'] as String?,
+      contactUri: json['contactUri'] as String?,
       uploaded: json['uploaded'] as bool? ?? false,
     );
   }
@@ -46,6 +49,7 @@ class OfflineSession {
       'data': data,
       'devicePublicKey': devicePublicKey,
       'deviceName': deviceName,
+      'contactUri': contactUri,
       'uploaded': uploaded,
     };
   }
@@ -59,6 +63,7 @@ class OfflineSession {
       data: data,
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
+      contactUri: contactUri,
       uploaded: uploaded ?? this.uploaded,
     );
   }
@@ -141,6 +146,7 @@ class OfflineSessionService {
     List<Map<String, dynamic>> pings, {
     String? devicePublicKey,
     String? deviceName,
+    String? contactUri,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to save, skipping session creation');
@@ -167,6 +173,7 @@ class OfflineSessionService {
       data: sessionData,
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
+      contactUri: contactUri,
     );
 
     _sessions.insert(0, session); // Add at beginning (newest first)
