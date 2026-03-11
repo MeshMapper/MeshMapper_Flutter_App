@@ -138,6 +138,8 @@ class MapWidget extends StatefulWidget {
 
 class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
+  late final SilentCancellableNetworkTileProvider _baseTileProvider;
+  late final SilentCancellableNetworkTileProvider _overlayTileProvider;
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = false; // Disabled by default - users often zoom out first
@@ -178,6 +180,13 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   // Default center (Ottawa)
   static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
   static const double _defaultZoom = 15.0; // Closer zoom for driving
+
+  @override
+  void initState() {
+    super.initState();
+    _baseTileProvider = SilentCancellableNetworkTileProvider();
+    _overlayTileProvider = SilentCancellableNetworkTileProvider();
+  }
 
   @override
   void dispose() {
@@ -419,40 +428,58 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    final appState = context.read<AppStateProvider>();
+    final mapState = context.select((AppStateProvider state) => (
+          preferencesLoaded: state.preferencesLoaded,
+          mapAutoFollow: state.preferences.mapAutoFollow,
+          mapAlwaysNorth: state.preferences.mapAlwaysNorth,
+          mapRotationLocked: state.preferences.mapRotationLocked,
+          mapStyle: state.preferences.mapStyle,
+          isImperial: state.preferences.isImperial,
+          currentPosition: state.currentPosition,
+          lastKnownPosition: state.lastKnownPosition,
+          zoneCode: state.zoneCode,
+          overlayCacheBust: state.overlayCacheBust,
+          discDropEnabled: state.discDropEnabled,
+          effectiveHopBytes: state.enforceHopBytes ? state.effectiveHopBytes : null,
+          mapNavigationTrigger: state.mapNavigationTrigger,
+          mapNavigationTarget: state.mapNavigationTarget,
+          mapDataRevision: state.mapDataRevision,
+          distanceFromLastPing: state.distanceFromLastPing,
+        ));
 
     // Load saved map toggle preferences once, after Hive has finished loading
-    if (!_prefsApplied && appState.preferencesLoaded) {
+    if (!_prefsApplied && mapState.preferencesLoaded) {
       _prefsApplied = true;
-      _autoFollow = appState.preferences.mapAutoFollow;
-      _alwaysNorth = appState.preferences.mapAlwaysNorth;
-      _rotationLocked = appState.preferences.mapRotationLocked;
+      _autoFollow = mapState.mapAutoFollow;
+      _alwaysNorth = mapState.mapAlwaysNorth;
+      _rotationLocked = mapState.mapRotationLocked;
     }
 
     // Determine map center - prefer current GPS, fallback to last known, then Ottawa
     LatLng center = _defaultCenter;
-    if (appState.currentPosition != null) {
+    if (mapState.currentPosition != null) {
       center = LatLng(
-        appState.currentPosition!.latitude,
-        appState.currentPosition!.longitude,
+        mapState.currentPosition!.latitude,
+        mapState.currentPosition!.longitude,
       );
-    } else if (appState.lastKnownPosition != null) {
+    } else if (mapState.lastKnownPosition != null) {
       center = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
+        mapState.lastKnownPosition!.lat,
+        mapState.lastKnownPosition!.lon,
       );
     }
 
     // One-time zoom to last known position when GPS is not yet available
     // This runs before GPS locks, so user sees their previous location instead of Ottawa
-    if (appState.currentPosition == null &&
-        appState.lastKnownPosition != null &&
+    if (mapState.currentPosition == null &&
+        mapState.lastKnownPosition != null &&
         !_hasZoomedToLastKnown &&
         _isMapReady) {
       _hasZoomedToLastKnown = true;
       final lastKnownCenter = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
+        mapState.lastKnownPosition!.lat,
+        mapState.lastKnownPosition!.lon,
       );
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -462,7 +489,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       });
     }
 
-    if (appState.currentPosition != null) {
+    if (mapState.currentPosition != null) {
       // One-time initial zoom to GPS when we first get a position
       // This happens even with auto-follow disabled so user sees their location
       // Don't apply panel offset - center directly on GPS so pin is in middle of screen
@@ -507,7 +534,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
       // Handle map rotation based on heading (when not in Always North mode)
       if (!_alwaysNorth && _isMapReady) {
-        final heading = appState.currentPosition!.heading;
+        final heading = mapState.currentPosition!.heading;
         if (_lastHeading == null) {
           // First heading after startup — store without rotating so the
           // initial zoom animation can settle at rotation 0 (where the
@@ -529,9 +556,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
     // Handle navigation trigger from log screen or graph
     // Reset map state and navigate to the target location
-    if (_isMapReady && appState.mapNavigationTrigger != _lastNavigationTrigger) {
-      _lastNavigationTrigger = appState.mapNavigationTrigger;
-      final target = appState.mapNavigationTarget;
+    if (_isMapReady && mapState.mapNavigationTrigger != _lastNavigationTrigger) {
+      _lastNavigationTrigger = mapState.mapNavigationTrigger;
+      final target = mapState.mapNavigationTarget;
       if (target != null) {
         // Reset map controls to default state
         _autoFollow = false;      // Disable center on GPS
@@ -567,27 +594,27 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return Stack(
       children: [
         // Map
-        _buildMap(appState, center),
+        _buildMap(appState, mapState, center),
 
         // GPS Info overlay (top-left, respects dynamic island in landscape)
         Positioned(
           top: topPadding,
           left: leftPadding,
-          child: _buildGpsInfoOverlay(appState),
+          child: _buildGpsInfoOverlay(mapState),
         ),
 
         // Map controls - top-right in both orientations, collapsible
         Positioned(
           top: topPadding,
           right: 8,
-          child: _buildCollapsibleMapControls(appState),
+          child: _buildCollapsibleMapControls(appState, mapState.mapStyle, mapState.zoneCode != null),
         ),
       ],
     );
   }
 
   /// Collapsible map controls (toggle at top, expands downward)
-  Widget _buildCollapsibleMapControls(AppStateProvider appState) {
+  Widget _buildCollapsibleMapControls(AppStateProvider appState, String mapStyleName, bool hasZoneOverlay) {
     // Use external state if provided, otherwise use internal state
     final isExpanded = widget.mapControlsExpanded ?? _mapControlsExpanded;
     final onToggle = widget.onMapControlsToggle ?? () => setState(() => _mapControlsExpanded = !_mapControlsExpanded);
@@ -615,12 +642,29 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         ),
         // Map controls (only when expanded) - below the toggle button
         if (isExpanded)
-          _buildMapControls(appState),
+          _buildMapControls(appState, mapStyleName, hasZoneOverlay),
       ],
     );
   }
 
-  Widget _buildMap(AppStateProvider appState, LatLng center) {
+  Widget _buildMap(AppStateProvider appState, ({
+    bool preferencesLoaded,
+    bool mapAutoFollow,
+    bool mapAlwaysNorth,
+    bool mapRotationLocked,
+    String mapStyle,
+    bool isImperial,
+    dynamic currentPosition,
+    ({double lat, double lon})? lastKnownPosition,
+    String? zoneCode,
+    int overlayCacheBust,
+    bool discDropEnabled,
+    int? effectiveHopBytes,
+    int mapNavigationTrigger,
+    ({double lat, double lon})? mapNavigationTarget,
+    int mapDataRevision,
+    double? distanceFromLastPing,
+  }) mapState, LatLng center) {
     return Builder(
       builder: (context) => FlutterMap(
         mapController: _mapController,
@@ -646,29 +690,29 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           // Tile layer (dynamic based on selected style from preferences)
           Builder(
             builder: (context) {
-              final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+              final mapStyle = MapStyleExtension.fromString(mapState.mapStyle);
               return TileLayer(
                 urlTemplate: mapStyle.urlTemplate,
                 subdomains: mapStyle.subdomains ?? const [],
                 userAgentPackageName: 'com.meshmapper.app',
                 maxZoom: 17,
                 retinaMode: mapStyle.supportsRetina && RetinaMode.isHighDensity(context),
-                tileProvider: SilentCancellableNetworkTileProvider(),
+                tileProvider: _baseTileProvider,
               );
             },
           ),
 
           // MeshMapper coverage overlay (only when zone code available and overlay enabled)
-          if (appState.zoneCode != null && _showMeshMapperOverlay)
+          if (mapState.zoneCode != null && _showMeshMapperOverlay)
             TileLayer(
-              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}',
+              urlTemplate: 'https://${mapState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${mapState.overlayCacheBust}',
               userAgentPackageName: 'com.meshmapper.app',
               minZoom: 3,
               maxZoom: 17,
               tileDisplay: const TileDisplay.fadeIn(
                 reloadStartOpacity: 1.0, // Keep old tile visible until new one loads
               ),
-              tileProvider: SilentCancellableNetworkTileProvider(),
+              tileProvider: _overlayTileProvider,
             ),
 
           // TX markers (green)
@@ -687,26 +731,26 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         ),
 
         // Repeater markers (magenta with ID, rotate with map)
-        MarkerLayer(
+          MarkerLayer(
           rotate: true,
           markers: _buildRepeaterMarkers(
             appState.repeaters,
-            appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+            mapState.effectiveHopBytes,
           ),
         ),
 
         // Current position marker (car icon)
-        if (appState.currentPosition != null)
+        if (mapState.currentPosition != null)
           MarkerLayer(
             markers: [
               Marker(
                 point: LatLng(
-                  appState.currentPosition!.latitude,
-                  appState.currentPosition!.longitude,
+                  mapState.currentPosition.latitude,
+                  mapState.currentPosition.longitude,
                 ),
                 width: 48,
                 height: 48,
-                child: _buildCurrentPositionMarker(appState.currentPosition!.heading),
+                child: _buildCurrentPositionMarker(mapState.currentPosition.heading),
               ),
             ],
           ),
@@ -716,10 +760,27 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// GPS info overlay (top-left corner)
-  Widget _buildGpsInfoOverlay(AppStateProvider appState) {
-    final position = appState.currentPosition;
+  Widget _buildGpsInfoOverlay(({
+    bool preferencesLoaded,
+    bool mapAutoFollow,
+    bool mapAlwaysNorth,
+    bool mapRotationLocked,
+    String mapStyle,
+    bool isImperial,
+    dynamic currentPosition,
+    ({double lat, double lon})? lastKnownPosition,
+    String? zoneCode,
+    int overlayCacheBust,
+    bool discDropEnabled,
+    int? effectiveHopBytes,
+    int mapNavigationTrigger,
+    ({double lat, double lon})? mapNavigationTarget,
+    int mapDataRevision,
+    double? distanceFromLastPing,
+  }) mapState) {
+    final position = mapState.currentPosition;
     final hasGps = position != null;
-    final distanceFromLastPing = appState.distanceFromLastPing;
+    final distanceFromLastPing = mapState.distanceFromLastPing;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -738,7 +799,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
           const SizedBox(width: 6),
           Text(
-            hasGps ? formatMeters(position.accuracy, isImperial: appState.preferences.isImperial) : 'No GPS',
+            hasGps ? formatMeters(position.accuracy, isImperial: mapState.isImperial) : 'No GPS',
             style: TextStyle(
               fontSize: 11,
               fontFamily: 'monospace',
@@ -755,7 +816,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
             const SizedBox(width: 4),
             Text(
-              formatMeters(distanceFromLastPing, isImperial: appState.preferences.isImperial),
+              formatMeters(distanceFromLastPing, isImperial: mapState.isImperial),
               style: const TextStyle(
                 fontSize: 11,
                 fontFamily: 'monospace',
@@ -775,8 +836,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// Map controls (always vertical, used inside collapsible wrapper)
-  Widget _buildMapControls(AppStateProvider appState) {
-    final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+  Widget _buildMapControls(AppStateProvider appState, String mapStyleName, bool hasZoneOverlay) {
+    final mapStyle = MapStyleExtension.fromString(mapStyleName);
 
     return Container(
       decoration: BoxDecoration(
@@ -794,7 +855,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: () => _cycleMapStyle(appState),
           ),
           // MeshMapper overlay toggle (only show when zone code available)
-          if (appState.zoneCode != null) ...[
+          if (hasZoneOverlay) ...[
             _buildControlDivider(),
             _buildControlButton(
               icon: Icons.layers,
