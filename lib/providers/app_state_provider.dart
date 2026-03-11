@@ -4504,6 +4504,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _bluetoothService.dispose();
     _audioService.dispose();
     _cooldownTimer.dispose();
+    _manualPingCooldownTimer.dispose();
     _autoPingTimer.dispose();
     _rxWindowTimer.dispose();
     _discoveryWindowTimer.dispose();
