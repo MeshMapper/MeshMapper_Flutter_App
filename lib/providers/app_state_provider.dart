@@ -3410,6 +3410,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         authErrors.contains(reason) ||
         zoneErrors.contains(reason)) {
       debugLog('[API] Session error requires disconnect: $reason');
+
+      // Preserve queued wardrive data to offline storage before disconnect clears it
+      if (sessionErrors.contains(reason)) {
+        try {
+          final queuedPings = await _apiQueueService.extractAllAsJson();
+          if (queuedPings.isNotEmpty) {
+            final offlineDeviceName = _isAnonymousRenamed
+                ? _originalDeviceName
+                : (_meshCoreConnection?.selfInfo?.name ??
+                    connectedDeviceName?.replaceFirst('MeshCore-', ''));
+            await _offlineSessionService.saveSession(
+              queuedPings,
+              devicePublicKey: _devicePublicKey,
+              deviceName: offlineDeviceName,
+              contactUri: _offlineContactUri,
+            );
+            debugLog('[APP] Preserved ${queuedPings.length} queued pings to offline storage on session expiry');
+          }
+        } catch (e) {
+          debugError('[APP] Failed to preserve queue to offline storage: $e');
+        }
+      }
+
       // Don't call requestAuth disconnect - session is already invalid on server
       // Just cleanup locally and disconnect
       await disconnect();

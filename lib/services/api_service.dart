@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
@@ -38,6 +39,10 @@ class ApiService {
   bool _rxAllowed = false;
   int? _sessionExpiresAt;
   Timer? _heartbeatTimer;
+  Timer? _heartbeatRetryTimer;
+  Timer? _sessionDeadlineTimer;
+  int _heartbeatRetryCount = 0;
+  static const int _maxHeartbeatRetries = 5;
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
@@ -590,6 +595,11 @@ class ApiService {
     _gpsProvider = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _heartbeatRetryCount = 0;
+    _sessionDeadlineTimer?.cancel();
+    _sessionDeadlineTimer = null;
     debugLog('[HEARTBEAT] Heartbeat mode disabled');
   }
 
@@ -597,9 +607,12 @@ class ApiService {
   /// Matches scheduleHeartbeat() in wardrive.js
   /// @param expiresAt Unix timestamp when session expires
   void scheduleHeartbeat(int expiresAt) {
-    // Cancel any existing heartbeat timer
+    // Cancel any existing heartbeat timer and reset retry state
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _heartbeatRetryCount = 0;
 
     if (!_heartbeatEnabled) return;
 
@@ -612,15 +625,17 @@ class ApiService {
       // Session is about to expire or already expired - send heartbeat immediately
       debugWarn('[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
       _sendScheduledHeartbeat();
-      return;
+    } else {
+      debugLog('[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
+
+      _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
+        debugLog('[HEARTBEAT] Timer fired, sending keepalive');
+        _sendScheduledHeartbeat();
+      });
     }
 
-    debugLog('[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
-
-    _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
-      debugLog('[HEARTBEAT] Timer fired, sending keepalive');
-      _sendScheduledHeartbeat();
-    });
+    // Schedule session deadline timer at exact expiry
+    _scheduleSessionDeadline(expiresAt);
   }
 
   /// Send scheduled heartbeat with GPS coordinates
@@ -631,10 +646,22 @@ class ApiService {
 
     if (result?['success'] == true) {
       debugLog('[HEARTBEAT] Heartbeat successful');
+      // Reset retry state on success
+      _heartbeatRetryCount = 0;
+      _heartbeatRetryTimer?.cancel();
+      _heartbeatRetryTimer = null;
       // Next heartbeat will be scheduled when we get new expires_at
     } else if (result == null) {
-      // Network error — transient, trigger session expiring
-      debugWarn('[HEARTBEAT] Heartbeat failed: network error');
+      // Network error — schedule retry with exponential backoff
+      if (_heartbeatRetryCount < _maxHeartbeatRetries) {
+        final delay = min(30 * pow(2, _heartbeatRetryCount).toInt(), 120);
+        _heartbeatRetryCount++;
+        debugWarn('[HEARTBEAT] Network error, scheduling retry $_heartbeatRetryCount/$_maxHeartbeatRetries in ${delay}s');
+        _heartbeatRetryTimer?.cancel();
+        _heartbeatRetryTimer = Timer(Duration(seconds: delay), _sendScheduledHeartbeat);
+      } else {
+        debugError('[HEARTBEAT] Network error, all $_maxHeartbeatRetries retries exhausted');
+      }
       _onSessionExpiring?.call();
     } else {
       // Server returned an error — check if critical
@@ -657,7 +684,33 @@ class ApiService {
     }
   }
 
-  /// Clear session data and cancel heartbeat timer
+  /// Schedule a hard deadline timer at the exact session expiry time.
+  /// If the server is unreachable and all heartbeat retries fail, this fires
+  /// and triggers the same disconnect flow as a server-returned session_expired.
+  void _scheduleSessionDeadline(int expiresAt) {
+    _sessionDeadlineTimer?.cancel();
+    if (!_heartbeatEnabled) return;
+
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final secondsUntilExpiry = expiresAt - now;
+
+    if (secondsUntilExpiry <= 0) {
+      _onSessionDeadlineReached();
+      return;
+    }
+
+    debugLog('[HEARTBEAT] Session deadline set for ${secondsUntilExpiry}s from now');
+    _sessionDeadlineTimer = Timer(Duration(seconds: secondsUntilExpiry), _onSessionDeadlineReached);
+  }
+
+  /// Called when the session deadline timer fires — server was unreachable
+  void _onSessionDeadlineReached() {
+    debugError('[HEARTBEAT] Session deadline reached - server unreachable, triggering session expiry');
+    _clearSession();
+    onSessionError?.call('session_expired', 'Session has timed out (server unreachable)');
+  }
+
+  /// Clear session data and cancel all timers
   void _clearSession() {
     _sessionId = null;
     _txAllowed = false;
@@ -671,6 +724,11 @@ class ApiService {
     _apiHopBytes = 1;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _heartbeatRetryCount = 0;
+    _sessionDeadlineTimer?.cancel();
+    _sessionDeadlineTimer = null;
     debugLog('[API] Session cleared');
   }
 
@@ -807,6 +865,10 @@ class ApiService {
   void dispose() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _sessionDeadlineTimer?.cancel();
+    _sessionDeadlineTimer = null;
     _client.close();
   }
 }
