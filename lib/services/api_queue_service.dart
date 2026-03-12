@@ -636,6 +636,24 @@ class ApiQueueService {
     _offlinePings.clear();
   }
 
+  /// Extract all queued items as API JSON without clearing the queue.
+  /// Used to preserve data before session-expiry disconnect.
+  Future<List<Map<String, dynamic>>> extractAllAsJson() async {
+    // Flush RX buffer first so all items are in the main queue
+    await _flushRxBuffer();
+
+    final hiveItems = _safeRead(
+      (box) => box.values.toList(),
+      <ApiQueueItem>[],
+    );
+
+    final allItems = [...hiveItems, ..._memoryQueue];
+
+    if (allItems.isEmpty) return [];
+
+    return allItems.map((item) => item.toApiJson()).toList();
+  }
+
   /// Dispose of resources
   void dispose() {
     _batchTimer?.cancel();
