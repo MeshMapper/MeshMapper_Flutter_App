@@ -670,6 +670,12 @@ class ApiQueueService {
     return [...hiveItems, ...memoryItems];
   }
 
+  /// Get a snapshot of accumulated offline pings without clearing.
+  /// Used for periodic auto-saves to persist data without losing the in-memory accumulator.
+  List<Map<String, dynamic>> getOfflinePingsSnapshot() {
+    return List<Map<String, dynamic>>.from(_offlinePings);
+  }
+
   /// Get accumulated offline pings and clear the accumulator
   /// Returns the list of ping JSON objects collected during offline session
   List<Map<String, dynamic>> getAndClearOfflinePings() {
