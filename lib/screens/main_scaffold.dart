@@ -26,6 +26,7 @@ class MainScaffold extends StatefulWidget {
 class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
+  bool _hasShownLocationSettingsPrompt = false;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -59,18 +60,15 @@ class _MainScaffoldState extends State<MainScaffold> {
 
     // Check if disclosure was already shown
     final hasShown = await PermissionDisclosureService.hasShownDisclosure();
-    if (hasShown) {
-      debugLog('[DISCLOSURE] Already shown, skipping');
-      return;
+    if (!hasShown) {
+      // Show the disclosure dialog
+      if (!mounted) return;
+      debugLog('[DISCLOSURE] Showing location disclosure dialog');
+      await PermissionDisclosureService.showLocationDisclosure(context);
     }
 
-    // Show the disclosure dialog
-    if (!mounted) return;
-    debugLog('[DISCLOSURE] Showing location disclosure dialog');
-    await PermissionDisclosureService.showLocationDisclosure(context);
-
-    debugLog('[DISCLOSURE] User acknowledged, requesting permissions');
-    await _requestPermissionsAfterDisclosure();
+    debugLog('[DISCLOSURE] Ensuring location permission after disclosure');
+    await _ensureLocationPermission();
   }
 
   /// Request GPS permission on web (triggers browser's native prompt)
@@ -93,8 +91,10 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
-  /// Request permissions after user accepts disclosure
-  Future<void> _requestPermissionsAfterDisclosure() async {
+  /// Ensure location permission after disclosure has been shown.
+  /// Requests when possible, restarts GPS when granted, and surfaces a settings CTA
+  /// when the permission has been permanently denied.
+  Future<void> _ensureLocationPermission() async {
     bool granted = false;
 
     if (Platform.isIOS) {
@@ -104,12 +104,23 @@ class _MainScaffoldState extends State<MainScaffold> {
         permission = await Geolocator.requestPermission();
       }
       debugLog('[DISCLOSURE] iOS location permission: $permission');
+      if (permission == LocationPermission.deniedForever) {
+        _showLocationSettingsPrompt();
+        return;
+      }
       granted = permission == LocationPermission.always ||
                 permission == LocationPermission.whileInUse;
     } else {
-      // Android: Request location via permission_handler
-      final status = await Permission.locationWhenInUse.request();
+      // Android: only request if needed so previously granted permission just restarts GPS.
+      var status = await Permission.locationWhenInUse.status;
+      if (status.isDenied) {
+        status = await Permission.locationWhenInUse.request();
+      }
       debugLog('[DISCLOSURE] Android location permission: $status');
+      if (status.isPermanentlyDenied) {
+        _showLocationSettingsPrompt();
+        return;
+      }
       granted = status.isGranted;
     }
 
@@ -119,6 +130,21 @@ class _MainScaffoldState extends State<MainScaffold> {
       final appState = context.read<AppStateProvider>();
       await appState.restartGpsAfterPermission();
     }
+  }
+
+  void _showLocationSettingsPrompt() {
+    if (!mounted || _hasShownLocationSettingsPrompt) return;
+    _hasShownLocationSettingsPrompt = true;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Location permission is disabled in system settings.'),
+        action: SnackBarAction(
+          label: 'Settings',
+          onPressed: Geolocator.openAppSettings,
+        ),
+      ),
+    );
   }
 
   @override
