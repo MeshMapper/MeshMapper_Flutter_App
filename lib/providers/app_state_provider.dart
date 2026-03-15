@@ -225,8 +225,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _reconnectAttempt = 0;
   Timer? _reconnectTimer;
   Timer? _reconnectTimeoutTimer;
+  Timer? _restoreAutoPingTimer;
   bool _autoPingWasEnabled = false;
   AutoMode _autoModeBeforeReconnect = AutoMode.active;
+  int _reconnectRestoreGeneration = 0;
   static const int _maxReconnectAttempts = 3;
   static const Duration _reconnectDelay = Duration(seconds: 3);
 
@@ -1916,6 +1918,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _fullDisconnectCleanup() async {
+    _cancelPendingAutoPingRestore();
     _connectionStep = ConnectionStep.disconnected;
 
     // Stop heartbeat immediately on BLE disconnect
@@ -1977,6 +1980,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Start auto-reconnect after unexpected BLE disconnect
   Future<void> _startAutoReconnect() async {
+    _cancelPendingAutoPingRestore();
     _isAutoReconnecting = true;
     _reconnectAttempt = 0;
     _connectionStep = ConnectionStep.reconnecting;
@@ -2098,9 +2102,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Restore auto-ping if it was active
     if (wasAutoPing) {
+      final restoreGeneration = _reconnectRestoreGeneration;
       // Use a short delay to ensure connection is fully set up
-      Timer(const Duration(milliseconds: 500), () {
-        if (_connectionStep == ConnectionStep.connected) {
+      _restoreAutoPingTimer?.cancel();
+      _restoreAutoPingTimer = Timer(const Duration(milliseconds: 500), () {
+        _restoreAutoPingTimer = null;
+        if (_isDisposed ||
+            restoreGeneration != _reconnectRestoreGeneration ||
+            _userRequestedDisconnect ||
+            _connectionStep != ConnectionStep.connected ||
+            _pingService == null) {
+          debugLog('[CONN] Skipping delayed auto-ping restore (stale or disconnected state)');
+          return;
+        }
+
+        if (!_autoPingEnabled) {
           toggleAutoPing(previousMode);
           debugLog('[CONN] Auto-ping restored after reconnect (mode=$previousMode)');
         }
@@ -2123,6 +2139,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimer = null;
     _reconnectTimeoutTimer?.cancel();
     _reconnectTimeoutTimer = null;
+    _cancelPendingAutoPingRestore();
 
     // Clear reconnect state
     _isAutoReconnecting = false;
@@ -2153,6 +2170,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimer = null;
     _reconnectTimeoutTimer?.cancel();
     _reconnectTimeoutTimer = null;
+    _cancelPendingAutoPingRestore();
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
     _autoPingWasEnabled = false;
@@ -4494,6 +4512,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Cleanup
   // ============================================
 
+  void _cancelPendingAutoPingRestore() {
+    _restoreAutoPingTimer?.cancel();
+    _restoreAutoPingTimer = null;
+    _reconnectRestoreGeneration++;
+  }
+
   @override
   @override
   void notifyListeners() {
@@ -4516,6 +4540,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _zoneCheckCountdownTimer?.cancel();
     _reconnectTimer?.cancel();
     _reconnectTimeoutTimer?.cancel();
+    _restoreAutoPingTimer?.cancel();
     _tileRefreshTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
