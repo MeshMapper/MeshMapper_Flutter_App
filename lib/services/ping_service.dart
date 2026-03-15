@@ -61,6 +61,9 @@ class PingService {
   final AudioService? _audioService;
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// Number of bytes per hop in path hash (1, 2, or 3). Passed to DiscTracker for repeater ID length.
+  final int _hopBytes;
+
   /// When true, skip RSSI carpeater check in DiscTracker (user setting)
   bool disableRssiFilter;
 
@@ -166,6 +169,7 @@ class PingService {
     AudioService? audioService,
     this.shouldIgnoreRepeater,
     this.disableRssiFilter = false,
+    int hopBytes = 1,
   })  : _gpsService = gpsService,
         _connection = connection,
         _apiQueue = apiQueue,
@@ -176,7 +180,8 @@ class PingService {
         _discoveryWindowCountdown = discoveryWindowTimer,
         _deviceId = deviceId,
         _txTracker = txTracker,
-        _audioService = audioService;
+        _audioService = audioService,
+        _hopBytes = hopBytes;
 
   /// Get current ping statistics
   PingStats get stats => _stats;
@@ -943,6 +948,7 @@ class PingService {
     final tracker = DiscTracker(
       shouldIgnoreRepeater: shouldIgnoreRepeater,
       disableRssiFilter: disableRssiFilter,
+      hopBytes: _hopBytes,
     );
     _discTracker = tracker;
     tracker.onCarpeaterDrop = onDiscCarpeaterDrop;

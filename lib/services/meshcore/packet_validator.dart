@@ -172,6 +172,18 @@ class PacketValidator {
     return rssi >= maxRssiThreshold;
   }
 
+  /// Check if a hop hex string matches a stored CARpeater ID using prefix truncation.
+  /// The stored ID is always 3-byte (6 hex chars). Incoming hop IDs vary by the
+  /// packet's path hash size (1, 2, or 3 bytes). Compares the shorter prefix.
+  /// Also handles legacy shorter stored IDs from before the 3-byte requirement.
+  static bool isCarpeaterIdMatch(String hopHex, String storedId) {
+    final hop = hopHex.toUpperCase();
+    final stored = storedId.toUpperCase();
+    final compareLen = hop.length < stored.length ? hop.length : stored.length;
+    if (compareLen == 0) return false;
+    return hop.substring(0, compareLen) == stored.substring(0, compareLen);
+  }
+
   /// Calculate ratio of printable ASCII characters (32-126)
   static double getPrintableRatio(String text) {
     if (text.isEmpty) return 0.0;
