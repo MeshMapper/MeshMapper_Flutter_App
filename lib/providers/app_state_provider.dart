@@ -1958,6 +1958,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _hopBytes = newHopBytes;
     _userChangedPathMode = true;
+    _pingService?.hopBytes = newHopBytes;
     final mode = newHopBytes - 1; // Convert 1/2/3 → mode 0/1/2
     _meshCoreConnection?.setPathHashMode(mode);
     debugLog('[PATH] User changed path mode to $newHopBytes-byte (sent to radio)');

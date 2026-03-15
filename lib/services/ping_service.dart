@@ -68,7 +68,10 @@ class PingService {
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
   /// Number of bytes per hop in path hash (1, 2, or 3). Passed to DiscTracker for repeater ID length.
-  final int _hopBytes;
+  int _hopBytes;
+
+  /// Update hop bytes at runtime (e.g. when user changes path mode while connected)
+  set hopBytes(int value) => _hopBytes = value;
 
   /// When true, skip RSSI carpeater check in DiscTracker (user setting)
   bool disableRssiFilter;

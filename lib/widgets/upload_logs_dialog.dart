@@ -64,7 +64,7 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
 
   Future<void> _loadUploadableFiles() async {
     try {
-      final files = await DebugFileLogger.listUploadableLogFiles();
+      final files = await widget.appState.prepareDebugLogsForUpload();
       if (mounted) {
         setState(() {
           _availableLogFiles = files;
