@@ -137,6 +137,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Wardriving Settings section
           _buildSectionHeader(context, 'Wardriving Settings'),
 
+          // Sound Notifications Toggle
+          SwitchListTile(
+            secondary: Icon(appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
+            title: const Text('Sound Notifications'),
+            subtitle: Text(appState.isSoundEnabled ? 'Plays on ping events' : 'Silent'),
+            value: appState.isSoundEnabled,
+            onChanged: (_) => appState.toggleSoundEnabled(),
+          ),
+
           // Auto-Ping Interval Selector
           ListTile(
             leading: const Icon(Icons.timer),

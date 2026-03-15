@@ -162,6 +162,12 @@ class PacketMetadata {
     return payloadType == PayloadType.advert;
   }
 
+  /// Check if packet is TRACE (trace path response, header 0x26)
+  bool get isTrace {
+    final payloadType = (header >> PacketHeader.typeShift) & PacketHeader.typeMask;
+    return payloadType == PayloadType.trace;
+  }
+
   /// Get first hop as hex string (for TX tracking keys)
   /// Returns multi-byte hex (2/4/6/8 chars depending on pathHashSize)
   String? get firstHopHex {

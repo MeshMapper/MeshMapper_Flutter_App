@@ -686,6 +686,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           markers: _buildDiscMarkers(appState.discLogEntries, appState.discDropEnabled),
         ),
 
+        // Trace markers (cyan/red circles for targeted ping results)
+        MarkerLayer(
+          markers: _buildTraceMarkers(appState.traceLogEntries),
+        ),
+
         // Repeater markers (magenta with ID, rotate with map)
         MarkerLayer(
           rotate: true,
@@ -1125,6 +1130,20 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       color: Colors.grey,
                       label: 'DISC',
                       description: 'Location where you sent a discovery request but no repeater responded',
+                    ),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
+                    _buildLegendItem(
+                      context: context,
+                      color: Colors.cyan,
+                      label: 'TRC',
+                      description: 'Location where a trace reached the repeater',
+                    ),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
+                    _buildLegendItem(
+                      context: context,
+                      color: Colors.red,
+                      label: 'TRC',
+                      description: 'Location where a trace got no response',
                     ),
                   ],
                 ),
@@ -1597,6 +1616,284 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         ),
       );
     }).toList();
+  }
+
+  List<Marker> _buildTraceMarkers(List<TraceLogEntry> entries) {
+    return entries.map((entry) {
+      return Marker(
+        point: LatLng(entry.latitude, entry.longitude),
+        width: 20,
+        height: 20,
+        child: GestureDetector(
+          onTap: () => _showTraceDetails(entry),
+          child: Container(
+            decoration: BoxDecoration(
+              color: entry.success ? Colors.cyan : Colors.red,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 4,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  void _showTraceDetails(TraceLogEntry entry) {
+    showModalBottomSheet(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.75,
+        ),
+        child: SingleChildScrollView(
+          child: Container(
+            padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Header with icon badge
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.cyan.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
+                      ),
+                      child: const Icon(Icons.gps_fixed, color: Colors.cyan, size: 24),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Trace',
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            _formatTime(entry.timestamp),
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 20),
+                      onPressed: () => Navigator.pop(context),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+
+                // Location chip
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${entry.latitude.toStringAsFixed(5)}, ${entry.longitude.toStringAsFixed(5)}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontFamily: 'monospace',
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Target repeater section header
+                Text(
+                  entry.success
+                      ? 'Target Repeater'
+                      : 'No response from target repeater',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+
+                if (entry.success) ...[
+                  const SizedBox(height: 12),
+                  // Table with headers
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                    ),
+                    child: Column(
+                      children: [
+                        // Header row
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: _nodeColumnWidth(),
+                                child: Text(
+                                  'Node',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  'RX SNR',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  'RX RSSI',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  'TX SNR',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Divider(height: 1, color: Theme.of(context).dividerColor),
+                        // Data row
+                        Builder(builder: (context) {
+                          final localSnr = entry.localSnr ?? 0;
+                          final localRssi = entry.localRssi ?? 0;
+                          final remoteSnr = entry.remoteSnr ?? 0;
+
+                          Color rxSnrColor;
+                          if (localSnr <= -1) {
+                            rxSnrColor = Colors.red;
+                          } else if (localSnr <= 5) {
+                            rxSnrColor = Colors.orange;
+                          } else {
+                            rxSnrColor = Colors.green;
+                          }
+
+                          Color rssiColor;
+                          if (localRssi >= -70) {
+                            rssiColor = Colors.green;
+                          } else if (localRssi >= -100) {
+                            rssiColor = Colors.orange;
+                          } else {
+                            rssiColor = Colors.red;
+                          }
+
+                          Color txSnrColor;
+                          if (remoteSnr <= -1) {
+                            txSnrColor = Colors.red;
+                          } else if (remoteSnr <= 5) {
+                            txSnrColor = Colors.orange;
+                          } else {
+                            txSnrColor = Colors.green;
+                          }
+
+                          return InkWell(
+                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.targetRepeaterId),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              child: Row(
+                                children: [
+                                  RepeaterIdChip(repeaterId: entry.targetRepeaterId, fontSize: 13, width: _nodeColumnWidth()),
+                                  // RX SNR
+                                  Expanded(
+                                    child: Center(
+                                      child: _buildStatChip(
+                                        value: localSnr.toStringAsFixed(1),
+                                        color: rxSnrColor,
+                                      ),
+                                    ),
+                                  ),
+                                  // RX RSSI
+                                  Expanded(
+                                    child: Center(
+                                      child: _buildStatChip(
+                                        value: '$localRssi',
+                                        color: rssiColor,
+                                      ),
+                                    ),
+                                  ),
+                                  // TX SNR
+                                  Expanded(
+                                    child: Center(
+                                      child: _buildStatChip(
+                                        value: remoteSnr.toStringAsFixed(1),
+                                        color: txSnrColor,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// DISC marker color (#7B68EE - medium slate blue/purple)

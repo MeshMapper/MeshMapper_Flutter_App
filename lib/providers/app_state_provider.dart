@@ -48,6 +48,8 @@ enum AutoMode {
   passive,
   /// Hybrid Mode: Alternates Discovery + Active pings each interval
   hybrid,
+  /// Trace Mode: Zero-hop trace to specific repeater
+  targeted,
 }
 
 /// Result of uploading an offline session
@@ -158,6 +160,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<TxLogEntry> _txLogEntries = [];
   final List<RxLogEntry> _rxLogEntries = [];
   final List<DiscLogEntry> _discLogEntries = [];
+  final List<TraceLogEntry> _traceLogEntries = [];
+
+  // Targeted mode state
+  String? _targetRepeaterId;
 
   // User error log entries
   final List<UserErrorEntry> _errorLogEntries = [];
@@ -308,6 +314,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isPendingDisable => _pingService?.pendingDisable ?? false;
   /// True when running any mode that does TX (Active or Hybrid)
   bool get isTxModeRunning => _autoPingEnabled && (_autoMode == AutoMode.active || _autoMode == AutoMode.hybrid);
+  /// True when running Trace Mode (zero-hop trace)
+  bool get isTargetedModeRunning => _autoPingEnabled && _autoMode == AutoMode.targeted;
+  String? get targetRepeaterId => _targetRepeaterId;
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
   int? get currentBatteryPercent => _currentBatteryPercent;
@@ -318,6 +327,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<TxLogEntry> get txLogEntries => List.unmodifiable(_txLogEntries);
   List<RxLogEntry> get rxLogEntries => List.unmodifiable(_rxLogEntries);
   List<DiscLogEntry> get discLogEntries => List.unmodifiable(_discLogEntries);
+  List<TraceLogEntry> get traceLogEntries => List.unmodifiable(_traceLogEntries);
   List<UserErrorEntry> get errorLogEntries => List.unmodifiable(_errorLogEntries);
   ({double lat, double lon})? get mapNavigationTarget => _mapNavigationTarget;
   int get mapNavigationTrigger => _mapNavigationTrigger;
@@ -493,7 +503,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Update background service notification with queue size
       if (_autoPingEnabled) {
         final modeName = _autoMode == AutoMode.passive ? 'Passive Mode'
-            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode' : 'Active Mode';
+            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode'
+            : _autoMode == AutoMode.targeted ? 'Trace Mode' : 'Active Mode';
         BackgroundServiceManager.updateNotification(
           mode: modeName,
           txCount: _pingStats.txCount,
@@ -1178,6 +1189,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         },
       );
 
+      // Wire UnifiedRxHandler so trace payloads route to TraceTracker
+      _pingService!.unifiedRxHandler = _unifiedRxHandler;
+
       // Set validation callbacks
       _pingService!.checkExternalAntennaConfigured = () {
         // External antenna must be explicitly set (yes or no) before pinging
@@ -1251,7 +1265,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Update background service notification with current stats
         if (_autoPingEnabled) {
           final modeName = _autoMode == AutoMode.passive ? 'Passive Mode'
-            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode' : 'Active Mode';
+            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode'
+            : _autoMode == AutoMode.targeted ? 'Trace Mode' : 'Active Mode';
           BackgroundServiceManager.updateNotification(
             mode: modeName,
             txCount: _pingStats.txCount,
@@ -1398,6 +1413,53 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         recordPingEvent(
           eventType,
+          latitude: lat,
+          longitude: lon,
+          repeaters: repeaters,
+        );
+      };
+
+      // Wire up trace ping callback (for log entry creation)
+      _pingService!.onTracePing = (entry) {
+        _addTraceLogEntry(entry);
+      };
+
+      // Wire up trace window complete callback for noise floor graph
+      _pingService!.onTraceWindowComplete = (result) {
+        double? lat;
+        double? lon;
+        List<MarkerRepeaterInfo>? repeaters;
+
+        if (_traceLogEntries.isNotEmpty) {
+          final lastTrace = _traceLogEntries.first;
+          lat = lastTrace.latitude;
+          lon = lastTrace.longitude;
+          if (result != null && result.success) {
+            repeaters = [MarkerRepeaterInfo(
+              repeaterId: result.targetRepeaterId,
+              snr: result.localSnr,
+              rssi: result.localRssi,
+            )];
+            // Update the log entry with success data
+            _traceLogEntries[0] = TraceLogEntry(
+              timestamp: lastTrace.timestamp,
+              latitude: lastTrace.latitude,
+              longitude: lastTrace.longitude,
+              targetRepeaterId: lastTrace.targetRepeaterId,
+              noiseFloor: lastTrace.noiseFloor,
+              localSnr: result.localSnr,
+              remoteSnr: result.remoteSnr,
+              localRssi: result.localRssi,
+              success: true,
+            );
+            notifyListeners();
+          }
+        }
+
+        recordPingEvent(
+          result != null && result.success
+              ? PingEventType.traceSuccess
+              : PingEventType.traceFail,
           latitude: lat,
           longitude: lon,
           repeaters: repeaters,
@@ -2368,14 +2430,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
-  /// Toggle auto-ping mode (Active, Passive, or Hybrid)
-  /// Returns false if blocked by cooldown (Active/Hybrid Mode only - Passive Mode ignores cooldown)
+  /// Set the target repeater ID for targeted mode
+  void setTargetRepeaterId(String? id) {
+    _targetRepeaterId = id;
+    notifyListeners();
+  }
+
+  /// Toggle auto-ping mode (Active, Passive, Hybrid, or Trace)
+  /// Returns false if blocked by cooldown (Active/Hybrid/Trace Mode only - Passive Mode ignores cooldown)
   Future<bool> toggleAutoPing(AutoMode mode) async {
     if (_pingService == null) return false;
 
     final isPassive = mode == AutoMode.passive;
     final isHybrid = mode == AutoMode.hybrid;
-    final isTxMode = !isPassive; // Active and Hybrid both do TX
+    final isTargeted = mode == AutoMode.targeted;
+    final isTxMode = !isPassive; // Active, Hybrid, and Targeted all do TX
 
     // If currently running the same mode, stop it (always allow stopping)
     if (_autoPingEnabled && _autoMode == mode) {
@@ -2470,7 +2539,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pingService!.setAutoPingInterval(intervalMs);
       debugLog('[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
 
-      final started = await _pingService!.enableAutoPing(passiveMode: isPassive, hybridMode: isHybrid);
+      final started = await _pingService!.enableAutoPing(
+        passiveMode: isPassive,
+        hybridMode: isHybrid,
+        targetedMode: isTargeted,
+        targetRepeaterId: isTargeted ? _targetRepeaterId : null,
+      );
       if (!started) {
         // Blocked by cooldown or already enabled
         if (_pingService!.isInCooldown()) {
@@ -2486,7 +2560,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _autoPingEnabled = true;
 
       // Start noise floor session for graph tracking
-      final sessionLabel = isPassive ? 'passive' : isHybrid ? 'hybrid' : 'active';
+      final sessionLabel = isPassive ? 'passive' : isHybrid ? 'hybrid' : isTargeted ? 'targeted' : 'active';
       _startNoiseFloorSession(sessionLabel);
 
       // Enable heartbeat for all auto-ping modes (not offline mode)
@@ -2506,7 +2580,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // Start background service for continuous operation
-      final modeName = isPassive ? 'Passive Mode' : isHybrid ? 'Hybrid Mode' : 'Active Mode';
+      final modeName = isPassive ? 'Passive Mode' : isHybrid ? 'Hybrid Mode' : isTargeted ? 'Trace Mode' : 'Active Mode';
       await BackgroundServiceManager.startService(
         mode: modeName,
         txCount: _pingStats.txCount,
@@ -2532,6 +2606,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _txLogEntries.clear();
     _rxLogEntries.clear();
     _discLogEntries.clear();
+    _traceLogEntries.clear();
     _errorLogEntries.clear();
     notifyListeners();
   }
@@ -2543,6 +2618,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _discLogEntries.removeLast();
     }
     debugLog('[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
+    notifyListeners();
+  }
+
+  /// Add a trace log entry (from Trace Mode)
+  void _addTraceLogEntry(TraceLogEntry entry) {
+    _traceLogEntries.insert(0, entry);
+    if (_traceLogEntries.length > _maxLogEntries) {
+      _traceLogEntries.removeLast();
+    }
+    debugLog('[APP] Trace log entry added: target=${entry.targetRepeaterId}, success=${entry.success}');
     notifyListeners();
   }
 

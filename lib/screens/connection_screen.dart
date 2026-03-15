@@ -13,6 +13,7 @@ import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../widgets/offline_mode_toggle.dart';
 import '../widgets/regional_config_card.dart';
 
 /// BLE device selection and connection screen
@@ -394,6 +395,28 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     // Portrait: vertical layout
     return Column(
       children: [
+        _buildZoneStatusBar(context, appState),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Row(
+            children: [
+              const Expanded(child: OfflineModeToggle()),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: Icon(
+                  Icons.info_outline,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                tooltip: 'About Offline Mode',
+                onPressed: () => _showOfflineModeInfo(context),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.all(16),
@@ -560,6 +583,32 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  void _showOfflineModeInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.cloud_off, color: Colors.orange, size: 22),
+            SizedBox(width: 8),
+            Text('Offline Mode'),
+          ],
+        ),
+        content: const Text(
+          'Save pings locally instead of uploading immediately. Useful when you have poor cell connectivity or the API is in maintenance.\n\n'
+          'Data is stored on your device and can be uploaded later from the Settings tab when connectivity is restored.',
+          style: TextStyle(fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Got it'),
+          ),
+        ],
       ),
     );
   }

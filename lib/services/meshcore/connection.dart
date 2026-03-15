@@ -68,6 +68,7 @@ class MeshCoreConnection {
   final _rawDataController = StreamController<Map<String, dynamic>>.broadcast();
   final _logRxDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
   final _controlDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
+  final _traceDataController = StreamController<Uint8List>.broadcast();
   final _noiseFloorController = StreamController<int>.broadcast();
   final _batteryController = StreamController<int>.broadcast();
 
@@ -121,6 +122,10 @@ class MeshCoreConnection {
 
   /// Stream of ControlData packets (for discovery responses)
   Stream<({Uint8List raw, double snr, int rssi})> get controlDataStream => _controlDataController.stream;
+
+  /// Stream of TraceData packets (for trace path responses)
+  /// 0x89 has NO snr/rssi prefix — raw bytes are the trace payload directly
+  Stream<Uint8List> get traceDataStream => _traceDataController.stream;
 
   /// Stream of noise floor updates (dBm)
   Stream<int> get noiseFloorStream => _noiseFloorController.stream;
@@ -401,6 +406,9 @@ class MeshCoreConnection {
         case PushCodes.controlData:
           _onControlDataPush(reader);
           break;
+        case PushCodes.traceData:
+          _onTraceDataPush(reader);
+          break;
         case ResponseCodes.stats:
           _onStatsResponse(reader);
           break;
@@ -607,6 +615,17 @@ class MeshCoreConnection {
         '${raw.length} bytes, snr=$snr, rssi=$rssi');
 
     _controlDataController.add((raw: raw, snr: snr, rssi: rssi));
+  }
+
+  void _onTraceDataPush(BufferReader reader) {
+    // 0x89 TraceData has NO snr/rssi prefix (unlike 0x88 LogRxData).
+    // The entire remaining payload is the trace response:
+    // [reserved][path_len][flags][tag:4][auth:4][path_hashes][path_snrs]
+    final raw = reader.readRemainingBytes();
+
+    debugLog('[CONN] Received trace data: ${raw.length} bytes');
+
+    _traceDataController.add(raw);
   }
 
   void _onStatsResponse(BufferReader reader) {
@@ -955,6 +974,27 @@ class MeshCoreConnection {
     return tag;
   }
 
+  /// Send trace path to a specific repeater (targeted ping / zero-hop trace)
+  /// Returns the 4-byte tag used for matching the response
+  Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes) async {
+    final random = Random.secure();
+    final tag = Uint8List.fromList([
+      random.nextInt(256), random.nextInt(256),
+      random.nextInt(256), random.nextInt(256),
+    ]);
+
+    debugLog('[CONN] Sending trace to ${repeaterIdBytes.map((b) => b.toRadixString(16).padLeft(2, "0")).join("")}');
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.sendTracePath);  // 0x24
+    data.writeBytes(tag);                        // 4-byte tag
+    data.writeUInt32LE(0);                       // auth_code = 0
+    data.writeByte(0);                           // flags = 0
+    data.writeBytes(repeaterIdBytes);            // target repeater ID
+    await _sendToRadio(data);
+    return tag;
+  }
+
   /// Get battery voltage
   Future<void> getBatteryVoltage() async {
     final data = BufferWriter();
@@ -1108,6 +1148,7 @@ class MeshCoreConnection {
     _rawDataController.close();
     _logRxDataController.close();
     _controlDataController.close();
+    _traceDataController.close();
     _noiseFloorController.close();
     _batteryController.close();
   }

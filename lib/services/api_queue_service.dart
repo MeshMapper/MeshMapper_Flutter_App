@@ -347,6 +347,53 @@ class ApiQueueService {
     });
   }
 
+  /// Enqueue a TRACE ping result (targeted zero-hop trace)
+  Future<void> enqueueTrace({
+    required double latitude,
+    required double longitude,
+    required String repeaterId,
+    required double localSnr,
+    required int localRssi,
+    required double remoteSnr,
+    required int timestamp,
+    required bool externalAntenna,
+    int? noiseFloor,
+  }) async {
+    final item = ApiQueueItem.fromTrace(
+      latitude: latitude,
+      longitude: longitude,
+      repeaterId: repeaterId,
+      localSnr: localSnr,
+      localRssi: localRssi,
+      remoteSnr: remoteSnr,
+      timestamp: timestamp,
+      externalAntenna: externalAntenna,
+      noiseFloor: noiseFloor,
+    );
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (offlineMode) {
+      _offlinePings.add(item.toApiJson());
+      debugLog('[API QUEUE] TRACE enqueued (offline): $repeaterId');
+      return;
+    }
+
+    final wrote = await _safeWrite((box) => box.add(item));
+    if (!wrote) {
+      _memoryQueue.add(item);
+      debugLog('[API QUEUE] TRACE enqueued (memory fallback): $repeaterId at $latitude, $longitude (queue size: $queueSize)');
+    } else {
+      debugLog('[API QUEUE] TRACE enqueued: $repeaterId at $latitude, $longitude (queue size: $queueSize)');
+    }
+    onQueueUpdated?.call(queueSize);
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
+      debugLog('[API QUEUE] Ping flush timer fired');
+      _flushRxBuffer();
+      _uploadBatch();
+    });
+  }
+
   /// Enqueue a failed DISC discovery (no nodes responded)
   Future<void> enqueueDiscDrop({
     required double latitude,

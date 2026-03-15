@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:geolocator/geolocator.dart';
 
@@ -12,7 +13,9 @@ import 'countdown_timer_service.dart';
 import 'gps_service.dart';
 import 'meshcore/connection.dart';
 import 'meshcore/disc_tracker.dart';
+import 'meshcore/trace_tracker.dart';
 import 'meshcore/tx_tracker.dart';
+import 'meshcore/unified_rx_handler.dart';
 import 'wakelock_service.dart';
 
 /// Ping service for TX/RX ping orchestration
@@ -70,6 +73,9 @@ class PingService {
   /// When true, skip RSSI carpeater check in DiscTracker (user setting)
   bool disableRssiFilter;
 
+  /// Unified RX handler reference for routing trace packets
+  UnifiedRxHandler? unifiedRxHandler;
+
   PingStats _stats = const PingStats();
   DateTime? _lastTxTime;
   Timer? _rxWindowTimer;
@@ -86,8 +92,16 @@ class PingService {
   bool _autoPingEnabled = false;
   bool _passiveModeEnabled = false;
   bool _hybridModeEnabled = false;
+  bool _targetedModeEnabled = false;
   bool _nextPingIsDiscovery = true;  // Start hybrid with discovery
   Timer? _autoTimer;
+
+  // Targeted mode tracking
+  TraceTracker? _traceTracker;
+  StreamSubscription<Uint8List>? _traceDataSubscription;
+  Timer? _targetedTimer;
+  String? _targetRepeaterId;
+  Position? _lastTargetedPosition;
 
   // Pending disable flag - when true, disable will execute after RX window ends
   bool _pendingDisable = false;
@@ -143,6 +157,13 @@ class PingService {
   /// Callback when discovery window ends (for noise floor graph)
   /// Parameters: (bool success) - true if any nodes discovered, false if none
   void Function(bool success)? onDiscoveryWindowComplete;
+
+  /// Callback when trace window ends (for noise floor graph + log)
+  /// Parameters: (TraceResult? result) - null if no response
+  void Function(TraceResult? result)? onTraceWindowComplete;
+
+  /// Callback when trace ping is sent (for log entry creation)
+  void Function(TraceLogEntry)? onTracePing;
 
   /// Callback when pingInProgress changes (for immediate UI refresh)
   void Function()? onPingProgressChanged;
@@ -200,6 +221,9 @@ class PingService {
 
   /// Check if Hybrid Mode is active (alternates discovery + TX)
   bool get isHybridMode => _hybridModeEnabled;
+
+  /// Check if Targeted Mode is active (zero-hop trace to specific repeater)
+  bool get isTargetedMode => _targetedModeEnabled;
 
   /// Check if discovery tracker is currently listening (for Passive Mode UI)
   bool get isDiscoveryListening => _discTracker?.isListening ?? false;
@@ -707,15 +731,21 @@ class PingService {
       debugLog('[PING] Executing pending disable after RX window');
       _pendingDisable = false;
       final wasHybrid = _hybridModeEnabled;
+      final wasTargeted = _targetedModeEnabled;
       _autoPingEnabled = false;
       _passiveModeEnabled = false;
       _hybridModeEnabled = false;
+      _targetedModeEnabled = false;
       _nextPingIsDiscovery = true;
       _autoTimer?.cancel();
       _autoTimer = null;
       // Clean up discovery infrastructure if hybrid was enabled
       if (wasHybrid) {
         _stopDiscoveryMode();
+      }
+      // Clean up targeted infrastructure if targeted was enabled
+      if (wasTargeted) {
+        _stopTargetedMode();
       }
       // Start cooldown immediately
       _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
@@ -809,20 +839,34 @@ class PingService {
     }
   }
 
-  /// Enable Active Mode (timer-based auto ping), Passive Mode (listen-only), or Hybrid Mode
+  /// Enable Active Mode (timer-based auto ping), Passive Mode (listen-only),
+  /// Hybrid Mode, or Targeted Mode (zero-hop trace)
   /// Reference: startAutoPing() in wardrive.js
   /// @param passiveMode - If true, only listens for RX (no TX pings) - this is Passive Mode
   /// @param hybridMode - If true, alternates discovery + TX pings each interval
-  Future<bool> enableAutoPing({bool passiveMode = false, bool hybridMode = false}) async {
-    debugLog('[AUTO] enableAutoPing called (passiveMode=$passiveMode, hybridMode=$hybridMode)');
+  /// @param targetedMode - If true, sends trace path to specific repeater
+  /// @param targetRepeaterId - Repeater ID hex string (required when targetedMode=true)
+  Future<bool> enableAutoPing({
+    bool passiveMode = false,
+    bool hybridMode = false,
+    bool targetedMode = false,
+    String? targetRepeaterId,
+  }) async {
+    debugLog('[AUTO] enableAutoPing called (passiveMode=$passiveMode, hybridMode=$hybridMode, targetedMode=$targetedMode)');
 
     if (_autoPingEnabled) {
       debugLog('[AUTO] Auto mode already enabled');
       return false;
     }
 
+    // Targeted mode requires a repeater ID
+    if (targetedMode && (targetRepeaterId == null || targetRepeaterId.isEmpty)) {
+      debugLog('[AUTO] Targeted mode requires a repeater ID');
+      return false;
+    }
+
     // Check if we're in cooldown (can't start during cooldown)
-    // Hybrid and Active modes are blocked by cooldown, Passive is not
+    // Hybrid, Active, and Targeted modes are blocked by cooldown, Passive is not
     // Reference: isInCooldown() check in startAutoPing() in wardrive.js
     if (!passiveMode && isInCooldown()) {
       final remainingSec = getRemainingCooldownSeconds();
@@ -840,14 +884,23 @@ class PingService {
     _autoPingEnabled = true;
     _passiveModeEnabled = passiveMode;
     _hybridModeEnabled = hybridMode;
+    _targetedModeEnabled = targetedMode;
     _nextPingIsDiscovery = true;  // Always start hybrid with discovery
+
+    if (targetedMode) {
+      _targetRepeaterId = targetRepeaterId;
+    }
 
     // Enable wake lock to keep screen on during auto mode
     // Reference: acquireWakeLock() in wardrive.js
     debugLog('[AUTO] Acquiring wake lock for auto mode');
     await _wakelockService.enable();
 
-    if (hybridMode) {
+    if (targetedMode) {
+      // Targeted Mode: send trace path to specific repeater
+      debugLog('[TARGETED] Targeted Mode started - tracing repeater $targetRepeaterId');
+      await _startTargetedMode();
+    } else if (hybridMode) {
       // Hybrid Mode: set up discovery infrastructure, then start with discovery
       debugLog('[HYBRID] Hybrid Mode started - alternating discovery + TX pings');
       await _startDiscoveryMode();
@@ -905,9 +958,15 @@ class PingService {
       _stopDiscoveryMode();
     }
 
+    // Clean up targeted mode infrastructure
+    if (_targetedModeEnabled) {
+      _stopTargetedMode();
+    }
+
     _autoPingEnabled = false;
     _passiveModeEnabled = false;
     _hybridModeEnabled = false;
+    _targetedModeEnabled = false;
     _nextPingIsDiscovery = true;
 
     // Disable wake lock when auto mode stops
@@ -928,8 +987,10 @@ class PingService {
     _autoPingEnabled = false;
     _passiveModeEnabled = false;
     _hybridModeEnabled = false;
+    _targetedModeEnabled = false;
     _nextPingIsDiscovery = true;
     _stopDiscoveryMode();
+    _stopTargetedMode();
     await _wakelockService.disable();
   }
 
@@ -1231,6 +1292,219 @@ class PingService {
     });
   }
 
+  // ============================================
+  // Targeted Mode (Zero-Hop Trace)
+  // ============================================
+
+  /// Start targeted mode - subscribes to trace data and sends first trace
+  Future<void> _startTargetedMode() async {
+    debugLog('[TRACE] Starting targeted mode for repeater $_targetRepeaterId');
+
+    // Create trace tracker
+    final tracker = TraceTracker();
+    _traceTracker = tracker;
+    tracker.onTraceReceived = (result) {
+      debugLog('[TRACE] Trace response received: localSnr=${result.localSnr}, remoteSnr=${result.remoteSnr}');
+    };
+    tracker.onWindowComplete = (result) {
+      debugLog('[TRACE] Trace window complete: ${result != null ? 'success' : 'no response'}');
+      _handleTraceWindowComplete(result);
+    };
+
+    // Wire trace tracker into UnifiedRxHandler so 0x88 BLE metadata
+    // gets stored for the 0x89 handler
+    unifiedRxHandler?.traceTracker = tracker;
+
+    // Subscribe to 0x89 TraceData stream for actual trace payloads
+    _traceDataSubscription = _connection.traceDataStream.listen((raw) {
+      final tt = _traceTracker;
+      if (tt != null && tt.isListening) {
+        tt.handlePacket(raw, tt.pendingBleSnr, tt.pendingBleRssi);
+      }
+    });
+
+    // Send first trace immediately
+    await _sendTargetedPing();
+  }
+
+  /// Stop targeted mode - cleans up tracker and subscription
+  void _stopTargetedMode() {
+    debugLog('[TRACE] Stopping targeted mode');
+    _targetedTimer?.cancel();
+    _targetedTimer = null;
+    _traceDataSubscription?.cancel();
+    _traceDataSubscription = null;
+    unifiedRxHandler?.traceTracker = null;
+    _traceTracker?.dispose();
+    _traceTracker = null;
+    _lastTargetedPosition = null;
+  }
+
+  /// Send a targeted ping (trace path) and start listening window
+  Future<void> _sendTargetedPing() async {
+    if (!_autoPingEnabled || !_targetedModeEnabled) {
+      debugLog('[TRACE] Not in targeted mode, skipping trace');
+      return;
+    }
+
+    final targetId = _targetRepeaterId;
+    if (targetId == null || targetId.isEmpty) {
+      debugLog('[TRACE] No target repeater ID, skipping trace');
+      _scheduleNextTargetedPing();
+      return;
+    }
+
+    // Check GPS
+    final position = _gpsService.lastPosition;
+    if (position == null) {
+      debugLog('[TRACE] No GPS position, skipping trace');
+      _pingInProgress = false;
+      _scheduleNextTargetedPing();
+      return;
+    }
+
+    // Check minimum distance from last trace (25m)
+    final lastPos = _lastTargetedPosition;
+    if (lastPos != null) {
+      final distance = Geolocator.distanceBetween(
+        lastPos.latitude, lastPos.longitude,
+        position.latitude, position.longitude,
+      );
+      if (distance < _gpsService.configuredMinDistance) {
+        debugLog('[TRACE] Too close to last trace (${distance.toStringAsFixed(1)}m < ${_gpsService.configuredMinDistance.toInt()}m), skipping');
+        _skipReason = 'too close';
+        _pingInProgress = false;
+        _scheduleNextTargetedPing();
+        return;
+      }
+    }
+
+    // Clear skip reason since we're proceeding
+    _skipReason = null;
+
+    // Signal "Sending..." to UI
+    _pingInProgress = true;
+    onPingProgressChanged?.call();
+
+    // Capture noise floor
+    final noiseFloor = _connection.lastNoiseFloor;
+    _pendingTxNoiseFloor = noiseFloor;
+
+    // Create trace log entry immediately
+    final traceEntry = TraceLogEntry(
+      timestamp: DateTime.now(),
+      latitude: position.latitude,
+      longitude: position.longitude,
+      targetRepeaterId: targetId,
+      noiseFloor: noiseFloor,
+      success: false, // Will be updated after window completes
+    );
+    onTracePing?.call(traceEntry);
+
+    debugLog('[TRACE] Sending trace to $targetId at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
+
+    try {
+      // Play transmit sound
+      _audioService?.playTransmitSound();
+
+      // Convert hex repeater ID to bytes
+      final repeaterIdBytes = Uint8List(_hopBytes);
+      for (int i = 0; i < _hopBytes && i * 2 + 2 <= targetId.length; i++) {
+        repeaterIdBytes[i] = int.parse(targetId.substring(i * 2, i * 2 + 2), radix: 16);
+      }
+
+      // Send trace path and get tag
+      final tag = await _connection.sendTracePath(repeaterIdBytes);
+
+      // Start tracking with the tag
+      _traceTracker?.startTracking(
+        tag: tag,
+        targetRepeaterId: targetId,
+        hopBytes: _hopBytes,
+        windowDuration: _rxListeningWindow,
+      );
+
+      // Start listening window countdown display
+      _discoveryWindowCountdown.start(_rxListeningWindow.inMilliseconds);
+
+      // Clear pingInProgress now that trace window is active
+      _pingInProgress = false;
+
+      // Update last targeted position for 25m check
+      _lastTargetedPosition = position;
+
+    } catch (e) {
+      _pingInProgress = false;
+      debugError('[TRACE] Failed to send trace: $e');
+      _scheduleNextTargetedPing();
+    }
+  }
+
+  /// Handle trace window completion
+  void _handleTraceWindowComplete(TraceResult? result) {
+    _discoveryWindowCountdown.stop();
+    final position = _lastTargetedPosition;
+    final targetId = _targetRepeaterId ?? '';
+
+    if (result != null && result.success && position != null) {
+      debugLog('[TRACE] Trace successful: localSnr=${result.localSnr}, remoteSnr=${result.remoteSnr}');
+
+      // Queue to API (only successful traces)
+      _apiQueue.enqueueTrace(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        repeaterId: targetId,
+        localSnr: result.localSnr,
+        localRssi: result.localRssi,
+        remoteSnr: result.remoteSnr,
+        timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        externalAntenna: getExternalAntenna?.call() ?? false,
+        noiseFloor: _pendingTxNoiseFloor,
+      );
+
+      // Update stats
+      _stats = _stats.copyWith(traceCount: _stats.traceCount + 1);
+      onStatsUpdated?.call(_stats);
+
+      // Play receive sound for successful trace
+      _audioService?.playReceiveSound();
+    } else {
+      debugLog('[TRACE] Trace failed: no response from $targetId');
+      // Failed traces are NOT posted to API (local visual only)
+    }
+
+    // Notify for noise floor graph and log updates
+    onTraceWindowComplete?.call(result);
+
+    _scheduleNextTargetedPing();
+  }
+
+  /// Schedule next targeted ping after interval
+  void _scheduleNextTargetedPing() {
+    if (!_autoPingEnabled || !_targetedModeEnabled) {
+      debugLog('[TRACE] Not in targeted mode, not scheduling next trace');
+      return;
+    }
+
+    _targetedTimer?.cancel();
+    _targetedTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
+      debugLog('[TRACE] Targeted ping timer fired');
+      if (_autoPingEnabled && _targetedModeEnabled) {
+        if (_pingInProgress) {
+          debugLog('[TRACE] Ping already in progress, skipping');
+          return;
+        }
+        _skipReason = null;
+        _sendTargetedPing();
+      }
+    });
+
+    // Notify callback for countdown display
+    onAutoPingScheduled?.call(_autoPingIntervalMs, _skipReason);
+
+    debugLog('[TRACE] Next targeted ping scheduled in ${_autoPingIntervalMs}ms');
+  }
+
   /// Stop any active TX echo tracking window
   /// Called when disabling auto mode to prevent late timer callbacks from
   /// triggering pings during cooldown (race condition fix)
@@ -1253,6 +1527,7 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
     _stopDiscoveryMode();
+    _stopTargetedMode();
     _wakelockService.dispose();
   }
 }
