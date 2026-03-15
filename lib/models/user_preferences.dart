@@ -73,6 +73,9 @@ class UserPreferences {
   /// Discovery drop: count failed discoveries as failed pings and report to API
   final bool discDropEnabled;
 
+  /// Delete wardriving channel from radio on disconnect
+  final bool deleteChannelOnDisconnect;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -98,6 +101,7 @@ class UserPreferences {
     this.disableRssiFilter = false,
     this.anonymousMode = false,
     this.discDropEnabled = false,
+    this.deleteChannelOnDisconnect = true,
   });
 
   /// Create from JSON (for persistence)
@@ -127,6 +131,7 @@ class UserPreferences {
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
+      deleteChannelOnDisconnect: (json['deleteChannelOnDisconnect'] as bool?) ?? true,
     );
   }
 
@@ -157,6 +162,7 @@ class UserPreferences {
       'disableRssiFilter': disableRssiFilter,
       'anonymousMode': anonymousMode,
       'discDropEnabled': discDropEnabled,
+      'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
     };
   }
 
@@ -186,6 +192,7 @@ class UserPreferences {
     bool? disableRssiFilter,
     bool? anonymousMode,
     bool? discDropEnabled,
+    bool? deleteChannelOnDisconnect,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -212,6 +219,7 @@ class UserPreferences {
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
+      deleteChannelOnDisconnect: deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
     );
   }
 
@@ -263,7 +271,8 @@ class UserPreferences {
         other.mapRotationLocked == mapRotationLocked &&
         other.disableRssiFilter == disableRssiFilter &&
         other.anonymousMode == anonymousMode &&
-        other.discDropEnabled == discDropEnabled;
+        other.discDropEnabled == discDropEnabled &&
+        other.deleteChannelOnDisconnect == deleteChannelOnDisconnect;
   }
 
   @override
@@ -292,6 +301,7 @@ class UserPreferences {
       disableRssiFilter,
       anonymousMode,
       discDropEnabled,
+      deleteChannelOnDisconnect,
     ]);
   }
 

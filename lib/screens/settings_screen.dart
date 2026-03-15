@@ -257,6 +257,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
 
+          // Delete Channel on Disconnect Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.delete_sweep),
+            title: const Text('Delete Channel on Disconnect'),
+            subtitle: const Text('Remove #wardriving channel from radio when disconnecting'),
+            value: prefs.deleteChannelOnDisconnect,
+            onChanged: (value) {
+              appState.updatePreferences(prefs.copyWith(deleteChannelOnDisconnect: value));
+            },
+          ),
+
           // Disable RSSI Filter Toggle
           SwitchListTile(
             secondary: const Icon(Icons.shield_outlined),
