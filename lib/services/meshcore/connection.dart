@@ -17,12 +17,14 @@ class DeviceQueryResponse {
   final int protocolVersion;
   final String manufacturer;
   final String? firmwareBuildDate; // Added in protocol v8
+  final String? firmwareVersionString; // e.g. "v1.14.0-9f1a3ea" (v7+, 20-byte C-string)
   final int? pathHashMode; // 0=1-byte, 1=2-byte, 2=3-byte (null if old firmware, v10+)
 
   const DeviceQueryResponse({
     required this.protocolVersion,
     required this.manufacturer,
     this.firmwareBuildDate,
+    this.firmwareVersionString,
     this.pathHashMode,
   });
 }
@@ -454,10 +456,12 @@ class MeshCoreConnection {
 
       // Parse additional fields from v9+ firmware
       int? pathHashMode;
+      String? firmwareVersionString;
       if (reader.remainingBytesCount > 0) {
-        // FIRMWARE_VERSION: 20 bytes (skip)
+        // FIRMWARE_VERSION: 20-byte null-terminated C-string
         if (reader.remainingBytesCount >= 20) {
-          reader.readBytes(20); // firmware version string
+          firmwareVersionString = reader.readCString(20);
+          debugLog('[CONN] Firmware version string: $firmwareVersionString');
         }
 
         // client_repeat: 1 byte (v9+, skip)
@@ -479,6 +483,7 @@ class MeshCoreConnection {
         protocolVersion: firmwareVer,
         manufacturer: manufacturerModel,
         firmwareBuildDate: buildDate,
+        firmwareVersionString: firmwareVersionString,
         pathHashMode: pathHashMode,
       );
 
