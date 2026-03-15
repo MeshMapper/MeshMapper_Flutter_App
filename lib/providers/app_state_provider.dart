@@ -3702,11 +3702,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugError('[GEOFENCE] Zone status check failed: reason=$reason, message=$message');
 
         if (reason == 'gps_inaccurate') {
-          logError('GPS Accuracy Error\n$message');
-          _scheduleZoneCheckRetry(seconds: 5, error: message, reason: 'gps_inaccurate');
+          logError('GPS Accuracy Error\n$message', autoSwitch: false);
+          _zoneCheckError = message;
+          _zoneCheckErrorReason = 'gps_inaccurate';
+          notifyListeners();
         } else if (reason == 'gps_stale') {
-          logError('GPS Stale Error\n$message');
-          _scheduleZoneCheckRetry(seconds: 5, error: message, reason: 'gps_stale');
+          logError('GPS Stale Error\n$message', autoSwitch: false);
+          _zoneCheckError = message;
+          _zoneCheckErrorReason = 'gps_stale';
+          notifyListeners();
         } else if (reason == 'zone_disabled') {
           final errorMsg = _getErrorMessage(reason, message);
           logError(errorMsg);

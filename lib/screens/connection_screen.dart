@@ -998,6 +998,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationIcon = Icons.wifi_off;
       locationText = 'No Internet';
       locationColor = Colors.red;
+    // GPS error: show GPS issue indicator
+    } else if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
+               appState.zoneCheckErrorReason == 'gps_stale') {
+      locationIcon = Icons.gps_off;
+      locationText = 'GPS Unavailable';
+      locationColor = Colors.orange;
     // Show "Checking Zone..." whenever a zone check is in progress
     // This provides consistent UI feedback during both initial and re-checks
     } else if (appState.isCheckingZone) {
@@ -1393,7 +1399,36 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           );
         }
 
-        // Non-network errors — show simple error with countdown
+        // GPS errors — no auto-retry, show manual retry button
+        if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
+            appState.zoneCheckErrorReason == 'gps_stale') {
+          return Column(
+            children: [
+              _buildZoneStatusBar(context, appState),
+              Expanded(
+                child: _buildMessageContent(
+                  context: context,
+                  icon: Icons.gps_off,
+                  iconColor: Colors.orange.withValues(alpha: 0.7),
+                  title: appState.zoneCheckErrorReason == 'gps_inaccurate'
+                      ? 'GPS Accuracy Error'
+                      : 'GPS Stale Error',
+                  message: '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
+                  action: FilledButton.icon(
+                    onPressed: () => appState.checkZoneStatus(),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Retry Zone Check'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+
+        // Other non-network errors — show simple error with countdown
         return Column(
           children: [
             _buildZoneStatusBar(context, appState),
