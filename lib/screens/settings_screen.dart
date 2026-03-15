@@ -423,15 +423,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           // Offline Sessions
-          if (appState.offlineSessions.isNotEmpty) ...[
-            _buildSectionHeader(context, 'Offline Sessions'),
+          _buildSectionHeader(context, 'Offline Sessions'),
+          if (appState.offlineSessions.isEmpty)
+            ListTile(
+              leading: Icon(Icons.cloud_off, color: Colors.grey.shade400),
+              title: Text(
+                'No offline sessions stored',
+                style: TextStyle(color: Colors.grey.shade500),
+              ),
+              subtitle: Text(
+                'Sessions recorded in offline mode will appear here for upload',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+              ),
+            )
+          else
             ...appState.offlineSessions.map((session) => _OfflineSessionTile(
               session: session,
               onUpload: () => _uploadOfflineSession(context, appState, session.filename),
               onDelete: () => _confirmDeleteOfflineSession(context, appState, session.filename),
               onDownload: () => _downloadOfflineSession(context, appState, session.filename),
             )),
-          ],
 
           const Divider(),
 

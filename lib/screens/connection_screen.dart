@@ -75,58 +75,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
-
-    // Build FAB for scanning - show Cancel during scan, Scan when idle
-    // Hide FAB entirely during maintenance mode (maintenance UI has its own buttons)
-    // Hide FAB when Bluetooth is off (shows full-screen message instead)
-    // Hide FAB during auto-reconnect
-    Widget? fab;
-    if (appState.isScanning) {
-      // Show Cancel FAB during active scan
-      fab = isLandscape
-          ? FloatingActionButton.small(
-              onPressed: () => appState.stopScan(),
-              backgroundColor: Colors.red,
-              child: const Icon(Icons.close),
-            )
-          : FloatingActionButton.extended(
-              onPressed: () => appState.stopScan(),
-              icon: const Icon(Icons.close),
-              label: const Text('Cancel'),
-              backgroundColor: Colors.red,
-            );
-    } else if (appState.connectionStep == ConnectionStep.disconnected &&
-        !appState.isAutoReconnecting &&
-        (!appState.maintenanceMode || appState.offlineMode) &&
-        !appState.isBluetoothOff) {
-      // Offline mode bypasses both zone and maintenance checks
-      final canScan = appState.offlineMode || appState.inZone == true;
-      fab = isLandscape
-          ? FloatingActionButton.small(
-              onPressed: canScan ? () => appState.startScan() : null,
-              backgroundColor: canScan ? null : Colors.grey,
-              child: const Icon(Icons.bluetooth_searching),
-            )
-          : FloatingActionButton.extended(
-              onPressed: canScan ? () => appState.startScan() : null,
-              icon: const Icon(Icons.bluetooth_searching),
-              label: Text(appState.offlineMode
-                  ? 'Scan'
-                  : appState.gpsStatus == GpsStatus.disabled
-                      ? 'GPS Disabled'
-                      : appState.gpsStatus == GpsStatus.permissionDenied
-                          ? 'GPS Required'
-                          : appState.isCheckingZone
-                              ? 'Checking Zone...'
-                              : appState.inZone == true
-                                  ? 'Scan'
-                                  : appState.inZone == false
-                                      ? 'Outside Zone'
-                                      : 'Checking Zone...'),
-              backgroundColor: canScan ? null : Colors.grey,
-            );
-    }
 
     return Scaffold(
       appBar: AppBar(
@@ -134,26 +82,34 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
         automaticallyImplyLeading: false,
       ),
       body: _buildBody(context, appState),
-      floatingActionButton: fab,
     );
   }
 
   Widget _buildBody(BuildContext context, AppStateProvider appState) {
-    // Show reconnecting UI
+    // Reconnecting and connection progress don't show the zone bar or bottom bar
     if (appState.connectionStep == ConnectionStep.reconnecting) {
       return _buildReconnectingView(context, appState);
     }
-
-    // Show connection progress
     if (appState.connectionStep != ConnectionStep.disconnected &&
         appState.connectionStep != ConnectionStep.connected &&
         appState.connectionStep != ConnectionStep.error) {
       return _buildConnectionProgress(context, appState);
     }
 
+    // All other states: zone bar top, content middle, action bar bottom
+    return Column(
+      children: [
+        _buildZoneStatusBar(context, appState),
+        Expanded(child: _buildStateContent(context, appState)),
+        _buildBottomBar(context, appState),
+      ],
+    );
+  }
+
+  /// Routes to the correct sub-view (zone bar is already rendered above)
+  Widget _buildStateContent(BuildContext context, AppStateProvider appState) {
     // Show connected state
     if (appState.isConnected) {
-      // Show path hash mode warning popup if pending
       final pathWarning = appState.pendingPathHashWarning;
       if (pathWarning != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -172,6 +128,99 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
     // Show device list
     return _buildDeviceList(context, appState);
+  }
+
+  /// Persistent bottom action bar: offline toggle + scan/cancel/disconnect
+  Widget _buildBottomBar(BuildContext context, AppStateProvider appState) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      child: Row(
+        children: [
+          const Expanded(child: OfflineModeToggle()),
+          const SizedBox(width: 12),
+          Expanded(child: _buildActionButton(context, appState)),
+        ],
+      ),
+    );
+  }
+
+  /// The right-side action button: Scan, Cancel, or Disconnect
+  Widget _buildActionButton(BuildContext context, AppStateProvider appState) {
+    if (appState.isConnected) {
+      // Disconnect
+      return _buildBottomButton(
+        icon: Icons.bluetooth_disabled,
+        label: 'Disconnect',
+        color: Colors.red,
+        onPressed: () async => await appState.disconnect(),
+      );
+    }
+
+    if (appState.isScanning) {
+      // Cancel scan
+      return _buildBottomButton(
+        icon: Icons.close,
+        label: 'Cancel',
+        color: Colors.red,
+        onPressed: () => appState.stopScan(),
+      );
+    }
+
+    // Scan — disabled when can't scan
+    final canScan = appState.connectionStep == ConnectionStep.disconnected &&
+        !appState.isAutoReconnecting &&
+        (!appState.maintenanceMode || appState.offlineMode) &&
+        !appState.isBluetoothOff &&
+        (appState.offlineMode || appState.inZone == true);
+
+    return _buildBottomButton(
+      icon: Icons.bluetooth_searching,
+      label: 'Scan',
+      color: Theme.of(context).colorScheme.primary,
+      onPressed: canScan ? () => appState.startScan() : null,
+    );
+  }
+
+  /// Styled button matching OfflineModeToggle shape
+  Widget _buildBottomButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    VoidCallback? onPressed,
+  }) {
+    final enabled = onPressed != null;
+    final effectiveColor = enabled ? color : Colors.grey;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: effectiveColor.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: effectiveColor.withValues(alpha: 0.4)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 18, color: effectiveColor),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: effectiveColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildConnectionProgress(BuildContext context, AppStateProvider appState) {
@@ -259,7 +308,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     final deviceName = appState.displayDeviceName ?? 'Unknown';
 
     // Extract version from firmware version string (v7+), fall back to manufacturer string
-    // Supports: "v1.14.0-9f1a3ea" → "1.14.0", "nightly-9f1a3ea" → "nightly-9f1a3ea"
     String? version;
     final fwString = appState.firmwareVersionString;
     if (fwString != null && fwString.isNotEmpty) {
@@ -284,117 +332,104 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       }
     }
 
-    // Use shortName from device model if available, otherwise fall back to manufacturer string
     final hardware = appState.deviceModel?.shortName ?? appState.manufacturerString ?? 'Unknown';
-
+    final platform = appState.deviceModel?.platform;
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final prefs = appState.preferences;
+    final isAutoMode = appState.autoPingEnabled;
+    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
 
-    // Build device info card
-    final deviceInfoCard = Card(
+    // Compact device summary card
+    final deviceSummaryCard = Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Header: BT icon + name/status
             Row(
               children: [
-                const Icon(
-                  Icons.bluetooth_connected,
-                  color: Colors.green,
-                  size: 28,
-                ),
-                const SizedBox(width: 12),
+                const Icon(Icons.bluetooth_connected, color: Colors.green, size: 20),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Connected',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: Colors.green,
-                              fontWeight: FontWeight.bold,
-                            ),
+                        deviceName,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                       Text(
-                        deviceName,
-                        style: Theme.of(context).textTheme.bodyLarge,
+                        'Connected',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.green,
+                        ),
                       ),
                     ],
                   ),
                 ),
               ],
             ),
-            const Divider(height: 20),
-            _buildInfoRow('Hardware', hardware),
-            _buildInfoRow('Version', version ?? 'Unknown'),
-            if (appState.deviceModel != null)
-              _buildInfoRow('Platform', appState.deviceModel!.platform),
-            if (appState.devicePublicKey != null)
+            const SizedBox(height: 8),
+
+            // Detail chips: hardware, version, platform
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                _buildDetailChip(context, Icons.memory, hardware),
+                if (version != null) _buildDetailChip(context, Icons.code, version),
+                if (platform != null) _buildDetailChip(context, Icons.developer_board, platform),
+              ],
+            ),
+
+            // Power level row
+            const SizedBox(height: 4),
+            _buildPowerRow(context, appState, isPowerSet, isAutoMode, prefs),
+
+            // Public key row
+            if (appState.devicePublicKey != null) ...[
+              const SizedBox(height: 8),
               _buildPublicKeyRow(context, appState.devicePublicKey!),
-            if (appState.authType != null && !appState.offlineMode)
+            ],
+
+            // Registered via row
+            if (appState.authType != null && !appState.offlineMode) ...[
+              const SizedBox(height: 4),
               _buildAuthTypeRow(context, appState.authType!),
+            ],
           ],
         ),
       ),
     );
 
-    // Build disconnect button
-    final disconnectButton = ElevatedButton.icon(
-      onPressed: () async {
-        await appState.disconnect();
-      },
-      icon: const Icon(Icons.bluetooth_disabled),
-      label: const Text('Disconnect'),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: Colors.red,
-        foregroundColor: Colors.white,
-      ),
+    // Compact channels card
+    final channelsCard = RegionalConfigCard(
+      zoneName: appState.offlineMode ? null : appState.zoneName,
+      zoneCode: appState.offlineMode ? null : appState.zoneCode,
+      channels: appState.offlineMode ? [] : appState.regionalChannels,
+      scope: appState.offlineMode ? null : appState.scope,
+      isOfflineMode: appState.offlineMode,
+      compact: true,
     );
 
     if (isLandscape) {
-      // Landscape: two-column layout
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Left column: device info + disconnect
               Expanded(
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: SingleChildScrollView(
-                        child: deviceInfoCard,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: disconnectButton,
-                    ),
-                  ],
-                ),
+                child: SingleChildScrollView(child: deviceSummaryCard),
               ),
               const SizedBox(width: 12),
-              // Right column: power + regional config
               Expanded(
-                child: SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      _buildPowerLevelCard(context, appState),
-                      const SizedBox(height: 12),
-                      RegionalConfigCard(
-                        zoneName: appState.offlineMode ? null : appState.zoneName,
-                        zoneCode: appState.offlineMode ? null : appState.zoneCode,
-                        channels: appState.offlineMode ? [] : appState.regionalChannels,
-                        scope: appState.offlineMode ? null : appState.scope,
-                        isOfflineMode: appState.offlineMode,
-                      ),
-                    ],
-                  ),
-                ),
+                child: SingleChildScrollView(child: channelsCard),
               ),
             ],
           ),
@@ -402,77 +437,109 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       );
     }
 
-    // Portrait: vertical layout
-    return Column(
-      children: [
-        _buildZoneStatusBar(context, appState),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Row(
-            children: [
-              const Expanded(child: OfflineModeToggle()),
-              const SizedBox(width: 4),
-              IconButton(
-                icon: Icon(
-                  Icons.info_outline,
-                  size: 20,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-                tooltip: 'About Offline Mode',
-                onPressed: () => _showOfflineModeInfo(context),
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              deviceInfoCard,
-              const SizedBox(height: 16),
-              _buildPowerLevelCard(context, appState),
-              const SizedBox(height: 16),
-              RegionalConfigCard(
-                zoneName: appState.offlineMode ? null : appState.zoneName,
-                zoneCode: appState.offlineMode ? null : appState.zoneCode,
-                channels: appState.offlineMode ? [] : appState.regionalChannels,
-                scope: appState.offlineMode ? null : appState.scope,
-                isOfflineMode: appState.offlineMode,
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: SizedBox(
-            width: double.infinity,
-            child: disconnectButton,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value) {
+    // Portrait: compact vertical layout (bottom bar provided by _buildBody)
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SizedBox(
-            width: 120,
-            child: Text(
-              label,
-              style: const TextStyle(fontWeight: FontWeight.w500),
-            ),
-          ),
-          Expanded(child: Text(value)),
+          deviceSummaryCard,
+          const SizedBox(height: 12),
+          channelsCard,
         ],
       ),
     );
   }
+
+  /// Power level row matching Registered via / Public Key format
+  Widget _buildPowerRow(
+    BuildContext context,
+    AppStateProvider appState,
+    bool isPowerSet,
+    bool isAutoMode,
+    UserPreferences prefs,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: InkWell(
+        onTap: isAutoMode ? null : () => _showPowerLevelSelector(context, appState),
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 120,
+                child: Text(
+                  'Power Level',
+                  style: TextStyle(fontWeight: FontWeight.w500),
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.bolt, size: 16, color: isPowerSet ? Colors.amber.shade700 : Colors.orange),
+                  const SizedBox(width: 4),
+                  Text(
+                    isPowerSet ? prefs.powerLevelDisplay : 'Unknown - tap to set',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: isPowerSet ? null : Colors.orange,
+                    ),
+                  ),
+                  if (prefs.autoPowerSet) ...[
+                    const SizedBox(width: 4),
+                    const Icon(Icons.auto_awesome, size: 14, color: Colors.green),
+                    const SizedBox(width: 2),
+                    const Text(
+                      'Auto',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.green,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                  if (!isAutoMode) ...[
+                    const SizedBox(width: 4),
+                    const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Small detail chip with icon + text
+  Widget _buildDetailChip(BuildContext context, IconData icon, String text) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 11,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+
 
   Widget _buildPublicKeyRow(BuildContext context, String publicKey) {
     // Show truncated key for display (first 8 + ... + last 8)
@@ -593,32 +660,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  void _showOfflineModeInfo(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.cloud_off, color: Colors.orange, size: 22),
-            SizedBox(width: 8),
-            Text('Offline Mode'),
-          ],
-        ),
-        content: const Text(
-          'Save pings locally instead of uploading immediately. Useful when you have poor cell connectivity or the API is in maintenance.\n\n'
-          'Data is stored on your device and can be uploaded later from the Settings tab when connectivity is restored.',
-          style: TextStyle(fontSize: 14, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Got it'),
-          ),
-        ],
       ),
     );
   }
@@ -787,50 +828,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildPowerLevelCard(BuildContext context, AppStateProvider appState) {
-    final prefs = appState.preferences;
-    final isAutoMode = appState.autoPingEnabled;
-    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
-
-    return Card(
-      child: ListTile(
-        leading: const Icon(Icons.power),
-        title: const Text('Power Level'),
-        subtitle: Builder(
-          builder: (context) {
-            if (!isPowerSet) {
-              return Text(
-                'Unknown hardware - select power',
-                style: TextStyle(color: Colors.orange.shade700),
-              );
-            }
-            return Row(
-              children: [
-                Text(prefs.powerLevelDisplay),
-                if (prefs.autoPowerSet) ...[
-                  const SizedBox(width: 8),
-                  const Icon(Icons.auto_awesome, size: 14, color: Colors.green),
-                  const SizedBox(width: 4),
-                  const Text(
-                    'Auto',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.green,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ],
-            );
-          },
-        ),
-        trailing: const Icon(Icons.chevron_right),
-        enabled: !isAutoMode,
-        onTap: isAutoMode ? null : () => _showPowerLevelSelector(context, appState),
       ),
     );
   }
@@ -1233,103 +1230,89 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
     // Show maintenance message (takes priority over zone checks)
     if (appState.maintenanceMode && !appState.offlineMode) {
-      return Column(
-        children: [
-          _buildZoneStatusBar(context, appState),
-          Expanded(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
+      return Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.engineering,
+                size: 64,
+                color: Colors.orange.withValues(alpha: 0.7),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Maintenance Mode',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                appState.maintenanceMessage ?? 'Service is temporarily unavailable.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              const SizedBox(height: 32),
+              // Primary action: Enable Offline Mode
+              FilledButton.icon(
+                onPressed: () => appState.setOfflineMode(true),
+                icon: const Icon(Icons.cloud_off),
+                label: const Text('Enable Offline Mode'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+              ),
+              if (appState.maintenanceUrl != null) ...[
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () => _launchMaintenanceUrl(appState.maintenanceUrl!),
+                  icon: const Icon(Icons.open_in_new, size: 18),
+                  label: const Text('More Info'),
+                ),
+              ],
+              const SizedBox(height: 32),
+              // Info note at bottom
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                ),
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      Icons.engineering,
-                      size: 64,
-                      color: Colors.orange.withValues(alpha: 0.7),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Maintenance Mode',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      appState.maintenanceMessage ?? 'Service is temporarily unavailable.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey.shade600,
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                    // Primary action: Enable Offline Mode
-                    FilledButton.icon(
-                      onPressed: () => appState.setOfflineMode(true),
-                      icon: const Icon(Icons.cloud_off),
-                      label: const Text('Enable Offline Mode'),
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                      ),
-                    ),
-                    if (appState.maintenanceUrl != null) ...[
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: () => _launchMaintenanceUrl(appState.maintenanceUrl!),
-                        icon: const Icon(Icons.open_in_new, size: 18),
-                        label: const Text('More Info'),
-                      ),
-                    ],
-                    const SizedBox(height: 32),
-                    // Info note at bottom
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              'Wardrive offline now, upload when service is restored.',
-                              style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
-                            ),
-                          ),
-                        ],
+                    Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        'Wardrive offline now, upload when service is restored.',
+                        style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
                       ),
                     ),
                   ],
                 ),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
       );
     }
 
     // Show Bluetooth off message (takes priority over zone checks)
     if (appState.isBluetoothOff) {
-      return Column(
-        children: [
-          _buildZoneStatusBar(context, appState),
-          Expanded(
-            child: _buildMessageContent(
-              context: context,
-              icon: Icons.bluetooth_disabled,
-              iconColor: Colors.red.withValues(alpha: 0.7),
-              title: 'Bluetooth is Off',
-              message: 'Please enable Bluetooth to scan for MeshCore devices.',
-            ),
-          ),
-        ],
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.bluetooth_disabled,
+        iconColor: Colors.red.withValues(alpha: 0.7),
+        title: 'Bluetooth is Off',
+        message: 'Please enable Bluetooth to scan for MeshCore devices.',
       );
     }
 
@@ -1347,24 +1330,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
         message += '\n\nNearest zone is $zoneDisplay, $dist away.';
       }
 
-      return Column(
-        children: [
-          _buildZoneStatusBar(context, appState),
-          Expanded(
-            child: _buildMessageContent(
-              context: context,
-              icon: Icons.public_off,
-              iconColor: Colors.orange.withValues(alpha: 0.7),
-              title: 'Region Not Available',
-              message: message,
-              action: OutlinedButton.icon(
-                onPressed: () => _launchOnboardingUrl(),
-                icon: const Icon(Icons.open_in_new, size: 18),
-                label: const Text('Request Region Onboarding'),
-              ),
-            ),
-          ),
-        ],
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.public_off,
+        iconColor: Colors.orange.withValues(alpha: 0.7),
+        title: 'Region Not Available',
+        message: message,
+        action: OutlinedButton.icon(
+          onPressed: () => _launchOnboardingUrl(),
+          icon: const Icon(Icons.open_in_new, size: 18),
+          label: const Text('Request Region Onboarding'),
+        ),
       );
     }
 
@@ -1375,158 +1351,129 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
         // Network error — show offline mode option (matches maintenance pattern)
         if (appState.zoneCheckErrorReason == 'network') {
-          return Column(
-            children: [
-              _buildZoneStatusBar(context, appState),
-              Expanded(
-                child: Center(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
+          return Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.wifi_off,
+                    size: 64,
+                    color: Colors.deepOrange.withValues(alpha: 0.7),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No Internet Connection',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Unable to reach MeshMapper. Check your connection, or wardrive offline.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    countdown > 0
+                        ? 'Retrying in ${countdown}s...'
+                        : 'Retrying...',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey.shade500,
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  FilledButton.icon(
+                    onPressed: () => appState.setOfflineMode(true),
+                    icon: const Icon(Icons.cloud_off),
+                    label: const Text('Enable Offline Mode'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                    ),
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          Icons.wifi_off,
-                          size: 64,
-                          color: Colors.deepOrange.withValues(alpha: 0.7),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'No Internet Connection',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Unable to reach MeshMapper. Check your connection, or wardrive offline.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          countdown > 0
-                              ? 'Retrying in ${countdown}s...'
-                              : 'Retrying...',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.grey.shade500,
-                          ),
-                        ),
-                        const SizedBox(height: 32),
-                        FilledButton.icon(
-                          onPressed: () => appState.setOfflineMode(true),
-                          icon: const Icon(Icons.cloud_off),
-                          label: const Text('Enable Offline Mode'),
-                          style: FilledButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          ),
-                        ),
-                        const SizedBox(height: 32),
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.blue.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
-                              const SizedBox(width: 8),
-                              Flexible(
-                                child: Text(
-                                  'Wardrive offline now, upload when service is restored.',
-                                  style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
-                                ),
-                              ),
-                            ],
+                        Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            'Wardrive offline now, upload when service is restored.',
+                            style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
                           ),
                         ),
                       ],
                     ),
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
           );
         }
 
         // GPS errors — no auto-retry, show manual retry button
         if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
             appState.zoneCheckErrorReason == 'gps_stale') {
-          return Column(
-            children: [
-              _buildZoneStatusBar(context, appState),
-              Expanded(
-                child: _buildMessageContent(
-                  context: context,
-                  icon: Icons.gps_off,
-                  iconColor: Colors.orange.withValues(alpha: 0.7),
-                  title: appState.zoneCheckErrorReason == 'gps_inaccurate'
-                      ? 'GPS Accuracy Error'
-                      : 'GPS Stale Error',
-                  message: '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
-                  action: FilledButton.icon(
-                    onPressed: () => appState.checkZoneStatus(),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry Zone Check'),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    ),
-                  ),
-                ),
+          return _buildMessageContent(
+            context: context,
+            icon: Icons.gps_off,
+            iconColor: Colors.orange.withValues(alpha: 0.7),
+            title: appState.zoneCheckErrorReason == 'gps_inaccurate'
+                ? 'GPS Accuracy Error'
+                : 'GPS Stale Error',
+            message: '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
+            action: FilledButton.icon(
+              onPressed: () => appState.checkZoneStatus(),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry Zone Check'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               ),
-            ],
+            ),
           );
         }
 
         // Other non-network errors — show simple error with countdown
-        return Column(
-          children: [
-            _buildZoneStatusBar(context, appState),
-            Expanded(
-              child: _buildMessageContent(
-                context: context,
-                icon: Icons.cloud_off,
-                iconColor: Colors.orange.withValues(alpha: 0.7),
-                title: 'Zone Check Failed',
-                message: countdown > 0
-                    ? '${appState.zoneCheckError}\n\nChecking again in ${countdown}s...'
-                    : '${appState.zoneCheckError}\n\nRetrying...',
-              ),
-            ),
-          ],
+        return _buildMessageContent(
+          context: context,
+          icon: Icons.cloud_off,
+          iconColor: Colors.orange.withValues(alpha: 0.7),
+          title: 'Zone Check Failed',
+          message: countdown > 0
+              ? '${appState.zoneCheckError}\n\nChecking again in ${countdown}s...'
+              : '${appState.zoneCheckError}\n\nRetrying...',
         );
       }
 
       // Zone check in progress or waiting for GPS
-      return Column(
-        children: [
-          _buildZoneStatusBar(context, appState),
-          Expanded(
-            child: _buildMessageContent(
-              context: context,
-              icon: Icons.location_searching,
-              iconColor: Colors.blue.withValues(alpha: 0.7),
-              title: 'Checking MeshMapper Zone...',
-              message: 'Verifying your location with MeshMapper',
-            ),
-          ),
-        ],
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.location_searching,
+        iconColor: Colors.blue.withValues(alpha: 0.7),
+        title: 'Checking MeshMapper Zone...',
+        message: 'Verifying your location with MeshMapper',
       );
     }
 
     if (appState.isScanning) {
       return Column(
         children: [
-          _buildZoneStatusBar(context, appState),
           const LinearProgressIndicator(),
           Expanded(child: _buildDeviceListView(context, appState, canConnect: canConnect)),
         ],
@@ -1537,12 +1484,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       // Show remembered device option if available (mobile only)
       final remembered = appState.rememberedDevice;
       if (!kIsWeb && remembered != null) {
-        return Column(
-          children: [
-            _buildZoneStatusBar(context, appState),
-            Expanded(child: _buildRememberedDeviceView(context, appState, remembered, canConnect: canConnect)),
-          ],
-        );
+        return _buildRememberedDeviceView(context, appState, remembered, canConnect: canConnect);
       }
 
       // Show GPS disabled message when location services are off
@@ -1550,74 +1492,48 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
         // iOS doesn't allow opening Location Services directly, so no button on iOS
         final isIOS = !kIsWeb && Platform.isIOS;
 
-        return Column(
-          children: [
-            _buildZoneStatusBar(context, appState),
-            Expanded(
-              child: _buildMessageContent(
-                context: context,
-                icon: Icons.gps_off,
-                iconColor: Colors.red.withValues(alpha: 0.7),
-                title: 'Location Services Disabled',
-                message: 'Please enable Location Services to verify you\'re in an allowed zone.',
-                action: isIOS
-                    ? null
-                    : ElevatedButton.icon(
-                        onPressed: () => Geolocator.openLocationSettings(),
-                        icon: const Icon(Icons.settings),
-                        label: const Text('Open Location Settings'),
-                      ),
-              ),
-            ),
-          ],
+        return _buildMessageContent(
+          context: context,
+          icon: Icons.gps_off,
+          iconColor: Colors.red.withValues(alpha: 0.7),
+          title: 'Location Services Disabled',
+          message: 'Please enable Location Services to verify you\'re in an allowed zone.',
+          action: isIOS
+              ? null
+              : ElevatedButton.icon(
+                  onPressed: () => Geolocator.openLocationSettings(),
+                  icon: const Icon(Icons.settings),
+                  label: const Text('Open Location Settings'),
+                ),
         );
       }
 
       // Show GPS permission required message when permissions are denied
       if (appState.gpsStatus == GpsStatus.permissionDenied) {
-        return Column(
-          children: [
-            _buildZoneStatusBar(context, appState),
-            Expanded(
-              child: _buildMessageContent(
-                context: context,
-                icon: Icons.location_off,
-                iconColor: Colors.orange.withValues(alpha: 0.7),
-                title: 'GPS Permission Required',
-                message: 'Location access is needed to verify you\'re in an allowed zone.',
-                action: ElevatedButton.icon(
-                  onPressed: () => _requestLocationPermission(appState),
-                  icon: const Icon(Icons.location_on),
-                  label: const Text('Enable Location'),
-                ),
-              ),
-            ),
-          ],
+        return _buildMessageContent(
+          context: context,
+          icon: Icons.location_off,
+          iconColor: Colors.orange.withValues(alpha: 0.7),
+          title: 'GPS Permission Required',
+          message: 'Location access is needed to verify you\'re in an allowed zone.',
+          action: ElevatedButton.icon(
+            onPressed: () => _requestLocationPermission(appState),
+            icon: const Icon(Icons.location_on),
+            label: const Text('Enable Location'),
+          ),
         );
       }
 
-      return Column(
-        children: [
-          _buildZoneStatusBar(context, appState),
-          Expanded(
-            child: _buildMessageContent(
-              context: context,
-              icon: Icons.bluetooth_searching,
-              iconColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
-              title: 'No devices found',
-              message: 'Tap Scan to search for MeshCore devices',
-            ),
-          ),
-        ],
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.bluetooth_searching,
+        iconColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+        title: 'No devices found',
+        message: 'Tap Scan to search for MeshCore devices',
       );
     }
 
-    return Column(
-      children: [
-        _buildZoneStatusBar(context, appState),
-        Expanded(child: _buildDeviceListView(context, appState, canConnect: canConnect)),
-      ],
-    );
+    return _buildDeviceListView(context, appState, canConnect: canConnect);
   }
 
   void _launchOnboardingUrl() async {
