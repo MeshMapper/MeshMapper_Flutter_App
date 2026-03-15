@@ -2240,7 +2240,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Delete wardriving channel FIRST, while BLE connection is still active
     // This prevents "GATT Server is disconnected" errors
-    await _meshCoreConnection?.deleteWardrivingChannelEarly();
+    if (_preferences.deleteChannelOnDisconnect) {
+      await _meshCoreConnection?.deleteWardrivingChannelEarly();
+    } else {
+      debugLog('[CHANNEL] Skipping channel deletion (user preference)');
+    }
 
     // Cleanup unified RX handler and TX tracker
     _logRxDataSubscription?.cancel();
