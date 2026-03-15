@@ -233,6 +233,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _reconnectTimer;
   Timer? _reconnectTimeoutTimer;
   Timer? _restoreAutoPingTimer;
+  Timer? _offlineAutoSaveTimer;
   bool _autoPingWasEnabled = false;
   AutoMode _autoModeBeforeReconnect = AutoMode.active;
   int _reconnectRestoreGeneration = 0;
@@ -283,6 +284,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
+    } else if (state == AppLifecycleState.paused) {
+      debugLog('[APP] App paused (backgrounded)');
+      // Save offline pings immediately on pause to prevent data loss if OS kills app
+      if (_preferences.offlineMode && _apiQueueService.offlinePingCount > 0) {
+        _autoSaveOfflinePings();
+      }
     }
   }
 
@@ -2260,6 +2267,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Stop RX wardriving if active (flushes batches to queue)
     _rxLogger?.stopWardriving(trigger: 'disconnect');
 
+    // Save offline pings before clearing queue (no-op if not in offline mode or no pings)
+    await _saveOfflineSession();
+
     // ALWAYS START FRESH - clear any queued data on disconnect
     // Pings without a valid session cannot be uploaded later
     await _apiQueueService.clearOnDisconnect();
@@ -2703,6 +2713,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Offline mode ${enabled ? 'enabled' : 'disabled'}');
 
     if (enabled) {
+      // Start periodic auto-save to prevent data loss from app kill
+      _startOfflineAutoSaveTimer();
       // Clear zone data when entering offline mode
       _inZone = null;
       _currentZone = null;
@@ -2710,6 +2722,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _lastZoneCheckPosition = null;
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
     } else {
+      // Stop auto-save timer when leaving offline mode
+      _stopOfflineAutoSaveTimer();
       // Re-check zone status when exiting offline mode
       if (_currentPosition != null) {
         debugLog('[GEOFENCE] Re-checking zone status after offline mode disabled');
@@ -2761,6 +2775,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 5. Update preferences and queue service
       _preferences = _preferences.copyWith(offlineMode: true);
       _apiQueueService.offlineMode = true;
+
+      // 5b. Start periodic auto-save to prevent data loss from app kill
+      _startOfflineAutoSaveTimer();
 
       // 6. Clear zone data
       _inZone = null;
@@ -3052,8 +3069,46 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       deviceName: offlineDeviceName,
       contactUri: _offlineContactUri,
     );
+    _offlineSessionService.finalizeCurrentSession();
     debugLog('[APP] Saved offline session with ${pings.length} pings');
+    _stopOfflineAutoSaveTimer();
     notifyListeners();
+  }
+
+  /// Periodically auto-save offline pings to prevent data loss from app kill.
+  /// Uses a non-destructive snapshot so in-memory accumulation continues.
+  void _autoSaveOfflinePings() {
+    if (!_preferences.offlineMode || _apiQueueService.offlinePingCount == 0) return;
+
+    final pings = _apiQueueService.getOfflinePingsSnapshot();
+    if (pings.isEmpty) return;
+
+    final offlineDeviceName = _isAnonymousRenamed
+        ? _originalDeviceName
+        : (_meshCoreConnection?.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''));
+
+    _offlineSessionService.updateCurrentSession(
+      pings,
+      devicePublicKey: _devicePublicKey,
+      deviceName: offlineDeviceName,
+      contactUri: _offlineContactUri,
+    );
+  }
+
+  void _startOfflineAutoSaveTimer() {
+    _offlineAutoSaveTimer?.cancel();
+    _offlineAutoSaveTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      _autoSaveOfflinePings();
+    });
+    debugLog('[OFFLINE] Auto-save timer started (60s interval)');
+  }
+
+  void _stopOfflineAutoSaveTimer() {
+    if (_offlineAutoSaveTimer != null) {
+      _offlineAutoSaveTimer!.cancel();
+      _offlineAutoSaveTimer = null;
+      debugLog('[OFFLINE] Auto-save timer stopped');
+    }
   }
 
   /// Upload a stored offline session
@@ -4643,6 +4698,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimer?.cancel();
     _reconnectTimeoutTimer?.cancel();
     _restoreAutoPingTimer?.cancel();
+    _offlineAutoSaveTimer?.cancel();
     _tileRefreshTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
