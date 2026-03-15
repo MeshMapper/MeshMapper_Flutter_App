@@ -350,9 +350,7 @@ class AutoPingInterval {
   static const List<int> values = [fast, normal, slow];
 }
 
-/// Minimum ping distance options (meters)
+/// Minimum ping distance (meters)
 class MinPingDistance {
   static const int min = 25;
-
-  static const List<int> values = [25, 50, 75, 150];
 }
