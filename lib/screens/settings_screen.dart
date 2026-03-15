@@ -1201,9 +1201,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showRepeaterIdDialog(BuildContext context, AppStateProvider appState) {
-    final effectiveBytes = appState.effectiveHopBytes;
-    final maxHexChars = effectiveBytes * 2;
-    final hintText = 'F' * maxHexChars;
+    const maxHexChars = 6;
+    const hintText = 'FFFFFF';
 
     final controller = TextEditingController(
       text: appState.preferences.ignoreRepeaterId ?? '',
@@ -1217,15 +1216,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Enter the repeater ID of your CARpeater ($maxHexChars hex digits):'),
+            const Text('Enter the full 3-byte repeater ID (6 hex digits):'),
             const SizedBox(height: 16),
             TextField(
               controller: controller,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'CARpeater ID',
                 hintText: hintText,
                 prefixText: '0x',
-                border: const OutlineInputBorder(),
+                border: OutlineInputBorder(),
               ),
               maxLength: maxHexChars,
               textCapitalization: TextCapitalization.characters,
@@ -1242,7 +1241,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Multi-hop packets through your CARpeater will be stripped to report the underlying repeater with null signal data. Single-hop CARpeater packets are still dropped.',
+              'Enter all 6 hex digits of your CARpeater\'s ID. '
+              'The app will automatically truncate to match your region\'s hop byte size (1, 2, or 3 bytes). '
+              'Multi-hop packets through your CARpeater will be stripped to report the underlying repeater.',
               style: TextStyle(
                 fontSize: 12,
                 color: Colors.grey[600],
@@ -1258,9 +1259,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextButton(
             onPressed: () {
               final value = controller.text.trim().toUpperCase();
-              // Accept hex IDs of any valid even length (2, 4, or 6 chars)
               final isValidHex = value.isEmpty ||
-                  (value.length % 2 == 0 && value.length <= 6 &&
+                  (value.length == maxHexChars &&
                       RegExp(r'^[0-9A-F]+$').hasMatch(value));
 
               if (isValidHex) {
@@ -1274,7 +1274,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
                 Navigator.pop(context);
               } else {
-                AppToast.warning(context, 'Invalid hex value. Use $maxHexChars hex digits.');
+                AppToast.warning(context, 'Please enter exactly 6 hex digits (3-byte ID).');
               }
             },
             child: const Text('Save'),

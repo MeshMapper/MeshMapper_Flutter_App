@@ -125,7 +125,7 @@ class TxTracker {
       double? reportedSnr = metadata.snr;
       int? reportedRssi = metadata.rssi;
 
-      if (carpeaterPrefix != null && pathHex.toUpperCase() == carpeaterPrefix!.toUpperCase()) {
+      if (carpeaterPrefix != null && PacketValidator.isCarpeaterIdMatch(pathHex, carpeaterPrefix!)) {
         if (metadata.pathHashCount < 2) {
           debugLog('[TX LOG] CARpeater pass-through: single-hop, dropping');
           return false;

@@ -1168,14 +1168,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         txTracker: _txTracker,
         audioService: _audioService,
         disableRssiFilter: _preferences.disableRssiFilter,
+        hopBytes: effectiveHopBytes,
         shouldIgnoreRepeater: (String repeaterId) {
-          // Same filter as RxLogger - check user preferences for ignored repeater ID
-          // Uses startsWith() for prefix matching across different hop byte sizes
           final prefs = _preferences;
           if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
-            final ignored = prefs.ignoreRepeaterId!.toUpperCase();
-            final current = repeaterId.toUpperCase();
-            return current.startsWith(ignored) || ignored.startsWith(current);
+            return PacketValidator.isCarpeaterIdMatch(repeaterId, prefs.ignoreRepeaterId!);
           }
           return false;
         },

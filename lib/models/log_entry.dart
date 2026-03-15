@@ -201,7 +201,7 @@ class DiscLogEntry {
 
 /// Discovered node entry for log display
 class DiscoveredNodeEntry {
-  final String repeaterId;      // First 2 hex chars of pubkey (e.g., "77", "4E")
+  final String repeaterId;      // First N hex chars of pubkey based on hopBytes (e.g., "4E", "4E7A", "4E7A3B")
   final String nodeType;        // "REPEATER" or "ROOM"
   final double localSnr;        // SNR as seen by local device (dB)
   final int localRssi;          // RSSI as seen by local device (dBm)
