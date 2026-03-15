@@ -8,6 +8,7 @@ class RegionalConfigCard extends StatelessWidget {
   final List<String> channels;
   final String? scope;
   final bool isOfflineMode;
+  final bool compact;
 
   const RegionalConfigCard({
     super.key,
@@ -16,10 +17,15 @@ class RegionalConfigCard extends StatelessWidget {
     this.channels = const [],
     this.scope,
     this.isOfflineMode = false,
+    this.compact = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    if (compact) {
+      return _buildCompact(context);
+    }
+
     // When offline mode is enabled, show "-" for zone fields
     final displayZoneName = isOfflineMode ? '-' : (zoneName ?? 'Not configured');
     final displayZoneCode = isOfflineMode ? '-' : zoneCode;
@@ -108,6 +114,93 @@ class RegionalConfigCard extends StatelessWidget {
     );
   }
 
+  /// Compact mode: "Regional Settings" header, scope row, channel chips
+  Widget _buildCompact(BuildContext context) {
+    final displayZone = isOfflineMode ? null : zoneName;
+    final displayScope = isOfflineMode ? '-' : (scope ?? 'Global');
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Icon(
+                  Icons.public,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Regional Settings',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                if (displayZone != null)
+                  Text(
+                    displayZone,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // Scope row
+            _buildCompactRow(context, 'Scope', [
+              _buildChannelChip(context, displayScope, isDefault: true),
+            ]),
+            const SizedBox(height: 8),
+
+            // Channels row
+            _buildCompactRow(context, 'Channels', [
+              _buildChannelChip(context, 'Public', isDefault: true),
+              _buildChannelChip(context, '#wardriving', isDefault: true),
+              if (!isOfflineMode)
+                ...channels.map((c) => _buildChannelChip(context, c)),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Compact labeled row: small label on left, chips on right
+  Widget _buildCompactRow(BuildContext context, String label, List<Widget> chips) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 70,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: chips,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildInfoRow(BuildContext context, IconData icon, String label, String? value,
       {bool isOffline = false}) {
     return Row(
@@ -130,8 +223,12 @@ class RegionalConfigCard extends StatelessWidget {
   }
 
   Widget _buildChannelChip(BuildContext context, String name, {bool isDefault = false}) {
-    // Public channel doesn't use # prefix
+    // Public channel doesn't use # prefix; scope/plain values pass through as-is
     final displayName = name == 'Public' ? name : (name.startsWith('#') ? name : '#$name');
+    // If it doesn't look like a channel name, show raw value (e.g. scope "Global")
+    final isChannel = name.startsWith('#') || name == 'Public';
+    final label = isChannel ? displayName : name;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -146,11 +243,10 @@ class RegionalConfigCard extends StatelessWidget {
         ),
       ),
       child: Text(
-        displayName,
+        label,
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w500,
-          // Use onPrimaryContainer for proper contrast on primaryContainer background
           color: isDefault ? Colors.grey : Theme.of(context).colorScheme.onPrimaryContainer,
         ),
       ),
