@@ -36,6 +36,7 @@ class PingControls extends StatelessWidget {
     final isPingInProgress = appState.isPingInProgress; // True during entire ping + RX window (includes auto pings)
     final autoPingWaiting = appState.autoPingTimer.isRunning; // Waiting for next auto ping
     final autoPingRemaining = appState.autoPingTimer.remainingSec;
+    final autoPingSkipped = appState.autoPingTimer.skipReason != null; // Last ping was skipped (e.g. distance)
     final discoveryWindowActive = appState.discoveryWindowTimer.isRunning; // Discovery listening window countdown (Passive Mode)
     final discoveryWindowRemaining = appState.discoveryWindowTimer.remainingSec;
 
@@ -147,7 +148,7 @@ class PingControls extends StatelessWidget {
                                         : rxWindowActive
                                             ? 'Listening ${rxWindowRemaining}s'  // TX RX window
                                             : autoPingWaiting
-                                                ? 'Next ping ${autoPingRemaining}s'
+                                                ? (autoPingSkipped ? 'Skipped ${autoPingRemaining}s' : 'Next ping ${autoPingRemaining}s')
                                                 : hybridEnabled ? 'Hybrid Mode' : 'Active Mode')
                                 : rxWindowActive
                                     ? 'Cooldown ${rxWindowRemaining}s'
@@ -181,7 +182,7 @@ class PingControls extends StatelessWidget {
                     ? (discoveryWindowActive
                         ? 'Listening ${discoveryWindowRemaining}s'  // During discovery listening window
                         : autoPingWaiting
-                            ? 'Next Disc ${autoPingRemaining}s'  // Waiting for next discovery
+                            ? (autoPingSkipped ? 'Skipped ${autoPingRemaining}s' : 'Next Disc ${autoPingRemaining}s')  // Waiting for next discovery
                             : 'Passive Mode')  // Initial state before first discovery
                     : isTxModeRunning || isPendingDisable
                         ? 'Passive Mode'  // Just disabled when Active/Hybrid Mode is running or stopping
@@ -511,7 +512,9 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
       if (discoveryWindowActive) {
         statusText = 'Listening ${discoveryRemaining}s';
       } else if (autoPingWaiting) {
-        statusText = 'Next in ${autoPingRemaining}s';
+        statusText = appState.autoPingTimer.skipReason != null
+            ? 'Skipped ${autoPingRemaining}s'
+            : 'Next in ${autoPingRemaining}s';
       }
     }
 
@@ -677,6 +680,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     final isPingInProgress = appState.isPingInProgress;
     final autoPingWaiting = appState.autoPingTimer.isRunning;
     final autoPingRemaining = appState.autoPingTimer.remainingSec;
+    final autoPingSkipped = appState.autoPingTimer.skipReason != null;
     final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
     final discoveryWindowRemaining = appState.discoveryWindowTimer.remainingSec;
 
@@ -794,6 +798,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         cooldownActive: cooldownActive,
         cooldownRemaining: cooldownRemaining,
         isExpandedDuringCooldown: activeModeExpanded && cooldownActive,
+        isSkipped: autoPingSkipped,
         discoveryWindowActive: discoveryWindowActive,
         discoveryWindowRemaining: discoveryWindowRemaining,
       ),
@@ -827,6 +832,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         cooldownActive: cooldownActive,
         cooldownRemaining: cooldownRemaining,
         isExpandedDuringCooldown: passiveModeExpanded && cooldownActive,
+        isSkipped: autoPingSkipped,
       ),
       color: isPassiveModeRunning
           ? const Color(0xFF22C55E) // green-500
@@ -857,6 +863,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         cooldownActive: cooldownActive,
         cooldownRemaining: cooldownRemaining,
         isExpandedDuringCooldown: traceModeExpanded && cooldownActive,
+        isSkipped: autoPingSkipped,
       ),
       color: isTargetedRunning
           ? const Color(0xFF22C55E) // green-500
@@ -959,6 +966,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool cooldownActive,
     required int cooldownRemaining,
     required bool isExpandedDuringCooldown,
+    required bool isSkipped,
     bool discoveryWindowActive = false,
     int discoveryWindowRemaining = 0,
   }) {
@@ -971,7 +979,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       if (discoveryWindowActive) return showFullText ? 'Listening ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
       if (isPingInProgress && !rxWindowActive) return showFullText ? 'Sending...' : '...';
       if (rxWindowActive) return showFullText ? 'Listening ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
-      if (autoPingWaiting) return showFullText ? 'Waiting ${autoPingRemaining}s' : '${autoPingRemaining}s';
+      if (autoPingWaiting) return showFullText ? (isSkipped ? 'Skipped ${autoPingRemaining}s' : 'Waiting ${autoPingRemaining}s') : '${autoPingRemaining}s';
     }
     // Show cooldown if this button caused it
     if (cooldownActive && isExpandedDuringCooldown) {
@@ -992,10 +1000,11 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool cooldownActive,
     required int cooldownRemaining,
     required bool isExpandedDuringCooldown,
+    required bool isSkipped,
   }) {
     if (isPassiveModeRunning) {
       if (discoveryWindowActive) return showFullText ? 'Listening ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
-      if (autoPingWaiting) return showFullText ? 'Waiting ${autoPingRemaining}s' : '${autoPingRemaining}s';
+      if (autoPingWaiting) return showFullText ? (isSkipped ? 'Skipped ${autoPingRemaining}s' : 'Waiting ${autoPingRemaining}s') : '${autoPingRemaining}s';
     }
     // Show cooldown if this button caused it
     if (cooldownActive && isExpandedDuringCooldown) {
@@ -1016,10 +1025,11 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool cooldownActive,
     required int cooldownRemaining,
     required bool isExpandedDuringCooldown,
+    required bool isSkipped,
   }) {
     if (isTargetedRunning) {
       if (discoveryWindowActive) return showFullText ? 'Listening ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
-      if (autoPingWaiting) return showFullText ? 'Next in ${autoPingRemaining}s' : '${autoPingRemaining}s';
+      if (autoPingWaiting) return showFullText ? (isSkipped ? 'Skipped ${autoPingRemaining}s' : 'Next in ${autoPingRemaining}s') : '${autoPingRemaining}s';
       return showFullText ? 'Stop' : null;
     }
     // Show cooldown if this button caused it
