@@ -119,6 +119,61 @@ class RxLogEntry {
   }
 }
 
+/// Trace Log Entry (targeted zero-hop trace result)
+class TraceLogEntry {
+  final DateTime timestamp;
+  final double latitude;
+  final double longitude;
+  final String targetRepeaterId;
+  final int? noiseFloor;
+  final double? localSnr;
+  final double? remoteSnr;
+  final int? localRssi;
+  final bool success;
+
+  TraceLogEntry({
+    required this.timestamp,
+    required this.latitude,
+    required this.longitude,
+    required this.targetRepeaterId,
+    this.noiseFloor,
+    this.localSnr,
+    this.remoteSnr,
+    this.localRssi,
+    required this.success,
+  });
+
+  /// Get formatted timestamp (HH:MM:SS)
+  String get timeString {
+    return '${timestamp.hour.toString().padLeft(2, '0')}:'
+        '${timestamp.minute.toString().padLeft(2, '0')}:'
+        '${timestamp.second.toString().padLeft(2, '0')}';
+  }
+
+  /// Get formatted location (5 decimal places)
+  String get locationString {
+    return '${latitude.toStringAsFixed(5)},${longitude.toStringAsFixed(5)}';
+  }
+
+  /// Get SNR color severity based on local SNR
+  SnrSeverity? get severity {
+    if (localSnr == null) return null;
+    if (localSnr! <= -1) {
+      return SnrSeverity.poor;
+    } else if (localSnr! <= 5) {
+      return SnrSeverity.fair;
+    } else {
+      return SnrSeverity.good;
+    }
+  }
+
+  /// Get CSV row
+  String toCsv() {
+    return '${timestamp.toIso8601String()},$targetRepeaterId,${localSnr ?? 'null'},${localRssi ?? 'null'},'
+        '${remoteSnr ?? 'null'},$latitude,$longitude,${noiseFloor ?? ''},$success';
+  }
+}
+
 /// SNR Severity levels for color coding
 enum SnrSeverity {
   poor, // Red: SNR ≤ -1 dB
