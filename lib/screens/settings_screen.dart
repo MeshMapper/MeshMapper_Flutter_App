@@ -147,6 +147,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: isAutoMode ? null : () => _showIntervalSelector(context, appState),
           ),
 
+          // Min Ping Distance Selector
+          ListTile(
+            leading: const Icon(Icons.straighten),
+            title: const Text('Min Ping Distance'),
+            subtitle: Text(prefs.minPingDistanceDisplay),
+            trailing: const Icon(Icons.chevron_right),
+            enabled: !isAutoMode,
+            onTap: isAutoMode ? null : () => _showDistanceSelector(context, appState),
+          ),
+
           // Hybrid Mode Toggle
           SwitchListTile(
             secondary: const Icon(Icons.compare_arrows),
@@ -1198,6 +1208,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
               }
               return tile;
+            }).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDistanceSelector(BuildContext context, AppStateProvider appState) {
+    final currentDistance = appState.preferences.minPingDistanceMeters;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Select Min Ping Distance'),
+        content: RadioGroup<int>(
+          groupValue: currentDistance,
+          onChanged: (value) {
+            if (value != null) {
+              appState.updatePreferences(
+                appState.preferences.copyWith(minPingDistanceMeters: value),
+              );
+              Navigator.pop(context);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: MinPingDistance.values.map((distance) {
+              String description;
+              if (distance == 25) {
+                description = 'Default';
+              } else if (distance == 50) {
+                description = 'City driving';
+              } else if (distance == 75) {
+                description = 'Highway';
+              } else {
+                description = 'Long range';
+              }
+
+              return RadioListTile<int>(
+                title: Text('${distance}m'),
+                subtitle: Text(description),
+                value: distance,
+              );
             }).toList(),
           ),
         ),

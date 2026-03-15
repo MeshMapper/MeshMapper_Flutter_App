@@ -76,6 +76,9 @@ class UserPreferences {
   /// Delete wardriving channel from radio on disconnect
   final bool deleteChannelOnDisconnect;
 
+  /// Minimum ping distance in meters (25m floor, user can increase)
+  final int minPingDistanceMeters;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -102,6 +105,7 @@ class UserPreferences {
     this.anonymousMode = false,
     this.discDropEnabled = false,
     this.deleteChannelOnDisconnect = true,
+    this.minPingDistanceMeters = 25,
   });
 
   /// Create from JSON (for persistence)
@@ -132,6 +136,7 @@ class UserPreferences {
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
       deleteChannelOnDisconnect: (json['deleteChannelOnDisconnect'] as bool?) ?? true,
+      minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
     );
   }
 
@@ -163,6 +168,7 @@ class UserPreferences {
       'anonymousMode': anonymousMode,
       'discDropEnabled': discDropEnabled,
       'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
+      'minPingDistanceMeters': minPingDistanceMeters,
     };
   }
 
@@ -193,6 +199,7 @@ class UserPreferences {
     bool? anonymousMode,
     bool? discDropEnabled,
     bool? deleteChannelOnDisconnect,
+    int? minPingDistanceMeters,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -220,6 +227,7 @@ class UserPreferences {
       anonymousMode: anonymousMode ?? this.anonymousMode,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
       deleteChannelOnDisconnect: deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
+      minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
     );
   }
 
@@ -244,6 +252,9 @@ class UserPreferences {
     if (autoPingInterval == 60) return '60 seconds';
     return '$autoPingInterval seconds';
   }
+
+  /// Get min ping distance display string
+  String get minPingDistanceDisplay => '${minPingDistanceMeters}m';
 
   @override
   bool operator ==(Object other) {
@@ -272,7 +283,8 @@ class UserPreferences {
         other.disableRssiFilter == disableRssiFilter &&
         other.anonymousMode == anonymousMode &&
         other.discDropEnabled == discDropEnabled &&
-        other.deleteChannelOnDisconnect == deleteChannelOnDisconnect;
+        other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
+        other.minPingDistanceMeters == minPingDistanceMeters;
   }
 
   @override
@@ -302,6 +314,7 @@ class UserPreferences {
       anonymousMode,
       discDropEnabled,
       deleteChannelOnDisconnect,
+      minPingDistanceMeters,
     ]);
   }
 
@@ -335,4 +348,11 @@ class AutoPingInterval {
   static const int slow = 60; // 60 seconds
 
   static const List<int> values = [fast, normal, slow];
+}
+
+/// Minimum ping distance options (meters)
+class MinPingDistance {
+  static const int min = 25;
+
+  static const List<int> values = [25, 50, 75, 150];
 }

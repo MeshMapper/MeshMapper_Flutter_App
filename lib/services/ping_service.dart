@@ -48,6 +48,9 @@ class PingService {
   /// Cooldown period between manual pings (15 seconds)
   static const Duration _manualPingCooldown = Duration(seconds: 15);
 
+  /// Current configured min ping distance (for validation messages)
+  static int currentMinDistance = 25;
+
   final GpsService _gpsService;
   final MeshCoreConnection _connection;
   final ApiQueueService _apiQueue;
@@ -1029,8 +1032,8 @@ class PingService {
         position.latitude,
         position.longitude,
       );
-      if (distance < GpsService.minDistanceMeters) {
-        debugLog('[DISC] Too close to last discovery (${distance.toStringAsFixed(1)}m < 25m), skipping');
+      if (distance < _gpsService.configuredMinDistance) {
+        debugLog('[DISC] Too close to last discovery (${distance.toStringAsFixed(1)}m < ${_gpsService.configuredMinDistance.toInt()}m), skipping');
         _skipReason = 'too close';
         _pingInProgress = false;
         _scheduleNextDiscovery();
@@ -1314,7 +1317,7 @@ extension PingValidationExtension on PingValidation {
       case PingValidation.outsideGeofence:
         return 'Outside service area';
       case PingValidation.tooCloseToLastPing:
-        return 'Move 25m before next ping';
+        return 'Move ${PingService.currentMinDistance}m before next ping';
       case PingValidation.cooldownActive:
         return 'Wait 5 seconds between pings';
       case PingValidation.manualCooldownActive:
