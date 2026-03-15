@@ -3182,6 +3182,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Propagate CARpeater prefix to live trackers
     _syncCarpeaterPrefix();
 
+    // Propagate min ping distance to GpsService and PingService
+    _gpsService.setMinPingDistance(preferences.minPingDistanceMeters.toDouble());
+    PingService.currentMinDistance = preferences.minPingDistanceMeters;
+
     notifyListeners();
     _savePreferences();
   }
@@ -4198,6 +4202,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[APP] Loaded preferences: interval=${_preferences.autoPingInterval}s, '
             'ignoreCarpeater=${_preferences.ignoreCarpeater}, '
             'ignoreRepeaterId=${_preferences.ignoreRepeaterId}');
+
+        // Apply saved min ping distance to GpsService and PingService
+        _gpsService.setMinPingDistance(_preferences.minPingDistanceMeters.toDouble());
+        PingService.currentMinDistance = _preferences.minPingDistanceMeters;
       }
     } catch (e) {
       debugLog('[APP] Failed to load preferences: $e');

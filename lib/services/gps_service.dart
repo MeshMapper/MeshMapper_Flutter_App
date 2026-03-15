@@ -28,6 +28,18 @@ class GpsService {
   /// Reference: getValidGpsForZoneCheck() in wardrive.js
   static const double maxAccuracyMetersForZoneCheck = 50.0;
 
+  /// Configured minimum ping distance (user-adjustable, clamped to minDistanceMeters floor)
+  double _configuredMinDistance = minDistanceMeters;
+
+  /// Get the configured minimum ping distance
+  double get configuredMinDistance => _configuredMinDistance;
+
+  /// Set the minimum ping distance (clamped to 25m floor)
+  void setMinPingDistance(double meters) {
+    _configuredMinDistance = meters < minDistanceMeters ? minDistanceMeters : meters;
+    debugLog('[GPS] Min ping distance set to ${_configuredMinDistance.toInt()}m');
+  }
+
   final _statusController = StreamController<GpsStatus>.broadcast();
   final _positionController = StreamController<Position>.broadcast();
 
@@ -274,10 +286,10 @@ class GpsService {
     );
   }
 
-  /// Check if current position is far enough from last ping (25m minimum)
+  /// Check if current position is far enough from last ping
   bool canPingAtPosition(Position position) {
     if (_lastPingPosition == null) return true;
-    return distanceFromLastPing(position) >= minDistanceMeters;
+    return distanceFromLastPing(position) >= _configuredMinDistance;
   }
 
   /// Mark current position as ping location
