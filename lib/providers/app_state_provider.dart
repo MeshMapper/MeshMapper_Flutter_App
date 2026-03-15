@@ -120,6 +120,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Device info
   DeviceModel? _deviceModel;
   String? _manufacturerString;
+  String? _firmwareVersionString;
   String? _devicePublicKey;
   String? _offlineContactUri;
 
@@ -303,6 +304,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   ({double lat, double lon})? get lastKnownPosition => _lastKnownPosition;
   DeviceModel? get deviceModel => _deviceModel;
   String? get manufacturerString => _manufacturerString;
+  String? get firmwareVersionString => _firmwareVersionString;
   String? get devicePublicKey => _devicePublicKey;
   PingStats get pingStats => _pingStats;
   bool get autoPingEnabled => _autoPingEnabled;
@@ -1030,6 +1032,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (step == ConnectionStep.connected) {
           // Update device info
           _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
+          _firmwareVersionString = _meshCoreConnection!.deviceInfo?.firmwareVersionString;
           _deviceModel = _meshCoreConnection!.deviceModel;
           _devicePublicKey = _meshCoreConnection!.devicePublicKey;
           debugLog('[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
@@ -2333,6 +2336,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _connectionStep = ConnectionStep.disconnected;
     _deviceModel = null;
     _manufacturerString = null;
+    _firmwareVersionString = null;
     _devicePublicKey = null;
     _offlineContactUri = null;
     _displayDeviceName = null;

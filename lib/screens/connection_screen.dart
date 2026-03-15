@@ -258,24 +258,34 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     // Get device name - uses displayDeviceName which prefers SelfInfo name over BLE advertisement name
     final deviceName = appState.displayDeviceName ?? 'Unknown';
 
-    // Parse version from manufacturer string and use shortName from device model for hardware
-    // Format examples:
-    // - "MeshCore (Heltec V3) v1.10.0"
-    // - "Ikoka Stick-E22-30dBm (Xiao_nrf52)      nightly-e31c46f"
+    // Extract version from firmware version string (v7+), fall back to manufacturer string
+    // Supports: "v1.14.0-9f1a3ea" → "1.14.0", "nightly-9f1a3ea" → "nightly-9f1a3ea"
     String? version;
-    final manufacturerString = appState.manufacturerString;
-    if (manufacturerString != null) {
-      // Use regex to find version pattern directly instead of splitting
-      // Match: v followed by digits/dots, OR nightly- followed by hex, OR just digits.digits
-      final versionRegex = RegExp(r'(v[\d.]+|nightly-[a-f0-9]+|\d+\.\d+\.\d+)');
-      final match = versionRegex.firstMatch(manufacturerString);
-      if (match != null) {
-        version = match.group(1);
+    final fwString = appState.firmwareVersionString;
+    if (fwString != null && fwString.isNotEmpty) {
+      final semverMatch = RegExp(r'(\d+\.\d+\.\d+)').firstMatch(fwString);
+      if (semverMatch != null) {
+        version = semverMatch.group(1);
+      } else {
+        final nightlyMatch = RegExp(r'(nightly-[a-f0-9]+)').firstMatch(fwString);
+        if (nightlyMatch != null) {
+          version = nightlyMatch.group(1);
+        }
+      }
+    }
+    if (version == null) {
+      final manufacturerString = appState.manufacturerString;
+      if (manufacturerString != null) {
+        final versionRegex = RegExp(r'(v[\d.]+|nightly-[a-f0-9]+|\d+\.\d+\.\d+)');
+        final match = versionRegex.firstMatch(manufacturerString);
+        if (match != null) {
+          version = match.group(1);
+        }
       }
     }
 
     // Use shortName from device model if available, otherwise fall back to manufacturer string
-    final hardware = appState.deviceModel?.shortName ?? manufacturerString ?? 'Unknown';
+    final hardware = appState.deviceModel?.shortName ?? appState.manufacturerString ?? 'Unknown';
 
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
