@@ -1711,6 +1711,21 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
+  /// Compute node column width based on hop byte count.
+  /// [extraPadding] adds space for additional content (e.g. nodeTypeLabel in DISC popup).
+  double _nodeColumnWidth({double extraPadding = 0}) {
+    final appState = context.read<AppStateProvider>();
+    final hopBytes = appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes;
+    switch (hopBytes) {
+      case 2:
+        return 70 + extraPadding;
+      case 3:
+        return 80 + extraPadding;
+      default:
+        return 60 + extraPadding;
+    }
+  }
+
   /// Show TX ping details popup
   void _showTxPingDetails(TxPing ping) {
     // Use the heardRepeaters directly from the TxPing
@@ -1834,7 +1849,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           child: Row(
                             children: [
                               SizedBox(
-                                width: 60,
+                                width: _nodeColumnWidth(),
                                 child: Text(
                                   'Node',
                                   style: TextStyle(
@@ -1903,7 +1918,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               child: Row(
                                 children: [
                                   // Repeater ID
-                                  RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 13, width: 60),
+                                  RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 13, width: _nodeColumnWidth()),
                                   // SNR
                                   Expanded(
                                     child: Center(
@@ -2072,7 +2087,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     child: Row(
                       children: [
                         SizedBox(
-                          width: 60,
+                          width: _nodeColumnWidth(),
                           child: Text(
                             'Node',
                             style: TextStyle(
@@ -2116,7 +2131,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       child: Row(
                         children: [
                           // Repeater ID
-                          RepeaterIdChip(repeaterId: ping.repeaterId, fontSize: 13, width: 60),
+                          RepeaterIdChip(repeaterId: ping.repeaterId, fontSize: 13, width: _nodeColumnWidth()),
                           // SNR
                           Expanded(
                             child: Center(
@@ -2270,7 +2285,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           child: Row(
                             children: [
                               SizedBox(
-                                width: 60,
+                                width: _nodeColumnWidth(extraPadding: 20),
                                 child: Text(
                                   'Node',
                                   style: TextStyle(
@@ -2355,7 +2370,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                 children: [
                                   // Node ID with type
                                   SizedBox(
-                                    width: 60,
+                                    width: _nodeColumnWidth(extraPadding: 20),
                                     child: Row(
                                       children: [
                                         RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 13),
