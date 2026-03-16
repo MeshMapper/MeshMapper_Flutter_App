@@ -236,6 +236,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _reconnectTimeoutTimer;
   Timer? _restoreAutoPingTimer;
   Timer? _offlineAutoSaveTimer;
+  Timer? _zoneRefreshTimer;
   bool _autoPingWasEnabled = false;
   AutoMode _autoModeBeforeReconnect = AutoMode.active;
   int _reconnectRestoreGeneration = 0;
@@ -940,6 +941,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               notifyListeners();
             }
 
+            // Sync zone capacity display with auth result
+            _syncZoneCapacityFromAuth(result);
+
             return result;
           }
 
@@ -1028,6 +1032,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             debugLog('[APP] Auth type: $_authType');
             notifyListeners();
           }
+
+          // Sync zone capacity display with auth result
+          _syncZoneCapacityFromAuth(registerResult);
 
           return registerResult;
         };
@@ -1585,6 +1592,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         } else {
           debugLog('[CONN] Connected with limited access');
         }
+
+        // Start periodic zone refresh to keep slot counts current
+        if (!_preferences.offlineMode) {
+          _startZoneRefreshTimer();
+        }
       } else {
         // No API session - offline mode or auth skipped
         debugLog('[CONN] Connected without API session (offline mode)');
@@ -1986,8 +1998,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _userChangedPathMode = true;
     _pingService?.hopBytes = newHopBytes;
     // Auto-map trace bytes when TX bytes change (3→4, others stay same)
+    final oldTraceHopBytes = _traceHopBytes;
     _traceHopBytes = newHopBytes == 3 ? 4 : newHopBytes;
     _pingService?.traceHopBytes = _traceHopBytes;
+    // Clear target repeater if trace bytes changed — old hex ID has wrong byte length
+    if (_traceHopBytes != oldTraceHopBytes) {
+      _targetRepeaterId = null;
+    }
     final mode = newHopBytes - 1; // Convert 1/2/3 → mode 0/1/2
     _meshCoreConnection?.setPathHashMode(mode);
     debugLog('[PATH] User changed path mode to $newHopBytes-byte (trace: $_traceHopBytes-byte, sent to radio)');
@@ -2013,6 +2030,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (value == _traceHopBytes) return;
     _traceHopBytes = value;
     _pingService?.traceHopBytes = value;
+    // Clear target repeater — old hex ID has wrong byte length
+    _targetRepeaterId = null;
     debugLog('[TRACE] User changed trace bytes to $value');
     notifyListeners();
   }
@@ -2033,6 +2052,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Stop heartbeat immediately on BLE disconnect
     _apiService.disableHeartbeat();
     debugLog('[CONN] Heartbeat disabled due to BLE disconnect');
+
+    // Stop zone refresh timer
+    _stopZoneRefreshTimer();
 
     // Stop auto-ping timers
     _autoPingTimer.stop();
@@ -2288,6 +2310,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Disable heartbeat immediately on disconnect
     _apiService.disableHeartbeat();
+
+    // Stop zone refresh timer
+    _stopZoneRefreshTimer();
 
     // Stop auto-ping if running (before releasing session)
     if (_autoPingEnabled) {
@@ -2936,6 +2961,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[APP] Auth type: $_authType');
           notifyListeners();
         }
+        _syncZoneCapacityFromAuth(result);
       } else if (result == null) {
         // API unreachable (null = network/timeout error)
         debugError('[APP] API unreachable - network error');
@@ -3002,6 +3028,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[APP] Auth type: $_authType');
           notifyListeners();
         }
+        _syncZoneCapacityFromAuth(registerResult);
 
         result = registerResult;
       }
@@ -3965,6 +3992,68 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Sync zone capacity display with auth result.
+  /// The /status API (pre-connection) and /auth API (during connection) can
+  /// return different capacity views. This keeps the connection screen's slot
+  /// display consistent with the map tab's txAllowed flag.
+  void _syncZoneCapacityFromAuth(Map<String, dynamic> authResult) {
+    if (_currentZone == null) return;
+
+    // If auth response includes slot data, use it directly (forward-compatible)
+    if (authResult.containsKey('slots_available')) {
+      _currentZone!['slots_available'] = authResult['slots_available'];
+      debugLog('[CAPACITY] Updated slots_available from auth: ${authResult['slots_available']}');
+    }
+    if (authResult.containsKey('slots_max')) {
+      _currentZone!['slots_max'] = authResult['slots_max'];
+      debugLog('[CAPACITY] Updated slots_max from auth: ${authResult['slots_max']}');
+    }
+
+    // Sync at_capacity with tx_allowed
+    final authTxAllowed = authResult['tx_allowed'] == true;
+    _currentZone!['at_capacity'] = !authTxAllowed;
+
+    // If auth says TX not allowed and server didn't provide slot data, set slots to 0
+    if (!authTxAllowed && !authResult.containsKey('slots_available')) {
+      _currentZone!['slots_available'] = 0;
+      debugLog('[CAPACITY] Zone at TX capacity per auth, set slots_available=0');
+    }
+
+    // If auth says TX allowed and we have slot data but server didn't provide updated count,
+    // decrement by 1 (we just took a slot)
+    if (authTxAllowed && !authResult.containsKey('slots_available')) {
+      final available = _currentZone!['slots_available'] as int?;
+      if (available != null && available > 0) {
+        _currentZone!['slots_available'] = available - 1;
+        debugLog('[CAPACITY] Took a slot, slots_available=${available - 1}');
+      }
+    }
+
+    notifyListeners();
+  }
+
+  /// Start periodic zone status refresh while connected.
+  /// Keeps slot counts and capacity status fresh during a session.
+  void _startZoneRefreshTimer() {
+    _zoneRefreshTimer?.cancel();
+    _zoneRefreshTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
+      if (!isConnected || _preferences.offlineMode) {
+        _zoneRefreshTimer?.cancel();
+        _zoneRefreshTimer = null;
+        return;
+      }
+      debugLog('[CAPACITY] Periodic zone refresh');
+      await checkZoneStatus();
+    });
+    debugLog('[CAPACITY] Started 60s zone refresh timer');
+  }
+
+  /// Stop zone status refresh timer.
+  void _stopZoneRefreshTimer() {
+    _zoneRefreshTimer?.cancel();
+    _zoneRefreshTimer = null;
+  }
+
   /// Fetch repeaters for a zone (called when zone is discovered)
   /// Only fetches once per IATA code to avoid redundant network requests
   Future<void> _fetchRepeatersForZone(String iata) async {
@@ -4758,6 +4847,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimeoutTimer?.cancel();
     _restoreAutoPingTimer?.cancel();
     _offlineAutoSaveTimer?.cancel();
+    _zoneRefreshTimer?.cancel();
     _tileRefreshTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
