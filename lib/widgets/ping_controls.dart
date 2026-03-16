@@ -487,7 +487,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final isTargetedRunning = appState.isTargetedModeRunning;
-    final maxLen = appState.effectiveHopBytes * 2;
+    final maxLen = appState.traceHopBytes * 2;
     final colorScheme = Theme.of(context).colorScheme;
 
     // Determine if the start button should be enabled
@@ -597,7 +597,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                     : colorScheme.onSurface,
               ),
               decoration: InputDecoration(
-                hintText: 'e.g. ${maxLen == 2 ? '4E' : maxLen == 4 ? '4E7A' : '4E7A3B'}',
+                hintText: 'e.g. ${maxLen == 2 ? '4E' : maxLen == 4 ? '4E7A' : maxLen == 8 ? '4E7A3B00' : '4E7A3B'}',
                 hintStyle: TextStyle(
                   fontSize: 12,
                   color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),

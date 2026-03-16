@@ -49,7 +49,6 @@ class TraceTracker {
   void startTracking({
     required Uint8List tag,
     required String targetRepeaterId,
-    int hopBytes = 1,
     Duration windowDuration = const Duration(seconds: 7),
   }) {
     debugLog('[TRACE] Starting trace tracking for repeater $targetRepeaterId');
