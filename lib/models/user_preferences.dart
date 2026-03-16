@@ -79,6 +79,9 @@ class UserPreferences {
   /// Minimum ping distance in meters (25m floor, user can increase)
   final int minPingDistanceMeters;
 
+  /// Auto-stop auto-ping after 30 minutes of idle (no movement)
+  final bool autoStopAfterIdle;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -106,6 +109,7 @@ class UserPreferences {
     this.discDropEnabled = false,
     this.deleteChannelOnDisconnect = true,
     this.minPingDistanceMeters = 25,
+    this.autoStopAfterIdle = true,
   });
 
   /// Create from JSON (for persistence)
@@ -137,6 +141,7 @@ class UserPreferences {
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
       deleteChannelOnDisconnect: (json['deleteChannelOnDisconnect'] as bool?) ?? true,
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
+      autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
     );
   }
 
@@ -169,6 +174,7 @@ class UserPreferences {
       'discDropEnabled': discDropEnabled,
       'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
       'minPingDistanceMeters': minPingDistanceMeters,
+      'autoStopAfterIdle': autoStopAfterIdle,
     };
   }
 
@@ -200,6 +206,7 @@ class UserPreferences {
     bool? discDropEnabled,
     bool? deleteChannelOnDisconnect,
     int? minPingDistanceMeters,
+    bool? autoStopAfterIdle,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -228,6 +235,7 @@ class UserPreferences {
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
       deleteChannelOnDisconnect: deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
       minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
+      autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
     );
   }
 
@@ -284,7 +292,8 @@ class UserPreferences {
         other.anonymousMode == anonymousMode &&
         other.discDropEnabled == discDropEnabled &&
         other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
-        other.minPingDistanceMeters == minPingDistanceMeters;
+        other.minPingDistanceMeters == minPingDistanceMeters &&
+        other.autoStopAfterIdle == autoStopAfterIdle;
   }
 
   @override
@@ -315,6 +324,7 @@ class UserPreferences {
       discDropEnabled,
       deleteChannelOnDisconnect,
       minPingDistanceMeters,
+      autoStopAfterIdle,
     ]);
   }
 

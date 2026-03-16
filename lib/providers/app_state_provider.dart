@@ -139,6 +139,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   PingStats _pingStats = const PingStats();
   bool _autoPingEnabled = false;
   AutoMode _autoMode = AutoMode.active;
+  DateTime? _idleAutoStopReference;
+  static const Duration _autoStopIdleTimeout = Duration(minutes: 30);
   bool _isPingSending = false; // True immediately when ping button clicked
   int _queueSize = 0;
   int? _currentNoiseFloor;
@@ -1346,6 +1348,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Wire up auto ping scheduled callback for countdown display
       _pingService!.onAutoPingScheduled = (intervalMs, skipReason) {
         _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
+
+        // Track idle time for auto-stop
+        if (skipReason != null) {
+          // Ping was skipped — check if idle too long
+          if (_preferences.autoStopAfterIdle && _idleAutoStopReference != null) {
+            final elapsed = DateTime.now().difference(_idleAutoStopReference!);
+            if (elapsed >= _autoStopIdleTimeout) {
+              _triggerIdleAutoStop();
+            }
+          }
+        } else {
+          // Successful ping — reset idle reference
+          _idleAutoStopReference = DateTime.now();
+        }
       };
 
       // Wire up discovery ping callback - fires immediately (like onTxPing)
@@ -1513,6 +1529,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Update local state
         _autoPingEnabled = false;
+        _idleAutoStopReference = null;
 
         debugLog('[APP] Pending disable cleanup complete, cooldown running');
         notifyListeners();
@@ -2001,6 +2018,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cooldownTimer.stop();
     if (_autoPingEnabled) {
       _autoPingEnabled = false;
+      _idleAutoStopReference = null;
       debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
     }
 
@@ -2064,6 +2082,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
     _autoPingEnabled = false;
+    _idleAutoStopReference = null;
 
     // Stop heartbeat
     _apiService.disableHeartbeat();
@@ -2252,6 +2271,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_autoPingEnabled) {
       await _pingService?.forceDisableAutoPing();
       _autoPingEnabled = false;
+      _idleAutoStopReference = null;
     }
 
     // End noise floor session on disconnect
@@ -2451,6 +2471,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Auto-stop auto-ping after prolonged idle (no movement)
+  void _triggerIdleAutoStop() {
+    if (!_autoPingEnabled) return;
+    final elapsed = _idleAutoStopReference != null
+        ? DateTime.now().difference(_idleAutoStopReference!).inMinutes
+        : 30;
+    debugLog('[AUTO] Auto-stop triggered: idle for $elapsed minutes');
+    logError('Auto-ping stopped: no movement for 30 minutes', severity: ErrorSeverity.warning, autoSwitch: false);
+    _idleAutoStopReference = null;
+    toggleAutoPing(_autoMode);
+  }
+
   /// Toggle auto-ping mode (Active, Passive, Hybrid, or Trace)
   /// Returns false if blocked by cooldown (Active/Hybrid/Trace Mode only - Passive Mode ignores cooldown)
   Future<bool> toggleAutoPing(AutoMode mode) async {
@@ -2504,6 +2536,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _apiService.disableHeartbeat();
 
       _autoPingEnabled = false;
+      _idleAutoStopReference = null;
 
       // Start 5-second shared cooldown for TX modes (Active/Hybrid), not Passive Mode
       // Passive Mode is listening only, no cooldown needed
@@ -2573,6 +2606,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Reference: state.rxTracking.isWardriving = true in wardrive.js
       _rxLogger?.startWardriving();
       _autoPingEnabled = true;
+      _idleAutoStopReference = DateTime.now();
 
       // Start noise floor session for graph tracking
       final sessionLabel = isPassive ? 'passive' : isHybrid ? 'hybrid' : isTargeted ? 'targeted' : 'active';
@@ -3020,6 +3054,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // 9. Update state
     _autoPingEnabled = false;
+    _idleAutoStopReference = null;
     debugLog('[APP] Auto-ping mode stopped gracefully');
     notifyListeners();
   }

@@ -166,6 +166,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: isAutoMode ? null : () => _showDistanceSelector(context, appState),
           ),
 
+          // Auto-Stop After Idle Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.timer_off),
+            title: const Text('Auto-Stop After Idle'),
+            subtitle: const Text('Stops auto-ping after 30 min without movement'),
+            value: prefs.autoStopAfterIdle,
+            onChanged: isAutoMode ? null : (value) {
+              appState.updatePreferences(prefs.copyWith(autoStopAfterIdle: value));
+            },
+          ),
+
           // Hybrid Mode Toggle
           SwitchListTile(
             secondary: const Icon(Icons.compare_arrows),
