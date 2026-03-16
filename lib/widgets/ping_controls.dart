@@ -6,6 +6,7 @@ import '../providers/app_state_provider.dart';
 import '../services/ping_service.dart';
 import '../utils/debug_logger_io.dart';
 import 'offline_mode_toggle.dart';
+import 'repeater_picker_sheet.dart';
 
 /// Modern ping control panel with icon-based buttons and animated status
 class PingControls extends StatelessWidget {
@@ -483,12 +484,31 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
     super.dispose();
   }
 
+  Future<void> _showRepeaterPicker() async {
+    final appState = context.read<AppStateProvider>();
+    final repeater = await showRepeaterPicker(context);
+    if (repeater == null || !mounted) return;
+
+    final maxLen = appState.traceHopBytes * 2;
+    final trimmed = repeater.hexId.length >= maxLen
+        ? repeater.hexId.substring(0, maxLen).toUpperCase()
+        : repeater.hexId.toUpperCase();
+    _controller.text = trimmed;
+    appState.setTargetRepeaterId(trimmed);
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final isTargetedRunning = appState.isTargetedModeRunning;
     final maxLen = appState.traceHopBytes * 2;
     final colorScheme = Theme.of(context).colorScheme;
+
+    // Sync controller when provider clears target (e.g. trace bytes changed)
+    if (appState.targetRepeaterId == null && _controller.text.isNotEmpty) {
+      _controller.clear();
+    }
 
     // Determine if the start button should be enabled
     final hexText = _controller.text.trim();
@@ -617,6 +637,27 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                 appState.setTargetRepeaterId(value.trim().toUpperCase());
                 setState(() {});
               },
+            ),
+          ),
+          const SizedBox(width: 6),
+          // Choose repeater button
+          SizedBox(
+            width: 32,
+            height: 32,
+            child: IconButton(
+              icon: Icon(
+                Icons.list,
+                size: 18,
+                color: (!isTargetedRunning && appState.repeaters.isNotEmpty)
+                    ? effectiveColor
+                    : colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+              ),
+              onPressed: (!isTargetedRunning && appState.repeaters.isNotEmpty)
+                  ? _showRepeaterPicker
+                  : null,
+              padding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Choose repeater',
             ),
           ),
         ],

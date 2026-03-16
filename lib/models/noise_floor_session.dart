@@ -106,7 +106,7 @@ class PingEventMarker extends HiveObject {
         PingEventType.discSuccess => Colors.purple,
         PingEventType.discFail => Colors.grey,
         PingEventType.traceSuccess => Colors.cyan,
-        PingEventType.traceFail => Colors.red,
+        PingEventType.traceFail => Colors.grey,
       };
 
   /// Get a display label for this event type
