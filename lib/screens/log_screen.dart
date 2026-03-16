@@ -451,7 +451,7 @@ class _TxLogTab extends StatelessWidget {
                       child: Row(
                         children: [
                           SizedBox(
-                            width: 50,
+                            width: 60,
                             child: Text(
                               'Node',
                               style: TextStyle(
@@ -543,7 +543,7 @@ class _TxLogTab extends StatelessWidget {
         child: Row(
           children: [
             // Repeater ID
-            RepeaterIdChip(repeaterId: event.repeaterId, fontSize: 11, width: 50),
+            RepeaterIdChip(repeaterId: event.repeaterId, fontSize: 11, width: 60),
             // SNR
             Expanded(
               child: Center(
@@ -713,7 +713,7 @@ class _RxLogTab extends StatelessWidget {
                     child: Row(
                       children: [
                         SizedBox(
-                          width: 50,
+                          width: 60,
                           child: Text(
                             'Node',
                             style: TextStyle(
@@ -757,7 +757,7 @@ class _RxLogTab extends StatelessWidget {
                       child: Row(
                         children: [
                           // Repeater ID
-                          RepeaterIdChip(repeaterId: entry.repeaterId, fontSize: 11, width: 50),
+                          RepeaterIdChip(repeaterId: entry.repeaterId, fontSize: 11, width: 60),
                           // SNR
                           Expanded(
                             child: Center(
@@ -923,7 +923,7 @@ class _DiscLogTab extends StatelessWidget {
                         child: Row(
                           children: [
                             SizedBox(
-                              width: 50,
+                              width: 70,
                               child: Text(
                                 'Node',
                                 style: TextStyle(
@@ -1034,10 +1034,12 @@ class _DiscLogTab extends StatelessWidget {
           children: [
             // Node ID with type
             SizedBox(
-              width: 50,
+              width: 70,
               child: Row(
                 children: [
-                  RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 11),
+                  Flexible(
+                    child: RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 11),
+                  ),
                   Text(
                     node.nodeTypeLabel,
                     style: const TextStyle(
@@ -1232,7 +1234,7 @@ class _TraceLogTab extends StatelessWidget {
                         child: Row(
                           children: [
                             SizedBox(
-                              width: 50,
+                              width: 70,
                               child: Text(
                                 'Node',
                                 style: TextStyle(
@@ -1348,7 +1350,7 @@ class _TraceLogTab extends StatelessWidget {
       child: Row(
         children: [
           SizedBox(
-            width: 50,
+            width: 70,
             child: RepeaterIdChip(repeaterId: entry.targetRepeaterId, fontSize: 11),
           ),
           Expanded(

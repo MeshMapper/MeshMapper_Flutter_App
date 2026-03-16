@@ -340,12 +340,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
           _buildSectionHeader(context, 'Radio Settings'),
 
-          // Path Bytes Setting
+          // TX Bytes Setting
           ListTile(
             leading: const Icon(Icons.linear_scale),
             title: Row(
               children: [
-                const Flexible(child: Text('Path Bytes', overflow: TextOverflow.ellipsis)),
+                const Flexible(child: Text('TX Bytes', overflow: TextOverflow.ellipsis)),
                 const SizedBox(width: 4),
                 GestureDetector(
                   onTap: () => _showHopBytesInfo(context),
@@ -372,7 +372,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             'Connect to radio to configure',
                             style: TextStyle(color: Colors.amber),
                           )
-                        : const Text('Repeater ID size in path hops'),
+                        : const Text('Repeater ID size in TX/RX path hops'),
             trailing: DropdownButton<int>(
               value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
               underline: const SizedBox(),
@@ -385,6 +385,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? null
                   : (value) {
                       if (value != null) appState.setHopBytes(value);
+                    },
+            ),
+          ),
+
+          // Trace Bytes Setting
+          ListTile(
+            leading: const Icon(Icons.gps_fixed),
+            title: Row(
+              children: [
+                const Flexible(child: Text('Trace Bytes', overflow: TextOverflow.ellipsis)),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: () => _showTraceBytesInfo(context),
+                  child: Icon(
+                    Icons.info_outline,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            subtitle: !appState.isConnected
+                ? const Text(
+                    'Connect to radio to configure',
+                    style: TextStyle(color: Colors.amber),
+                  )
+                : (appState.isConnected && !appState.supportsMultiBytePaths)
+                    ? const Text(
+                        'Firmware 1.14+ required',
+                        style: TextStyle(color: Colors.amber),
+                      )
+                    : const Text('Repeater ID size in trace path'),
+            trailing: DropdownButton<int>(
+              value: appState.traceHopBytes,
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(value: 1, child: Text('1')),
+                DropdownMenuItem(value: 2, child: Text('2')),
+                DropdownMenuItem(value: 4, child: Text('4')),
+              ],
+              onChanged: (!appState.isConnected || isAutoMode || !appState.supportsMultiBytePaths)
+                  ? null
+                  : (value) {
+                      if (value != null) appState.setTraceHopBytes(value);
                     },
             ),
           ),
@@ -1142,7 +1186,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             Icon(Icons.linear_scale, size: 24),
             SizedBox(width: 8),
-            Text('Path Bytes'),
+            Text('TX Bytes'),
           ],
         ),
         content: const Column(
@@ -1150,7 +1194,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Controls how many bytes are used to identify each repeater in the packet path. '
+              'Controls how many bytes are used to identify each repeater in TX/RX packet paths. '
               'More bytes = more unique IDs, reducing collisions in large networks.',
               style: TextStyle(fontSize: 14),
             ),
@@ -1165,6 +1209,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Text(
               'Requires MeshCore firmware v1.14.0+. '
               'RX always auto-detects the sender\'s byte size.',
+              style: TextStyle(fontSize: 13, color: Colors.amber),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTraceBytesInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.gps_fixed, size: 24),
+            SizedBox(width: 8),
+            Text('Trace Bytes'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Controls how many bytes are used for the repeater ID in trace path requests. '
+              'This is separate from TX Bytes because traces use a different encoding.',
+              style: TextStyle(fontSize: 14),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'TX/RX uses a simple counter:\n'
+              '\u2022 Mode 0 \u2192 1 byte\n'
+              '\u2022 Mode 1 \u2192 2 bytes\n'
+              '\u2022 Mode 2 \u2192 3 bytes\n\n'
+              'Trace uses bitshift encoding:\n'
+              '\u2022 Mode 0 \u2192 1 byte\n'
+              '\u2022 Mode 1 \u2192 2 bytes\n'
+              '\u2022 Mode 2 \u2192 4 bytes',
+              style: TextStyle(fontSize: 13),
+            ),
+            SizedBox(height: 12),
+            Text(
+              '3-byte traces are not supported by the MeshCore protocol. '
+              'When your region uses 3-byte TX paths, set Trace Bytes to 4.',
               style: TextStyle(fontSize: 13, color: Colors.amber),
             ),
           ],

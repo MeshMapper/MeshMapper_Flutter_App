@@ -70,8 +70,14 @@ class PingService {
   /// Number of bytes per hop in path hash (1, 2, or 3). Passed to DiscTracker for repeater ID length.
   int _hopBytes;
 
+  /// Number of bytes for trace path IDs (1, 2, or 4). Uses bitshift encoding, separate from TX.
+  int _traceHopBytes;
+
   /// Update hop bytes at runtime (e.g. when user changes path mode while connected)
   set hopBytes(int value) => _hopBytes = value;
+
+  /// Update trace hop bytes at runtime (e.g. when user changes trace byte setting)
+  set traceHopBytes(int value) => _traceHopBytes = value;
 
   /// When true, skip RSSI carpeater check in DiscTracker (user setting)
   bool disableRssiFilter;
@@ -197,6 +203,7 @@ class PingService {
     this.shouldIgnoreRepeater,
     this.disableRssiFilter = false,
     int hopBytes = 1,
+    int traceHopBytes = 1,
   })  : _gpsService = gpsService,
         _connection = connection,
         _apiQueue = apiQueue,
@@ -208,7 +215,8 @@ class PingService {
         _deviceId = deviceId,
         _txTracker = txTracker,
         _audioService = audioService,
-        _hopBytes = hopBytes;
+        _hopBytes = hopBytes,
+        _traceHopBytes = traceHopBytes;
 
   /// Get current ping statistics
   PingStats get stats => _stats;
@@ -1410,20 +1418,20 @@ class PingService {
       // Play transmit sound
       _audioService?.playTransmitSound();
 
-      // Convert hex repeater ID to bytes
-      final repeaterIdBytes = Uint8List(_hopBytes);
-      for (int i = 0; i < _hopBytes && i * 2 + 2 <= targetId.length; i++) {
+      // Convert hex repeater ID to bytes (trace uses separate byte size: 1, 2, or 4)
+      final traceBytes = _traceHopBytes;
+      final repeaterIdBytes = Uint8List(traceBytes);
+      for (int i = 0; i < traceBytes && i * 2 + 2 <= targetId.length; i++) {
         repeaterIdBytes[i] = int.parse(targetId.substring(i * 2, i * 2 + 2), radix: 16);
       }
 
       // Send trace path and get tag
-      final tag = await _connection.sendTracePath(repeaterIdBytes);
+      final tag = await _connection.sendTracePath(repeaterIdBytes, hopBytes: traceBytes);
 
       // Start tracking with the tag
       _traceTracker?.startTracking(
         tag: tag,
         targetRepeaterId: targetId,
-        hopBytes: _hopBytes,
         windowDuration: _rxListeningWindow,
       );
 

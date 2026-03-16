@@ -44,6 +44,8 @@ class RepeaterIdChip extends StatelessWidget {
       children: [
         Text(
           repeaterId,
+          softWrap: false,
+          overflow: TextOverflow.clip,
           style: TextStyle(
             fontSize: effectiveFontSize,
             fontWeight: FontWeight.w600,

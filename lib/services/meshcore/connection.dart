@@ -981,20 +981,31 @@ class MeshCoreConnection {
 
   /// Send trace path to a specific repeater (targeted ping / zero-hop trace)
   /// Returns the 4-byte tag used for matching the response
-  Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes) async {
+  /// [hopBytes] controls trace ID size: 1, 2, or 4 bytes (bitshift encoding)
+  Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes, {int hopBytes = 1}) async {
     final random = Random.secure();
     final tag = Uint8List.fromList([
       random.nextInt(256), random.nextInt(256),
       random.nextInt(256), random.nextInt(256),
     ]);
 
-    debugLog('[CONN] Sending trace to ${repeaterIdBytes.map((b) => b.toRadixString(16).padLeft(2, "0")).join("")}');
+    // Trace uses bitshift encoding: actual_bytes = 1 << path_sz
+    // 1 → path_sz=0, 2 → path_sz=1, 4 → path_sz=2
+    final int pathSz;
+    switch (hopBytes) {
+      case 4:  pathSz = 2; break;
+      case 2:  pathSz = 1; break;
+      default: pathSz = 0; break;
+    }
+    final int flags = pathSz & 0x03;
+
+    debugLog('[CONN] Sending trace to ${repeaterIdBytes.map((b) => b.toRadixString(16).padLeft(2, "0")).join("")} (traceBytes=$hopBytes, path_sz=$pathSz)');
 
     final data = BufferWriter();
     data.writeByte(CommandCodes.sendTracePath);  // 0x24
     data.writeBytes(tag);                        // 4-byte tag
     data.writeUInt32LE(0);                       // auth_code = 0
-    data.writeByte(0);                           // flags = 0
+    data.writeByte(flags);                       // flags with path_sz in bits 0-1
     data.writeBytes(repeaterIdBytes);            // target repeater ID
     await _sendToRadio(data);
     return tag;

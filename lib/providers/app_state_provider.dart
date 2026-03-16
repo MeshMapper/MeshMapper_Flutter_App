@@ -264,6 +264,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int? _originalPathHashMode; // Device's mode BEFORE we changed it (from DeviceInfo)
   bool _userChangedPathMode = false; // True if user manually changed hopBytes while connected
   int _hopBytes = 1; // Runtime-only: current hop byte size (read from device, not persisted)
+  int _traceHopBytes = 1; // Runtime-only: trace byte size (1, 2, or 4 — bitshift encoding)
 
   // Noise floor session tracking (for graph feature)
   NoiseFloorSession? _currentNoiseFloorSession;
@@ -429,6 +430,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get enforceHopBytes => _apiService.enforceHopBytes;
   int get hopBytes => _hopBytes;
   int get effectiveHopBytes => enforceHopBytes ? _apiService.apiHopBytes : _hopBytes;
+  int get traceHopBytes => _traceHopBytes;
   bool get supportsMultiBytePaths => _originalPathHashMode != null;
 
   // Offline mode
@@ -1192,6 +1194,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         audioService: _audioService,
         disableRssiFilter: _preferences.disableRssiFilter,
         hopBytes: effectiveHopBytes,
+        traceHopBytes: _traceHopBytes,
         shouldIgnoreRepeater: (String repeaterId) {
           final prefs = _preferences;
           if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
@@ -1893,9 +1896,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_originalPathHashMode != null) {
       final deviceHopBytes = _originalPathHashMode! + 1;
       _hopBytes = deviceHopBytes;
-      debugLog('[PATH] Read device path mode: $deviceHopBytes-byte');
+      // Map TX bytes to trace bytes (3-byte traces not possible, use 4)
+      _traceHopBytes = deviceHopBytes == 3 ? 4 : deviceHopBytes;
+      _pingService?.traceHopBytes = _traceHopBytes;
+      debugLog('[PATH] Read device path mode: $deviceHopBytes-byte (trace: $_traceHopBytes-byte)');
     } else {
       _hopBytes = 1;
+      _traceHopBytes = 1;
     }
 
     final effective = effectiveHopBytes;
@@ -1907,7 +1914,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       try {
         await _meshCoreConnection!.setPathHashMode(effective - 1);
         _hopBytes = effective; // Update runtime state to reflect new mode
-        debugLog('[PATH] Set path hash mode: device was $deviceHopBytes-byte, now $effective-byte');
+        _traceHopBytes = effective == 3 ? 4 : effective;
+        _pingService?.traceHopBytes = _traceHopBytes;
+        debugLog('[PATH] Set path hash mode: device was $deviceHopBytes-byte, now $effective-byte (trace: $_traceHopBytes-byte)');
 
         // Show warning popup if changing from 1-byte to multi-byte
         if (deviceMode == 0 && effective > 1) {
@@ -1976,9 +1985,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _hopBytes = newHopBytes;
     _userChangedPathMode = true;
     _pingService?.hopBytes = newHopBytes;
+    // Auto-map trace bytes when TX bytes change (3→4, others stay same)
+    _traceHopBytes = newHopBytes == 3 ? 4 : newHopBytes;
+    _pingService?.traceHopBytes = _traceHopBytes;
     final mode = newHopBytes - 1; // Convert 1/2/3 → mode 0/1/2
     _meshCoreConnection?.setPathHashMode(mode);
-    debugLog('[PATH] User changed path mode to $newHopBytes-byte (sent to radio)');
+    debugLog('[PATH] User changed path mode to $newHopBytes-byte (trace: $_traceHopBytes-byte, sent to radio)');
     notifyListeners();
   }
 
@@ -1993,6 +2005,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _hopBytes = value;
       notifyListeners();
     }
+  }
+
+  /// Set trace hop bytes (called from settings UI). Valid values: 1, 2, 4.
+  void setTraceHopBytes(int value) {
+    if (value != 1 && value != 2 && value != 4) return;
+    if (value == _traceHopBytes) return;
+    _traceHopBytes = value;
+    _pingService?.traceHopBytes = value;
+    debugLog('[TRACE] User changed trace bytes to $value');
+    notifyListeners();
   }
 
   /// Pending path hash warning data (for UI to show dialog)
@@ -2380,6 +2402,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _originalPathHashMode = null;
     _userChangedPathMode = false;
     _hopBytes = 1;
+    _traceHopBytes = 1;
 
     // Clear regional channels (keeps only Public) and scope
     ChannelService.clearRegionalChannels();
