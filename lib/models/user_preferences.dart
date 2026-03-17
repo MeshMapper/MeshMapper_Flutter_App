@@ -82,6 +82,9 @@ class UserPreferences {
   /// Auto-stop auto-ping after 30 minutes of idle (no movement)
   final bool autoStopAfterIdle;
 
+  /// Show top 3 repeaters by SNR on the map during wardriving
+  final bool showTopRepeaters;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -110,6 +113,7 @@ class UserPreferences {
     this.deleteChannelOnDisconnect = true,
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
+    this.showTopRepeaters = false,
   });
 
   /// Create from JSON (for persistence)
@@ -142,6 +146,7 @@ class UserPreferences {
       deleteChannelOnDisconnect: (json['deleteChannelOnDisconnect'] as bool?) ?? true,
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
+      showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
     );
   }
 
@@ -175,6 +180,7 @@ class UserPreferences {
       'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
+      'showTopRepeaters': showTopRepeaters,
     };
   }
 
@@ -207,6 +213,7 @@ class UserPreferences {
     bool? deleteChannelOnDisconnect,
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
+    bool? showTopRepeaters,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -236,6 +243,7 @@ class UserPreferences {
       deleteChannelOnDisconnect: deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
       minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
+      showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
     );
   }
 
@@ -293,7 +301,8 @@ class UserPreferences {
         other.discDropEnabled == discDropEnabled &&
         other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
         other.minPingDistanceMeters == minPingDistanceMeters &&
-        other.autoStopAfterIdle == autoStopAfterIdle;
+        other.autoStopAfterIdle == autoStopAfterIdle &&
+        other.showTopRepeaters == showTopRepeaters;
   }
 
   @override
@@ -325,6 +334,7 @@ class UserPreferences {
       deleteChannelOnDisconnect,
       minPingDistanceMeters,
       autoStopAfterIdle,
+      showTopRepeaters,
     ]);
   }
 
