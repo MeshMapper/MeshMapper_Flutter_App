@@ -849,11 +849,11 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       alignment: WrapAlignment.center,
       children: [
         _legendItem(context, Colors.green, 'TX Success'),
-        _legendItem(context, Colors.red, 'TX/Trace Fail'),
+        _legendItem(context, Colors.red, 'TX Fail'),
         _legendItem(context, Colors.blue, 'RX'),
         _legendItem(context, Colors.purple, 'DISC Success'),
-        _legendItem(context, Colors.grey, 'DISC Fail'),
         _legendItem(context, Colors.cyan, 'Trace Success'),
+        _legendItem(context, Colors.grey, 'No Response'),
       ],
     );
   }
