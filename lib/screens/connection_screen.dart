@@ -78,7 +78,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Connection'),
+        toolbarHeight: 40,
+        title: const Text('Connection', style: TextStyle(fontSize: 18)),
         automaticallyImplyLeading: false,
       ),
       body: _buildBody(context, appState),

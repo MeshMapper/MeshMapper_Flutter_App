@@ -181,6 +181,47 @@ enum SnrSeverity {
   good, // Green: SNR > 5 dB
 }
 
+/// Ping type for unified log view
+enum PingLogType { tx, rx, disc, trace }
+
+/// Wrapper for unified chronological ping log view
+class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
+  final PingLogType type;
+  final DateTime timestamp;
+  final dynamic entry;
+
+  UnifiedPingLogEntry({required this.type, required this.timestamp, required this.entry});
+
+  TxLogEntry get asTx => entry as TxLogEntry;
+  RxLogEntry get asRx => entry as RxLogEntry;
+  DiscLogEntry get asDisc => entry as DiscLogEntry;
+  TraceLogEntry get asTrace => entry as TraceLogEntry;
+
+  @override
+  int compareTo(UnifiedPingLogEntry other) => other.timestamp.compareTo(timestamp);
+
+  String get timeString => switch (type) {
+    PingLogType.tx => asTx.timeString,
+    PingLogType.rx => asRx.timeString,
+    PingLogType.disc => asDisc.timeString,
+    PingLogType.trace => asTrace.timeString,
+  };
+
+  String get locationString => switch (type) {
+    PingLogType.tx => asTx.locationString,
+    PingLogType.rx => asRx.locationString,
+    PingLogType.disc => asDisc.locationString,
+    PingLogType.trace => asTrace.locationString,
+  };
+
+  String toCsv() => switch (type) {
+    PingLogType.tx => 'TX,${asTx.toCsv()}',
+    PingLogType.rx => 'RX,${asRx.toCsv()}',
+    PingLogType.disc => 'DISC,${asDisc.toCsv()}',
+    PingLogType.trace => 'TRC,${asTrace.toCsv()}',
+  };
+}
+
 /// User Error Entry for error log
 class UserErrorEntry {
   final DateTime timestamp;

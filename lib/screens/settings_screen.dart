@@ -102,7 +102,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Settings'),
+        toolbarHeight: 40,
+        title: const Text('Settings', style: TextStyle(fontSize: 18)),
         automaticallyImplyLeading: false,
       ),
       body: ListView(
