@@ -40,7 +40,7 @@ enum PingEventType {
   traceSuccess, // Cyan: Trace got response
 
   @HiveField(6)
-  traceFail, // Red: Trace no response
+  traceFail, // Grey: Trace no response
 }
 
 /// Repeater info for graph markers

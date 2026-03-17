@@ -1127,13 +1127,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.grey,
-                      label: 'DISC',
-                      description: 'Location where you sent a discovery request but no repeater responded',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
-                    _buildLegendItem(
-                      context: context,
                       color: Colors.cyan,
                       label: 'TRC',
                       description: 'Location where a trace reached the repeater',
@@ -1141,7 +1134,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.red,
+                      color: Colors.grey,
+                      label: 'DISC',
+                      description: 'Location where you sent a discovery request but no repeater responded',
+                    ),
+                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
+                    _buildLegendItem(
+                      context: context,
+                      color: Colors.grey,
                       label: 'TRC',
                       description: 'Location where a trace got no response',
                     ),
@@ -1628,7 +1628,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           onTap: () => _showTraceDetails(entry),
           child: Container(
             decoration: BoxDecoration(
-              color: entry.success ? Colors.cyan : Colors.red,
+              color: entry.success ? Colors.cyan : Colors.grey,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [
