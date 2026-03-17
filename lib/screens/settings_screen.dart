@@ -157,6 +157,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
               },
             ),
+            SwitchListTile(
+              secondary: const Icon(Icons.cell_tower),
+              title: const Text('Top Repeaters on Map'),
+              subtitle: const Text('Show top 3 repeaters by SNR while wardriving'),
+              value: prefs.showTopRepeaters,
+              onChanged: (value) {
+                appState.updatePreferences(prefs.copyWith(showTopRepeaters: value));
+              },
+            ),
             if (!kIsWeb)
               _BackgroundModeToggle(appState: appState),
           ]),

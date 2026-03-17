@@ -165,6 +165,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<DiscLogEntry> _discLogEntries = [];
   final List<TraceLogEntry> _traceLogEntries = [];
 
+  // Top repeaters overlay — updated live on each ping event
+  List<({String repeaterId, double snr})> _topRepeatersOverlay = [];
+
   // Targeted mode state
   String? _targetRepeaterId;
 
@@ -337,6 +340,38 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isScanning => _isScanning;
   List<TxPing> get txPings => List.unmodifiable(_txPings);
   List<RxPing> get rxPings => List.unmodifiable(_rxPings);
+
+  /// Top 3 repeaters by best SNR (1-byte IDs only) across TX echoes and RX observations
+  List<({String repeaterId, double snr})> get topRepeatersBySnr => _topRepeatersOverlay;
+
+  /// Update the top repeaters overlay with results from the latest ping.
+  /// New repeaters from this ping take priority (sorted by best SNR first).
+  /// Remaining slots are filled with carryover from the previous display.
+  void _updateTopRepeaters(List<({String repeaterId, double snr})> current) {
+    // Deduplicate current entries, keeping best SNR per repeater
+    final bestSnr = <String, double>{};
+    for (final r in current) {
+      final key = r.repeaterId.toUpperCase();
+      if (!bestSnr.containsKey(key) || r.snr > bestSnr[key]!) {
+        bestSnr[key] = r.snr;
+      }
+    }
+    final fresh = bestSnr.entries
+        .map((e) => (repeaterId: e.key, snr: e.value))
+        .toList()
+      ..sort((a, b) => b.snr.compareTo(a.snr));
+
+    if (fresh.length >= 3) {
+      _topRepeatersOverlay = fresh.take(3).toList();
+    } else {
+      // Fill remaining slots with previous entries not already in fresh
+      final freshIds = fresh.map((r) => r.repeaterId).toSet();
+      final carryover = _topRepeatersOverlay
+          .where((r) => !freshIds.contains(r.repeaterId))
+          .toList();
+      _topRepeatersOverlay = [...fresh, ...carryover].take(3).toList();
+    }
+  }
   List<TxLogEntry> get txLogEntries => List.unmodifiable(_txLogEntries);
   List<RxLogEntry> get rxLogEntries => List.unmodifiable(_rxLogEntries);
   List<DiscLogEntry> get discLogEntries => List.unmodifiable(_discLogEntries);
@@ -1281,6 +1316,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         ));
         if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
 
+        // Update top repeaters overlay with this RX observation
+        if (ping.repeaterId.length == 2) {
+          _updateTopRepeaters([(repeaterId: ping.repeaterId.toUpperCase(), snr: ping.snr)]);
+        }
+
         notifyListeners();
       };
 
@@ -1351,6 +1391,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             );
             _txLogEntries[_txLogEntries.length - 1] = updatedEntry;
             debugLog('[APP] Updated TxLogEntry with ${existingEvents.length} events (real-time)');
+
+            // Update top repeaters overlay with current TX echoes
+            _updateTopRepeaters(existingEvents
+                .where((e) => e.repeaterId.length == 2 && e.snr != null)
+                .map((e) => (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
+                .toList());
+
             debugLog('[APP] Calling notifyListeners() to update UI');
             notifyListeners();
             debugLog('[APP] notifyListeners() completed');
@@ -1395,6 +1442,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (isNew) {
           _audioService.playReceiveSound();
         }
+
+        // Update top repeaters overlay with all discovered nodes from this ping
+        _updateTopRepeaters(discPing.discoveredNodes
+            .where((n) => n.repeaterId.length == 2)
+            .map((n) => (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
+            .toList());
+
         notifyListeners();
       };
 
@@ -1724,6 +1778,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             debugLog('[APP] Created IMMEDIATE RX pin for repeater: ${observation.repeaterId} '
                 'at ${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)} '
                 '(batch tracking: ${_currentBatchRepeaters.length} repeaters, rxCount: ${_pingStats.rxCount})');
+            // Update top repeaters overlay immediately
+            if (observation.repeaterId.length == 2 && observation.snr != null) {
+              _updateTopRepeaters([(repeaterId: repeaterKey, snr: observation.snr!)]);
+            }
             // Play receive sound for new RX observation
             _audioService.playReceiveSound();
             // Record RX event for noise floor graph with location and repeater info
@@ -1828,6 +1886,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
           debugLog('[APP] Added RX log entry: repeater=${entry.repeaterId}, '
               'snr=${entry.snr ?? 'null'}, pathLen=${entry.pathLength}');
+
+          // Update top repeaters overlay with this RX observation
+          if (entry.repeaterId.length == 2 && entry.snr != null) {
+            _updateTopRepeaters([(repeaterId: entry.repeaterId.toUpperCase(), snr: entry.snr!)]);
+          }
 
           // Note: RX count is incremented in onObservation when pin is created (immediate feedback)
 
@@ -2715,6 +2778,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _discLogEntries.clear();
     _traceLogEntries.clear();
     _errorLogEntries.clear();
+    _topRepeatersOverlay = [];
     notifyListeners();
   }
 
@@ -2735,6 +2799,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _traceLogEntries.removeLast();
     }
     debugLog('[APP] Trace log entry added: target=${entry.targetRepeaterId}, success=${entry.success}');
+
+    // Update top repeaters overlay with successful trace result
+    if (entry.success && entry.targetRepeaterId.length == 2 && entry.localSnr != null) {
+      _updateTopRepeaters([(repeaterId: entry.targetRepeaterId.toUpperCase(), snr: entry.localSnr!)]);
+    }
+
     notifyListeners();
   }
 

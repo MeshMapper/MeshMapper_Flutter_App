@@ -569,11 +569,20 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         // Map
         _buildMap(appState, center),
 
-        // GPS Info overlay (top-left, respects dynamic island in landscape)
+        // GPS Info + Top Repeaters overlay (top-left, respects dynamic island in landscape)
         Positioned(
           top: topPadding,
           left: leftPadding,
-          child: _buildGpsInfoOverlay(appState),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildGpsInfoOverlay(appState),
+              if (appState.preferences.showTopRepeaters && appState.autoPingEnabled) ...[
+                const SizedBox(height: 6),
+                _buildTopRepeatersOverlay(appState),
+              ],
+            ],
+          ),
         ),
 
         // Map controls - top-right in both orientations, collapsible
@@ -721,6 +730,61 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// GPS info overlay (top-left corner)
+  /// Top 3 repeaters by SNR overlay (bottom-right of map)
+  Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
+    final topRepeaters = appState.topRepeatersBySnr;
+    if (topRepeaters.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final r in topRepeaters)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 1),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    r.repeaterId,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      fontFamily: 'monospace',
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${r.snr.toStringAsFixed(1)} dB',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      fontFamily: 'monospace',
+                      color: _snrColor(r.snr),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// SNR color: green > 5, orange -1..5, red <= -1
+  static Color _snrColor(double snr) {
+    if (snr <= -1) return Colors.red;
+    if (snr <= 5) return Colors.orange;
+    return Colors.green;
+  }
+
   Widget _buildGpsInfoOverlay(AppStateProvider appState) {
     final position = appState.currentPosition;
     final hasGps = position != null;
