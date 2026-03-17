@@ -342,6 +342,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<DiscLogEntry> get discLogEntries => List.unmodifiable(_discLogEntries);
   List<TraceLogEntry> get traceLogEntries => List.unmodifiable(_traceLogEntries);
   List<UserErrorEntry> get errorLogEntries => List.unmodifiable(_errorLogEntries);
+  List<UnifiedPingLogEntry> get unifiedPingLogEntries {
+    final merged = <UnifiedPingLogEntry>[
+      ..._txLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.tx, timestamp: e.timestamp, entry: e)),
+      ..._rxLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.rx, timestamp: e.timestamp, entry: e)),
+      ..._discLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.disc, timestamp: e.timestamp, entry: e)),
+      ..._traceLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.trace, timestamp: e.timestamp, entry: e)),
+    ];
+    merged.sort();
+    return merged;
+  }
   ({double lat, double lon})? get mapNavigationTarget => _mapNavigationTarget;
   int get mapNavigationTrigger => _mapNavigationTrigger;
   bool get requestMapTabSwitch => _requestMapTabSwitch;
