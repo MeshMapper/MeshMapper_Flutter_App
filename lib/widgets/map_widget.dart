@@ -577,7 +577,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildGpsInfoOverlay(appState),
-              if (appState.preferences.showTopRepeaters && appState.autoPingEnabled) ...[
+              if (appState.preferences.showTopRepeaters) ...[
                 const SizedBox(height: 6),
                 _buildTopRepeatersOverlay(appState),
               ],
@@ -733,7 +733,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   /// Top 3 repeaters by SNR overlay (bottom-right of map)
   Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
     final topRepeaters = appState.topRepeatersBySnr;
-    if (topRepeaters.isEmpty) return const SizedBox.shrink();
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -745,33 +744,66 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final r in topRepeaters)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 1),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    r.repeaterId,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      fontFamily: 'monospace',
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    '${r.snr.toStringAsFixed(1)} dB',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      fontFamily: 'monospace',
-                      color: _snrColor(r.snr),
-                    ),
-                  ),
-                ],
+          const Text(
+            'Top Heard',
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w500,
+              color: Colors.white54,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 2),
+          if (topRepeaters.isEmpty)
+            const Text(
+              '---',
+              style: TextStyle(
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: Colors.white38,
               ),
+            ),
+          if (topRepeaters.isNotEmpty)
+            Table(
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              columnWidths: const {
+                0: IntrinsicColumnWidth(),
+                1: FixedColumnWidth(8),
+                2: IntrinsicColumnWidth(),
+              },
+              children: [
+                for (final r in topRepeaters)
+                  TableRow(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: Text(
+                          r.repeaterId,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'monospace',
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: Text(
+                          r.snr.toStringAsFixed(1),
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'monospace',
+                            color: _snrColor(r.snr),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
             ),
         ],
       ),

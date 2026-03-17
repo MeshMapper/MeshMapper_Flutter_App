@@ -160,7 +160,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SwitchListTile(
               secondary: const Icon(Icons.cell_tower),
               title: const Text('Top Repeaters on Map'),
-              subtitle: const Text('Show top 3 repeaters by SNR while wardriving'),
+              subtitle: const Text('Show top 3 repeaters by SNR from last ping'),
               value: prefs.showTopRepeaters,
               onChanged: (value) {
                 appState.updatePreferences(prefs.copyWith(showTopRepeaters: value));

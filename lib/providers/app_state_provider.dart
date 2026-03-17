@@ -1321,9 +1321,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
 
         // Update top repeaters overlay with this RX observation
-        if (ping.repeaterId.length == 2) {
-          _updateTopRepeaters([(repeaterId: ping.repeaterId.toUpperCase(), snr: ping.snr)]);
-        }
+        _updateTopRepeaters([(repeaterId: ping.repeaterId.toUpperCase(), snr: ping.snr)]);
 
         notifyListeners();
       };
@@ -1398,7 +1396,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
             // Update top repeaters overlay with current TX echoes
             _updateTopRepeaters(existingEvents
-                .where((e) => e.repeaterId.length == 2 && e.snr != null)
+                .where((e) => e.snr != null)
                 .map((e) => (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
                 .toList());
 
@@ -1449,7 +1447,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Update top repeaters overlay with all discovered nodes from this ping
         _updateTopRepeaters(discPing.discoveredNodes
-            .where((n) => n.repeaterId.length == 2)
             .map((n) => (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
             .toList());
 
@@ -1785,7 +1782,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                 'at ${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)} '
                 '(batch tracking: ${_currentBatchRepeaters.length} repeaters, rxCount: ${_pingStats.rxCount})');
             // Update top repeaters overlay immediately
-            if (observation.repeaterId.length == 2 && observation.snr != null) {
+            if (observation.snr != null) {
               _updateTopRepeaters([(repeaterId: repeaterKey, snr: observation.snr!)]);
             }
             // Play receive sound for new RX observation
@@ -1894,7 +1891,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               'snr=${entry.snr ?? 'null'}, pathLen=${entry.pathLength}');
 
           // Update top repeaters overlay with this RX observation
-          if (entry.repeaterId.length == 2 && entry.snr != null) {
+          if (entry.snr != null) {
             _updateTopRepeaters([(repeaterId: entry.repeaterId.toUpperCase(), snr: entry.snr!)]);
           }
 
@@ -2784,7 +2781,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _discLogEntries.clear();
     _traceLogEntries.clear();
     _errorLogEntries.clear();
-    _topRepeatersOverlay = [];
     notifyListeners();
   }
 
@@ -2807,8 +2803,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Trace log entry added: target=${entry.targetRepeaterId}, success=${entry.success}');
 
     // Update top repeaters overlay with successful trace result
-    if (entry.success && entry.targetRepeaterId.length == 2 && entry.localSnr != null) {
-      _updateTopRepeaters([(repeaterId: entry.targetRepeaterId.toUpperCase(), snr: entry.localSnr!)]);
+    if (entry.success && entry.localSnr != null) {
+      // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay
+      final id = entry.targetRepeaterId.toUpperCase();
+      final displayId = id.length > 6 ? id.substring(0, 6) : id;
+      _updateTopRepeaters([(repeaterId: displayId, snr: entry.localSnr!)]);
     }
 
     notifyListeners();

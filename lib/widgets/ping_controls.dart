@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 import '../providers/app_state_provider.dart';
 import '../services/ping_service.dart';
 import '../utils/debug_logger_io.dart';
-import 'offline_mode_toggle.dart';
 import 'repeater_picker_sheet.dart';
 
 /// Modern ping control panel with icon-based buttons and animated status
@@ -450,11 +449,13 @@ class _TargetedPingSection extends StatefulWidget {
   final bool isAnyModeRunning;
   final bool cooldownActive;
   final int cooldownRemaining;
+  final bool compact;
 
   const _TargetedPingSection({
     required this.isAnyModeRunning,
     required this.cooldownActive,
     required this.cooldownRemaining,
+    this.compact = false,
   });
 
   @override
@@ -578,24 +579,26 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                     size: 18,
                     color: effectiveColor,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _isStarting
-                          ? 'Starting...'
-                          : isTargetedRunning
-                              ? (statusText ?? 'Stop')
-                              : widget.cooldownActive
-                                  ? 'Cooldown ${widget.cooldownRemaining}s'
-                                  : 'Trace Mode',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: isTargetedRunning ? FontWeight.w600 : FontWeight.w500,
-                        color: isEnabled ? colorScheme.onSurface : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                  if (!widget.compact) ...[
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _isStarting
+                            ? 'Starting...'
+                            : isTargetedRunning
+                                ? (statusText ?? 'Stop')
+                                : widget.cooldownActive
+                                    ? 'Cooldown ${widget.cooldownRemaining}s'
+                                    : 'Trace Mode',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: isTargetedRunning ? FontWeight.w600 : FontWeight.w500,
+                          color: isEnabled ? colorScheme.onSurface : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),
@@ -1148,11 +1151,6 @@ class LandscapePingControls extends StatelessWidget {
     final prefs = appState.preferences;
     final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
 
-    // Antenna selector
-    final soundEnabled = appState.isSoundEnabled;
-    final offlineMode = appState.offlineMode;
-    final isConnected = appState.isConnected;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1248,34 +1246,12 @@ class LandscapePingControls extends StatelessWidget {
         ),
         const SizedBox(height: 10),
 
-        // Compact row for toggles
-        Row(
-          children: [
-            Expanded(
-              child: _LandscapeToggle(
-                icon: offlineMode ? Icons.cloud_off : Icons.cloud_queue,
-                label: 'Offline',
-                isOn: offlineMode,
-                color: Colors.orange,
-                onTap: () => OfflineModeToggle.handleOfflineModeToggle(
-                  context,
-                  appState,
-                  offlineMode,
-                  isConnected,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _LandscapeToggle(
-                icon: soundEnabled ? Icons.volume_up : Icons.volume_off,
-                label: 'Sound',
-                isOn: soundEnabled,
-                color: Colors.blue,
-                onTap: () => appState.toggleSoundEnabled(),
-              ),
-            ),
-          ],
+        // Targeted Ping controls (Trace Mode)
+        _TargetedPingSection(
+          isAnyModeRunning: isActiveModeRunning || isPassiveModeRunning || isHybridModeRunning,
+          cooldownActive: cooldownActive,
+          cooldownRemaining: cooldownRemaining,
+          compact: true,
         ),
       ],
     );
@@ -1574,70 +1550,6 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
 }
 
 /// Compact toggle button for landscape panel
-class _LandscapeToggle extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool isOn;
-  final Color color;
-  final VoidCallback onTap;
-
-  const _LandscapeToggle({
-    required this.icon,
-    required this.label,
-    required this.isOn,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final activeColor = isOn ? color : colorScheme.onSurfaceVariant;
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          height: 38,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          decoration: BoxDecoration(
-            color: isOn
-                ? activeColor.withValues(alpha: 0.12)
-                : colorScheme.onSurface.withValues(alpha: 0.04),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isOn
-                  ? activeColor.withValues(alpha: 0.35)
-                  : colorScheme.outline.withValues(alpha: 0.15),
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                size: 16,
-                color: isOn ? activeColor : colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: isOn ? FontWeight.w600 : FontWeight.w500,
-                  color: isOn ? activeColor : colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// Compact action button for minimized panel - horizontal pill layout
 /// Supports expanding to show label when active
 class _CompactActionButton extends StatefulWidget {
