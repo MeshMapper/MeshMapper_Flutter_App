@@ -102,6 +102,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   ConnectionStep _connectionStep = ConnectionStep.disconnected;
   String? _connectionError;
   bool _isAuthError = false;  // Track if connection failed due to auth
+  bool _isNetworkError = false;  // Track if connection failed due to network
 
   // Bluetooth adapter state (on/off)
   BluetoothAdapterState _bluetoothAdapterState = BluetoothAdapterState.unknown;
@@ -310,6 +311,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   ConnectionStep get connectionStep => _connectionStep;
   String? get connectionError => _connectionError;
   bool get isAuthError => _isAuthError;
+  bool get isNetworkError => _isNetworkError;
   BluetoothAdapterState get bluetoothAdapterState => _bluetoothAdapterState;
   bool get isBluetoothOn => _bluetoothAdapterState == BluetoothAdapterState.on;
   bool get isBluetoothOff => _bluetoothAdapterState == BluetoothAdapterState.off;
@@ -821,6 +823,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _discoveredDevices = [];
     _connectionError = null;
     _isAuthError = false;
+    _isNetworkError = false;
     notifyListeners();
 
     // Listen for discovered devices using subscription so stopScan() can cancel
@@ -888,6 +891,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       _connectionError = null;
       _isAuthError = false;
+      _isNetworkError = false;
 
       // Clean up any previous connection first
       if (_meshCoreConnection != null) {
@@ -1703,12 +1707,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           final errorParts = parts[1].split(':');
           final reason = errorParts.isNotEmpty ? errorParts[0] : 'unknown';
           final serverMessage = errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
+          _isNetworkError = reason == 'network_error';
           _connectionError = _getErrorMessage(reason, serverMessage);
         } else {
           _connectionError = 'Authentication failed';
         }
       } else {
         _isAuthError = false;
+        _isNetworkError = false;
         // Provide clean user-facing messages for common BLE errors
         if (errorStr.contains('timeout') || errorStr.contains('Timeout') || errorStr.contains('timed out')) {
           _connectionError = 'Bluetooth connection scan timed out';
@@ -3974,6 +3980,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[GEOFENCE] API response received: ${result != null ? 'valid' : 'null'}');
 
       if (result == null) {
+        // Update position even on failure to prevent zone check flooding
+        // (without this, every GPS update re-triggers a zone check while driving)
+        _lastZoneCheckPosition = _currentPosition;
         debugError('[GEOFENCE] Zone status check failed: no response from API');
         _scheduleZoneCheckRetry(
           seconds: 5,
