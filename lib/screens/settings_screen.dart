@@ -107,801 +107,770 @@ class _SettingsScreenState extends State<SettingsScreen> {
         automaticallyImplyLeading: false,
       ),
       body: ListView(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
-          // Appearance section
-          _buildSectionHeader(context, 'Appearance'),
-          SwitchListTile(
-            secondary: Icon(
-              prefs.themeMode == 'dark' ? Icons.dark_mode : Icons.light_mode,
-            ),
-            title: const Text('Theme'),
-            subtitle: Text(prefs.themeMode == 'dark' ? 'Dark mode' : 'Light mode'),
-            value: prefs.themeMode == 'dark',
-            onChanged: (isDark) {
-              appState.setThemeMode(isDark ? 'dark' : 'light');
-            },
-          ),
-          SwitchListTile(
-            secondary: Icon(
-              prefs.isImperial ? Icons.square_foot : Icons.straighten,
-            ),
-            title: const Text('Units'),
-            subtitle: Text(prefs.isImperial ? 'Imperial (mi, ft)' : 'Metric (km, m)'),
-            value: prefs.isImperial,
-            onChanged: (isImperial) {
-              appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
-            },
-          ),
-
-          const Divider(),
-
-          // Wardriving Settings section
-          _buildSectionHeader(context, 'Wardriving Settings'),
-
-          // Sound Notifications Toggle
-          SwitchListTile(
-            secondary: Icon(appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
-            title: const Text('Sound Notifications'),
-            subtitle: Text(appState.isSoundEnabled ? 'Plays on ping events' : 'Silent'),
-            value: appState.isSoundEnabled,
-            onChanged: (_) => appState.toggleSoundEnabled(),
-          ),
-
-          // Auto-Ping Interval Selector
-          ListTile(
-            leading: const Icon(Icons.timer),
-            title: const Text('Auto-Ping Interval'),
-            subtitle: Text(prefs.autoPingIntervalDisplay),
-            trailing: const Icon(Icons.chevron_right),
-            enabled: !isAutoMode,
-            onTap: isAutoMode ? null : () => _showIntervalSelector(context, appState),
-          ),
-
-          // Min Ping Distance Selector
-          ListTile(
-            leading: const Icon(Icons.straighten),
-            title: const Text('Min Ping Distance'),
-            subtitle: Text(prefs.minPingDistanceDisplay),
-            trailing: const Icon(Icons.chevron_right),
-            enabled: !isAutoMode,
-            onTap: isAutoMode ? null : () => _showDistanceSelector(context, appState),
-          ),
-
-          // Auto-Stop After Idle Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.timer_off),
-            title: const Text('Auto-Stop After Idle'),
-            subtitle: const Text('Stops auto-ping after 30 min without movement'),
-            value: prefs.autoStopAfterIdle,
-            onChanged: isAutoMode ? null : (value) {
-              appState.updatePreferences(prefs.copyWith(autoStopAfterIdle: value));
-            },
-          ),
-
-          // Hybrid Mode Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.compare_arrows),
-            title: Row(
-              children: [
-                const Flexible(child: Text('Hybrid Mode', overflow: TextOverflow.ellipsis)),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: () => _showHybridModeInfo(context),
-                  child: Icon(
-                    Icons.info_outline,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-            subtitle: appState.enforceHybrid
-                ? const Text(
-                    'Set by Regional Admin — hybrid uses 50% fewer flood packets, improving mesh health.',
-                    style: TextStyle(color: Colors.amber),
-                  )
-                : const Text('Combines Active and Passive modes'),
-            value: appState.enforceHybrid ? true : prefs.hybridModeEnabled,
-            onChanged: (isAutoMode || appState.enforceHybrid) ? null : (value) {
-              appState.updatePreferences(prefs.copyWith(hybridModeEnabled: value));
-            },
-          ),
-
-          // Discovery Drop Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.signal_wifi_off),
-            title: Row(
-              children: [
-                const Flexible(child: Text('Discovery Drop', overflow: TextOverflow.ellipsis)),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: () => _showDiscDropInfo(context),
-                  child: Icon(
-                    Icons.info_outline,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-            subtitle: appState.enforceDiscDrop
-                ? const Text(
-                    'Set by Regional Admin — reports dead zones for network analysis.',
-                    style: TextStyle(color: Colors.amber),
-                  )
-                : const Text('Count failed discoveries as failed pings'),
-            value: appState.enforceDiscDrop ? true : prefs.discDropEnabled,
-            onChanged: (isAutoMode || appState.enforceDiscDrop) ? null : (value) {
-              appState.updatePreferences(prefs.copyWith(discDropEnabled: value));
-            },
-          ),
-
-          // CARpeater Filter Setting
-          SwitchListTile(
-            secondary: const Icon(Icons.filter_alt),
-            title: const Text('CARpeater Filter'),
-            subtitle: Text(prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
-                ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
-                : 'Tap to set CARpeater repeater ID'),
-            value: prefs.ignoreCarpeater,
-            onChanged: isAutoMode ? null : (value) {
-              if (value && prefs.ignoreRepeaterId == null) {
-                // Show dialog to set repeater ID when enabling
-                _showRepeaterIdDialog(context, appState);
-              } else {
-                appState.updatePreferences(prefs.copyWith(ignoreCarpeater: value));
-              }
-            },
-          ),
-
-          // CARpeater ID - show when enabled
-          if (prefs.ignoreCarpeater)
-            ListTile(
-              leading: const SizedBox(width: 24), // Indent
-              title: const Text('CARpeater ID'),
-              subtitle: Text(prefs.ignoreRepeaterId != null
-                  ? '0x${prefs.ignoreRepeaterId}'
-                  : 'Not set'),
-              trailing: const Icon(Icons.chevron_right),
-              enabled: !isAutoMode,
-              onTap: isAutoMode ? null : () => _showRepeaterIdDialog(context, appState),
-            ),
-
-          // Anonymous Mode Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.visibility_off),
-            title: const Text('Anonymous Mode'),
-            subtitle: Text(prefs.anonymousMode
-                ? 'Device broadcasts as "Anonymous"'
-                : 'Device uses its real name'),
-            value: prefs.anonymousMode,
-            onChanged: isAutoMode ? null : (value) {
-              if (value) {
-                _showEnableAnonymousConfirmation(context, appState);
-              } else {
-                if (appState.connectionStatus == ConnectionStatus.connected) {
-                  _showDisableAnonymousConfirmation(context, appState);
-                } else {
-                  appState.setAnonymousMode(false);
-                }
-              }
-            },
-          ),
-
-          // Delete Channel on Disconnect Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.delete_sweep),
-            title: const Text('Delete Channel on Disconnect'),
-            subtitle: const Text('Remove #wardriving channel from radio when disconnecting'),
-            value: prefs.deleteChannelOnDisconnect,
-            onChanged: (value) {
-              appState.updatePreferences(prefs.copyWith(deleteChannelOnDisconnect: value));
-            },
-          ),
-
-          // Disable RSSI Filter Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.shield_outlined),
-            title: const Text('Disable RSSI Filter'),
-            subtitle: Text(prefs.disableRssiFilter
-                ? 'Allows all signal strengths'
-                : 'Drops signals stronger than -30 dBm'),
-            value: prefs.disableRssiFilter,
-            onChanged: isAutoMode ? null : (value) {
-              if (value) {
-                _showDisableRssiFilterConfirmation(context, appState);
-              } else {
-                appState.updatePreferences(prefs.copyWith(disableRssiFilter: false));
-              }
-            },
-          ),
-
           // Lock indicator
           if (isAutoMode)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                children: [
-                  Icon(Icons.lock, size: 16, color: Colors.amber),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Settings locked during auto-ping mode',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.amber,
-                      ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.lock, size: 16, color: Colors.amber),
+                    SizedBox(width: 8),
+                    Text(
+                      'Some settings locked during auto-ping',
+                      style: TextStyle(fontSize: 12, color: Colors.amber),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
 
-          // Radio Settings section
-          const Divider(),
-          _buildSectionHeader(context, 'Radio Settings'),
-
-          // TX Bytes Setting
-          ListTile(
-            leading: const Icon(Icons.linear_scale),
-            title: Row(
-              children: [
-                const Flexible(child: Text('TX Bytes', overflow: TextOverflow.ellipsis)),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: () => _showHopBytesInfo(context),
-                  child: Icon(
-                    Icons.info_outline,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-            subtitle: appState.enforceHopBytes
-                ? const Text(
-                    'Set by Regional Admin — larger IDs reduce collisions in your region.',
-                    style: TextStyle(color: Colors.amber),
-                  )
-                : (appState.isConnected && !appState.supportsMultiBytePaths)
-                    ? const Text(
-                        'Firmware 1.14+ required',
-                        style: TextStyle(color: Colors.amber),
-                      )
-                    : !appState.isConnected
-                        ? const Text(
-                            'Connect to radio to configure',
-                            style: TextStyle(color: Colors.amber),
-                          )
-                        : const Text('Repeater ID size in TX/RX path hops'),
-            trailing: DropdownButton<int>(
-              value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
-              underline: const SizedBox(),
-              items: const [
-                DropdownMenuItem(value: 1, child: Text('1')),
-                DropdownMenuItem(value: 2, child: Text('2')),
-                DropdownMenuItem(value: 3, child: Text('3')),
-              ],
-              onChanged: (!appState.isConnected || isAutoMode || appState.enforceHopBytes || !appState.supportsMultiBytePaths)
-                  ? null
-                  : (value) {
-                      if (value != null) appState.setHopBytes(value);
-                    },
-            ),
-          ),
-
-          // Trace Bytes Setting
-          ListTile(
-            leading: const Icon(Icons.gps_fixed),
-            title: Row(
-              children: [
-                const Flexible(child: Text('Trace Bytes', overflow: TextOverflow.ellipsis)),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: () => _showTraceBytesInfo(context),
-                  child: Icon(
-                    Icons.info_outline,
-                    size: 18,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-            subtitle: !appState.isConnected
-                ? const Text(
-                    'Connect to radio to configure',
-                    style: TextStyle(color: Colors.amber),
-                  )
-                : (appState.isConnected && !appState.supportsMultiBytePaths)
-                    ? const Text(
-                        'Firmware 1.14+ required',
-                        style: TextStyle(color: Colors.amber),
-                      )
-                    : const Text('Repeater ID size in trace path'),
-            trailing: DropdownButton<int>(
-              value: appState.traceHopBytes,
-              underline: const SizedBox(),
-              items: const [
-                DropdownMenuItem(value: 1, child: Text('1')),
-                DropdownMenuItem(value: 2, child: Text('2')),
-                DropdownMenuItem(value: 4, child: Text('4')),
-              ],
-              onChanged: (!appState.isConnected || isAutoMode || !appState.supportsMultiBytePaths)
-                  ? null
-                  : (value) {
-                      if (value != null) appState.setTraceHopBytes(value);
-                    },
-            ),
-          ),
-
-          // Background Mode - for "Always" location permission (iOS and Android)
-          if (!kIsWeb) ...[
-            const Divider(),
-            _buildSectionHeader(context, 'Background Mode'),
-            _BackgroundModeToggle(appState: appState),
-          ],
-
-          const Divider(),
-
-          // Data Management section
-          _buildSectionHeader(context, 'Data Management'),
-          ListTile(
-            leading: const Icon(Icons.cloud_queue),
-            title: const Text('Queued Pings'),
-            subtitle: Text('${appState.queueSize} items waiting'),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.cloud_upload),
-                  onPressed: appState.queueSize > 0
-                      ? () => appState.forceUploadQueue()
-                      : null,
-                  tooltip: 'Force upload',
-                ),
-                IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: appState.queueSize > 0
-                      ? () => _confirmClearQueue(context, appState)
-                      : null,
-                  tooltip: 'Clear queue',
-                ),
-              ],
-            ),
-          ),
-
-          // Clear Map Markers
-          ListTile(
-            leading: const Icon(Icons.delete_sweep),
-            title: const Text('Clear Map Markers'),
-            subtitle: const Text('Remove all TX/RX markers from map'),
-            onTap: () => _confirmClearPings(context, appState),
-          ),
-
-          // Offline Sessions
-          _buildSectionHeader(context, 'Offline Sessions'),
-          if (appState.offlineSessions.isEmpty)
-            ListTile(
-              leading: Icon(Icons.cloud_off, color: Colors.grey.shade400),
-              title: Text(
-                'No offline sessions stored',
-                style: TextStyle(color: Colors.grey.shade500),
-              ),
-              subtitle: Text(
-                'Sessions recorded in offline mode will appear here for upload',
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
-              ),
-            )
-          else
-            ...appState.offlineSessions.map((session) => _OfflineSessionTile(
-              session: session,
-              onUpload: () => _uploadOfflineSession(context, appState, session.filename),
-              onDelete: () => _confirmDeleteOfflineSession(context, appState, session.filename),
-              onDownload: () => _downloadOfflineSession(context, appState, session.filename),
-            )),
-
-          const Divider(),
-
-          // About section
-          _buildSectionHeader(context, 'About'),
-          ListTile(
-            leading: const Icon(Icons.perm_identity),
-            title: const Text('Device ID'),
-            subtitle: Text(appState.deviceId),
-          ),
-          const ListTile(
-            leading: Icon(Icons.info_outline),
-            title: Text(AppConstants.appName),
-            subtitle: Text('Mesh network coverage mapper'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.new_releases_outlined),
-            title: const Text('Version'),
-            subtitle: Text(AppConstants.appVersion),
-            onTap: () => _onVersionTap(appState),
-          ),
-          ListTile(
-            leading: const Icon(Icons.feedback_outlined),
-            title: const Text('Submit Feedback'),
-            subtitle: const Text('Report bugs or request features'),
-            onTap: () => _showBugReportDialog(context, appState),
-          ),
-          ListTile(
-            leading: const FaIcon(FontAwesomeIcons.github),
-            title: const Text('GitHub'),
-            subtitle: const Text('View issues and source code'),
-            onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
-          ),
-          ListTile(
-            leading: const FaIcon(FontAwesomeIcons.discord),
-            title: const Text('Discord'),
-            subtitle: const Text('Join our community chat'),
-            onTap: () => _launchUrl('https://discord.gg/D26P6c6QmG'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.groups),
-            title: const Text('Community'),
-            subtitle: const Text('Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
-            onTap: () => _launchUrl('https://ottawamesh.ca/'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.coffee),
-            title: const Text('Buy us a coffee ☕'),
-            subtitle: const Text('Support MeshMapper development'),
-            onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
-          ),
-
-          // Exit Options (Android only)
-          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
-            const Divider(),
-            _buildSectionHeader(context, 'Exit Options'),
-
-            // Auto-close toggle
+          // General
+          _buildSection(context, 'General', [
             SwitchListTile(
-              secondary: const Icon(Icons.exit_to_app),
-              title: const Text('Close App After Disconnect'),
-              subtitle: const Text('Automatically exit the app when disconnecting'),
-              value: prefs.closeAppAfterDisconnect,
-              onChanged: (value) => appState.setCloseAppAfterDisconnect(value),
-            ),
-
-            // Manual close button
-            ListTile(
-              leading: const Icon(Icons.power_settings_new, color: Colors.red),
-              title: const Text('Close App'),
-              subtitle: const Text('Exit the app completely'),
-              onTap: () => _showCloseAppConfirmation(context, appState),
-            ),
-          ],
-
-          // Developer Tools section - only visible when developer mode is enabled
-          if (appState.developerModeEnabled) ...[
-            const Divider(),
-
-            _buildSectionHeader(context, 'Developer Tools'),
-
-            // Developer mode toggle (to disable)
-            SwitchListTile(
-              secondary: const Icon(Icons.developer_mode),
-              title: const Text('Developer Mode'),
-              subtitle: const Text('Disable to hide developer tools'),
-              value: appState.developerModeEnabled,
-              onChanged: (value) {
-                appState.setDeveloperMode(value);
+              secondary: Icon(
+                prefs.themeMode == 'dark' ? Icons.dark_mode : Icons.light_mode,
+              ),
+              title: const Text('Theme'),
+              subtitle: Text(prefs.themeMode == 'dark' ? 'Dark mode' : 'Light mode'),
+              value: prefs.themeMode == 'dark',
+              onChanged: (isDark) {
+                appState.setThemeMode(isDark ? 'dark' : 'light');
               },
             ),
-
-            // GPS Simulator Toggle
-          SwitchListTile(
-            secondary: Icon(
-              Icons.gps_fixed,
-              color: appState.isGpsSimulatorEnabled ? Colors.orange : null,
+            SwitchListTile(
+              secondary: Icon(
+                prefs.isImperial ? Icons.square_foot : Icons.straighten,
+              ),
+              title: const Text('Units'),
+              subtitle: Text(prefs.isImperial ? 'Imperial (mi, ft)' : 'Metric (km, m)'),
+              value: prefs.isImperial,
+              onChanged: (isImperial) {
+                appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
+              },
             ),
-            title: Row(
-              children: [
-                const Text('GPS Simulator'),
-                if (appState.isGpsSimulatorEnabled) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.orange,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text(
-                      'SIMULATED',
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+            if (!kIsWeb)
+              _BackgroundModeToggle(appState: appState),
+          ]),
+
+          // Ping Settings
+          _buildSection(context, 'Ping Settings', [
+            SwitchListTile(
+              secondary: const Icon(Icons.visibility_off),
+              title: const Text('Anonymous Mode'),
+              subtitle: Text(prefs.anonymousMode
+                  ? 'Device broadcasts as "Anonymous"'
+                  : 'Device uses its real name'),
+              value: prefs.anonymousMode,
+              onChanged: isAutoMode ? null : (value) {
+                if (value) {
+                  _showEnableAnonymousConfirmation(context, appState);
+                } else {
+                  if (appState.connectionStatus == ConnectionStatus.connected) {
+                    _showDisableAnonymousConfirmation(context, appState);
+                  } else {
+                    appState.setAnonymousMode(false);
+                  }
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.timer),
+              title: const Text('Auto-Ping Interval'),
+              subtitle: Text(prefs.autoPingIntervalDisplay),
+              trailing: const Icon(Icons.chevron_right),
+              enabled: !isAutoMode,
+              onTap: isAutoMode ? null : () => _showIntervalSelector(context, appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.straighten),
+              title: const Text('Min Ping Distance'),
+              subtitle: Text(prefs.minPingDistanceDisplay),
+              trailing: const Icon(Icons.chevron_right),
+              enabled: !isAutoMode,
+              onTap: isAutoMode ? null : () => _showDistanceSelector(context, appState),
+            ),
+            SwitchListTile(
+              secondary: Icon(appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
+              title: const Text('Sound Notifications'),
+              subtitle: Text(appState.isSoundEnabled ? 'Plays on ping events' : 'Silent'),
+              value: appState.isSoundEnabled,
+              onChanged: (_) => appState.toggleSoundEnabled(),
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.timer_off),
+              title: const Text('Auto-Stop After Idle'),
+              subtitle: const Text('Stops auto-ping after 30 min without movement'),
+              value: prefs.autoStopAfterIdle,
+              onChanged: isAutoMode ? null : (value) {
+                appState.updatePreferences(prefs.copyWith(autoStopAfterIdle: value));
+              },
+            ),
+          ]),
+
+          // Modes
+          _buildSection(context, 'Modes', [
+            SwitchListTile(
+              secondary: const Icon(Icons.compare_arrows),
+              title: Row(
+                children: [
+                  const Flexible(child: Text('Hybrid Mode', overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => _showHybridModeInfo(context),
+                    child: Icon(
+                      Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
-              ],
-            ),
-            subtitle: Text(appState.isGpsSimulatorEnabled
-                ? 'Smooth simulated movement active'
-                : 'Use simulated GPS for testing'),
-            value: appState.isGpsSimulatorEnabled,
-            onChanged: (value) {
-              if (value) {
-                appState.enableGpsSimulator();
-              } else {
-                appState.disableGpsSimulator();
-              }
-            },
-          ),
-
-          // Simulator Settings (only when enabled)
-          if (appState.isGpsSimulatorEnabled) ...[
-            // Speed Slider
-            ListTile(
-              leading: const SizedBox(width: 24),
-              title: const Text('Simulation Speed'),
-              subtitle: Slider(
-                value: appState.gpsSimulatorSpeed,
-                min: 10,
-                max: 120,
-                divisions: 11,
-                label: formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
-                onChanged: (value) {
-                  appState.setGpsSimulatorSpeed(value);
-                },
               ),
-              trailing: Text(
-                formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
-                style: const TextStyle(fontWeight: FontWeight.bold),
+              subtitle: appState.enforceHybrid
+                  ? const Text(
+                      'Set by Regional Admin — hybrid uses 50% fewer flood packets, improving mesh health.',
+                      style: TextStyle(color: Colors.amber),
+                    )
+                  : const Text('Combines Active and Passive modes'),
+              value: appState.enforceHybrid ? true : prefs.hybridModeEnabled,
+              onChanged: (isAutoMode || appState.enforceHybrid) ? null : (value) {
+                appState.updatePreferences(prefs.copyWith(hybridModeEnabled: value));
+              },
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.signal_wifi_off),
+              title: Row(
+                children: [
+                  const Flexible(child: Text('Discovery Drop', overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => _showDiscDropInfo(context),
+                    child: Icon(
+                      Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              subtitle: appState.enforceDiscDrop
+                  ? const Text(
+                      'Set by Regional Admin — reports dead zones for network analysis.',
+                      style: TextStyle(color: Colors.amber),
+                    )
+                  : const Text('Count failed discoveries as failed pings'),
+              value: appState.enforceDiscDrop ? true : prefs.discDropEnabled,
+              onChanged: (isAutoMode || appState.enforceDiscDrop) ? null : (value) {
+                appState.updatePreferences(prefs.copyWith(discDropEnabled: value));
+              },
+            ),
+          ]),
+
+          // Filtering
+          _buildSection(context, 'Filtering', [
+            SwitchListTile(
+              secondary: const Icon(Icons.filter_alt),
+              title: const Text('CARpeater Filter'),
+              subtitle: Text(prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
+                  ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
+                  : 'Tap to set CARpeater repeater ID'),
+              value: prefs.ignoreCarpeater,
+              onChanged: isAutoMode ? null : (value) {
+                if (value && prefs.ignoreRepeaterId == null) {
+                  _showRepeaterIdDialog(context, appState);
+                } else {
+                  appState.updatePreferences(prefs.copyWith(ignoreCarpeater: value));
+                }
+              },
+            ),
+            if (prefs.ignoreCarpeater)
+              ListTile(
+                leading: const SizedBox(width: 24),
+                title: const Text('CARpeater ID'),
+                subtitle: Text(prefs.ignoreRepeaterId != null
+                    ? '0x${prefs.ignoreRepeaterId}'
+                    : 'Not set'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !isAutoMode,
+                onTap: isAutoMode ? null : () => _showRepeaterIdDialog(context, appState),
+              ),
+            SwitchListTile(
+              secondary: const Icon(Icons.shield_outlined),
+              title: const Text('Disable RSSI Filter'),
+              subtitle: Text(prefs.disableRssiFilter
+                  ? 'Allows all signal strengths'
+                  : 'Drops signals stronger than -30 dBm'),
+              value: prefs.disableRssiFilter,
+              onChanged: isAutoMode ? null : (value) {
+                if (value) {
+                  _showDisableRssiFilterConfirmation(context, appState);
+                } else {
+                  appState.updatePreferences(prefs.copyWith(disableRssiFilter: false));
+                }
+              },
+            ),
+          ]),
+
+          // Radio Settings
+          _buildSection(context, 'Radio', [
+            ListTile(
+              leading: const Icon(Icons.linear_scale),
+              title: Row(
+                children: [
+                  const Flexible(child: Text('TX Bytes', overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => _showHopBytesInfo(context),
+                    child: Icon(
+                      Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              subtitle: appState.enforceHopBytes
+                  ? const Text(
+                      'Set by Regional Admin — larger IDs reduce collisions in your region.',
+                      style: TextStyle(color: Colors.amber),
+                    )
+                  : (appState.isConnected && !appState.supportsMultiBytePaths)
+                      ? const Text(
+                          'Firmware 1.14+ required',
+                          style: TextStyle(color: Colors.amber),
+                        )
+                      : !appState.isConnected
+                          ? const Text(
+                              'Connect to radio to configure',
+                              style: TextStyle(color: Colors.amber),
+                            )
+                          : const Text('Repeater ID size in TX/RX path hops'),
+              trailing: DropdownButton<int>(
+                value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem(value: 1, child: Text('1')),
+                  DropdownMenuItem(value: 2, child: Text('2')),
+                  DropdownMenuItem(value: 3, child: Text('3')),
+                ],
+                onChanged: (!appState.isConnected || isAutoMode || appState.enforceHopBytes || !appState.supportsMultiBytePaths)
+                    ? null
+                    : (value) {
+                        if (value != null) appState.setHopBytes(value);
+                      },
               ),
             ),
-
-            // Pattern Selector
             ListTile(
-              leading: const SizedBox(width: 24),
-              title: const Text('Movement Pattern'),
-              trailing: SizedBox(
-                width: 180,
-                child: DropdownButton<SimulatorPattern>(
-                  value: appState.gpsSimulatorPattern,
-                  underline: const SizedBox(),
-                  isExpanded: true,
-                  items: [
-                    const DropdownMenuItem(
-                      value: SimulatorPattern.straight,
-                      child: Text('Straight Line', overflow: TextOverflow.ellipsis),
+              leading: const Icon(Icons.gps_fixed),
+              title: Row(
+                children: [
+                  const Flexible(child: Text('Trace Bytes', overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => _showTraceBytesInfo(context),
+                    child: Icon(
+                      Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
-                    const DropdownMenuItem(
-                      value: SimulatorPattern.circle,
-                      child: Text('Circle', overflow: TextOverflow.ellipsis),
-                    ),
-                    const DropdownMenuItem(
-                      value: SimulatorPattern.randomWalk,
-                      child: Text('Random Walk', overflow: TextOverflow.ellipsis),
-                    ),
-                    if (appState.hasSimulatorRoute)
-                      DropdownMenuItem(
-                        value: SimulatorPattern.route,
-                        child: Text(
-                          'Route: ${appState.simulatorRouteName ?? "Loaded"}',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                  ],
-                  onChanged: (pattern) {
-                    if (pattern != null) {
-                      appState.setGpsSimulatorPattern(pattern);
-                    }
-                  },
-                ),
+                  ),
+                ],
+              ),
+              subtitle: !appState.isConnected
+                  ? const Text(
+                      'Connect to radio to configure',
+                      style: TextStyle(color: Colors.amber),
+                    )
+                  : (appState.isConnected && !appState.supportsMultiBytePaths)
+                      ? const Text(
+                          'Firmware 1.14+ required',
+                          style: TextStyle(color: Colors.amber),
+                        )
+                      : const Text('Repeater ID size in trace path'),
+              trailing: DropdownButton<int>(
+                value: appState.traceHopBytes,
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem(value: 1, child: Text('1')),
+                  DropdownMenuItem(value: 2, child: Text('2')),
+                  DropdownMenuItem(value: 4, child: Text('4')),
+                ],
+                onChanged: (!appState.isConnected || isAutoMode || !appState.supportsMultiBytePaths)
+                    ? null
+                    : (value) {
+                        if (value != null) appState.setTraceHopBytes(value);
+                      },
               ),
             ),
+            SwitchListTile(
+              secondary: const Icon(Icons.delete_sweep),
+              title: Row(
+                children: [
+                  const Flexible(child: Text('Delete Channel on Disconnect')),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => _showDeleteChannelInfo(context),
+                    child: Icon(
+                      Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              value: prefs.deleteChannelOnDisconnect,
+              onChanged: (value) {
+                appState.updatePreferences(prefs.copyWith(deleteChannelOnDisconnect: value));
+              },
+            ),
+          ]),
 
-            // Load Route File
+          // Data Management
+          _buildSection(context, 'Data', [
             ListTile(
-              leading: const SizedBox(width: 24),
-              title: const Text('Load Route File'),
-              subtitle: Text(appState.hasSimulatorRoute
-                  ? '${appState.simulatorRouteName} (${appState.simulatorRoutePointCount} points)'
-                  : 'KML or GPX file'),
+              leading: const Icon(Icons.cloud_queue),
+              title: const Text('Queued Pings'),
+              subtitle: Text('${appState.queueSize} items waiting'),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.folder_open),
-                    onPressed: () => _pickRouteFile(context, appState),
-                    tooltip: 'Load route file',
+                    icon: const Icon(Icons.cloud_upload),
+                    onPressed: appState.queueSize > 0
+                        ? () => appState.forceUploadQueue()
+                        : null,
+                    tooltip: 'Force upload',
                   ),
-                  if (appState.hasSimulatorRoute)
-                    IconButton(
-                      icon: const Icon(Icons.clear),
-                      onPressed: () {
-                        appState.clearSimulatorRoute();
-                        AppToast.info(context, 'Route cleared');
-                      },
-                      tooltip: 'Clear route',
-                    ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: appState.queueSize > 0
+                        ? () => _confirmClearQueue(context, appState)
+                        : null,
+                    tooltip: 'Clear queue',
+                  ),
                 ],
               ),
             ),
-
-            // Reset Position Button
             ListTile(
-              leading: const SizedBox(width: 24),
-              title: const Text('Reset Position'),
-              subtitle: Text(appState.hasSimulatorRoute
-                  ? 'Reset to route start'
-                  : 'Reset to Ottawa downtown'),
-              trailing: IconButton(
-                icon: const Icon(Icons.restart_alt),
-                onPressed: () {
-                  appState.resetGpsSimulator();
-                  AppToast.info(
-                    context,
-                    appState.hasSimulatorRoute
-                        ? 'Reset to route start'
-                        : 'GPS simulator reset to Ottawa downtown',
-                  );
+              leading: const Icon(Icons.delete_sweep),
+              title: const Text('Clear Map Markers'),
+              subtitle: const Text('Remove all TX/RX markers from map'),
+              onTap: () => _confirmClearPings(context, appState),
+            ),
+          ]),
+
+          // Offline Sessions
+          _buildSection(context, 'Offline Sessions', [
+            if (appState.offlineSessions.isEmpty)
+              ListTile(
+                leading: Icon(Icons.cloud_off, color: Colors.grey.shade400),
+                title: Text(
+                  'No offline sessions stored',
+                  style: TextStyle(color: Colors.grey.shade500),
+                ),
+                subtitle: Text(
+                  'Sessions recorded in offline mode will appear here',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+                ),
+              )
+            else
+              ...appState.offlineSessions.map((session) => _OfflineSessionTile(
+                session: session,
+                onUpload: () => _uploadOfflineSession(context, appState, session.filename),
+                onDelete: () => _confirmDeleteOfflineSession(context, appState, session.filename),
+                onDownload: () => _downloadOfflineSession(context, appState, session.filename),
+              )),
+          ]),
+
+          // About
+          _buildSection(context, 'About', [
+            const ListTile(
+              leading: Icon(Icons.info_outline),
+              title: Text(AppConstants.appName),
+              subtitle: Text('Mesh network coverage mapper'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.new_releases_outlined),
+              title: const Text('Version'),
+              subtitle: Text(AppConstants.appVersion),
+              onTap: () => _onVersionTap(appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.feedback_outlined),
+              title: const Text('Submit Feedback'),
+              subtitle: const Text('Report bugs or request features'),
+              onTap: () => _showBugReportDialog(context, appState),
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.github),
+              title: const Text('GitHub'),
+              subtitle: const Text('View issues and source code'),
+              onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.discord),
+              title: const Text('Discord'),
+              subtitle: const Text('Join our community chat'),
+              onTap: () => _launchUrl('https://discord.gg/D26P6c6QmG'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.groups),
+              title: const Text('Community'),
+              subtitle: const Text('Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
+              onTap: () => _launchUrl('https://ottawamesh.ca/'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.coffee),
+              title: const Text('Buy us a coffee'),
+              subtitle: const Text('Support MeshMapper development'),
+              onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
+            ),
+          ]),
+
+          // Exit Options (Android only)
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+            _buildSection(context, 'Exit', [
+              SwitchListTile(
+                secondary: const Icon(Icons.exit_to_app),
+                title: const Text('Close App After Disconnect'),
+                subtitle: const Text('Automatically exit the app when disconnecting'),
+                value: prefs.closeAppAfterDisconnect,
+                onChanged: (value) => appState.setCloseAppAfterDisconnect(value),
+              ),
+              ListTile(
+                leading: const Icon(Icons.power_settings_new, color: Colors.red),
+                title: const Text('Close App'),
+                subtitle: const Text('Exit the app completely'),
+                onTap: () => _showCloseAppConfirmation(context, appState),
+              ),
+            ]),
+
+          // Developer Tools - only visible when developer mode is enabled
+          if (appState.developerModeEnabled)
+            _buildSection(context, 'Developer Tools', [
+              SwitchListTile(
+                secondary: const Icon(Icons.developer_mode),
+                title: const Text('Developer Mode'),
+                subtitle: const Text('Disable to hide developer tools'),
+                value: appState.developerModeEnabled,
+                onChanged: (value) {
+                  appState.setDeveloperMode(value);
                 },
               ),
-            ),
-          ],
-          ], // Close developerModeEnabled conditional
-
-          // Debug section (always visible on mobile)
-          if (!kIsWeb) ...[
-            const Divider(),
-
-            _buildSectionHeader(context, 'Debug'),
-
-            SwitchListTile(
-              secondary: Icon(
-                Icons.bug_report,
-                color: appState.debugLogsEnabled ? Colors.orange : null,
-              ),
-              title: Row(
-                children: [
-                  const Text('Debug Logs'),
-                  if (appState.debugLogsEnabled) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.orange,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: const Text(
-                        'LOGGING',
-                        style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              subtitle: Text(
-                appState.debugLogsEnabled
-                    ? 'Writing logs to file'
-                    : 'Enable to save debug logs to device',
-              ),
-              value: appState.debugLogsEnabled,
-              onChanged: (value) async {
-                if (value) {
-                  await appState.enableDebugLogs();
-                } else {
-                  await appState.disableDebugLogs();
-                }
-              },
-            ),
-
-            // Log Files List (show when toggle is ON or when files exist)
-            if (appState.debugLogsEnabled || appState.debugLogFiles.isNotEmpty) ...[
-              // Section header with Delete All button
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: Row(
+              SwitchListTile(
+                secondary: Icon(
+                  Icons.gps_fixed,
+                  color: appState.isGpsSimulatorEnabled ? Colors.orange : null,
+                ),
+                title: Row(
                   children: [
-                    Text(
-                      'Debug Log Files',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            color: Colors.grey.shade600,
+                    const Text('GPS Simulator'),
+                    if (appState.isGpsSimulatorEnabled) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.orange,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'SIMULATED',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
-                    ),
-                    const Spacer(),
-                    if (appState.debugLogFiles.isNotEmpty) ...[
-                      TextButton.icon(
-                        icon: const Icon(Icons.cloud_upload, size: 18),
-                        label: const Text('Upload'),
-                        onPressed: () => _showUploadLogsDialog(context, appState),
-                      ),
-                      TextButton.icon(
-                        icon: const Icon(Icons.delete_sweep, size: 18),
-                        label: const Text('Delete All'),
-                        onPressed: () => _confirmDeleteAllLogs(context, appState),
+                        ),
                       ),
                     ],
                   ],
                 ),
-              ),
-
-              // Log files list or empty message
-              if (appState.debugLogFiles.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    'No debug logs yet',
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                  ),
-                )
-              else
-                ...appState.debugLogFiles.asMap().entries.map((entry) {
-                  final index = entry.key;
-                  final file = entry.value;
-                  final filename = file.path.split('/').last;
-                  final sizeBytes = file.lengthSync();
-                  final isCurrentLog = index == 0;
-                  final timestampMatch = RegExp(r'meshmapper-debug-(\d+)\.txt').firstMatch(filename);
-                  final fileDate = timestampMatch != null
-                      ? DateTime.fromMillisecondsSinceEpoch(int.parse(timestampMatch.group(1)!) * 1000)
-                      : null;
-                  final dateStr = fileDate != null ? DateFormat('MMM d, h:mm a').format(fileDate) : filename;
-
-                  String sizeDisplay;
-                  final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
-                  if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
-                    final sizeMb = (sizeBytes / 1024 / 1024).toStringAsFixed(1);
-                    sizeDisplay = '$sizeMb MB ($partCount parts)';
+                subtitle: Text(appState.isGpsSimulatorEnabled
+                    ? 'Smooth simulated movement active'
+                    : 'Use simulated GPS for testing'),
+                value: appState.isGpsSimulatorEnabled,
+                onChanged: (value) {
+                  if (value) {
+                    appState.enableGpsSimulator();
                   } else {
-                    sizeDisplay = '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                    appState.disableGpsSimulator();
                   }
-                  if (isCurrentLog) {
-                    sizeDisplay = '$sizeDisplay (current)';
-                  }
-
-                  return ListTile(
-                    leading: const Icon(Icons.description, size: 20),
-                    title: Text(dateStr, style: const TextStyle(fontSize: 13)),
-                    subtitle: Text(
-                      sizeDisplay,
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.visibility, size: 20),
-                          onPressed: () => _showLogViewer(context, appState, file),
-                          tooltip: 'View',
+                },
+              ),
+              if (appState.isGpsSimulatorEnabled) ...[
+                ListTile(
+                  leading: const SizedBox(width: 24),
+                  title: const Text('Simulation Speed'),
+                  subtitle: Slider(
+                    value: appState.gpsSimulatorSpeed,
+                    min: 10,
+                    max: 120,
+                    divisions: 11,
+                    label: formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
+                    onChanged: (value) {
+                      appState.setGpsSimulatorSpeed(value);
+                    },
+                  ),
+                  trailing: Text(
+                    formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                ListTile(
+                  leading: const SizedBox(width: 24),
+                  title: const Text('Movement Pattern'),
+                  trailing: SizedBox(
+                    width: 180,
+                    child: DropdownButton<SimulatorPattern>(
+                      value: appState.gpsSimulatorPattern,
+                      underline: const SizedBox(),
+                      isExpanded: true,
+                      items: [
+                        const DropdownMenuItem(
+                          value: SimulatorPattern.straight,
+                          child: Text('Straight Line', overflow: TextOverflow.ellipsis),
                         ),
+                        const DropdownMenuItem(
+                          value: SimulatorPattern.circle,
+                          child: Text('Circle', overflow: TextOverflow.ellipsis),
+                        ),
+                        const DropdownMenuItem(
+                          value: SimulatorPattern.randomWalk,
+                          child: Text('Random Walk', overflow: TextOverflow.ellipsis),
+                        ),
+                        if (appState.hasSimulatorRoute)
+                          DropdownMenuItem(
+                            value: SimulatorPattern.route,
+                            child: Text(
+                              'Route: ${appState.simulatorRouteName ?? "Loaded"}',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (pattern) {
+                        if (pattern != null) {
+                          appState.setGpsSimulatorPattern(pattern);
+                        }
+                      },
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const SizedBox(width: 24),
+                  title: const Text('Load Route File'),
+                  subtitle: Text(appState.hasSimulatorRoute
+                      ? '${appState.simulatorRouteName} (${appState.simulatorRoutePointCount} points)'
+                      : 'KML or GPX file'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.folder_open),
+                        onPressed: () => _pickRouteFile(context, appState),
+                        tooltip: 'Load route file',
+                      ),
+                      if (appState.hasSimulatorRoute)
                         IconButton(
-                          icon: const Icon(Icons.share, size: 20),
-                          onPressed: () => appState.shareDebugLog(file),
-                          tooltip: 'Share',
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            appState.clearSimulatorRoute();
+                            AppToast.info(context, 'Route cleared');
+                          },
+                          tooltip: 'Clear route',
+                        ),
+                    ],
+                  ),
+                ),
+                ListTile(
+                  leading: const SizedBox(width: 24),
+                  title: const Text('Reset Position'),
+                  subtitle: Text(appState.hasSimulatorRoute
+                      ? 'Reset to route start'
+                      : 'Reset to Ottawa downtown'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.restart_alt),
+                    onPressed: () {
+                      appState.resetGpsSimulator();
+                      AppToast.info(
+                        context,
+                        appState.hasSimulatorRoute
+                            ? 'Reset to route start'
+                            : 'GPS simulator reset to Ottawa downtown',
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ]),
+
+          // Debug section (always visible on mobile)
+          if (!kIsWeb)
+            _buildSection(context, 'Debug', [
+              SwitchListTile(
+                secondary: Icon(
+                  Icons.bug_report,
+                  color: appState.debugLogsEnabled ? Colors.orange : null,
+                ),
+                title: Row(
+                  children: [
+                    const Text('Debug Logs'),
+                    if (appState.debugLogsEnabled) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.orange,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'LOGGING',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                subtitle: Text(
+                  appState.debugLogsEnabled
+                      ? 'Writing logs to file'
+                      : 'Enable to save debug logs to device',
+                ),
+                value: appState.debugLogsEnabled,
+                onChanged: (value) async {
+                  if (value) {
+                    await appState.enableDebugLogs();
+                  } else {
+                    await appState.disableDebugLogs();
+                  }
+                },
+              ),
+              if (appState.debugLogsEnabled || appState.debugLogFiles.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Log Files',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              color: Colors.grey.shade600,
+                            ),
+                      ),
+                      const Spacer(),
+                      if (appState.debugLogFiles.isNotEmpty) ...[
+                        TextButton.icon(
+                          icon: const Icon(Icons.cloud_upload, size: 18),
+                          label: const Text('Upload'),
+                          onPressed: () => _showUploadLogsDialog(context, appState),
+                        ),
+                        TextButton.icon(
+                          icon: const Icon(Icons.delete_sweep, size: 18),
+                          label: const Text('Delete All'),
+                          onPressed: () => _confirmDeleteAllLogs(context, appState),
                         ),
                       ],
+                    ],
+                  ),
+                ),
+                if (appState.debugLogFiles.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      'No debug logs yet',
+                      style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
                     ),
-                  );
-                }),
-            ],
-          ],
+                  )
+                else
+                  ...appState.debugLogFiles.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final file = entry.value;
+                    final filename = file.path.split('/').last;
+                    final sizeBytes = file.lengthSync();
+                    final isCurrentLog = index == 0;
+                    final timestampMatch = RegExp(r'meshmapper-debug-(\d+)\.txt').firstMatch(filename);
+                    final fileDate = timestampMatch != null
+                        ? DateTime.fromMillisecondsSinceEpoch(int.parse(timestampMatch.group(1)!) * 1000)
+                        : null;
+                    final dateStr = fileDate != null ? DateFormat('MMM d, h:mm a').format(fileDate) : filename;
 
-          const SizedBox(height: 32),
+                    String sizeDisplay;
+                    final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
+                    if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
+                      final sizeMb = (sizeBytes / 1024 / 1024).toStringAsFixed(1);
+                      sizeDisplay = '$sizeMb MB ($partCount parts)';
+                    } else {
+                      sizeDisplay = '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                    }
+                    if (isCurrentLog) {
+                      sizeDisplay = '$sizeDisplay (current)';
+                    }
+
+                    return ListTile(
+                      leading: const Icon(Icons.description, size: 20),
+                      title: Text(dateStr, style: const TextStyle(fontSize: 13)),
+                      subtitle: Text(
+                        sizeDisplay,
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.visibility, size: 20),
+                            onPressed: () => _showLogViewer(context, appState, file),
+                            tooltip: 'View',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.share, size: 20),
+                            onPressed: () => appState.shareDebugLog(file),
+                            tooltip: 'Share',
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+              ],
+            ]),
         ],
       ),
     );
   }
 
-  Widget _buildSectionHeader(BuildContext context, String title) {
+  Widget _buildSection(BuildContext context, String title, List<Widget> children) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      child: Text(
-        title,
-        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.bold,
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Text(
+                title,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: FontWeight.bold,
+                    ),
+              ),
             ),
+            ...children,
+            const SizedBox(height: 4),
+          ],
+        ),
       ),
     );
   }
@@ -1165,6 +1134,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SizedBox(height: 12),
             Text(
               'Discovery requests require Repeater firmware 1.10+. If the majority of the mesh is not on this version, it may produce false "no coverage" areas/failed pings.',
+              style: TextStyle(fontSize: 13, color: Colors.amber),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeleteChannelInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_sweep, size: 24),
+            SizedBox(width: 8),
+            Flexible(child: Text('Delete Channel on Disconnect')),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'When enabled, the #wardriving channel is removed from your radio when you disconnect. '
+              'This keeps your radio\'s channel list clean.\n\n'
+              'When disabled, the channel remains on the radio after disconnect.',
+              style: TextStyle(fontSize: 14),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'If the app crashes or BLE disconnects unexpectedly, your device '
+              'may retain the #wardriving channel until you reconnect and properly disconnect.',
               style: TextStyle(fontSize: 13, color: Colors.amber),
             ),
           ],
@@ -1907,29 +1915,7 @@ class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
         Icons.location_on,
         color: _hasAlwaysPermission ? Colors.green : null,
       ),
-      title: Row(
-        children: [
-          const Text('Background Location'),
-          if (_hasAlwaysPermission) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.green,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Text(
-                'ALWAYS',
-                style: TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
+      title: const Text('Background Location'),
       subtitle: Text(
         _hasAlwaysPermission
             ? 'Location tracking works in background'

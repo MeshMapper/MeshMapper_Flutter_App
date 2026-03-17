@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/log_entry.dart';
+import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../widgets/repeater_id_chip.dart';
 
@@ -16,6 +17,7 @@ class LogScreen extends StatefulWidget {
 
 class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  final _allPingsKey = GlobalKey<_AllPingsTabState>();
 
   @override
   void initState() {
@@ -87,7 +89,9 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
         controller: _tabController,
         children: [
           _AllPingsTab(
+            key: _allPingsKey,
             allEntries: appState.unifiedPingLogEntries,
+            repeaters: appState.repeaters,
             txCount: appState.txLogEntries.length,
             rxCount: appState.rxLogEntries.length,
             discCount: appState.discLogEntries.length,
@@ -108,6 +112,29 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
   }
 
   void _copyAllPingsToCsv(BuildContext context, AppStateProvider appState) {
+    // If a search filter is active, export only the filtered unified entries
+    final tabState = _allPingsKey.currentState;
+    final searchQuery = tabState?._searchQuery ?? '';
+    if (searchQuery.isNotEmpty && tabState != null) {
+      final filtered = tabState._filteredEntries;
+      if (filtered.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No matching entries to copy'), duration: Duration(seconds: 2)),
+        );
+        return;
+      }
+      final buffer = StringBuffer();
+      buffer.writeln('type,data');
+      for (final entry in filtered) {
+        buffer.writeln(entry.toCsv());
+      }
+      Clipboard.setData(ClipboardData(text: buffer.toString()));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${filtered.length} filtered entries copied to clipboard'), duration: const Duration(seconds: 2)),
+      );
+      return;
+    }
+
     final tx = appState.txLogEntries;
     final rx = appState.rxLogEntries;
     final disc = appState.discLogEntries;
@@ -212,13 +239,16 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
 
 class _AllPingsTab extends StatefulWidget {
   final List<UnifiedPingLogEntry> allEntries;
+  final List<Repeater> repeaters;
   final int txCount;
   final int rxCount;
   final int discCount;
   final int traceCount;
 
   const _AllPingsTab({
+    super.key,
     required this.allEntries,
+    required this.repeaters,
     required this.txCount,
     required this.rxCount,
     required this.discCount,
@@ -237,6 +267,18 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     PingLogType.trace,
   };
 
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+
+  /// Current filtered entries (used by CSV export)
+  List<UnifiedPingLogEntry> _filteredEntries = [];
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   void _toggleFilter(PingLogType type) {
     setState(() {
       if (_activeFilters.contains(type)) {
@@ -250,14 +292,136 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Repeater name resolution & search matching
+  // ---------------------------------------------------------------------------
+
+  /// Resolve a short repeater ID to known repeater names via prefix matching.
+  static ({List<String> names, bool ambiguous}) _resolveRepeaterNames(
+    String repeaterId, List<Repeater> repeaters,
+  ) {
+    final idLower = repeaterId.toLowerCase();
+    final matches = repeaters
+        .where((r) => r.hexId.toLowerCase().startsWith(idLower))
+        .map((r) => r.name)
+        .toList();
+    return (names: matches, ambiguous: matches.length > 1);
+  }
+
+  /// Whether a hex ID has ambiguous name matches (maps to multiple repeaters).
+  static bool _isAmbiguousId(String repeaterId, List<Repeater> repeaters) {
+    return _resolveRepeaterNames(repeaterId, repeaters).ambiguous;
+  }
+
+  /// True if the query looks like a hex string (only 0-9, a-f).
+  static bool _isHexQuery(String query) {
+    return RegExp(r'^[0-9a-fA-F]+$').hasMatch(query);
+  }
+
+  /// Whether an entry matches the current search query.
+  bool _matchesSearch(UnifiedPingLogEntry entry, List<Repeater> repeaters) {
+    if (_searchQuery.isEmpty) return true;
+    final query = _searchQuery.toLowerCase();
+
+    switch (entry.type) {
+      case PingLogType.tx:
+        final tx = entry.asTx;
+        for (final event in tx.events) {
+          if (event.repeaterId.toLowerCase().startsWith(query)) return true;
+          final resolved = _resolveRepeaterNames(event.repeaterId, repeaters);
+          if (resolved.names.any((n) => n.toLowerCase().contains(query))) return true;
+        }
+        return false;
+      case PingLogType.rx:
+        final rx = entry.asRx;
+        if (rx.repeaterId.toLowerCase().startsWith(query)) return true;
+        final resolved = _resolveRepeaterNames(rx.repeaterId, repeaters);
+        return resolved.names.any((n) => n.toLowerCase().contains(query));
+      case PingLogType.disc:
+        final disc = entry.asDisc;
+        for (final node in disc.discoveredNodes) {
+          if (node.repeaterId.toLowerCase().startsWith(query)) return true;
+          if (node.pubkeyHex != null && node.pubkeyHex!.toLowerCase().startsWith(query)) return true;
+          final resolved = _resolveRepeaterNames(node.repeaterId, repeaters);
+          if (resolved.names.any((n) => n.toLowerCase().contains(query))) return true;
+        }
+        return false;
+      case PingLogType.trace:
+        final trace = entry.asTrace;
+        if (trace.targetRepeaterId.toLowerCase().startsWith(query)) return true;
+        final resolved = _resolveRepeaterNames(trace.targetRepeaterId, repeaters);
+        return resolved.names.any((n) => n.toLowerCase().contains(query));
+    }
+  }
+
+  /// Whether an entry should show the ambiguity indicator.
+  /// Only shown when searching by name (non-hex query) and a repeater ID is ambiguous.
+  bool _shouldShowAmbiguity(UnifiedPingLogEntry entry, List<Repeater> repeaters) {
+    if (_searchQuery.isEmpty || _isHexQuery(_searchQuery)) return false;
+
+    switch (entry.type) {
+      case PingLogType.tx:
+        return entry.asTx.events.any((e) => _isAmbiguousId(e.repeaterId, repeaters));
+      case PingLogType.rx:
+        return _isAmbiguousId(entry.asRx.repeaterId, repeaters);
+      case PingLogType.disc:
+        return entry.asDisc.discoveredNodes.any((n) => _isAmbiguousId(n.repeaterId, repeaters));
+      case PingLogType.trace:
+        return _isAmbiguousId(entry.asTrace.targetRepeaterId, repeaters);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final filtered = widget.allEntries
         .where((e) => _activeFilters.contains(e.type))
+        .where((e) => _matchesSearch(e, widget.repeaters))
         .toList();
+    _filteredEntries = filtered;
+
+    final hasEntries = widget.allEntries.isNotEmpty;
+    final hasResults = filtered.isNotEmpty;
 
     return Column(
       children: [
+        // Search bar
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+          child: SizedBox(
+            height: 36,
+            child: TextField(
+              controller: _searchController,
+              style: const TextStyle(fontSize: 13),
+              decoration: InputDecoration(
+                hintText: 'Search by repeater name or ID',
+                hintStyle: const TextStyle(fontSize: 13),
+                prefixIcon: const Icon(Icons.search, size: 18),
+                prefixIconConstraints: const BoxConstraints(minWidth: 36),
+                suffixIcon: _searchQuery.isNotEmpty
+                    ? GestureDetector(
+                        onTap: () {
+                          _searchController.clear();
+                          setState(() => _searchQuery = '');
+                        },
+                        child: const Icon(Icons.close, size: 18),
+                      )
+                    : null,
+                suffixIconConstraints: const BoxConstraints(minWidth: 36),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
+                ),
+              ),
+              onChanged: (value) => setState(() => _searchQuery = value.trim()),
+            ),
+          ),
+        ),
         // Filter segmented row
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
@@ -284,14 +448,23 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         ),
         // List
         Expanded(
-          child: filtered.isEmpty
+          child: !hasResults
               ? Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.list_alt, size: 48, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      Icon(
+                        hasEntries ? Icons.search_off : Icons.list_alt,
+                        size: 48,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                       const SizedBox(height: 16),
-                      Text('No pings logged yet', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                      Text(
+                        hasEntries && _searchQuery.isNotEmpty
+                            ? 'No results for \'$_searchQuery\''
+                            : 'No pings logged yet',
+                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      ),
                     ],
                   ),
                 )
@@ -300,11 +473,12 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final unified = filtered[index];
+                    final showAmbiguity = _shouldShowAmbiguity(unified, widget.repeaters);
                     return switch (unified.type) {
-                      PingLogType.tx => _buildTxCard(context, unified.asTx),
-                      PingLogType.rx => _buildRxCard(context, unified.asRx),
-                      PingLogType.disc => _buildDiscCard(context, unified.asDisc),
-                      PingLogType.trace => _buildTraceCard(context, unified.asTrace),
+                      PingLogType.tx => _buildTxCard(context, unified.asTx, showAmbiguity: showAmbiguity),
+                      PingLogType.rx => _buildRxCard(context, unified.asRx, showAmbiguity: showAmbiguity),
+                      PingLogType.disc => _buildDiscCard(context, unified.asDisc, showAmbiguity: showAmbiguity),
+                      PingLogType.trace => _buildTraceCard(context, unified.asTrace, showAmbiguity: showAmbiguity),
                     };
                   },
                 ),
@@ -422,7 +596,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // TX Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildTxCard(BuildContext context, TxLogEntry entry) {
+  Widget _buildTxCard(BuildContext context, TxLogEntry entry, {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -434,7 +608,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.tx, entry.timeString, entry.locationString),
+              _buildCardHeader(context, PingLogType.tx, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
               // Repeaters table
               if (entry.events.isNotEmpty) ...[
                 const SizedBox(height: 10),
@@ -505,7 +679,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // RX Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildRxCard(BuildContext context, RxLogEntry entry) {
+  Widget _buildRxCard(BuildContext context, RxLogEntry entry, {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
     final snrColor = _snrColor(entry.severity);
     final rssiColor = _rssiColor(entry.rssi);
@@ -520,7 +694,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.rx, entry.timeString, entry.locationString),
+              _buildCardHeader(context, PingLogType.rx, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
               const SizedBox(height: 10),
               // Repeater table (single row)
               Container(
@@ -569,7 +743,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // DISC Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildDiscCard(BuildContext context, DiscLogEntry entry) {
+  Widget _buildDiscCard(BuildContext context, DiscLogEntry entry, {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
 
     return Card(
@@ -582,7 +756,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.disc, entry.timeString, entry.locationString),
+              _buildCardHeader(context, PingLogType.disc, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
               // Nodes table
               if (entry.discoveredNodes.isNotEmpty) ...[
                 const SizedBox(height: 10),
@@ -675,7 +849,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // Trace Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildTraceCard(BuildContext context, TraceLogEntry entry) {
+  Widget _buildTraceCard(BuildContext context, TraceLogEntry entry, {bool showAmbiguity = false}) {
     final colorScheme = Theme.of(context).colorScheme;
     final appState = context.read<AppStateProvider>();
 
@@ -689,7 +863,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.trace, entry.timeString, entry.locationString),
+              _buildCardHeader(context, PingLogType.trace, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
               // Results table
               if (entry.success) ...[
                 const SizedBox(height: 10),
@@ -757,10 +931,17 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // Shared helpers
   // ---------------------------------------------------------------------------
 
-  static Widget _buildCardHeader(BuildContext context, PingLogType type, String timeString, String locationString) {
+  static Widget _buildCardHeader(BuildContext context, PingLogType type, String timeString, String locationString, {bool showAmbiguity = false}) {
     return Row(
       children: [
         _buildTypeBadge(type),
+        if (showAmbiguity) ...[
+          const SizedBox(width: 2),
+          Tooltip(
+            message: 'Repeater ID matches multiple nodes',
+            child: Icon(Icons.help_outline, size: 14, color: Colors.amber.shade700),
+          ),
+        ],
         const SizedBox(width: 6),
         Text(
           timeString,
