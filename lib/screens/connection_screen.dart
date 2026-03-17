@@ -1002,18 +1002,22 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                Icons.error_outline,
+                appState.isNetworkError ? Icons.cloud_off : Icons.error_outline,
                 size: isLandscape ? 48 : 64,
-                color: Colors.red,
+                color: appState.isNetworkError ? Colors.orange : Colors.red,
               ),
               SizedBox(height: isLandscape ? 8 : 16),
               Text(
-                appState.isAuthError ? 'Authentication Failed' : 'Connection Failed',
+                appState.isNetworkError
+                    ? 'Server Unreachable'
+                    : appState.isAuthError ? 'Authentication Failed' : 'Connection Failed',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
               Text(
-                appState.connectionError ?? 'Unknown error',
+                appState.isNetworkError
+                    ? 'MeshMapper services unreachable, try again or use offline mode.'
+                    : appState.connectionError ?? 'Unknown error',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
