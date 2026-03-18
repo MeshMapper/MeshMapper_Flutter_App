@@ -575,7 +575,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
               child: Row(
                 children: [
                   Icon(
-                    Icons.gps_fixed,
+                    Icons.route,
                     size: 18,
                     color: effectiveColor,
                   ),
@@ -896,7 +896,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
     // Build trace mode button (only used when hasTargetRepeaterId)
     final traceModeButton = _CompactActionButton(
-      icon: Icons.gps_fixed,
+      icon: Icons.route,
       label: _getTraceModeLabel(
         isTargetedRunning: isTargetedRunning,
         discoveryWindowActive: discoveryWindowActive,

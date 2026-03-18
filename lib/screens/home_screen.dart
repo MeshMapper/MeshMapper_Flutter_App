@@ -175,6 +175,14 @@ class _HomeScreenState extends State<HomeScreen> {
           onTap: withTapHandlers ? () => _showInfoPopup('disc', appState) : null,
         ),
         const SizedBox(width: 8),
+        // Trace count
+        _buildAppBarStatChip(
+          Icons.route,
+          appState.pingStats.traceCount,
+          Colors.cyan,
+          onTap: withTapHandlers ? () => _showInfoPopup('trace', appState) : null,
+        ),
+        const SizedBox(width: 8),
         // Upload count
         _buildAppBarStatChip(
           Icons.cloud_done,
@@ -330,6 +338,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
       case 'disc':
         return ('Discovery Requests', 'Discovery request packets we have sent out.', Icons.radar, const Color(0xFF7B68EE));
+
+      case 'trace':
+        return ('Trace Responses', 'Trace path requests that received a response from the target repeater.', Icons.route, Colors.cyan);
 
       case 'upload':
         return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
