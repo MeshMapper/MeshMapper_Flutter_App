@@ -233,13 +233,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Flexible(child: Text('Hybrid Mode', overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () => _showHybridModeInfo(context),
-                    child: Icon(
+                  IconButton(
+                    onPressed: () => _showHybridModeInfo(context),
+                    icon: Icon(
                       Icons.info_outline,
                       size: 18,
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
                   ),
                 ],
               ),
@@ -260,13 +263,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Flexible(child: Text('Discovery Drop', overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () => _showDiscDropInfo(context),
-                    child: Icon(
+                  IconButton(
+                    onPressed: () => _showDiscDropInfo(context),
+                    icon: Icon(
                       Icons.info_outline,
                       size: 18,
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
                   ),
                 ],
               ),
@@ -278,7 +284,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : const Text('Count failed discoveries as failed pings'),
               value: appState.enforceDiscDrop ? true : prefs.discDropEnabled,
               onChanged: (isAutoMode || appState.enforceDiscDrop) ? null : (value) {
-                appState.updatePreferences(prefs.copyWith(discDropEnabled: value));
+                if (value == true) {
+                  _showDiscDropEnableConfirmation(context, appState);
+                } else {
+                  appState.updatePreferences(prefs.copyWith(discDropEnabled: false));
+                }
               },
             ),
           ]),
@@ -336,13 +346,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Flexible(child: Text('TX Bytes', overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () => _showHopBytesInfo(context),
-                    child: Icon(
+                  IconButton(
+                    onPressed: () => _showHopBytesInfo(context),
+                    icon: Icon(
                       Icons.info_outline,
                       size: 18,
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
                   ),
                 ],
               ),
@@ -383,13 +396,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Flexible(child: Text('Trace Bytes', overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () => _showTraceBytesInfo(context),
-                    child: Icon(
+                  IconButton(
+                    onPressed: () => _showTraceBytesInfo(context),
+                    icon: Icon(
                       Icons.info_outline,
                       size: 18,
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
                   ),
                 ],
               ),
@@ -425,16 +441,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   const Flexible(child: Text('Delete Channel on Disconnect')),
                   const SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () => _showDeleteChannelInfo(context),
-                    child: Icon(
+                  IconButton(
+                    onPressed: () => _showDeleteChannelInfo(context),
+                    icon: Icon(
                       Icons.info_outline,
                       size: 18,
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
                   ),
                 ],
               ),
+              subtitle: Text(prefs.deleteChannelOnDisconnect
+                  ? 'Removes #wardriving channel from device'
+                  : 'Keeps #wardriving channel on device'),
               value: prefs.deleteChannelOnDisconnect,
               onChanged: (value) {
                 appState.updatePreferences(prefs.copyWith(deleteChannelOnDisconnect: value));
@@ -493,6 +515,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             else
               ...appState.offlineSessions.map((session) => _OfflineSessionTile(
                 session: session,
+                uploadEnabled: !appState.isUploadingOfflineSession,
                 onUpload: () => _uploadOfflineSession(context, appState, session.filename),
                 onDelete: () => _confirmDeleteOfflineSession(context, appState, session.filename),
                 onDownload: () => _downloadOfflineSession(context, appState, session.filename),
@@ -1157,6 +1180,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  void _showDiscDropEnableConfirmation(BuildContext context, AppStateProvider appState) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.signal_wifi_off, size: 24),
+            SizedBox(width: 8),
+            Text('Discovery Drop'),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'When enabled, failed discovery requests (no repeater responded) are reported to the API as failed pings, helping identify dead zones in the mesh network.',
+              style: TextStyle(fontSize: 14),
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Discovery requests require Repeater firmware 1.10+. If the majority of the mesh is not on this version, it may produce false "no coverage" areas/failed pings.',
+              style: TextStyle(fontSize: 13, color: Colors.amber),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              appState.updatePreferences(
+                appState.preferences.copyWith(discDropEnabled: true),
+              );
+            },
+            child: const Text('Enable'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showDeleteChannelInfo(BuildContext context) {
     showDialog(
       context: context,
@@ -1332,13 +1400,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
 
               final tile = RadioListTile<int>(
-                title: Text('$interval seconds'),
+                title: Text(
+                  '$interval seconds',
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                ),
                 subtitle: isDisabled
                     ? const Text(
                         'Set by Regional Admin — slower intervals reduce congestion in your region',
-                        style: TextStyle(color: Colors.amber),
+                        style: TextStyle(fontSize: 12, color: Colors.amber),
                       )
-                    : Text(description),
+                    : Text(
+                        description,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                 value: interval,
               );
 
@@ -1563,31 +1640,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _uploadOfflineSession(BuildContext context, AppStateProvider appState, String filename) async {
-    // Show loading indicator
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-            ),
-            SizedBox(width: 12),
-            Text('Uploading session...'),
-          ],
+    // Progress text notifier for updating dialog without rebuilding screen
+    final progressNotifier = ValueNotifier<String>('Authenticating...');
+
+    // Show non-dismissible progress dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              const Text(
+                'Uploading session...',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                filename,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+              const SizedBox(height: 8),
+              ValueListenableBuilder<String>(
+                valueListenable: progressNotifier,
+                builder: (_, status, __) => Text(
+                  status,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                ),
+              ),
+            ],
+          ),
         ),
-        duration: Duration(seconds: 30), // Will be dismissed when upload completes
       ),
     );
 
-    final result = await appState.uploadOfflineSessionWithAuth(filename);
+    final result = await appState.uploadOfflineSessionWithAuth(
+      filename,
+      onProgress: (status) => progressNotifier.value = status,
+    );
+
+    // Close progress dialog
+    if (context.mounted) {
+      Navigator.of(context).pop();
+    }
+
+    progressNotifier.dispose();
 
     if (context.mounted) {
-      // Dismiss loading indicator
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-
-      // Show result
+      // Show result via SnackBar
       String message;
       Color backgroundColor;
 
@@ -1610,6 +1717,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           break;
         case OfflineUploadResult.partialFailure:
           message = 'Partial upload - some pings failed';
+          backgroundColor = Colors.orange;
+          break;
+        case OfflineUploadResult.uploadInProgress:
+          message = 'Another upload is already in progress';
           backgroundColor = Colors.orange;
           break;
       }
@@ -1948,12 +2059,14 @@ class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
 /// Widget for displaying an offline session in the list
 class _OfflineSessionTile extends StatelessWidget {
   final OfflineSession session;
+  final bool uploadEnabled;
   final VoidCallback onUpload;
   final VoidCallback onDelete;
   final VoidCallback onDownload;
 
   const _OfflineSessionTile({
     required this.session,
+    this.uploadEnabled = true,
     required this.onUpload,
     required this.onDelete,
     required this.onDownload,
@@ -2000,9 +2113,9 @@ class _OfflineSessionTile extends StatelessWidget {
           if (!isUploaded)
             IconButton(
               icon: const Icon(Icons.cloud_upload),
-              onPressed: onUpload,
+              onPressed: uploadEnabled ? onUpload : null,
               tooltip: 'Upload session',
-              color: Colors.green,
+              color: uploadEnabled ? Colors.green : Colors.grey,
             ),
           // Delete button - always available
           IconButton(
