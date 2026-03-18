@@ -64,6 +64,8 @@ enum OfflineUploadResult {
   authFailed,
   /// Some pings failed to upload
   partialFailure,
+  /// Another upload is already in progress
+  uploadInProgress,
 }
 
 /// Main application state provider
@@ -484,6 +486,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Offline mode
   bool get offlineMode => _preferences.offlineMode;
   List<OfflineSession> get offlineSessions => _offlineSessionService.sessions;
+  bool _isUploadingOfflineSession = false;
+  bool get isUploadingOfflineSession => _isUploadingOfflineSession;
 
   // Developer mode
   bool get developerModeEnabled => _preferences.developerModeEnabled;
@@ -3319,14 +3323,42 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Upload an offline session with authenticated API session
-  /// Uses stored device credentials to authenticate before uploading
+  /// Uses stored device credentials to authenticate before uploading.
+  /// Session is fully isolated from the shared ApiService state — offline uploads
+  /// never touch _sessionId and cannot trigger BLE disconnect on failure.
   ///
+  /// @param onProgress Optional callback for progress updates (e.g., "Batch 1/3")
   /// Returns the result of the upload operation
-  Future<OfflineUploadResult> uploadOfflineSessionWithAuth(String filename) async {
+  Future<OfflineUploadResult> uploadOfflineSessionWithAuth(
+    String filename, {
+    void Function(String status)? onProgress,
+  }) async {
+    // Concurrency guard — only one offline upload at a time
+    if (_isUploadingOfflineSession) {
+      debugWarn('[OFFLINE] Upload already in progress, rejecting concurrent request');
+      return OfflineUploadResult.uploadInProgress;
+    }
+
+    _isUploadingOfflineSession = true;
+    notifyListeners();
+
+    try {
+      return await _uploadOfflineSessionIsolated(filename, onProgress: onProgress);
+    } finally {
+      _isUploadingOfflineSession = false;
+      notifyListeners();
+    }
+  }
+
+  /// Internal implementation of offline session upload with isolated session
+  Future<OfflineUploadResult> _uploadOfflineSessionIsolated(
+    String filename, {
+    void Function(String status)? onProgress,
+  }) async {
     // 1. Get session with stored device credentials
     final session = _offlineSessionService.getSession(filename);
     if (session == null) {
-      debugLog('[APP] Offline session not found: $filename');
+      debugLog('[OFFLINE] Session not found: $filename');
       return OfflineUploadResult.notFound;
     }
 
@@ -3337,25 +3369,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .toList();
 
     if (pings == null || pings.isEmpty) {
-      debugLog('[APP] Offline session has no pings: $filename');
+      debugLog('[OFFLINE] Session has no pings: $filename');
       return OfflineUploadResult.invalidSession;
     }
 
     // 2. Get device credentials from session
     final publicKey = session.devicePublicKey;
     if (publicKey == null) {
-      debugLog('[APP] Offline session missing device public key: $filename');
+      debugLog('[OFFLINE] Session missing device public key: $filename');
       return OfflineUploadResult.invalidSession;
     }
 
     final deviceName = session.deviceName;
     if (deviceName == null || deviceName.isEmpty) {
-      debugLog('[APP] Offline session missing device name: $filename');
+      debugLog('[OFFLINE] Session missing device name: $filename');
       return OfflineUploadResult.invalidSession;
     }
 
-    // 3. Authenticate with offline_mode: true
-    debugLog('[APP] Authenticating for offline upload with device: $deviceName');
+    onProgress?.call('Authenticating...');
+
+    // 3. Authenticate with offline_mode: true, skipSessionStore: true
+    //    This prevents writing to shared _sessionId/_txAllowed/etc.
+    debugLog('[OFFLINE] Authenticating for offline upload with device: $deviceName');
     final authResult = await _apiService.requestAuth(
       reason: 'connect',
       publicKey: publicKey,
@@ -3368,22 +3403,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       lon: _currentPosition?.longitude,
       accuracyMeters: _currentPosition?.accuracy,
       offlineMode: true,
+      skipSessionStore: true,
     );
 
     Map<String, dynamic>? effectiveAuth = authResult;
 
     if (authResult == null) {
-      debugError('[API] Offline upload auth failed: network error');
+      debugError('[OFFLINE] Auth failed: network error');
       return OfflineUploadResult.authFailed;
     }
 
     if (authResult['success'] != true) {
       final reason = authResult['reason'] as String? ?? 'unknown';
-      debugLog('[API] Offline upload Stage 1 failed: $reason');
+      debugLog('[OFFLINE] Stage 1 failed: $reason');
 
       // Stage 2: If unknown_device and we have a stored contactUri, attempt registration
       if (reason == 'unknown_device' && session.contactUri != null) {
-        debugLog('[APP] Stage 2: Attempting registration via stored contact URI...');
+        debugLog('[OFFLINE] Stage 2: Attempting registration via stored contact URI...');
         final registerResult = await _apiService.requestAuth(
           reason: 'register',
           contactUri: session.contactUri,
@@ -3396,62 +3432,76 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           lon: _currentPosition?.longitude,
           accuracyMeters: _currentPosition?.accuracy,
           offlineMode: true,
+          skipSessionStore: true,
         );
 
         if (registerResult == null || registerResult['success'] != true) {
           final regReason = registerResult?['reason'] as String? ?? 'unknown';
-          debugError('[API] Offline upload Stage 2 registration failed: $regReason');
+          debugError('[OFFLINE] Stage 2 registration failed: $regReason');
           return OfflineUploadResult.authFailed;
         }
 
-        debugLog('[APP] Stage 2 succeeded: device registered for offline upload');
+        debugLog('[OFFLINE] Stage 2 succeeded: device registered for offline upload');
         effectiveAuth = registerResult;
       } else {
-        debugError('[API] Offline upload auth failed: $reason');
+        debugError('[OFFLINE] Auth failed: $reason');
         return OfflineUploadResult.authFailed;
       }
     }
 
-    debugLog('[APP] Offline upload authenticated, session: ${effectiveAuth!['session_id']}');
+    // Extract session_id into local variable — never stored in shared state
+    final offlineSessionId = effectiveAuth!['session_id'] as String?;
+    if (offlineSessionId == null) {
+      debugError('[OFFLINE] Auth succeeded but no session_id in response');
+      return OfflineUploadResult.authFailed;
+    }
+
+    debugLog('[OFFLINE] Authenticated with isolated session: $offlineSessionId');
 
     // Delay after auth before posting
     await Future.delayed(const Duration(seconds: 1));
 
-    // 4. Upload pings in batches of 50
+    // 4. Upload pings in batches of 50 using isolated session
     const batchSize = 50;
     var uploadedCount = 0;
     var failedBatches = 0;
+    final totalBatches = (pings.length + batchSize - 1) ~/ batchSize;
 
     for (var i = 0; i < pings.length; i += batchSize) {
+      final batchNum = (i ~/ batchSize) + 1;
+      onProgress?.call('Batch $batchNum/$totalBatches');
+
       final batch = pings.skip(i).take(batchSize).toList();
-      final result = await _apiService.uploadBatch(batch);
+      final result = await _apiService.uploadBatchWithSessionId(batch, offlineSessionId);
       if (result == UploadResult.success) {
         uploadedCount += batch.length;
-        debugLog('[APP] Uploaded batch ${(i ~/ batchSize) + 1}: ${batch.length} pings');
+        debugLog('[OFFLINE] Uploaded batch $batchNum: ${batch.length} pings');
       } else {
         failedBatches++;
-        debugError('[APP] Failed to upload batch ${(i ~/ batchSize) + 1}');
+        debugError('[OFFLINE] Failed to upload batch $batchNum');
       }
     }
 
     // Delay after posting before disconnect
     await Future.delayed(const Duration(seconds: 1));
 
-    // 5. Release API session
+    // 5. Release isolated API session (does not clear shared state)
+    onProgress?.call('Finalizing...');
     await _apiService.requestAuth(
       reason: 'disconnect',
       publicKey: publicKey,
+      sessionId: offlineSessionId,
     );
-    debugLog('[APP] Offline upload session released');
+    debugLog('[OFFLINE] Isolated upload session released');
 
     // 6. Mark session as uploaded (don't delete) if all batches succeeded
     if (failedBatches == 0) {
       await _offlineSessionService.markAsUploaded(filename);
-      debugLog('[API] Uploaded ${pings.length} pings from $filename');
+      debugLog('[OFFLINE] Uploaded ${pings.length} pings from $filename');
       notifyListeners();
       return OfflineUploadResult.success;
     } else {
-      debugWarn('[API] Partial upload: $uploadedCount/${pings.length} pings from $filename');
+      debugWarn('[OFFLINE] Partial upload: $uploadedCount/${pings.length} pings from $filename');
       notifyListeners();
       return OfflineUploadResult.partialFailure;
     }

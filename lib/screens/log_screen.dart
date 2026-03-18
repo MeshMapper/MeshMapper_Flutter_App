@@ -501,7 +501,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
               Text(
                 label,
                 style: TextStyle(
-                  fontSize: 12,
+                  fontSize: 13,
                   fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                   color: active ? color : Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
                 ),
@@ -509,17 +509,20 @@ class _AllPingsTabState extends State<_AllPingsTab> {
               if (count > 0) ...[
                 const SizedBox(width: 4),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  constraints: const BoxConstraints(minWidth: 18, minHeight: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                   decoration: BoxDecoration(
                     color: active ? color : Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
                     borderRadius: BorderRadius.circular(8),
                   ),
+                  alignment: Alignment.center,
                   child: Text(
                     count > 99 ? '99+' : count.toString(),
                     style: const TextStyle(
-                      fontSize: 9,
+                      fontSize: 10,
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
+                      height: 1.0,
                     ),
                   ),
                 ),
@@ -560,8 +563,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       child: Text(
         label,
         style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
           color: color,
         ),
       ),
@@ -583,7 +586,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       child: Text(
         value,
         style: TextStyle(
-          fontSize: 10,
+          fontSize: 11,
           fontWeight: FontWeight.w600,
           color: color,
           fontFamily: 'monospace',
@@ -618,7 +621,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 Text(
                   'No repeaters heard',
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontStyle: FontStyle.italic,
                   ),
@@ -666,7 +669,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(
           children: [
-            RepeaterIdChip(repeaterId: event.repeaterId, fontSize: 11, width: 60),
+            RepeaterIdChip(repeaterId: event.repeaterId, fontSize: 14, width: 60),
             Expanded(child: Center(child: _buildChip(event.snr?.toStringAsFixed(1) ?? '-', snrColor))),
             Expanded(child: Center(child: _buildChip(event.rssi != null ? '${event.rssi}' : '-', rssiColor))),
           ],
@@ -722,7 +725,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                         child: Row(
                           children: [
-                            RepeaterIdChip(repeaterId: entry.repeaterId, fontSize: 11, width: 60),
+                            RepeaterIdChip(repeaterId: entry.repeaterId, fontSize: 14, width: 60),
                             Expanded(child: Center(child: _buildChip(entry.snr?.toStringAsFixed(1) ?? '-', snrColor))),
                             Expanded(child: Center(child: _buildChip(entry.rssi != null ? '${entry.rssi}' : '-', rssiColor))),
                           ],
@@ -789,7 +792,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 Text(
                   'No nodes discovered',
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontStyle: FontStyle.italic,
                   ),
@@ -824,11 +827,11 @@ class _AllPingsTabState extends State<_AllPingsTab> {
               width: 70,
               child: Row(
                 children: [
-                  Flexible(child: RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 11)),
+                  Flexible(child: RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 14)),
                   Text(
                     node.nodeTypeLabel,
                     style: const TextStyle(
-                      fontSize: 9,
+                      fontSize: 11,
                       fontWeight: FontWeight.w500,
                       color: Color(0xFF7B68EE),
                     ),
@@ -896,7 +899,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 Text(
                   'No response',
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     color: colorScheme.onSurfaceVariant,
                     fontStyle: FontStyle.italic,
                   ),
@@ -918,7 +921,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       child: Row(
         children: [
-          SizedBox(width: 70, child: RepeaterIdChip(repeaterId: entry.targetRepeaterId, fontSize: 11)),
+          SizedBox(width: 70, child: RepeaterIdChip(repeaterId: entry.targetRepeaterId, fontSize: 14)),
           Expanded(child: Center(child: _buildChip(entry.localSnr?.toStringAsFixed(1) ?? '-', rxSnrColor))),
           Expanded(child: Center(child: _buildChip(entry.localRssi != null ? '${entry.localRssi}' : '-', rssiColor))),
           Expanded(child: Center(child: _buildChip(entry.remoteSnr?.toStringAsFixed(1) ?? '-', txSnrColor))),
@@ -946,7 +949,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         Text(
           timeString,
           style: TextStyle(
-            fontSize: 12,
+            fontSize: 14,
             fontWeight: FontWeight.w600,
             fontFamily: 'monospace',
             color: Theme.of(context).colorScheme.onSurface,
@@ -958,7 +961,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         Text(
           locationString,
           style: TextStyle(
-            fontSize: 11,
+            fontSize: 12,
             color: Theme.of(context).colorScheme.onSurfaceVariant,
             fontFamily: 'monospace',
           ),
@@ -972,7 +975,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       text,
       textAlign: center ? TextAlign.center : TextAlign.left,
       style: TextStyle(
-        fontSize: 10,
+        fontSize: 12,
         fontWeight: FontWeight.w600,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
