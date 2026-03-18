@@ -158,6 +158,9 @@ class _StatusBarState extends State<StatusBar> {
       case 'disc':
         return ('Discovery Requests', 'Discovery requests we have heard a response for.', Icons.radar, const Color(0xFF7B68EE));
 
+      case 'trace':
+        return ('Trace Responses', 'Trace path requests that received a response from the target repeater.', Icons.route, Colors.cyan);
+
       case 'upload':
         return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
 
@@ -258,6 +261,16 @@ class _StatusBarState extends State<StatusBar> {
           value: appState.pingStats.discCount,
           color: const Color(0xFF7B68EE),  // DISC purple
           onTap: () => _showInfoPopup(context, 'disc'),
+        ),
+
+        const SizedBox(width: 8),
+
+        // Trace count chip (animated)
+        _AnimatedStatChip(
+          icon: Icons.route,
+          value: appState.pingStats.traceCount,
+          color: Colors.cyan,
+          onTap: () => _showInfoPopup(context, 'trace'),
         ),
 
         const SizedBox(width: 8),
