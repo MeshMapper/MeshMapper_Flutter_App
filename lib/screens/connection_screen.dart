@@ -500,6 +500,18 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                         fontWeight: FontWeight.bold,
                       ),
                     ),
+                  ] else if (prefs.powerLevelSet && !prefs.autoPowerSet && appState.deviceModel != null) ...[
+                    const SizedBox(width: 4),
+                    const Icon(Icons.edit, size: 14, color: Colors.orange),
+                    const SizedBox(width: 2),
+                    const Text(
+                      'Override',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.orange,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ],
                   if (!isAutoMode) ...[
                     const SizedBox(width: 4),
@@ -867,6 +879,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       powerLevel: value,
                       txPower: PowerLevel.getTxPower(value),
                       autoPowerSet: false, // Clear auto flag on override
+                      powerLevelSet: true, // Mark as manually overridden
                     ),
                   );
                   Navigator.pop(context); // Close confirmation
@@ -899,23 +912,29 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Auto-detection info banner
-            if (prefs.autoPowerSet && deviceModel != null)
+            // Auto-detection / override info banner
+            if (deviceModel != null)
               Container(
                 padding: const EdgeInsets.all(12),
                 margin: const EdgeInsets.only(bottom: 16),
                 decoration: BoxDecoration(
-                  color: Colors.green.withValues(alpha: 0.1),
-                  border: Border.all(color: Colors.green),
+                  color: (prefs.autoPowerSet ? Colors.green : Colors.orange).withValues(alpha: 0.1),
+                  border: Border.all(color: prefs.autoPowerSet ? Colors.green : Colors.orange),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.auto_awesome, size: 20, color: Colors.green),
+                    Icon(
+                      prefs.autoPowerSet ? Icons.auto_awesome : Icons.edit,
+                      size: 20,
+                      color: prefs.autoPowerSet ? Colors.green : Colors.orange,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Auto-detected: ${deviceModel.shortName} ${deviceModel.power}W',
+                        prefs.autoPowerSet
+                            ? 'Auto-detected: ${deviceModel.shortName} ${deviceModel.power}W'
+                            : 'Override active \u2014 ${deviceModel.shortName} auto-detects as ${deviceModel.power}W',
                         style: const TextStyle(fontSize: 12),
                       ),
                     ),
@@ -935,7 +954,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 mainAxisSize: MainAxisSize.min,
                 children: PowerLevel.values.map((power) {
                   final isSelected = power == currentPower;
-                  final isRecommended = prefs.autoPowerSet && deviceModel != null && power == deviceModel.power;
+                  final isRecommended = deviceModel != null && power == deviceModel.power;
 
                   // Create a temp preferences object to get the display string with dBm
                   final tempPrefs = UserPreferences(powerLevel: power);
@@ -982,6 +1001,21 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           ],
         ),
         actions: [
+          if (!prefs.autoPowerSet && deviceModel != null)
+            TextButton(
+              onPressed: () {
+                appState.updatePreferences(
+                  prefs.copyWith(
+                    powerLevel: deviceModel.power,
+                    txPower: deviceModel.txPower,
+                    autoPowerSet: true,
+                    powerLevelSet: false,
+                  ),
+                );
+                Navigator.pop(context);
+              },
+              child: const Text('Reset to Auto', style: TextStyle(color: Colors.green)),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Cancel'),

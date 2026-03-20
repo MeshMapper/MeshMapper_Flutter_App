@@ -52,6 +52,9 @@ enum AutoMode {
   targeted,
 }
 
+/// Ping type for the top-heard overlay dots
+enum OverlayPingType { tx, disc, trace, rx }
+
 /// Result of uploading an offline session
 enum OfflineUploadResult {
   /// Upload completed successfully
@@ -169,7 +172,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<TraceLogEntry> _traceLogEntries = [];
 
   // Top repeaters overlay — updated live on each ping event
-  List<({String repeaterId, double snr})> _topRepeatersOverlay = [];
+  List<({String repeaterId, double snr, OverlayPingType type})> _topRepeatersOverlay = [];
+  ({String repeaterId, double snr})? _rxOverlaySlot;
+  Timer? _rxOverlayWindowTimer;
 
   // Targeted mode state
   String? _targetRepeaterId;
@@ -190,6 +195,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Whether the current antenna setting was auto-restored from a saved preference
   bool _antennaRestoredFromDevice = false;
   bool get antennaRestoredFromDevice => _antennaRestoredFromDevice;
+
+  /// Per-device power overrides: maps companion name → {powerLevel, txPower}
+  Map<String, Map<String, dynamic>> _devicePowerOverrides = {};
+
+  /// Whether the current power setting was auto-restored from a saved override
+  bool _powerRestoredFromDevice = false;
+  bool get powerRestoredFromDevice => _powerRestoredFromDevice;
 
   // Remembered device for quick reconnection (mobile only)
   RememberedDevice? _rememberedDevice;
@@ -345,14 +357,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<TxPing> get txPings => List.unmodifiable(_txPings);
   List<RxPing> get rxPings => List.unmodifiable(_rxPings);
 
-  /// Top 3 repeaters by best SNR (1-byte IDs only) across TX echoes and RX observations
-  List<({String repeaterId, double snr})> get topRepeatersBySnr => _topRepeatersOverlay;
+  /// Top 3 repeaters by best SNR from TX/DISC/Trace pings
+  List<({String repeaterId, double snr, OverlayPingType type})> get topRepeatersBySnr => _topRepeatersOverlay;
+  /// Best RX observation in the current 5-second window
+  ({String repeaterId, double snr})? get rxOverlaySlot => _rxOverlaySlot;
 
-  /// Update the top repeaters overlay with results from the latest ping.
-  /// New repeaters from this ping take priority (sorted by best SNR first).
-  /// Remaining slots are filled with carryover from the previous display.
-  void _updateTopRepeaters(List<({String repeaterId, double snr})> current) {
-    // Deduplicate current entries, keeping best SNR per repeater
+  /// Update the top repeaters overlay with results from the latest TX/DISC/Trace ping.
+  /// Replaces all 3 slots entirely (no carryover from previous pings).
+  void _updateTopRepeaters(List<({String repeaterId, double snr})> current, OverlayPingType type) {
     final bestSnr = <String, double>{};
     for (final r in current) {
       final key = r.repeaterId.toUpperCase();
@@ -361,20 +373,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     final fresh = bestSnr.entries
-        .map((e) => (repeaterId: e.key, snr: e.value))
+        .map((e) => (repeaterId: e.key, snr: e.value, type: type))
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
+    _topRepeatersOverlay = fresh.take(3).toList();
+  }
 
-    if (fresh.length >= 3) {
-      _topRepeatersOverlay = fresh.take(3).toList();
+  /// Update the RX overlay slot with a 5-second rolling window (best SNR wins).
+  void _updateRxOverlaySlot(String repeaterId, double snr) {
+    final entry = (repeaterId: repeaterId.toUpperCase(), snr: snr);
+    if (_rxOverlayWindowTimer?.isActive ?? false) {
+      if (_rxOverlaySlot == null || snr > _rxOverlaySlot!.snr) {
+        _rxOverlaySlot = entry;
+      }
     } else {
-      // Fill remaining slots with previous entries not already in fresh
-      final freshIds = fresh.map((r) => r.repeaterId).toSet();
-      final carryover = _topRepeatersOverlay
-          .where((r) => !freshIds.contains(r.repeaterId))
-          .toList();
-      _topRepeatersOverlay = [...fresh, ...carryover].take(3).toList();
+      _rxOverlaySlot = entry;
+      _rxOverlayWindowTimer = Timer(const Duration(seconds: 5), () {
+        // Window closed — slot stays until next RX or cleared
+      });
     }
+  }
+
+  /// Clear all overlay state (top 3 + RX slot).
+  void _clearOverlayState() {
+    _topRepeatersOverlay = [];
+    _rxOverlaySlot = null;
+    _rxOverlayWindowTimer?.cancel();
+    _rxOverlayWindowTimer = null;
   }
   List<TxLogEntry> get txLogEntries => List.unmodifiable(_txLogEntries);
   List<RxLogEntry> get rxLogEntries => List.unmodifiable(_rxLogEntries);
@@ -616,6 +641,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
     await _loadDeviceAntennaPreferences();
+    await _loadDevicePowerOverrides();
 
     // Load last known GPS position for map centering
     await _loadLastPosition();
@@ -1162,8 +1188,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           powerLevel: device.power,
           txPower: device.txPower,
           autoPowerSet: true, // Indicates power was auto-detected from device model
+          powerLevelSet: false, // Clear stale manual flag from previous session
         );
-        // TODO: Persist to SharedPreferences when implemented
         notifyListeners();
         debugLog('[MODEL] Device recognized: ${device.shortName} - reporting ${device.power}W in API calls');
       }
@@ -1324,8 +1350,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         ));
         if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
 
-        // Update top repeaters overlay with this RX observation
-        _updateTopRepeaters([(repeaterId: ping.repeaterId.toUpperCase(), snr: ping.snr)]);
+        // Update RX overlay slot with this RX observation
+        _updateRxOverlaySlot(ping.repeaterId, ping.snr);
 
         notifyListeners();
       };
@@ -1402,7 +1428,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _updateTopRepeaters(existingEvents
                 .where((e) => e.snr != null)
                 .map((e) => (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
-                .toList());
+                .toList(), OverlayPingType.tx);
 
             debugLog('[APP] Calling notifyListeners() to update UI');
             notifyListeners();
@@ -1452,7 +1478,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Update top repeaters overlay with all discovered nodes from this ping
         _updateTopRepeaters(discPing.discoveredNodes
             .map((n) => (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
-            .toList());
+            .toList(), OverlayPingType.disc);
 
         notifyListeners();
       };
@@ -1652,6 +1678,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         notifyListeners();
       }
 
+      // Restore per-device power override if previously saved
+      if (resolvedName != null && _devicePowerOverrides.containsKey(resolvedName)) {
+        final saved = _devicePowerOverrides[resolvedName]!;
+        _preferences = _preferences.copyWith(
+          powerLevel: (saved['powerLevel'] as num).toDouble(),
+          txPower: (saved['txPower'] as num).toInt(),
+          autoPowerSet: false,
+          powerLevelSet: true,
+        );
+        _powerRestoredFromDevice = true;
+        _savePreferences();
+        debugLog('[APP] Restored power override for "$resolvedName": ${saved['powerLevel']}W');
+        notifyListeners();
+      }
+
       // Log connection status based on TX/RX permissions
       if (hasApiSession) {
         if (txAllowed && rxAllowed) {
@@ -1785,9 +1826,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             debugLog('[APP] Created IMMEDIATE RX pin for repeater: ${observation.repeaterId} '
                 'at ${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)} '
                 '(batch tracking: ${_currentBatchRepeaters.length} repeaters, rxCount: ${_pingStats.rxCount})');
-            // Update top repeaters overlay immediately
+            // Update RX overlay slot immediately
             if (observation.snr != null) {
-              _updateTopRepeaters([(repeaterId: repeaterKey, snr: observation.snr!)]);
+              _updateRxOverlaySlot(repeaterKey, observation.snr!);
             }
             // Play receive sound for new RX observation
             _audioService.playReceiveSound();
@@ -1894,9 +1935,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[APP] Added RX log entry: repeater=${entry.repeaterId}, '
               'snr=${entry.snr ?? 'null'}, pathLen=${entry.pathLength}');
 
-          // Update top repeaters overlay with this RX observation
+          // Update RX overlay slot with this RX observation
           if (entry.snr != null) {
-            _updateTopRepeaters([(repeaterId: entry.repeaterId.toUpperCase(), snr: entry.snr!)]);
+            _updateRxOverlaySlot(entry.repeaterId, entry.snr!);
           }
 
           // Note: RX count is incremented in onObservation when pin is created (immediate feedback)
@@ -2183,6 +2224,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isAnonymousRenamed = false;
     _originalDeviceName = null;
 
+    // Clear top-heard overlay
+    _clearOverlayState();
+
     // Existing cleanup
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
@@ -2359,8 +2403,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectAttempt = 0;
     _autoPingWasEnabled = false;
 
-    // Reset antenna setting so user must choose again on next connect
+    // Reset antenna and power settings so user must choose again on next connect
     _antennaRestoredFromDevice = false;
+    _powerRestoredFromDevice = false;
     _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
     _savePreferences();
 
@@ -2499,6 +2544,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _offlineContactUri = null;
     _displayDeviceName = null;
     _antennaRestoredFromDevice = false;
+    _powerRestoredFromDevice = false;
     _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
     _savePreferences();
     _currentNoiseFloor = null;
@@ -2666,6 +2712,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
 
+      // Clear top-heard overlay on stop
+      _clearOverlayState();
+
       // Start 5-second shared cooldown for TX modes (Active/Hybrid), not Passive Mode
       // Passive Mode is listening only, no cooldown needed
       if (isTxMode) {
@@ -2698,6 +2747,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Stop countdown timers when switching modes
         _autoPingTimer.stop();
         _rxWindowTimer.stop();
+        // Clear top-heard overlay on mode switch
+        _clearOverlayState();
         // Save offline session if offline mode is enabled
         if (_preferences.offlineMode) {
           await _saveOfflineSession();
@@ -2774,6 +2825,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void clearPings() {
     _txPings.clear();
     _rxPings.clear();
+    _clearOverlayState();
     _pingService?.resetStats();
     notifyListeners();
   }
@@ -2785,6 +2837,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _discLogEntries.clear();
     _traceLogEntries.clear();
     _errorLogEntries.clear();
+    _clearOverlayState();
     notifyListeners();
   }
 
@@ -2811,7 +2864,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay
       final id = entry.targetRepeaterId.toUpperCase();
       final displayId = id.length > 6 ? id.substring(0, 6) : id;
-      _updateTopRepeaters([(repeaterId: displayId, snr: entry.localSnr!)]);
+      _updateTopRepeaters([(repeaterId: displayId, snr: entry.localSnr!)], OverlayPingType.trace);
     }
 
     notifyListeners();
@@ -3530,8 +3583,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _preferences = preferences;
 
-    // Clear restored flag — user is making a manual choice now
+    // Clear restored flags — user is making a manual choice now
     _antennaRestoredFromDevice = false;
+    _powerRestoredFromDevice = false;
 
     // Persist antenna choice per device name (use original name, not "Anonymous")
     final deviceName = _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
@@ -3539,6 +3593,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _deviceAntennaPreferences[deviceName] = preferences.externalAntenna;
       _saveDeviceAntennaPreferences();
       debugLog('[APP] Saved antenna preference for "$deviceName": ${preferences.externalAntenna ? "external" : "device"}');
+    }
+
+    // Persist power override per device name
+    if (deviceName != null && preferences.powerLevelSet && !preferences.autoPowerSet) {
+      _devicePowerOverrides[deviceName] = {
+        'powerLevel': preferences.powerLevel,
+        'txPower': preferences.txPower,
+      };
+      _saveDevicePowerOverrides();
+      debugLog('[APP] Saved power override for "$deviceName": ${preferences.powerLevel}W');
+    } else if (deviceName != null && preferences.autoPowerSet) {
+      // User re-selected the auto-detected value — clear any saved override
+      if (_devicePowerOverrides.remove(deviceName) != null) {
+        _saveDevicePowerOverrides();
+        debugLog('[APP] Cleared power override for "$deviceName" (auto-detected selected)');
+      }
     }
 
     // Propagate RSSI filter setting to live trackers/validators
@@ -4690,6 +4760,40 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await box.put('device_antenna_preferences', _deviceAntennaPreferences);
     } catch (e) {
       debugLog('[APP] Failed to save device antenna preferences: $e');
+    }
+  }
+
+  // ============================================
+  // Device Power Override Persistence
+  // ============================================
+
+  /// Load per-device power overrides from Hive storage
+  Future<void> _loadDevicePowerOverrides() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      final raw = box.get('device_power_overrides');
+      if (raw != null) {
+        _devicePowerOverrides = (raw as Map).map(
+          (key, value) => MapEntry(key.toString(), Map<String, dynamic>.from(value as Map)),
+        );
+        debugLog('[APP] Loaded power overrides for ${_devicePowerOverrides.length} device(s)');
+      }
+    } catch (e) {
+      debugLog('[APP] Failed to load device power overrides: $e');
+    }
+  }
+
+  /// Save per-device power overrides to Hive storage
+  Future<void> _saveDevicePowerOverrides() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      await box.put('device_power_overrides', _devicePowerOverrides);
+    } catch (e) {
+      debugLog('[APP] Failed to save device power overrides: $e');
     }
   }
 
