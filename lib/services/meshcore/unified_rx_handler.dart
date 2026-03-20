@@ -4,6 +4,7 @@ import '../../utils/debug_logger_io.dart';
 import 'packet_metadata.dart';
 import 'packet_validator.dart';
 import 'rx_logger.dart';
+import 'trace_tracker.dart';
 import 'tx_tracker.dart';
 
 /// Unified RX handler - orchestrates TX echo tracking and passive RX logging
@@ -17,6 +18,9 @@ class UnifiedRxHandler {
 
   /// Get current validator
   PacketValidator get validator => _validator;
+
+  /// Trace tracker for targeted ping mode (set by PingService when active)
+  TraceTracker? traceTracker;
 
   /// Channel key for message decryption (injected for TX validation)
   Uint8List? channelKey;
@@ -71,9 +75,22 @@ class UnifiedRxHandler {
       
       debugLog('[UNIFIED RX] Packet received: '
           'header=0x${metadata.header.toRadixString(16)}, '
-          'pathLength=${metadata.pathLength}');
-      
-      // Route to TX tracking if active (during 7s echo window)
+          'pathHashSize=${metadata.pathHashSize}, pathHashCount=${metadata.pathHashCount}');
+
+      // Store BLE metadata from 0x88 LogRxData for trace packets.
+      // The actual trace payload arrives separately via 0x89 TraceData stream.
+      // We only store RSSI/SNR here — the 0x89 handler combines them.
+      if (metadata.isTrace) {
+        final tt = traceTracker;
+        if (tt != null && tt.isListening) {
+          debugLog('[UNIFIED RX] Trace packet in 0x88 - storing BLE metadata for 0x89 handler');
+          tt.pendingBleSnr = metadata.snr;
+          tt.pendingBleRssi = metadata.rssi;
+        }
+        return; // Trace packets don't go to TX tracker or RX logger
+      }
+
+      // Route to TX tracking if active (during 5s echo window)
       if (txTracker.isListening) {
         debugLog('[UNIFIED RX] TX tracking active - checking for echo');
         final wasEcho = await txTracker.handlePacket(metadata);

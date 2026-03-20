@@ -64,6 +64,27 @@ class UserPreferences {
   /// Map rotation lock (disable rotation gestures)
   final bool mapRotationLocked;
 
+  /// Disable RSSI carpeater filter (allow all signal strengths)
+  final bool disableRssiFilter;
+
+  /// Anonymous mode: rename companion to "Anonymous" during wardriving
+  final bool anonymousMode;
+
+  /// Discovery drop: count failed discoveries as failed pings and report to API
+  final bool discDropEnabled;
+
+  /// Delete wardriving channel from radio on disconnect
+  final bool deleteChannelOnDisconnect;
+
+  /// Minimum ping distance in meters (25m floor, user can increase)
+  final int minPingDistanceMeters;
+
+  /// Auto-stop auto-ping after 30 minutes of idle (no movement)
+  final bool autoStopAfterIdle;
+
+  /// Show top 3 repeaters by SNR on the map during wardriving
+  final bool showTopRepeaters;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -82,10 +103,17 @@ class UserPreferences {
     this.closeAppAfterDisconnect = false,
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
-    this.hybridModeEnabled = false,
+    this.hybridModeEnabled = true,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
+    this.disableRssiFilter = false,
+    this.anonymousMode = false,
+    this.discDropEnabled = false,
+    this.deleteChannelOnDisconnect = true,
+    this.minPingDistanceMeters = 25,
+    this.autoStopAfterIdle = true,
+    this.showTopRepeaters = false,
   });
 
   /// Create from JSON (for persistence)
@@ -108,10 +136,17 @@ class UserPreferences {
       closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
-      hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? false,
+      hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
+      disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
+      anonymousMode: (json['anonymousMode'] as bool?) ?? false,
+      discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
+      deleteChannelOnDisconnect: (json['deleteChannelOnDisconnect'] as bool?) ?? true,
+      minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
+      autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
+      showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
     );
   }
 
@@ -139,6 +174,13 @@ class UserPreferences {
       'mapAutoFollow': mapAutoFollow,
       'mapAlwaysNorth': mapAlwaysNorth,
       'mapRotationLocked': mapRotationLocked,
+      'disableRssiFilter': disableRssiFilter,
+      'anonymousMode': anonymousMode,
+      'discDropEnabled': discDropEnabled,
+      'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
+      'minPingDistanceMeters': minPingDistanceMeters,
+      'autoStopAfterIdle': autoStopAfterIdle,
+      'showTopRepeaters': showTopRepeaters,
     };
   }
 
@@ -165,6 +207,13 @@ class UserPreferences {
     bool? mapAutoFollow,
     bool? mapAlwaysNorth,
     bool? mapRotationLocked,
+    bool? disableRssiFilter,
+    bool? anonymousMode,
+    bool? discDropEnabled,
+    bool? deleteChannelOnDisconnect,
+    int? minPingDistanceMeters,
+    bool? autoStopAfterIdle,
+    bool? showTopRepeaters,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -188,6 +237,13 @@ class UserPreferences {
       mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
+      disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
+      anonymousMode: anonymousMode ?? this.anonymousMode,
+      discDropEnabled: discDropEnabled ?? this.discDropEnabled,
+      deleteChannelOnDisconnect: deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
+      minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
+      autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
+      showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
     );
   }
 
@@ -213,6 +269,9 @@ class UserPreferences {
     return '$autoPingInterval seconds';
   }
 
+  /// Get min ping distance display string
+  String get minPingDistanceDisplay => '${minPingDistanceMeters}m';
+
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
@@ -236,12 +295,19 @@ class UserPreferences {
         other.hybridModeEnabled == hybridModeEnabled &&
         other.mapAutoFollow == mapAutoFollow &&
         other.mapAlwaysNorth == mapAlwaysNorth &&
-        other.mapRotationLocked == mapRotationLocked;
+        other.mapRotationLocked == mapRotationLocked &&
+        other.disableRssiFilter == disableRssiFilter &&
+        other.anonymousMode == anonymousMode &&
+        other.discDropEnabled == discDropEnabled &&
+        other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
+        other.minPingDistanceMeters == minPingDistanceMeters &&
+        other.autoStopAfterIdle == autoStopAfterIdle &&
+        other.showTopRepeaters == showTopRepeaters;
   }
 
   @override
   int get hashCode {
-    return Object.hash(
+    return Object.hashAll([
       powerLevel,
       txPower,
       externalAntenna,
@@ -262,7 +328,14 @@ class UserPreferences {
       mapAutoFollow,
       mapAlwaysNorth,
       mapRotationLocked,
-    );
+      disableRssiFilter,
+      anonymousMode,
+      discDropEnabled,
+      deleteChannelOnDisconnect,
+      minPingDistanceMeters,
+      autoStopAfterIdle,
+      showTopRepeaters,
+    ]);
   }
 
   /// Check if using imperial units
@@ -295,4 +368,9 @@ class AutoPingInterval {
   static const int slow = 60; // 60 seconds
 
   static const List<int> values = [fast, normal, slow];
+}
+
+/// Minimum ping distance (meters)
+class MinPingDistance {
+  static const int min = 25;
 }

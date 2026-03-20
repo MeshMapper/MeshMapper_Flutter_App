@@ -34,6 +34,9 @@ class Repeater {
   /// The repeater is active while `now < staleTime`.
   final int? staleTime;
 
+  /// Number of bytes per hop hash for this repeater's path (1, 2, or 3)
+  final int hopBytes;
+
   const Repeater({
     required this.id,
     required this.hexId,
@@ -45,6 +48,7 @@ class Repeater {
     this.iata,
     this.createdAt,
     this.staleTime,
+    this.hopBytes = 1,
   });
 
   /// Parse from JSON object in repeaters.json
@@ -78,6 +82,7 @@ class Repeater {
       iata: json['iata'] as String?,
       createdAt: createdAt,
       staleTime: staleTime,
+      hopBytes: (json['hop_bytes'] as int?) ?? 1,
     );
   }
 
@@ -93,6 +98,7 @@ class Repeater {
       'iata': iata,
       'created_at': createdAt,
       'stale_time': staleTime,
+      'hop_bytes': hopBytes,
     };
   }
 
@@ -129,6 +135,17 @@ class Repeater {
 
   /// Check if the repeater has not been heard in the past 24 hours
   bool get isDead => !isActive;
+
+  /// Get display hex ID based on hop bytes (or override).
+  /// [overrideHopBytes] is used when regional admin enforces a byte size.
+  String displayHexId({int? overrideHopBytes}) {
+    final bytes = overrideHopBytes ?? hopBytes;
+    final hexChars = bytes * 2; // 1 byte = 2 hex chars
+    if (hexId.length >= hexChars) {
+      return hexId.substring(0, hexChars).toUpperCase();
+    }
+    return id; // Fallback to short numeric ID
+  }
 
   @override
   String toString() => 'Repeater(id=$id, name=$name, enabled=$isEnabled)';
