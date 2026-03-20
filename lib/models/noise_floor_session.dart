@@ -35,12 +35,6 @@ enum PingEventType {
 
   @HiveField(4)
   discFail, // Grey: Discovery no response
-
-  @HiveField(5)
-  traceSuccess, // Cyan: Trace got response
-
-  @HiveField(6)
-  traceFail, // Grey: Trace no response
 }
 
 /// Repeater info for graph markers
@@ -105,8 +99,6 @@ class PingEventMarker extends HiveObject {
         PingEventType.rx => Colors.blue,
         PingEventType.discSuccess => Colors.purple,
         PingEventType.discFail => Colors.grey,
-        PingEventType.traceSuccess => Colors.cyan,
-        PingEventType.traceFail => Colors.grey,
       };
 
   /// Get a display label for this event type
@@ -116,8 +108,6 @@ class PingEventMarker extends HiveObject {
         PingEventType.rx => 'RX',
         PingEventType.discSuccess => 'DISC Success',
         PingEventType.discFail => 'DISC Fail',
-        PingEventType.traceSuccess => 'Trace Success',
-        PingEventType.traceFail => 'Trace Fail',
       };
 }
 
@@ -164,7 +154,6 @@ class NoiseFloorSession extends HiveObject {
   String get modeDisplay => switch (mode) {
     'active' => 'Active Mode',
     'hybrid' => 'Hybrid Mode',
-    'targeted' => 'Trace Mode',
     _ => 'Passive Mode',
   };
 

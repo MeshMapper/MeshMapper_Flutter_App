@@ -19,13 +19,12 @@ class GraphScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 40,
-        title: const Text('Noise Floor History', style: TextStyle(fontSize: 18)),
+        title: const Text('Noise Floor History'),
         automaticallyImplyLeading: false,
         actions: [
           if (sessions.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.delete_outline, size: 20),
+              icon: const Icon(Icons.delete_outline),
               onPressed: () => _confirmClearSessions(context, appState),
               tooltip: 'Clear all sessions',
             ),

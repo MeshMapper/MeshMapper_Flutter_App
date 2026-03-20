@@ -46,7 +46,6 @@ class MobileBluetoothService implements BluetoothService {
   StreamSubscription? _connectionStateSubscription;
   StreamSubscription? _notificationSubscription;
   StreamSubscription? _scanSubscription;
-  StreamController<DiscoveredDevice>? _scanController;
 
   // Store scanned device info for use in connect()
   // This preserves the device name from scan results
@@ -184,15 +183,10 @@ class MobileBluetoothService implements BluetoothService {
   @override
   Stream<DiscoveredDevice> scanForDevices({Duration? timeout}) async* {
     final controller = StreamController<DiscoveredDevice>();
-    _scanController = controller;
     
     _updateStatus(ConnectionStatus.scanning);
 
     try {
-      // Ensure any previous scan stream is closed before starting a new one
-      await _scanSubscription?.cancel();
-      _scanSubscription = null;
-
       // Start scanning with filter for MeshCore service UUID
       await fbp.FlutterBluePlus.startScan(
         withServices: [fbp.Guid(BleUuids.serviceUuid)],
@@ -214,30 +208,14 @@ class MobileBluetoothService implements BluetoothService {
           );
           // Store device info for use in connect() - preserves name from scan
           _scannedDevices[device.id] = device;
-          if (!controller.isClosed) {
-            controller.add(device);
-          }
+          controller.add(device);
         }
       });
-
-      // Complete stream when scan naturally stops (timeout or platform stop)
-      unawaited(() async {
-        await fbp.FlutterBluePlus.isScanning.where((isScanning) => !isScanning).first;
-        if (!controller.isClosed) {
-          await controller.close();
-        }
-      }());
 
       yield* controller.stream;
     } finally {
       await _scanSubscription?.cancel();
       _scanSubscription = null;
-      if (!controller.isClosed) {
-        await controller.close();
-      }
-      if (identical(_scanController, controller)) {
-        _scanController = null;
-      }
     }
   }
 
@@ -246,11 +224,6 @@ class MobileBluetoothService implements BluetoothService {
     await fbp.FlutterBluePlus.stopScan();
     await _scanSubscription?.cancel();
     _scanSubscription = null;
-    final scanController = _scanController;
-    if (scanController != null && !scanController.isClosed) {
-      await scanController.close();
-    }
-    _scanController = null;
     // NOTE: Do NOT fire 'disconnected' here. Stopping a scan is not a disconnection.
     // The status will be updated by connect() when a connection starts.
     // Firing 'disconnected' here causes a race condition where the queued event

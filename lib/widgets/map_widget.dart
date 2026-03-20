@@ -80,18 +80,6 @@ extension MapStyleExtension on MapStyle {
         return null; // ArcGIS doesn't use subdomains
     }
   }
-
-  /// Whether this style supports retina tiles via {r} placeholder
-  bool get supportsRetina {
-    switch (this) {
-      case MapStyle.dark:
-        return true; // Carto supports @2x via {r}
-      case MapStyle.light:
-        return false; // OSM has no retina support
-      case MapStyle.satellite:
-        return false; // ArcGIS has no retina support
-    }
-  }
 }
 
 /// Custom tile provider that silently handles HTTP errors (404, 503, etc.)
@@ -569,20 +557,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         // Map
         _buildMap(appState, center),
 
-        // GPS Info + Top Repeaters overlay (top-left, respects dynamic island in landscape)
+        // GPS Info overlay (top-left, respects dynamic island in landscape)
         Positioned(
           top: topPadding,
           left: leftPadding,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildGpsInfoOverlay(appState),
-              if (appState.preferences.showTopRepeaters) ...[
-                const SizedBox(height: 6),
-                _buildTopRepeatersOverlay(appState),
-              ],
-            ],
-          ),
+          child: _buildGpsInfoOverlay(appState),
         ),
 
         // Map controls - top-right in both orientations, collapsible
@@ -637,7 +616,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           initialCenter: center,
           initialZoom: _defaultZoom,
           minZoom: 3,
-          maxZoom: 17,
+          maxZoom: 18,
           interactionOptions: InteractionOptions(
             flags: _rotationLocked
                 ? InteractiveFlag.all & ~InteractiveFlag.rotate
@@ -660,9 +639,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 urlTemplate: mapStyle.urlTemplate,
                 subdomains: mapStyle.subdomains ?? const [],
                 userAgentPackageName: 'com.meshmapper.app',
-                maxZoom: 17,
-                retinaMode: mapStyle.supportsRetina && RetinaMode.isHighDensity(context),
-                tileProvider: SilentCancellableNetworkTileProvider(),
+                maxZoom: 19,
+                retinaMode: RetinaMode.isHighDensity(context), // Enable high-res tiles on retina displays
+                tileProvider: SilentCancellableNetworkTileProvider(), // Silently handles tile errors
               );
             },
           ),
@@ -670,13 +649,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           // MeshMapper coverage overlay (only when zone code available and overlay enabled)
           if (appState.zoneCode != null && _showMeshMapperOverlay)
             TileLayer(
-              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}',
+              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}',
               userAgentPackageName: 'com.meshmapper.app',
-              minZoom: 3,
-              maxZoom: 17,
-              tileDisplay: const TileDisplay.fadeIn(
-                reloadStartOpacity: 1.0, // Keep old tile visible until new one loads
-              ),
+              maxZoom: 19,
               tileProvider: SilentCancellableNetworkTileProvider(),
             ),
 
@@ -692,21 +667,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
         // DISC markers (purple circles for discovery observations)
         MarkerLayer(
-          markers: _buildDiscMarkers(appState.discLogEntries, appState.discDropEnabled),
+          markers: _buildDiscMarkers(appState.discLogEntries),
         ),
 
-        // Trace markers (cyan/red circles for targeted ping results)
+        // Repeater markers (magenta circles with ID)
         MarkerLayer(
-          markers: _buildTraceMarkers(appState.traceLogEntries),
-        ),
-
-        // Repeater markers (magenta with ID, rotate with map)
-        MarkerLayer(
-          rotate: true,
-          markers: _buildRepeaterMarkers(
-            appState.repeaters,
-            appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-          ),
+          markers: _buildRepeaterMarkers(appState.repeaters),
         ),
 
         // Current position marker (car icon)
@@ -729,128 +695,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// Color for the overlay ping-type dot
-  static Color _overlayTypeColor(OverlayPingType type) {
-    return switch (type) {
-      OverlayPingType.tx => Colors.green,
-      OverlayPingType.disc => Colors.purple,
-      OverlayPingType.trace => Colors.cyan,
-      OverlayPingType.rx => Colors.blue,
-    };
-  }
-
-  /// Build a single overlay table row with colored dot, repeater ID, and SNR
-  TableRow _overlayRow(String repeaterId, double snr, Color dotColor) {
-    return TableRow(
-      children: [
-        TableCell(
-          verticalAlignment: TableCellVerticalAlignment.middle,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: Container(
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: dotColor,
-              ),
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
-          child: Text(
-            repeaterId,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'monospace',
-              color: Colors.white,
-            ),
-          ),
-        ),
-        const SizedBox(),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
-          child: Text(
-            snr.toStringAsFixed(1),
-            textAlign: TextAlign.right,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'monospace',
-              color: _snrColor(snr),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   /// GPS info overlay (top-left corner)
-  /// Top heard repeaters overlay (bottom-right of map)
-  Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
-    final topRepeaters = appState.topRepeatersBySnr;
-    final rxSlot = appState.rxOverlaySlot;
-    final isEmpty = topRepeaters.isEmpty && rxSlot == null;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Top Heard',
-            style: TextStyle(
-              fontSize: 9,
-              fontWeight: FontWeight.w500,
-              color: Colors.white54,
-              letterSpacing: 0.5,
-            ),
-          ),
-          const SizedBox(height: 2),
-          if (isEmpty)
-            const Text(
-              '---',
-              style: TextStyle(
-                fontSize: 11,
-                fontFamily: 'monospace',
-                color: Colors.white38,
-              ),
-            ),
-          if (!isEmpty)
-            Table(
-              defaultColumnWidth: const IntrinsicColumnWidth(),
-              columnWidths: const {
-                0: IntrinsicColumnWidth(), // dot
-                1: IntrinsicColumnWidth(), // ID
-                2: FixedColumnWidth(8),    // spacer
-                3: IntrinsicColumnWidth(), // SNR
-              },
-              children: [
-                for (final r in topRepeaters)
-                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type)),
-                if (rxSlot != null)
-                  _overlayRow(rxSlot.repeaterId, rxSlot.snr, _overlayTypeColor(OverlayPingType.rx)),
-              ],
-            ),
-        ],
-      ),
-    );
-  }
-
-  /// SNR color: green > 5, orange -1..5, red <= -1
-  static Color _snrColor(double snr) {
-    if (snr <= -1) return Colors.red;
-    if (snr <= 5) return Colors.orange;
-    return Colors.green;
-  }
-
   Widget _buildGpsInfoOverlay(AppStateProvider appState) {
     final position = appState.currentPosition;
     final hasGps = position != null;
@@ -1257,23 +1102,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.cyan,
-                      label: 'TRC',
-                      description: 'Location where a trace reached the repeater',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
-                    _buildLegendItem(
-                      context: context,
                       color: Colors.grey,
                       label: 'DISC',
                       description: 'Location where you sent a discovery request but no repeater responded',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
-                    _buildLegendItem(
-                      context: context,
-                      color: Colors.grey,
-                      label: 'TRC',
-                      description: 'Location where a trace got no response',
                     ),
                   ],
                 ),
@@ -1719,7 +1550,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     }).toList();
   }
 
-  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries, bool discDropEnabled) {
+  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries) {
     return entries.map((entry) {
       return Marker(
         point: LatLng(entry.latitude, entry.longitude),
@@ -1729,9 +1560,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           onTap: () => _showDiscPingDetails(entry),
           child: Container(
             decoration: BoxDecoration(
-              color: entry.nodeCount == 0
-                  ? (discDropEnabled ? Colors.red : Colors.grey)
-                  : _discMarkerColor,
+              color: entry.nodeCount == 0 ? Colors.grey : _discMarkerColor,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [
@@ -1746,284 +1575,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         ),
       );
     }).toList();
-  }
-
-  List<Marker> _buildTraceMarkers(List<TraceLogEntry> entries) {
-    return entries.map((entry) {
-      return Marker(
-        point: LatLng(entry.latitude, entry.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showTraceDetails(entry),
-          child: Container(
-            decoration: BoxDecoration(
-              color: entry.success ? Colors.cyan : Colors.grey,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }).toList();
-  }
-
-  void _showTraceDetails(TraceLogEntry entry) {
-    showModalBottomSheet(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.75,
-        ),
-        child: SingleChildScrollView(
-          child: Container(
-            padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Header with icon badge
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.cyan.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
-                      ),
-                      child: const Icon(Icons.gps_fixed, color: Colors.cyan, size: 24),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Trace',
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          Text(
-                            _formatTime(entry.timestamp),
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, size: 20),
-                      onPressed: () => Navigator.pop(context),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-
-                // Location chip
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${entry.latitude.toStringAsFixed(5)}, ${entry.longitude.toStringAsFixed(5)}',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontFamily: 'monospace',
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // Target repeater section header
-                Text(
-                  entry.success
-                      ? 'Target Repeater'
-                      : 'No response from target repeater',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-
-                if (entry.success) ...[
-                  const SizedBox(height: 12),
-                  // Table with headers
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: _nodeColumnWidth(),
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'TX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(height: 1, color: Theme.of(context).dividerColor),
-                        // Data row
-                        Builder(builder: (context) {
-                          final localSnr = entry.localSnr ?? 0;
-                          final localRssi = entry.localRssi ?? 0;
-                          final remoteSnr = entry.remoteSnr ?? 0;
-
-                          Color rxSnrColor;
-                          if (localSnr <= -1) {
-                            rxSnrColor = Colors.red;
-                          } else if (localSnr <= 5) {
-                            rxSnrColor = Colors.orange;
-                          } else {
-                            rxSnrColor = Colors.green;
-                          }
-
-                          Color rssiColor;
-                          if (localRssi >= -70) {
-                            rssiColor = Colors.green;
-                          } else if (localRssi >= -100) {
-                            rssiColor = Colors.orange;
-                          } else {
-                            rssiColor = Colors.red;
-                          }
-
-                          Color txSnrColor;
-                          if (remoteSnr <= -1) {
-                            txSnrColor = Colors.red;
-                          } else if (remoteSnr <= 5) {
-                            txSnrColor = Colors.orange;
-                          } else {
-                            txSnrColor = Colors.green;
-                          }
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.targetRepeaterId),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  RepeaterIdChip(repeaterId: entry.targetRepeaterId, fontSize: 13, width: _nodeColumnWidth()),
-                                  // RX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: localSnr.toStringAsFixed(1),
-                                        color: rxSnrColor,
-                                      ),
-                                    ),
-                                  ),
-                                  // RX RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: '$localRssi',
-                                        color: rssiColor,
-                                      ),
-                                    ),
-                                  ),
-                                  // TX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: remoteSnr.toStringAsFixed(1),
-                                        color: txSnrColor,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
   }
 
   /// DISC marker color (#7B68EE - medium slate blue/purple)
@@ -2065,39 +1616,23 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return _repeaterMarkerColor; // Active (default)
   }
 
-  List<Marker> _buildRepeaterMarkers(List<Repeater> repeaters, int? regionHopBytesOverride) {
+  List<Marker> _buildRepeaterMarkers(List<Repeater> repeaters) {
     final duplicateIds = _getDuplicateRepeaterIds(repeaters);
 
     return repeaters.map((repeater) {
       final isDuplicate = duplicateIds.contains(repeater.id);
       final markerColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
-      // Display hex ID based on per-repeater hop_bytes (or regional admin override)
-      final displayId = repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
-      final effectiveBytes = regionHopBytesOverride ?? repeater.hopBytes;
-      final isLongId = displayId.length > 2;
-      final markerWidth = displayId.length > 4 ? 48.0 : isLongId ? 40.0 : 28.0;
-
-      // Shape varies by hop bytes: 1=square, 2=rounded rect, 3=more rounded
-      final borderRadius = effectiveBytes >= 3
-          ? BorderRadius.circular(8)
-          : effectiveBytes == 2
-              ? BorderRadius.circular(6)
-              : BorderRadius.circular(4);
-
       return Marker(
         point: LatLng(repeater.lat, repeater.lon),
-        width: markerWidth,
+        width: 28,
         height: 28,
         child: GestureDetector(
-          onTap: () => _showRepeaterDetails(repeater, isDuplicate: isDuplicate, regionHopBytesOverride: regionHopBytesOverride),
+          onTap: () => _showRepeaterDetails(repeater, isDuplicate: isDuplicate),
           child: Container(
-            padding: isLongId
-                ? const EdgeInsets.symmetric(horizontal: 4)
-                : EdgeInsets.zero,
             decoration: BoxDecoration(
               color: markerColor,
-              borderRadius: borderRadius,
+              shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [
                 BoxShadow(
@@ -2109,12 +1644,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
             alignment: Alignment.center,
             child: Text(
-              displayId,
-              style: TextStyle(
-                fontSize: displayId.length > 4 ? 8 : isLongId ? 9 : 10,
+              repeater.id,
+              style: const TextStyle(
+                fontSize: 10,
                 fontWeight: FontWeight.bold,
                 color: Colors.white,
-                fontFamily: 'monospace',
               ),
             ),
           ),
@@ -2138,21 +1672,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// Compute node column width based on hop byte count.
-  /// [extraPadding] adds space for additional content (e.g. nodeTypeLabel in DISC popup).
-  double _nodeColumnWidth({double extraPadding = 0}) {
-    final appState = context.read<AppStateProvider>();
-    final hopBytes = appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes;
-    switch (hopBytes) {
-      case 2:
-        return 70 + extraPadding;
-      case 3:
-        return 80 + extraPadding;
-      default:
-        return 60 + extraPadding;
-    }
-  }
-
   /// Show TX ping details popup
   void _showTxPingDetails(TxPing ping) {
     // Use the heardRepeaters directly from the TxPing
@@ -2161,221 +1680,209 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
-      isScrollControlled: true,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.75,
-        ),
-        child: SingleChildScrollView(
-          child: Container(
-            padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      builder: (context) => Container(
+        padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header with icon badge
+            Row(
               children: [
-                // Header with icon badge
-                Row(
-                  children: [
-                    // Icon badge
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.green.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.green.withValues(alpha: 0.4)),
-                      ),
-                      child: const Icon(Icons.arrow_upward, color: Colors.green, size: 24),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'TX Ping',
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          Text(
-                            _formatTime(ping.timestamp),
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, size: 20),
-                      onPressed: () => Navigator.pop(context),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-
-                // Location chip
+                // Icon badge
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                    color: Colors.green.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.green.withValues(alpha: 0.4)),
                   ),
-                  child: Row(
+                  child: const Icon(Icons.arrow_upward, color: Colors.green, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${ping.latitude.toStringAsFixed(5)}, ${ping.longitude.toStringAsFixed(5)}',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontFamily: 'monospace',
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
+                      Text(
+                        'TX Ping',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        _formatTime(ping.timestamp),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
-
-                // Repeaters section header
-                Text(
-                  heardRepeaters.isEmpty ? 'No repeaters heard' : 'Heard Repeaters (${heardRepeaters.length})',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    letterSpacing: 0.5,
-                  ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
                 ),
+              ],
+            ),
+            const SizedBox(height: 20),
 
-                if (heardRepeaters.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  // Repeaters table
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+            // Location chip
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${ping.latitude.toStringAsFixed(5)}, ${ping.longitude.toStringAsFixed(5)}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
                     ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Repeaters section header
+            Text(
+              heardRepeaters.isEmpty ? 'No repeaters heard' : 'Heard Repeaters (${heardRepeaters.length})',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                letterSpacing: 0.5,
+              ),
+            ),
+
+            if (heardRepeaters.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              // Repeaters table
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                ),
+                child: Column(
+                  children: [
+                    // Header row
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 60,
+                            child: Text(
+                              'Node',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'SNR',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'RSSI',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Divider(height: 1, color: Theme.of(context).dividerColor),
+                    // Data rows
+                    ...heardRepeaters.map((repeater) {
+                      // Calculate SNR chip color
+                      Color snrColor;
+                      if (repeater.snr <= -1) {
+                        snrColor = Colors.red;
+                      } else if (repeater.snr <= 5) {
+                        snrColor = Colors.orange;
+                      } else {
+                        snrColor = Colors.green;
+                      }
+
+                      // Calculate RSSI chip color
+                      Color rssiColor;
+                      if (repeater.rssi >= -70) {
+                        rssiColor = Colors.green;
+                      } else if (repeater.rssi >= -100) {
+                        rssiColor = Colors.orange;
+                      } else {
+                        rssiColor = Colors.red;
+                      }
+
+                      return InkWell(
+                        onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           child: Row(
                             children: [
-                              SizedBox(
-                                width: _nodeColumnWidth(),
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              // Repeater ID
+                              RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 13, width: 60),
+                              // SNR
+                              Expanded(
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: repeater.snr.toStringAsFixed(1),
+                                    color: snrColor,
                                   ),
                                 ),
                               ),
+                              // RSSI
                               Expanded(
-                                child: Text(
-                                  'SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: '${repeater.rssi}',
+                                    color: rssiColor,
                                   ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        Divider(height: 1, color: Theme.of(context).dividerColor),
-                        // Data rows
-                        ...heardRepeaters.map((repeater) {
-                          // Calculate SNR chip color
-                          Color snrColor;
-                          if (repeater.snr == null) {
-                            snrColor = Colors.grey;
-                          } else if (repeater.snr! <= -1) {
-                            snrColor = Colors.red;
-                          } else if (repeater.snr! <= 5) {
-                            snrColor = Colors.orange;
-                          } else {
-                            snrColor = Colors.green;
-                          }
-
-                          // Calculate RSSI chip color
-                          Color rssiColor;
-                          if (repeater.rssi == null) {
-                            rssiColor = Colors.grey;
-                          } else if (repeater.rssi! >= -70) {
-                            rssiColor = Colors.green;
-                          } else if (repeater.rssi! >= -100) {
-                            rssiColor = Colors.orange;
-                          } else {
-                            rssiColor = Colors.red;
-                          }
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Repeater ID
-                                  RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 13, width: _nodeColumnWidth()),
-                                  // SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: repeater.snr?.toStringAsFixed(1) ?? '-',
-                                        color: snrColor,
-                                      ),
-                                    ),
-                                  ),
-                                  // RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: repeater.rssi != null ? '${repeater.rssi}' : '-',
-                                        color: rssiColor,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -2514,7 +2021,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     child: Row(
                       children: [
                         SizedBox(
-                          width: _nodeColumnWidth(),
+                          width: 60,
                           child: Text(
                             'Node',
                             style: TextStyle(
@@ -2558,7 +2065,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       child: Row(
                         children: [
                           // Repeater ID
-                          RepeaterIdChip(repeaterId: ping.repeaterId, fontSize: 13, width: _nodeColumnWidth()),
+                          RepeaterIdChip(repeaterId: ping.repeaterId, fontSize: 13, width: 60),
                           // SNR
                           Expanded(
                             child: Center(
@@ -2595,262 +2102,254 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
-      isScrollControlled: true,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.75,
-        ),
-        child: SingleChildScrollView(
-          child: Container(
-            padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      builder: (context) => Container(
+        padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header with icon badge
+            Row(
               children: [
-                // Header with icon badge
-                Row(
-                  children: [
-                    // Icon badge
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: _discMarkerColor.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: _discMarkerColor.withValues(alpha: 0.4)),
-                      ),
-                      child: const Icon(Icons.radar, color: _discMarkerColor, size: 24),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Disc Request',
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          Text(
-                            _formatTime(entry.timestamp),
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, size: 20),
-                      onPressed: () => Navigator.pop(context),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-
-                // Location chip
+                // Icon badge
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                    color: _discMarkerColor.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _discMarkerColor.withValues(alpha: 0.4)),
                   ),
-                  child: Row(
+                  child: const Icon(Icons.radar, color: _discMarkerColor, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${entry.latitude.toStringAsFixed(5)}, ${entry.longitude.toStringAsFixed(5)}',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontFamily: 'monospace',
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
+                      Text(
+                        'Disc Request',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        _formatTime(entry.timestamp),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
-
-                // Discovered nodes section header
-                Text(
-                  entry.discoveredNodes.isEmpty
-                      ? 'No nodes discovered'
-                      : 'Discovered Nodes (${entry.discoveredNodes.length})',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    letterSpacing: 0.5,
-                  ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
                 ),
+              ],
+            ),
+            const SizedBox(height: 20),
 
-                if (entry.discoveredNodes.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  // Table with headers
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+            // Location chip
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${entry.latitude.toStringAsFixed(5)}, ${entry.longitude.toStringAsFixed(5)}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
                     ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Discovered nodes section header
+            Text(
+              entry.discoveredNodes.isEmpty
+                  ? 'No nodes discovered'
+                  : 'Discovered Nodes (${entry.discoveredNodes.length})',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                letterSpacing: 0.5,
+              ),
+            ),
+
+            if (entry.discoveredNodes.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              // Table with headers
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                ),
+                child: Column(
+                  children: [
+                    // Header row
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 60,
+                            child: Text(
+                              'Node',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'RX SNR',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'RX RSSI',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'TX SNR',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Divider(height: 1, color: Theme.of(context).dividerColor),
+                    // Data rows
+                    ...entry.discoveredNodes.map((node) {
+                      // Calculate colors
+                      Color rxSnrColor;
+                      if (node.localSnr <= -1) {
+                        rxSnrColor = Colors.red;
+                      } else if (node.localSnr <= 5) {
+                        rxSnrColor = Colors.orange;
+                      } else {
+                        rxSnrColor = Colors.green;
+                      }
+
+                      Color rssiColor;
+                      if (node.localRssi >= -70) {
+                        rssiColor = Colors.green;
+                      } else if (node.localRssi >= -100) {
+                        rssiColor = Colors.orange;
+                      } else {
+                        rssiColor = Colors.red;
+                      }
+
+                      Color txSnrColor;
+                      if (node.remoteSnr <= -1) {
+                        txSnrColor = Colors.red;
+                      } else if (node.remoteSnr <= 5) {
+                        txSnrColor = Colors.orange;
+                      } else {
+                        txSnrColor = Colors.green;
+                      }
+
+                      return InkWell(
+                        onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           child: Row(
                             children: [
+                              // Node ID with type
                               SizedBox(
-                                width: _nodeColumnWidth(extraPadding: 20),
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                width: 60,
+                                child: Row(
+                                  children: [
+                                    RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 13),
+                                    Text(
+                                      node.nodeTypeLabel,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w500,
+                                        color: _discMarkerColor,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              // RX SNR
+                              Expanded(
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: node.localSnr.toStringAsFixed(1),
+                                    color: rxSnrColor,
                                   ),
                                 ),
                               ),
+                              // RSSI
                               Expanded(
-                                child: Text(
-                                  'RX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: '${node.localRssi}',
+                                    color: rssiColor,
                                   ),
                                 ),
                               ),
+                              // TX SNR
                               Expanded(
-                                child: Text(
-                                  'RX RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'TX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                child: Center(
+                                  child: _buildStatChip(
+                                    value: node.remoteSnr.toStringAsFixed(1),
+                                    color: txSnrColor,
                                   ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        Divider(height: 1, color: Theme.of(context).dividerColor),
-                        // Data rows
-                        ...entry.discoveredNodes.map((node) {
-                          // Calculate colors
-                          Color rxSnrColor;
-                          if (node.localSnr <= -1) {
-                            rxSnrColor = Colors.red;
-                          } else if (node.localSnr <= 5) {
-                            rxSnrColor = Colors.orange;
-                          } else {
-                            rxSnrColor = Colors.green;
-                          }
-
-                          Color rssiColor;
-                          if (node.localRssi >= -70) {
-                            rssiColor = Colors.green;
-                          } else if (node.localRssi >= -100) {
-                            rssiColor = Colors.orange;
-                          } else {
-                            rssiColor = Colors.red;
-                          }
-
-                          Color txSnrColor;
-                          if (node.remoteSnr <= -1) {
-                            txSnrColor = Colors.red;
-                          } else if (node.remoteSnr <= 5) {
-                            txSnrColor = Colors.orange;
-                          } else {
-                            txSnrColor = Colors.green;
-                          }
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Node ID with type
-                                  SizedBox(
-                                    width: _nodeColumnWidth(extraPadding: 20),
-                                    child: Row(
-                                      children: [
-                                        RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 13),
-                                        Text(
-                                          node.nodeTypeLabel,
-                                          style: const TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w500,
-                                            color: _discMarkerColor,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  // RX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: node.localSnr.toStringAsFixed(1),
-                                        color: rxSnrColor,
-                                      ),
-                                    ),
-                                  ),
-                                  // RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: '${node.localRssi}',
-                                        color: rssiColor,
-                                      ),
-                                    ),
-                                  ),
-                                  // TX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: node.remoteSnr.toStringAsFixed(1),
-                                        color: txSnrColor,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -2877,7 +2376,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// Show repeater details popup
-  void _showRepeaterDetails(Repeater repeater, {bool isDuplicate = false, int? regionHopBytesOverride}) {
+  void _showRepeaterDetails(Repeater repeater, {bool isDuplicate = false}) {
     // Determine icon badge color based on primary status
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
@@ -2911,33 +2410,25 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             // Header with icon badge (containing ID) and name
             Row(
               children: [
-                // Icon badge with hex ID (mirrors map marker)
-                Builder(builder: (context) {
-                  final displayId = repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
-                  final isLongId = displayId.length > 2;
-                  return Container(
-                    constraints: const BoxConstraints(minWidth: 44),
-                    height: 44,
-                    padding: isLongId
-                        ? const EdgeInsets.symmetric(horizontal: 8)
-                        : EdgeInsets.zero,
-                    decoration: BoxDecoration(
-                      color: iconColor,
-                      borderRadius: BorderRadius.circular(22),
-                      border: Border.all(color: Colors.white, width: 2),
+                // Icon badge with ID (mirrors map marker)
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: iconColor,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    repeater.id,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
                     ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      displayId,
-                      style: TextStyle(
-                        fontSize: isLongId ? 13 : 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  );
-                }),
+                  ),
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(

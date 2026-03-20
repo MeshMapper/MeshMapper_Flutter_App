@@ -28,18 +28,6 @@ class GpsService {
   /// Reference: getValidGpsForZoneCheck() in wardrive.js
   static const double maxAccuracyMetersForZoneCheck = 50.0;
 
-  /// Configured minimum ping distance (user-adjustable, clamped to minDistanceMeters floor)
-  double _configuredMinDistance = minDistanceMeters;
-
-  /// Get the configured minimum ping distance
-  double get configuredMinDistance => _configuredMinDistance;
-
-  /// Set the minimum ping distance (clamped to 25m floor)
-  void setMinPingDistance(double meters) {
-    _configuredMinDistance = meters < minDistanceMeters ? minDistanceMeters : meters;
-    debugLog('[GPS] Min ping distance set to ${_configuredMinDistance.toInt()}m');
-  }
-
   final _statusController = StreamController<GpsStatus>.broadcast();
   final _positionController = StreamController<Position>.broadcast();
 
@@ -173,14 +161,6 @@ class GpsService {
   Future<void> startWatching() async {
     debugLog('[GPS] startWatching() called, current status: $_status');
 
-    // Ensure only one active position stream subscription exists.
-    // startWatching() can be called multiple times (e.g. after permission flow).
-    if (_positionSubscription != null) {
-      debugLog('[GPS] Existing position subscription found, restarting watcher');
-      await _positionSubscription?.cancel();
-      _positionSubscription = null;
-    }
-
     // Check if location services are enabled first (system-level setting)
     final serviceEnabled = await isLocationServiceEnabled();
     debugLog('[GPS] Location services check: enabled=$serviceEnabled');
@@ -214,12 +194,6 @@ class GpsService {
     }
 
     debugLog('[GPS] Starting position stream listener...');
-
-    // Cancel any existing subscription to prevent orphaned listeners
-    // (e.g. restartGpsAfterPermission() racing with _initialize())
-    await _positionSubscription?.cancel();
-    _positionSubscription = null;
-
     _updateStatus(GpsStatus.searching);
 
     // Configure location settings for position stream
@@ -286,10 +260,10 @@ class GpsService {
     );
   }
 
-  /// Check if current position is far enough from last ping
+  /// Check if current position is far enough from last ping (25m minimum)
   bool canPingAtPosition(Position position) {
     if (_lastPingPosition == null) return true;
-    return distanceFromLastPing(position) >= _configuredMinDistance;
+    return distanceFromLastPing(position) >= minDistanceMeters;
   }
 
   /// Mark current position as ping location

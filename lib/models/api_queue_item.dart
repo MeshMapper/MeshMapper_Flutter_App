@@ -44,7 +44,7 @@ class ApiQueueItem extends HiveObject {
   final String heardRepeats;
 
   /// Earliest time this item can be uploaded (milliseconds since epoch)
-  /// All items are immediate; upload timing is controlled by flush timers
+  /// TX items have 5-second delay; RX/DISC are immediate
   @HiveField(13)
   final int canUploadAfter;
 
@@ -81,7 +81,7 @@ class ApiQueueItem extends HiveObject {
       longitude: longitude,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
-      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate — flush timer controls upload timing
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch + 5000, // 5 seconds from now
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
     );
@@ -138,87 +138,10 @@ class ApiQueueItem extends HiveObject {
     );
   }
 
-  /// Create from a successful TRACE ping (targeted zero-hop trace)
-  /// heardRepeats format: "repeaterId:localSnr:localRssi:remoteSnr"
-  factory ApiQueueItem.fromTrace({
-    required double latitude,
-    required double longitude,
-    required String repeaterId,
-    required double localSnr,
-    required int localRssi,
-    required double remoteSnr,
-    required int timestamp,
-    required bool externalAntenna,
-    int? noiseFloor,
-  }) {
-    final heardRepeats = '$repeaterId:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
-    return ApiQueueItem(
-      type: 'TRACE',
-      latitude: latitude,
-      longitude: longitude,
-      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
-      heardRepeats: heardRepeats,
-      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
-      externalAntenna: externalAntenna,
-      noiseFloor: noiseFloor,
-    );
-  }
-
-  /// Create from a failed DISC discovery (no nodes responded)
-  factory ApiQueueItem.fromDiscDrop({
-    required double latitude,
-    required double longitude,
-    required int timestamp,
-    required bool externalAntenna,
-    int? noiseFloor,
-  }) {
-    return ApiQueueItem(
-      type: 'DISC',
-      latitude: latitude,
-      longitude: longitude,
-      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
-      heardRepeats: 'None',
-      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
-      externalAntenna: externalAntenna,
-      noiseFloor: noiseFloor,
-    );
-  }
-
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
-    // For TRACE type, parse the heardRepeats field to extract individual values
-    if (type == 'TRACE') {
-      // Format: "repeaterId:localSnr:localRssi:remoteSnr"
-      final parts = heardRepeats.split(':');
-      return {
-        'type': type,
-        'lat': latitude,
-        'lon': longitude,
-        'noisefloor': noiseFloor,
-        'repeater_id': parts.isNotEmpty ? parts[0] : '',
-        'local_snr': parts.length > 1 ? double.tryParse(parts[1]) : null,
-        'local_rssi': parts.length > 2 ? int.tryParse(parts[2]) : null,
-        'remote_snr': parts.length > 3 ? double.tryParse(parts[3]) : null,
-        'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
-        'external_antenna': externalAntenna,
-      };
-    }
-
     // For DISC type, parse the heardRepeats field to extract individual values
     if (type == 'DISC') {
-      // Failed discovery (no nodes responded)
-      if (heardRepeats == 'None') {
-        return {
-          'type': type,
-          'lat': latitude,
-          'lon': longitude,
-          'noisefloor': noiseFloor,
-          'repeater_id': 'None',
-          'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
-          'external_antenna': externalAntenna,
-        };
-      }
-
       // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
       final parts = heardRepeats.split(':');
       return {

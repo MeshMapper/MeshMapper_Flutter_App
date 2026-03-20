@@ -21,15 +21,11 @@ class PacketValidator {
   /// Allowed channels for validation
   final Map<int, ChannelInfo> allowedChannels;
 
-  /// When true, skip RSSI carpeater check (user setting)
-  final bool disableRssiFilter;
-
-  PacketValidator({required this.allowedChannels, this.disableRssiFilter = false});
+  PacketValidator({required this.allowedChannels});
 
   /// Validate packet for RX wardriving
   /// Returns ValidationResult with success/failure and reason
-  /// [skipRssiCheck] - When true, skip the RSSI carpeater check (used for CARpeater pass-through)
-  Future<ValidationResult> validate(PacketMetadata metadata, {bool skipRssiCheck = false}) async {
+  Future<ValidationResult> validate(PacketMetadata metadata) async {
     try {
       // Log packet for debugging
       final rawHex = metadata.raw
@@ -38,20 +34,15 @@ class PacketValidator {
       debugLog('[RX FILTER] ========== VALIDATING PACKET ==========');
       debugLog('[RX FILTER] Raw packet (${metadata.raw.length} bytes): $rawHex');
       debugLog('[RX FILTER] Header: 0x${metadata.header.toRadixString(16).padLeft(2, '0')} | '
-          'PathHashCount: ${metadata.pathHashCount} | SNR: ${metadata.snr}');
+          'PathLength: ${metadata.pathLength} | SNR: ${metadata.snr}');
 
       // VALIDATION 1: Check RSSI (carpeater filter)
-      if (skipRssiCheck) {
-        debugLog('[RX FILTER] RSSI check skipped (CARpeater pass-through)');
-      } else if (disableRssiFilter) {
-        debugLog('[RX FILTER] RSSI filter disabled by user, skipping carpeater check');
-      } else if (isCarpeater(metadata.rssi)) {
+      if (isCarpeater(metadata.rssi)) {
         debugLog('[RX FILTER] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ $maxRssiThreshold) - '
             'possible carpeater (RSSI failsafe)');
         return ValidationResult.failed('carpeater-rssi');
-      } else {
-        debugLog('[RX FILTER] ✓ RSSI OK (${metadata.rssi} < $maxRssiThreshold)');
       }
+      debugLog('[RX FILTER] ✓ RSSI OK (${metadata.rssi} < $maxRssiThreshold)');
 
       // VALIDATION 2: Check packet type
       if (metadata.isGroupText) {
@@ -170,18 +161,6 @@ class PacketValidator {
   /// Check if RSSI indicates carpeater (signal too strong)
   static bool isCarpeater(int rssi) {
     return rssi >= maxRssiThreshold;
-  }
-
-  /// Check if a hop hex string matches a stored CARpeater ID using prefix truncation.
-  /// The stored ID is always 3-byte (6 hex chars). Incoming hop IDs vary by the
-  /// packet's path hash size (1, 2, or 3 bytes). Compares the shorter prefix.
-  /// Also handles legacy shorter stored IDs from before the 3-byte requirement.
-  static bool isCarpeaterIdMatch(String hopHex, String storedId) {
-    final hop = hopHex.toUpperCase();
-    final stored = storedId.toUpperCase();
-    final compareLen = hop.length < stored.length ? hop.length : stored.length;
-    if (compareLen == 0) return false;
-    return hop.substring(0, compareLen) == stored.substring(0, compareLen);
   }
 
   /// Calculate ratio of printable ASCII characters (32-126)

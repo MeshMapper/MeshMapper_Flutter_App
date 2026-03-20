@@ -26,7 +26,6 @@ class MainScaffold extends StatefulWidget {
 class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
-  bool _hasShownLocationSettingsPrompt = false;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -60,15 +59,18 @@ class _MainScaffoldState extends State<MainScaffold> {
 
     // Check if disclosure was already shown
     final hasShown = await PermissionDisclosureService.hasShownDisclosure();
-    if (!hasShown) {
-      // Show the disclosure dialog
-      if (!mounted) return;
-      debugLog('[DISCLOSURE] Showing location disclosure dialog');
-      await PermissionDisclosureService.showLocationDisclosure(context);
+    if (hasShown) {
+      debugLog('[DISCLOSURE] Already shown, skipping');
+      return;
     }
 
-    debugLog('[DISCLOSURE] Ensuring location permission after disclosure');
-    await _ensureLocationPermission();
+    // Show the disclosure dialog
+    if (!mounted) return;
+    debugLog('[DISCLOSURE] Showing location disclosure dialog');
+    await PermissionDisclosureService.showLocationDisclosure(context);
+
+    debugLog('[DISCLOSURE] User acknowledged, requesting permissions');
+    await _requestPermissionsAfterDisclosure();
   }
 
   /// Request GPS permission on web (triggers browser's native prompt)
@@ -91,10 +93,8 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
-  /// Ensure location permission after disclosure has been shown.
-  /// Requests when possible, restarts GPS when granted, and surfaces a settings CTA
-  /// when the permission has been permanently denied.
-  Future<void> _ensureLocationPermission() async {
+  /// Request permissions after user accepts disclosure
+  Future<void> _requestPermissionsAfterDisclosure() async {
     bool granted = false;
 
     if (Platform.isIOS) {
@@ -104,23 +104,12 @@ class _MainScaffoldState extends State<MainScaffold> {
         permission = await Geolocator.requestPermission();
       }
       debugLog('[DISCLOSURE] iOS location permission: $permission');
-      if (permission == LocationPermission.deniedForever) {
-        _showLocationSettingsPrompt();
-        return;
-      }
       granted = permission == LocationPermission.always ||
                 permission == LocationPermission.whileInUse;
     } else {
-      // Android: only request if needed so previously granted permission just restarts GPS.
-      var status = await Permission.locationWhenInUse.status;
-      if (status.isDenied) {
-        status = await Permission.locationWhenInUse.request();
-      }
+      // Android: Request location via permission_handler
+      final status = await Permission.locationWhenInUse.request();
       debugLog('[DISCLOSURE] Android location permission: $status');
-      if (status.isPermanentlyDenied) {
-        _showLocationSettingsPrompt();
-        return;
-      }
       granted = status.isGranted;
     }
 
@@ -130,21 +119,6 @@ class _MainScaffoldState extends State<MainScaffold> {
       final appState = context.read<AppStateProvider>();
       await appState.restartGpsAfterPermission();
     }
-  }
-
-  void _showLocationSettingsPrompt() {
-    if (!mounted || _hasShownLocationSettingsPrompt) return;
-    _hasShownLocationSettingsPrompt = true;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Location permission is disabled in system settings.'),
-        action: SnackBarAction(
-          label: 'Settings',
-          onPressed: Geolocator.openAppSettings,
-        ),
-      ),
-    );
   }
 
   @override
@@ -171,18 +145,6 @@ class _MainScaffoldState extends State<MainScaffold> {
             _selectedIndex = 1; // Switch to Log tab
           });
           // Don't clear yet - LogScreen needs to see it to switch to Error tab
-        }
-      });
-    }
-
-    // Listen for connection tab requests - switch to Connect tab (e.g. anonymous mode reconnect)
-    if (appState.requestConnectionTabSwitch && _selectedIndex != 3) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          setState(() {
-            _selectedIndex = 3; // Switch to Connect tab
-          });
-          appState.clearConnectionTabSwitchRequest();
         }
       });
     }

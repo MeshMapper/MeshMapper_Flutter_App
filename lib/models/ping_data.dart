@@ -111,14 +111,14 @@ class RxPing {
 /// Repeater that heard a TX ping (from echo tracking)
 class HeardRepeater {
   final String repeaterId; // Hex ID (e.g., "4e", "77")
-  final double? snr; // Best SNR observed (null for CARpeater pass-through)
-  final int? rssi; // RSSI in dBm (null for CARpeater pass-through)
+  final double snr; // Best SNR observed
+  final int rssi; // RSSI in dBm
   final int seenCount; // How many times this repeater was heard
 
   const HeardRepeater({
     required this.repeaterId,
-    this.snr,
-    this.rssi,
+    required this.snr,
+    this.rssi = 0,
     this.seenCount = 1,
   });
 }
@@ -139,7 +139,6 @@ class PingStats {
   final int txCount;
   final int rxCount;
   final int discCount; // Discovery count (Passive Mode)
-  final int traceCount; // Trace count (Targeted Mode)
   final int successfulUploads;
   final int failedUploads;
   final int queuedCount;
@@ -148,7 +147,6 @@ class PingStats {
     this.txCount = 0,
     this.rxCount = 0,
     this.discCount = 0,
-    this.traceCount = 0,
     this.successfulUploads = 0,
     this.failedUploads = 0,
     this.queuedCount = 0,
@@ -158,7 +156,6 @@ class PingStats {
     int? txCount,
     int? rxCount,
     int? discCount,
-    int? traceCount,
     int? successfulUploads,
     int? failedUploads,
     int? queuedCount,
@@ -167,7 +164,6 @@ class PingStats {
       txCount: txCount ?? this.txCount,
       rxCount: rxCount ?? this.rxCount,
       discCount: discCount ?? this.discCount,
-      traceCount: traceCount ?? this.traceCount,
       successfulUploads: successfulUploads ?? this.successfulUploads,
       failedUploads: failedUploads ?? this.failedUploads,
       queuedCount: queuedCount ?? this.queuedCount,

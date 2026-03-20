@@ -7,7 +7,7 @@ import 'crypto_service.dart';
 import 'packet_metadata.dart';
 import 'packet_validator.dart';
 
-/// TX echo tracker for repeater detection during 5-second window
+/// TX echo tracker for repeater detection during 7-second window
 /// Reference: handleTxLogging() in wardrive.js (lines 3561-3710)
 class TxTracker {
   bool isListening = false;
@@ -22,14 +22,9 @@ class TxTracker {
 
   Timer? _windowTimer;
 
-  /// CARpeater prefix — when set, multi-hop packets with this firstHop are stripped
-  /// to report the underlying repeater with null SNR/RSSI
-  String? carpeaterPrefix;
-
   /// Callback fired when a new echo is received (for real-time UI updates)
   /// Parameters: (repeaterId, snr, rssi, isNew) - isNew is true for first time seeing this repeater
-  /// snr/rssi are nullable for CARpeater pass-through (signal data is meaningless)
-  void Function(String repeaterId, double? snr, int? rssi, bool isNew)? onEchoReceived;
+  void Function(String repeaterId, double snr, int rssi, bool isNew)? onEchoReceived;
 
   /// Callback for carpeater drops (for quiet error logging)
   /// Called with repeater ID and reason when an echo is dropped due to carpeater detection
@@ -38,9 +33,6 @@ class TxTracker {
   /// Function to check if a repeater ID should be ignored (user carpeater filter)
   /// Returns true if the repeater should be filtered out
   bool Function(String repeaterId)? shouldIgnoreRepeater;
-
-  /// When true, skip RSSI carpeater check (user setting)
-  bool disableRssiFilter = false;
 
   /// Start tracking echoes for a sent ping
   /// 
@@ -54,7 +46,7 @@ class TxTracker {
     required int channelIdx,
     required int channelHash,
     required Uint8List channelKey,
-    Duration windowDuration = const Duration(seconds: 5),
+    Duration windowDuration = const Duration(seconds: 7),
   }) {
     debugLog('[TX LOG] Starting echo tracking');
     debugLog('[TX LOG] Payload: "$payload"');
@@ -86,7 +78,7 @@ class TxTracker {
     // Log final results
     if (repeaters.isNotEmpty) {
       for (final entry in repeaters.entries) {
-        debugLog('[TX LOG] Final: ${entry.key} -> SNR=${entry.value.snr ?? 'null'}, seen=${entry.value.seenCount}x');
+        debugLog('[TX LOG] Final: ${entry.key} -> SNR=${entry.value.snr}, seen=${entry.value.seenCount}x');
       }
     }
   }
@@ -112,55 +104,31 @@ class TxTracker {
 
       // VALIDATION STEP 1.5: Path length check (must have hops to identify repeater)
       // Moved before RSSI check so we can log the repeater ID on carpeater drops
-      if (metadata.pathHashCount == 0) {
+      if (metadata.pathLength == 0) {
         debugLog('[TX LOG] Ignoring: no path (direct transmission, not a repeater echo)');
         return false;
       }
 
       // Extract first hop (first repeater) for use in validation and logging
-      var pathHex = metadata.firstHopHex!;
-
-      // CARpeater pass-through: strip CARpeater hop and report underlying repeater
-      bool carpeaterStripped = false;
-      double? reportedSnr = metadata.snr;
-      int? reportedRssi = metadata.rssi;
-
-      if (carpeaterPrefix != null && PacketValidator.isCarpeaterIdMatch(pathHex, carpeaterPrefix!)) {
-        if (metadata.pathHashCount < 2) {
-          debugLog('[TX LOG] CARpeater pass-through: single-hop, dropping');
-          return false;
-        }
-        // Multi-hop: strip CARpeater, report underlying repeater (second hop)
-        final underlyingHex = metadata.getHopHex(1)!;
-        debugLog('[TX LOG] CARpeater pass-through: stripped $pathHex, reporting underlying repeater $underlyingHex');
-        pathHex = underlyingHex;
-        carpeaterStripped = true;
-        reportedSnr = null;
-        reportedRssi = null;
-      }
+      final firstHopId = metadata.firstHop!;
+      final pathHex = firstHopId.toRadixString(16).padLeft(2, '0');
 
       // VALIDATION STEP 2: Check user carpeater filter (before RSSI check so user
       // never sees confusing "RSSI too strong" errors for a device they told the app to ignore)
-      if (!carpeaterStripped && shouldIgnoreRepeater != null && shouldIgnoreRepeater!(pathHex.toUpperCase())) {
+      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(pathHex.toUpperCase())) {
         debugLog('[TX LOG] ❌ DROPPED: Repeater $pathHex ignored by user carpeater filter');
         return false;
       }
 
       // VALIDATION STEP 2.5: Check RSSI (carpeater failsafe)
-      // Skip for CARpeater pass-through (user explicitly identified their CARpeater)
-      if (carpeaterStripped) {
-        debugLog('[TX LOG] RSSI check skipped (CARpeater pass-through)');
-      } else if (disableRssiFilter) {
-        debugLog('[TX LOG] RSSI filter disabled by user, skipping carpeater check');
-      } else if (PacketValidator.isCarpeater(metadata.rssi)) {
+      if (PacketValidator.isCarpeater(metadata.rssi)) {
         debugLog('[TX LOG] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ ${PacketValidator.maxRssiThreshold}) '
             '- possible carpeater (RSSI failsafe), repeater=$pathHex');
         debugLog('[TX LOG] onCarpeaterDrop callback is ${onCarpeaterDrop != null ? "SET" : "NULL"}');
         onCarpeaterDrop?.call(pathHex, 'RSSI too strong (${metadata.rssi} dBm)');
         return false; // Mark as handled (dropped)
-      } else {
-        debugLog('[TX LOG] ✓ RSSI OK (${metadata.rssi} < ${PacketValidator.maxRssiThreshold})');
       }
+      debugLog('[TX LOG] ✓ RSSI OK (${metadata.rssi} < ${PacketValidator.maxRssiThreshold})');
 
       // VALIDATION STEP 3: Channel hash validation
       if (metadata.encryptedPayload.length < 3) {
@@ -236,53 +204,50 @@ class TxTracker {
 
       // Path length and first hop already validated/extracted earlier (before RSSI check)
 
-      debugLog('[PING] Repeater echo accepted: first_hop=$pathHex, SNR=$reportedSnr, '
-          'full_path_length=${metadata.pathHashCount}${carpeaterStripped ? ' (CARpeater stripped)' : ''}');
+      debugLog('[PING] Repeater echo accepted: first_hop=$pathHex, SNR=${metadata.snr}, '
+          'full_path_length=${metadata.pathLength}');
 
       // Deduplication: check if we already have this repeater
       bool isNewRepeater = false;
       if (repeaters.containsKey(pathHex)) {
         final existing = repeaters[pathHex]!;
         debugLog('[PING] Deduplication: path $pathHex already seen '
-            '(existing SNR=${existing.snr}, new SNR=$reportedSnr)');
+            '(existing SNR=${existing.snr}, new SNR=${metadata.snr})');
 
-        // Keep the best (highest) SNR — null SNR never replaces non-null
-        final shouldUpdate = reportedSnr != null && existing.snr != null
-            ? reportedSnr > existing.snr!
-            : reportedSnr != null && existing.snr == null;
-        if (shouldUpdate) {
+        // Keep the best (highest) SNR
+        if (metadata.snr > existing.snr) {
           debugLog('[PING] Deduplication decision: updating path $pathHex with better SNR: '
-              '${existing.snr} -> $reportedSnr');
+              '${existing.snr} -> ${metadata.snr}');
           repeaters[pathHex] = RepeaterEcho(
             repeaterId: pathHex,
-            snr: reportedSnr,
-            rssi: reportedRssi,
+            snr: metadata.snr,
+            rssi: metadata.rssi,
             seenCount: existing.seenCount + 1,
           );
         } else {
           debugLog('[PING] Deduplication decision: keeping existing SNR for path $pathHex '
-              '(existing ${existing.snr} >= new $reportedSnr)');
+              '(existing ${existing.snr} >= new ${metadata.snr})');
           // Still increment seen count
           existing.seenCount++;
         }
       } else {
         // New repeater
         isNewRepeater = true;
-        debugLog('[PING] Adding new repeater echo: path=$pathHex, SNR=$reportedSnr, RSSI=$reportedRssi');
+        debugLog('[PING] Adding new repeater echo: path=$pathHex, SNR=${metadata.snr}, RSSI=${metadata.rssi}');
         repeaters[pathHex] = RepeaterEcho(
           repeaterId: pathHex,
-          snr: reportedSnr,
-          rssi: reportedRssi,
+          snr: metadata.snr,
+          rssi: metadata.rssi,
           seenCount: 1,
         );
       }
 
       // Notify callback for real-time UI updates
       final bestSnr = repeaters[pathHex]!.snr;
-      final bestRssi = repeaters[pathHex]!.rssi;
+      final rssi = repeaters[pathHex]!.rssi;
       debugLog('[TX LOG] Invoking onEchoReceived callback (callback=${onEchoReceived != null ? "SET" : "NULL"})');
       if (onEchoReceived != null) {
-        onEchoReceived!(pathHex, bestSnr, bestRssi, isNewRepeater);
+        onEchoReceived!(pathHex, bestSnr, rssi, isNewRepeater);
         debugLog('[TX LOG] onEchoReceived callback invoked successfully');
       }
 
@@ -304,14 +269,14 @@ class TxTracker {
 /// Repeater echo data
 class RepeaterEcho {
   final String repeaterId;  // Hex string
-  double? snr;              // Best SNR seen (null for CARpeater pass-through)
-  int? rssi;                // RSSI value (dBm) (null for CARpeater pass-through)
+  double snr;               // Best SNR seen
+  int rssi;                 // RSSI value (dBm)
   int seenCount;            // Times observed
 
   RepeaterEcho({
     required this.repeaterId,
-    this.snr,
-    this.rssi,
+    required this.snr,
+    required this.rssi,
     this.seenCount = 1,
   });
 }

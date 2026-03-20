@@ -15,14 +15,15 @@ import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
 import 'services/background_service.dart';
 import 'services/debug_file_logger.dart';
+import 'utils/constants.dart';
 import 'utils/debug_logger_io.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Enable debug file logging FIRST on mobile to capture early logs
+  // Enable debug file logging FIRST on mobile for dev builds
   // This must happen before DebugLogger.initialize() to capture early logs
-  if (!kIsWeb) {
+  if (!kIsWeb && AppConstants.isDevelopmentBuild) {
     await DebugFileLogger.enable();
   }
 
@@ -247,14 +248,6 @@ class _ThemedAppState extends State<_ThemedApp> {
 
         return MaterialApp(
           title: 'MeshMapper',
-          builder: (context, child) {
-            return MediaQuery(
-              data: MediaQuery.of(context).copyWith(
-                textScaler: TextScaler.noScaling,
-              ),
-              child: child!,
-            );
-          },
           theme: ThemeData(
             colorScheme: lightColorScheme,
             scaffoldBackgroundColor: const Color(0xFFF1F5F9), // slate-100
