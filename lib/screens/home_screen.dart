@@ -175,6 +175,14 @@ class _HomeScreenState extends State<HomeScreen> {
           onTap: withTapHandlers ? () => _showInfoPopup('disc', appState) : null,
         ),
         const SizedBox(width: 8),
+        // Trace count
+        _buildAppBarStatChip(
+          Icons.route,
+          appState.pingStats.traceCount,
+          Colors.cyan,
+          onTap: withTapHandlers ? () => _showInfoPopup('trace', appState) : null,
+        ),
+        const SizedBox(width: 8),
         // Upload count
         _buildAppBarStatChip(
           Icons.cloud_done,
@@ -230,7 +238,7 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => Padding(
-        padding: const EdgeInsets.all(20),
+        padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(context).viewPadding.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -330,6 +338,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
       case 'disc':
         return ('Discovery Requests', 'Discovery request packets we have sent out.', Icons.radar, const Color(0xFF7B68EE));
+
+      case 'trace':
+        return ('Trace Responses', 'Trace path requests that received a response from the target repeater.', Icons.route, Colors.cyan);
 
       case 'upload':
         return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
@@ -880,20 +891,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 description: 'Sends zero-hop discovery pings every 30s, tracks nearby repeaters and received mesh traffic.',
               ),
 
-              // Offline mode toggle
+              // Trace Mode
               _buildHelpItem(
-                icon: Icons.cloud_off,
-                color: Colors.orange,
-                title: 'Offline Mode',
-                description: 'Save pings locally instead of uploading immediately. Useful when you have poor connectivity. Upload saved sessions later from the Settings tab.',
-              ),
-
-              // Sound toggle
-              _buildHelpItem(
-                icon: Icons.volume_up,
-                color: Colors.blue,
-                title: 'Sound',
-                description: 'Sonar tone when sending TX/Discovery pings. Message tone when receiving valid RX packets, heard repeaters, or discovery responses.',
+                icon: Icons.gps_fixed,
+                color: Colors.cyan,
+                title: 'Trace Mode',
+                description: 'Sends a zero-hop trace to a specific repeater by its hex ID at your set interval. Shows signal quality (SNR/RSSI) for that one repeater over time — useful for antenna alignment or testing a specific node.',
               ),
 
               const SizedBox(height: 8),

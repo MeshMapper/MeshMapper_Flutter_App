@@ -20,8 +20,8 @@ class DebugLogger {
     if (_initialized) return;
     _initialized = true;
 
-    // On mobile, enable debug logging in debug mode
-    _debugEnabled = kDebugMode;
+    // Enable debug logging by default on all builds
+    _debugEnabled = true;
     
     if (_debugEnabled) {
       debugPrint('[DEBUG] Debug logging ENABLED (debug mode)');

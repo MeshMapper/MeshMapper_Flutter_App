@@ -12,6 +12,7 @@ class OfflineSession {
   final Map<String, dynamic> data;
   final String? devicePublicKey;  // Device public key for auth during upload
   final String? deviceName;       // Device name for display
+  final String? contactUri;       // Signed contact URI for registration during upload
   final bool uploaded;            // Track upload status
 
   OfflineSession({
@@ -21,6 +22,7 @@ class OfflineSession {
     required this.data,
     this.devicePublicKey,
     this.deviceName,
+    this.contactUri,
     this.uploaded = false,
   });
 
@@ -33,6 +35,7 @@ class OfflineSession {
       data: json['data'] as Map<String, dynamic>,
       devicePublicKey: json['devicePublicKey'] as String?,
       deviceName: json['deviceName'] as String?,
+      contactUri: json['contactUri'] as String?,
       uploaded: json['uploaded'] as bool? ?? false,
     );
   }
@@ -46,6 +49,7 @@ class OfflineSession {
       'data': data,
       'devicePublicKey': devicePublicKey,
       'deviceName': deviceName,
+      'contactUri': contactUri,
       'uploaded': uploaded,
     };
   }
@@ -59,6 +63,7 @@ class OfflineSession {
       data: data,
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
+      contactUri: contactUri,
       uploaded: uploaded ?? this.uploaded,
     );
   }
@@ -77,6 +82,10 @@ class OfflineSessionService {
 
   SharedPreferences? _prefs;
   List<OfflineSession> _sessions = [];
+
+  /// Tracks the filename of the session currently being accumulated via periodic auto-save.
+  /// When set, `updateCurrentSession()` updates this session in-place instead of creating a new one.
+  String? _currentSessionFilename;
 
   /// Callback when sessions list changes
   void Function(List<OfflineSession> sessions)? onSessionsUpdated;
@@ -141,6 +150,7 @@ class OfflineSessionService {
     List<Map<String, dynamic>> pings, {
     String? devicePublicKey,
     String? deviceName,
+    String? contactUri,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to save, skipping session creation');
@@ -167,12 +177,77 @@ class OfflineSessionService {
       data: sessionData,
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
+      contactUri: contactUri,
     );
 
     _sessions.insert(0, session); // Add at beginning (newest first)
     await _saveSessions();
 
     debugLog('[OFFLINE] Saved session: $filename with ${pings.length} pings (device: ${deviceName ?? "unknown"})');
+  }
+
+  /// Update the current in-progress session with the latest pings snapshot.
+  /// If no current session exists, creates a new one and tracks it.
+  /// This allows periodic saves to update the same file instead of creating duplicates.
+  Future<void> updateCurrentSession(
+    List<Map<String, dynamic>> pings, {
+    String? devicePublicKey,
+    String? deviceName,
+    String? contactUri,
+  }) async {
+    if (pings.isEmpty) {
+      debugLog('[OFFLINE] No pings to auto-save, skipping');
+      return;
+    }
+
+    // If we have a tracked session, update it in-place
+    if (_currentSessionFilename != null) {
+      final index = _sessions.indexWhere((s) => s.filename == _currentSessionFilename);
+      if (index != -1) {
+        final existing = _sessions[index];
+        final updatedData = Map<String, dynamic>.from(existing.data);
+        updatedData['pings'] = pings;
+        updatedData['ping_count'] = pings.length;
+
+        _sessions[index] = OfflineSession(
+          filename: existing.filename,
+          createdAt: existing.createdAt,
+          pingCount: pings.length,
+          data: updatedData,
+          devicePublicKey: devicePublicKey ?? existing.devicePublicKey,
+          deviceName: deviceName ?? existing.deviceName,
+          contactUri: contactUri ?? existing.contactUri,
+        );
+        await _saveSessions();
+        debugLog('[OFFLINE] Updated session: ${existing.filename} with ${pings.length} pings');
+        return;
+      }
+      // Session was deleted externally — fall through to create new
+      debugWarn('[OFFLINE] Tracked session $_currentSessionFilename not found, creating new');
+      _currentSessionFilename = null;
+    }
+
+    // No current session — create a new one and track it
+    await saveSession(
+      pings,
+      devicePublicKey: devicePublicKey,
+      deviceName: deviceName,
+      contactUri: contactUri,
+    );
+    // saveSession inserts at index 0 (newest first)
+    if (_sessions.isNotEmpty) {
+      _currentSessionFilename = _sessions.first.filename;
+      debugLog('[OFFLINE] Tracking new auto-save session: $_currentSessionFilename');
+    }
+  }
+
+  /// Clear the current session tracker so the next save creates a fresh session file.
+  /// Called after final saves (mode switch, disconnect) to create a clean break.
+  void finalizeCurrentSession() {
+    if (_currentSessionFilename != null) {
+      debugLog('[OFFLINE] Finalized session: $_currentSessionFilename');
+      _currentSessionFilename = null;
+    }
   }
 
   /// Mark a session as uploaded without deleting it
