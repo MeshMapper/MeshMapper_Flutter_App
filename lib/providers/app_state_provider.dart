@@ -379,7 +379,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _topRepeatersOverlay = fresh.take(3).toList();
   }
 
-  /// Update the RX overlay slot with a 5-second rolling window (best SNR wins).
+  /// Update the RX overlay slot — window matches auto-ping interval (best SNR wins).
   void _updateRxOverlaySlot(String repeaterId, double snr) {
     final entry = (repeaterId: repeaterId.toUpperCase(), snr: snr);
     if (_rxOverlayWindowTimer?.isActive ?? false) {
@@ -388,7 +388,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } else {
       _rxOverlaySlot = entry;
-      _rxOverlayWindowTimer = Timer(const Duration(seconds: 5), () {
+      _rxOverlayWindowTimer = Timer(Duration(seconds: _preferences.autoPingInterval), () {
         // Window closed — slot stays until next RX or cleared
       });
     }
