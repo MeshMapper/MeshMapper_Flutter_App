@@ -295,9 +295,20 @@ Keeps the screen on during auto-ping to prevent device sleep during wardriving s
 
 ### Packet Structure
 - Custom binary protocol with header byte (0x11 = GROUP_TEXT, 0x21 = ADVERT)
-- Path encoding: hop count + repeater IDs (4 bytes each)
+- Path encoding: `pathLen` byte encodes hash size (top 2 bits) + hop count (bottom 6 bits), followed by `hopCount * hashSize` path bytes
+  - `pathHashSize = (pathLen >> 6) + 1` → 1, 2, 3, or 4 bytes per hop
+  - `pathHashCount = pathLen & 63` → 0-63 hops
 - SNR/RSSI metadata in BLE event payload
 - Encrypted message payload (AES-ECB with channel key)
+
+### Multi-Byte Path Support (v1.14.0+)
+- **Purpose**: Expands repeater ID space from 256 (1-byte) to 65K (2-byte) or 16M (3-byte) unique IDs
+- **TX mode**: Configured via `CMD_SET_PATH_HASH_MODE = 61 (0x3D)` — `[0x3D][0x00][mode]` where mode=0→1-byte, 1→2-byte, 2→3-byte
+- **RX auto-detect**: Each received packet's `pathLen` byte is decoded to determine hash size, regardless of the user's TX setting
+- **DeviceInfo**: v10+ firmware includes `path_hash_mode` byte after manufacturer + firmware version fields
+- **API enforcement**: Auth response may include `hop_bytes` (1/2/3) to enforce regional path byte size
+- **Lifecycle**: Radio mode is set during connection and restored to original on clean disconnect. Unclean disconnect leaves radio in configured mode.
+- **Discovery pings**: NOT affected — multi-byte paths apply only to TX/RX channel messages
 
 ## Platform-Specific Notes
 

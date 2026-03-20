@@ -66,8 +66,10 @@ class CommandCodes {
   static const int sendControlData = 55; // 0x37 - CMD_SEND_CONTROL_DATA (discovery)
   static const int setOtherParams = 38;
   static const int sendTelemetryReq = 39;
+  static const int setFloodScope = 54; // 0x36 - CMD_SET_FLOOD_SCOPE
   static const int getStats = 56; // 0x38
   static const int sendBinaryReq = 50;
+  static const int setPathHashMode = 61; // 0x3D - CMD_SET_PATH_HASH_MODE
 }
 
 /// Response codes received from device

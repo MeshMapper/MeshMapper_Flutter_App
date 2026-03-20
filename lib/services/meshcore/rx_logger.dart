@@ -34,12 +34,17 @@ class RxLogger {
   /// Called with repeater ID and reason when a packet is dropped due to carpeater detection
   final void Function(String repeaterId, String reason)? onCarpeaterDrop;
 
+  /// CARpeater prefix — when set, multi-hop packets with this firstHop are stripped
+  /// to report the underlying repeater with null SNR/RSSI
+  String? carpeaterPrefix;
+
   RxLogger({
     required this.onRxEntry,
     this.onObservation,
     required this.getGpsLocation,
     this.shouldIgnoreRepeater,
     this.onCarpeaterDrop,
+    this.carpeaterPrefix,
   });
 
   /// Start passive RX wardriving
@@ -68,16 +73,35 @@ class RxLogger {
       
       // VALIDATION: Check path length (need at least one hop)
       // Packets with no path are direct transmissions and don't provide repeater coverage info
-      if (metadata.pathLength == 0) {
+      if (metadata.pathHashCount == 0) {
         debugLog('[RX LOG] Ignoring: no path (direct transmission, not via repeater)');
         return false;
       }
 
+      bool carpeaterStripped = false;
+      String repeaterId;
+      double? reportedSnr = metadata.snr;
+      int? reportedRssi = metadata.rssi;
+
       // Extract LAST hop from path (the repeater that directly delivered to us)
-      // Do this early so we have repeater ID for carpeater logging
-      // Mask to last byte only (0xFF) for consistent 2-character display
-      final lastHopId = metadata.lastHop! & 0xFF;
-      final repeaterId = lastHopId.toRadixString(16).padLeft(2, '0').toUpperCase();
+      final lastHopHex = metadata.lastHopHex!;
+
+      // CARpeater check: the carpeater is co-located with us, so it only
+      // appears as the last hop (the delivery repeater) on RX packets
+      if (carpeaterPrefix != null && PacketValidator.isCarpeaterIdMatch(lastHopHex, carpeaterPrefix!)) {
+        if (metadata.pathHashCount < 2) {
+          debugLog('[RX LOG] CARpeater pass-through: single-hop, dropping');
+          return false;
+        }
+        // Second-to-last hop = the real repeater that forwarded to our carpeater
+        repeaterId = metadata.getHopHex(metadata.pathHashCount - 2)!;
+        carpeaterStripped = true;
+        reportedSnr = null;
+        reportedRssi = null;
+        debugLog('[RX LOG] CARpeater pass-through: stripped $lastHopHex, reporting underlying repeater $repeaterId');
+      } else {
+        repeaterId = lastHopHex;
+      }
 
       // Get current GPS location
       final gpsLocation = getGpsLocation();
@@ -89,13 +113,15 @@ class RxLogger {
       // Check if this repeater should be ignored (user carpeater filter)
       // Must run before RSSI check so user never sees confusing "RSSI too strong"
       // errors for a device they told the app to ignore
-      if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
+      // Skip for CARpeater pass-through (CARpeater itself was already handled)
+      if (!carpeaterStripped && shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
         debugLog('[RX LOG] ❌ Ignoring repeater $repeaterId (user carpeater filter)');
         return false;
       }
 
       // PACKET FILTER: Validate packet before logging
-      final validation = await validator.validate(metadata);
+      // Skip RSSI check for CARpeater pass-through
+      final validation = await validator.validate(metadata, skipRssiCheck: carpeaterStripped);
       if (!validation.valid) {
         final rawHex = metadata.raw
             .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
@@ -110,17 +136,17 @@ class RxLogger {
         return false;
       }
 
-      debugLog('[RX LOG] Packet heard via last hop: $repeaterId, '
-          'SNR=${metadata.snr}, path_length=${metadata.pathLength}');
+      debugLog('[RX LOG] Packet heard via ${carpeaterStripped ? 'underlying' : 'last'} hop: $repeaterId, '
+          'SNR=$reportedSnr, path_length=${metadata.pathHashCount}${carpeaterStripped ? ' (CARpeater stripped)' : ''}');
 
       debugLog('[RX LOG] ✅ Packet validated and passed filter');
 
       // Create observation for this packet
       final observation = RxObservation(
         repeaterId: repeaterId,
-        snr: metadata.snr,
-        rssi: metadata.rssi,
-        pathLength: metadata.pathLength,
+        snr: reportedSnr,
+        rssi: reportedRssi,
+        pathLength: metadata.pathHashCount,
         header: metadata.header,
         lat: gpsLocation.lat,
         lon: gpsLocation.lon,
@@ -132,9 +158,9 @@ class RxLogger {
       // Returns true if this observation updated the batch (new repeater or better SNR)
       final wasKept = await _handleRxBatching(
         repeaterId: repeaterId,
-        snr: metadata.snr,
-        rssi: metadata.rssi,
-        pathLength: metadata.pathLength,
+        snr: reportedSnr,
+        rssi: reportedRssi,
+        pathLength: metadata.pathHashCount,
         header: metadata.header,
         currentLocation: gpsLocation,
         metadata: metadata,
@@ -149,10 +175,10 @@ class RxLogger {
         final batchedObservation = _batchBuffer[repeaterId]?.bestObservation ?? observation;
         onObservation?.call(batchedObservation);
         debugLog('[RX LOG] ✅ Observation kept in batch: repeater=$repeaterId, '
-            'snr=${batchedObservation.snr}, location=${batchedObservation.lat.toStringAsFixed(5)},${batchedObservation.lon.toStringAsFixed(5)}');
+            'snr=${batchedObservation.snr ?? 'null'}, location=${batchedObservation.lat.toStringAsFixed(5)},${batchedObservation.lon.toStringAsFixed(5)}');
       } else {
         debugLog('[RX LOG] ⏭️  Observation ignored (worse SNR): repeater=$repeaterId, '
-            'snr=${metadata.snr}, current_best=${_batchBuffer[repeaterId]?.bestObservation.snr}');
+            'snr=$reportedSnr, current_best=${_batchBuffer[repeaterId]?.bestObservation.snr}');
       }
       
       return true;
@@ -168,8 +194,8 @@ class RxLogger {
   /// Returns true if this observation was kept (new repeater or better SNR)
   Future<bool> _handleRxBatching({
     required String repeaterId,
-    required double snr,
-    required int rssi,
+    required double? snr,
+    required int? rssi,
     required int pathLength,
     required int header,
     required ({double lat, double lon}) currentLocation,
@@ -207,9 +233,14 @@ class RxLogger {
       debugLog('[RX BATCH] Started 30s timeout timer for repeater $repeaterId');
     } else {
       // Already tracking this repeater - check if new SNR is better
-      if (snr > buffer.bestObservation.snr) {
+      // Null SNR never replaces non-null; non-null always replaces null
+      final existingSnr = buffer.bestObservation.snr;
+      final shouldUpdate = snr != null && existingSnr != null
+          ? snr > existingSnr
+          : snr != null && existingSnr == null;
+      if (shouldUpdate) {
         debugLog('[RX BATCH] Better SNR for repeater $repeaterId: '
-            '${buffer.bestObservation.snr} -> $snr');
+            '$existingSnr -> $snr');
         // IMPORTANT: Keep the FIRST location where we heard this repeater,
         // only update the SNR/RSSI/metadata. This ensures the map pin stays
         // at the original location and doesn't follow the user.
@@ -423,8 +454,8 @@ class RxBatch {
 /// Single RX observation
 class RxObservation {
   final String repeaterId; // Hex ID of the repeater
-  final double snr;
-  final int rssi;
+  final double? snr;       // Null for CARpeater pass-through
+  final int? rssi;         // Null for CARpeater pass-through
   final int pathLength;
   final int header;
   final double lat;
@@ -434,8 +465,8 @@ class RxObservation {
 
   RxObservation({
     required this.repeaterId,
-    required this.snr,
-    required this.rssi,
+    this.snr,
+    this.rssi,
     required this.pathLength,
     required this.header,
     required this.lat,
@@ -450,8 +481,8 @@ class RxApiEntry {
   final String repeaterId;
   final double lat;
   final double lon;
-  final double snr;
-  final int rssi;
+  final double? snr;   // Null for CARpeater pass-through
+  final int? rssi;     // Null for CARpeater pass-through
   final int pathLength;
   final int header;
   final DateTime timestamp;
@@ -461,8 +492,8 @@ class RxApiEntry {
     required this.repeaterId,
     required this.lat,
     required this.lon,
-    required this.snr,
-    required this.rssi,
+    this.snr,
+    this.rssi,
     required this.pathLength,
     required this.header,
     required this.timestamp,
