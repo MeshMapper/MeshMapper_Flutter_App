@@ -729,10 +729,70 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
+  /// Color for the overlay ping-type dot
+  static Color _overlayTypeColor(OverlayPingType type) {
+    return switch (type) {
+      OverlayPingType.tx => Colors.green,
+      OverlayPingType.disc => Colors.purple,
+      OverlayPingType.trace => Colors.cyan,
+      OverlayPingType.rx => Colors.blue,
+    };
+  }
+
+  /// Build a single overlay table row with colored dot, repeater ID, and SNR
+  TableRow _overlayRow(String repeaterId, double snr, Color dotColor) {
+    return TableRow(
+      children: [
+        TableCell(
+          verticalAlignment: TableCellVerticalAlignment.middle,
+          child: Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: dotColor,
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 1),
+          child: Text(
+            repeaterId,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              fontFamily: 'monospace',
+              color: Colors.white,
+            ),
+          ),
+        ),
+        const SizedBox(),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 1),
+          child: Text(
+            snr.toStringAsFixed(1),
+            textAlign: TextAlign.right,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              fontFamily: 'monospace',
+              color: _snrColor(snr),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   /// GPS info overlay (top-left corner)
-  /// Top 3 repeaters by SNR overlay (bottom-right of map)
+  /// Top heard repeaters overlay (bottom-right of map)
   Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
     final topRepeaters = appState.topRepeatersBySnr;
+    final rxSlot = appState.rxOverlaySlot;
+    final isEmpty = topRepeaters.isEmpty && rxSlot == null;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -754,7 +814,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
           ),
           const SizedBox(height: 2),
-          if (topRepeaters.isEmpty)
+          if (isEmpty)
             const Text(
               '---',
               style: TextStyle(
@@ -763,46 +823,20 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 color: Colors.white38,
               ),
             ),
-          if (topRepeaters.isNotEmpty)
+          if (!isEmpty)
             Table(
               defaultColumnWidth: const IntrinsicColumnWidth(),
               columnWidths: const {
-                0: IntrinsicColumnWidth(),
-                1: FixedColumnWidth(8),
-                2: IntrinsicColumnWidth(),
+                0: IntrinsicColumnWidth(), // dot
+                1: IntrinsicColumnWidth(), // ID
+                2: FixedColumnWidth(8),    // spacer
+                3: IntrinsicColumnWidth(), // SNR
               },
               children: [
                 for (final r in topRepeaters)
-                  TableRow(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
-                        child: Text(
-                          r.repeaterId,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'monospace',
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
-                        child: Text(
-                          r.snr.toStringAsFixed(1),
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'monospace',
-                            color: _snrColor(r.snr),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type)),
+                if (rxSlot != null)
+                  _overlayRow(rxSlot.repeaterId, rxSlot.snr, _overlayTypeColor(OverlayPingType.rx)),
               ],
             ),
         ],
