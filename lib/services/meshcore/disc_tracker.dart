@@ -20,6 +20,9 @@ class DiscTracker {
   /// Callback to check if a repeater should be ignored (carpeater filter)
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// When true, skip RSSI carpeater check (user setting)
+  final bool disableRssiFilter;
+
   /// Callback for carpeater drops (for quiet error logging)
   /// Called with repeater ID and reason when a discovery response is dropped due to carpeater detection
   void Function(String repeaterId, String reason)? onCarpeaterDrop;
@@ -28,7 +31,10 @@ class DiscTracker {
   /// Parameters: (node, isNew) - isNew is true for first time seeing this node
   void Function(DiscoveredNode node, bool isNew)? onNodeDiscovered;
 
-  DiscTracker({this.shouldIgnoreRepeater});
+  /// Number of bytes per hop in path hash (1, 2, or 3). Controls repeater ID length.
+  final int hopBytes;
+
+  DiscTracker({this.shouldIgnoreRepeater, this.disableRssiFilter = false, this.hopBytes = 1});
 
   /// Callback fired when discovery window completes
   void Function(List<DiscoveredNode> discoveredNodes)? onWindowComplete;
@@ -39,7 +45,7 @@ class DiscTracker {
   /// @param windowDuration - How long to listen (default 7 seconds)
   void startTracking({
     required Uint8List tag,
-    Duration windowDuration = const Duration(seconds: 7),
+    Duration windowDuration = const Duration(seconds: 5),
   }) {
     debugLog('[DISC] Starting discovery tracking');
     debugLog('[DISC] Tag: ${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
@@ -131,8 +137,8 @@ class DiscTracker {
       final pubkey = rawBytes.sublist(7, 39);
       final pubkeyHex = pubkey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').toUpperCase();
 
-      // Get repeater ID (first 2 hex chars = first byte)
-      final repeaterId = pubkeyHex.substring(0, 2);
+      // Get repeater ID (first N hex chars based on hopBytes setting)
+      final repeaterId = pubkeyHex.substring(0, hopBytes * 2);
 
       // Check if this repeater should be ignored (user carpeater filter)
       if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
@@ -141,7 +147,9 @@ class DiscTracker {
       }
 
       // Check RSSI (carpeater failsafe)
-      if (PacketValidator.isCarpeater(localRssi)) {
+      if (disableRssiFilter) {
+        debugLog('[DISC] RSSI filter disabled by user, skipping carpeater check');
+      } else if (PacketValidator.isCarpeater(localRssi)) {
         debugLog('[DISC] ❌ DROPPED: RSSI too strong ($localRssi ≥ ${PacketValidator.maxRssiThreshold}) '
             '- possible carpeater, repeater=$repeaterId');
         onCarpeaterDrop?.call(repeaterId, 'RSSI too strong ($localRssi dBm)');
@@ -204,7 +212,7 @@ class DiscTracker {
 
 /// Discovered node data
 class DiscoveredNode {
-  final String repeaterId;     // First 2 hex chars of pubkey (e.g., "77", "4E")
+  final String repeaterId;     // First N hex chars of pubkey based on hopBytes (e.g., "4E", "4E7A", "4E7A3B")
   final int nodeType;          // 0x01 = REPEATER, 0x02 = ROOM
   final double localSnr;       // SNR as seen by local device (dB)
   final int localRssi;         // RSSI as seen by local device (dBm)
