@@ -221,8 +221,6 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       PingEventType.rx => 'RX Received',
       PingEventType.discSuccess => 'Discovery Success',
       PingEventType.discFail => 'Discovery Failed',
-      PingEventType.traceSuccess => 'Trace Success',
-      PingEventType.traceFail => 'Trace Failed',
     };
 
     final eventDescription = switch (marker.type) {
@@ -231,8 +229,6 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       PingEventType.rx => 'Received passive observation',
       PingEventType.discSuccess => 'Discovery got response',
       PingEventType.discFail => 'Discovery got no response',
-      PingEventType.traceSuccess => 'Trace got response from target',
-      PingEventType.traceFail => 'Trace got no response from target',
     };
 
     final hasLocation = marker.latitude != null && marker.longitude != null;
@@ -852,8 +848,7 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
         _legendItem(context, Colors.red, 'TX Fail'),
         _legendItem(context, Colors.blue, 'RX'),
         _legendItem(context, Colors.purple, 'DISC Success'),
-        _legendItem(context, Colors.cyan, 'Trace Success'),
-        _legendItem(context, Colors.grey, 'No Response'),
+        _legendItem(context, Colors.grey, 'DISC Fail'),
       ],
     );
   }

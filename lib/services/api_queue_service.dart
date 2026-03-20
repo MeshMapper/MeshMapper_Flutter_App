@@ -25,12 +25,8 @@ class ApiQueueService {
   final ApiService _apiService;
   Box<ApiQueueItem>? _box;
   Timer? _batchTimer;
-  Timer? _pingFlushTimer;
   bool _isUploading = false;
   bool _isRecovering = false;
-
-  // In-memory fallback when Hive is corrupted/unavailable
-  final List<ApiQueueItem> _memoryQueue = [];
 
   // Offline mode
   bool offlineMode = false;
@@ -82,7 +78,6 @@ class ApiQueueService {
       debugError('[API QUEUE] Failed to clear stale items: $e - recovering');
       await _recoverBox();
     }
-    _memoryQueue.clear();
     _rxBuffer.clear();
     _offlinePings.clear();
 
@@ -211,8 +206,8 @@ class ApiQueueService {
     }
   }
 
-  /// Get current queue size (Hive + in-memory fallback)
-  int get queueSize => _safeRead((box) => box.length, 0) + _memoryQueue.length;
+  /// Get current queue size
+  int get queueSize => _safeRead((box) => box.length, 0);
 
   /// Enqueue a TX ping
   /// heardRepeats format: "4e(12.25),77(12.25)" or "None"
@@ -240,20 +235,10 @@ class ApiQueueService {
       return;
     }
 
-    final wrote = await _safeWrite((box) => box.add(item));
-    if (!wrote) {
-      _memoryQueue.add(item);
-      debugLog('[API QUEUE] TX enqueued (memory fallback): $heardRepeats (queue size: $queueSize)');
-    } else {
-      debugLog('[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
-    }
+    await _safeWrite((box) => box.add(item));
+    debugLog('[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _checkBatchUpload();
   }
 
   /// Enqueue an RX observation
@@ -331,106 +316,10 @@ class ApiQueueService {
       return;
     }
 
-    final wrote = await _safeWrite((box) => box.add(item));
-    if (!wrote) {
-      _memoryQueue.add(item);
-      debugLog('[API QUEUE] DISC enqueued (memory fallback): $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
-    } else {
-      debugLog('[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
-    }
+    await _safeWrite((box) => box.add(item));
+    debugLog('[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
-  }
-
-  /// Enqueue a TRACE ping result (targeted zero-hop trace)
-  Future<void> enqueueTrace({
-    required double latitude,
-    required double longitude,
-    required String repeaterId,
-    required double localSnr,
-    required int localRssi,
-    required double remoteSnr,
-    required int timestamp,
-    required bool externalAntenna,
-    int? noiseFloor,
-  }) async {
-    final item = ApiQueueItem.fromTrace(
-      latitude: latitude,
-      longitude: longitude,
-      repeaterId: repeaterId,
-      localSnr: localSnr,
-      localRssi: localRssi,
-      remoteSnr: remoteSnr,
-      timestamp: timestamp,
-      externalAntenna: externalAntenna,
-      noiseFloor: noiseFloor,
-    );
-
-    // In offline mode, accumulate to offline pings list instead of queue
-    if (offlineMode) {
-      _offlinePings.add(item.toApiJson());
-      debugLog('[API QUEUE] TRACE enqueued (offline): $repeaterId');
-      return;
-    }
-
-    final wrote = await _safeWrite((box) => box.add(item));
-    if (!wrote) {
-      _memoryQueue.add(item);
-      debugLog('[API QUEUE] TRACE enqueued (memory fallback): $repeaterId at $latitude, $longitude (queue size: $queueSize)');
-    } else {
-      debugLog('[API QUEUE] TRACE enqueued: $repeaterId at $latitude, $longitude (queue size: $queueSize)');
-    }
-    onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
-  }
-
-  /// Enqueue a failed DISC discovery (no nodes responded)
-  Future<void> enqueueDiscDrop({
-    required double latitude,
-    required double longitude,
-    required int timestamp,
-    required bool externalAntenna,
-    int? noiseFloor,
-  }) async {
-    final item = ApiQueueItem.fromDiscDrop(
-      latitude: latitude,
-      longitude: longitude,
-      timestamp: timestamp,
-      externalAntenna: externalAntenna,
-      noiseFloor: noiseFloor,
-    );
-
-    // In offline mode, accumulate to offline pings list instead of queue
-    if (offlineMode) {
-      _offlinePings.add(item.toApiJson());
-      debugLog('[API QUEUE] DISC drop enqueued (offline)');
-      return;
-    }
-
-    final wrote = await _safeWrite((box) => box.add(item));
-    if (!wrote) {
-      _memoryQueue.add(item);
-      debugLog('[API QUEUE] DISC drop enqueued (memory fallback) at $latitude, $longitude (queue size: $queueSize)');
-    } else {
-      debugLog('[API QUEUE] DISC drop enqueued at $latitude, $longitude (queue size: $queueSize)');
-    }
-    onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _checkBatchUpload();
   }
 
   // Guard to prevent concurrent RX buffer flushes
@@ -452,12 +341,10 @@ class ApiQueueService {
       final bufferSize = _rxBuffer.length;
       _rxBuffer.clear();
 
-      // Now add items to the box (or memory fallback)
+      // Now add items to the box
       for (final item in itemsToFlush) {
         final ok = await _safeWrite((box) => box.add(item));
-        if (!ok) {
-          _memoryQueue.add(item);
-        }
+        if (!ok) break;
       }
 
       debugLog('[API QUEUE] Flushed ${itemsToFlush.length} RX items from $bufferSize repeaters to queue');
@@ -486,23 +373,25 @@ class ApiQueueService {
     });
   }
 
+  void _checkBatchUpload() {
+    if (queueSize >= _batchSize) {
+      _uploadBatch();
+    }
+  }
+
   /// Manually flush queue (called by TX-triggered flush timer)
   Future<void> flushQueue() async {
     await _flushRxBuffer();
     await _uploadBatch();
   }
 
-  /// Upload batch of queued items (from Hive box or in-memory fallback)
+  /// Upload batch of queued items
   Future<void> _uploadBatch() async {
     if (_isUploading) {
       debugLog('[API QUEUE] Upload skipped: already uploading');
       return;
     }
-
-    final hiveEmpty = _safeRead((box) => box.isEmpty, true);
-    final memoryEmpty = _memoryQueue.isEmpty;
-
-    if (hiveEmpty && memoryEmpty) {
+    if (_safeRead((box) => box.isEmpty, true)) {
       debugLog('[API QUEUE] Upload skipped: queue empty');
       return;
     }
@@ -510,24 +399,21 @@ class ApiQueueService {
     _isUploading = true;
 
     try {
-      // Collect items from both Hive and memory queue
-      final hiveItems = _safeRead((box) => box.values
+      // Log if TX items are waiting in hold period
+      final pendingTx = _safeRead((box) => box.values.where((item) =>
+          item.type == 'TX' && !item.isUploadEligible).length, 0);
+      if (pendingTx > 0) {
+        debugLog('[API QUEUE] $pendingTx TX items still in hold period');
+      }
+
+      // Get items ready for upload (must pass retry, retry delay, AND upload eligibility checks)
+      final items = _safeRead((box) => box.values
           .where((item) =>
               item.retryCount < _maxRetries &&
               item.isReadyForRetry &&
               item.isUploadEligible)
           .take(_batchSize)
           .toList(), <ApiQueueItem>[]);
-
-      final memoryItems = _memoryQueue
-          .where((item) =>
-              item.retryCount < _maxRetries &&
-              item.isReadyForRetry &&
-              item.isUploadEligible)
-          .take(_batchSize - hiveItems.length)
-          .toList();
-
-      final items = [...hiveItems, ...memoryItems];
 
       if (items.isEmpty) {
         debugLog('[API QUEUE] Upload skipped: no items ready for upload');
@@ -544,46 +430,29 @@ class ApiQueueService {
         debugLog('[API QUEUE] Item ${i + 1}/${items.length}: type=${item.type}, external_antenna=${item.externalAntenna}');
       }
 
-      final memoryCount = memoryItems.length;
-      if (memoryCount > 0) {
-        debugLog('[API QUEUE] Uploading ${items.length} items ($memoryCount from memory fallback)...');
-      } else {
-        debugLog('[API QUEUE] Uploading ${items.length} items...');
-      }
+      debugLog('[API QUEUE] Uploading ${items.length} items...');
 
       // Attempt upload
       final result = await _apiService.uploadBatch(pings);
 
       if (result == UploadResult.success) {
         final uploadedCount = items.length;
-        // Remove successful Hive items
-        for (final item in hiveItems) {
-          try { await item.delete(); } catch (_) {}
-        }
-        // Remove successful memory items
-        for (final item in memoryItems) {
-          _memoryQueue.remove(item);
+        // Remove successful items
+        for (final item in items) {
+          await item.delete();
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
         onUploadSuccess?.call(uploadedCount);
       } else if (result == UploadResult.nonRetryable) {
-        // Data is permanently invalid — discard
-        for (final item in hiveItems) {
-          try { await item.delete(); } catch (_) {}
-        }
-        for (final item in memoryItems) {
-          _memoryQueue.remove(item);
+        // Data is permanently invalid (bad GPS, invalid request, etc.) — discard
+        for (final item in items) {
+          await item.delete();
         }
         debugWarn('[API QUEUE] Discarded ${items.length} items (non-retryable error)');
       } else {
         // Mark items as retried
-        for (final item in hiveItems) {
+        for (final item in items) {
           item.markRetried();
-        }
-        // Memory items: update retry fields directly (no Hive save)
-        for (final item in memoryItems) {
-          item.retryCount++;
-          item.lastRetryAt = DateTime.now();
         }
         debugLog('[API QUEUE] Upload FAILED: ${items.length} items marked for retry');
       }
@@ -603,18 +472,44 @@ class ApiQueueService {
     await _uploadBatch();
   }
 
-  /// Force upload all queued items immediately
+  /// Force upload after waiting for any TX items in hold period
   /// Used during BLE disconnect to ensure all data is uploaded before session release
   Future<void> forceUploadWithHoldWait() async {
-    _pingFlushTimer?.cancel();
     await _flushRxBuffer();
+
+    // Check if any TX items are still in hold period
+    try {
+      if (_box != null && _box!.isNotEmpty) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        int maxWaitMs = 0;
+
+        for (final item in _box!.values) {
+          if (item.type == 'TX' && !item.isUploadEligible) {
+            final waitMs = item.canUploadAfter - now;
+            if (waitMs > maxWaitMs) {
+              maxWaitMs = waitMs;
+            }
+          }
+        }
+
+        if (maxWaitMs > 0) {
+          // Cap wait time at 6 seconds (slightly more than 5s hold period)
+          final cappedWaitMs = maxWaitMs.clamp(0, 6000);
+          debugLog('[API QUEUE] Waiting ${cappedWaitMs}ms for TX hold period to expire');
+          await Future.delayed(Duration(milliseconds: cappedWaitMs));
+        }
+      }
+    } catch (e) {
+      debugError('[API QUEUE] Failed to check hold period: $e - skipping wait');
+      await _recoverBox();
+    }
+
     await _uploadBatch();
   }
 
   /// Clear all queued items
   Future<void> clear() async {
     await _safeWrite((box) => box.clear());
-    _memoryQueue.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
   }
@@ -623,19 +518,16 @@ class ApiQueueService {
   /// Called when device disconnects to ensure no stale pings remain
   /// Also stops the batch timer to prevent upload attempts without a session
   Future<void> clearOnDisconnect() async {
-    // Stop timers to prevent upload attempts without session
+    // Stop the batch timer to prevent upload attempts without session
     _batchTimer?.cancel();
     _batchTimer = null;
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = null;
-    debugLog('[API QUEUE] Timers stopped on disconnect');
+    debugLog('[API QUEUE] Batch timer stopped on disconnect');
 
     final count = queueSize + _rxBuffer.length;
     if (count > 0) {
       debugLog('[API QUEUE] Clearing $count items on disconnect (queue: $queueSize, rxBuffer: ${_rxBuffer.length})');
     }
     await _safeWrite((box) => box.clear());
-    _memoryQueue.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
   }
@@ -649,7 +541,6 @@ class ApiQueueService {
       debugLog('[API QUEUE] Clearing $count stale items before connect');
     }
     await _safeWrite((box) => box.clear());
-    _memoryQueue.clear();
     _rxBuffer.clear();
     onQueueUpdated?.call(0);
 
@@ -662,18 +553,10 @@ class ApiQueueService {
 
   /// Get failed items (exceeded max retries)
   List<ApiQueueItem> get failedItems {
-    final hiveItems = _safeRead(
+    return _safeRead(
       (box) => box.values.where((item) => item.retryCount >= _maxRetries).toList(),
       <ApiQueueItem>[],
     );
-    final memoryItems = _memoryQueue.where((item) => item.retryCount >= _maxRetries).toList();
-    return [...hiveItems, ...memoryItems];
-  }
-
-  /// Get a snapshot of accumulated offline pings without clearing.
-  /// Used for periodic auto-saves to persist data without losing the in-memory accumulator.
-  List<Map<String, dynamic>> getOfflinePingsSnapshot() {
-    return List<Map<String, dynamic>>.from(_offlinePings);
   }
 
   /// Get accumulated offline pings and clear the accumulator
@@ -689,28 +572,9 @@ class ApiQueueService {
     _offlinePings.clear();
   }
 
-  /// Extract all queued items as API JSON without clearing the queue.
-  /// Used to preserve data before session-expiry disconnect.
-  Future<List<Map<String, dynamic>>> extractAllAsJson() async {
-    // Flush RX buffer first so all items are in the main queue
-    await _flushRxBuffer();
-
-    final hiveItems = _safeRead(
-      (box) => box.values.toList(),
-      <ApiQueueItem>[],
-    );
-
-    final allItems = [...hiveItems, ..._memoryQueue];
-
-    if (allItems.isEmpty) return [];
-
-    return allItems.map((item) => item.toApiJson()).toList();
-  }
-
   /// Dispose of resources
   void dispose() {
     _batchTimer?.cancel();
-    _pingFlushTimer?.cancel();
     _box?.close();
   }
 }

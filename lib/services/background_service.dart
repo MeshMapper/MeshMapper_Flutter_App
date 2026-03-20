@@ -249,8 +249,6 @@ class BackgroundServiceManager {
         String body;
         if (mode == 'Passive Mode') {
           body = 'RX: $rxCount | Queue: $queueSize';
-        } else if (mode == 'Trace Mode') {
-          body = 'Trace: $txCount | RX: $rxCount | Queue: $queueSize';
         } else {
           body = 'TX: $txCount | RX: $rxCount | Queue: $queueSize';
         }
