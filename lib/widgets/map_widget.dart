@@ -14,6 +14,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
 
 /// Map style options
@@ -732,10 +733,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   /// Color for the overlay ping-type dot
   static Color _overlayTypeColor(OverlayPingType type) {
     return switch (type) {
-      OverlayPingType.tx => Colors.green,
-      OverlayPingType.disc => Colors.purple,
-      OverlayPingType.trace => Colors.cyan,
-      OverlayPingType.rx => Colors.blue,
+      OverlayPingType.tx => PingColors.txSuccess,
+      OverlayPingType.disc => PingColors.discSuccess,
+      OverlayPingType.trace => PingColors.traceSuccess,
+      OverlayPingType.rx => PingColors.rx,
     };
   }
 
@@ -1229,49 +1230,49 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   children: [
                     _buildLegendItem(
                       context: context,
-                      color: const Color(0xFF22C55E),
+                      color: PingColors.txSuccessLegend,
                       label: 'TX',
                       description: 'Location where you sent a ping and heard a repeater',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.red,
+                      color: PingColors.txFail,
                       label: 'TX',
                       description: 'Location where you sent a ping but no repeater was heard',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: const Color(0xFF0EA5E9),
+                      color: PingColors.rx,
                       label: 'RX',
                       description: 'Location where you received a message from the mesh',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: const Color(0xFF7D54C7),
+                      color: PingColors.discSuccess,
                       label: 'DISC',
                       description: 'Location where you sent a discovery request and a repeater responded',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.cyan,
+                      color: PingColors.traceSuccess,
                       label: 'TRC',
                       description: 'Location where a trace reached the repeater',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.grey,
+                      color: PingColors.discFail,
                       label: 'DISC',
                       description: 'Location where you sent a discovery request but no repeater responded',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.grey,
+                      color: PingColors.noResponse,
                       label: 'TRC',
                       description: 'Location where a trace got no response',
                     ),
@@ -1670,7 +1671,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           onTap: () => _showTxPingDetails(ping),
           child: Container(
             decoration: BoxDecoration(
-              color: ping.heardRepeaters.isEmpty ? Colors.red : Colors.green,
+              color: ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
               boxShadow: const [
@@ -1690,8 +1691,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   List<Marker> _buildRxMarkers(List<RxPing> pings) {
     return pings.map((ping) {
-      // Use blue to match the RX chip in status bar
-      const color = Colors.blue;
+      // Use purple to match RX coverage squares on web map
+      const color = PingColors.rx;
 
       return Marker(
         point: LatLng(ping.latitude, ping.longitude),
@@ -2026,8 +2027,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// DISC marker color (#7B68EE - medium slate blue/purple)
-  static const Color _discMarkerColor = Color(0xFF7B68EE);
+  /// DISC marker color (#51D4E9 - cyan, matches DISC/TRACE web map squares)
+  static const Color _discMarkerColor = PingColors.discSuccess;
 
   /// Repeater marker color (#a52163 - magenta/pink) - Active
   static const Color _repeaterMarkerColor = Color(0xFFA52163);

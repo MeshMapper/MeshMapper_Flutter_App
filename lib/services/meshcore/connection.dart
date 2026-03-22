@@ -84,6 +84,7 @@ class MeshCoreConnection {
   Completer<DeviceQueryResponse>? _deviceQueryCompleter;
   Completer<SelfInfo>? _selfInfoCompleter;
   Completer<void>? _sentCompleter;
+  Completer<void>? _setTimeCompleter;
   Completer<ChannelInfo>? _channelInfoCompleter;
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
@@ -369,10 +370,23 @@ class MeshCoreConnection {
       switch (responseCode) {
         case ResponseCodes.ok:
           debugLog('[CONN] Received OK response');
+          _setTimeCompleter?.complete();
+          _setTimeCompleter = null;
           break;
         case ResponseCodes.err:
           final errorCode = reader.remainingBytesCount > 0 ? reader.readByte() : 0;
           debugLog('[CONN] Received ERR response (error code: $errorCode)');
+          // Time sync: error code 6 (ERR_CODE_ILLEGAL_ARG) means "no sync needed" — treat as success
+          if (_setTimeCompleter != null) {
+            if (errorCode == 6) {
+              debugLog('[CONN] Time sync not needed (error code 6) - treating as success');
+            } else {
+              debugWarn('[CONN] Time sync error (code $errorCode) - continuing anyway');
+            }
+            _setTimeCompleter?.complete();
+            _setTimeCompleter = null;
+            break;
+          }
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
           _statsCompleter?.completeError(errException);
@@ -758,12 +772,23 @@ class MeshCoreConnection {
     );
   }
 
-  /// Set device time
+  /// Set device time and await OK/ERROR response from device
   Future<void> setDeviceTime(int epochSecs) async {
+    _setTimeCompleter = Completer<void>();
+    final future = _setTimeCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.setDeviceTime);
     data.writeUInt32LE(epochSecs);
     await _sendToRadio(data);
+
+    return future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        _setTimeCompleter = null;
+        debugWarn('[CONN] Time sync timed out - continuing anyway');
+      },
+    );
   }
 
   /// Set TX power
@@ -1158,6 +1183,7 @@ class MeshCoreConnection {
   void dispose() {
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
+    _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();
     _channelMessageController.close();
