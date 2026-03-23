@@ -212,6 +212,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   void dispose() {
     _animationController?.dispose();
     _rotationAnimationController?.dispose();
+    _baseTileProvider.dispose();
+    _overlayTileProvider.dispose();
     super.dispose();
   }
 
