@@ -1926,6 +1926,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
     if (_autoPingEnabled) {
       _autoPingEnabled = false;
       debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
@@ -1989,6 +1990,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
     _autoPingEnabled = false;
 
     // Stop heartbeat
@@ -2174,6 +2176,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Stop all countdown timers
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
 
@@ -2885,6 +2888,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer.stop();
     _discoveryWindowTimer.stop();
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
 
     // 7. End noise floor session
     await _endNoiseFloorSession();
