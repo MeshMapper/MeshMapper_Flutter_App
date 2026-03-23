@@ -17,12 +17,14 @@ class DeviceQueryResponse {
   final int protocolVersion;
   final String manufacturer;
   final String? firmwareBuildDate; // Added in protocol v8
+  final String? firmwareVersionString; // e.g. "v1.14.0-9f1a3ea" (v7+, 20-byte C-string)
   final int? pathHashMode; // 0=1-byte, 1=2-byte, 2=3-byte (null if old firmware, v10+)
 
   const DeviceQueryResponse({
     required this.protocolVersion,
     required this.manufacturer,
     this.firmwareBuildDate,
+    this.firmwareVersionString,
     this.pathHashMode,
   });
 }
@@ -68,6 +70,7 @@ class MeshCoreConnection {
   final _rawDataController = StreamController<Map<String, dynamic>>.broadcast();
   final _logRxDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
   final _controlDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
+  final _traceDataController = StreamController<Uint8List>.broadcast();
   final _noiseFloorController = StreamController<int>.broadcast();
   final _batteryController = StreamController<int>.broadcast();
 
@@ -81,6 +84,7 @@ class MeshCoreConnection {
   Completer<DeviceQueryResponse>? _deviceQueryCompleter;
   Completer<SelfInfo>? _selfInfoCompleter;
   Completer<void>? _sentCompleter;
+  Completer<void>? _setTimeCompleter;
   Completer<ChannelInfo>? _channelInfoCompleter;
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
@@ -121,6 +125,10 @@ class MeshCoreConnection {
 
   /// Stream of ControlData packets (for discovery responses)
   Stream<({Uint8List raw, double snr, int rssi})> get controlDataStream => _controlDataController.stream;
+
+  /// Stream of TraceData packets (for trace path responses)
+  /// 0x89 has NO snr/rssi prefix — raw bytes are the trace payload directly
+  Stream<Uint8List> get traceDataStream => _traceDataController.stream;
 
   /// Stream of noise floor updates (dBm)
   Stream<int> get noiseFloorStream => _noiseFloorController.stream;
@@ -362,10 +370,23 @@ class MeshCoreConnection {
       switch (responseCode) {
         case ResponseCodes.ok:
           debugLog('[CONN] Received OK response');
+          _setTimeCompleter?.complete();
+          _setTimeCompleter = null;
           break;
         case ResponseCodes.err:
           final errorCode = reader.remainingBytesCount > 0 ? reader.readByte() : 0;
           debugLog('[CONN] Received ERR response (error code: $errorCode)');
+          // Time sync: error code 6 (ERR_CODE_ILLEGAL_ARG) means "no sync needed" — treat as success
+          if (_setTimeCompleter != null) {
+            if (errorCode == 6) {
+              debugLog('[CONN] Time sync not needed (error code 6) - treating as success');
+            } else {
+              debugWarn('[CONN] Time sync error (code $errorCode) - continuing anyway');
+            }
+            _setTimeCompleter?.complete();
+            _setTimeCompleter = null;
+            break;
+          }
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
           _statsCompleter?.completeError(errException);
@@ -400,6 +421,9 @@ class MeshCoreConnection {
           break;
         case PushCodes.controlData:
           _onControlDataPush(reader);
+          break;
+        case PushCodes.traceData:
+          _onTraceDataPush(reader);
           break;
         case ResponseCodes.stats:
           _onStatsResponse(reader);
@@ -446,10 +470,12 @@ class MeshCoreConnection {
 
       // Parse additional fields from v9+ firmware
       int? pathHashMode;
+      String? firmwareVersionString;
       if (reader.remainingBytesCount > 0) {
-        // FIRMWARE_VERSION: 20 bytes (skip)
+        // FIRMWARE_VERSION: 20-byte null-terminated C-string
         if (reader.remainingBytesCount >= 20) {
-          reader.readBytes(20); // firmware version string
+          firmwareVersionString = reader.readCString(20);
+          debugLog('[CONN] Firmware version string: $firmwareVersionString');
         }
 
         // client_repeat: 1 byte (v9+, skip)
@@ -471,6 +497,7 @@ class MeshCoreConnection {
         protocolVersion: firmwareVer,
         manufacturer: manufacturerModel,
         firmwareBuildDate: buildDate,
+        firmwareVersionString: firmwareVersionString,
         pathHashMode: pathHashMode,
       );
 
@@ -609,6 +636,17 @@ class MeshCoreConnection {
     _controlDataController.add((raw: raw, snr: snr, rssi: rssi));
   }
 
+  void _onTraceDataPush(BufferReader reader) {
+    // 0x89 TraceData has NO snr/rssi prefix (unlike 0x88 LogRxData).
+    // The entire remaining payload is the trace response:
+    // [reserved][path_len][flags][tag:4][auth:4][path_hashes][path_snrs]
+    final raw = reader.readRemainingBytes();
+
+    debugLog('[CONN] Received trace data: ${raw.length} bytes');
+
+    _traceDataController.add(raw);
+  }
+
   void _onStatsResponse(BufferReader reader) {
     // Stats response format (from web client):
     // <stats_type:1> <noise:int16> <last_rssi:int8> <last_snr:int8> <tx_air_secs:uint32> <rx_air_secs:uint32>
@@ -734,12 +772,23 @@ class MeshCoreConnection {
     );
   }
 
-  /// Set device time
+  /// Set device time and await OK/ERROR response from device
   Future<void> setDeviceTime(int epochSecs) async {
+    _setTimeCompleter = Completer<void>();
+    final future = _setTimeCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.setDeviceTime);
     data.writeUInt32LE(epochSecs);
     await _sendToRadio(data);
+
+    return future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        _setTimeCompleter = null;
+        debugWarn('[CONN] Time sync timed out - continuing anyway');
+      },
+    );
   }
 
   /// Set TX power
@@ -955,6 +1004,38 @@ class MeshCoreConnection {
     return tag;
   }
 
+  /// Send trace path to a specific repeater (targeted ping / zero-hop trace)
+  /// Returns the 4-byte tag used for matching the response
+  /// [hopBytes] controls trace ID size: 1, 2, or 4 bytes (bitshift encoding)
+  Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes, {int hopBytes = 1}) async {
+    final random = Random.secure();
+    final tag = Uint8List.fromList([
+      random.nextInt(256), random.nextInt(256),
+      random.nextInt(256), random.nextInt(256),
+    ]);
+
+    // Trace uses bitshift encoding: actual_bytes = 1 << path_sz
+    // 1 → path_sz=0, 2 → path_sz=1, 4 → path_sz=2
+    final int pathSz;
+    switch (hopBytes) {
+      case 4:  pathSz = 2; break;
+      case 2:  pathSz = 1; break;
+      default: pathSz = 0; break;
+    }
+    final int flags = pathSz & 0x03;
+
+    debugLog('[CONN] Sending trace to ${repeaterIdBytes.map((b) => b.toRadixString(16).padLeft(2, "0")).join("")} (traceBytes=$hopBytes, path_sz=$pathSz)');
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.sendTracePath);  // 0x24
+    data.writeBytes(tag);                        // 4-byte tag
+    data.writeUInt32LE(0);                       // auth_code = 0
+    data.writeByte(flags);                       // flags with path_sz in bits 0-1
+    data.writeBytes(repeaterIdBytes);            // target repeater ID
+    await _sendToRadio(data);
+    return tag;
+  }
+
   /// Get battery voltage
   Future<void> getBatteryVoltage() async {
     final data = BufferWriter();
@@ -1102,12 +1183,14 @@ class MeshCoreConnection {
   void dispose() {
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
+    _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();
     _channelMessageController.close();
     _rawDataController.close();
     _logRxDataController.close();
     _controlDataController.close();
+    _traceDataController.close();
     _noiseFloorController.close();
     _batteryController.close();
   }

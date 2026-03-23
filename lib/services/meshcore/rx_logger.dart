@@ -88,7 +88,7 @@ class RxLogger {
 
       // CARpeater check: the carpeater is co-located with us, so it only
       // appears as the last hop (the delivery repeater) on RX packets
-      if (carpeaterPrefix != null && lastHopHex == carpeaterPrefix!.toUpperCase()) {
+      if (carpeaterPrefix != null && PacketValidator.isCarpeaterIdMatch(lastHopHex, carpeaterPrefix!)) {
         if (metadata.pathHashCount < 2) {
           debugLog('[RX LOG] CARpeater pass-through: single-hop, dropping');
           return false;

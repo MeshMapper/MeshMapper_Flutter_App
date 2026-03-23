@@ -73,6 +73,18 @@ class UserPreferences {
   /// Discovery drop: count failed discoveries as failed pings and report to API
   final bool discDropEnabled;
 
+  /// Delete wardriving channel from radio on disconnect
+  final bool deleteChannelOnDisconnect;
+
+  /// Minimum ping distance in meters (25m floor, user can increase)
+  final int minPingDistanceMeters;
+
+  /// Auto-stop auto-ping after 30 minutes of idle (no movement)
+  final bool autoStopAfterIdle;
+
+  /// Show top 3 repeaters by SNR on the map during wardriving
+  final bool showTopRepeaters;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -91,13 +103,17 @@ class UserPreferences {
     this.closeAppAfterDisconnect = false,
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
-    this.hybridModeEnabled = false,
+    this.hybridModeEnabled = true,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
     this.disableRssiFilter = false,
     this.anonymousMode = false,
     this.discDropEnabled = false,
+    this.deleteChannelOnDisconnect = true,
+    this.minPingDistanceMeters = 25,
+    this.autoStopAfterIdle = true,
+    this.showTopRepeaters = false,
   });
 
   /// Create from JSON (for persistence)
@@ -120,13 +136,17 @@ class UserPreferences {
       closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
-      hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? false,
+      hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
+      deleteChannelOnDisconnect: (json['deleteChannelOnDisconnect'] as bool?) ?? true,
+      minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
+      autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
+      showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
     );
   }
 
@@ -157,6 +177,10 @@ class UserPreferences {
       'disableRssiFilter': disableRssiFilter,
       'anonymousMode': anonymousMode,
       'discDropEnabled': discDropEnabled,
+      'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
+      'minPingDistanceMeters': minPingDistanceMeters,
+      'autoStopAfterIdle': autoStopAfterIdle,
+      'showTopRepeaters': showTopRepeaters,
     };
   }
 
@@ -186,6 +210,10 @@ class UserPreferences {
     bool? disableRssiFilter,
     bool? anonymousMode,
     bool? discDropEnabled,
+    bool? deleteChannelOnDisconnect,
+    int? minPingDistanceMeters,
+    bool? autoStopAfterIdle,
+    bool? showTopRepeaters,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -212,6 +240,10 @@ class UserPreferences {
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
+      deleteChannelOnDisconnect: deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
+      minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
+      autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
+      showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
     );
   }
 
@@ -236,6 +268,9 @@ class UserPreferences {
     if (autoPingInterval == 60) return '60 seconds';
     return '$autoPingInterval seconds';
   }
+
+  /// Get min ping distance display string
+  String get minPingDistanceDisplay => '${minPingDistanceMeters}m';
 
   @override
   bool operator ==(Object other) {
@@ -263,7 +298,11 @@ class UserPreferences {
         other.mapRotationLocked == mapRotationLocked &&
         other.disableRssiFilter == disableRssiFilter &&
         other.anonymousMode == anonymousMode &&
-        other.discDropEnabled == discDropEnabled;
+        other.discDropEnabled == discDropEnabled &&
+        other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
+        other.minPingDistanceMeters == minPingDistanceMeters &&
+        other.autoStopAfterIdle == autoStopAfterIdle &&
+        other.showTopRepeaters == showTopRepeaters;
   }
 
   @override
@@ -292,6 +331,10 @@ class UserPreferences {
       disableRssiFilter,
       anonymousMode,
       discDropEnabled,
+      deleteChannelOnDisconnect,
+      minPingDistanceMeters,
+      autoStopAfterIdle,
+      showTopRepeaters,
     ]);
   }
 
@@ -325,4 +368,9 @@ class AutoPingInterval {
   static const int slow = 60; // 60 seconds
 
   static const List<int> values = [fast, normal, slow];
+}
+
+/// Minimum ping distance (meters)
+class MinPingDistance {
+  static const int min = 25;
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
@@ -38,6 +39,10 @@ class ApiService {
   bool _rxAllowed = false;
   int? _sessionExpiresAt;
   Timer? _heartbeatTimer;
+  Timer? _heartbeatRetryTimer;
+  Timer? _sessionDeadlineTimer;
+  int _heartbeatRetryCount = 0;
+  static const int _maxHeartbeatRetries = 5;
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
@@ -219,6 +224,8 @@ class ApiService {
   /// @param publicKey Device public key (for existing auth flow)
   /// @param contactUri Signed contact URI (for registration flow)
   /// @param offlineMode Set to true when uploading offline session data
+  /// @param skipSessionStore When true, does not write to shared _sessionId/_txAllowed/etc. Caller manages session locally.
+  /// @param sessionId Explicit session ID for disconnect. When provided, disconnect uses this instead of _sessionId and skips _clearSession().
   /// @returns Map with success, session_id, tx_allowed, rx_allowed, expires_at, reason, message
   Future<Map<String, dynamic>?> requestAuth({
     required String reason,
@@ -233,6 +240,8 @@ class ApiService {
     double? lon,
     double? accuracyMeters,
     bool offlineMode = false,
+    bool skipSessionStore = false,
+    String? sessionId,
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -273,8 +282,8 @@ class ApiService {
           'timestamp': DateTime.now().millisecondsSinceEpoch ~/ 1000,
         };
       } else {
-        // For disconnect: add session_id
-        payload['session_id'] = _sessionId;
+        // For disconnect: use explicit sessionId if provided, otherwise shared _sessionId
+        payload['session_id'] = sessionId ?? _sessionId;
       }
 
       final response = await _client.post(
@@ -311,66 +320,71 @@ class ApiService {
       // Store session info on successful connect or register
       // Note: 'register' now returns full auth response directly (no retry needed)
       if ((reason == 'connect' || reason == 'register') && data['success'] == true) {
-        _sessionId = data['session_id'] as String?;
-        _txAllowed = data['tx_allowed'] == true;
-        _rxAllowed = data['rx_allowed'] == true;
-        _sessionExpiresAt = data['expires_at'] as int?;
+        if (!skipSessionStore) {
+          _sessionId = data['session_id'] as String?;
+          _txAllowed = data['tx_allowed'] == true;
+          _rxAllowed = data['rx_allowed'] == true;
+          _sessionExpiresAt = data['expires_at'] as int?;
 
-        // Parse channels array from auth response
-        final channelsData = data['channels'];
-        if (channelsData is List) {
-          _channels = channelsData.cast<String>().toList();
-          debugLog('[API] Regional channels: $_channels');
-        } else {
-          _channels = [];
-        }
-
-        // Parse scopes array from auth response
-        final scopesData = data['scopes'];
-        if (scopesData is List && scopesData.isNotEmpty) {
-          _scopes = scopesData.cast<String>().toList();
-          debugLog('[API] Regional scopes: $_scopes');
-        } else {
-          _scopes = [];
-        }
-
-        // Parse enforce_hybrid flag from auth response
-        _enforceHybrid = data['enforce_hybrid'] == true;
-        if (_enforceHybrid) {
-          debugLog('[API] Regional admin enforces hybrid mode');
-        }
-
-        // Parse disc_drop flag from auth response
-        _enforceDiscDrop = data['disc_drop'] == true;
-        if (_enforceDiscDrop) {
-          debugLog('[API] Regional admin enforces discovery drop');
-        }
-
-        // Parse min_mode_interval from auth response
-        final minInterval = data['min_mode_interval'];
-        if (minInterval is int && minInterval > 0) {
-          _minModeInterval = minInterval;
-          debugLog('[API] Regional admin min interval: ${_minModeInterval}s');
-        } else {
-          _minModeInterval = 15;
-        }
-
-        // Parse hop_bytes from auth response
-        final hopBytes = data['hop_bytes'];
-        if (hopBytes is int && hopBytes >= 1 && hopBytes <= 3) {
-          _apiHopBytes = hopBytes;
-          if (_apiHopBytes > 1) {
-            debugLog('[API] Regional admin enforces $_apiHopBytes-byte paths');
+          // Parse channels array from auth response
+          final channelsData = data['channels'];
+          if (channelsData is List) {
+            _channels = channelsData.cast<String>().toList();
+            debugLog('[API] Regional channels: $_channels');
+          } else {
+            _channels = [];
           }
-        } else {
-          _apiHopBytes = 1;
-        }
 
-        // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
-        // (not on initial auth, since heartbeat is only for auto mode)
+          // Parse scopes array from auth response
+          final scopesData = data['scopes'];
+          if (scopesData is List && scopesData.isNotEmpty) {
+            _scopes = scopesData.cast<String>().toList();
+            debugLog('[API] Regional scopes: $_scopes');
+          } else {
+            _scopes = [];
+          }
+
+          // Parse enforce_hybrid flag from auth response
+          _enforceHybrid = data['enforce_hybrid'] == true;
+          if (_enforceHybrid) {
+            debugLog('[API] Regional admin enforces hybrid mode');
+          }
+
+          // Parse disc_drop flag from auth response
+          _enforceDiscDrop = data['disc_drop'] == true;
+          if (_enforceDiscDrop) {
+            debugLog('[API] Regional admin enforces discovery drop');
+          }
+
+          // Parse min_mode_interval from auth response
+          final minInterval = data['min_mode_interval'];
+          if (minInterval is int && minInterval > 0) {
+            _minModeInterval = minInterval;
+            debugLog('[API] Regional admin min interval: ${_minModeInterval}s');
+          } else {
+            _minModeInterval = 15;
+          }
+
+          // Parse hop_bytes from auth response
+          final hopBytes = data['hop_bytes'];
+          if (hopBytes is int && hopBytes >= 1 && hopBytes <= 3) {
+            _apiHopBytes = hopBytes;
+            if (_apiHopBytes > 1) {
+              debugLog('[API] Regional admin enforces $_apiHopBytes-byte paths');
+            }
+          } else {
+            _apiHopBytes = 1;
+          }
+
+          // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
+          // (not on initial auth, since heartbeat is only for auto mode)
+        }
       } else if (reason == 'disconnect') {
-        // Clear session on disconnect
-        _clearSession();
+        // Only clear shared session when no explicit sessionId was provided
+        // (explicit sessionId means caller manages its own session lifecycle)
+        if (sessionId == null) {
+          _clearSession();
+        }
       }
 
       return data;
@@ -590,6 +604,11 @@ class ApiService {
     _gpsProvider = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _heartbeatRetryCount = 0;
+    _sessionDeadlineTimer?.cancel();
+    _sessionDeadlineTimer = null;
     debugLog('[HEARTBEAT] Heartbeat mode disabled');
   }
 
@@ -597,9 +616,12 @@ class ApiService {
   /// Matches scheduleHeartbeat() in wardrive.js
   /// @param expiresAt Unix timestamp when session expires
   void scheduleHeartbeat(int expiresAt) {
-    // Cancel any existing heartbeat timer
+    // Cancel any existing heartbeat timer and reset retry state
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _heartbeatRetryCount = 0;
 
     if (!_heartbeatEnabled) return;
 
@@ -612,15 +634,17 @@ class ApiService {
       // Session is about to expire or already expired - send heartbeat immediately
       debugWarn('[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
       _sendScheduledHeartbeat();
-      return;
+    } else {
+      debugLog('[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
+
+      _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
+        debugLog('[HEARTBEAT] Timer fired, sending keepalive');
+        _sendScheduledHeartbeat();
+      });
     }
 
-    debugLog('[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
-
-    _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
-      debugLog('[HEARTBEAT] Timer fired, sending keepalive');
-      _sendScheduledHeartbeat();
-    });
+    // Schedule session deadline timer at exact expiry
+    _scheduleSessionDeadline(expiresAt);
   }
 
   /// Send scheduled heartbeat with GPS coordinates
@@ -631,10 +655,22 @@ class ApiService {
 
     if (result?['success'] == true) {
       debugLog('[HEARTBEAT] Heartbeat successful');
+      // Reset retry state on success
+      _heartbeatRetryCount = 0;
+      _heartbeatRetryTimer?.cancel();
+      _heartbeatRetryTimer = null;
       // Next heartbeat will be scheduled when we get new expires_at
     } else if (result == null) {
-      // Network error — transient, trigger session expiring
-      debugWarn('[HEARTBEAT] Heartbeat failed: network error');
+      // Network error — schedule retry with exponential backoff
+      if (_heartbeatRetryCount < _maxHeartbeatRetries) {
+        final delay = min(30 * pow(2, _heartbeatRetryCount).toInt(), 120);
+        _heartbeatRetryCount++;
+        debugWarn('[HEARTBEAT] Network error, scheduling retry $_heartbeatRetryCount/$_maxHeartbeatRetries in ${delay}s');
+        _heartbeatRetryTimer?.cancel();
+        _heartbeatRetryTimer = Timer(Duration(seconds: delay), _sendScheduledHeartbeat);
+      } else {
+        debugError('[HEARTBEAT] Network error, all $_maxHeartbeatRetries retries exhausted');
+      }
       _onSessionExpiring?.call();
     } else {
       // Server returned an error — check if critical
@@ -657,7 +693,33 @@ class ApiService {
     }
   }
 
-  /// Clear session data and cancel heartbeat timer
+  /// Schedule a hard deadline timer at the exact session expiry time.
+  /// If the server is unreachable and all heartbeat retries fail, this fires
+  /// and triggers the same disconnect flow as a server-returned session_expired.
+  void _scheduleSessionDeadline(int expiresAt) {
+    _sessionDeadlineTimer?.cancel();
+    if (!_heartbeatEnabled) return;
+
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final secondsUntilExpiry = expiresAt - now;
+
+    if (secondsUntilExpiry <= 0) {
+      _onSessionDeadlineReached();
+      return;
+    }
+
+    debugLog('[HEARTBEAT] Session deadline set for ${secondsUntilExpiry}s from now');
+    _sessionDeadlineTimer = Timer(Duration(seconds: secondsUntilExpiry), _onSessionDeadlineReached);
+  }
+
+  /// Called when the session deadline timer fires — server was unreachable
+  void _onSessionDeadlineReached() {
+    debugError('[HEARTBEAT] Session deadline reached - server unreachable, triggering session expiry');
+    _clearSession();
+    onSessionError?.call('session_expired', 'Session has timed out (server unreachable)');
+  }
+
+  /// Clear session data and cancel all timers
   void _clearSession() {
     _sessionId = null;
     _txAllowed = false;
@@ -671,6 +733,11 @@ class ApiService {
     _apiHopBytes = 1;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _heartbeatRetryCount = 0;
+    _sessionDeadlineTimer?.cancel();
+    _sessionDeadlineTimer = null;
     debugLog('[API] Session cleared');
   }
 
@@ -803,10 +870,120 @@ class ApiService {
     }
   }
 
+  /// Submit wardrive data using an explicit session ID (for offline uploads)
+  /// Does NOT read/write shared _sessionId, _sessionExpiresAt, or heartbeat state
+  Future<Map<String, dynamic>?> submitWardriveDataWithSessionId(
+    List<Map<String, dynamic>> entries,
+    String sessionId,
+  ) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final payload = {
+        'key': apiKey,
+        'session_id': sessionId,
+        'data': entries,
+      };
+
+      final response = await _client.post(
+        Uri.parse(wardriveEndpoint),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(payload),
+      ).timeout(const Duration(seconds: 30));
+
+      stopwatch.stop();
+
+      if (response.statusCode != 200) {
+        debugError('[API] /wardrive-api.php/wardrive (offline) returned HTTP ${response.statusCode}');
+        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+
+      Map<String, dynamic> data;
+      try {
+        data = json.decode(response.body) as Map<String, dynamic>;
+      } on FormatException {
+        debugError('[API] Non-JSON response from /wardrive offline (HTTP ${response.statusCode}): '
+            '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
+        rethrow;
+      }
+
+      final antennaSummary = entries.map((e) =>
+        '${e['type']}:external_antenna=${e['external_antenna']}'
+      ).join(', ');
+      _logApiCall(
+        endpoint: '/wardrive-api.php/wardrive (offline)',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: {'data': '${entries.length} items', 'items': antennaSummary},
+        response: data,
+      );
+
+      // Do NOT update shared _sessionExpiresAt or schedule heartbeat
+      return data;
+    } catch (e) {
+      stopwatch.stop();
+      debugError('[API] POST /wardrive-api.php/wardrive (offline) failed: $e');
+      return null;
+    }
+  }
+
+  /// Upload batch using explicit session ID (for offline uploads)
+  /// Returns UploadResult only — does NOT call _clearSession(), onSessionError, or onMaintenanceMode
+  Future<UploadResult> uploadBatchWithSessionId(
+    List<Map<String, dynamic>> pings,
+    String sessionId,
+  ) async {
+    if (pings.isEmpty) return UploadResult.success;
+
+    try {
+      final result = await submitWardriveDataWithSessionId(pings, sessionId);
+
+      if (result == null) {
+        debugError('[API] Offline upload batch failed: no response');
+        return UploadResult.retryable;
+      }
+
+      if (result['success'] == true) {
+        debugLog('[API] Offline upload batch SUCCESS: ${pings.length} items');
+        return UploadResult.success;
+      }
+
+      final reason = result['reason'] as String?;
+
+      // For offline uploads, session/auth errors are non-retryable but do NOT cascade
+      const criticalErrors = {
+        'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
+        'invalid_key', 'unauthorized', 'bad_key',
+        'outside_zone', 'zone_full', 'zone_disabled',
+      };
+      if (criticalErrors.contains(reason)) {
+        debugError('[API] Offline upload batch session error: $reason');
+        return UploadResult.nonRetryable;
+      }
+
+      const nonRetryableErrors = {
+        'gps_inaccurate', 'gps_stale', 'invalid_request', 'zone_disabled', 'outofdate',
+      };
+      if (nonRetryableErrors.contains(reason)) {
+        debugWarn('[API] Offline upload batch non-retryable error: $reason - discarding batch');
+        return UploadResult.nonRetryable;
+      }
+
+      return UploadResult.retryable;
+    } catch (e) {
+      debugError('[API] Offline upload batch exception: $e');
+      return UploadResult.retryable;
+    }
+  }
+
   /// Dispose of resources
   void dispose() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _heartbeatRetryTimer?.cancel();
+    _heartbeatRetryTimer = null;
+    _sessionDeadlineTimer?.cancel();
+    _sessionDeadlineTimer = null;
     _client.close();
   }
 }

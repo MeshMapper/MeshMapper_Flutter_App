@@ -347,6 +347,53 @@ class ApiQueueService {
     });
   }
 
+  /// Enqueue a TRACE ping result (targeted zero-hop trace)
+  Future<void> enqueueTrace({
+    required double latitude,
+    required double longitude,
+    required String repeaterId,
+    required double localSnr,
+    required int localRssi,
+    required double remoteSnr,
+    required int timestamp,
+    required bool externalAntenna,
+    int? noiseFloor,
+  }) async {
+    final item = ApiQueueItem.fromTrace(
+      latitude: latitude,
+      longitude: longitude,
+      repeaterId: repeaterId,
+      localSnr: localSnr,
+      localRssi: localRssi,
+      remoteSnr: remoteSnr,
+      timestamp: timestamp,
+      externalAntenna: externalAntenna,
+      noiseFloor: noiseFloor,
+    );
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (offlineMode) {
+      _offlinePings.add(item.toApiJson());
+      debugLog('[API QUEUE] TRACE enqueued (offline): $repeaterId');
+      return;
+    }
+
+    final wrote = await _safeWrite((box) => box.add(item));
+    if (!wrote) {
+      _memoryQueue.add(item);
+      debugLog('[API QUEUE] TRACE enqueued (memory fallback): $repeaterId at $latitude, $longitude (queue size: $queueSize)');
+    } else {
+      debugLog('[API QUEUE] TRACE enqueued: $repeaterId at $latitude, $longitude (queue size: $queueSize)');
+    }
+    onQueueUpdated?.call(queueSize);
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
+      debugLog('[API QUEUE] Ping flush timer fired');
+      _flushRxBuffer();
+      _uploadBatch();
+    });
+  }
+
   /// Enqueue a failed DISC discovery (no nodes responded)
   Future<void> enqueueDiscDrop({
     required double latitude,
@@ -623,6 +670,12 @@ class ApiQueueService {
     return [...hiveItems, ...memoryItems];
   }
 
+  /// Get a snapshot of accumulated offline pings without clearing.
+  /// Used for periodic auto-saves to persist data without losing the in-memory accumulator.
+  List<Map<String, dynamic>> getOfflinePingsSnapshot() {
+    return List<Map<String, dynamic>>.from(_offlinePings);
+  }
+
   /// Get accumulated offline pings and clear the accumulator
   /// Returns the list of ping JSON objects collected during offline session
   List<Map<String, dynamic>> getAndClearOfflinePings() {
@@ -634,6 +687,24 @@ class ApiQueueService {
   /// Clear offline pings without returning them
   void clearOfflinePings() {
     _offlinePings.clear();
+  }
+
+  /// Extract all queued items as API JSON without clearing the queue.
+  /// Used to preserve data before session-expiry disconnect.
+  Future<List<Map<String, dynamic>>> extractAllAsJson() async {
+    // Flush RX buffer first so all items are in the main queue
+    await _flushRxBuffer();
+
+    final hiveItems = _safeRead(
+      (box) => box.values.toList(),
+      <ApiQueueItem>[],
+    );
+
+    final allItems = [...hiveItems, ..._memoryQueue];
+
+    if (allItems.isEmpty) return [];
+
+    return allItems.map((item) => item.toApiJson()).toList();
   }
 
   /// Dispose of resources

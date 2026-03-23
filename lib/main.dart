@@ -247,6 +247,14 @@ class _ThemedAppState extends State<_ThemedApp> {
 
         return MaterialApp(
           title: 'MeshMapper',
+          builder: (context, child) {
+            return MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: TextScaler.noScaling,
+              ),
+              child: child!,
+            );
+          },
           theme: ThemeData(
             colorScheme: lightColorScheme,
             scaffoldBackgroundColor: const Color(0xFFF1F5F9), // slate-100

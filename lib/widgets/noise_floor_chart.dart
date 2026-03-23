@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/noise_floor_session.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
 
 /// Interactive noise floor chart with pinch-to-zoom and pan
@@ -221,6 +222,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       PingEventType.rx => 'RX Received',
       PingEventType.discSuccess => 'Discovery Success',
       PingEventType.discFail => 'Discovery Failed',
+      PingEventType.traceSuccess => 'Trace Success',
+      PingEventType.traceFail => 'Trace Failed',
     };
 
     final eventDescription = switch (marker.type) {
@@ -229,6 +232,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       PingEventType.rx => 'Received passive observation',
       PingEventType.discSuccess => 'Discovery got response',
       PingEventType.discFail => 'Discovery got no response',
+      PingEventType.traceSuccess => 'Trace got response from target',
+      PingEventType.traceFail => 'Trace got no response from target',
     };
 
     final hasLocation = marker.latitude != null && marker.longitude != null;
@@ -844,11 +849,12 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       runSpacing: 8,
       alignment: WrapAlignment.center,
       children: [
-        _legendItem(context, Colors.green, 'TX Success'),
-        _legendItem(context, Colors.red, 'TX Fail'),
-        _legendItem(context, Colors.blue, 'RX'),
-        _legendItem(context, Colors.purple, 'DISC Success'),
-        _legendItem(context, Colors.grey, 'DISC Fail'),
+        _legendItem(context, PingColors.txSuccess, 'TX Success'),
+        _legendItem(context, PingColors.txFail, 'TX Fail'),
+        _legendItem(context, PingColors.rx, 'RX'),
+        _legendItem(context, PingColors.discSuccess, 'DISC Success'),
+        _legendItem(context, PingColors.traceSuccess, 'Trace Success'),
+        _legendItem(context, PingColors.noResponse, 'No Response'),
       ],
     );
   }
