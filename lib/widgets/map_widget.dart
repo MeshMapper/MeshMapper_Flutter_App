@@ -681,24 +681,15 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               tileProvider: SilentCancellableNetworkTileProvider(),
             ),
 
-          // TX markers (green)
+          // Coverage markers (TX, RX, DISC, Trace) — sorted by timestamp, newest on top
         MarkerLayer(
-          markers: _buildTxMarkers(appState.txPings),
-        ),
-        
-        // RX markers (colored by repeater)
-        MarkerLayer(
-          markers: _buildRxMarkers(appState.rxPings),
-        ),
-
-        // DISC markers (purple circles for discovery observations)
-        MarkerLayer(
-          markers: _buildDiscMarkers(appState.discLogEntries, appState.discDropEnabled),
-        ),
-
-        // Trace markers (cyan/red circles for targeted ping results)
-        MarkerLayer(
-          markers: _buildTraceMarkers(appState.traceLogEntries),
+          markers: _buildCoverageMarkers(
+            txPings: appState.txPings,
+            rxPings: appState.rxPings,
+            discEntries: appState.discLogEntries,
+            discDropEnabled: appState.discDropEnabled,
+            traceEntries: appState.traceLogEntries,
+          ),
         ),
 
         // Repeater markers (magenta with ID, rotate with map)
@@ -1661,119 +1652,100 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  List<Marker> _buildTxMarkers(List<TxPing> pings) {
-    return pings.map((ping) {
-      return Marker(
-        point: LatLng(ping.latitude, ping.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showTxPingDetails(ping),
-          child: Container(
-            decoration: BoxDecoration(
-              color: ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-            // Simple dot - no arrow (looks good at any map rotation)
-          ),
-        ),
-      );
-    }).toList();
+  /// Shared decoration for coverage dots — diminished border for readability.
+  BoxDecoration _coverageDotDecoration(Color color) => BoxDecoration(
+    color: color,
+    shape: BoxShape.circle,
+    border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
+    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))],
+  );
+
+  /// Build all coverage dot markers sorted by timestamp (oldest first = drawn underneath).
+  /// Newer pings always render on top regardless of type.
+  List<Marker> _buildCoverageMarkers({
+    required List<TxPing> txPings,
+    required List<RxPing> rxPings,
+    required List<DiscLogEntry> discEntries,
+    required bool discDropEnabled,
+    required List<TraceLogEntry> traceEntries,
+  }) {
+    final timestamped = <(DateTime, Marker)>[
+      for (final ping in txPings)
+        (ping.timestamp, _buildTxMarker(ping)),
+      for (final ping in rxPings)
+        (ping.timestamp, _buildRxMarker(ping)),
+      for (final entry in discEntries)
+        (entry.timestamp, _buildDiscMarker(entry, discDropEnabled)),
+      for (final entry in traceEntries)
+        (entry.timestamp, _buildTraceMarker(entry)),
+    ];
+
+    timestamped.sort((a, b) => a.$1.compareTo(b.$1));
+    return timestamped.map((e) => e.$2).toList();
   }
 
-  List<Marker> _buildRxMarkers(List<RxPing> pings) {
-    return pings.map((ping) {
-      // Use purple to match RX coverage squares on web map
-      const color = PingColors.rx;
-
-      return Marker(
-        point: LatLng(ping.latitude, ping.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showRxPingDetails(ping),
-          child: Container(
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-            // Simple dot - no arrow (looks good at any map rotation)
+  Marker _buildTxMarker(TxPing ping) {
+    return Marker(
+      point: LatLng(ping.latitude, ping.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showTxPingDetails(ping),
+        child: Container(
+          decoration: _coverageDotDecoration(
+            ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess,
           ),
         ),
-      );
-    }).toList();
+      ),
+    );
   }
 
-  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries, bool discDropEnabled) {
-    return entries.map((entry) {
-      return Marker(
-        point: LatLng(entry.latitude, entry.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showDiscPingDetails(entry),
-          child: Container(
-            decoration: BoxDecoration(
-              color: entry.nodeCount == 0
-                  ? (discDropEnabled ? Colors.red : Colors.grey)
-                  : _discMarkerColor,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-          ),
+  Marker _buildRxMarker(RxPing ping) {
+    return Marker(
+      point: LatLng(ping.latitude, ping.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showRxPingDetails(ping),
+        child: Container(
+          decoration: _coverageDotDecoration(PingColors.rx),
         ),
-      );
-    }).toList();
+      ),
+    );
   }
 
-  List<Marker> _buildTraceMarkers(List<TraceLogEntry> entries) {
-    return entries.map((entry) {
-      return Marker(
-        point: LatLng(entry.latitude, entry.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showTraceDetails(entry),
-          child: Container(
-            decoration: BoxDecoration(
-              color: entry.success ? Colors.cyan : Colors.grey,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
+  Marker _buildDiscMarker(DiscLogEntry entry, bool discDropEnabled) {
+    return Marker(
+      point: LatLng(entry.latitude, entry.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showDiscPingDetails(entry),
+        child: Container(
+          decoration: _coverageDotDecoration(
+            entry.nodeCount == 0
+                ? (discDropEnabled ? Colors.red : Colors.grey)
+                : _discMarkerColor,
           ),
         ),
-      );
-    }).toList();
+      ),
+    );
+  }
+
+  Marker _buildTraceMarker(TraceLogEntry entry) {
+    return Marker(
+      point: LatLng(entry.latitude, entry.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showTraceDetails(entry),
+        child: Container(
+          decoration: _coverageDotDecoration(
+            entry.success ? Colors.cyan : Colors.grey,
+          ),
+        ),
+      ),
+    );
   }
 
   void _showTraceDetails(TraceLogEntry entry) {
