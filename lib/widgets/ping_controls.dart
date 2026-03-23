@@ -86,6 +86,7 @@ class PingControls extends StatelessWidget {
         // Action buttons row
         Row(
           children: [
+            if (!txNotAllowed) ...[
             // Send Ping button
             // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Cooldown Xs" → "Send Ping"
             // Manual pings use 15-second cooldown, no distance requirement
@@ -169,6 +170,7 @@ class PingControls extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
+            ],
 
             // Passive Mode button (toggle)
             // When ON: shows "Listening..." → "Next Disc Xs" cycle
@@ -934,6 +936,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     // - Grey non-expanded buttons are icon-only
     return Row(
       children: [
+        if (!txNotAllowed) ...[
         // Send Ping - expanded buttons stay big even when grey (cooldown)
         if (sendPingExpanded)
           Expanded(child: sendPingButton)
@@ -951,6 +954,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         else
           activeModeButton,
         const SizedBox(width: 6),
+        ],
 
         // Passive Mode
         if (passiveModeExpanded)
@@ -1167,6 +1171,7 @@ class LandscapePingControls extends StatelessWidget {
         // Action buttons row (icon-only)
         Row(
           children: [
+            if (!txNotAllowed) ...[
             // TX Ping button
             Expanded(
               child: _LandscapeIconButton(
@@ -1219,6 +1224,7 @@ class LandscapePingControls extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
+            ],
 
             // Passive Mode button
             Expanded(
