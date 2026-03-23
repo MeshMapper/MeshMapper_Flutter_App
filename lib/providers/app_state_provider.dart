@@ -521,6 +521,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int get offlinePingCount => _apiQueueService.offlinePingCount;
   OfflineSessionService get offlineSessionService => _offlineSessionService;
 
+  /// Bumps the selected map revision so widgets depending on marker/log data
+  /// rebuild even when the underlying collections are mutated in place.
+  ///
+  /// Call this whenever map-visible data changes without replacing the lists;
+  /// otherwise the map can keep showing stale markers until some unrelated
+  /// state change triggers a rebuild.
   void _markMapDataChanged() {
     _mapDataRevision++;
   }
