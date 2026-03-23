@@ -107,6 +107,25 @@ final class SilentCancellableNetworkTileProvider extends CancellableNetworkTileP
   );
 }
 
+typedef MapState = ({
+  bool preferencesLoaded,
+  bool mapAutoFollow,
+  bool mapAlwaysNorth,
+  bool mapRotationLocked,
+  String mapStyle,
+  bool isImperial,
+  dynamic currentPosition,
+  ({double lat, double lon})? lastKnownPosition,
+  String? zoneCode,
+  int overlayCacheBust,
+  bool discDropEnabled,
+  int? effectiveHopBytes,
+  int mapNavigationTrigger,
+  ({double lat, double lon})? mapNavigationTarget,
+  int mapDataRevision,
+  double? distanceFromLastPing,
+});
+
 /// Map widget with TX/RX markers
 /// Uses flutter_map with OpenStreetMap tiles
 class MapWidget extends StatefulWidget {
@@ -662,24 +681,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildMap(AppStateProvider appState, ({
-    bool preferencesLoaded,
-    bool mapAutoFollow,
-    bool mapAlwaysNorth,
-    bool mapRotationLocked,
-    String mapStyle,
-    bool isImperial,
-    dynamic currentPosition,
-    ({double lat, double lon})? lastKnownPosition,
-    String? zoneCode,
-    int overlayCacheBust,
-    bool discDropEnabled,
-    int? effectiveHopBytes,
-    int mapNavigationTrigger,
-    ({double lat, double lon})? mapNavigationTarget,
-    int mapDataRevision,
-    double? distanceFromLastPing,
-  }) mapState, LatLng center) {
+  Widget _buildMap(AppStateProvider appState, MapState mapState, LatLng center) {
     return Builder(
       builder: (context) => FlutterMap(
         mapController: _mapController,
@@ -731,40 +733,40 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
 
           // Coverage markers (TX, RX, DISC, Trace) — sorted by timestamp, newest on top
-        MarkerLayer(
-          markers: _buildCoverageMarkers(
-            txPings: appState.txPings,
-            rxPings: appState.rxPings,
-            discEntries: appState.discLogEntries,
-            discDropEnabled: appState.discDropEnabled,
-            traceEntries: appState.traceLogEntries,
-          ),
-        ),
-
-        // Repeater markers (magenta with ID, rotate with map)
           MarkerLayer(
-          rotate: true,
-          markers: _buildRepeaterMarkers(
-            appState.repeaters,
-            mapState.effectiveHopBytes,
+            markers: _buildCoverageMarkers(
+              txPings: appState.txPings,
+              rxPings: appState.rxPings,
+              discEntries: appState.discLogEntries,
+              discDropEnabled: appState.discDropEnabled,
+              traceEntries: appState.traceLogEntries,
+            ),
           ),
-        ),
 
-        // Current position marker (car icon)
-        if (mapState.currentPosition != null)
+          // Repeater markers (magenta with ID, rotate with map)
           MarkerLayer(
-            markers: [
-              Marker(
-                point: LatLng(
-                  mapState.currentPosition.latitude,
-                  mapState.currentPosition.longitude,
+            rotate: true,
+            markers: _buildRepeaterMarkers(
+              appState.repeaters,
+              mapState.effectiveHopBytes,
+            ),
+          ),
+
+          // Current position marker (car icon)
+          if (mapState.currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: LatLng(
+                    mapState.currentPosition.latitude,
+                    mapState.currentPosition.longitude,
+                  ),
+                  width: 48,
+                  height: 48,
+                  child: _buildCurrentPositionMarker(mapState.currentPosition.heading),
                 ),
-                width: 48,
-                height: 48,
-                child: _buildCurrentPositionMarker(mapState.currentPosition.heading),
-              ),
-            ],
-          ),
+              ],
+            ),
         ],
       ),
     );
@@ -829,24 +831,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// GPS info overlay (top-left corner)
-  Widget _buildGpsInfoOverlay(({
-    bool preferencesLoaded,
-    bool mapAutoFollow,
-    bool mapAlwaysNorth,
-    bool mapRotationLocked,
-    String mapStyle,
-    bool isImperial,
-    dynamic currentPosition,
-    ({double lat, double lon})? lastKnownPosition,
-    String? zoneCode,
-    int overlayCacheBust,
-    bool discDropEnabled,
-    int? effectiveHopBytes,
-    int mapNavigationTrigger,
-    ({double lat, double lon})? mapNavigationTarget,
-    int mapDataRevision,
-    double? distanceFromLastPing,
-  }) mapState) {
+  Widget _buildGpsInfoOverlay(MapState mapState) {
     final position = mapState.currentPosition;
     final distanceFromLastPing = mapState.distanceFromLastPing;
 
