@@ -3062,6 +3062,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (success: false, error: _modeSwitchError);
       }
 
+      // Re-check zone status BEFORE auth (zone data was cleared when entering offline mode)
+      debugLog('[APP] Re-checking zone status before auth...');
+      await checkZoneStatus();
+
+      if (zoneCode == null) {
+        debugError('[APP] Cannot switch to online mode: not in a zone');
+        _modeSwitchError = 'Could not determine your zone. Check GPS and internet connection.';
+        return (success: false, error: _modeSwitchError);
+      }
+
       // ============================================================
       // STAGE 1: Try existing public_key authentication
       // ============================================================
@@ -3187,12 +3197,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Re-initialize channel service with regional channels
         await ChannelService.setRegionalChannels(_regionalChannels);
-      }
-
-      // 7. Re-check zone status
-      if (_currentPosition != null) {
-        debugLog('[GEOFENCE] Re-checking zone status after online mode enabled');
-        await checkZoneStatus();
       }
 
       debugLog('[APP] Successfully switched to online mode');
