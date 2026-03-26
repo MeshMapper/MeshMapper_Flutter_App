@@ -3333,41 +3333,43 @@ class _PinMarkerPainter extends CustomPainter {
     final cx = size.width / 2;
     final cy = size.height / 2;
 
-    // White outline
+    final fillPaint = Paint()..color = color..style = PaintingStyle.fill;
     final outlinePaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.7)
+      ..color = Colors.white.withValues(alpha: 0.8)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
-
-    // Fill
-    final fillPaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.fill;
-
-    // Shadow
     final shadowPaint = Paint()
-      ..color = Colors.black.withValues(alpha: 0.12)
+      ..color = Colors.black.withValues(alpha: 0.15)
       ..style = PaintingStyle.fill
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
 
-    // Teardrop: circle at top, pointed at bottom
-    final path = ui.Path()
-      ..moveTo(cx, cy + 9) // Bottom point
-      ..quadraticBezierTo(cx - 9, cy - 2, cx - 6, cy - 5) // Left curve
-      ..arcToPoint(
-        Offset(cx + 6, cy - 5),
-        radius: const Radius.circular(6),
-        clockwise: true,
-      ) // Top arc
-      ..quadraticBezierTo(cx + 9, cy - 2, cx, cy + 9) // Right curve
+    const headRadius = 6.0;
+    final headCenter = Offset(cx, cy - 2);
+    final tipY = cy + 9;
+
+    // Combined shadow
+    final pinPath = ui.Path()
+      ..addOval(Rect.fromCircle(center: headCenter, radius: headRadius))
+      ..moveTo(cx - 4, cy + 1)
+      ..lineTo(cx, tipY)
+      ..lineTo(cx + 4, cy + 1)
       ..close();
+    canvas.drawPath(pinPath, shadowPaint);
 
-    canvas.drawPath(path, shadowPaint);
-    canvas.drawPath(path, fillPaint);
-    canvas.drawPath(path, outlinePaint);
+    // Triangle point
+    final triPath = ui.Path()
+      ..moveTo(cx - 4, cy + 1)
+      ..lineTo(cx, tipY)
+      ..lineTo(cx + 4, cy + 1)
+      ..close();
+    canvas.drawPath(triPath, fillPaint);
 
-    // Inner dot for the pin head
-    canvas.drawCircle(Offset(cx, cy - 3), 2.5, Paint()..color = Colors.white.withValues(alpha: 0.8));
+    // Circle head
+    canvas.drawCircle(headCenter, headRadius, fillPaint);
+    canvas.drawCircle(headCenter, headRadius, outlinePaint);
+
+    // Inner dot
+    canvas.drawCircle(headCenter, 2.0, Paint()..color = Colors.white.withValues(alpha: 0.9));
   }
 
   @override
