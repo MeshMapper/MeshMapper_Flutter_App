@@ -487,6 +487,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Audio service getters
   bool get isSoundEnabled => _audioService.isEnabled;
+  bool get isTxSoundEnabled => _audioService.isTxEnabled;
+  bool get isRxSoundEnabled => _audioService.isRxEnabled;
   AudioService get audioService => _audioService;
 
   bool get isConnected => _connectionStep == ConnectionStep.connected;
@@ -3755,6 +3757,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Set sound notifications enabled state
   Future<void> setSoundEnabled(bool enabled) async {
     await _audioService.setEnabled(enabled);
+    notifyListeners();
+  }
+
+  /// Set TX sound enabled state (ping sent / discovery sent)
+  Future<void> setTxSoundEnabled(bool enabled) async {
+    await _audioService.setTxEnabled(enabled);
+    notifyListeners();
+  }
+
+  /// Set RX sound enabled state (repeater echo / RX observation)
+  Future<void> setRxSoundEnabled(bool enabled) async {
+    await _audioService.setRxEnabled(enabled);
     notifyListeners();
   }
 

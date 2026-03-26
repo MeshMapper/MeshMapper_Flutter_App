@@ -85,6 +85,12 @@ class UserPreferences {
   /// Show top 3 repeaters by SNR on the map during wardriving
   final bool showTopRepeaters;
 
+  /// Coverage marker style on the map (dot, pin, diamond)
+  final String markerStyle;
+
+  /// GPS position marker style (arrow, car, bike, boat, walk)
+  final String gpsMarkerStyle;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -114,6 +120,8 @@ class UserPreferences {
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
+    this.markerStyle = 'dot',
+    this.gpsMarkerStyle = 'arrow',
   });
 
   /// Create from JSON (for persistence)
@@ -147,6 +155,8 @@ class UserPreferences {
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
+      markerStyle: (json['markerStyle'] as String?) ?? 'dot',
+      gpsMarkerStyle: (json['gpsMarkerStyle'] as String?) ?? 'arrow',
     );
   }
 
@@ -181,6 +191,8 @@ class UserPreferences {
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
       'showTopRepeaters': showTopRepeaters,
+      'markerStyle': markerStyle,
+      'gpsMarkerStyle': gpsMarkerStyle,
     };
   }
 
@@ -214,6 +226,8 @@ class UserPreferences {
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
     bool? showTopRepeaters,
+    String? markerStyle,
+    String? gpsMarkerStyle,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -244,6 +258,8 @@ class UserPreferences {
       minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
+      markerStyle: markerStyle ?? this.markerStyle,
+      gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
     );
   }
 
@@ -302,7 +318,9 @@ class UserPreferences {
         other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
-        other.showTopRepeaters == showTopRepeaters;
+        other.showTopRepeaters == showTopRepeaters &&
+        other.markerStyle == markerStyle &&
+        other.gpsMarkerStyle == gpsMarkerStyle;
   }
 
   @override
@@ -335,6 +353,8 @@ class UserPreferences {
       minPingDistanceMeters,
       autoStopAfterIdle,
       showTopRepeaters,
+      markerStyle,
+      gpsMarkerStyle,
     ]);
   }
 

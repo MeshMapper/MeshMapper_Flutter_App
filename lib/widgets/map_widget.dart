@@ -1652,13 +1652,41 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// Shared decoration for coverage dots — diminished border for readability.
-  BoxDecoration _coverageDotDecoration(Color color) => BoxDecoration(
-    color: color,
-    shape: BoxShape.circle,
-    border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
-    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))],
-  );
+  /// Build a coverage marker child widget based on the user's marker style preference.
+  Widget _buildCoverageMarkerChild(Color color) {
+    final style = context.read<AppStateProvider>().preferences.markerStyle;
+    switch (style) {
+      case 'circle':
+        return Container(
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2.0),
+            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))],
+          ),
+        );
+      case 'pin':
+        return CustomPaint(
+          size: const Size(20, 20),
+          painter: _PinMarkerPainter(color),
+        );
+      case 'diamond':
+        return CustomPaint(
+          size: const Size(20, 20),
+          painter: _DiamondMarkerPainter(color),
+        );
+      case 'dot':
+      default:
+        return Container(
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white.withValues(alpha: 0.6), width: 1.5),
+            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))],
+          ),
+        );
+    }
+  }
 
   /// Build all coverage dot markers sorted by timestamp (oldest first = drawn underneath).
   /// Newer pings always render on top regardless of type.
@@ -1691,10 +1719,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       height: 20,
       child: GestureDetector(
         onTap: () => _showTxPingDetails(ping),
-        child: Container(
-          decoration: _coverageDotDecoration(
-            ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess,
-          ),
+        child: _buildCoverageMarkerChild(
+          ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess,
         ),
       ),
     );
@@ -1707,9 +1733,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       height: 20,
       child: GestureDetector(
         onTap: () => _showRxPingDetails(ping),
-        child: Container(
-          decoration: _coverageDotDecoration(PingColors.rx),
-        ),
+        child: _buildCoverageMarkerChild(PingColors.rx),
       ),
     );
   }
@@ -1721,12 +1745,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       height: 20,
       child: GestureDetector(
         onTap: () => _showDiscPingDetails(entry),
-        child: Container(
-          decoration: _coverageDotDecoration(
-            entry.nodeCount == 0
-                ? (discDropEnabled ? Colors.red : Colors.grey)
-                : _discMarkerColor,
-          ),
+        child: _buildCoverageMarkerChild(
+          entry.nodeCount == 0
+              ? (discDropEnabled ? Colors.red : Colors.grey)
+              : _discMarkerColor,
         ),
       ),
     );
@@ -1739,10 +1761,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       height: 20,
       child: GestureDetector(
         onTap: () => _showTraceDetails(entry),
-        child: Container(
-          decoration: _coverageDotDecoration(
-            entry.success ? Colors.cyan : Colors.grey,
-          ),
+        child: _buildCoverageMarkerChild(
+          entry.success ? Colors.cyan : Colors.grey,
         ),
       ),
     );
@@ -2100,15 +2120,28 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     // Convert heading from degrees to radians
     // heading is 0-360 degrees, 0 = North, 90 = East
     final headingRadians = heading * (math.pi / 180);
+    final style = context.read<AppStateProvider>().preferences.gpsMarkerStyle;
 
-    // Clean directional arrow
-    return Transform.rotate(
-      angle: headingRadians,
-      child: CustomPaint(
-        size: const Size(24, 24),
-        painter: _ArrowPainter(),
-      ),
-    );
+    // Arrow and walk rotate with heading; vehicle/boat icons don't (they face up)
+    final shouldRotate = style == 'arrow' || style == 'walk';
+
+    final CustomPainter painter;
+    switch (style) {
+      case 'car':
+        painter = const _CarMarkerPainter();
+      case 'bike':
+        painter = const _BikeMarkerPainter();
+      case 'boat':
+        painter = const _BoatMarkerPainter();
+      case 'walk':
+        painter = const _WalkMarkerPainter();
+      case 'arrow':
+      default:
+        painter = const _ArrowPainter();
+    }
+
+    final child = CustomPaint(size: const Size(24, 24), painter: painter);
+    return shouldRotate ? Transform.rotate(angle: headingRadians, child: child) : child;
   }
 
   /// Compute node column width based on hop byte count.
@@ -3030,6 +3063,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
 /// Paints a crisp directional arrow pointing up
 class _ArrowPainter extends CustomPainter {
+  const _ArrowPainter();
+
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
@@ -3065,6 +3100,318 @@ class _ArrowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Paints a car silhouette for GPS position marker
+class _CarMarkerPainter extends CustomPainter {
+  const _CarMarkerPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    // White outline
+    final outlinePaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    // Car body outline (rounded rect, slightly larger)
+    final outlineRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(cx, cy), width: 14, height: 20),
+      const Radius.circular(4),
+    );
+    canvas.drawRRect(outlineRect, outlinePaint);
+
+    // Blue car body
+    final bodyPaint = Paint()
+      ..color = const Color(0xFF2196F3)
+      ..style = PaintingStyle.fill;
+
+    final bodyRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(cx, cy), width: 11, height: 17),
+      const Radius.circular(3),
+    );
+    canvas.drawRRect(bodyRect, bodyPaint);
+
+    // Windshield (darker blue rectangle near top)
+    final windshieldPaint = Paint()
+      ..color = const Color(0xFF1565C0)
+      ..style = PaintingStyle.fill;
+    final windshieldRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(cx, cy - 3), width: 7, height: 4),
+      const Radius.circular(1),
+    );
+    canvas.drawRRect(windshieldRect, windshieldPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Paints a bicycle silhouette for GPS position marker
+class _BikeMarkerPainter extends CustomPainter {
+  const _BikeMarkerPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    final outlinePaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+
+    final bikePaint = Paint()
+      ..color = const Color(0xFF2196F3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..strokeCap = StrokeCap.round;
+
+    final fillPaint = Paint()
+      ..color = const Color(0xFF2196F3)
+      ..style = PaintingStyle.fill;
+
+    // Two wheels
+    const wheelR = 4.0;
+    final leftWheel = Offset(cx - 5, cy + 3);
+    final rightWheel = Offset(cx + 5, cy + 3);
+
+    // White outlines for wheels
+    canvas.drawCircle(leftWheel, wheelR + 1, outlinePaint);
+    canvas.drawCircle(rightWheel, wheelR + 1, outlinePaint);
+
+    // Frame outline
+    final framePath = ui.Path()
+      ..moveTo(leftWheel.dx, leftWheel.dy)
+      ..lineTo(cx, cy - 5) // Up to handlebars
+      ..lineTo(rightWheel.dx, rightWheel.dy) // Down to rear
+      ..moveTo(cx, cy - 5)
+      ..lineTo(cx + 2, cy - 7); // Handlebar
+    canvas.drawPath(framePath, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 3.5..strokeCap = StrokeCap.round);
+
+    // Blue wheels
+    canvas.drawCircle(leftWheel, wheelR, bikePaint);
+    canvas.drawCircle(rightWheel, wheelR, bikePaint);
+
+    // Blue frame
+    canvas.drawPath(framePath, bikePaint);
+
+    // Seat dot
+    canvas.drawCircle(Offset(cx - 1, cy - 4), 1.5, fillPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Paints a boat silhouette for GPS position marker
+class _BoatMarkerPainter extends CustomPainter {
+  const _BoatMarkerPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    // White outline
+    final outlinePaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    final fillPaint = Paint()
+      ..color = const Color(0xFF2196F3)
+      ..style = PaintingStyle.fill;
+
+    // Hull outline (wider)
+    final hullOutline = ui.Path()
+      ..moveTo(cx - 9, cy + 1)
+      ..lineTo(cx - 6, cy + 8)
+      ..lineTo(cx + 6, cy + 8)
+      ..lineTo(cx + 9, cy + 1)
+      ..close();
+    canvas.drawPath(hullOutline, outlinePaint);
+
+    // Hull fill
+    final hull = ui.Path()
+      ..moveTo(cx - 7, cy + 2)
+      ..lineTo(cx - 5, cy + 7)
+      ..lineTo(cx + 5, cy + 7)
+      ..lineTo(cx + 7, cy + 2)
+      ..close();
+    canvas.drawPath(hull, fillPaint);
+
+    // Mast outline
+    canvas.drawLine(Offset(cx, cy + 2), Offset(cx, cy - 9),
+      Paint()..color = Colors.white..strokeWidth = 3..strokeCap = StrokeCap.round);
+    // Mast
+    canvas.drawLine(Offset(cx, cy + 2), Offset(cx, cy - 9),
+      Paint()..color = const Color(0xFF2196F3)..strokeWidth = 1.5..strokeCap = StrokeCap.round);
+
+    // Sail outline
+    final sailOutline = ui.Path()
+      ..moveTo(cx + 1, cy - 8)
+      ..lineTo(cx + 7, cy)
+      ..lineTo(cx + 1, cy)
+      ..close();
+    canvas.drawPath(sailOutline, outlinePaint);
+
+    // Sail
+    final sail = ui.Path()
+      ..moveTo(cx + 1, cy - 7)
+      ..lineTo(cx + 6, cy - 0.5)
+      ..lineTo(cx + 1, cy - 0.5)
+      ..close();
+    canvas.drawPath(sail, Paint()..color = const Color(0xFF64B5F6)..style = PaintingStyle.fill);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Paints a walking person silhouette for GPS position marker
+class _WalkMarkerPainter extends CustomPainter {
+  const _WalkMarkerPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    final outlinePaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.5
+      ..strokeCap = StrokeCap.round;
+
+    final personPaint = Paint()
+      ..color = const Color(0xFF2196F3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round;
+
+    final fillPaint = Paint()
+      ..color = const Color(0xFF2196F3)
+      ..style = PaintingStyle.fill;
+
+    // Head outline + fill
+    canvas.drawCircle(Offset(cx, cy - 7), 3.5, Paint()..color = Colors.white..style = PaintingStyle.fill);
+    canvas.drawCircle(Offset(cx, cy - 7), 2.5, fillPaint);
+
+    // Body outline
+    canvas.drawLine(Offset(cx, cy - 4), Offset(cx, cy + 3), outlinePaint);
+    // Body
+    canvas.drawLine(Offset(cx, cy - 4), Offset(cx, cy + 3), personPaint);
+
+    // Arms outline
+    canvas.drawLine(Offset(cx - 5, cy - 1), Offset(cx + 5, cy - 1), outlinePaint);
+    // Arms
+    canvas.drawLine(Offset(cx - 5, cy - 1), Offset(cx + 5, cy - 1), personPaint);
+
+    // Left leg outline
+    canvas.drawLine(Offset(cx, cy + 3), Offset(cx - 4, cy + 10), outlinePaint);
+    // Right leg outline
+    canvas.drawLine(Offset(cx, cy + 3), Offset(cx + 4, cy + 10), outlinePaint);
+    // Left leg
+    canvas.drawLine(Offset(cx, cy + 3), Offset(cx - 4, cy + 10), personPaint);
+    // Right leg
+    canvas.drawLine(Offset(cx, cy + 3), Offset(cx + 4, cy + 10), personPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Paints a teardrop/pin marker for coverage dots
+class _PinMarkerPainter extends CustomPainter {
+  final Color color;
+  const _PinMarkerPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    // White outline
+    final outlinePaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.7)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+
+    // Fill
+    final fillPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    // Shadow
+    final shadowPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.12)
+      ..style = PaintingStyle.fill
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+
+    // Teardrop: circle at top, pointed at bottom
+    final path = ui.Path()
+      ..moveTo(cx, cy + 9) // Bottom point
+      ..quadraticBezierTo(cx - 9, cy - 2, cx - 6, cy - 5) // Left curve
+      ..arcToPoint(
+        Offset(cx + 6, cy - 5),
+        radius: const Radius.circular(6),
+        clockwise: true,
+      ) // Top arc
+      ..quadraticBezierTo(cx + 9, cy - 2, cx, cy + 9) // Right curve
+      ..close();
+
+    canvas.drawPath(path, shadowPaint);
+    canvas.drawPath(path, fillPaint);
+    canvas.drawPath(path, outlinePaint);
+
+    // Inner dot for the pin head
+    canvas.drawCircle(Offset(cx, cy - 3), 2.5, Paint()..color = Colors.white.withValues(alpha: 0.8));
+  }
+
+  @override
+  bool shouldRepaint(covariant _PinMarkerPainter oldDelegate) => oldDelegate.color != color;
+}
+
+/// Paints a diamond marker for coverage dots
+class _DiamondMarkerPainter extends CustomPainter {
+  final Color color;
+  const _DiamondMarkerPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    final outlinePaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.7)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+
+    final fillPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    final shadowPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.12)
+      ..style = PaintingStyle.fill
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+
+    final path = ui.Path()
+      ..moveTo(cx, cy - 8) // Top
+      ..lineTo(cx + 8, cy) // Right
+      ..lineTo(cx, cy + 8) // Bottom
+      ..lineTo(cx - 8, cy) // Left
+      ..close();
+
+    canvas.drawPath(path, shadowPaint);
+    canvas.drawPath(path, fillPaint);
+    canvas.drawPath(path, outlinePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _DiamondMarkerPainter oldDelegate) => oldDelegate.color != color;
 }
 
 /// A stateful widget for sound item with play button visual feedback

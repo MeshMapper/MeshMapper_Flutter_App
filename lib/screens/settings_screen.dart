@@ -168,6 +168,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             if (!kIsWeb)
               _BackgroundModeToggle(appState: appState),
+            ListTile(
+              leading: const Icon(Icons.place),
+              title: const Text('Map Marker Style'),
+              subtitle: Text(_markerStyleLabel(prefs.markerStyle)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showMarkerStyleSelector(context, appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.my_location),
+              title: const Text('GPS Marker'),
+              subtitle: Text(_gpsMarkerLabel(prefs.gpsMarkerStyle)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showGpsMarkerSelector(context, appState),
+            ),
+            SwitchListTile(
+              secondary: Icon(appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
+              title: const Text('Sound Notifications'),
+              subtitle: Text(appState.isSoundEnabled ? 'Plays on ping events' : 'Silent'),
+              value: appState.isSoundEnabled,
+              onChanged: (_) => appState.toggleSoundEnabled(),
+            ),
+            if (appState.isSoundEnabled) ...[
+              SwitchListTile(
+                secondary: const SizedBox(width: 24),
+                title: const Text('Ping Sent'),
+                subtitle: const Text('Sound when TX ping or discovery is sent'),
+                value: appState.isTxSoundEnabled,
+                onChanged: (value) => appState.setTxSoundEnabled(value),
+              ),
+              SwitchListTile(
+                secondary: const SizedBox(width: 24),
+                title: const Text('Response Received'),
+                subtitle: const Text('Sound when repeater echo or RX is received'),
+                value: appState.isRxSoundEnabled,
+                onChanged: (value) => appState.setRxSoundEnabled(value),
+              ),
+            ],
           ]),
 
           // Ping Settings
@@ -206,13 +243,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               trailing: const Icon(Icons.chevron_right),
               enabled: !isAutoMode,
               onTap: isAutoMode ? null : () => _showDistanceSelector(context, appState),
-            ),
-            SwitchListTile(
-              secondary: Icon(appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
-              title: const Text('Sound Notifications'),
-              subtitle: Text(appState.isSoundEnabled ? 'Plays on ping events' : 'Silent'),
-              value: appState.isSoundEnabled,
-              onChanged: (_) => appState.toggleSoundEnabled(),
             ),
             SwitchListTile(
               secondary: const Icon(Icons.timer_off),
@@ -875,6 +905,122 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ]),
         ],
+      ),
+    );
+  }
+
+  String _markerStyleLabel(String style) {
+    switch (style) {
+      case 'circle': return 'Outlined Dot';
+      case 'pin': return 'Pin';
+      case 'diamond': return 'Diamond';
+      case 'dot':
+      default: return 'Dot';
+    }
+  }
+
+  String _gpsMarkerLabel(String style) {
+    switch (style) {
+      case 'car': return 'Car';
+      case 'bike': return 'Bike';
+      case 'boat': return 'Boat';
+      case 'walk': return 'Walk';
+      case 'arrow':
+      default: return 'Arrow';
+    }
+  }
+
+  void _showMarkerStyleSelector(BuildContext context, AppStateProvider appState) {
+    final options = [
+      ('dot', 'Dot', Icons.circle),
+      ('circle', 'Outlined Dot', Icons.circle_outlined),
+      ('pin', 'Pin', Icons.place),
+      ('diamond', 'Diamond', Icons.diamond),
+    ];
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text('Map Marker Style', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+            RadioGroup<String>(
+              groupValue: appState.preferences.markerStyle,
+              onChanged: (v) {
+                if (v != null) {
+                  appState.updatePreferences(appState.preferences.copyWith(markerStyle: v));
+                }
+                Navigator.pop(context);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final (value, label, icon) in options)
+                    RadioListTile<String>(
+                      secondary: Icon(icon),
+                      title: Text(label),
+                      value: value,
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showGpsMarkerSelector(BuildContext context, AppStateProvider appState) {
+    final options = [
+      ('arrow', 'Arrow', Icons.navigation),
+      ('car', 'Car', Icons.directions_car),
+      ('bike', 'Bike', Icons.directions_bike),
+      ('boat', 'Boat', Icons.directions_boat),
+      ('walk', 'Walk', Icons.directions_walk),
+    ];
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text('GPS Marker', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+            RadioGroup<String>(
+              groupValue: appState.preferences.gpsMarkerStyle,
+              onChanged: (v) {
+                if (v != null) {
+                  appState.updatePreferences(appState.preferences.copyWith(gpsMarkerStyle: v));
+                }
+                Navigator.pop(context);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final (value, label, icon) in options)
+                    RadioListTile<String>(
+                      secondary: Icon(icon),
+                      title: Text(label),
+                      value: value,
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }

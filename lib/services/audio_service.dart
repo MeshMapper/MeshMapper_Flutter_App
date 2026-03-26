@@ -11,6 +11,8 @@ import '../utils/debug_logger_io.dart';
 class AudioService {
   static const String _prefsBoxName = 'audio_preferences';
   static const String _enabledKey = 'sound_enabled';
+  static const String _txEnabledKey = 'tx_sound_enabled';
+  static const String _rxEnabledKey = 'rx_sound_enabled';
   static const String _txAsset = 'assets/transmitted_packet.mp3';
   static const String _rxAsset = 'assets/received_packet.mp3';
 
@@ -23,6 +25,8 @@ class AudioService {
   AudioPlayer? _rxPlayer;
   bool _initialized = false;
   bool _enabled = false; // Disabled by default, remembered once user changes it
+  bool _txEnabled = true; // TX sound sub-toggle (only matters when master is on)
+  bool _rxEnabled = true; // RX sound sub-toggle (only matters when master is on)
   Timer? _focusReleaseTimer;
 
   /// Whether the audio service is initialized
@@ -30,6 +34,12 @@ class AudioService {
 
   /// Whether sound notifications are enabled
   bool get isEnabled => _enabled;
+
+  /// Whether TX sound is enabled (ping sent / discovery sent)
+  bool get isTxEnabled => _txEnabled;
+
+  /// Whether RX sound is enabled (repeater echo / RX observation)
+  bool get isRxEnabled => _rxEnabled;
 
   /// Initialize the audio service and pre-load sounds
   Future<void> initialize() async {
@@ -99,9 +109,15 @@ class AudioService {
       } else {
         debugLog('[AUDIO] No saved preference, using default: $_enabled');
       }
+
+      final txEnabled = box.get(_txEnabledKey);
+      if (txEnabled != null) _txEnabled = txEnabled as bool;
+      final rxEnabled = box.get(_rxEnabledKey);
+      if (rxEnabled != null) _rxEnabled = rxEnabled as bool;
+      debugLog('[AUDIO] Loaded sub-toggles: tx=$_txEnabled, rx=$_rxEnabled');
     } catch (e) {
       debugError('[AUDIO] Failed to load enabled state: $e');
-      // Keep default (disabled)
+      // Keep defaults
     }
   }
 
@@ -154,11 +170,13 @@ class AudioService {
 
   /// Play the transmit sound (when TX ping or Discovery request is sent)
   Future<void> playTransmitSound() async {
+    if (!_txEnabled) return;
     await _playSound(_txPlayer, _txAsset, 'TX');
   }
 
   /// Play the receive sound (when repeater echo or RX observation is detected)
   Future<void> playReceiveSound() async {
+    if (!_rxEnabled) return;
     await _playSound(_rxPlayer, _rxAsset, 'RX');
   }
 
@@ -272,6 +290,33 @@ class AudioService {
   /// Toggle sound notifications
   Future<void> toggle() async {
     await setEnabled(!_enabled);
+  }
+
+  /// Enable or disable TX sound notifications
+  Future<void> setTxEnabled(bool enabled) async {
+    if (_txEnabled == enabled) return;
+    _txEnabled = enabled;
+    debugLog('[AUDIO] TX sound ${enabled ? 'enabled' : 'disabled'}');
+    await _saveSetting(_txEnabledKey, enabled);
+  }
+
+  /// Enable or disable RX sound notifications
+  Future<void> setRxEnabled(bool enabled) async {
+    if (_rxEnabled == enabled) return;
+    _rxEnabled = enabled;
+    debugLog('[AUDIO] RX sound ${enabled ? 'enabled' : 'disabled'}');
+    await _saveSetting(_rxEnabledKey, enabled);
+  }
+
+  /// Save a single setting to Hive
+  Future<void> _saveSetting(String key, dynamic value) async {
+    final box = await _openBoxSafely(_prefsBoxName);
+    if (box == null) return;
+    try {
+      await box.put(key, value);
+    } catch (e) {
+      debugError('[AUDIO] Failed to save $key: $e');
+    }
   }
 
   /// Dispose of audio resources
