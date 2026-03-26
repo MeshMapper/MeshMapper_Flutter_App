@@ -397,13 +397,26 @@ class MobileBluetoothService implements BluetoothService {
         return; // Success - exit retry loop
 
       } catch (e, stackTrace) {
+        final errorStr = e.toString();
+
         // Check for Android error 133 (GATT_ERROR) - a well-known Android BLE stack issue
         // that typically succeeds on retry
-        final isError133 = Platform.isAndroid && e.toString().contains('android-code: 133');
+        final isError133 = Platform.isAndroid && errorStr.contains('android-code: 133');
 
-        if (isError133 && attempt < _maxRetries) {
-          debugLog('[BLE] Error 133 on attempt $attempt, retrying after delay...');
-          await Future.delayed(_retryDelay);
+        // Check for iOS apple-code 14 (Peer removed pairing information)
+        // The remote device cleared its bond keys — clear iOS stale bond and retry
+        final isBondError = Platform.isIOS &&
+            (errorStr.contains('apple-code: 14') || errorStr.contains('Peer removed pairing information'));
+
+        if ((isError133 || isBondError) && attempt < _maxRetries) {
+          if (isBondError) {
+            debugLog('[BLE] Bond error (apple-code 14) on attempt $attempt, removing bond and retrying...');
+            await removeBond(deviceId);
+            await Future.delayed(const Duration(seconds: 2));
+          } else {
+            debugLog('[BLE] Error 133 on attempt $attempt, retrying after delay...');
+            await Future.delayed(_retryDelay);
+          }
           // Force cleanup before retry
           try {
             await _bleDevice?.disconnect();
@@ -468,6 +481,19 @@ class MobileBluetoothService implements BluetoothService {
   void cacheDeviceInfo(DiscoveredDevice device) {
     _scannedDevices[device.id] = device;
     debugLog('[BLE] Cached device info: ${device.name} (${device.id})');
+  }
+
+  @override
+  Future<void> removeBond(String deviceId) async {
+    try {
+      final device = fbp.BluetoothDevice.fromId(deviceId);
+      debugLog('[BLE] Removing bond for $deviceId');
+      await device.removeBond();
+      debugLog('[BLE] Bond removed for $deviceId');
+    } catch (e) {
+      // removeBond may not be supported on all platforms/devices — log and continue
+      debugLog('[BLE] removeBond failed (continuing): $e');
+    }
   }
 
   @override

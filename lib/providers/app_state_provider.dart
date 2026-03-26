@@ -260,6 +260,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _reconnectRestoreGeneration = 0;
   static const int _maxReconnectAttempts = 3;
   static const Duration _reconnectDelay = Duration(seconds: 3);
+  static const Duration _reconnectDelayAfterBondError = Duration(seconds: 5);
+  bool _lastReconnectWasBondError = false;
 
   // Map navigation trigger (for navigating to log entry coordinates)
   ({double lat, double lon})? _mapNavigationTarget;
@@ -2241,6 +2243,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelPendingAutoPingRestore();
     _isAutoReconnecting = true;
     _reconnectAttempt = 0;
+    _lastReconnectWasBondError = false;
     _connectionStep = ConnectionStep.reconnecting;
 
     // Remember auto-ping state before cleanup
@@ -2309,8 +2312,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[CONN] Auto-reconnect attempt $_reconnectAttempt of $_maxReconnectAttempts');
     notifyListeners();
 
+    // Use longer delay after bond errors to give iOS time to clear stale keys
+    final delay = _lastReconnectWasBondError ? _reconnectDelayAfterBondError : _reconnectDelay;
+
     // Delay before attempting reconnection
-    _reconnectTimer = Timer(_reconnectDelay, () async {
+    _reconnectTimer = Timer(delay, () async {
       if (!_isAutoReconnecting) return; // Cancelled while waiting
 
       try {
@@ -2320,6 +2326,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // If we get here and connection step is 'connected', success!
         if (_connectionStep == ConnectionStep.connected) {
           debugLog('[CONN] Auto-reconnect succeeded on attempt $_reconnectAttempt');
+          _lastReconnectWasBondError = false;
           _onReconnectSuccess();
         } else if (_isAutoReconnecting) {
           // Connection failed but didn't throw - try again
@@ -2331,6 +2338,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       } catch (e) {
         debugError('[CONN] Auto-reconnect attempt $_reconnectAttempt failed: $e');
         if (_isAutoReconnecting) {
+          // Check for iOS apple-code 14 (Peer removed pairing information)
+          // The MeshCore device cleared its bond keys — clear iOS stale bond before retrying
+          await _handleBondErrorIfNeeded(e);
+
           // Reset step back to reconnecting for UI
           _connectionStep = ConnectionStep.reconnecting;
           _connectionError = null;
@@ -2339,6 +2350,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
     });
+  }
+
+  /// Detect iOS apple-code 14 bond errors and clear the stale bond before retry
+  Future<void> _handleBondErrorIfNeeded(Object error) async {
+    final errorStr = error.toString();
+    if (errorStr.contains('apple-code: 14') || errorStr.contains('Peer removed pairing information')) {
+      _lastReconnectWasBondError = true;
+      final deviceId = _rememberedDevice?.id;
+      if (deviceId != null) {
+        debugLog('[CONN] Bond error detected (apple-code 14) — clearing stale bond for $deviceId');
+        await _bluetoothService.removeBond(deviceId);
+      }
+    }
   }
 
   /// Called when auto-reconnect succeeds
