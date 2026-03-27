@@ -1314,6 +1314,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Get external antenna value for API payloads
       _pingService!.getExternalAntenna = () => _preferences.externalAntenna;
 
+      // Get power level from preferences (includes per-device overrides and manual selection)
+      _pingService!.getPowerLevel = () => _preferences.powerLevel;
+
       // Check if TX is allowed by API (zone capacity)
       _pingService!.checkTxAllowed = () => txAllowed;
 
@@ -1959,6 +1962,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             repeaterId: entry.repeaterId,
             externalAntenna: _preferences.externalAntenna,
             noiseFloor: _meshCoreConnection?.lastNoiseFloor,
+            power: _preferences.powerLevel,
           );
 
           // Update UI

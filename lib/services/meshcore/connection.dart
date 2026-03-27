@@ -950,9 +950,10 @@ class MeshCoreConnection {
   }
 
   /// Send ping to #wardriving channel
-  /// Format: @[MapperBot] LAT, LON [power]
+  /// Format: @[MapperBot] LAT, LON
+  /// Power is no longer included in the mesh message — it is sent per-ping in the API payload instead
   /// Reference: buildPayload() in wardrive.js
-  Future<void> sendPing(double lat, double lon, double powerWatts) async {
+  Future<void> sendPing(double lat, double lon) async {
     final channel = _wardrivingChannel;
     if (channel == null) {
       throw Exception('Wardriving channel not initialized');
@@ -960,9 +961,7 @@ class MeshCoreConnection {
 
     // Format coordinates to 5 decimal places with comma separator
     final coordsStr = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
-    // Format power as "X.Xw" (e.g., "1.0w", "0.3w")
-    final powerStr = '${powerWatts.toStringAsFixed(1)}w';
-    final message = '@[MapperBot] $coordsStr [$powerStr]';
+    final message = '@[MapperBot] $coordsStr';
 
     debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;

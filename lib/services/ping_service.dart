@@ -137,6 +137,9 @@ class PingService {
   /// Callback to get the external antenna value for API payloads
   bool Function()? getExternalAntenna;
 
+  /// Callback to get the power level in watts (0.3, 0.6, 1.0, 2.0) from user preferences
+  double Function()? getPowerLevel;
+
   /// Callback to check if discovery drop is enabled (failed discoveries → API)
   bool Function()? getDiscDropEnabled;
 
@@ -531,15 +534,12 @@ class PingService {
         _pingInProgress = false;
         return false;
       }
-      // Use power in watts (0.3, 0.6, 1.0, 2.0) - matches web client buildPayload()
-      final powerWatts = _connection.deviceModel?.power ?? 0.3;
-      // Also get txPower in dBm for API queue (for database records)
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
       // Build ping message (same format used for TxTracker correlation)
+      // Power is no longer included in the mesh message — sent per-ping in API payload
       final coordsStr = '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
-      final powerStr = '${powerWatts.toStringAsFixed(1)}w';
-      final pingMessage = '@[MapperBot] $coordsStr [$powerStr]';
+      final pingMessage = '@[MapperBot] $coordsStr';
 
       // Capture noise floor at ping time
       final noiseFloor = _connection.lastNoiseFloor;
@@ -620,8 +620,8 @@ class PingService {
       // Play transmit sound immediately before sending
       _audioService?.playTransmitSound();
 
-      // Send ping via BLE - uses watts format like "1.0w"
-      await _connection.sendPing(position.latitude, position.longitude, powerWatts);
+      // Send ping via BLE (coordinates only — power is in API payload)
+      await _connection.sendPing(position.latitude, position.longitude);
 
       // Mark ping time and position
       _lastTxTime = DateTime.now();
@@ -725,6 +725,7 @@ class PingService {
         timestamp: txTimestamp,
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
+        power: getPowerLevel?.call(),
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
 
@@ -1205,6 +1206,7 @@ class PingService {
           timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
+          power: getPowerLevel?.call(),
         );
       }
 
@@ -1222,6 +1224,7 @@ class PingService {
           timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
+          power: getPowerLevel?.call(),
         );
         debugLog('[DISC] Discovery drop queued (no response)');
       }
@@ -1471,6 +1474,7 @@ class PingService {
         timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
+        power: getPowerLevel?.call(),
       );
 
       // Update stats
