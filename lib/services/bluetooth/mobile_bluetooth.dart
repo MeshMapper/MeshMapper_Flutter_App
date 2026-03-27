@@ -403,14 +403,14 @@ class MobileBluetoothService implements BluetoothService {
         // that typically succeeds on retry
         final isError133 = Platform.isAndroid && errorStr.contains('android-code: 133');
 
-        // Check for iOS apple-code 14 (Peer removed pairing information)
-        // The remote device cleared its bond keys — clear iOS stale bond and retry
+        // Check for iOS apple-code 14 (Peer removed pairing information) or
+        // apple-code 15 (Failed to encrypt the connection) — both indicate stale bond keys
         final isBondError = Platform.isIOS &&
-            (errorStr.contains('apple-code: 14') || errorStr.contains('Peer removed pairing information'));
+            (errorStr.contains('apple-code: 14') || errorStr.contains('apple-code: 15') || errorStr.contains('Peer removed pairing information'));
 
         if ((isError133 || isBondError) && attempt < _maxRetries) {
           if (isBondError) {
-            debugLog('[BLE] Bond error (apple-code 14) on attempt $attempt, removing bond and retrying...');
+            debugLog('[BLE] Bond error (apple-code 14/15) on attempt $attempt, removing bond and retrying...');
             await removeBond(deviceId);
             await Future.delayed(const Duration(seconds: 2));
           } else {

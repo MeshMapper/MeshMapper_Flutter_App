@@ -44,8 +44,8 @@ class PingService {
   static const Duration _rxListeningWindow = Duration(seconds: 5);
   /// Cooldown period between pings (5 seconds)
   static const Duration _autoPingCooldown = Duration(seconds: 5);
-  /// Discovery listening window duration (5 seconds)
-  static const Duration _discoveryListeningWindow = Duration(seconds: 5);
+  /// Discovery listening window duration (7 seconds)
+  static const Duration _discoveryListeningWindow = Duration(seconds: 7);
   /// Discovery request interval (30 seconds - repeaters only respond 4 times per 2 minutes)
   static const Duration _discoveryInterval = Duration(seconds: 30);
   /// Cooldown period between manual pings (15 seconds)
@@ -474,6 +474,13 @@ class PingService {
   Future<bool> sendTxPing({bool manual = true}) async {
     debugLog('[PING] sendTxPing called (manual=$manual)');
 
+    // Guard: don't send pings if connection is not in connected state
+    // Handles race where timer callback fires after reconnect started
+    if (_connection.currentStep != ConnectionStep.connected) {
+      debugLog('[PING] Ignoring TX ping — not connected (step: ${_connection.currentStep})');
+      return false;
+    }
+
     // Early guard: prevent concurrent ping execution (critical for preventing BLE GATT errors)
     // Reference: state.pingInProgress check in wardrive.js
     if (_pingInProgress) {
@@ -518,7 +525,11 @@ class PingService {
               _skipReason = 'too close';
               debugLog('[PING] Auto ping blocked: too close to last ping, scheduling next');
             }
-            _scheduleNextAutoPing();
+            if (_hybridModeEnabled) {
+              _scheduleNextHybridPing();
+            } else {
+              _scheduleNextAutoPing();
+            }
           }
           _pingInProgress = false;
           return false;
@@ -809,6 +820,11 @@ class PingService {
     _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
       debugLog('[ACTIVE MODE] Auto ping timer fired');
 
+      // Guard: connection may have dropped since timer was scheduled
+      if (_connection.currentStep != ConnectionStep.connected) {
+        debugLog('[ACTIVE MODE] Not connected, ignoring timer');
+        return;
+      }
       // Double-check guards before sending ping
       if (!_autoPingEnabled || _passiveModeEnabled) {
         debugLog('[ACTIVE MODE] Auto mode no longer running, ignoring timer');
@@ -1082,6 +1098,12 @@ class PingService {
 
   /// Send a discovery request and start listening window
   Future<void> _sendDiscoveryRequest() async {
+    // Guard: don't send discovery during reconnect (race with timer queue)
+    if (_connection.currentStep != ConnectionStep.connected) {
+      debugLog('[DISC] Ignoring discovery request — not connected (step: ${_connection.currentStep})');
+      return;
+    }
+
     if (!_autoPingEnabled || (!_passiveModeEnabled && !_hybridModeEnabled)) {
       debugLog('[DISC] Not in Passive/Hybrid Mode, skipping discovery request');
       return;
@@ -1278,8 +1300,10 @@ class PingService {
     _autoTimer = null;
 
     // Subtract listening window so interval is measured start-to-start
-    // At 15s: wait = 15000 - 5000 = 10000ms. Clamp to min 1s.
-    final listenMs = _rxListeningWindow.inMilliseconds; // 5000
+    // TX uses 5s RX window, discovery uses 7s window
+    final listenMs = _nextPingIsDiscovery
+        ? _discoveryListeningWindow.inMilliseconds
+        : _rxListeningWindow.inMilliseconds;
     final waitMs = (_autoPingIntervalMs - listenMs).clamp(1000, _autoPingIntervalMs);
 
     final isNextDisc = _nextPingIsDiscovery;
@@ -1289,6 +1313,10 @@ class PingService {
 
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
       if (!_autoPingEnabled || !_hybridModeEnabled) return;
+      if (_connection.currentStep != ConnectionStep.connected) {
+        debugLog('[HYBRID] Not connected, ignoring timer');
+        return;
+      }
       if (_pingInProgress) {
         debugLog('[HYBRID] Ping already in progress, skipping');
         return;
@@ -1504,6 +1532,10 @@ class PingService {
     _targetedTimer?.cancel();
     _targetedTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
       debugLog('[TRACE] Targeted ping timer fired');
+      if (_connection.currentStep != ConnectionStep.connected) {
+        debugLog('[TRACE] Not connected, ignoring timer');
+        return;
+      }
       if (_autoPingEnabled && _targetedModeEnabled) {
         if (_pingInProgress) {
           debugLog('[TRACE] Ping already in progress, skipping');

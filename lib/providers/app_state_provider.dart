@@ -263,6 +263,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _reconnectDelayAfterBondError = Duration(seconds: 5);
   bool _lastReconnectWasBondError = false;
 
+  // Idle disconnect timer — disconnects after 15 min without manual ping or auto-ping
+  Timer? _idleDisconnectTimer;
+  static const Duration _idleDisconnectTimeout = Duration(minutes: 15);
+
+  // Geofence zone check log throttle (while disconnected)
+  DateTime? _lastZoneCheckLogTime;
+  int _zoneCheckSuppressedCount = 0;
+
   // Map navigation trigger (for navigating to log entry coordinates)
   ({double lat, double lon})? _mapNavigationTarget;
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
@@ -744,7 +752,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // This allows users to know if they've entered/exited a zone while moving
       // Skip zone checks when offline mode is enabled
       if (!isConnected && !_preferences.offlineMode && _shouldRecheckZone(position)) {
-        debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone');
+        // Throttle log to once per 30s to avoid spam while driving
+        final now = DateTime.now();
+        if (_lastZoneCheckLogTime == null || now.difference(_lastZoneCheckLogTime!) >= const Duration(seconds: 30)) {
+          if (_zoneCheckSuppressedCount > 0) {
+            debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone (suppressed $_zoneCheckSuppressedCount similar in last 30s)');
+          } else {
+            debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone');
+          }
+          _lastZoneCheckLogTime = now;
+          _zoneCheckSuppressedCount = 0;
+        } else {
+          _zoneCheckSuppressedCount++;
+        }
         await checkZoneStatus();
       }
 
@@ -1714,6 +1734,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!_preferences.offlineMode) {
           _startZoneRefreshTimer();
         }
+
+        // Enable heartbeat immediately on connection to keep server session alive
+        // Previously only enabled on auto-ping start, causing silent session expiry
+        if (!_preferences.offlineMode && _apiService.hasSession) {
+          _apiService.enableHeartbeat(
+            gpsProvider: () {
+              final pos = _gpsService.lastPosition;
+              if (pos == null) return null;
+              return (lat: pos.latitude, lon: pos.longitude);
+            },
+          );
+          debugLog('[HEARTBEAT] Enabled on connection');
+        }
+
+        // Start 15-minute idle disconnect timer (cancelled by manual ping or auto-ping start)
+        _startIdleDisconnectTimer();
       } else {
         // No API session - offline mode or auth skipped
         debugLog('[CONN] Connected without API session (offline mode)');
@@ -2175,6 +2211,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _fullDisconnectCleanup() async {
+    // Guard against double cleanup (e.g., reconnect timeout + BLE disconnect event)
+    if (_connectionStep == ConnectionStep.disconnected) {
+      debugLog('[CONN] Already disconnected, skipping duplicate cleanup');
+      return;
+    }
     _cancelPendingAutoPingRestore();
     _connectionStep = ConnectionStep.disconnected;
 
@@ -2245,6 +2286,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Start auto-reconnect after unexpected BLE disconnect
   Future<void> _startAutoReconnect() async {
     _cancelPendingAutoPingRestore();
+    _cancelIdleDisconnectTimer();
     _isAutoReconnecting = true;
     _reconnectAttempt = 0;
     _lastReconnectWasBondError = false;
@@ -2356,14 +2398,36 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
-  /// Detect iOS apple-code 14 bond errors and clear the stale bond before retry
+  /// Start 15-minute idle disconnect timer.
+  /// Fires if user does not send a manual ping or start auto-ping within 15 minutes.
+  void _startIdleDisconnectTimer() {
+    _idleDisconnectTimer?.cancel();
+    _idleDisconnectTimer = Timer(_idleDisconnectTimeout, () {
+      if (!isConnected || _autoPingEnabled) return;
+      debugLog('[IDLE] 15-minute idle timeout reached — disconnecting');
+      logError('Disconnected: 15 minutes of inactivity', severity: ErrorSeverity.warning);
+      disconnect();
+    });
+    debugLog('[IDLE] Idle disconnect timer started (${_idleDisconnectTimeout.inMinutes} min)');
+  }
+
+  /// Cancel the idle disconnect timer
+  void _cancelIdleDisconnectTimer() {
+    if (_idleDisconnectTimer != null) {
+      _idleDisconnectTimer!.cancel();
+      _idleDisconnectTimer = null;
+      debugLog('[IDLE] Idle disconnect timer cancelled');
+    }
+  }
+
+  /// Detect iOS apple-code 14/15 bond errors and clear the stale bond before retry
   Future<void> _handleBondErrorIfNeeded(Object error) async {
     final errorStr = error.toString();
-    if (errorStr.contains('apple-code: 14') || errorStr.contains('Peer removed pairing information')) {
+    if (errorStr.contains('apple-code: 14') || errorStr.contains('apple-code: 15') || errorStr.contains('Peer removed pairing information')) {
       _lastReconnectWasBondError = true;
       final deviceId = _rememberedDevice?.id;
       if (deviceId != null) {
-        debugLog('[CONN] Bond error detected (apple-code 14) — clearing stale bond for $deviceId');
+        debugLog('[CONN] Bond error detected (apple-code 14/15) — clearing stale bond for $deviceId');
         await _bluetoothService.removeBond(deviceId);
       }
     }
@@ -2408,6 +2472,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[CONN] Auto-ping restored after reconnect (mode=$previousMode)');
         }
       });
+    } else {
+      // No auto-ping to restore — start idle timer
+      _startIdleDisconnectTimer();
     }
 
     notifyListeners();
@@ -2452,6 +2519,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> disconnect() async {
     // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
     _userRequestedDisconnect = true;
+
+    // Cancel idle disconnect timer
+    _cancelIdleDisconnectTimer();
 
     // Cancel any active auto-reconnect
     _reconnectTimer?.cancel();
@@ -2631,12 +2701,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Send a manual TX ping
   Future<bool> sendPing() async {
     if (_pingService == null) return false;
+    if (_isAutoReconnecting) {
+      debugLog('[PING] Ignoring ping during auto-reconnect');
+      return false;
+    }
 
     // Check session validity before starting (skip in offline mode)
     if (!_preferences.offlineMode) {
       final sessionCheck = await _checkSessionBeforeAction();
       if (!sessionCheck) return false;
     }
+
+    // Reset idle disconnect timer (user is actively pinging)
+    _startIdleDisconnectTimer();
 
     // Set sending state immediately for instant UI feedback
     _isPingSending = true;
@@ -2736,8 +2813,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // End noise floor session when mode is disabled
       await _endNoiseFloorSession();
 
-      // Disable heartbeat when stopping auto mode
-      _apiService.disableHeartbeat();
+      // Keep heartbeat enabled (stays on while connected to prevent session expiry)
+      // Re-start idle disconnect timer now that user is idle again
+      _startIdleDisconnectTimer();
 
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
@@ -2754,6 +2832,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
       }
     } else {
+      // Cancel idle disconnect timer — auto-ping keeps the session active
+      _cancelIdleDisconnectTimer();
+
       // Check session validity before starting (skip in offline mode)
       if (!_preferences.offlineMode) {
         final sessionCheck = await _checkSessionBeforeAction();
@@ -5134,6 +5215,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimer?.cancel();
     _reconnectTimeoutTimer?.cancel();
     _restoreAutoPingTimer?.cancel();
+    _idleDisconnectTimer?.cancel();
     _offlineAutoSaveTimer?.cancel();
     _zoneRefreshTimer?.cancel();
     _tileRefreshTimer?.cancel();
