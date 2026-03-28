@@ -490,6 +490,13 @@ class PingService {
     _pingInProgress = true;
 
     try {
+      // For auto pings, request a fresh GPS position before validation.
+      // This ensures the 25m distance check and ping coordinates reflect
+      // where the device is NOW, not where it was at the last stream event.
+      if (!manual) {
+        await _gpsService.getFreshPosition();
+      }
+
       // Use different validation and cooldown for manual vs auto pings
       if (manual) {
         // Manual ping: 15-second cooldown, no distance check
@@ -1109,8 +1116,8 @@ class PingService {
       return;
     }
 
-    // Check GPS
-    final position = _gpsService.lastPosition;
+    // Request fresh GPS position before discovery (same rationale as TX auto-ping)
+    final position = await _gpsService.getFreshPosition();
     if (position == null) {
       debugLog('[DISC] No GPS position, skipping discovery request');
       _pingInProgress = false;
