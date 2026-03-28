@@ -836,12 +836,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// SNR color: green > 5, orange -1..5, red <= -1
-  static Color _snrColor(double snr) {
-    if (snr <= -1) return Colors.red;
-    if (snr <= 5) return Colors.orange;
-    return Colors.green;
-  }
+  /// SNR color (delegates to active palette)
+  static Color _snrColor(double snr) => PingColors.snrColor(snr);
 
   Widget _buildGpsInfoOverlay(AppStateProvider appState) {
     final position = appState.currentPosition;
@@ -896,9 +892,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   Color _getAccuracyColor(double accuracy) {
-    if (accuracy <= 10) return Colors.green;
-    if (accuracy <= 30) return Colors.orange;
-    return Colors.red;
+    if (accuracy <= 10) return PingColors.signalGood;
+    if (accuracy <= 30) return PingColors.signalMedium;
+    return PingColors.signalBad;
   }
 
   /// Map controls (always vertical, used inside collapsible wrapper)
@@ -1747,7 +1743,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         onTap: () => _showDiscPingDetails(entry),
         child: _buildCoverageMarkerChild(
           entry.nodeCount == 0
-              ? (discDropEnabled ? Colors.red : Colors.grey)
+              ? (discDropEnabled ? PingColors.txFail : PingColors.discFail)
               : _discMarkerColor,
         ),
       ),
@@ -1941,32 +1937,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           final localRssi = entry.localRssi ?? 0;
                           final remoteSnr = entry.remoteSnr ?? 0;
 
-                          Color rxSnrColor;
-                          if (localSnr <= -1) {
-                            rxSnrColor = Colors.red;
-                          } else if (localSnr <= 5) {
-                            rxSnrColor = Colors.orange;
-                          } else {
-                            rxSnrColor = Colors.green;
-                          }
-
-                          Color rssiColor;
-                          if (localRssi >= -70) {
-                            rssiColor = Colors.green;
-                          } else if (localRssi >= -100) {
-                            rssiColor = Colors.orange;
-                          } else {
-                            rssiColor = Colors.red;
-                          }
-
-                          Color txSnrColor;
-                          if (remoteSnr <= -1) {
-                            txSnrColor = Colors.red;
-                          } else if (remoteSnr <= 5) {
-                            txSnrColor = Colors.orange;
-                          } else {
-                            txSnrColor = Colors.green;
-                          }
+                          final rxSnrColor = PingColors.snrColor(localSnr);
+                          final rssiColor = PingColors.rssiColor(localRssi);
+                          final txSnrColor = PingColors.snrColor(remoteSnr.toDouble());
 
                           return InkWell(
                             onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.targetRepeaterId),
@@ -2019,20 +1992,20 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// DISC marker color (#51D4E9 - cyan, matches DISC/TRACE web map squares)
-  static const Color _discMarkerColor = PingColors.discSuccess;
+  /// DISC marker color (delegates to active palette)
+  static Color get _discMarkerColor => PingColors.discSuccess;
 
-  /// Repeater marker color (#a52163 - magenta/pink) - Active
-  static const Color _repeaterMarkerColor = Color(0xFFA52163);
+  /// Repeater marker color - Active (delegates to active palette)
+  static Color get _repeaterMarkerColor => PingColors.repeaterActive;
 
-  /// Duplicate repeater marker color (#a51d2a - red)
-  static const Color _repeaterDuplicateColor = Color(0xFFA51D2A);
+  /// Duplicate repeater marker color (delegates to active palette)
+  static Color get _repeaterDuplicateColor => PingColors.repeaterDuplicate;
 
-  /// New repeater marker color (#c05802 - orange)
-  static const Color _repeaterNewColor = Color(0xFFC05802);
+  /// New repeater marker color (delegates to active palette)
+  static Color get _repeaterNewColor => PingColors.repeaterNew;
 
-  /// Dead repeater marker color (grey)
-  static const Color _repeaterDeadColor = Colors.grey;
+  /// Dead repeater marker color (delegates to active palette)
+  static Color get _repeaterDeadColor => PingColors.repeaterDead;
 
   /// Get set of duplicate repeater IDs
   Set<String> _getDuplicateRepeaterIds(List<Repeater> repeaters) {
@@ -2190,11 +2163,11 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: Colors.green.withValues(alpha: 0.15),
+                        color: PingColors.txSuccess.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.green.withValues(alpha: 0.4)),
+                        border: Border.all(color: PingColors.txSuccess.withValues(alpha: 0.4)),
                       ),
-                      child: const Icon(Icons.arrow_upward, color: Colors.green, size: 24),
+                      child: Icon(Icons.arrow_upward, color: PingColors.txSuccess, size: 24),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -2320,29 +2293,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         Divider(height: 1, color: Theme.of(context).dividerColor),
                         // Data rows
                         ...heardRepeaters.map((repeater) {
-                          // Calculate SNR chip color
-                          Color snrColor;
-                          if (repeater.snr == null) {
-                            snrColor = Colors.grey;
-                          } else if (repeater.snr! <= -1) {
-                            snrColor = Colors.red;
-                          } else if (repeater.snr! <= 5) {
-                            snrColor = Colors.orange;
-                          } else {
-                            snrColor = Colors.green;
-                          }
-
-                          // Calculate RSSI chip color
-                          Color rssiColor;
-                          if (repeater.rssi == null) {
-                            rssiColor = Colors.grey;
-                          } else if (repeater.rssi! >= -70) {
-                            rssiColor = Colors.green;
-                          } else if (repeater.rssi! >= -100) {
-                            rssiColor = Colors.orange;
-                          } else {
-                            rssiColor = Colors.red;
-                          }
+                          final snrColor = repeater.snr != null ? PingColors.snrColor(repeater.snr!) : Colors.grey;
+                          final rssiColor = repeater.rssi != null ? PingColors.rssiColor(repeater.rssi!) : Colors.grey;
 
                           return InkWell(
                             onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId),
@@ -2389,25 +2341,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   /// Show RX ping details popup
   void _showRxPingDetails(RxPing ping) {
-    // Calculate SNR severity for chip color
-    Color snrColor;
-    if (ping.snr <= -1) {
-      snrColor = Colors.red;
-    } else if (ping.snr <= 5) {
-      snrColor = Colors.orange;
-    } else {
-      snrColor = Colors.green;
-    }
-
-    // Calculate RSSI chip color based on signal strength
-    Color rssiColor;
-    if (ping.rssi >= -70) {
-      rssiColor = Colors.green; // Strong: -30 to -70 dBm
-    } else if (ping.rssi >= -100) {
-      rssiColor = Colors.orange; // Medium: -70 to -100 dBm
-    } else {
-      rssiColor = Colors.red; // Weak: -100 to -120 dBm
-    }
+    final snrColor = PingColors.snrColor(ping.snr);
+    final rssiColor = PingColors.rssiColor(ping.rssi);
 
     showModalBottomSheet(
       context: context,
@@ -2628,7 +2563,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: _discMarkerColor.withValues(alpha: 0.4)),
                       ),
-                      child: const Icon(Icons.radar, color: _discMarkerColor, size: 24),
+                      child: Icon(Icons.radar, color: _discMarkerColor, size: 24),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -2767,33 +2702,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         Divider(height: 1, color: Theme.of(context).dividerColor),
                         // Data rows
                         ...entry.discoveredNodes.map((node) {
-                          // Calculate colors
-                          Color rxSnrColor;
-                          if (node.localSnr <= -1) {
-                            rxSnrColor = Colors.red;
-                          } else if (node.localSnr <= 5) {
-                            rxSnrColor = Colors.orange;
-                          } else {
-                            rxSnrColor = Colors.green;
-                          }
-
-                          Color rssiColor;
-                          if (node.localRssi >= -70) {
-                            rssiColor = Colors.green;
-                          } else if (node.localRssi >= -100) {
-                            rssiColor = Colors.orange;
-                          } else {
-                            rssiColor = Colors.red;
-                          }
-
-                          Color txSnrColor;
-                          if (node.remoteSnr <= -1) {
-                            txSnrColor = Colors.red;
-                          } else if (node.remoteSnr <= 5) {
-                            txSnrColor = Colors.orange;
-                          } else {
-                            txSnrColor = Colors.green;
-                          }
+                          final rxSnrColor = PingColors.snrColor(node.localSnr);
+                          final rssiColor = PingColors.rssiColor(node.localRssi);
+                          final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
 
                           return InkWell(
                             onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
@@ -2809,7 +2720,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                         RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 13),
                                         Text(
                                           node.nodeTypeLabel,
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                             fontSize: 10,
                                             fontWeight: FontWeight.w500,
                                             color: _discMarkerColor,

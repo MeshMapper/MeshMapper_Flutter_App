@@ -999,9 +999,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Get color based on noise floor value (lower is better)
   Color _getNoiseFloorColor(int noiseFloor) {
-    if (noiseFloor <= -100) return Colors.green;   // -100 to -120: great
-    if (noiseFloor <= -90) return Colors.orange;   // -90 to -100: okay
-    return Colors.red;                              // 0 to -90: bad
+    return PingColors.noiseFloorColor(noiseFloor.toDouble());
   }
 
   /// Get battery icon based on percentage

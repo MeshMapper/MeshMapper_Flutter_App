@@ -37,6 +37,7 @@ import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
 import '../utils/constants.dart';
+import '../utils/ping_colors.dart';
 import '../services/wakelock_service.dart';
 import '../utils/debug_logger_io.dart';
 
@@ -3817,6 +3818,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _savePreferences();
   }
 
+  /// Set color vision type for accessibility and persist
+  void setColorVisionType(String type) {
+    _preferences = _preferences.copyWith(colorVisionType: type);
+    PingColors.setColorVisionType(
+      ColorVisionType.values.firstWhere((e) => e.name == type, orElse: () => ColorVisionType.none),
+    );
+    debugLog('[A11Y] Color vision type set to $type');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Set unit system preference (metric or imperial)
   void setUnitSystem(String system) {
     _preferences = _preferences.copyWith(unitSystem: system);
@@ -4837,6 +4849,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Apply saved min ping distance to GpsService and PingService
         _gpsService.setMinPingDistance(_preferences.minPingDistanceMeters.toDouble());
         PingService.currentMinDistance = _preferences.minPingDistanceMeters;
+
+        // Apply saved color vision type
+        PingColors.setColorVisionType(
+          ColorVisionType.values.firstWhere(
+            (e) => e.name == _preferences.colorVisionType,
+            orElse: () => ColorVisionType.none,
+          ),
+        );
       }
     } catch (e) {
       debugLog('[APP] Failed to load preferences: $e');

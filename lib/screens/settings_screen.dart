@@ -146,6 +146,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 appState.setThemeMode(isDark ? 'dark' : 'light');
               },
             ),
+            if (!kIsWeb)
+              _BackgroundModeToggle(appState: appState),
+            ListTile(
+              leading: const Icon(Icons.visibility),
+              title: const Text('Color Vision'),
+              subtitle: Text(_colorVisionLabel(prefs.colorVisionType)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showColorVisionSelector(context, appState),
+            ),
             SwitchListTile(
               secondary: Icon(
                 prefs.isImperial ? Icons.square_foot : Icons.straighten,
@@ -166,8 +175,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 appState.updatePreferences(prefs.copyWith(showTopRepeaters: value));
               },
             ),
-            if (!kIsWeb)
-              _BackgroundModeToggle(appState: appState),
             ListTile(
               leading: const Icon(Icons.place),
               title: const Text('Map Marker Style'),
@@ -1013,6 +1020,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     RadioListTile<String>(
                       secondary: Icon(icon),
                       title: Text(label),
+                      value: value,
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _colorVisionLabel(String type) {
+    return switch (type) {
+      'protanopia' => 'Protanopia (red-blind)',
+      'deuteranopia' => 'Deuteranopia (green-blind)',
+      'tritanopia' => 'Tritanopia (blue-blind)',
+      'achromatopsia' => 'Achromatopsia (monochrome)',
+      _ => 'Default',
+    };
+  }
+
+  void _showColorVisionSelector(BuildContext context, AppStateProvider appState) {
+    final options = [
+      ('none', 'Default', 'Standard color palette'),
+      ('protanopia', 'Protanopia', 'Red-blind — difficulty distinguishing red and green'),
+      ('deuteranopia', 'Deuteranopia', 'Green-blind — difficulty distinguishing red and green'),
+      ('tritanopia', 'Tritanopia', 'Blue-blind — difficulty distinguishing blue and yellow'),
+      ('achromatopsia', 'Achromatopsia', 'Total color blindness — sees in greyscale'),
+    ];
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text('Color Vision', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+            RadioGroup<String>(
+              groupValue: appState.preferences.colorVisionType,
+              onChanged: (v) {
+                if (v != null) appState.setColorVisionType(v);
+                Navigator.pop(context);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final (value, label, subtitle) in options)
+                    RadioListTile<String>(
+                      secondary: const Icon(Icons.visibility),
+                      title: Text(label),
+                      subtitle: subtitle != null ? Text(subtitle, style: const TextStyle(fontSize: 12)) : null,
                       value: value,
                     ),
                 ],

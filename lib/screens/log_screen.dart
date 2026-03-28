@@ -809,14 +809,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   Widget _buildDiscNodeRow(BuildContext context, DiscoveredNodeEntry node) {
     final rxSnrColor = _snrColorFromValue(node.localSnr);
     final rssiColor = _rssiColor(node.localRssi);
-    Color txSnrColor;
-    if (node.remoteSnr <= -1) {
-      txSnrColor = Colors.red;
-    } else if (node.remoteSnr <= 5) {
-      txSnrColor = Colors.orange;
-    } else {
-      txSnrColor = Colors.green;
-    }
+    final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
 
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
@@ -831,7 +824,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                   Flexible(child: RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 14)),
                   Text(
                     node.nodeTypeLabel,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w500,
                       color: PingColors.discSuccess,
@@ -985,29 +978,23 @@ class _AllPingsTabState extends State<_AllPingsTab> {
 
   static Color _snrColor(SnrSeverity? severity) {
     return switch (severity) {
-      SnrSeverity.poor => Colors.red,
-      SnrSeverity.fair => Colors.orange,
-      SnrSeverity.good => Colors.green,
+      SnrSeverity.poor => PingColors.signalBad,
+      SnrSeverity.fair => PingColors.signalMedium,
+      SnrSeverity.good => PingColors.signalGood,
       null => Colors.grey,
     };
   }
 
-  static Color _snrColorFromValue(double snr) {
-    if (snr <= -1) return Colors.red;
-    if (snr <= 5) return Colors.orange;
-    return Colors.green;
-  }
+  static Color _snrColorFromValue(double snr) => PingColors.snrColor(snr);
 
   static Color _snrColorFromNullableValue(double? snr) {
     if (snr == null) return Colors.grey;
-    return _snrColorFromValue(snr);
+    return PingColors.snrColor(snr);
   }
 
   static Color _rssiColor(int? rssi) {
     if (rssi == null) return Colors.grey;
-    if (rssi >= -70) return Colors.green;
-    if (rssi >= -100) return Colors.orange;
-    return Colors.red;
+    return PingColors.rssiColor(rssi);
   }
 }
 

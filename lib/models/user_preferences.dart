@@ -91,6 +91,9 @@ class UserPreferences {
   /// GPS position marker style (arrow, car, bike, boat, walk)
   final String gpsMarkerStyle;
 
+  /// Color vision type for accessibility (none, protanopia, deuteranopia, tritanopia, achromatopsia)
+  final String colorVisionType;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -122,6 +125,7 @@ class UserPreferences {
     this.showTopRepeaters = false,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
+    this.colorVisionType = 'none',
   });
 
   /// Create from JSON (for persistence)
@@ -157,6 +161,7 @@ class UserPreferences {
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: (json['gpsMarkerStyle'] as String?) ?? 'arrow',
+      colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
     );
   }
 
@@ -193,6 +198,7 @@ class UserPreferences {
       'showTopRepeaters': showTopRepeaters,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
+      'colorVisionType': colorVisionType,
     };
   }
 
@@ -228,6 +234,7 @@ class UserPreferences {
     bool? showTopRepeaters,
     String? markerStyle,
     String? gpsMarkerStyle,
+    String? colorVisionType,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -260,6 +267,7 @@ class UserPreferences {
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
+      colorVisionType: colorVisionType ?? this.colorVisionType,
     );
   }
 
@@ -320,7 +328,8 @@ class UserPreferences {
         other.autoStopAfterIdle == autoStopAfterIdle &&
         other.showTopRepeaters == showTopRepeaters &&
         other.markerStyle == markerStyle &&
-        other.gpsMarkerStyle == gpsMarkerStyle;
+        other.gpsMarkerStyle == gpsMarkerStyle &&
+        other.colorVisionType == colorVisionType;
   }
 
   @override
@@ -355,6 +364,7 @@ class UserPreferences {
       showTopRepeaters,
       markerStyle,
       gpsMarkerStyle,
+      colorVisionType,
     ]);
   }
 

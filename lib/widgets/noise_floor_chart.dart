@@ -483,25 +483,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
 
   /// Build a table row for a repeater (matching TX log style)
   Widget _buildRepeaterRow(BuildContext context, MarkerRepeaterInfo repeater) {
-    // SNR color: good (>5), fair (-1 to 5), poor (<-1)
-    Color snrColor;
-    if (repeater.snr <= -1) {
-      snrColor = Colors.red;
-    } else if (repeater.snr <= 5) {
-      snrColor = Colors.orange;
-    } else {
-      snrColor = Colors.green;
-    }
-
-    // RSSI color based on signal strength
-    Color rssiColor;
-    if (repeater.rssi >= -70) {
-      rssiColor = Colors.green;
-    } else if (repeater.rssi >= -100) {
-      rssiColor = Colors.orange;
-    } else {
-      rssiColor = Colors.red;
-    }
+    final snrColor = PingColors.snrColor(repeater.snr);
+    final rssiColor = PingColors.rssiColor(repeater.rssi);
 
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId, fullHexId: repeater.pubkeyHex),
@@ -703,20 +686,20 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       return ((dbm - minY) / yRange).clamp(0.0, 1.0);
     }
 
-    // Smooth gradient with faded transitions
+    // Smooth gradient with faded transitions (palette-aware)
     final lineColors = [
-      Colors.green,
-      Colors.green,
-      Colors.orange,
-      Colors.red,
-      Colors.red,
+      PingColors.noiseFloorGood,
+      PingColors.noiseFloorGood,
+      PingColors.noiseFloorMedium,
+      PingColors.noiseFloorBad,
+      PingColors.noiseFloorBad,
     ];
     final fillColors = [
-      Colors.green.withValues(alpha: 0.2),
-      Colors.green.withValues(alpha: 0.15),
-      Colors.orange.withValues(alpha: 0.12),
-      Colors.red.withValues(alpha: 0.1),
-      Colors.red.withValues(alpha: 0.08),
+      PingColors.noiseFloorGood.withValues(alpha: 0.2),
+      PingColors.noiseFloorGood.withValues(alpha: 0.15),
+      PingColors.noiseFloorMedium.withValues(alpha: 0.12),
+      PingColors.noiseFloorBad.withValues(alpha: 0.1),
+      PingColors.noiseFloorBad.withValues(alpha: 0.08),
     ];
     final stops = [
       0.0,
