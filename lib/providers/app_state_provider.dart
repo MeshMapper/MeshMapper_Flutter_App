@@ -500,6 +500,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isSoundEnabled => _audioService.isEnabled;
   bool get isTxSoundEnabled => _audioService.isTxEnabled;
   bool get isRxSoundEnabled => _audioService.isRxEnabled;
+  bool get isDisconnectAlertEnabled => _preferences.disconnectAlertEnabled;
   AudioService get audioService => _audioService;
 
   bool get isConnected => _connectionStep == ConnectionStep.connected;
@@ -2232,6 +2233,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
     if (_autoPingEnabled) {
+      if (!_userRequestedDisconnect) {
+        _playDisconnectAlert();
+      }
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
       debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
@@ -2496,6 +2500,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimeoutTimer = null;
     _cancelPendingAutoPingRestore();
 
+    // Alert if auto-ping was running before disconnect
+    if (_autoPingWasEnabled) {
+      _playDisconnectAlert();
+    }
+
     // Clear reconnect state
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
@@ -2756,6 +2765,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Auto-stop auto-ping after prolonged idle (no movement)
   void _triggerIdleAutoStop() {
     if (!_autoPingEnabled) return;
+    _playDisconnectAlert();
     final elapsed = _idleAutoStopReference != null
         ? DateTime.now().difference(_idleAutoStopReference!).inMinutes
         : 30;
@@ -3893,6 +3903,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Set disconnect alert enabled state
+  Future<void> setDisconnectAlertEnabled(bool enabled) async {
+    _preferences = _preferences.copyWith(disconnectAlertEnabled: enabled);
+    await _savePreferences();
+    debugLog('[AUDIO] Disconnect alert ${enabled ? 'enabled' : 'disabled'}');
+    notifyListeners();
+  }
+
+  /// Play disconnect alert if enabled (triple beep for unexpected ping stop)
+  void _playDisconnectAlert() {
+    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) return;
+    debugLog('[AUDIO] Playing disconnect alert — pinging stopped unexpectedly');
+    _audioService.playAlertSound();
+  }
+
   /// Navigate to coordinates on map (triggered from log entries)
   void navigateToMapCoordinates(double latitude, double longitude) {
     _mapNavigationTarget = (lat: latitude, lon: longitude);
@@ -4039,6 +4064,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Handle maintenance mode while connected - end session and log error
   Future<void> _handleMaintenanceModeConnected(String message, String? url) async {
     debugLog('[MAINTENANCE] Ending session due to maintenance mode');
+
+    // Alert if auto-ping was running (maintenance is not user-initiated)
+    if (_autoPingEnabled) {
+      _playDisconnectAlert();
+    }
 
     // Log to error log (this sets _requestErrorLogSwitch = true)
     logError('Maintenance Mode Enabled: $message', severity: ErrorSeverity.warning);

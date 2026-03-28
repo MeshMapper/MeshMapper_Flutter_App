@@ -148,6 +148,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             if (!kIsWeb)
               _BackgroundModeToggle(appState: appState),
+            SwitchListTile(
+              secondary: Icon(prefs.mapTilesEnabled ? Icons.map : Icons.map_outlined),
+              title: const Text('Disable Map Tiles'),
+              subtitle: Text(prefs.mapTilesEnabled
+                  ? 'Map and coverage tiles load normally'
+                  : 'Disabled to save mobile data'),
+              value: !prefs.mapTilesEnabled,
+              onChanged: (value) {
+                appState.updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.visibility),
               title: const Text('Color Vision'),
@@ -210,6 +221,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: const Text('Sound when repeater echo or RX is received'),
                 value: appState.isRxSoundEnabled,
                 onChanged: (value) => appState.setRxSoundEnabled(value),
+              ),
+              SwitchListTile(
+                secondary: const SizedBox(width: 24),
+                title: const Text('Disconnect Alert'),
+                subtitle: const Text('Triple beep when pinging stops unexpectedly'),
+                value: appState.isDisconnectAlertEnabled,
+                onChanged: (value) => appState.setDisconnectAlertEnabled(value),
               ),
             ],
           ]),

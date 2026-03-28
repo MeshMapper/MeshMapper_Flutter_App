@@ -278,6 +278,31 @@ class AudioService {
     }
   }
 
+  /// Play disconnect alert sound (triple beep pattern).
+  /// Independent of master sound toggle — this is a safety alert.
+  Future<void> playAlertSound() async {
+    if (!_initialized || _txPlayer == null) return;
+
+    try {
+      await _ensureSessionActive();
+      for (int i = 0; i < 3; i++) {
+        await _txPlayer!.seek(Duration.zero);
+        await _txPlayer!.play().timeout(const Duration(seconds: 3));
+        if (i < 2) {
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+      }
+      debugLog('[AUDIO] Played disconnect alert (triple beep)');
+      _scheduleFocusRelease();
+    } on TimeoutException {
+      debugWarn('[AUDIO] Alert play() timed out — resetting audio session');
+      await _txPlayer!.stop();
+      await _resetAudioSession();
+    } catch (e) {
+      debugError('[AUDIO] Failed to play alert sound: $e');
+    }
+  }
+
   /// Enable or disable sound notifications
   Future<void> setEnabled(bool enabled) async {
     if (_enabled == enabled) return;

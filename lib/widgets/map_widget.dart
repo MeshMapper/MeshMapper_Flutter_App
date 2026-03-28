@@ -654,22 +654,24 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         ),
         children: [
           // Tile layer (dynamic based on selected style from preferences)
-          Builder(
-            builder: (context) {
-              final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
-              return TileLayer(
-                urlTemplate: mapStyle.urlTemplate,
-                subdomains: mapStyle.subdomains ?? const [],
-                userAgentPackageName: 'com.meshmapper.app',
-                maxZoom: 17,
-                retinaMode: mapStyle.supportsRetina && RetinaMode.isHighDensity(context),
-                tileProvider: SilentCancellableNetworkTileProvider(),
-              );
-            },
-          ),
+          // Skipped entirely when map tiles are disabled to save mobile data
+          if (appState.preferences.mapTilesEnabled)
+            Builder(
+              builder: (context) {
+                final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+                return TileLayer(
+                  urlTemplate: mapStyle.urlTemplate,
+                  subdomains: mapStyle.subdomains ?? const [],
+                  userAgentPackageName: 'com.meshmapper.app',
+                  maxZoom: 17,
+                  retinaMode: mapStyle.supportsRetina && RetinaMode.isHighDensity(context),
+                  tileProvider: SilentCancellableNetworkTileProvider(),
+                );
+              },
+            ),
 
-          // MeshMapper coverage overlay (only when zone code available and overlay enabled)
-          if (appState.zoneCode != null && _showMeshMapperOverlay)
+          // MeshMapper coverage overlay (only when zone code available, overlay enabled, and tiles enabled)
+          if (appState.preferences.mapTilesEnabled && appState.zoneCode != null && _showMeshMapperOverlay)
             TileLayer(
               urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}',
               userAgentPackageName: 'com.meshmapper.app',
@@ -701,9 +703,13 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
         ),
 
-        // Current position marker (car icon)
+        // Current position marker
         if (appState.currentPosition != null)
           MarkerLayer(
+            // Vehicle/boat icons stay upright by counter-rotating against map rotation;
+            // arrow and walk rotate with heading (handled by Transform.rotate in the painter)
+            rotate: appState.preferences.gpsMarkerStyle != 'arrow' &&
+                    appState.preferences.gpsMarkerStyle != 'walk',
             markers: [
               Marker(
                 point: LatLng(

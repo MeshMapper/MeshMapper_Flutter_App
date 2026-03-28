@@ -94,6 +94,12 @@ class UserPreferences {
   /// Color vision type for accessibility (none, protanopia, deuteranopia, tritanopia, achromatopsia)
   final String colorVisionType;
 
+  /// Download map tiles (base map + coverage overlay). When false, no tile network requests are made to save mobile data.
+  final bool mapTilesEnabled;
+
+  /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
+  final bool disconnectAlertEnabled;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -126,6 +132,8 @@ class UserPreferences {
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
     this.colorVisionType = 'none',
+    this.mapTilesEnabled = true,
+    this.disconnectAlertEnabled = false,
   });
 
   /// Create from JSON (for persistence)
@@ -162,6 +170,8 @@ class UserPreferences {
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: (json['gpsMarkerStyle'] as String?) ?? 'arrow',
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
+      mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
+      disconnectAlertEnabled: (json['disconnectAlertEnabled'] as bool?) ?? false,
     );
   }
 
@@ -199,6 +209,8 @@ class UserPreferences {
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
       'colorVisionType': colorVisionType,
+      'mapTilesEnabled': mapTilesEnabled,
+      'disconnectAlertEnabled': disconnectAlertEnabled,
     };
   }
 
@@ -235,6 +247,8 @@ class UserPreferences {
     String? markerStyle,
     String? gpsMarkerStyle,
     String? colorVisionType,
+    bool? mapTilesEnabled,
+    bool? disconnectAlertEnabled,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -268,6 +282,8 @@ class UserPreferences {
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
       colorVisionType: colorVisionType ?? this.colorVisionType,
+      mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
+      disconnectAlertEnabled: disconnectAlertEnabled ?? this.disconnectAlertEnabled,
     );
   }
 
@@ -329,7 +345,9 @@ class UserPreferences {
         other.showTopRepeaters == showTopRepeaters &&
         other.markerStyle == markerStyle &&
         other.gpsMarkerStyle == gpsMarkerStyle &&
-        other.colorVisionType == colorVisionType;
+        other.colorVisionType == colorVisionType &&
+        other.mapTilesEnabled == mapTilesEnabled &&
+        other.disconnectAlertEnabled == disconnectAlertEnabled;
   }
 
   @override
@@ -365,6 +383,8 @@ class UserPreferences {
       markerStyle,
       gpsMarkerStyle,
       colorVisionType,
+      mapTilesEnabled,
+      disconnectAlertEnabled,
     ]);
   }
 
