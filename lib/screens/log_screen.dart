@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/log_entry.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/ping_colors.dart';
 import '../widgets/repeater_id_chip.dart';
 
 /// Log screen with two tabs: All Pings (unified TX+RX+DISC+TRC) and Errors
@@ -434,13 +435,13 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             child: IntrinsicHeight(
               child: Row(
                 children: [
-                  _buildFilterSegment(PingLogType.tx, 'TX', widget.txCount, Colors.green, isFirst: true),
+                  _buildFilterSegment(PingLogType.tx, 'TX', widget.txCount, PingColors.txSuccess, isFirst: true),
                   _segmentDivider(context),
-                  _buildFilterSegment(PingLogType.rx, 'RX', widget.rxCount, Colors.blue),
+                  _buildFilterSegment(PingLogType.rx, 'RX', widget.rxCount, PingColors.rx),
                   _segmentDivider(context),
-                  _buildFilterSegment(PingLogType.disc, 'DISC', widget.discCount, const Color(0xFF7B68EE)),
+                  _buildFilterSegment(PingLogType.disc, 'DISC', widget.discCount, PingColors.discSuccess),
                   _segmentDivider(context),
-                  _buildFilterSegment(PingLogType.trace, 'TRC', widget.traceCount, Colors.cyan, isLast: true),
+                  _buildFilterSegment(PingLogType.trace, 'TRC', widget.traceCount, PingColors.traceSuccess, isLast: true),
                 ],
               ),
             ),
@@ -548,10 +549,10 @@ class _AllPingsTabState extends State<_AllPingsTab> {
 
   static Widget _buildTypeBadge(PingLogType type) {
     final (label, color) = switch (type) {
-      PingLogType.tx => ('TX', Colors.green),
-      PingLogType.rx => ('RX', Colors.blue),
-      PingLogType.disc => ('DISC', const Color(0xFF7B68EE)),
-      PingLogType.trace => ('TRC', Colors.cyan),
+      PingLogType.tx => ('TX', PingColors.txSuccess),
+      PingLogType.rx => ('RX', PingColors.rx),
+      PingLogType.disc => ('DISC', PingColors.discSuccess),
+      PingLogType.trace => ('TRC', PingColors.traceSuccess),
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -808,14 +809,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   Widget _buildDiscNodeRow(BuildContext context, DiscoveredNodeEntry node) {
     final rxSnrColor = _snrColorFromValue(node.localSnr);
     final rssiColor = _rssiColor(node.localRssi);
-    Color txSnrColor;
-    if (node.remoteSnr <= -1) {
-      txSnrColor = Colors.red;
-    } else if (node.remoteSnr <= 5) {
-      txSnrColor = Colors.orange;
-    } else {
-      txSnrColor = Colors.green;
-    }
+    final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
 
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
@@ -830,10 +824,10 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                   Flexible(child: RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 14)),
                   Text(
                     node.nodeTypeLabel,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w500,
-                      color: Color(0xFF7B68EE),
+                      color: PingColors.discSuccess,
                     ),
                   ),
                 ],
@@ -984,29 +978,23 @@ class _AllPingsTabState extends State<_AllPingsTab> {
 
   static Color _snrColor(SnrSeverity? severity) {
     return switch (severity) {
-      SnrSeverity.poor => Colors.red,
-      SnrSeverity.fair => Colors.orange,
-      SnrSeverity.good => Colors.green,
+      SnrSeverity.poor => PingColors.signalBad,
+      SnrSeverity.fair => PingColors.signalMedium,
+      SnrSeverity.good => PingColors.signalGood,
       null => Colors.grey,
     };
   }
 
-  static Color _snrColorFromValue(double snr) {
-    if (snr <= -1) return Colors.red;
-    if (snr <= 5) return Colors.orange;
-    return Colors.green;
-  }
+  static Color _snrColorFromValue(double snr) => PingColors.snrColor(snr);
 
   static Color _snrColorFromNullableValue(double? snr) {
     if (snr == null) return Colors.grey;
-    return _snrColorFromValue(snr);
+    return PingColors.snrColor(snr);
   }
 
   static Color _rssiColor(int? rssi) {
     if (rssi == null) return Colors.grey;
-    if (rssi >= -70) return Colors.green;
-    if (rssi >= -100) return Colors.orange;
-    return Colors.red;
+    return PingColors.rssiColor(rssi);
   }
 }
 

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 
 /// Status bar showing GPS, connection, and queue status
 class StatusBar extends StatefulWidget {
@@ -150,16 +151,16 @@ class _StatusBarState extends State<StatusBar> {
         return ('Locating...', 'Acquiring GPS signal and checking your zone status.', Icons.gps_not_fixed, Colors.blue);
 
       case 'tx':
-        return ('TX Packets', 'TX packets that have been sent out. These are messages to the #wardriving channel.', Icons.arrow_upward, Colors.green);
+        return ('TX Packets', 'TX packets that have been sent out. These are messages to the #wardriving channel.', Icons.arrow_upward, PingColors.txSuccess);
 
       case 'rx':
-        return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, Colors.blue);
+        return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, PingColors.rx);
 
       case 'disc':
-        return ('Discovery Requests', 'Discovery requests we have heard a response for.', Icons.radar, const Color(0xFF7B68EE));
+        return ('Discovery Requests', 'Discovery requests we have heard a response for.', Icons.radar, PingColors.discSuccess);
 
       case 'trace':
-        return ('Trace Responses', 'Trace path requests that received a response from the target repeater.', Icons.route, Colors.cyan);
+        return ('Trace Responses', 'Trace path requests that received a response from the target repeater.', Icons.route, PingColors.traceSuccess);
 
       case 'upload':
         return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
@@ -239,7 +240,7 @@ class _StatusBarState extends State<StatusBar> {
         _AnimatedStatChip(
           icon: Icons.arrow_upward,
           value: appState.pingStats.txCount,
-          color: Colors.green,
+          color: PingColors.txSuccess,
           onTap: () => _showInfoPopup(context, 'tx'),
         ),
 
@@ -249,7 +250,7 @@ class _StatusBarState extends State<StatusBar> {
         _AnimatedStatChip(
           icon: Icons.arrow_downward,
           value: appState.pingStats.rxCount,
-          color: Colors.blue,
+          color: PingColors.rx,
           onTap: () => _showInfoPopup(context, 'rx'),
         ),
 
@@ -259,7 +260,7 @@ class _StatusBarState extends State<StatusBar> {
         _AnimatedStatChip(
           icon: Icons.radar,
           value: appState.pingStats.discCount,
-          color: const Color(0xFF7B68EE),  // DISC purple
+          color: PingColors.discSuccess,
           onTap: () => _showInfoPopup(context, 'disc'),
         ),
 
@@ -269,7 +270,7 @@ class _StatusBarState extends State<StatusBar> {
         _AnimatedStatChip(
           icon: Icons.route,
           value: appState.pingStats.traceCount,
-          color: Colors.cyan,
+          color: PingColors.traceSuccess,
           onTap: () => _showInfoPopup(context, 'trace'),
         ),
 

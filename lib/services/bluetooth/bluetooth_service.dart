@@ -86,6 +86,12 @@ abstract class BluetoothService {
   /// Used for remembered devices to ensure name is available during connect
   void cacheDeviceInfo(DiscoveredDevice device);
 
+  /// Remove BLE bond/pairing for a device
+  /// On Android: removes the system bond entry
+  /// On iOS: best-effort — calls cancelPeripheralConnection to nudge CoreBluetooth
+  /// into clearing stale encryption keys (used after apple-code 14 errors)
+  Future<void> removeBond(String deviceId);
+
   /// Dispose of resources
   void dispose();
 }
