@@ -85,6 +85,21 @@ class UserPreferences {
   /// Show top 3 repeaters by SNR on the map during wardriving
   final bool showTopRepeaters;
 
+  /// Coverage marker style on the map (dot, pin, diamond)
+  final String markerStyle;
+
+  /// GPS position marker style (arrow, car, bike, boat, walk)
+  final String gpsMarkerStyle;
+
+  /// Color vision type for accessibility (none, protanopia, deuteranopia, tritanopia, achromatopsia)
+  final String colorVisionType;
+
+  /// Download map tiles (base map + coverage overlay). When false, no tile network requests are made to save mobile data.
+  final bool mapTilesEnabled;
+
+  /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
+  final bool disconnectAlertEnabled;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -114,6 +129,11 @@ class UserPreferences {
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
+    this.markerStyle = 'dot',
+    this.gpsMarkerStyle = 'arrow',
+    this.colorVisionType = 'none',
+    this.mapTilesEnabled = true,
+    this.disconnectAlertEnabled = false,
   });
 
   /// Create from JSON (for persistence)
@@ -147,6 +167,11 @@ class UserPreferences {
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
+      markerStyle: (json['markerStyle'] as String?) ?? 'dot',
+      gpsMarkerStyle: (json['gpsMarkerStyle'] as String?) ?? 'arrow',
+      colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
+      mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
+      disconnectAlertEnabled: (json['disconnectAlertEnabled'] as bool?) ?? false,
     );
   }
 
@@ -181,6 +206,11 @@ class UserPreferences {
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
       'showTopRepeaters': showTopRepeaters,
+      'markerStyle': markerStyle,
+      'gpsMarkerStyle': gpsMarkerStyle,
+      'colorVisionType': colorVisionType,
+      'mapTilesEnabled': mapTilesEnabled,
+      'disconnectAlertEnabled': disconnectAlertEnabled,
     };
   }
 
@@ -214,6 +244,11 @@ class UserPreferences {
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
     bool? showTopRepeaters,
+    String? markerStyle,
+    String? gpsMarkerStyle,
+    String? colorVisionType,
+    bool? mapTilesEnabled,
+    bool? disconnectAlertEnabled,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -244,6 +279,11 @@ class UserPreferences {
       minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
+      markerStyle: markerStyle ?? this.markerStyle,
+      gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
+      colorVisionType: colorVisionType ?? this.colorVisionType,
+      mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
+      disconnectAlertEnabled: disconnectAlertEnabled ?? this.disconnectAlertEnabled,
     );
   }
 
@@ -302,7 +342,12 @@ class UserPreferences {
         other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
-        other.showTopRepeaters == showTopRepeaters;
+        other.showTopRepeaters == showTopRepeaters &&
+        other.markerStyle == markerStyle &&
+        other.gpsMarkerStyle == gpsMarkerStyle &&
+        other.colorVisionType == colorVisionType &&
+        other.mapTilesEnabled == mapTilesEnabled &&
+        other.disconnectAlertEnabled == disconnectAlertEnabled;
   }
 
   @override
@@ -335,6 +380,11 @@ class UserPreferences {
       minPingDistanceMeters,
       autoStopAfterIdle,
       showTopRepeaters,
+      markerStyle,
+      gpsMarkerStyle,
+      colorVisionType,
+      mapTilesEnabled,
+      disconnectAlertEnabled,
     ]);
   }
 

@@ -65,6 +65,7 @@ class SelfInfo {
 /// 9. Connected State
 class MeshCoreConnection {
   final BluetoothService _bluetooth;
+  bool _disposed = false;
   final _stepController = StreamController<ConnectionStep>.broadcast();
   final _channelMessageController = StreamController<ChannelMessage>.broadcast();
   final _rawDataController = StreamController<Map<String, dynamic>>.broadcast();
@@ -84,6 +85,7 @@ class MeshCoreConnection {
   Completer<DeviceQueryResponse>? _deviceQueryCompleter;
   Completer<SelfInfo>? _selfInfoCompleter;
   Completer<void>? _sentCompleter;
+  Completer<void>? _setTimeCompleter;
   Completer<ChannelInfo>? _channelInfoCompleter;
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
@@ -176,8 +178,8 @@ class MeshCoreConnection {
 
   void _updateStep(ConnectionStep step) {
     _currentStep = step;
-    if (_stepController.isClosed) {
-      debugError('[CONN] Cannot update step - controller is closed!');
+    if (_disposed || _stepController.isClosed) {
+      debugLog('[CONN] Ignoring step update on disposed connection (expected during reconnect)');
       return;
     }
     debugLog('[CONN] Step: $step');
@@ -188,8 +190,11 @@ class MeshCoreConnection {
   /// Returns (deviceModel, deviceModelMatched) for display/reporting purposes
   /// Note: This method does NOT modify radio TX power settings - it only reads device info
   Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(String deviceId, List<DeviceModel> deviceModels) async {
+    if (_disposed) {
+      throw Exception('Connection instance has been disposed');
+    }
     bool deviceModelMatched = false;
-    
+
     try {
       // Step 1: BLE Connect
       _updateStep(ConnectionStep.bleConnecting);
@@ -369,10 +374,23 @@ class MeshCoreConnection {
       switch (responseCode) {
         case ResponseCodes.ok:
           debugLog('[CONN] Received OK response');
+          _setTimeCompleter?.complete();
+          _setTimeCompleter = null;
           break;
         case ResponseCodes.err:
           final errorCode = reader.remainingBytesCount > 0 ? reader.readByte() : 0;
           debugLog('[CONN] Received ERR response (error code: $errorCode)');
+          // Time sync: error code 6 (ERR_CODE_ILLEGAL_ARG) means "no sync needed" — treat as success
+          if (_setTimeCompleter != null) {
+            if (errorCode == 6) {
+              debugLog('[CONN] Time sync not needed (error code 6) - treating as success');
+            } else {
+              debugWarn('[CONN] Time sync error (code $errorCode) - continuing anyway');
+            }
+            _setTimeCompleter?.complete();
+            _setTimeCompleter = null;
+            break;
+          }
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
           _statsCompleter?.completeError(errException);
@@ -641,10 +659,16 @@ class MeshCoreConnection {
       if (statsType == StatsTypes.radio) {
         final noiseFloor = reader.readInt16LE();
         // Skip remaining fields (lastRssi, lastSnr, txAirSecs, rxAirSecs)
-        _lastNoiseFloor = noiseFloor;
-        _noiseFloorController.add(noiseFloor); // Emit to stream
-        debugLog('[CONN] Noise floor updated: ${noiseFloor}dBm');
-        _statsCompleter?.complete(noiseFloor);
+        if (noiseFloor == 0) {
+          // MeshCore 1.14.x AGC reset zeroes out noise floor briefly; discard
+          debugLog('[CONN] Noise floor reading is 0dBm (AGC reset), ignoring');
+          _statsCompleter?.complete(0);
+        } else {
+          _lastNoiseFloor = noiseFloor;
+          _noiseFloorController.add(noiseFloor); // Emit to stream
+          debugLog('[CONN] Noise floor updated: ${noiseFloor}dBm');
+          _statsCompleter?.complete(noiseFloor);
+        }
       } else {
         debugLog('[CONN] Unknown stats type: $statsType');
         _statsCompleter?.complete(0);
@@ -758,12 +782,23 @@ class MeshCoreConnection {
     );
   }
 
-  /// Set device time
+  /// Set device time and await OK/ERROR response from device
   Future<void> setDeviceTime(int epochSecs) async {
+    _setTimeCompleter = Completer<void>();
+    final future = _setTimeCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.setDeviceTime);
     data.writeUInt32LE(epochSecs);
     await _sendToRadio(data);
+
+    return future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        _setTimeCompleter = null;
+        debugWarn('[CONN] Time sync timed out - continuing anyway');
+      },
+    );
   }
 
   /// Set TX power
@@ -925,9 +960,10 @@ class MeshCoreConnection {
   }
 
   /// Send ping to #wardriving channel
-  /// Format: @[MapperBot] LAT, LON [power]
+  /// Format: @[MapperBot] LAT, LON
+  /// Power is no longer included in the mesh message — it is sent per-ping in the API payload instead
   /// Reference: buildPayload() in wardrive.js
-  Future<void> sendPing(double lat, double lon, double powerWatts) async {
+  Future<void> sendPing(double lat, double lon) async {
     final channel = _wardrivingChannel;
     if (channel == null) {
       throw Exception('Wardriving channel not initialized');
@@ -935,9 +971,7 @@ class MeshCoreConnection {
 
     // Format coordinates to 5 decimal places with comma separator
     final coordsStr = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
-    // Format power as "X.Xw" (e.g., "1.0w", "0.3w")
-    final powerStr = '${powerWatts.toStringAsFixed(1)}w';
-    final message = '@[MapperBot] $coordsStr [$powerStr]';
+    final message = '@[MapperBot] $coordsStr';
 
     debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
@@ -1156,8 +1190,10 @@ class MeshCoreConnection {
 
   /// Dispose of resources
   void dispose() {
+    _disposed = true;
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
+    _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();
     _channelMessageController.close();

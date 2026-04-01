@@ -7,6 +7,7 @@ import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 
 /// A styled repeater ID text with a dotted underline hint that it's tappable.
 ///
@@ -201,8 +202,9 @@ class RepeaterIdChip extends StatelessWidget {
     int? regionHopBytesOverride,
   }) {
     final isActive = repeater.isActive;
-    final badgeColor = isActive ? Colors.green : Colors.grey;
+    final badgeColor = isActive ? PingColors.repeaterActive : PingColors.repeaterDead;
     final statusText = isActive ? 'Active' : 'Stale';
+    final statusIcon = isActive ? Icons.circle : Icons.circle_outlined;
 
     // Calculate distance string if GPS is available
     String? distanceText;
@@ -273,7 +275,7 @@ class RepeaterIdChip extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          // Active/Stale chip
+          // Active/Stale chip (icon + text for colorblind accessibility)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
@@ -281,13 +283,20 @@ class RepeaterIdChip extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: badgeColor.withValues(alpha: 0.4)),
             ),
-            child: Text(
-              statusText,
-              style: TextStyle(
-                fontSize: 11,
-                color: badgeColor,
-                fontWeight: FontWeight.w600,
-              ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(statusIcon, size: 8, color: badgeColor),
+                const SizedBox(width: 4),
+                Text(
+                  statusText,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: badgeColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
           ),
         ],

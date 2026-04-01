@@ -223,6 +223,7 @@ class ApiQueueService {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) async {
     final item = ApiQueueItem.fromTx(
       latitude: latitude,
@@ -231,6 +232,7 @@ class ApiQueueService {
       timestamp: timestamp,
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -266,6 +268,7 @@ class ApiQueueService {
     required String repeaterId,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) async {
     final item = ApiQueueItem.fromRx(
       latitude: latitude,
@@ -274,6 +277,7 @@ class ApiQueueService {
       timestamp: timestamp,
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -309,6 +313,7 @@ class ApiQueueService {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) async {
     final item = ApiQueueItem.fromDisc(
       latitude: latitude,
@@ -322,6 +327,7 @@ class ApiQueueService {
       timestamp: timestamp,
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -358,6 +364,7 @@ class ApiQueueService {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) async {
     final item = ApiQueueItem.fromTrace(
       latitude: latitude,
@@ -369,6 +376,7 @@ class ApiQueueService {
       timestamp: timestamp,
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -401,6 +409,7 @@ class ApiQueueService {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) async {
     final item = ApiQueueItem.fromDiscDrop(
       latitude: latitude,
@@ -408,6 +417,7 @@ class ApiQueueService {
       timestamp: timestamp,
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue

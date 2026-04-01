@@ -6,6 +6,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 
 /// Show a bottom sheet repeater picker and return the selected repeater.
 Future<Repeater?> showRepeaterPicker(BuildContext context) {
@@ -226,7 +227,8 @@ class _RepeaterTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isActive = repeater.isActive;
-    final badgeColor = isActive ? Colors.green : Colors.grey;
+    final badgeColor = isActive ? PingColors.repeaterActive : PingColors.repeaterDead;
+    final statusIcon = isActive ? Icons.circle : Icons.circle_outlined;
 
     // Distance text
     String? distanceText;
@@ -315,7 +317,7 @@ class _RepeaterTile extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            // Active/Stale chip
+            // Active/Stale chip (icon + text for colorblind accessibility)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
@@ -324,13 +326,20 @@ class _RepeaterTile extends StatelessWidget {
                 border:
                     Border.all(color: badgeColor.withValues(alpha: 0.4)),
               ),
-              child: Text(
-                isActive ? 'Active' : 'Stale',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: badgeColor,
-                  fontWeight: FontWeight.w600,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(statusIcon, size: 8, color: badgeColor),
+                  const SizedBox(width: 4),
+                  Text(
+                    isActive ? 'Active' : 'Stale',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: badgeColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
