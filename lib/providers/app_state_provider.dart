@@ -237,6 +237,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Tile refresh after upload
   int _overlayCacheBust = 0;
+  int _mapDataRevision = 0;
   Timer? _tileRefreshTimer;
 
   // Auth type from API response (API, Mesh, Manual)
@@ -441,6 +442,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get zoneName => _currentZone?['name'] as String?;
   String? get zoneCode => _currentZone?['code'] as String?;
   int get overlayCacheBust => _overlayCacheBust;
+  int get mapDataRevision => _mapDataRevision;
   int? get zoneSlotsAvailable => _currentZone?['slots_available'] as int?;
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
   String? get nearestZoneName => _nearestZone?['name'] as String?;
@@ -518,6 +520,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get developerModeEnabled => _preferences.developerModeEnabled;
   int get offlinePingCount => _apiQueueService.offlinePingCount;
   OfflineSessionService get offlineSessionService => _offlineSessionService;
+
+  /// Bumps the selected map revision so widgets depending on marker/log data
+  /// rebuild even when the underlying collections are mutated in place.
+  ///
+  /// Call this whenever map-visible data changes without replacing the lists;
+  /// otherwise the map can keep showing stale markers until some unrelated
+  /// state change triggers a rebuild.
+  void _markMapDataChanged() {
+    _mapDataRevision++;
+  }
 
   /// Distance in meters from last TX ping position (like wardrive.js)
   double? get distanceFromLastPing {
@@ -1319,6 +1331,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pingService!.onTxPing = (ping) {
         _txPings.add(ping);
         if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
+        _markMapDataChanged();
 
         // Add TX log entry (power in watts from preferences)
         _txLogEntries.add(TxLogEntry(
@@ -1336,6 +1349,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pingService!.onRxPing = (ping) {
         _rxPings.add(ping);
         if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
+        _markMapDataChanged();
 
         // Add RX log entry
         _rxLogEntries.add(RxLogEntry(
@@ -1818,6 +1832,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             );
             _rxPings.add(rxPing);
             if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
+            _markMapDataChanged();
             _currentBatchRepeaters.add(repeaterKey);
 
             // Increment RX count immediately when pin is created (not on batch flush)
@@ -1889,6 +1904,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                 snr: entry.snr ?? existingPin.snr, // UPDATE to best SNR from batch
                 rssi: entry.rssi ?? existingPin.rssi,
               );
+              _markMapDataChanged();
               debugLog('[APP] Updated RX pin SNR for repeater=${entry.repeaterId}: '
                   '${existingPin.snr.toStringAsFixed(2)} -> ${entry.snr?.toStringAsFixed(2) ?? 'null'}');
             } else {
@@ -1907,6 +1923,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             );
             _rxPings.add(newRxPing);
             if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
+            _markMapDataChanged();
             debugLog('[APP] Created FALLBACK RX pin for repeater=${entry.repeaterId} '
                 'at ${entry.lat.toStringAsFixed(5)},${entry.lon.toStringAsFixed(5)}');
           }
@@ -2825,6 +2842,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void clearPings() {
     _txPings.clear();
     _rxPings.clear();
+    _markMapDataChanged();
     _clearOverlayState();
     _pingService?.resetStats();
     notifyListeners();
@@ -2837,6 +2855,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _discLogEntries.clear();
     _traceLogEntries.clear();
     _errorLogEntries.clear();
+    _markMapDataChanged();
     _clearOverlayState();
     notifyListeners();
   }
@@ -2847,6 +2866,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_discLogEntries.length > _maxLogEntries) {
       _discLogEntries.removeLast();
     }
+    _markMapDataChanged();
     debugLog('[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
     notifyListeners();
   }
@@ -4187,6 +4207,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Clear repeaters when exiting zone
         _repeaters = [];
+        _markMapDataChanged();
         _repeatersLoaded = false;
         _repeatersLoadedForIata = null;
       }
@@ -4275,6 +4296,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
       _repeaters = fetchedRepeaters;
+      _markMapDataChanged();
       _repeatersLoaded = true;
       _repeatersLoadedForIata = iata;
       debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');

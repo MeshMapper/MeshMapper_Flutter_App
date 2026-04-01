@@ -14,6 +14,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
 
 /// Map style options
@@ -106,6 +107,25 @@ final class SilentCancellableNetworkTileProvider extends CancellableNetworkTileP
   );
 }
 
+typedef MapState = ({
+  bool preferencesLoaded,
+  bool mapAutoFollow,
+  bool mapAlwaysNorth,
+  bool mapRotationLocked,
+  String mapStyle,
+  bool isImperial,
+  dynamic currentPosition,
+  ({double lat, double lon})? lastKnownPosition,
+  String? zoneCode,
+  int overlayCacheBust,
+  bool discDropEnabled,
+  int? effectiveHopBytes,
+  int mapNavigationTrigger,
+  ({double lat, double lon})? mapNavigationTarget,
+  int mapDataRevision,
+  double? distanceFromLastPing,
+});
+
 /// Map widget with TX/RX markers
 /// Uses flutter_map with OpenStreetMap tiles
 class MapWidget extends StatefulWidget {
@@ -138,6 +158,8 @@ class MapWidget extends StatefulWidget {
 
 class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
+  late final SilentCancellableNetworkTileProvider _baseTileProvider;
+  late final SilentCancellableNetworkTileProvider _overlayTileProvider;
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = false; // Disabled by default - users often zoom out first
@@ -180,9 +202,18 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   static const double _defaultZoom = 15.0; // Closer zoom for driving
 
   @override
+  void initState() {
+    super.initState();
+    _baseTileProvider = SilentCancellableNetworkTileProvider();
+    _overlayTileProvider = SilentCancellableNetworkTileProvider();
+  }
+
+  @override
   void dispose() {
     _animationController?.dispose();
     _rotationAnimationController?.dispose();
+    _baseTileProvider.dispose();
+    _overlayTileProvider.dispose();
     super.dispose();
   }
 
@@ -419,40 +450,63 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    final appState = context.read<AppStateProvider>();
+    final mapState = context.select((AppStateProvider state) => (
+          preferencesLoaded: state.preferencesLoaded,
+          mapAutoFollow: state.preferences.mapAutoFollow,
+          mapAlwaysNorth: state.preferences.mapAlwaysNorth,
+          mapRotationLocked: state.preferences.mapRotationLocked,
+          mapStyle: state.preferences.mapStyle,
+          isImperial: state.preferences.isImperial,
+          currentPosition: state.currentPosition,
+          lastKnownPosition: state.lastKnownPosition,
+          zoneCode: state.zoneCode,
+          overlayCacheBust: state.overlayCacheBust,
+          discDropEnabled: state.discDropEnabled,
+          effectiveHopBytes: state.enforceHopBytes ? state.effectiveHopBytes : null,
+          mapNavigationTrigger: state.mapNavigationTrigger,
+          mapNavigationTarget: state.mapNavigationTarget,
+          mapDataRevision: state.mapDataRevision,
+          distanceFromLastPing: state.distanceFromLastPing,
+        ));
+    final overlayState = context.select((AppStateProvider state) => (
+          showTopRepeaters: state.preferences.showTopRepeaters,
+          topRepeaters: state.topRepeatersBySnr,
+          rxOverlaySlot: state.rxOverlaySlot,
+        ));
 
     // Load saved map toggle preferences once, after Hive has finished loading
-    if (!_prefsApplied && appState.preferencesLoaded) {
+    if (!_prefsApplied && mapState.preferencesLoaded) {
       _prefsApplied = true;
-      _autoFollow = appState.preferences.mapAutoFollow;
-      _alwaysNorth = appState.preferences.mapAlwaysNorth;
-      _rotationLocked = appState.preferences.mapRotationLocked;
+      _autoFollow = mapState.mapAutoFollow;
+      _alwaysNorth = mapState.mapAlwaysNorth;
+      _rotationLocked = mapState.mapRotationLocked;
     }
 
     // Determine map center - prefer current GPS, fallback to last known, then Ottawa
     LatLng center = _defaultCenter;
-    if (appState.currentPosition != null) {
+    if (mapState.currentPosition != null) {
       center = LatLng(
-        appState.currentPosition!.latitude,
-        appState.currentPosition!.longitude,
+        mapState.currentPosition!.latitude,
+        mapState.currentPosition!.longitude,
       );
-    } else if (appState.lastKnownPosition != null) {
+    } else if (mapState.lastKnownPosition != null) {
       center = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
+        mapState.lastKnownPosition!.lat,
+        mapState.lastKnownPosition!.lon,
       );
     }
 
     // One-time zoom to last known position when GPS is not yet available
     // This runs before GPS locks, so user sees their previous location instead of Ottawa
-    if (appState.currentPosition == null &&
-        appState.lastKnownPosition != null &&
+    if (mapState.currentPosition == null &&
+        mapState.lastKnownPosition != null &&
         !_hasZoomedToLastKnown &&
         _isMapReady) {
       _hasZoomedToLastKnown = true;
       final lastKnownCenter = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
+        mapState.lastKnownPosition!.lat,
+        mapState.lastKnownPosition!.lon,
       );
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -462,7 +516,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       });
     }
 
-    if (appState.currentPosition != null) {
+    if (mapState.currentPosition != null) {
       // One-time initial zoom to GPS when we first get a position
       // This happens even with auto-follow disabled so user sees their location
       // Don't apply panel offset - center directly on GPS so pin is in middle of screen
@@ -507,7 +561,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
       // Handle map rotation based on heading (when not in Always North mode)
       if (!_alwaysNorth && _isMapReady) {
-        final heading = appState.currentPosition!.heading;
+        final heading = mapState.currentPosition!.heading;
         if (_lastHeading == null) {
           // First heading after startup — store without rotating so the
           // initial zoom animation can settle at rotation 0 (where the
@@ -529,9 +583,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
     // Handle navigation trigger from log screen or graph
     // Reset map state and navigate to the target location
-    if (_isMapReady && appState.mapNavigationTrigger != _lastNavigationTrigger) {
-      _lastNavigationTrigger = appState.mapNavigationTrigger;
-      final target = appState.mapNavigationTarget;
+    if (_isMapReady && mapState.mapNavigationTrigger != _lastNavigationTrigger) {
+      _lastNavigationTrigger = mapState.mapNavigationTrigger;
+      final target = mapState.mapNavigationTarget;
       if (target != null) {
         // Reset map controls to default state
         _autoFollow = false;      // Disable center on GPS
@@ -567,7 +621,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return Stack(
       children: [
         // Map
-        _buildMap(appState, center),
+        _buildMap(appState, mapState, center),
 
         // GPS Info + Top Repeaters overlay (top-left, respects dynamic island in landscape)
         Positioned(
@@ -576,10 +630,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildGpsInfoOverlay(appState),
-              if (appState.preferences.showTopRepeaters) ...[
+              _buildGpsInfoOverlay(mapState),
+              if (overlayState.showTopRepeaters) ...[
                 const SizedBox(height: 6),
-                _buildTopRepeatersOverlay(appState),
+                _buildTopRepeatersOverlay(overlayState.topRepeaters, overlayState.rxOverlaySlot),
               ],
             ],
           ),
@@ -589,14 +643,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         Positioned(
           top: topPadding,
           right: 8,
-          child: _buildCollapsibleMapControls(appState),
+          child: _buildCollapsibleMapControls(appState, mapState.mapStyle, mapState.zoneCode != null),
         ),
       ],
     );
   }
 
   /// Collapsible map controls (toggle at top, expands downward)
-  Widget _buildCollapsibleMapControls(AppStateProvider appState) {
+  Widget _buildCollapsibleMapControls(AppStateProvider appState, String mapStyleName, bool hasZoneOverlay) {
     // Use external state if provided, otherwise use internal state
     final isExpanded = widget.mapControlsExpanded ?? _mapControlsExpanded;
     final onToggle = widget.onMapControlsToggle ?? () => setState(() => _mapControlsExpanded = !_mapControlsExpanded);
@@ -624,12 +678,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         ),
         // Map controls (only when expanded) - below the toggle button
         if (isExpanded)
-          _buildMapControls(appState),
+          _buildMapControls(appState, mapStyleName, hasZoneOverlay),
       ],
     );
   }
 
-  Widget _buildMap(AppStateProvider appState, LatLng center) {
+  Widget _buildMap(AppStateProvider appState, MapState mapState, LatLng center) {
     return Builder(
       builder: (context) => FlutterMap(
         mapController: _mapController,
@@ -655,75 +709,66 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           // Tile layer (dynamic based on selected style from preferences)
           Builder(
             builder: (context) {
-              final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+              final mapStyle = MapStyleExtension.fromString(mapState.mapStyle);
               return TileLayer(
                 urlTemplate: mapStyle.urlTemplate,
                 subdomains: mapStyle.subdomains ?? const [],
                 userAgentPackageName: 'com.meshmapper.app',
                 maxZoom: 17,
                 retinaMode: mapStyle.supportsRetina && RetinaMode.isHighDensity(context),
-                tileProvider: SilentCancellableNetworkTileProvider(),
+                tileProvider: _baseTileProvider,
               );
             },
           ),
 
           // MeshMapper coverage overlay (only when zone code available and overlay enabled)
-          if (appState.zoneCode != null && _showMeshMapperOverlay)
+          if (mapState.zoneCode != null && _showMeshMapperOverlay)
             TileLayer(
-              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}',
+              urlTemplate: 'https://${mapState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${mapState.overlayCacheBust}',
               userAgentPackageName: 'com.meshmapper.app',
               minZoom: 3,
               maxZoom: 17,
               tileDisplay: const TileDisplay.fadeIn(
                 reloadStartOpacity: 1.0, // Keep old tile visible until new one loads
               ),
-              tileProvider: SilentCancellableNetworkTileProvider(),
+              tileProvider: _overlayTileProvider,
             ),
 
-          // TX markers (green)
-        MarkerLayer(
-          markers: _buildTxMarkers(appState.txPings),
-        ),
-        
-        // RX markers (colored by repeater)
-        MarkerLayer(
-          markers: _buildRxMarkers(appState.rxPings),
-        ),
-
-        // DISC markers (purple circles for discovery observations)
-        MarkerLayer(
-          markers: _buildDiscMarkers(appState.discLogEntries, appState.discDropEnabled),
-        ),
-
-        // Trace markers (cyan/red circles for targeted ping results)
-        MarkerLayer(
-          markers: _buildTraceMarkers(appState.traceLogEntries),
-        ),
-
-        // Repeater markers (magenta with ID, rotate with map)
-        MarkerLayer(
-          rotate: true,
-          markers: _buildRepeaterMarkers(
-            appState.repeaters,
-            appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-          ),
-        ),
-
-        // Current position marker (car icon)
-        if (appState.currentPosition != null)
+          // Coverage markers (TX, RX, DISC, Trace) — sorted by timestamp, newest on top
           MarkerLayer(
-            markers: [
-              Marker(
-                point: LatLng(
-                  appState.currentPosition!.latitude,
-                  appState.currentPosition!.longitude,
-                ),
-                width: 48,
-                height: 48,
-                child: _buildCurrentPositionMarker(appState.currentPosition!.heading),
-              ),
-            ],
+            markers: _buildCoverageMarkers(
+              txPings: appState.txPings,
+              rxPings: appState.rxPings,
+              discEntries: appState.discLogEntries,
+              discDropEnabled: appState.discDropEnabled,
+              traceEntries: appState.traceLogEntries,
+            ),
           ),
+
+          // Repeater markers (magenta with ID, rotate with map)
+          MarkerLayer(
+            rotate: true,
+            markers: _buildRepeaterMarkers(
+              appState.repeaters,
+              mapState.effectiveHopBytes,
+            ),
+          ),
+
+          // Current position marker (car icon)
+          if (mapState.currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: LatLng(
+                    mapState.currentPosition.latitude,
+                    mapState.currentPosition.longitude,
+                  ),
+                  width: 48,
+                  height: 48,
+                  child: _buildCurrentPositionMarker(mapState.currentPosition.heading),
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -732,10 +777,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   /// Color for the overlay ping-type dot
   static Color _overlayTypeColor(OverlayPingType type) {
     return switch (type) {
-      OverlayPingType.tx => Colors.green,
-      OverlayPingType.disc => Colors.purple,
-      OverlayPingType.trace => Colors.cyan,
-      OverlayPingType.rx => Colors.blue,
+      OverlayPingType.tx => PingColors.txSuccess,
+      OverlayPingType.disc => PingColors.discSuccess,
+      OverlayPingType.trace => PingColors.traceSuccess,
+      OverlayPingType.rx => PingColors.rx,
     };
   }
 
@@ -788,10 +833,62 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// GPS info overlay (top-left corner)
+  Widget _buildGpsInfoOverlay(MapState mapState) {
+    final position = mapState.currentPosition;
+    final distanceFromLastPing = mapState.distanceFromLastPing;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // GPS Status
+          Icon(
+            position != null ? Icons.gps_fixed : Icons.gps_off,
+            size: 14,
+            color: position != null ? _getAccuracyColor(position.accuracy) : Colors.grey,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            position != null ? formatMeters(position.accuracy, isImperial: mapState.isImperial) : 'No GPS',
+            style: TextStyle(
+              fontSize: 11,
+              fontFamily: 'monospace',
+              color: position != null ? _getAccuracyColor(position.accuracy) : Colors.grey,
+            ),
+          ),
+          // Distance since last TX ping (like wardrive.js)
+          if (position != null && distanceFromLastPing != null) ...[
+            const SizedBox(width: 12),
+            const Icon(
+              Icons.straighten,
+              size: 12,
+              color: Colors.white70,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              formatMeters(distanceFromLastPing, isImperial: mapState.isImperial),
+              style: const TextStyle(
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: Colors.white70,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   /// Top heard repeaters overlay (bottom-right of map)
-  Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
-    final topRepeaters = appState.topRepeatersBySnr;
-    final rxSlot = appState.rxOverlaySlot;
+  Widget _buildTopRepeatersOverlay(
+    List<({String repeaterId, double snr, OverlayPingType type})> topRepeaters,
+    ({String repeaterId, double snr})? rxSlot,
+  ) {
     final isEmpty = topRepeaters.isEmpty && rxSlot == null;
 
     return Container(
@@ -851,58 +948,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return Colors.green;
   }
 
-  Widget _buildGpsInfoOverlay(AppStateProvider appState) {
-    final position = appState.currentPosition;
-    final hasGps = position != null;
-    final distanceFromLastPing = appState.distanceFromLastPing;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // GPS Status
-          Icon(
-            hasGps ? Icons.gps_fixed : Icons.gps_off,
-            size: 14,
-            color: hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            hasGps ? formatMeters(position.accuracy, isImperial: appState.preferences.isImperial) : 'No GPS',
-            style: TextStyle(
-              fontSize: 11,
-              fontFamily: 'monospace',
-              color: hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
-            ),
-          ),
-          // Distance since last TX ping (like wardrive.js)
-          if (hasGps && distanceFromLastPing != null) ...[
-            const SizedBox(width: 12),
-            const Icon(
-              Icons.straighten,
-              size: 12,
-              color: Colors.white70,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              formatMeters(distanceFromLastPing, isImperial: appState.preferences.isImperial),
-              style: const TextStyle(
-                fontSize: 11,
-                fontFamily: 'monospace',
-                color: Colors.white70,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
   Color _getAccuracyColor(double accuracy) {
     if (accuracy <= 10) return Colors.green;
     if (accuracy <= 30) return Colors.orange;
@@ -910,8 +955,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// Map controls (always vertical, used inside collapsible wrapper)
-  Widget _buildMapControls(AppStateProvider appState) {
-    final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+  Widget _buildMapControls(AppStateProvider appState, String mapStyleName, bool hasZoneOverlay) {
+    final mapStyle = MapStyleExtension.fromString(mapStyleName);
 
     return Container(
       decoration: BoxDecoration(
@@ -929,7 +974,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             onPressed: () => _cycleMapStyle(appState),
           ),
           // MeshMapper overlay toggle (only show when zone code available)
-          if (appState.zoneCode != null) ...[
+          if (hasZoneOverlay) ...[
             _buildControlDivider(),
             _buildControlButton(
               icon: Icons.layers,
@@ -1229,49 +1274,49 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   children: [
                     _buildLegendItem(
                       context: context,
-                      color: const Color(0xFF22C55E),
+                      color: PingColors.txSuccessLegend,
                       label: 'TX',
                       description: 'Location where you sent a ping and heard a repeater',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.red,
+                      color: PingColors.txFail,
                       label: 'TX',
                       description: 'Location where you sent a ping but no repeater was heard',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: const Color(0xFF0EA5E9),
+                      color: PingColors.rx,
                       label: 'RX',
                       description: 'Location where you received a message from the mesh',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: const Color(0xFF7D54C7),
+                      color: PingColors.discSuccess,
                       label: 'DISC',
                       description: 'Location where you sent a discovery request and a repeater responded',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.cyan,
+                      color: PingColors.traceSuccess,
                       label: 'TRC',
                       description: 'Location where a trace reached the repeater',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.grey,
+                      color: PingColors.discFail,
                       label: 'DISC',
                       description: 'Location where you sent a discovery request but no repeater responded',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
                     _buildLegendItem(
                       context: context,
-                      color: Colors.grey,
+                      color: PingColors.noResponse,
                       label: 'TRC',
                       description: 'Location where a trace got no response',
                     ),
@@ -1660,119 +1705,100 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  List<Marker> _buildTxMarkers(List<TxPing> pings) {
-    return pings.map((ping) {
-      return Marker(
-        point: LatLng(ping.latitude, ping.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showTxPingDetails(ping),
-          child: Container(
-            decoration: BoxDecoration(
-              color: ping.heardRepeaters.isEmpty ? Colors.red : Colors.green,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-            // Simple dot - no arrow (looks good at any map rotation)
-          ),
-        ),
-      );
-    }).toList();
+  /// Shared decoration for coverage dots — diminished border for readability.
+  BoxDecoration _coverageDotDecoration(Color color) => BoxDecoration(
+    color: color,
+    shape: BoxShape.circle,
+    border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
+    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))],
+  );
+
+  /// Build all coverage dot markers sorted by timestamp (oldest first = drawn underneath).
+  /// Newer pings always render on top regardless of type.
+  List<Marker> _buildCoverageMarkers({
+    required List<TxPing> txPings,
+    required List<RxPing> rxPings,
+    required List<DiscLogEntry> discEntries,
+    required bool discDropEnabled,
+    required List<TraceLogEntry> traceEntries,
+  }) {
+    final timestamped = <(DateTime, Marker)>[
+      for (final ping in txPings)
+        (ping.timestamp, _buildTxMarker(ping)),
+      for (final ping in rxPings)
+        (ping.timestamp, _buildRxMarker(ping)),
+      for (final entry in discEntries)
+        (entry.timestamp, _buildDiscMarker(entry, discDropEnabled)),
+      for (final entry in traceEntries)
+        (entry.timestamp, _buildTraceMarker(entry)),
+    ];
+
+    timestamped.sort((a, b) => a.$1.compareTo(b.$1));
+    return timestamped.map((e) => e.$2).toList();
   }
 
-  List<Marker> _buildRxMarkers(List<RxPing> pings) {
-    return pings.map((ping) {
-      // Use blue to match the RX chip in status bar
-      const color = Colors.blue;
-
-      return Marker(
-        point: LatLng(ping.latitude, ping.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showRxPingDetails(ping),
-          child: Container(
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-            // Simple dot - no arrow (looks good at any map rotation)
+  Marker _buildTxMarker(TxPing ping) {
+    return Marker(
+      point: LatLng(ping.latitude, ping.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showTxPingDetails(ping),
+        child: Container(
+          decoration: _coverageDotDecoration(
+            ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess,
           ),
         ),
-      );
-    }).toList();
+      ),
+    );
   }
 
-  List<Marker> _buildDiscMarkers(List<DiscLogEntry> entries, bool discDropEnabled) {
-    return entries.map((entry) {
-      return Marker(
-        point: LatLng(entry.latitude, entry.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showDiscPingDetails(entry),
-          child: Container(
-            decoration: BoxDecoration(
-              color: entry.nodeCount == 0
-                  ? (discDropEnabled ? Colors.red : Colors.grey)
-                  : _discMarkerColor,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-          ),
+  Marker _buildRxMarker(RxPing ping) {
+    return Marker(
+      point: LatLng(ping.latitude, ping.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showRxPingDetails(ping),
+        child: Container(
+          decoration: _coverageDotDecoration(PingColors.rx),
         ),
-      );
-    }).toList();
+      ),
+    );
   }
 
-  List<Marker> _buildTraceMarkers(List<TraceLogEntry> entries) {
-    return entries.map((entry) {
-      return Marker(
-        point: LatLng(entry.latitude, entry.longitude),
-        width: 20,
-        height: 20,
-        child: GestureDetector(
-          onTap: () => _showTraceDetails(entry),
-          child: Container(
-            decoration: BoxDecoration(
-              color: entry.success ? Colors.cyan : Colors.grey,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
+  Marker _buildDiscMarker(DiscLogEntry entry, bool discDropEnabled) {
+    return Marker(
+      point: LatLng(entry.latitude, entry.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showDiscPingDetails(entry),
+        child: Container(
+          decoration: _coverageDotDecoration(
+            entry.nodeCount == 0
+                ? (discDropEnabled ? Colors.red : Colors.grey)
+                : _discMarkerColor,
           ),
         ),
-      );
-    }).toList();
+      ),
+    );
+  }
+
+  Marker _buildTraceMarker(TraceLogEntry entry) {
+    return Marker(
+      point: LatLng(entry.latitude, entry.longitude),
+      width: 20,
+      height: 20,
+      child: GestureDetector(
+        onTap: () => _showTraceDetails(entry),
+        child: Container(
+          decoration: _coverageDotDecoration(
+            entry.success ? Colors.cyan : Colors.grey,
+          ),
+        ),
+      ),
+    );
   }
 
   void _showTraceDetails(TraceLogEntry entry) {
@@ -2026,8 +2052,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// DISC marker color (#7B68EE - medium slate blue/purple)
-  static const Color _discMarkerColor = Color(0xFF7B68EE);
+  /// DISC marker color (#51D4E9 - cyan, matches DISC/TRACE web map squares)
+  static const Color _discMarkerColor = PingColors.discSuccess;
 
   /// Repeater marker color (#a52163 - magenta/pink) - Active
   static const Color _repeaterMarkerColor = Color(0xFFA52163);

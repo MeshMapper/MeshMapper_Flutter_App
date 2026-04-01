@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 import '../widgets/connection_panel.dart';
 import '../widgets/map_widget.dart';
 import '../widgets/ping_controls.dart';
@@ -155,7 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildAppBarStatChip(
           Icons.arrow_upward,
           appState.pingStats.txCount,
-          Colors.green,
+          PingColors.txSuccess,
           onTap: withTapHandlers ? () => _showInfoPopup('tx', appState) : null,
         ),
         const SizedBox(width: 8),
@@ -163,7 +164,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildAppBarStatChip(
           Icons.arrow_downward,
           appState.pingStats.rxCount,
-          Colors.blue,
+          PingColors.rx,
           onTap: withTapHandlers ? () => _showInfoPopup('rx', appState) : null,
         ),
         const SizedBox(width: 8),
@@ -171,7 +172,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildAppBarStatChip(
           Icons.radar,
           appState.pingStats.discCount,
-          const Color(0xFF7B68EE),
+          PingColors.discSuccess,
           onTap: withTapHandlers ? () => _showInfoPopup('disc', appState) : null,
         ),
         const SizedBox(width: 8),
@@ -179,7 +180,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildAppBarStatChip(
           Icons.route,
           appState.pingStats.traceCount,
-          Colors.cyan,
+          PingColors.traceSuccess,
           onTap: withTapHandlers ? () => _showInfoPopup('trace', appState) : null,
         ),
         const SizedBox(width: 8),
@@ -331,16 +332,16 @@ class _HomeScreenState extends State<HomeScreen> {
         return ('Locating...', 'Acquiring GPS signal and checking your zone status.', Icons.gps_not_fixed, Colors.blue);
 
       case 'tx':
-        return ('TX Packets', 'TX packets that have been sent out. These are messages to the #wardriving channel.', Icons.arrow_upward, Colors.green);
+        return ('TX Packets', 'TX packets that have been sent out. These are messages to the #wardriving channel.', Icons.arrow_upward, PingColors.txSuccess);
 
       case 'rx':
-        return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, Colors.blue);
+        return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, PingColors.rx);
 
       case 'disc':
-        return ('Discovery Requests', 'Discovery request packets we have sent out.', Icons.radar, const Color(0xFF7B68EE));
+        return ('Discovery Requests', 'Discovery request packets we have sent out.', Icons.radar, PingColors.discSuccess);
 
       case 'trace':
-        return ('Trace Responses', 'Trace path requests that received a response from the target repeater.', Icons.route, Colors.cyan);
+        return ('Trace Responses', 'Trace path requests that received a response from the target repeater.', Icons.route, PingColors.traceSuccess);
 
       case 'upload':
         return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
