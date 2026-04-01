@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
+import '../utils/ping_colors.dart';
 
 part 'noise_floor_session.g.dart';
 
@@ -100,13 +101,13 @@ class PingEventMarker extends HiveObject {
 
   /// Get the color for this event type
   Color get color => switch (type) {
-        PingEventType.txSuccess => Colors.green,
-        PingEventType.txFail => Colors.red,
-        PingEventType.rx => Colors.blue,
-        PingEventType.discSuccess => Colors.purple,
-        PingEventType.discFail => Colors.grey,
-        PingEventType.traceSuccess => Colors.cyan,
-        PingEventType.traceFail => Colors.grey,
+        PingEventType.txSuccess => PingColors.txSuccess,
+        PingEventType.txFail => PingColors.txFail,
+        PingEventType.rx => PingColors.rx,
+        PingEventType.discSuccess => PingColors.discSuccess,
+        PingEventType.discFail => PingColors.discFail,
+        PingEventType.traceSuccess => PingColors.traceSuccess,
+        PingEventType.traceFail => PingColors.noResponse,
       };
 
   /// Get a display label for this event type

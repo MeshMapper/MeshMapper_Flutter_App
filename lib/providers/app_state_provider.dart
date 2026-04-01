@@ -37,6 +37,7 @@ import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
 import '../utils/constants.dart';
+import '../utils/ping_colors.dart';
 import '../services/wakelock_service.dart';
 import '../utils/debug_logger_io.dart';
 
@@ -260,6 +261,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _reconnectRestoreGeneration = 0;
   static const int _maxReconnectAttempts = 3;
   static const Duration _reconnectDelay = Duration(seconds: 3);
+  static const Duration _reconnectDelayAfterBondError = Duration(seconds: 5);
+  bool _lastReconnectWasBondError = false;
+
+  // Idle disconnect timer — disconnects after 15 min without manual ping or auto-ping
+  Timer? _idleDisconnectTimer;
+  static const Duration _idleDisconnectTimeout = Duration(minutes: 15);
+
+  // Geofence zone check log throttle (while disconnected)
+  DateTime? _lastZoneCheckLogTime;
+  int _zoneCheckSuppressedCount = 0;
 
   // Map navigation trigger (for navigating to log entry coordinates)
   ({double lat, double lon})? _mapNavigationTarget;
@@ -487,6 +498,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Audio service getters
   bool get isSoundEnabled => _audioService.isEnabled;
+  bool get isTxSoundEnabled => _audioService.isTxEnabled;
+  bool get isRxSoundEnabled => _audioService.isRxEnabled;
+  bool get isDisconnectAlertEnabled => _preferences.disconnectAlertEnabled;
   AudioService get audioService => _audioService;
 
   bool get isConnected => _connectionStep == ConnectionStep.connected;
@@ -740,7 +754,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // This allows users to know if they've entered/exited a zone while moving
       // Skip zone checks when offline mode is enabled
       if (!isConnected && !_preferences.offlineMode && _shouldRecheckZone(position)) {
-        debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone');
+        // Throttle log to once per 30s to avoid spam while driving
+        final now = DateTime.now();
+        if (_lastZoneCheckLogTime == null || now.difference(_lastZoneCheckLogTime!) >= const Duration(seconds: 30)) {
+          if (_zoneCheckSuppressedCount > 0) {
+            debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone (suppressed $_zoneCheckSuppressedCount similar in last 30s)');
+          } else {
+            debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone');
+          }
+          _lastZoneCheckLogTime = now;
+          _zoneCheckSuppressedCount = 0;
+        } else {
+          _zoneCheckSuppressedCount++;
+        }
         await checkZoneStatus();
       }
 
@@ -1310,6 +1336,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Get external antenna value for API payloads
       _pingService!.getExternalAntenna = () => _preferences.externalAntenna;
 
+      // Get power level from preferences (includes per-device overrides and manual selection)
+      _pingService!.getPowerLevel = () => _preferences.powerLevel;
+
       // Check if TX is allowed by API (zone capacity)
       _pingService!.checkTxAllowed = () => txAllowed;
 
@@ -1707,6 +1736,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!_preferences.offlineMode) {
           _startZoneRefreshTimer();
         }
+
+        // Enable heartbeat immediately on connection to keep server session alive
+        // Previously only enabled on auto-ping start, causing silent session expiry
+        if (!_preferences.offlineMode && _apiService.hasSession) {
+          _apiService.enableHeartbeat(
+            gpsProvider: () {
+              final pos = _gpsService.lastPosition;
+              if (pos == null) return null;
+              return (lat: pos.latitude, lon: pos.longitude);
+            },
+          );
+          debugLog('[HEARTBEAT] Enabled on connection');
+        }
+
+        // Start 15-minute idle disconnect timer (cancelled by manual ping or auto-ping start)
+        _startIdleDisconnectTimer();
       } else {
         // No API session - offline mode or auth skipped
         debugLog('[CONN] Connected without API session (offline mode)');
@@ -1955,6 +2000,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             repeaterId: entry.repeaterId,
             externalAntenna: _preferences.externalAntenna,
             noiseFloor: _meshCoreConnection?.lastNoiseFloor,
+            power: _preferences.powerLevel,
           );
 
           // Update UI
@@ -2167,6 +2213,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _fullDisconnectCleanup() async {
+    // Guard against double cleanup (e.g., reconnect timeout + BLE disconnect event)
+    if (_connectionStep == ConnectionStep.disconnected) {
+      debugLog('[CONN] Already disconnected, skipping duplicate cleanup');
+      return;
+    }
     _cancelPendingAutoPingRestore();
     _connectionStep = ConnectionStep.disconnected;
 
@@ -2182,6 +2233,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
     if (_autoPingEnabled) {
+      if (!_userRequestedDisconnect) {
+        _playDisconnectAlert();
+      }
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
       debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
@@ -2237,8 +2291,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Start auto-reconnect after unexpected BLE disconnect
   Future<void> _startAutoReconnect() async {
     _cancelPendingAutoPingRestore();
+    _cancelIdleDisconnectTimer();
     _isAutoReconnecting = true;
     _reconnectAttempt = 0;
+    _lastReconnectWasBondError = false;
     _connectionStep = ConnectionStep.reconnecting;
 
     // Remember auto-ping state before cleanup
@@ -2307,8 +2363,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[CONN] Auto-reconnect attempt $_reconnectAttempt of $_maxReconnectAttempts');
     notifyListeners();
 
+    // Use longer delay after bond errors to give iOS time to clear stale keys
+    final delay = _lastReconnectWasBondError ? _reconnectDelayAfterBondError : _reconnectDelay;
+
     // Delay before attempting reconnection
-    _reconnectTimer = Timer(_reconnectDelay, () async {
+    _reconnectTimer = Timer(delay, () async {
       if (!_isAutoReconnecting) return; // Cancelled while waiting
 
       try {
@@ -2318,6 +2377,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // If we get here and connection step is 'connected', success!
         if (_connectionStep == ConnectionStep.connected) {
           debugLog('[CONN] Auto-reconnect succeeded on attempt $_reconnectAttempt');
+          _lastReconnectWasBondError = false;
           _onReconnectSuccess();
         } else if (_isAutoReconnecting) {
           // Connection failed but didn't throw - try again
@@ -2329,6 +2389,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       } catch (e) {
         debugError('[CONN] Auto-reconnect attempt $_reconnectAttempt failed: $e');
         if (_isAutoReconnecting) {
+          // Check for iOS apple-code 14 (Peer removed pairing information)
+          // The MeshCore device cleared its bond keys — clear iOS stale bond before retrying
+          await _handleBondErrorIfNeeded(e);
+
           // Reset step back to reconnecting for UI
           _connectionStep = ConnectionStep.reconnecting;
           _connectionError = null;
@@ -2337,6 +2401,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
     });
+  }
+
+  /// Start 15-minute idle disconnect timer.
+  /// Fires if user does not send a manual ping or start auto-ping within 15 minutes.
+  void _startIdleDisconnectTimer() {
+    _idleDisconnectTimer?.cancel();
+    _idleDisconnectTimer = Timer(_idleDisconnectTimeout, () {
+      if (!isConnected || _autoPingEnabled) return;
+      debugLog('[IDLE] 15-minute idle timeout reached — disconnecting');
+      logError('Disconnected: 15 minutes of inactivity', severity: ErrorSeverity.warning);
+      disconnect();
+    });
+    debugLog('[IDLE] Idle disconnect timer started (${_idleDisconnectTimeout.inMinutes} min)');
+  }
+
+  /// Cancel the idle disconnect timer
+  void _cancelIdleDisconnectTimer() {
+    if (_idleDisconnectTimer != null) {
+      _idleDisconnectTimer!.cancel();
+      _idleDisconnectTimer = null;
+      debugLog('[IDLE] Idle disconnect timer cancelled');
+    }
+  }
+
+  /// Detect iOS apple-code 14/15 bond errors and clear the stale bond before retry
+  Future<void> _handleBondErrorIfNeeded(Object error) async {
+    final errorStr = error.toString();
+    if (errorStr.contains('apple-code: 14') || errorStr.contains('apple-code: 15') || errorStr.contains('Peer removed pairing information')) {
+      _lastReconnectWasBondError = true;
+      final deviceId = _rememberedDevice?.id;
+      if (deviceId != null) {
+        debugLog('[CONN] Bond error detected (apple-code 14/15) — clearing stale bond for $deviceId');
+        await _bluetoothService.removeBond(deviceId);
+      }
+    }
   }
 
   /// Called when auto-reconnect succeeds
@@ -2378,6 +2477,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[CONN] Auto-ping restored after reconnect (mode=$previousMode)');
         }
       });
+    } else {
+      // No auto-ping to restore — start idle timer
+      _startIdleDisconnectTimer();
     }
 
     notifyListeners();
@@ -2397,6 +2499,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimeoutTimer?.cancel();
     _reconnectTimeoutTimer = null;
     _cancelPendingAutoPingRestore();
+
+    // Alert if auto-ping was running before disconnect
+    if (_autoPingWasEnabled) {
+      _playDisconnectAlert();
+    }
 
     // Clear reconnect state
     _isAutoReconnecting = false;
@@ -2422,6 +2529,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> disconnect() async {
     // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
     _userRequestedDisconnect = true;
+
+    // Cancel idle disconnect timer
+    _cancelIdleDisconnectTimer();
 
     // Cancel any active auto-reconnect
     _reconnectTimer?.cancel();
@@ -2601,12 +2711,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Send a manual TX ping
   Future<bool> sendPing() async {
     if (_pingService == null) return false;
+    if (_isAutoReconnecting) {
+      debugLog('[PING] Ignoring ping during auto-reconnect');
+      return false;
+    }
 
     // Check session validity before starting (skip in offline mode)
     if (!_preferences.offlineMode) {
       final sessionCheck = await _checkSessionBeforeAction();
       if (!sessionCheck) return false;
     }
+
+    // Reset idle disconnect timer (user is actively pinging)
+    _startIdleDisconnectTimer();
 
     // Set sending state immediately for instant UI feedback
     _isPingSending = true;
@@ -2648,6 +2765,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Auto-stop auto-ping after prolonged idle (no movement)
   void _triggerIdleAutoStop() {
     if (!_autoPingEnabled) return;
+    _playDisconnectAlert();
     final elapsed = _idleAutoStopReference != null
         ? DateTime.now().difference(_idleAutoStopReference!).inMinutes
         : 30;
@@ -2706,8 +2824,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // End noise floor session when mode is disabled
       await _endNoiseFloorSession();
 
-      // Disable heartbeat when stopping auto mode
-      _apiService.disableHeartbeat();
+      // Keep heartbeat enabled (stays on while connected to prevent session expiry)
+      // Re-start idle disconnect timer now that user is idle again
+      _startIdleDisconnectTimer();
 
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
@@ -2724,6 +2843,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
       }
     } else {
+      // Cancel idle disconnect timer — auto-ping keeps the session active
+      _cancelIdleDisconnectTimer();
+
       // Check session validity before starting (skip in offline mode)
       if (!_preferences.offlineMode) {
         final sessionCheck = await _checkSessionBeforeAction();
@@ -3062,6 +3184,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (success: false, error: _modeSwitchError);
       }
 
+      // Re-check zone status BEFORE auth (zone data was cleared when entering offline mode)
+      debugLog('[APP] Re-checking zone status before auth...');
+      await checkZoneStatus();
+
+      if (zoneCode == null) {
+        debugError('[APP] Cannot switch to online mode: not in a zone');
+        _modeSwitchError = 'Could not determine your zone. Check GPS and internet connection.';
+        return (success: false, error: _modeSwitchError);
+      }
+
       // ============================================================
       // STAGE 1: Try existing public_key authentication
       // ============================================================
@@ -3187,12 +3319,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Re-initialize channel service with regional channels
         await ChannelService.setRegionalChannels(_regionalChannels);
-      }
-
-      // 7. Re-check zone status
-      if (_currentPosition != null) {
-        debugLog('[GEOFENCE] Re-checking zone status after online mode enabled');
-        await checkZoneStatus();
       }
 
       debugLog('[APP] Successfully switched to online mode');
@@ -3702,6 +3828,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _savePreferences();
   }
 
+  /// Set color vision type for accessibility and persist
+  void setColorVisionType(String type) {
+    _preferences = _preferences.copyWith(colorVisionType: type);
+    PingColors.setColorVisionType(
+      ColorVisionType.values.firstWhere((e) => e.name == type, orElse: () => ColorVisionType.none),
+    );
+    debugLog('[A11Y] Color vision type set to $type');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Set unit system preference (metric or imperial)
   void setUnitSystem(String system) {
     _preferences = _preferences.copyWith(unitSystem: system);
@@ -3752,6 +3889,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setSoundEnabled(bool enabled) async {
     await _audioService.setEnabled(enabled);
     notifyListeners();
+  }
+
+  /// Set TX sound enabled state (ping sent / discovery sent)
+  Future<void> setTxSoundEnabled(bool enabled) async {
+    await _audioService.setTxEnabled(enabled);
+    notifyListeners();
+  }
+
+  /// Set RX sound enabled state (repeater echo / RX observation)
+  Future<void> setRxSoundEnabled(bool enabled) async {
+    await _audioService.setRxEnabled(enabled);
+    notifyListeners();
+  }
+
+  /// Set disconnect alert enabled state
+  Future<void> setDisconnectAlertEnabled(bool enabled) async {
+    _preferences = _preferences.copyWith(disconnectAlertEnabled: enabled);
+    await _savePreferences();
+    debugLog('[AUDIO] Disconnect alert ${enabled ? 'enabled' : 'disabled'}');
+    notifyListeners();
+  }
+
+  /// Play disconnect alert if enabled (triple beep for unexpected ping stop)
+  void _playDisconnectAlert() {
+    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) return;
+    debugLog('[AUDIO] Playing disconnect alert — pinging stopped unexpectedly');
+    _audioService.playAlertSound();
   }
 
   /// Navigate to coordinates on map (triggered from log entries)
@@ -3900,6 +4064,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Handle maintenance mode while connected - end session and log error
   Future<void> _handleMaintenanceModeConnected(String message, String? url) async {
     debugLog('[MAINTENANCE] Ending session due to maintenance mode');
+
+    // Alert if auto-ping was running (maintenance is not user-initiated)
+    if (_autoPingEnabled) {
+      _playDisconnectAlert();
+    }
 
     // Log to error log (this sets _requestErrorLogSwitch = true)
     logError('Maintenance Mode Enabled: $message', severity: ErrorSeverity.warning);
@@ -4710,6 +4879,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Apply saved min ping distance to GpsService and PingService
         _gpsService.setMinPingDistance(_preferences.minPingDistanceMeters.toDouble());
         PingService.currentMinDistance = _preferences.minPingDistanceMeters;
+
+        // Apply saved color vision type
+        PingColors.setColorVisionType(
+          ColorVisionType.values.firstWhere(
+            (e) => e.name == _preferences.colorVisionType,
+            orElse: () => ColorVisionType.none,
+          ),
+        );
       }
     } catch (e) {
       debugLog('[APP] Failed to load preferences: $e');
@@ -5088,6 +5265,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimer?.cancel();
     _reconnectTimeoutTimer?.cancel();
     _restoreAutoPingTimer?.cancel();
+    _idleDisconnectTimer?.cancel();
     _offlineAutoSaveTimer?.cancel();
     _zoneRefreshTimer?.cancel();
     _tileRefreshTimer?.cancel();
