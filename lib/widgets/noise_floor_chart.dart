@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/noise_floor_session.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
 
 /// Interactive noise floor chart with pinch-to-zoom and pan
@@ -482,25 +483,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
 
   /// Build a table row for a repeater (matching TX log style)
   Widget _buildRepeaterRow(BuildContext context, MarkerRepeaterInfo repeater) {
-    // SNR color: good (>5), fair (-1 to 5), poor (<-1)
-    Color snrColor;
-    if (repeater.snr <= -1) {
-      snrColor = Colors.red;
-    } else if (repeater.snr <= 5) {
-      snrColor = Colors.orange;
-    } else {
-      snrColor = Colors.green;
-    }
-
-    // RSSI color based on signal strength
-    Color rssiColor;
-    if (repeater.rssi >= -70) {
-      rssiColor = Colors.green;
-    } else if (repeater.rssi >= -100) {
-      rssiColor = Colors.orange;
-    } else {
-      rssiColor = Colors.red;
-    }
+    final snrColor = PingColors.snrColor(repeater.snr);
+    final rssiColor = PingColors.rssiColor(repeater.rssi);
 
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId, fullHexId: repeater.pubkeyHex),
@@ -702,20 +686,20 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       return ((dbm - minY) / yRange).clamp(0.0, 1.0);
     }
 
-    // Smooth gradient with faded transitions
+    // Smooth gradient with faded transitions (palette-aware)
     final lineColors = [
-      Colors.green,
-      Colors.green,
-      Colors.orange,
-      Colors.red,
-      Colors.red,
+      PingColors.noiseFloorGood,
+      PingColors.noiseFloorGood,
+      PingColors.noiseFloorMedium,
+      PingColors.noiseFloorBad,
+      PingColors.noiseFloorBad,
     ];
     final fillColors = [
-      Colors.green.withValues(alpha: 0.2),
-      Colors.green.withValues(alpha: 0.15),
-      Colors.orange.withValues(alpha: 0.12),
-      Colors.red.withValues(alpha: 0.1),
-      Colors.red.withValues(alpha: 0.08),
+      PingColors.noiseFloorGood.withValues(alpha: 0.2),
+      PingColors.noiseFloorGood.withValues(alpha: 0.15),
+      PingColors.noiseFloorMedium.withValues(alpha: 0.12),
+      PingColors.noiseFloorBad.withValues(alpha: 0.1),
+      PingColors.noiseFloorBad.withValues(alpha: 0.08),
     ];
     final stops = [
       0.0,
@@ -848,12 +832,12 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       runSpacing: 8,
       alignment: WrapAlignment.center,
       children: [
-        _legendItem(context, Colors.green, 'TX Success'),
-        _legendItem(context, Colors.red, 'TX Fail'),
-        _legendItem(context, Colors.blue, 'RX'),
-        _legendItem(context, Colors.purple, 'DISC Success'),
-        _legendItem(context, Colors.cyan, 'Trace Success'),
-        _legendItem(context, Colors.grey, 'No Response'),
+        _legendItem(context, PingColors.txSuccess, 'TX Success'),
+        _legendItem(context, PingColors.txFail, 'TX Fail'),
+        _legendItem(context, PingColors.rx, 'RX'),
+        _legendItem(context, PingColors.discSuccess, 'DISC Success'),
+        _legendItem(context, PingColors.traceSuccess, 'Trace Success'),
+        _legendItem(context, PingColors.noResponse, 'No Response'),
       ],
     );
   }

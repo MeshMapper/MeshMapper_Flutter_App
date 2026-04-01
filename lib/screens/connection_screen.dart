@@ -439,7 +439,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     }
 
     // Portrait: compact vertical layout (bottom bar provided by _buildBody)
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

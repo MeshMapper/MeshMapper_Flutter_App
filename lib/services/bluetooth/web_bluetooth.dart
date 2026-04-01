@@ -263,6 +263,11 @@ class WebBluetoothService implements BluetoothService {
   }
 
   @override
+  Future<void> removeBond(String deviceId) async {
+    // Web Bluetooth does not support bond management
+  }
+
+  @override
   void dispose() {
     _notificationSubscription?.cancel();
     _connectionController.close();

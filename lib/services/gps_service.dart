@@ -358,6 +358,30 @@ class GpsService {
     return null; // Valid
   }
 
+  /// Request a fresh GPS position from the hardware for auto-ping accuracy.
+  /// On mobile, this forces a warm-start GPS read (typically < 1 second when
+  /// GPS is already streaming). Falls back to lastPosition on timeout/error.
+  Future<Position?> getFreshPosition({Duration timeout = const Duration(seconds: 3)}) async {
+    // Simulator provides its own positions — use cached
+    if (_simulatorEnabled) {
+      return _lastPosition;
+    }
+
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: timeout,
+      );
+      debugLog('[GPS] Fresh position acquired: ${position.latitude.toStringAsFixed(5)}, '
+          '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
+      _lastPosition = position;
+      return position;
+    } catch (e) {
+      debugLog('[GPS] Fresh position request failed, using cached: $e');
+      return _lastPosition;
+    }
+  }
+
   /// Get current position (single request)
   Future<Position?> getCurrentPosition() async {
     if (!await requestPermissions()) {

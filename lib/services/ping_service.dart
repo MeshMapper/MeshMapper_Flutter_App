@@ -44,8 +44,8 @@ class PingService {
   static const Duration _rxListeningWindow = Duration(seconds: 5);
   /// Cooldown period between pings (5 seconds)
   static const Duration _autoPingCooldown = Duration(seconds: 5);
-  /// Discovery listening window duration (5 seconds)
-  static const Duration _discoveryListeningWindow = Duration(seconds: 5);
+  /// Discovery listening window duration (7 seconds)
+  static const Duration _discoveryListeningWindow = Duration(seconds: 7);
   /// Discovery request interval (30 seconds - repeaters only respond 4 times per 2 minutes)
   static const Duration _discoveryInterval = Duration(seconds: 30);
   /// Cooldown period between manual pings (15 seconds)
@@ -136,6 +136,9 @@ class PingService {
 
   /// Callback to get the external antenna value for API payloads
   bool Function()? getExternalAntenna;
+
+  /// Callback to get the power level in watts (0.3, 0.6, 1.0, 2.0) from user preferences
+  double Function()? getPowerLevel;
 
   /// Callback to check if discovery drop is enabled (failed discoveries → API)
   bool Function()? getDiscDropEnabled;
@@ -471,6 +474,13 @@ class PingService {
   Future<bool> sendTxPing({bool manual = true}) async {
     debugLog('[PING] sendTxPing called (manual=$manual)');
 
+    // Guard: don't send pings if connection is not in connected state
+    // Handles race where timer callback fires after reconnect started
+    if (_connection.currentStep != ConnectionStep.connected) {
+      debugLog('[PING] Ignoring TX ping — not connected (step: ${_connection.currentStep})');
+      return false;
+    }
+
     // Early guard: prevent concurrent ping execution (critical for preventing BLE GATT errors)
     // Reference: state.pingInProgress check in wardrive.js
     if (_pingInProgress) {
@@ -480,6 +490,13 @@ class PingService {
     _pingInProgress = true;
 
     try {
+      // For auto pings, request a fresh GPS position before validation.
+      // This ensures the 25m distance check and ping coordinates reflect
+      // where the device is NOW, not where it was at the last stream event.
+      if (!manual) {
+        await _gpsService.getFreshPosition();
+      }
+
       // Use different validation and cooldown for manual vs auto pings
       if (manual) {
         // Manual ping: 15-second cooldown, no distance check
@@ -515,7 +532,11 @@ class PingService {
               _skipReason = 'too close';
               debugLog('[PING] Auto ping blocked: too close to last ping, scheduling next');
             }
-            _scheduleNextAutoPing();
+            if (_hybridModeEnabled) {
+              _scheduleNextHybridPing();
+            } else {
+              _scheduleNextAutoPing();
+            }
           }
           _pingInProgress = false;
           return false;
@@ -531,15 +552,12 @@ class PingService {
         _pingInProgress = false;
         return false;
       }
-      // Use power in watts (0.3, 0.6, 1.0, 2.0) - matches web client buildPayload()
-      final powerWatts = _connection.deviceModel?.power ?? 0.3;
-      // Also get txPower in dBm for API queue (for database records)
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
       // Build ping message (same format used for TxTracker correlation)
+      // Power is no longer included in the mesh message — sent per-ping in API payload
       final coordsStr = '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
-      final powerStr = '${powerWatts.toStringAsFixed(1)}w';
-      final pingMessage = '@[MapperBot] $coordsStr [$powerStr]';
+      final pingMessage = '@[MapperBot] $coordsStr';
 
       // Capture noise floor at ping time
       final noiseFloor = _connection.lastNoiseFloor;
@@ -620,8 +638,8 @@ class PingService {
       // Play transmit sound immediately before sending
       _audioService?.playTransmitSound();
 
-      // Send ping via BLE - uses watts format like "1.0w"
-      await _connection.sendPing(position.latitude, position.longitude, powerWatts);
+      // Send ping via BLE (coordinates only — power is in API payload)
+      await _connection.sendPing(position.latitude, position.longitude);
 
       // Mark ping time and position
       _lastTxTime = DateTime.now();
@@ -725,6 +743,7 @@ class PingService {
         timestamp: txTimestamp,
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
+        power: getPowerLevel?.call(),
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
 
@@ -808,6 +827,11 @@ class PingService {
     _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
       debugLog('[ACTIVE MODE] Auto ping timer fired');
 
+      // Guard: connection may have dropped since timer was scheduled
+      if (_connection.currentStep != ConnectionStep.connected) {
+        debugLog('[ACTIVE MODE] Not connected, ignoring timer');
+        return;
+      }
       // Double-check guards before sending ping
       if (!_autoPingEnabled || _passiveModeEnabled) {
         debugLog('[ACTIVE MODE] Auto mode no longer running, ignoring timer');
@@ -1081,13 +1105,19 @@ class PingService {
 
   /// Send a discovery request and start listening window
   Future<void> _sendDiscoveryRequest() async {
+    // Guard: don't send discovery during reconnect (race with timer queue)
+    if (_connection.currentStep != ConnectionStep.connected) {
+      debugLog('[DISC] Ignoring discovery request — not connected (step: ${_connection.currentStep})');
+      return;
+    }
+
     if (!_autoPingEnabled || (!_passiveModeEnabled && !_hybridModeEnabled)) {
       debugLog('[DISC] Not in Passive/Hybrid Mode, skipping discovery request');
       return;
     }
 
-    // Check GPS
-    final position = _gpsService.lastPosition;
+    // Request fresh GPS position before discovery (same rationale as TX auto-ping)
+    final position = await _gpsService.getFreshPosition();
     if (position == null) {
       debugLog('[DISC] No GPS position, skipping discovery request');
       _pingInProgress = false;
@@ -1205,6 +1235,7 @@ class PingService {
           timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
+          power: getPowerLevel?.call(),
         );
       }
 
@@ -1222,6 +1253,7 @@ class PingService {
           timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
+          power: getPowerLevel?.call(),
         );
         debugLog('[DISC] Discovery drop queued (no response)');
       }
@@ -1275,8 +1307,10 @@ class PingService {
     _autoTimer = null;
 
     // Subtract listening window so interval is measured start-to-start
-    // At 15s: wait = 15000 - 5000 = 10000ms. Clamp to min 1s.
-    final listenMs = _rxListeningWindow.inMilliseconds; // 5000
+    // TX uses 5s RX window, discovery uses 7s window
+    final listenMs = _nextPingIsDiscovery
+        ? _discoveryListeningWindow.inMilliseconds
+        : _rxListeningWindow.inMilliseconds;
     final waitMs = (_autoPingIntervalMs - listenMs).clamp(1000, _autoPingIntervalMs);
 
     final isNextDisc = _nextPingIsDiscovery;
@@ -1286,6 +1320,10 @@ class PingService {
 
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
       if (!_autoPingEnabled || !_hybridModeEnabled) return;
+      if (_connection.currentStep != ConnectionStep.connected) {
+        debugLog('[HYBRID] Not connected, ignoring timer');
+        return;
+      }
       if (_pingInProgress) {
         debugLog('[HYBRID] Ping already in progress, skipping');
         return;
@@ -1471,6 +1509,7 @@ class PingService {
         timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
+        power: getPowerLevel?.call(),
       );
 
       // Update stats
@@ -1500,6 +1539,10 @@ class PingService {
     _targetedTimer?.cancel();
     _targetedTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
       debugLog('[TRACE] Targeted ping timer fired');
+      if (_connection.currentStep != ConnectionStep.connected) {
+        debugLog('[TRACE] Not connected, ignoring timer');
+        return;
+      }
       if (_autoPingEnabled && _targetedModeEnabled) {
         if (_pingInProgress) {
           debugLog('[TRACE] Ping already in progress, skipping');

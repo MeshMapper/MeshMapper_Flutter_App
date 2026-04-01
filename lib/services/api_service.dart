@@ -40,7 +40,7 @@ class ApiService {
   int? _sessionExpiresAt;
   Timer? _heartbeatTimer;
   Timer? _heartbeatRetryTimer;
-  Timer? _sessionDeadlineTimer;
+
   int _heartbeatRetryCount = 0;
   static const int _maxHeartbeatRetries = 5;
   Function? _onSessionExpiring;
@@ -607,8 +607,6 @@ class ApiService {
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
     _heartbeatRetryCount = 0;
-    _sessionDeadlineTimer?.cancel();
-    _sessionDeadlineTimer = null;
     debugLog('[HEARTBEAT] Heartbeat mode disabled');
   }
 
@@ -642,9 +640,6 @@ class ApiService {
         _sendScheduledHeartbeat();
       });
     }
-
-    // Schedule session deadline timer at exact expiry
-    _scheduleSessionDeadline(expiresAt);
   }
 
   /// Send scheduled heartbeat with GPS coordinates
@@ -693,32 +688,6 @@ class ApiService {
     }
   }
 
-  /// Schedule a hard deadline timer at the exact session expiry time.
-  /// If the server is unreachable and all heartbeat retries fail, this fires
-  /// and triggers the same disconnect flow as a server-returned session_expired.
-  void _scheduleSessionDeadline(int expiresAt) {
-    _sessionDeadlineTimer?.cancel();
-    if (!_heartbeatEnabled) return;
-
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final secondsUntilExpiry = expiresAt - now;
-
-    if (secondsUntilExpiry <= 0) {
-      _onSessionDeadlineReached();
-      return;
-    }
-
-    debugLog('[HEARTBEAT] Session deadline set for ${secondsUntilExpiry}s from now');
-    _sessionDeadlineTimer = Timer(Duration(seconds: secondsUntilExpiry), _onSessionDeadlineReached);
-  }
-
-  /// Called when the session deadline timer fires — server was unreachable
-  void _onSessionDeadlineReached() {
-    debugError('[HEARTBEAT] Session deadline reached - server unreachable, triggering session expiry');
-    _clearSession();
-    onSessionError?.call('session_expired', 'Session has timed out (server unreachable)');
-  }
-
   /// Clear session data and cancel all timers
   void _clearSession() {
     _sessionId = null;
@@ -736,8 +705,6 @@ class ApiService {
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
     _heartbeatRetryCount = 0;
-    _sessionDeadlineTimer?.cancel();
-    _sessionDeadlineTimer = null;
     debugLog('[API] Session cleared');
   }
 
@@ -982,8 +949,6 @@ class ApiService {
     _heartbeatTimer = null;
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
-    _sessionDeadlineTimer?.cancel();
-    _sessionDeadlineTimer = null;
     _client.close();
   }
 }
