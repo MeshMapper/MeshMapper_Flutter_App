@@ -109,6 +109,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
   /// Routes to the correct sub-view (zone bar is already rendered above)
   Widget _buildStateContent(BuildContext context, AppStateProvider appState) {
+    // Show zone grace period state
+    if (appState.isInZoneGracePeriod) {
+      return _buildZoneGraceView(context, appState);
+    }
+
     // Show connected state
     if (appState.isConnected) {
       final pathWarning = appState.pendingPathHashWarning;
@@ -253,6 +258,81 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               Text(
                 'Step ${step.stepNumber} of $totalSteps',
                 style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildZoneGraceView(BuildContext context, AppStateProvider appState) {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final nearestName = appState.nearestZoneName;
+    final nearestDistance = appState.nearestZoneDistanceKm;
+    final hasNearestInfo = nearestName != null && nearestDistance != null;
+
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(isLandscape ? 16 : 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.location_off,
+                color: Colors.orange.shade400,
+                size: isLandscape ? 28 : 36,
+              ),
+              SizedBox(height: isLandscape ? 12 : 20),
+              Text(
+                'Out of Zone',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              if (hasNearestInfo) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Nearest: $nearestName (${nearestDistance.toStringAsFixed(1)} km)',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                      ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+              SizedBox(height: isLandscape ? 12 : 16),
+              Text(
+                appState.zoneGraceCountdownFormatted,
+                style: TextStyle(
+                  color: Colors.orange.shade400,
+                  fontSize: isLandscape ? 22 : 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: isLandscape ? 8 : 12),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Searching for zone...',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                        ),
+                  ),
+                ],
+              ),
+              SizedBox(height: isLandscape ? 16 : 24),
+              OutlinedButton(
+                onPressed: () => appState.cancelZoneGracePeriod(),
+                child: const Text('Cancel'),
               ),
             ],
           ),

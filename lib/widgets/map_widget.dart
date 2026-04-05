@@ -673,7 +673,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           // MeshMapper coverage overlay (only when zone code available, overlay enabled, and tiles enabled)
           if (appState.preferences.mapTilesEnabled && appState.zoneCode != null && _showMeshMapperOverlay)
             TileLayer(
-              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}',
+              urlTemplate: 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}${appState.preferences.colorVisionType != 'none' ? '&cvd=${appState.preferences.colorVisionType}' : ''}',
               userAgentPackageName: 'com.meshmapper.app',
               minZoom: 3,
               maxZoom: 17,
@@ -1294,42 +1294,42 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   children: [
                     _buildLayerItem(
                       context: context,
-                      color: const Color(0xFF7EE094),
+                      color: PingColors.coverageBidir,
                       label: 'BIDIR',
                       description: 'Heard repeats from the mesh AND successfully routed through it',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
                       context: context,
-                      color: const Color(0xFF51D4E9),
+                      color: PingColors.coverageDisc,
                       label: 'DISC',
                       description: 'Wardriving app sent a discovery packet and heard a reply',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
                       context: context,
-                      color: const Color(0xFFFD8928),
+                      color: PingColors.coverageTx,
                       label: 'TX',
                       description: 'Successfully routed through, but no repeats heard back',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
                       context: context,
-                      color: const Color(0xFF7D54C7),
+                      color: PingColors.coverageRx,
                       label: 'RX',
                       description: 'Heard mesh traffic but did not transmit',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
                       context: context,
-                      color: const Color(0xFF9E9689),
+                      color: PingColors.coverageDead,
                       label: 'DEAD',
                       description: 'Repeater heard it, but no other radio received the repeat',
                     ),
                     Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
                     _buildLayerItem(
                       context: context,
-                      color: const Color(0xFFE04F5D),
+                      color: PingColors.coverageDrop,
                       label: 'DROP',
                       description: 'No repeats heard AND no successful route',
                     ),
