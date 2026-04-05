@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show File;
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -1043,12 +1044,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showGpsMarkerSelector(BuildContext context, AppStateProvider appState) {
-    final options = [
-      ('arrow', 'Arrow', Icons.navigation),
-      ('car', 'Car', Icons.directions_car),
-      ('bike', 'Bike', Icons.directions_bike),
-      ('boat', 'Boat', Icons.directions_boat),
-      ('walk', 'Walk', Icons.directions_walk),
+    final options = <(String, String, Widget)>[
+      ('arrow', 'Arrow', const Icon(Icons.navigation)),
+      ('car', 'Car', const Icon(Icons.directions_car)),
+      ('bike', 'Bike', const Icon(Icons.directions_bike)),
+      ('boat', 'Boat', const Icon(Icons.directions_boat)),
+      ('walk', 'Walk', const Icon(Icons.directions_walk)),
+      ('pacman', 'Pac-Man', const _PacmanIcon()),
     ];
     showModalBottomSheet(
       context: context,
@@ -1076,7 +1078,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   for (final (value, label, icon) in options)
                     RadioListTile<String>(
-                      secondary: Icon(icon),
+                      secondary: icon,
                       title: Text(label),
                       value: value,
                     ),
@@ -2553,4 +2555,61 @@ class _OfflineSessionTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Pac-Man icon widget for the GPS marker selector
+class _PacmanIcon extends StatelessWidget {
+  const _PacmanIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: const Size(24, 24),
+      painter: _PacmanIconPainter(
+        color: IconTheme.of(context).color ?? Colors.grey,
+      ),
+    );
+  }
+}
+
+class _PacmanIconPainter extends CustomPainter {
+  final Color color;
+  const _PacmanIconPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    const radius = 10.0;
+
+    const mouthAngle = 45.0 * (math.pi / 180);
+    // Mouth faces right for the settings icon (natural reading direction)
+    const startAngle = mouthAngle / 2;
+    const sweepAngle = 2 * math.pi - mouthAngle;
+
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    final path = Path()
+      ..moveTo(cx, cy)
+      ..arcTo(
+        Rect.fromCircle(center: Offset(cx, cy), radius: radius),
+        startAngle,
+        sweepAngle,
+        false,
+      )
+      ..close();
+    canvas.drawPath(path, paint);
+
+    // Eye
+    final eyePaint = Paint()
+      ..color = color == Colors.grey ? Colors.white : Colors.white.withValues(alpha: 0.9)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(cx + 2, cy - 3.5), 1.5, eyePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PacmanIconPainter oldDelegate) =>
+      color != oldDelegate.color;
 }
