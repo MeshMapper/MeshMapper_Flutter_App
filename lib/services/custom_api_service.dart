@@ -83,7 +83,9 @@ class CustomApiService {
     } catch (e) {
       stopwatch.stop();
       debugError('[CUSTOM API] Forward exception: $e');
-      _throttledError('network_error', 'Custom API network error: ${e.runtimeType}');
+      // Extract a concise, user-friendly message from the exception chain
+      final description = _describeError(e);
+      _throttledError('network_error', 'Custom API: $description');
     }
   }
 
@@ -97,6 +99,21 @@ class CustomApiService {
     }
     _errorThrottle[errorType] = now;
     onError?.call(message);
+  }
+
+  /// Extract a concise error description from an exception.
+  /// The http package wraps SocketException inside ClientException —
+  /// drill into the chain to surface the actionable detail (e.g. host lookup failure).
+  String _describeError(Object e) {
+    final full = e.toString();
+    // Look for SocketException detail (e.g. "Failed host lookup: 'blah.blah'")
+    final socketMatch = RegExp(r'SocketException: (.+?)(?:,|\()').firstMatch(full);
+    if (socketMatch != null) return socketMatch.group(1)!.trim();
+    // Look for OS-level message
+    final osMatch = RegExp(r'OS Error: (.+?)(?:,|\))').firstMatch(full);
+    if (osMatch != null) return osMatch.group(1)!.trim();
+    // Fallback: use the exception type
+    return e.runtimeType.toString();
   }
 
   void dispose() {
