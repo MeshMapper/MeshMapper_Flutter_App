@@ -707,9 +707,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         if (appState.currentPosition != null)
           MarkerLayer(
             // Vehicle/boat icons stay upright by counter-rotating against map rotation;
-            // arrow and walk rotate with heading (handled by Transform.rotate in the painter)
+            // arrow, walk, and pacman rotate with heading (handled by Transform.rotate in the painter)
             rotate: appState.preferences.gpsMarkerStyle != 'arrow' &&
-                    appState.preferences.gpsMarkerStyle != 'walk',
+                    appState.preferences.gpsMarkerStyle != 'walk' &&
+                    appState.preferences.gpsMarkerStyle != 'pacman',
             markers: [
               Marker(
                 point: LatLng(
@@ -2101,8 +2102,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     final headingRadians = heading * (math.pi / 180);
     final style = context.read<AppStateProvider>().preferences.gpsMarkerStyle;
 
-    // Arrow and walk rotate with heading; vehicle/boat icons don't (they face up)
-    final shouldRotate = style == 'arrow' || style == 'walk';
+    // Arrow, walk, and pacman rotate with heading; vehicle/boat icons don't (they face up)
+    final shouldRotate = style == 'arrow' || style == 'walk' || style == 'pacman';
 
     final CustomPainter painter;
     switch (style) {
@@ -2114,6 +2115,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         painter = const _BoatMarkerPainter();
       case 'walk':
         painter = const _WalkMarkerPainter();
+      case 'pacman':
+        painter = const _PacmanMarkerPainter();
       case 'arrow':
       default:
         painter = const _ArrowPainter();
@@ -3234,6 +3237,66 @@ class _WalkMarkerPainter extends CustomPainter {
     canvas.drawLine(Offset(cx, cy + 3), Offset(cx - 4, cy + 10), personPaint);
     // Right leg
     canvas.drawLine(Offset(cx, cy + 3), Offset(cx + 4, cy + 10), personPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Paints a Pac-Man for GPS position marker — mouth faces up (direction of travel)
+class _PacmanMarkerPainter extends CustomPainter {
+  const _PacmanMarkerPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    const radius = 10.0;
+
+    // Mouth opening angle: 45° total (22.5° each side of the top)
+    // In canvas coordinates, 0° = 3 o'clock, so "up" = -90° = -π/2.
+    // Arc sweeps clockwise. We start at (-90 - 22.5)° and sweep (360 - 45)°.
+    const mouthAngle = 45.0 * (math.pi / 180);
+    const startAngle = -math.pi / 2 + mouthAngle / 2; // right edge of mouth
+    const sweepAngle = 2 * math.pi - mouthAngle;
+
+    // White outline for visibility
+    final outlinePaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    final outlinePath = ui.Path()
+      ..moveTo(cx, cy)
+      ..arcTo(
+        Rect.fromCircle(center: Offset(cx, cy), radius: radius + 1.5),
+        startAngle,
+        sweepAngle,
+        false,
+      )
+      ..close();
+    canvas.drawPath(outlinePath, outlinePaint);
+
+    // Yellow Pac-Man body
+    final bodyPaint = Paint()
+      ..color = const Color(0xFFFFEB3B) // Material yellow
+      ..style = PaintingStyle.fill;
+
+    final bodyPath = ui.Path()
+      ..moveTo(cx, cy)
+      ..arcTo(
+        Rect.fromCircle(center: Offset(cx, cy), radius: radius),
+        startAngle,
+        sweepAngle,
+        false,
+      )
+      ..close();
+    canvas.drawPath(bodyPath, bodyPaint);
+
+    // Eye — small black circle, offset toward the mouth side (upper-left of center)
+    final eyePaint = Paint()
+      ..color = Colors.black
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(cx - 2.5, cy - 4.5), 1.5, eyePaint);
   }
 
   @override
