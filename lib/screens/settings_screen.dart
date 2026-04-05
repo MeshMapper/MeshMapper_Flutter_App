@@ -568,10 +568,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : 'Forward pings to a third-party server'),
               value: prefs.customApiEnabled,
               onChanged: isAutoMode ? null : (value) {
-                if (value && !prefs.customApiDisclaimerAccepted) {
+                if (value) {
                   _showCustomApiDisclaimer(context, appState);
                 } else {
-                  appState.updatePreferences(prefs.copyWith(customApiEnabled: value));
+                  appState.updatePreferences(prefs.copyWith(customApiEnabled: false));
                 }
               },
             ),
