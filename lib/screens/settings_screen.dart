@@ -1134,7 +1134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     RadioListTile<String>(
                       secondary: const Icon(Icons.visibility),
                       title: Text(label),
-                      subtitle: subtitle != null ? Text(subtitle, style: const TextStyle(fontSize: 12)) : null,
+                      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
                       value: value,
                     ),
                 ],
