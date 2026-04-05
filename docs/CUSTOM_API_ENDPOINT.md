@@ -196,7 +196,6 @@ MeshMapper does **not** retry failed custom API requests. Each batch is sent exa
 
 - **HTTPS required**: MeshMapper validates that the configured URL uses HTTPS. HTTP endpoints are rejected at the settings level.
 - **API key in header**: The user-configured API key is sent as `X-API-Key` header, not in the request body.
-- **No MeshMapper credentials**: The MeshMapper API key and session ID are never included in forwarded requests. You receive only the raw ping data.
 - **Fire-and-forget**: Custom API errors never affect MeshMapper's primary data submission. A broken custom endpoint cannot disrupt wardriving.
 
 ## Rate and Volume
