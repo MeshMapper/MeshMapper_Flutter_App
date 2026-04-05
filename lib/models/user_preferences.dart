@@ -100,6 +100,18 @@ class UserPreferences {
   /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
   final bool disconnectAlertEnabled;
 
+  /// Custom API endpoint enabled (forwards wardrive payload to third-party URL)
+  final bool customApiEnabled;
+
+  /// Custom API endpoint URL (must be HTTPS)
+  final String? customApiUrl;
+
+  /// Custom API endpoint key (sent as X-API-Key header)
+  final String? customApiKey;
+
+  /// Whether the user has accepted the third-party data sharing disclaimer
+  final bool customApiDisclaimerAccepted;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -134,6 +146,10 @@ class UserPreferences {
     this.colorVisionType = 'none',
     this.mapTilesEnabled = true,
     this.disconnectAlertEnabled = false,
+    this.customApiEnabled = false,
+    this.customApiUrl,
+    this.customApiKey,
+    this.customApiDisclaimerAccepted = false,
   });
 
   /// Create from JSON (for persistence)
@@ -172,6 +188,10 @@ class UserPreferences {
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
       disconnectAlertEnabled: (json['disconnectAlertEnabled'] as bool?) ?? false,
+      customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
+      customApiUrl: json['customApiUrl'] as String?,
+      customApiKey: json['customApiKey'] as String?,
+      customApiDisclaimerAccepted: (json['customApiDisclaimerAccepted'] as bool?) ?? false,
     );
   }
 
@@ -211,6 +231,10 @@ class UserPreferences {
       'colorVisionType': colorVisionType,
       'mapTilesEnabled': mapTilesEnabled,
       'disconnectAlertEnabled': disconnectAlertEnabled,
+      'customApiEnabled': customApiEnabled,
+      'customApiUrl': customApiUrl,
+      'customApiKey': customApiKey,
+      'customApiDisclaimerAccepted': customApiDisclaimerAccepted,
     };
   }
 
@@ -249,6 +273,10 @@ class UserPreferences {
     String? colorVisionType,
     bool? mapTilesEnabled,
     bool? disconnectAlertEnabled,
+    bool? customApiEnabled,
+    String? customApiUrl,
+    String? customApiKey,
+    bool? customApiDisclaimerAccepted,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -284,6 +312,10 @@ class UserPreferences {
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
       disconnectAlertEnabled: disconnectAlertEnabled ?? this.disconnectAlertEnabled,
+      customApiEnabled: customApiEnabled ?? this.customApiEnabled,
+      customApiUrl: customApiUrl ?? this.customApiUrl,
+      customApiKey: customApiKey ?? this.customApiKey,
+      customApiDisclaimerAccepted: customApiDisclaimerAccepted ?? this.customApiDisclaimerAccepted,
     );
   }
 
@@ -347,7 +379,11 @@ class UserPreferences {
         other.gpsMarkerStyle == gpsMarkerStyle &&
         other.colorVisionType == colorVisionType &&
         other.mapTilesEnabled == mapTilesEnabled &&
-        other.disconnectAlertEnabled == disconnectAlertEnabled;
+        other.disconnectAlertEnabled == disconnectAlertEnabled &&
+        other.customApiEnabled == customApiEnabled &&
+        other.customApiUrl == customApiUrl &&
+        other.customApiKey == customApiKey &&
+        other.customApiDisclaimerAccepted == customApiDisclaimerAccepted;
   }
 
   @override
@@ -385,6 +421,10 @@ class UserPreferences {
       colorVisionType,
       mapTilesEnabled,
       disconnectAlertEnabled,
+      customApiEnabled,
+      customApiUrl,
+      customApiKey,
+      customApiDisclaimerAccepted,
     ]);
   }
 
