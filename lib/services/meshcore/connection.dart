@@ -654,6 +654,13 @@ class MeshCoreConnection {
   void _onStatsResponse(BufferReader reader) {
     // Stats response format (from web client):
     // <stats_type:1> <noise:int16> <last_rssi:int8> <last_snr:int8> <tx_air_secs:uint32> <rx_air_secs:uint32>
+    // Valid stats payload is 13 bytes. Some firmware versions send peer info
+    // frames on the same response code (0x18) at 82+ bytes — reject those.
+    if (reader.remainingBytesCount > 30) {
+      _statsCompleter?.complete(0);
+      _statsCompleter = null;
+      return;
+    }
     try {
       final statsType = reader.readByte();
       if (statsType == StatsTypes.radio) {

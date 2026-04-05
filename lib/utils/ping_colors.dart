@@ -42,6 +42,14 @@ class ColorPalette {
   final Color noiseFloorMedium;
   final Color noiseFloorBad;
 
+  // Coverage layer legend (must match tile server output for each CVD type)
+  final Color coverageBidir;
+  final Color coverageDisc;
+  final Color coverageTx;
+  final Color coverageRx;
+  final Color coverageDead;
+  final Color coverageDrop;
+
   const ColorPalette({
     required this.txSuccess,
     required this.txSuccessLegend,
@@ -61,6 +69,12 @@ class ColorPalette {
     required this.noiseFloorGood,
     required this.noiseFloorMedium,
     required this.noiseFloorBad,
+    required this.coverageBidir,
+    required this.coverageDisc,
+    required this.coverageTx,
+    required this.coverageRx,
+    required this.coverageDead,
+    required this.coverageDrop,
   });
 }
 
@@ -94,6 +108,12 @@ class ColorPalettes {
     noiseFloorGood: Colors.green,
     noiseFloorMedium: Colors.orange,
     noiseFloorBad: Colors.red,
+    coverageBidir: Color(0xFF7EE094),
+    coverageDisc: Color(0xFF51D4E9),
+    coverageTx: Color(0xFFFD8928),
+    coverageRx: Color(0xFF7D54C7),
+    coverageDead: Color(0xFF9E9689),
+    coverageDrop: Color(0xFFE04F5D),
   );
 
   /// Protanopia (red-blind) — replaces red/green axis with blue/orange.
@@ -117,6 +137,12 @@ class ColorPalettes {
     noiseFloorGood: Color(0xFF0072B2),
     noiseFloorMedium: Color(0xFFF0E442),
     noiseFloorBad: Color(0xFFD55E00),
+    coverageBidir: Color(0xFF0072B2),
+    coverageDisc: Color(0xFF56B4E9),
+    coverageTx: Color(0xFFE69F00),
+    coverageRx: Color(0xFFCC79A7),
+    coverageDead: Color(0xFF9E9E9E),
+    coverageDrop: Color(0xFFD55E00),
   );
 
   /// Tritanopia (blue-blind) — replaces blue/cyan with orange/vermillion.
@@ -140,6 +166,12 @@ class ColorPalettes {
     noiseFloorGood: Color(0xFF009E73),
     noiseFloorMedium: Color(0xFFE69F00),
     noiseFloorBad: Color(0xFFD55E00),
+    coverageBidir: Color(0xFF009E73),
+    coverageDisc: Color(0xFFE69F00),
+    coverageTx: Color(0xFFCC79A7),
+    coverageRx: Color(0xFFCC79A7),
+    coverageDead: Color(0xFF9E9E9E),
+    coverageDrop: Color(0xFFD55E00),
   );
 
   /// Achromatopsia (monochrome) — luminance-only palette.
@@ -164,6 +196,12 @@ class ColorPalettes {
     noiseFloorGood: Color(0xFFE0E0E0),
     noiseFloorMedium: Color(0xFF9E9E9E),
     noiseFloorBad: Color(0xFF424242),
+    coverageBidir: Color(0xFFE0E0E0),
+    coverageDisc: Color(0xFFBDBDBD),
+    coverageTx: Color(0xFF9E9E9E),
+    coverageRx: Color(0xFF757575),
+    coverageDead: Color(0xFF616161),
+    coverageDrop: Color(0xFF424242),
   );
 
   /// Look up palette for a given CVD type.
@@ -226,6 +264,14 @@ class PingColors {
   static Color get noiseFloorGood => _activePalette.noiseFloorGood;
   static Color get noiseFloorMedium => _activePalette.noiseFloorMedium;
   static Color get noiseFloorBad => _activePalette.noiseFloorBad;
+
+  // ── Coverage layer legend (matches tile server output) ──
+  static Color get coverageBidir => _activePalette.coverageBidir;
+  static Color get coverageDisc => _activePalette.coverageDisc;
+  static Color get coverageTx => _activePalette.coverageTx;
+  static Color get coverageRx => _activePalette.coverageRx;
+  static Color get coverageDead => _activePalette.coverageDead;
+  static Color get coverageDrop => _activePalette.coverageDrop;
 
   // ── Convenience: SNR color from value ──
   static Color snrColor(double snr) {

@@ -396,6 +396,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
+        // Zone grace period overlay (both orientations)
+        if (appState.isInZoneGracePeriod)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black54,
+              child: Center(
+                child: _buildZoneGraceOverlay(appState),
+              ),
+            ),
+          ),
+
         // Portrait: bottom control panel
         if (!isLandscape)
           Positioned(
@@ -714,6 +725,102 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 20),
             OutlinedButton(
               onPressed: () => appState.cancelAutoReconnect(),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.orange.shade400,
+                side: BorderSide(color: Colors.orange.shade400),
+              ),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Zone grace period overlay shown centered over the map when outside zone
+  Widget _buildZoneGraceOverlay(AppStateProvider appState) {
+    final nearestName = appState.nearestZoneName;
+    final nearestDistance = appState.nearestZoneDistanceKm;
+    final hasNearestInfo = nearestName != null && nearestDistance != null;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 260),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.location_off,
+              color: Colors.orange.shade400,
+              size: 36,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Out of Zone',
+              style: TextStyle(
+                color: Colors.grey.shade100,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            if (hasNearestInfo) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Nearest: $nearestName (${nearestDistance.toStringAsFixed(1)} km)',
+                style: TextStyle(
+                  color: Colors.grey.shade400,
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+            const SizedBox(height: 16),
+            Text(
+              appState.zoneGraceCountdownFormatted,
+              style: TextStyle(
+                color: Colors.orange.shade400,
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.grey.shade500,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching for zone...',
+                  style: TextStyle(
+                    color: Colors.grey.shade500,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton(
+              onPressed: () => appState.cancelZoneGracePeriod(),
               style: OutlinedButton.styleFrom(
                 foregroundColor: Colors.orange.shade400,
                 side: BorderSide(color: Colors.orange.shade400),

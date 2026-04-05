@@ -268,6 +268,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _idleDisconnectTimer;
   static const Duration _idleDisconnectTimeout = Duration(minutes: 15);
 
+  // Zone grace period — pauses wardriving when outside_zone, resumes on zone re-entry
+  bool _isInZoneGracePeriod = false;
+  Timer? _zoneGraceTimer;              // 5-minute overall timeout
+  Timer? _zoneGracePollingTimer;       // 5-second zone polling
+  Timer? _zoneGraceCountdownTimer;     // 1-second UI countdown tick
+  int _zoneGraceSecondsRemaining = 0;
+  bool _autoPingWasEnabledBeforeGrace = false;
+  AutoMode _autoModeBeforeGrace = AutoMode.active;
+  static const Duration _zoneGraceTimeout = Duration(minutes: 5);
+
   // Geofence zone check log throttle (while disconnected)
   DateTime? _lastZoneCheckLogTime;
   int _zoneCheckSuppressedCount = 0;
@@ -482,6 +492,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isAutoReconnecting => _isAutoReconnecting;
   int get reconnectAttempt => _reconnectAttempt;
 
+  // Zone grace period getters
+  bool get isInZoneGracePeriod => _isInZoneGracePeriod;
+  int get zoneGraceSecondsRemaining => _zoneGraceSecondsRemaining;
+  String get zoneGraceCountdownFormatted =>
+      '${(_zoneGraceSecondsRemaining ~/ 60).toString().padLeft(2, '0')}:'
+      '${(_zoneGraceSecondsRemaining % 60).toString().padLeft(2, '0')}';
+
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
 
@@ -689,7 +706,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         final hasRemembered = _rememberedDevice != null;
         final isUnexpected = !_userRequestedDisconnect && !_isAutoReconnecting;
 
-        if (wasConnected && hasRemembered && isUnexpected && !kIsWeb) {
+        if (_isInZoneGracePeriod) {
+          // BLE disconnected during zone grace period — abandon grace, full cleanup
+          debugLog('[CONN] BLE disconnect during zone grace period — full cleanup');
+          _cancelZoneGraceTimers();
+          _isInZoneGracePeriod = false;
+          _zoneGraceSecondsRemaining = 0;
+          if (_autoPingWasEnabledBeforeGrace) _playDisconnectAlert();
+          _autoPingWasEnabledBeforeGrace = false;
+          await _fullDisconnectCleanup();
+        } else if (wasConnected && hasRemembered && isUnexpected && !kIsWeb) {
           debugLog('[CONN] Unexpected BLE disconnect detected - starting auto-reconnect');
           await _startAutoReconnect();
         } else if (!_isAutoReconnecting) {
@@ -2221,6 +2247,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelPendingAutoPingRestore();
     _connectionStep = ConnectionStep.disconnected;
 
+    // Cancel any active zone grace period
+    _cancelZoneGraceTimers();
+    _isInZoneGracePeriod = false;
+    _zoneGraceSecondsRemaining = 0;
+    _autoPingWasEnabledBeforeGrace = false;
+
     // Stop heartbeat immediately on BLE disconnect
     _apiService.disableHeartbeat();
     debugLog('[CONN] Heartbeat disabled due to BLE disconnect');
@@ -2290,6 +2322,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Start auto-reconnect after unexpected BLE disconnect
   Future<void> _startAutoReconnect() async {
+    // Defensive: cancel zone grace period if active
+    if (_isInZoneGracePeriod) {
+      _cancelZoneGraceTimers();
+      _isInZoneGracePeriod = false;
+      _zoneGraceSecondsRemaining = 0;
+      _autoPingWasEnabledBeforeGrace = false;
+    }
     _cancelPendingAutoPingRestore();
     _cancelIdleDisconnectTimer();
     _isAutoReconnecting = true;
@@ -2542,6 +2581,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
     _autoPingWasEnabled = false;
+
+    // Cancel any active zone grace period
+    _cancelZoneGraceTimers();
+    _isInZoneGracePeriod = false;
+    _zoneGraceSecondsRemaining = 0;
+    _autoPingWasEnabledBeforeGrace = false;
 
     // Disable heartbeat immediately on disconnect
     _apiService.disableHeartbeat();
@@ -4001,6 +4046,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    // Zone grace period: intercept outside_zone during active session
+    if (reason == 'outside_zone' && _isInZoneGracePeriod) {
+      debugLog('[ZONE GRACE] outside_zone during grace period — already handling');
+      return;
+    }
+    if (reason == 'outside_zone' && isConnected && !_isInZoneGracePeriod) {
+      debugLog('[ZONE GRACE] outside_zone — entering grace period');
+      await _startZoneGracePeriod();
+      return;
+    }
+
     // Log error
     debugError('[API] Session error: $reason - $userMessage');
     logError(userMessage, severity: ErrorSeverity.error);
@@ -4429,6 +4485,193 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _stopZoneRefreshTimer() {
     _zoneRefreshTimer?.cancel();
     _zoneRefreshTimer = null;
+  }
+
+  // ============================================
+  // Zone Grace Period
+  // ============================================
+
+  /// Cancel all zone grace period timers.
+  void _cancelZoneGraceTimers() {
+    _zoneGraceTimer?.cancel();
+    _zoneGraceTimer = null;
+    _zoneGracePollingTimer?.cancel();
+    _zoneGracePollingTimer = null;
+    _zoneGraceCountdownTimer?.cancel();
+    _zoneGraceCountdownTimer = null;
+  }
+
+  /// Enter zone grace period when outside_zone is detected during an active session.
+  /// Pauses wardriving but keeps BLE and API session alive.
+  /// Polls for zone re-entry every 5s; auto-disconnects after 5 minutes.
+  Future<void> _startZoneGracePeriod() async {
+    if (_isInZoneGracePeriod) return;
+    _isInZoneGracePeriod = true;
+    debugLog('[ZONE GRACE] Entering zone grace period (${_zoneGraceTimeout.inMinutes}m timeout)');
+    logError('Left wardriving zone. Searching for nearby zone...', severity: ErrorSeverity.warning, autoSwitch: false);
+
+    // Save auto-ping state for restoration on zone re-entry
+    _autoPingWasEnabledBeforeGrace = _autoPingEnabled;
+    _autoModeBeforeGrace = _autoMode;
+
+    // Stop auto-ping timers and disable
+    _autoPingTimer.stop();
+    _rxWindowTimer.stop();
+    _cooldownTimer.stop();
+    if (_autoPingEnabled) {
+      _autoPingEnabled = false;
+      _idleAutoStopReference = null;
+      debugLog('[ZONE GRACE] Auto-ping paused');
+    }
+
+    // Disable heartbeat (no point while outside zone)
+    _apiService.disableHeartbeat();
+
+    // Stop RX logger (no session context for RX data)
+    _rxLogger?.stopWardriving(trigger: 'zone_grace');
+
+    // Stop zone refresh timer (replaced by 5s grace polling)
+    _stopZoneRefreshTimer();
+
+    // Cancel idle disconnect timer
+    _cancelIdleDisconnectTimer();
+
+    // Stop background service
+    await BackgroundServiceManager.stopService();
+
+    // Clear API queue — items have gap-GPS coords that would be rejected again
+    await _apiQueueService.clearOnDisconnect();
+
+    // Keep alive: BLE, _meshCoreConnection, _pingService, _unifiedRxHandler,
+    // noise floor, and API session (backend auto-transfers on zone re-entry)
+
+    // Start 5-minute countdown
+    _zoneGraceSecondsRemaining = _zoneGraceTimeout.inSeconds;
+
+    // Overall timeout — abandon grace period after 5 minutes
+    _zoneGraceTimer = Timer(_zoneGraceTimeout, () {
+      debugLog('[ZONE GRACE] Timeout expired — abandoning');
+      _abandonZoneGracePeriod();
+    });
+
+    // 1-second countdown tick for UI
+    _zoneGraceCountdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_zoneGraceSecondsRemaining > 0) {
+        _zoneGraceSecondsRemaining--;
+        notifyListeners();
+      }
+    });
+
+    // Trigger immediate zone check, then start 5-second polling
+    _pollZoneDuringGracePeriod();
+    _zoneGracePollingTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _pollZoneDuringGracePeriod();
+    });
+
+    notifyListeners();
+  }
+
+  /// Poll zone status during grace period (called every 5s).
+  Future<void> _pollZoneDuringGracePeriod() async {
+    if (!_isInZoneGracePeriod) {
+      _zoneGracePollingTimer?.cancel();
+      _zoneGracePollingTimer = null;
+      return;
+    }
+
+    debugLog('[ZONE GRACE] Polling zone status...');
+    try {
+      await checkZoneStatus();
+    } catch (e) {
+      debugWarn('[ZONE GRACE] Zone check failed: $e');
+      return; // Retry on next tick
+    }
+
+    // checkZoneStatus updates _inZone and calls notifyListeners (overlay auto-updates)
+    if (_inZone == true) {
+      debugLog('[ZONE GRACE] Zone re-entered: ${_currentZone?['name']}');
+      await _onZoneGraceReEntry();
+    }
+  }
+
+  /// Zone re-entered during grace period — resume wardriving.
+  /// Session is preserved; backend auto-transfers to the new zone.
+  Future<void> _onZoneGraceReEntry() async {
+    _cancelZoneGraceTimers();
+
+    final wasAutoPing = _autoPingWasEnabledBeforeGrace;
+    final previousMode = _autoModeBeforeGrace;
+
+    // Clear grace state
+    _isInZoneGracePeriod = false;
+    _zoneGraceSecondsRemaining = 0;
+    _autoPingWasEnabledBeforeGrace = false;
+
+    debugLog('[ZONE GRACE] Resuming wardriving (autoPing=$wasAutoPing, mode=$previousMode)');
+    logError('Re-entered wardriving zone. Resuming...', severity: ErrorSeverity.info, autoSwitch: false);
+
+    // Re-enable heartbeat
+    _apiService.enableHeartbeat(
+      gpsProvider: () {
+        final pos = _gpsService.lastPosition;
+        if (pos == null) return null;
+        return (lat: pos.latitude, lon: pos.longitude);
+      },
+    );
+
+    // Restart zone refresh timer (60s)
+    _startZoneRefreshTimer();
+
+    // Prepare API queue for fresh data
+    await _apiQueueService.clearBeforeConnect();
+
+    // Restore auto-ping if it was active
+    if (wasAutoPing) {
+      _restoreAutoPingTimer?.cancel();
+      _restoreAutoPingTimer = Timer(const Duration(milliseconds: 500), () {
+        _restoreAutoPingTimer = null;
+        if (_isDisposed ||
+            _userRequestedDisconnect ||
+            _connectionStep != ConnectionStep.connected ||
+            _pingService == null) {
+          debugLog('[ZONE GRACE] Skipping auto-ping restore (stale or disconnected state)');
+          return;
+        }
+        if (!_autoPingEnabled) {
+          toggleAutoPing(previousMode);
+          debugLog('[ZONE GRACE] Auto-ping restored (mode=$previousMode)');
+        }
+      });
+    } else {
+      _startIdleDisconnectTimer();
+    }
+
+    notifyListeners();
+  }
+
+  /// Abandon zone grace period — timeout, failure, or BLE disconnect.
+  Future<void> _abandonZoneGracePeriod() async {
+    _cancelZoneGraceTimers();
+
+    if (_autoPingWasEnabledBeforeGrace) {
+      _playDisconnectAlert();
+    }
+
+    // Clear grace state
+    _isInZoneGracePeriod = false;
+    _zoneGraceSecondsRemaining = 0;
+    _autoPingWasEnabledBeforeGrace = false;
+
+    debugLog('[ZONE GRACE] Abandoned — performing full disconnect');
+
+    // Full disconnect cleanup
+    await disconnect();
+  }
+
+  /// Cancel zone grace period (user-triggered from UI cancel button).
+  Future<void> cancelZoneGracePeriod() async {
+    debugLog('[ZONE GRACE] Cancelled by user');
+    await _abandonZoneGracePeriod();
   }
 
   /// Fetch repeaters for a zone (called when zone is discovered)
@@ -5268,6 +5511,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _idleDisconnectTimer?.cancel();
     _offlineAutoSaveTimer?.cancel();
     _zoneRefreshTimer?.cancel();
+    _cancelZoneGraceTimers();
     _tileRefreshTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
