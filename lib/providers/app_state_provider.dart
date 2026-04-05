@@ -36,6 +36,7 @@ import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
+import '../services/custom_api_service.dart';
 import '../utils/constants.dart';
 import '../utils/ping_colors.dart';
 import '../services/wakelock_service.dart';
@@ -85,6 +86,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final ApiQueueService _apiQueueService;
   late final OfflineSessionService _offlineSessionService;
   late final DeviceModelService _deviceModelService;
+  late final CustomApiService _customApiService;
   final AudioService _audioService = AudioService();
   late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
   late final ManualPingCooldownTimer _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
@@ -577,6 +579,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Initialize services
     _apiService = ApiService();
     _apiQueueService = ApiQueueService(apiService: _apiService);
+
+    // Initialize custom API forwarding service
+    _customApiService = CustomApiService(prefsGetter: () => _preferences);
+    _customApiService.onError = (message) {
+      logError('Custom API: $message', severity: ErrorSeverity.warning, autoSwitch: false);
+    };
+    _apiQueueService.customApiService = _customApiService;
 
     // Set up session error callback for auto-disconnect
     _apiService.onSessionError = (reason, message) async {
@@ -5518,6 +5527,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService?.dispose();
     _gpsService.dispose();
     _apiQueueService.dispose();
+    _customApiService.dispose();
     _offlineSessionService.dispose();
     _apiService.dispose();
     _bluetoothService.dispose();

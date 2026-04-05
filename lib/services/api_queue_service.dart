@@ -5,6 +5,7 @@ import 'package:hive/hive.dart';
 import '../models/api_queue_item.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_service.dart';
+import 'custom_api_service.dart';
 
 /// API queue service with batch upload and retry logic
 /// Ported from apiQueue and batchUpload() in wardrive.js
@@ -50,6 +51,9 @@ class ApiQueueService {
 
   /// Callback when storage was cleaned up (for user-visible info logging)
   void Function(String infoMessage)? onStorageCleanup;
+
+  /// Custom API service for forwarding pings to third-party endpoint
+  CustomApiService? customApiService;
 
   /// Number of pings accumulated in current offline session
   int get offlinePingCount => _offlinePings.length;
@@ -576,6 +580,8 @@ class ApiQueueService {
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
         onUploadSuccess?.call(uploadedCount);
+        // Fire-and-forget: forward to custom API endpoint
+        customApiService?.forwardPings(pings);
       } else if (result == UploadResult.nonRetryable) {
         // Data is permanently invalid — discard
         for (final item in hiveItems) {

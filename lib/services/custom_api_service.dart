@@ -1,0 +1,105 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+import '../models/user_preferences.dart';
+import '../utils/debug_logger_io.dart';
+
+/// Service for forwarding wardrive ping payloads to a user-configured
+/// third-party API endpoint. Fire-and-forget: never blocks MeshMapper uploads.
+///
+/// Payload sent to custom endpoint:
+/// ```json
+/// { "data": [ ...same ping objects as MeshMapper... ] }
+/// ```
+///
+/// MeshMapper API key and session_id are NOT included.
+/// Custom API key is sent as X-API-Key header.
+class CustomApiService {
+  final http.Client _client;
+  final UserPreferences Function() _prefsGetter;
+
+  /// Throttle map: error type → last time logged to user-facing error tab
+  final Map<String, DateTime> _errorThrottle = {};
+  static const Duration _throttleWindow = Duration(minutes: 1);
+  static const Duration _requestTimeout = Duration(seconds: 10);
+
+  /// Callback for user-facing error logging (wired to AppStateProvider.logError)
+  void Function(String message)? onError;
+
+  CustomApiService({
+    required UserPreferences Function() prefsGetter,
+    http.Client? client,
+  })  : _prefsGetter = prefsGetter,
+        _client = client ?? http.Client();
+
+  /// Fire-and-forget: forward pings to the custom endpoint.
+  /// Called after successful MeshMapper upload. Never throws.
+  void forwardPings(List<Map<String, dynamic>> pings) {
+    final prefs = _prefsGetter();
+    if (!prefs.customApiEnabled) return;
+    if (prefs.customApiUrl == null || prefs.customApiUrl!.isEmpty) return;
+    if (prefs.customApiKey == null || prefs.customApiKey!.isEmpty) return;
+
+    // Fire and forget — do not await
+    _doForward(prefs.customApiUrl!, prefs.customApiKey!, pings);
+  }
+
+  Future<void> _doForward(
+    String url,
+    String apiKey,
+    List<Map<String, dynamic>> pings,
+  ) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final payload = json.encode({'data': pings});
+
+      final response = await _client
+          .post(
+            Uri.parse(url),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-API-Key': apiKey,
+            },
+            body: payload,
+          )
+          .timeout(_requestTimeout);
+
+      stopwatch.stop();
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        debugLog('[CUSTOM API] Forward SUCCESS: ${pings.length} items in ${stopwatch.elapsedMilliseconds}ms');
+      } else {
+        final errorType = 'http_${response.statusCode}';
+        debugError('[CUSTOM API] Forward failed: HTTP ${response.statusCode} (${stopwatch.elapsedMilliseconds}ms)');
+        debugError('[CUSTOM API]   Body: ${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
+        _throttledError(errorType, 'Custom API returned HTTP ${response.statusCode}');
+      }
+    } on TimeoutException {
+      stopwatch.stop();
+      debugError('[CUSTOM API] Forward timed out after ${_requestTimeout.inSeconds}s');
+      _throttledError('timeout', 'Custom API request timed out');
+    } catch (e) {
+      stopwatch.stop();
+      debugError('[CUSTOM API] Forward exception: $e');
+      _throttledError('network_error', 'Custom API network error: ${e.runtimeType}');
+    }
+  }
+
+  /// Log error to user-facing error tab, throttled to one per error type per minute.
+  /// Debug logs (debugError) are always emitted unthrottled.
+  void _throttledError(String errorType, String message) {
+    final now = DateTime.now();
+    final lastLog = _errorThrottle[errorType];
+    if (lastLog != null && now.difference(lastLog) < _throttleWindow) {
+      return; // Suppressed — same error type logged within 1 minute
+    }
+    _errorThrottle[errorType] = now;
+    onError?.call(message);
+  }
+
+  void dispose() {
+    _errorThrottle.clear();
+  }
+}
