@@ -615,6 +615,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: const Icon(Icons.chevron_right),
                 onTap: isAutoMode ? null : () => _showCustomApiKeyDialog(context, appState),
               ),
+              SwitchListTile(
+                secondary: const SizedBox(width: 24),
+                title: const Text('Include Contact Key'),
+                subtitle: const Text('Share device public key prefix with endpoint'),
+                value: prefs.customApiIncludeContact,
+                onChanged: isAutoMode ? null : (value) {
+                  appState.updatePreferences(prefs.copyWith(customApiIncludeContact: value));
+                },
+              ),
               ListTile(
                 leading: const Icon(Icons.content_paste),
                 title: const Text('Import from Clipboard'),
