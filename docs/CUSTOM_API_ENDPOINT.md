@@ -192,6 +192,27 @@ Your endpoint should return any `2xx` HTTP status code on success. The response 
 
 MeshMapper does **not** retry failed custom API requests. Each batch is sent exactly once.
 
+## Configuration Link for End Users
+
+As an endpoint operator, you can generate a configuration link that your users paste into their clipboard. In MeshMapper Settings > API Endpoints, they tap **Import from Clipboard** to auto-fill the URL and API key.
+
+**Format:**
+
+```
+meshmapper://custom-api?url=your-server.com/api/wardrive&key=your-api-key-here
+```
+
+- `url` — Your endpoint host and path, **without** `https://` (MeshMapper prepends it automatically).
+- `key` — The API key the user should send. This will be set as their `X-API-Key` header value.
+
+**Example:**
+
+```
+meshmapper://custom-api?url=data.myproject.org/ingest/wardrive&key=sk_live_abc123def456
+```
+
+The user copies this link, opens MeshMapper Settings > API Endpoints, and taps "Import from Clipboard." Both fields are populated instantly.
+
 ## Security Notes
 
 - **HTTPS required**: MeshMapper validates that the configured URL uses HTTPS. HTTP endpoints are rejected at the settings level.
