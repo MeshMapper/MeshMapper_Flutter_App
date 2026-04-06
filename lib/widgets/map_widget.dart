@@ -12,6 +12,7 @@ import '../models/log_entry.dart';
 import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
+import '../services/gps_service.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
@@ -107,6 +108,17 @@ final class SilentCancellableNetworkTileProvider extends CancellableNetworkTileP
   );
 }
 
+/// Resolved repeater with SNR and ambiguity info for ping focus mode.
+/// Line color is based on [snr] (green/yellow/red). When a short hex ID
+/// matches multiple repeaters, [ambiguous] is true and the line gets a
+/// distinct border to indicate uncertainty.
+class _ResolvedRepeater {
+  final Repeater repeater;
+  final double? snr;
+  final bool ambiguous;
+  const _ResolvedRepeater(this.repeater, this.snr, this.ambiguous);
+}
+
 /// Map widget with TX/RX markers
 /// Uses flutter_map with OpenStreetMap tiles
 class MapWidget extends StatefulWidget {
@@ -163,6 +175,15 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
   // Map navigation trigger tracking (from log screen)
   int _lastNavigationTrigger = 0;
+
+  // Ping focus mode — highlight connected repeaters when a marker is tapped
+  LatLng? _focusedPingLocation;
+  DateTime? _focusedPingTimestamp;
+  List<_ResolvedRepeater> _focusedRepeaters = [];
+  LatLng? _preFocusCenter;
+  double? _preFocusZoom;
+  bool _wasAutoFollowBeforeFocus = false;
+  bool _wasRotatingBeforeFocus = false; // true if heading mode was active
 
   // Smooth animation for map movement
   AnimationController? _animationController;
@@ -302,6 +323,22 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     });
 
     _animationController!.forward();
+  }
+
+  /// Zoom to fit a focused ping and its connected repeaters on screen
+  void _zoomToFocusBounds(LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
+    if (!_isMapReady || !mounted) return;
+
+    final points = [pingLocation, ...repeaters.map((r) => LatLng(r.repeater.lat, r.repeater.lon))];
+    if (points.length < 2) return;
+
+    final fitted = CameraFit.coordinates(
+      coordinates: points,
+      padding: EdgeInsets.fromLTRB(60, 60, 60, MediaQuery.of(context).size.height * 0.4),
+      maxZoom: 15,
+    ).fit(_mapController.camera);
+
+    _animateToPositionWithZoom(fitted.center, fitted.zoom);
   }
 
   /// Smoothly animate the map rotation to match heading
@@ -694,14 +731,60 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
         ),
 
-        // Repeater markers (magenta with ID, rotate with map)
-        MarkerLayer(
-          rotate: true,
-          markers: _buildRepeaterMarkers(
-            appState.repeaters,
-            appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+        // Focus mode: polylines from focused ping to each connected repeater
+        // Line color = SNR (green/yellow/red). Ambiguous matches get a white border.
+        if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty)
+          PolylineLayer(
+            polylines: _focusedRepeaters.map((r) {
+              final lineColor = r.snr != null
+                  ? PingColors.snrColor(r.snr!)
+                  : Colors.grey;
+              return Polyline(
+                points: [_focusedPingLocation!, LatLng(r.repeater.lat, r.repeater.lon)],
+                color: lineColor.withValues(alpha: 0.9),
+                strokeWidth: 3.5,
+                isDotted: true,
+                borderStrokeWidth: r.ambiguous ? 1.5 : 0,
+                borderColor: r.ambiguous ? Colors.white.withValues(alpha: 0.6) : null,
+              );
+            }).toList(),
           ),
-        ),
+
+        // Repeater markers (magenta with ID, rotate with map)
+        // During focus mode, split into two layers: faded repeaters below, connected on top
+        if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty) ...[
+          // Faded non-connected repeaters (below)
+          MarkerLayer(
+            rotate: true,
+            markers: _buildRepeaterMarkers(
+              appState.repeaters,
+              appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+              onlyFaded: true,
+            ),
+          ),
+          // Distance labels (middle)
+          MarkerLayer(
+            rotate: true,
+            markers: _buildFocusDistanceLabels(appState),
+          ),
+          // Connected repeaters (on top)
+          MarkerLayer(
+            rotate: true,
+            markers: _buildRepeaterMarkers(
+              appState.repeaters,
+              appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+              onlyConnected: true,
+            ),
+          ),
+        ] else
+          // Normal mode: single layer with all repeaters
+          MarkerLayer(
+            rotate: true,
+            markers: _buildRepeaterMarkers(
+              appState.repeaters,
+              appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+            ),
+          ),
 
         // Current position marker
         if (appState.currentPosition != null)
@@ -1715,63 +1798,94 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return timestamped.map((e) => e.$2).toList();
   }
 
+  /// Check if a ping at given lat/lon/timestamp is the currently focused ping.
+  bool _isFocusedPing(double lat, double lon, DateTime timestamp) {
+    return _focusedPingLocation != null &&
+        _focusedPingTimestamp == timestamp &&
+        _focusedPingLocation!.latitude == lat &&
+        _focusedPingLocation!.longitude == lon;
+  }
+
+  /// Apply focus fade to a marker color. Returns dimmed color if focus is active
+  /// and this marker is not the focused one.
+  Color _applyFocusFade(Color color, bool isFocused) {
+    if (_focusedPingLocation == null || isFocused) return color;
+    return color.withValues(alpha: 0.15);
+  }
+
   Marker _buildTxMarker(TxPing ping) {
+    final isFocused = _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
+    final color = ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess;
+    final size = isFocused ? 24.0 : 20.0;
     return Marker(
       point: LatLng(ping.latitude, ping.longitude),
-      width: 20,
-      height: 20,
+      width: size,
+      height: size,
       child: GestureDetector(
         onTap: () => _showTxPingDetails(ping),
-        child: _buildCoverageMarkerChild(
-          ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess,
-        ),
+        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
       ),
     );
   }
 
   Marker _buildRxMarker(RxPing ping) {
+    final isFocused = _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
+    final size = isFocused ? 24.0 : 20.0;
     return Marker(
       point: LatLng(ping.latitude, ping.longitude),
-      width: 20,
-      height: 20,
+      width: size,
+      height: size,
       child: GestureDetector(
         onTap: () => _showRxPingDetails(ping),
-        child: _buildCoverageMarkerChild(PingColors.rx),
+        child: _buildCoverageMarkerChild(_applyFocusFade(PingColors.rx, isFocused)),
       ),
     );
   }
 
   Marker _buildDiscMarker(DiscLogEntry entry, bool discDropEnabled) {
+    final isFocused = _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
+    final color = entry.nodeCount == 0
+        ? (discDropEnabled ? PingColors.txFail : PingColors.discFail)
+        : _discMarkerColor;
+    final size = isFocused ? 24.0 : 20.0;
     return Marker(
       point: LatLng(entry.latitude, entry.longitude),
-      width: 20,
-      height: 20,
+      width: size,
+      height: size,
       child: GestureDetector(
         onTap: () => _showDiscPingDetails(entry),
-        child: _buildCoverageMarkerChild(
-          entry.nodeCount == 0
-              ? (discDropEnabled ? PingColors.txFail : PingColors.discFail)
-              : _discMarkerColor,
-        ),
+        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
       ),
     );
   }
 
   Marker _buildTraceMarker(TraceLogEntry entry) {
+    final isFocused = _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
+    final color = entry.success ? Colors.cyan : Colors.grey;
+    final size = isFocused ? 24.0 : 20.0;
     return Marker(
       point: LatLng(entry.latitude, entry.longitude),
-      width: 20,
-      height: 20,
+      width: size,
+      height: size,
       child: GestureDetector(
         onTap: () => _showTraceDetails(entry),
-        child: _buildCoverageMarkerChild(
-          entry.success ? Colors.cyan : Colors.grey,
-        ),
+        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
       ),
     );
   }
 
   void _showTraceDetails(TraceLogEntry entry) {
+    // Activate focus mode for successful traces with a known repeater
+    if (entry.success) {
+      final resolved = _resolveRepeatersByHexIds(
+        [entry.targetRepeaterId],
+        snrValues: [entry.localSnr],
+      );
+      if (resolved.isNotEmpty) {
+        _activatePingFocus(LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+      }
+    }
+
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
@@ -1949,7 +2063,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           final txSnrColor = PingColors.snrColor(remoteSnr.toDouble());
 
                           return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.targetRepeaterId),
+                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.targetRepeaterId, fromLatLng: (lat: entry.latitude, lon: entry.longitude)),
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                               child: Row(
@@ -1996,7 +2110,51 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
         ),
       ),
-    );
+    ).whenComplete(() => _dismissPingFocus());
+  }
+
+  /// Build distance label markers at the midpoint of each focus line.
+  List<Marker> _buildFocusDistanceLabels(AppStateProvider appState) {
+    if (_focusedPingLocation == null) return [];
+    final isImperial = appState.preferences.isImperial;
+    final ping = _focusedPingLocation!;
+
+    return _focusedRepeaters.map((r) {
+      final repeaterPos = LatLng(r.repeater.lat, r.repeater.lon);
+      // Midpoint of the line
+      final midLat = (ping.latitude + repeaterPos.latitude) / 2;
+      final midLon = (ping.longitude + repeaterPos.longitude) / 2;
+      // Distance in meters — use GpsService for consistency with repeater popup
+      final meters = GpsService.distanceBetween(
+        ping.latitude, ping.longitude, repeaterPos.latitude, repeaterPos.longitude,
+      );
+      final label = meters < 1000
+          ? formatMeters(meters, isImperial: isImperial)
+          : formatKilometers(meters / 1000, isImperial: isImperial);
+
+      return Marker(
+        point: LatLng(midLat, midLon),
+        width: 70,
+        height: 22,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              fontFamily: 'monospace',
+              color: Colors.white,
+            ),
+          ),
+        ),
+      );
+    }).toList();
   }
 
   /// DISC marker color (delegates to active palette)
@@ -2015,6 +2173,106 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   static Color get _repeaterDeadColor => PingColors.repeaterDead;
 
   /// Get set of duplicate repeater IDs
+  /// Resolve heard repeater hex IDs to Repeater objects with GPS coordinates.
+  /// Marks matches as ambiguous when a single hex ID matches multiple repeaters.
+  /// [snrValues] provides the SNR for each hex ID (same index) for line coloring.
+  List<_ResolvedRepeater> _resolveRepeatersByHexIds(
+    List<String> hexIds, {
+    List<String?> fullHexIds = const [],
+    List<double?> snrValues = const [],
+  }) {
+    final allRepeaters = context.read<AppStateProvider>().repeaters;
+    final resolved = <_ResolvedRepeater>[];
+    for (int i = 0; i < hexIds.length; i++) {
+      final fullHex = i < fullHexIds.length ? fullHexIds[i] : null;
+      final snr = i < snrValues.length ? snrValues[i] : null;
+      final matchKey = (fullHex != null && fullHex.length >= 8)
+          ? fullHex.substring(0, 8)
+          : hexIds[i];
+      final matches = allRepeaters
+          .where((r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
+          .toList();
+      final ambiguous = matches.length > 1;
+      resolved.addAll(matches.map((r) => _ResolvedRepeater(r, snr, ambiguous)));
+    }
+    return resolved;
+  }
+
+  /// Activate ping focus mode — draw lines, fade markers, zoom to fit.
+  void _activatePingFocus(LatLng pingLocation, DateTime timestamp, List<_ResolvedRepeater> repeaters) {
+    _preFocusCenter = _mapController.camera.center;
+    _preFocusZoom = _mapController.camera.zoom;
+    _wasAutoFollowBeforeFocus = _autoFollow;
+    _wasRotatingBeforeFocus = !_alwaysNorth;
+
+    if (_autoFollow) {
+      _autoFollow = false;
+    }
+
+    // Lock to north-up during focus so the zoom-to-fit view is stable
+    if (!_alwaysNorth) {
+      _alwaysNorth = true;
+      _animateToRotation(0); // Won't fire because _alwaysNorth is now true
+      // Snap rotation to 0 directly
+      if (_isMapReady) {
+        _mapController.rotate(0);
+      }
+    }
+
+    setState(() {
+      _focusedPingLocation = pingLocation;
+      _focusedPingTimestamp = timestamp;
+      _focusedRepeaters = repeaters;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _focusedPingLocation != null) {
+        _zoomToFocusBounds(pingLocation, repeaters);
+      }
+    });
+  }
+
+  /// Dismiss ping focus mode — restore map state.
+  void _dismissPingFocus() {
+    if (_focusedPingLocation == null || !mounted) return;
+
+    final center = _preFocusCenter;
+    final zoom = _preFocusZoom;
+    final shouldRestoreAutoFollow = _wasAutoFollowBeforeFocus && !_autoFollow;
+    final shouldRestoreRotation = _wasRotatingBeforeFocus && _alwaysNorth;
+
+    // Clear focus state but do NOT restore auto-follow or rotation yet —
+    // they would immediately trigger animations in the build method that
+    // override our zoom-back animation (both share _animationController).
+    setState(() {
+      _focusedPingLocation = null;
+      _focusedPingTimestamp = null;
+      _focusedRepeaters = [];
+    });
+
+    if (center != null && zoom != null) {
+      _animateToPositionWithZoom(center, zoom);
+
+      // Restore auto-follow and heading rotation after the zoom-back
+      // animation completes (500ms) so they don't clobber it mid-flight.
+      if (shouldRestoreAutoFollow || shouldRestoreRotation) {
+        Future.delayed(const Duration(milliseconds: 550), () {
+          if (mounted) {
+            setState(() {
+              if (shouldRestoreAutoFollow) _autoFollow = true;
+              if (shouldRestoreRotation) _alwaysNorth = false;
+            });
+          }
+        });
+      }
+    } else {
+      setState(() {
+        if (shouldRestoreAutoFollow) _autoFollow = true;
+        if (shouldRestoreRotation) _alwaysNorth = false;
+      });
+    }
+  }
+
   Set<String> _getDuplicateRepeaterIds(List<Repeater> repeaters) {
     final idCounts = <String, int>{};
     for (final repeater in repeaters) {
@@ -2038,12 +2296,36 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return _repeaterMarkerColor; // Active (default)
   }
 
-  List<Marker> _buildRepeaterMarkers(List<Repeater> repeaters, int? regionHopBytesOverride) {
+  List<Marker> _buildRepeaterMarkers(
+    List<Repeater> repeaters,
+    int? regionHopBytesOverride, {
+    bool onlyFaded = false,
+    bool onlyConnected = false,
+  }) {
     final duplicateIds = _getDuplicateRepeaterIds(repeaters);
+    final hasFocus = _focusedPingLocation != null;
 
-    return repeaters.map((repeater) {
+    return repeaters.where((repeater) {
+      if (!hasFocus) return true; // No focus — include all
+      final isConnected = _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
+      if (onlyConnected) return isConnected;
+      if (onlyFaded) return !isConnected;
+      return true;
+    }).map((repeater) {
       final isDuplicate = duplicateIds.contains(repeater.id);
       final markerColor = _getRepeaterMarkerColor(repeater, isDuplicate);
+
+      // During focus mode, fade repeaters not connected to the focused ping
+      final isConnected = hasFocus && _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
+      final effectiveColor = (hasFocus && !isConnected)
+          ? markerColor.withValues(alpha: 0.15)
+          : markerColor;
+      final effectiveBorderColor = (hasFocus && !isConnected)
+          ? Colors.white.withValues(alpha: 0.15)
+          : Colors.white;
+      final effectiveTextColor = (hasFocus && !isConnected)
+          ? Colors.white.withValues(alpha: 0.15)
+          : Colors.white;
 
       // Display hex ID based on per-repeater hop_bytes (or regional admin override)
       final displayId = repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
@@ -2069,10 +2351,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 ? const EdgeInsets.symmetric(horizontal: 4)
                 : EdgeInsets.zero,
             decoration: BoxDecoration(
-              color: markerColor,
+              color: effectiveColor,
               borderRadius: borderRadius,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
+              border: Border.all(color: effectiveBorderColor, width: 2),
+              boxShadow: (hasFocus && !isConnected) ? null : const [
                 BoxShadow(
                   color: Colors.black26,
                   blurRadius: 4,
@@ -2086,7 +2368,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               style: TextStyle(
                 fontSize: displayId.length > 4 ? 8 : isLongId ? 9 : 10,
                 fontWeight: FontWeight.bold,
-                color: Colors.white,
+                color: effectiveTextColor,
                 fontFamily: 'monospace',
               ),
             ),
@@ -2145,6 +2427,17 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   void _showTxPingDetails(TxPing ping) {
     // Use the heardRepeaters directly from the TxPing
     final heardRepeaters = ping.heardRepeaters;
+
+    // Activate focus mode if the ping was heard by known repeaters
+    if (heardRepeaters.isNotEmpty) {
+      final resolved = _resolveRepeatersByHexIds(
+        heardRepeaters.map((r) => r.repeaterId).toList(),
+        snrValues: heardRepeaters.map((r) => r.snr).toList(),
+      );
+      if (resolved.isNotEmpty) {
+        _activatePingFocus(LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+      }
+    }
 
     showModalBottomSheet(
       context: context,
@@ -2306,7 +2599,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           final rssiColor = repeater.rssi != null ? PingColors.rssiColor(repeater.rssi!) : Colors.grey;
 
                           return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId),
+                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId, fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                               child: Row(
@@ -2345,13 +2638,22 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
         ),
       ),
-    );
+    ).whenComplete(() => _dismissPingFocus());
   }
 
   /// Show RX ping details popup
   void _showRxPingDetails(RxPing ping) {
     final snrColor = PingColors.snrColor(ping.snr);
     final rssiColor = PingColors.rssiColor(ping.rssi);
+
+    // Activate focus mode for the RX ping's repeater
+    final resolved = _resolveRepeatersByHexIds(
+      [ping.repeaterId],
+      snrValues: [ping.snr],
+    );
+    if (resolved.isNotEmpty) {
+      _activatePingFocus(LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+    }
 
     showModalBottomSheet(
       context: context,
@@ -2502,7 +2804,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   Divider(height: 1, color: Theme.of(context).dividerColor),
                   // Data row
                   InkWell(
-                    onTap: () => RepeaterIdChip.showRepeaterPopup(context, ping.repeaterId),
+                    onTap: () => RepeaterIdChip.showRepeaterPopup(context, ping.repeaterId, fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       child: Row(
@@ -2537,11 +2839,23 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ],
         ),
       ),
-    );
+    ).whenComplete(() => _dismissPingFocus());
   }
 
   /// Show DISC ping details popup
   void _showDiscPingDetails(DiscLogEntry entry) {
+    // Activate focus mode for discovered nodes with known repeater positions
+    if (entry.discoveredNodes.isNotEmpty) {
+      final resolved = _resolveRepeatersByHexIds(
+        entry.discoveredNodes.map((n) => n.repeaterId).toList(),
+        fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
+        snrValues: entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
+      );
+      if (resolved.isNotEmpty) {
+        _activatePingFocus(LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+      }
+    }
+
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
@@ -2716,7 +3030,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
 
                           return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
+                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex, fromLatLng: (lat: entry.latitude, lon: entry.longitude)),
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                               child: Row(
@@ -2779,7 +3093,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
           ),
         ),
       ),
-    );
+    ).whenComplete(() => _dismissPingFocus());
   }
 
   /// Build a status chip for the repeater popup
