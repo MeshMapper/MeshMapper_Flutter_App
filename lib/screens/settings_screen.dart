@@ -554,6 +554,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ]),
 
+          // Offline Sessions
+          _buildSection(context, 'Offline Sessions', [
+            if (appState.offlineSessions.isEmpty)
+              ListTile(
+                leading: Icon(Icons.cloud_off, color: Colors.grey.shade400),
+                title: Text(
+                  'No offline sessions stored',
+                  style: TextStyle(color: Colors.grey.shade500),
+                ),
+                subtitle: Text(
+                  'Sessions recorded in offline mode will appear here',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+                ),
+              )
+            else
+              ...appState.offlineSessions.map((session) => _OfflineSessionTile(
+                session: session,
+                uploadEnabled: !appState.isUploadingOfflineSession,
+                onUpload: () => _uploadOfflineSession(context, appState, session.filename),
+                onDelete: () => _confirmDeleteOfflineSession(context, appState, session.filename),
+                onDownload: () => _downloadOfflineSession(context, appState, session.filename),
+              )),
+          ]),
+
           // API Endpoints
           _buildSection(context, 'API Endpoints', [
             const ListTile(
@@ -591,31 +615,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: const Icon(Icons.chevron_right),
                 onTap: isAutoMode ? null : () => _showCustomApiKeyDialog(context, appState),
               ),
-            ],
-          ]),
-
-          // Offline Sessions
-          _buildSection(context, 'Offline Sessions', [
-            if (appState.offlineSessions.isEmpty)
               ListTile(
-                leading: Icon(Icons.cloud_off, color: Colors.grey.shade400),
-                title: Text(
-                  'No offline sessions stored',
-                  style: TextStyle(color: Colors.grey.shade500),
-                ),
-                subtitle: Text(
-                  'Sessions recorded in offline mode will appear here',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
-                ),
-              )
-            else
-              ...appState.offlineSessions.map((session) => _OfflineSessionTile(
-                session: session,
-                uploadEnabled: !appState.isUploadingOfflineSession,
-                onUpload: () => _uploadOfflineSession(context, appState, session.filename),
-                onDelete: () => _confirmDeleteOfflineSession(context, appState, session.filename),
-                onDownload: () => _downloadOfflineSession(context, appState, session.filename),
-              )),
+                leading: const Icon(Icons.content_paste),
+                title: const Text('Import from Clipboard'),
+                subtitle: const Text('Paste a meshmapper:// config link'),
+                onTap: isAutoMode ? null : () => _importCustomApiFromClipboard(context, appState),
+              ),
+            ],
           ]),
 
           // About
@@ -991,6 +997,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'bike': return 'Bike';
       case 'boat': return 'Boat';
       case 'walk': return 'Walk';
+      case 'pacman': return 'Pac-Man';
       case 'arrow':
       default: return 'Arrow';
     }
@@ -2299,6 +2306,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _importCustomApiFromClipboard(BuildContext context, AppStateProvider appState) async {
+    final clipData = await Clipboard.getData('text/plain');
+    final text = clipData?.text?.trim();
+
+    if (text == null || text.isEmpty) {
+      if (context.mounted) AppToast.error(context, 'Clipboard is empty');
+      return;
+    }
+
+    // Expected format: meshmapper://custom-api?url=example.com/api.php&key=xxxxxxxxxx
+    if (!text.startsWith('meshmapper://')) {
+      if (context.mounted) {
+        AppToast.error(context, 'No meshmapper:// link found in clipboard');
+      }
+      return;
+    }
+
+    try {
+      final uri = Uri.parse(text);
+      final rawUrl = uri.queryParameters['url'];
+      final key = uri.queryParameters['key'];
+
+      if (rawUrl == null || rawUrl.isEmpty) {
+        if (context.mounted) AppToast.error(context, 'Link is missing the url parameter');
+        return;
+      }
+      if (key == null || key.isEmpty) {
+        if (context.mounted) AppToast.error(context, 'Link is missing the key parameter');
+        return;
+      }
+
+      final fullUrl = 'https://$rawUrl';
+
+      // Validate the constructed URL
+      final parsed = Uri.tryParse(fullUrl);
+      if (parsed == null || !parsed.hasAuthority) {
+        if (context.mounted) AppToast.error(context, 'Invalid URL in link: $rawUrl');
+        return;
+      }
+
+      appState.updatePreferences(
+        appState.preferences.copyWith(
+          customApiUrl: fullUrl,
+          customApiKey: key,
+        ),
+      );
+
+      if (context.mounted) {
+        AppToast.success(context, 'Imported endpoint: $rawUrl');
+      }
+      debugLog('[CUSTOM API] Imported endpoint from clipboard: $fullUrl');
+    } catch (e) {
+      debugError('[CUSTOM API] Failed to parse clipboard link: $e');
+      if (context.mounted) AppToast.error(context, 'Invalid meshmapper:// link');
+    }
   }
 
   void _showCloseAppConfirmation(BuildContext context, AppStateProvider appState) {

@@ -702,6 +702,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   userAgentPackageName: 'com.meshmapper.app',
                   maxZoom: 17,
                   retinaMode: mapStyle.supportsRetina && RetinaMode.isHighDensity(context),
+                  tileDisplay: const TileDisplay.fadeIn(
+                    reloadStartOpacity: 1.0,
+                  ),
                   tileProvider: SilentCancellableNetworkTileProvider(),
                 );
               },
@@ -715,12 +718,13 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               minZoom: 3,
               maxZoom: 17,
               tileDisplay: const TileDisplay.fadeIn(
-                reloadStartOpacity: 1.0, // Keep old tile visible until new one loads
+                reloadStartOpacity: 1.0,
               ),
               tileProvider: SilentCancellableNetworkTileProvider(),
             ),
 
           // Coverage markers (TX, RX, DISC, Trace) — sorted by timestamp, newest on top
+          // During focus mode, the focused marker is excluded and rendered in its own top layer
         MarkerLayer(
           markers: _buildCoverageMarkers(
             txPings: appState.txPings,
@@ -728,6 +732,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             discEntries: appState.discLogEntries,
             discDropEnabled: appState.discDropEnabled,
             traceEntries: appState.traceLogEntries,
+            excludeFocused: _focusedPingLocation != null,
           ),
         ),
 
@@ -774,6 +779,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               appState.repeaters,
               appState.enforceHopBytes ? appState.effectiveHopBytes : null,
               onlyConnected: true,
+            ),
+          ),
+          // Focused ping marker (above everything except GPS)
+          MarkerLayer(
+            markers: _buildFocusedPingMarker(
+              txPings: appState.txPings,
+              rxPings: appState.rxPings,
+              discEntries: appState.discLogEntries,
+              discDropEnabled: appState.discDropEnabled,
+              traceEntries: appState.traceLogEntries,
             ),
           ),
         ] else
@@ -1782,20 +1797,58 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     required List<DiscLogEntry> discEntries,
     required bool discDropEnabled,
     required List<TraceLogEntry> traceEntries,
+    bool excludeFocused = false,
   }) {
     final timestamped = <(DateTime, Marker)>[
       for (final ping in txPings)
-        (ping.timestamp, _buildTxMarker(ping)),
+        if (!excludeFocused || !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
+          (ping.timestamp, _buildTxMarker(ping)),
       for (final ping in rxPings)
-        (ping.timestamp, _buildRxMarker(ping)),
+        if (!excludeFocused || !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
+          (ping.timestamp, _buildRxMarker(ping)),
       for (final entry in discEntries)
-        (entry.timestamp, _buildDiscMarker(entry, discDropEnabled)),
+        if (!excludeFocused || !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
+          (entry.timestamp, _buildDiscMarker(entry, discDropEnabled)),
       for (final entry in traceEntries)
-        (entry.timestamp, _buildTraceMarker(entry)),
+        if (!excludeFocused || !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
+          (entry.timestamp, _buildTraceMarker(entry)),
     ];
 
     timestamped.sort((a, b) => a.$1.compareTo(b.$1));
     return timestamped.map((e) => e.$2).toList();
+  }
+
+  /// Build just the focused ping marker for rendering in its own top layer.
+  List<Marker> _buildFocusedPingMarker({
+    required List<TxPing> txPings,
+    required List<RxPing> rxPings,
+    required List<DiscLogEntry> discEntries,
+    required bool discDropEnabled,
+    required List<TraceLogEntry> traceEntries,
+  }) {
+    if (_focusedPingLocation == null) return [];
+
+    for (final ping in txPings) {
+      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
+        return [_buildTxMarker(ping)];
+      }
+    }
+    for (final ping in rxPings) {
+      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
+        return [_buildRxMarker(ping)];
+      }
+    }
+    for (final entry in discEntries) {
+      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
+        return [_buildDiscMarker(entry, discDropEnabled)];
+      }
+    }
+    for (final entry in traceEntries) {
+      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
+        return [_buildTraceMarker(entry)];
+      }
+    }
+    return [];
   }
 
   /// Check if a ping at given lat/lon/timestamp is the currently focused ping.
