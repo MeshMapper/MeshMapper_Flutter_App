@@ -585,6 +585,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _customApiService.onError = (message) {
       logError('Custom API: $message', severity: ErrorSeverity.warning, autoSwitch: false);
     };
+    _customApiService.contactGetter = () {
+      final pk = _devicePublicKey;
+      return (pk != null && pk.length >= 8) ? pk.substring(0, 8).toUpperCase() : null;
+    };
+    _customApiService.iataGetter = () => zoneCode ?? _preferences.iataCode;
     _apiQueueService.customApiService = _customApiService;
 
     // Set up session error callback for auto-disconnect

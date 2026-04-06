@@ -112,6 +112,9 @@ class UserPreferences {
   /// Whether the user has accepted the third-party data sharing disclaimer
   final bool customApiDisclaimerAccepted;
 
+  /// Include device public key prefix in custom API payload (contact field)
+  final bool customApiIncludeContact;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -150,6 +153,7 @@ class UserPreferences {
     this.customApiUrl,
     this.customApiKey,
     this.customApiDisclaimerAccepted = false,
+    this.customApiIncludeContact = true,
   });
 
   /// Create from JSON (for persistence)
@@ -192,6 +196,7 @@ class UserPreferences {
       customApiUrl: json['customApiUrl'] as String?,
       customApiKey: json['customApiKey'] as String?,
       customApiDisclaimerAccepted: (json['customApiDisclaimerAccepted'] as bool?) ?? false,
+      customApiIncludeContact: (json['customApiIncludeContact'] as bool?) ?? true,
     );
   }
 
@@ -235,6 +240,7 @@ class UserPreferences {
       'customApiUrl': customApiUrl,
       'customApiKey': customApiKey,
       'customApiDisclaimerAccepted': customApiDisclaimerAccepted,
+      'customApiIncludeContact': customApiIncludeContact,
     };
   }
 
@@ -277,6 +283,7 @@ class UserPreferences {
     String? customApiUrl,
     String? customApiKey,
     bool? customApiDisclaimerAccepted,
+    bool? customApiIncludeContact,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -316,6 +323,7 @@ class UserPreferences {
       customApiUrl: customApiUrl ?? this.customApiUrl,
       customApiKey: customApiKey ?? this.customApiKey,
       customApiDisclaimerAccepted: customApiDisclaimerAccepted ?? this.customApiDisclaimerAccepted,
+      customApiIncludeContact: customApiIncludeContact ?? this.customApiIncludeContact,
     );
   }
 
@@ -383,7 +391,8 @@ class UserPreferences {
         other.customApiEnabled == customApiEnabled &&
         other.customApiUrl == customApiUrl &&
         other.customApiKey == customApiKey &&
-        other.customApiDisclaimerAccepted == customApiDisclaimerAccepted;
+        other.customApiDisclaimerAccepted == customApiDisclaimerAccepted &&
+        other.customApiIncludeContact == customApiIncludeContact;
   }
 
   @override
@@ -425,6 +434,7 @@ class UserPreferences {
       customApiUrl,
       customApiKey,
       customApiDisclaimerAccepted,
+      customApiIncludeContact,
     ]);
   }
 

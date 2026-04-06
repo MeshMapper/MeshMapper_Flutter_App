@@ -28,6 +28,12 @@ class CustomApiService {
   /// Callback for user-facing error logging (wired to AppStateProvider.logError)
   void Function(String message)? onError;
 
+  /// Returns the 8-char public key prefix of the connected device, or null
+  String? Function()? contactGetter;
+
+  /// Returns the current IATA zone code, or null if not in a zone
+  String? Function()? iataGetter;
+
   CustomApiService({
     required UserPreferences Function() prefsGetter,
     http.Client? client,
@@ -42,8 +48,19 @@ class CustomApiService {
     if (prefs.customApiUrl == null || prefs.customApiUrl!.isEmpty) return;
     if (prefs.customApiKey == null || prefs.customApiKey!.isEmpty) return;
 
+    // Enrich with contact and iata (custom API only — never sent to MeshMapper)
+    final contact = prefs.customApiIncludeContact ? contactGetter?.call() : null;
+    final iata = iataGetter?.call();
+
+    final enriched = pings.map((ping) {
+      final enrichedPing = Map<String, dynamic>.from(ping);
+      if (contact != null) enrichedPing['contact'] = contact;
+      if (iata != null) enrichedPing['iata'] = iata;
+      return enrichedPing;
+    }).toList();
+
     // Fire and forget — do not await
-    _doForward(prefs.customApiUrl!, prefs.customApiKey!, pings);
+    _doForward(prefs.customApiUrl!, prefs.customApiKey!, enriched);
   }
 
   Future<void> _doForward(

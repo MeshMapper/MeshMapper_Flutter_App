@@ -39,6 +39,8 @@ Every ping object contains a `type` field that determines which additional field
 | `external_antenna` | `boolean` | Whether an external antenna is connected to the device |
 | `noisefloor` | `integer\|null` | Ambient noise floor in dBm (e.g., -103). Null if unavailable. |
 | `power` | `string\|null` | Radio TX power formatted as `"X.Xw"` (e.g., `"0.3w"`, `"1.0w"`, `"2.0w"`). Null if unavailable. |
+| `contact` | `string\|absent` | First 8 hex chars of the wardriver's MeshCore device public key (e.g., `"D873B1F2"`). Only present when the user enables "Include Contact Key" in settings. Useful for cross-referencing with MQTT observer data. |
+| `iata` | `string\|absent` | MeshMapper zone code (e.g., `"RDU"`, `"MSP"`, `"YOW"`). Present when the wardriver is in a zone. |
 
 ### TX Ping (type: "TX")
 
@@ -59,7 +61,9 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "heard_repeats": "4e(12.25),77(8.50)",
   "timestamp": 1768762843,
   "external_antenna": false,
-  "power": "0.3w"
+  "power": "0.3w",
+  "contact": "D873B1F2",
+  "iata": "YOW"
 }
 ```
 
@@ -74,7 +78,9 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "heard_repeats": "None",
   "timestamp": 1768762873,
   "external_antenna": false,
-  "power": "0.3w"
+  "power": "0.3w",
+  "contact": "D873B1F2",
+  "iata": "YOW"
 }
 ```
 
