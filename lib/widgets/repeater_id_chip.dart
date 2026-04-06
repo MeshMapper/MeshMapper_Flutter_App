@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 
 import '../models/repeater.dart';
@@ -77,7 +76,11 @@ class RepeaterIdChip extends StatelessWidget {
   /// For DISC pings, pass [fullHexId] (the full public key hex) to enable
   /// exact 4-byte matching against the repeater database instead of the
   /// ambiguous 1-byte prefix match used for TX/RX pings.
-  static void showRepeaterPopup(BuildContext context, String repeaterId, {String? fullHexId}) {
+  /// Show a dialog with matching repeater names for the given [repeaterId].
+  ///
+  /// When [fromLatLng] is provided, distances are measured from that point
+  /// (e.g. the ping's GPS location) instead of the user's current position.
+  static void showRepeaterPopup(BuildContext context, String repeaterId, {String? fullHexId, ({double lat, double lon})? fromLatLng}) {
     final appState = Provider.of<AppStateProvider>(context, listen: false);
     final repeaters = appState.repeaters;
 
@@ -119,17 +122,16 @@ class RepeaterIdChip extends StatelessWidget {
           ),
         );
       } else {
+        // Use explicit origin point if provided, otherwise fall back to current GPS
         final position = appState.currentPosition;
+        final refLat = fromLatLng?.lat ?? position?.latitude;
+        final refLon = fromLatLng?.lon ?? position?.longitude;
 
-        // Sort by distance (closest first) when GPS is available
-        if (position != null) {
+        // Sort by distance (closest first) when a reference point is available
+        if (refLat != null && refLon != null) {
           matches.sort((a, b) {
-            final distA = GpsService.distanceBetween(
-              position.latitude, position.longitude, a.lat, a.lon,
-            );
-            final distB = GpsService.distanceBetween(
-              position.latitude, position.longitude, b.lat, b.lon,
-            );
+            final distA = GpsService.distanceBetween(refLat, refLon, a.lat, a.lon);
+            final distB = GpsService.distanceBetween(refLat, refLon, b.lat, b.lon);
             return distA.compareTo(distB);
           });
         }
@@ -138,7 +140,7 @@ class RepeaterIdChip extends StatelessWidget {
         content = Column(
           mainAxisSize: MainAxisSize.min,
           children: matches
-              .map((r) => _buildRepeaterRow(context, r, position: position, regionHopBytesOverride: regionOverride))
+              .map((r) => _buildRepeaterRow(context, r, refLat: refLat, refLon: refLon, regionHopBytesOverride: regionOverride))
               .toList(),
         );
       }
@@ -198,7 +200,8 @@ class RepeaterIdChip extends StatelessWidget {
   static Widget _buildRepeaterRow(
     BuildContext context,
     Repeater repeater, {
-    Position? position,
+    double? refLat,
+    double? refLon,
     int? regionHopBytesOverride,
   }) {
     final isActive = repeater.isActive;
@@ -206,14 +209,14 @@ class RepeaterIdChip extends StatelessWidget {
     final statusText = isActive ? 'Active' : 'Stale';
     final statusIcon = isActive ? Icons.circle : Icons.circle_outlined;
 
-    // Calculate distance string if GPS is available
+    // Calculate distance string if a reference point is available
     String? distanceText;
-    if (position != null) {
+    if (refLat != null && refLon != null) {
       final meters = GpsService.distanceBetween(
-        position.latitude, position.longitude, repeater.lat, repeater.lon,
+        refLat, refLon, repeater.lat, repeater.lon,
       );
       debugLog('[UI] Distance to ${repeater.name}: '
-          'from (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}) '
+          'from (${refLat.toStringAsFixed(5)}, ${refLon.toStringAsFixed(5)}) '
           'to (${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}) '
           '= ${meters.toStringAsFixed(0)}m');
       final isImperial = Provider.of<AppStateProvider>(context, listen: false)
