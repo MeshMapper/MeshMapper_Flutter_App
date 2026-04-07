@@ -103,7 +103,9 @@ A passively observed mesh packet from a nearby repeater.
   "heard_repeats": "4e(12.00)",
   "timestamp": 1768762900,
   "external_antenna": false,
-  "power": "0.3w"
+  "power": "0.3w",
+  "contact": "D873B1F2",
+  "iata": "YOW"
 }
 ```
 
@@ -136,7 +138,9 @@ A response from a discovered repeater or room node.
   "public_key": "a3b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
   "timestamp": 1768762950,
   "external_antenna": true,
-  "power": "1.0w"
+  "power": "1.0w",
+  "contact": "D873B1F2",
+  "iata": "YOW"
 }
 ```
 
@@ -151,7 +155,9 @@ A response from a discovered repeater or room node.
   "repeater_id": "None",
   "timestamp": 1768762980,
   "external_antenna": true,
-  "power": "1.0w"
+  "power": "1.0w",
+  "contact": "D873B1F2",
+  "iata": "YOW"
 }
 ```
 
@@ -180,7 +186,9 @@ A targeted zero-hop trace to a specific repeater.
   "remote_snr": 8.25,
   "timestamp": 1768763010,
   "external_antenna": false,
-  "power": "0.3w"
+  "power": "0.3w",
+  "contact": "D873B1F2",
+  "iata": "YOW"
 }
 ```
 
@@ -223,6 +231,8 @@ The user copies this link, opens MeshMapper Settings > API Endpoints, and taps "
 
 - **HTTPS required**: MeshMapper validates that the configured URL uses HTTPS. HTTP endpoints are rejected at the settings level.
 - **API key in header**: The user-configured API key is sent as `X-API-Key` header, not in the request body.
+- **No MeshMapper credentials**: The MeshMapper API key and session ID are never included in forwarded requests. You receive only the raw ping data.
+- **Contact key is opt-in**: The `contact` field (device public key prefix) is controlled by the user via "Include Contact Key" toggle. It defaults to ON but can be disabled.
 - **Fire-and-forget**: Custom API errors never affect MeshMapper's primary data submission. A broken custom endpoint cannot disrupt wardriving.
 
 ## Rate and Volume
