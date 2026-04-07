@@ -554,10 +554,10 @@ class PingService {
       }
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
-      // Build ping message (same format used for TxTracker correlation)
-      // Power is no longer included in the mesh message — sent per-ping in API payload
-      final coordsStr = '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
-      final pingMessage = '@[MapperBot] $coordsStr';
+      // Build 3-byte ping UID from coordinates + timestamp (for TxTracker correlation)
+      final hash = '${position.latitude},${position.longitude},${DateTime.now().millisecondsSinceEpoch ~/ 1000}'.hashCode;
+      final pingMessage = (hash & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+      debugLog('[PING] Generated UID: $pingMessage');
 
       // Capture noise floor at ping time
       final noiseFloor = _connection.lastNoiseFloor;
@@ -638,8 +638,8 @@ class PingService {
       // Play transmit sound immediately before sending
       _audioService?.playTransmitSound();
 
-      // Send ping via BLE (coordinates only — power is in API payload)
-      await _connection.sendPing(position.latitude, position.longitude);
+      // Send ping via BLE (UID only — coordinates and power are in API payload)
+      await _connection.sendPing(pingMessage);
 
       // Mark ping time and position
       _lastTxTime = DateTime.now();
