@@ -967,6 +967,7 @@ class MeshCoreConnection {
   }
 
   /// Send ping to #wardriving channel
+  /// Coordinates and power are no longer included in the mesh message — sent per-ping in API payload instead
   /// Message is a 3-byte UID (6 hex chars) derived from coordinates + timestamp
   Future<void> sendPing(String message) async {
     final channel = _wardrivingChannel;

@@ -555,6 +555,7 @@ class PingService {
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
       // Build 3-byte ping UID from coordinates + timestamp (for TxTracker correlation)
+      // Coordinates and power are no longer included in the mesh message — sent per-ping in API payload
       final hash = '${position.latitude},${position.longitude},${DateTime.now().millisecondsSinceEpoch ~/ 1000}'.hashCode;
       final pingMessage = (hash & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
       debugLog('[PING] Generated UID: $pingMessage');
