@@ -160,6 +160,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 appState.updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
               },
             ),
+            if (prefs.mapTilesEnabled)
+              ListTile(
+                leading: const Icon(Icons.opacity),
+                title: const Text('Coverage Overlay Opacity'),
+                subtitle: Slider(
+                  value: prefs.coverageOverlayOpacity.clamp(0.3, 1.0),
+                  min: 0.3,
+                  max: 1.0,
+                  divisions: 7,
+                  label: '${(prefs.coverageOverlayOpacity * 100).round()}%',
+                  onChanged: (value) => appState.setCoverageOverlayOpacity(value),
+                ),
+                trailing: Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
+              ),
             ListTile(
               leading: const Icon(Icons.visibility),
               title: const Text('Color Vision'),

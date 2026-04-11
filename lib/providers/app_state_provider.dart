@@ -656,9 +656,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Upload success: +$uploadedCount items (total: ${_pingStats.successfulUploads})');
       notifyListeners();
 
-      // Schedule overlay tile refresh after server has time to regenerate tiles
-      // Cache buster change + notifyListeners triggers flutter_map's reloadImages()
-      // which updates tile URLs in-place and refetches cleanly
+      // Schedule overlay tile refresh after server has time to regenerate tiles.
+      // The MapWidget watches _overlayCacheBust and calls _refreshCoverageOverlay()
+      // (remove + re-add raster source with new URL) when it changes.
       _tileRefreshTimer?.cancel();
       _tileRefreshTimer = Timer(const Duration(seconds: 5), () {
         _overlayCacheBust = DateTime.now().millisecondsSinceEpoch;
@@ -3879,6 +3879,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _savePreferences();
   }
 
+  /// Set coverage overlay opacity (0.3–1.0) and persist.
+  /// MapWidget watches `preferences.coverageOverlayOpacity` and applies the
+  /// new value to the raster layer at runtime via setLayerProperties, so the
+  /// overlay fades live as the slider moves. Lower bound of 0.3 prevents the
+  /// overlay from disappearing entirely.
+  void setCoverageOverlayOpacity(double opacity) {
+    final clamped = opacity.clamp(0.3, 1.0);
+    _preferences = _preferences.copyWith(coverageOverlayOpacity: clamped);
+    debugLog('[MAP] Coverage overlay opacity set to ${clamped.toStringAsFixed(2)}');
+    notifyListeners();
+    _savePreferences();
+  }
+
   /// Set app theme mode (dark/light) and persist
   void setThemeMode(String mode) {
     _preferences = _preferences.copyWith(themeMode: mode);
@@ -4380,14 +4393,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         if (reason == 'gps_inaccurate') {
           logError('GPS Accuracy Error\n$message', autoSwitch: false);
-          _zoneCheckError = message;
-          _zoneCheckErrorReason = 'gps_inaccurate';
-          notifyListeners();
+          // Schedule a retry so we don't depend solely on the GPS stream firing
+          // again — on first launch the stream may stall on a low-accuracy fix
+          // and the coverage tile overlay would never load.
+          _scheduleZoneCheckRetry(seconds: 10, error: message, reason: 'gps_inaccurate');
         } else if (reason == 'gps_stale') {
           logError('GPS Stale Error\n$message', autoSwitch: false);
-          _zoneCheckError = message;
-          _zoneCheckErrorReason = 'gps_stale';
-          notifyListeners();
+          _scheduleZoneCheckRetry(seconds: 10, error: message, reason: 'gps_stale');
         } else if (reason == 'zone_disabled') {
           final errorMsg = _getErrorMessage(reason, message);
           logError(errorMsg);
