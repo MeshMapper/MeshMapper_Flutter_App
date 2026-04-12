@@ -3141,6 +3141,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Offline mode ${enabled ? 'enabled' : 'disabled'}');
 
     if (enabled) {
+      // Cancel zone check retries — offline mode doesn't need zone validation
+      _clearZoneCheckError();
+      _isCheckingZone = false;
+      _stopMaintenancePolling();
       // Start periodic auto-save to prevent data loss from app kill
       _startOfflineAutoSaveTimer();
       // Clear zone data when entering offline mode
@@ -3206,6 +3210,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // 5b. Start periodic auto-save to prevent data loss from app kill
       _startOfflineAutoSaveTimer();
+
+      // 5c. Cancel zone check retries and maintenance polling
+      _clearZoneCheckError();
+      _isCheckingZone = false;
+      _stopMaintenancePolling();
 
       // 6. Clear zone data
       _inZone = null;
@@ -4344,6 +4353,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    if (_preferences.offlineMode) {
+      debugLog('[GEOFENCE] Skipping zone check: offline mode enabled');
+      return;
+    }
+
     if (_isCheckingZone) {
       debugLog('[GEOFENCE] Zone check already in progress, skipping duplicate call');
       return;
@@ -5020,11 +5034,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[MAP] Fetching repeaters for zone: $iata');
     try {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
-      _repeaters = fetchedRepeaters;
-      _repeatersLoaded = true;
-      _repeatersLoadedForIata = iata;
-      debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
-      notifyListeners();
+      if (fetchedRepeaters.isNotEmpty) {
+        _repeaters = fetchedRepeaters;
+        _repeatersLoaded = true;
+        _repeatersLoadedForIata = iata;
+        debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
+        notifyListeners();
+      } else {
+        debugWarn('[MAP] No repeaters returned for zone $iata — will retry on next zone check');
+      }
     } catch (e) {
       debugError('[MAP] Failed to fetch repeaters: $e');
     }
