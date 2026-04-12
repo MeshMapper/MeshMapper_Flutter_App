@@ -244,6 +244,14 @@
       "notes": "Seeed Tracker T1000"
     },
     {
+      "manufacturer": "Seeed Xiao-nrf52",
+      "shortName": "Seeed Xiao nRF52",
+      "power": 0.3,
+      "platform": "nrf52",
+      "txPower": 22,
+      "notes": "Seeed Xiao nRF52840 bare board, no PA amplifier"
+    },
+    {
       "manufacturer": "Xiao C3",
       "shortName": "Xiao C3",
       "power": 0.3,
