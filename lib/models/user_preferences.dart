@@ -188,7 +188,7 @@ class UserPreferences {
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
-      gpsMarkerStyle: (json['gpsMarkerStyle'] as String?) ?? 'arrow',
+      gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
       disconnectAlertEnabled: (json['disconnectAlertEnabled'] as bool?) ?? false,
@@ -198,6 +198,13 @@ class UserPreferences {
       customApiDisclaimerAccepted: (json['customApiDisclaimerAccepted'] as bool?) ?? false,
       customApiIncludeContact: (json['customApiIncludeContact'] as bool?) ?? true,
     );
+  }
+
+  /// Migrate the legacy 'pacman' gps marker id to 'chomper' after the rename.
+  static String _migrateGpsMarkerStyle(String? value) {
+    if (value == null) return 'arrow';
+    if (value == 'pacman') return 'chomper';
+    return value;
   }
 
   /// Convert to JSON (for persistence)
