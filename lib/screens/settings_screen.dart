@@ -1006,7 +1006,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'bike': return 'Bike';
       case 'boat': return 'Boat';
       case 'walk': return 'Walk';
-      case 'pacman': return 'Pac-Man';
+      case 'chomper': return 'Chomper';
       case 'arrow':
       default: return 'Arrow';
     }
@@ -1066,7 +1066,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ('bike', 'Bike', const Icon(Icons.directions_bike)),
       ('boat', 'Boat', const Icon(Icons.directions_boat)),
       ('walk', 'Walk', const Icon(Icons.directions_walk)),
-      ('pacman', 'Pac-Man', const _PacmanIcon()),
+      ('chomper', 'Chomper', const _ChomperIcon()),
     ];
     showModalBottomSheet(
       context: context,
@@ -2634,24 +2634,24 @@ class _OfflineSessionTile extends StatelessWidget {
   }
 }
 
-/// Pac-Man icon widget for the GPS marker selector
-class _PacmanIcon extends StatelessWidget {
-  const _PacmanIcon();
+/// Chomper icon widget for the GPS marker selector
+class _ChomperIcon extends StatelessWidget {
+  const _ChomperIcon();
 
   @override
   Widget build(BuildContext context) {
     return CustomPaint(
       size: const Size(24, 24),
-      painter: _PacmanIconPainter(
+      painter: _ChomperIconPainter(
         color: IconTheme.of(context).color ?? Colors.grey,
       ),
     );
   }
 }
 
-class _PacmanIconPainter extends CustomPainter {
+class _ChomperIconPainter extends CustomPainter {
   final Color color;
-  const _PacmanIconPainter({required this.color});
+  const _ChomperIconPainter({required this.color});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2659,7 +2659,7 @@ class _PacmanIconPainter extends CustomPainter {
     final cy = size.height / 2;
     const radius = 10.0;
 
-    const mouthAngle = 45.0 * (math.pi / 180);
+    const mouthAngle = 70.0 * (math.pi / 180);
     // Mouth faces right for the settings icon (natural reading direction)
     const startAngle = mouthAngle / 2;
     const sweepAngle = 2 * math.pi - mouthAngle;
@@ -2678,15 +2678,9 @@ class _PacmanIconPainter extends CustomPainter {
       )
       ..close();
     canvas.drawPath(path, paint);
-
-    // Eye
-    final eyePaint = Paint()
-      ..color = color == Colors.grey ? Colors.white : Colors.white.withValues(alpha: 0.9)
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(Offset(cx + 2, cy - 3.5), 1.5, eyePaint);
   }
 
   @override
-  bool shouldRepaint(covariant _PacmanIconPainter oldDelegate) =>
+  bool shouldRepaint(covariant _ChomperIconPainter oldDelegate) =>
       color != oldDelegate.color;
 }
