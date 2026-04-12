@@ -139,6 +139,15 @@ class TxTracker {
         reportedRssi = null;
       }
 
+      // Only direct (1-hop) echoes yield a meaningful SNR/RSSI for the repeater
+      // that heard our TX: the radio reports last-hop link quality, so for any
+      // multi-hop relay the metrics describe a different link entirely.
+      if (!carpeaterStripped && metadata.pathHashCount > 1) {
+        debugLog('[TX LOG] Ignoring: multi-hop echo (pathHashCount=${metadata.pathHashCount}) '
+            'from $pathHex — SNR/RSSI would measure last-hop link, not repeater downlink');
+        return false;
+      }
+
       // VALIDATION STEP 2: Check user carpeater filter (before RSSI check so user
       // never sees confusing "RSSI too strong" errors for a device they told the app to ignore)
       if (!carpeaterStripped && shouldIgnoreRepeater != null && shouldIgnoreRepeater!(pathHex.toUpperCase())) {
