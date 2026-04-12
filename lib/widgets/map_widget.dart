@@ -358,6 +358,12 @@ class _MapWidgetState extends State<MapWidget> {
   // the current preference in _buildMap to detect slider changes and apply
   // them live via _applyCoverageOverlayOpacity (no layer rebuild needed).
   double? _lastAppliedCoverageOpacity;
+  // Guard flag that coalesces multiple overlay-refresh triggers (cache bust
+  // and zone change) in the same frame into a single post-frame callback.
+  // Without this, two watchers can schedule concurrent _refreshCoverageOverlay
+  // runs whose remove/add calls interleave and produce "Source already exists"
+  // errors in the native log.
+  bool _coverageRefreshScheduled = false;
   bool _styleLoaded = false;
   bool _hasStyleLoadedOnce = false;  // True after first onStyleLoadedCallback (prevents re-centering on style switch)
 
@@ -365,6 +371,14 @@ class _MapWidgetState extends State<MapWidget> {
   // The build() method computes a version hash from app state and only triggers
   // _syncAllAnnotations when the hash changes (avoiding unnecessary diff work).
   int _lastMarkerDataVersion = -1;
+  // Serializes concurrent _syncAllAnnotations runs. Without this, a second
+  // build() can fire a sync while the previous one is still awaiting platform
+  // calls — both would mutate _coverageSymbols / _distanceLabelSymbols, and
+  // the older sync's cleanup loop would remove symbols the newer sync just
+  // added. The flag causes re-entrant post-frame callbacks to bail; after the
+  // in-flight sync finishes, the finally block checks if the data version
+  // advanced during the run and triggers a rebuild if so.
+  bool _syncInFlight = false;
 
   // Tile load failure detection — shows a banner if map tiles haven't loaded
   // within a timeout after style load. Cleared when onMapIdle fires.
@@ -428,7 +442,17 @@ class _MapWidgetState extends State<MapWidget> {
   @override
   void dispose() {
     _tileLoadTimeoutTimer?.cancel();
-    _mapController?.removeListener(_onCameraChanged);
+    final controller = _mapController;
+    if (controller != null) {
+      controller.removeListener(_onCameraChanged);
+      // Symbol/feature tap listeners are registered in _onMapCreated onto
+      // separate callback collections that ChangeNotifier.dispose() does NOT
+      // clear. Remove them explicitly so an in-flight tap that gets queued
+      // before the platform channel is torn down can't reach into a disposed
+      // State. try/catch swallows the edge case where _onMapCreated never ran.
+      try { controller.onSymbolTapped.remove(_handleSymbolTap); } catch (_) {}
+      try { controller.onFeatureTapped.remove(_handleFeatureTap); } catch (_) {}
+    }
     super.dispose();
   }
 
@@ -871,8 +895,22 @@ class _MapWidgetState extends State<MapWidget> {
       final dataVersion = _computeMarkerDataVersion(appState);
       if (dataVersion != _lastMarkerDataVersion) {
         _lastMarkerDataVersion = dataVersion;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _syncAllAnnotations(appState);
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (!mounted) return;
+          // Guard against concurrent build()-triggered syncs stepping on each
+          // other. _syncAllAnnotations awaits multiple native platform calls
+          // and can take ~100ms+; during auto-ping bursts multiple rebuilds
+          // would otherwise schedule overlapping runs whose cleanup loops
+          // would remove symbols the other sync just added.
+          if (_syncInFlight) return;
+          _syncInFlight = true;
+          try {
+            await _syncAllAnnotations(appState);
+          } catch (e) {
+            debugError('[MAP] _syncAllAnnotations failed: $e');
+          } finally {
+            _syncInFlight = false;
+          }
         });
       }
     }
@@ -1010,24 +1048,32 @@ class _MapWidgetState extends State<MapWidget> {
     // onStyleLoadedCallback → _onStyleLoaded re-registers images, rebuilds
     // cluster layers, re-adds the coverage overlay, and re-syncs annotations.
 
-    // Detect cache bust change and refresh overlay
-    if (appState.overlayCacheBust != _lastCacheBust && _isMapReady && _styleLoaded) {
-      _lastCacheBust = appState.overlayCacheBust;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _refreshCoverageOverlay(appState);
-      });
-    }
-
-    // Detect zoneCode transition (null → value, or zone change) and add/refresh
-    // the overlay. Needed because _addCoverageOverlay only runs during
-    // _onStyleLoaded — if the first zone check failed with gps_inaccurate, the
-    // style loads with zoneCode=null and the overlay is skipped. When a later
-    // retry sets the zone, nothing would otherwise trigger the raster layer.
-    if (appState.zoneCode != _lastOverlayZoneCode && _isMapReady && _styleLoaded) {
-      _lastOverlayZoneCode = appState.zoneCode;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _refreshCoverageOverlay(appState);
-      });
+    // Detect cache bust or zoneCode change → schedule a SINGLE coalesced
+    // refresh. Previously each watcher scheduled its own post-frame callback,
+    // which could race when both changed in the same frame (e.g. a zone
+    // transition that also rotates cache bust). The _coverageRefreshScheduled
+    // flag ensures at most one refresh is queued per frame.
+    //
+    // The zoneCode watcher is needed because _addCoverageOverlay only runs
+    // during _onStyleLoaded — if the first zone check failed with
+    // gps_inaccurate, the style loads with zoneCode=null and the overlay is
+    // skipped. When a later retry sets the zone, nothing else would trigger
+    // the raster layer.
+    final cacheBustChanged =
+        appState.overlayCacheBust != _lastCacheBust && _isMapReady && _styleLoaded;
+    final zoneChanged =
+        appState.zoneCode != _lastOverlayZoneCode && _isMapReady && _styleLoaded;
+    if (cacheBustChanged || zoneChanged) {
+      if (cacheBustChanged) _lastCacheBust = appState.overlayCacheBust;
+      if (zoneChanged) _lastOverlayZoneCode = appState.zoneCode;
+      if (!_coverageRefreshScheduled) {
+        _coverageRefreshScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          _coverageRefreshScheduled = false;
+          if (!mounted) return;
+          await _refreshCoverageOverlay(appState);
+        });
+      }
     }
 
     // Detect coverage overlay opacity change (user dragged the slider in
@@ -1107,6 +1153,7 @@ class _MapWidgetState extends State<MapWidget> {
   /// app state and call the existing `_show*Details()` method (which expects
   /// the full object, not just an ID).
   void _handleSymbolTap(Symbol symbol) {
+    if (!mounted) return;
     final data = symbol.data;
     if (data == null) return;
     final kind = data['kind'] as String?;
@@ -1324,6 +1371,13 @@ class _MapWidgetState extends State<MapWidget> {
       _gpsSymbol = null;
       _coverageSymbols.clear();
       _distanceLabelSymbols.clear();
+      // Distance-label companions: the native side wipes registered images on
+      // style reload, so the "already registered" cache must be cleared too or
+      // the next focus mode will skip addImage() and reference a non-existent
+      // image. The size/repeater-position maps are cleared for consistency.
+      _distanceLabelImageSize.clear();
+      _distanceLabelRepeaterPos.clear();
+      _registeredDistanceLabelImages.clear();
       // Mark cluster layers as not-ready until _setupRepeaterClusterLayers
       // creates them on the new style. This gates build()-driven post-frame
       // syncs from racing ahead of source creation.
@@ -1892,10 +1946,14 @@ class _MapWidgetState extends State<MapWidget> {
     }
   }
 
-  /// Composite key for a coverage marker symbol — kind + timestamp ms.
+  /// Composite key for a coverage marker symbol — kind + timestamp ms + lat/lon.
   /// Used as the map key in [_coverageSymbols] and to detect updates/removals.
-  String _coverageKey(String type, DateTime ts) =>
-      '${type}_${ts.millisecondsSinceEpoch}';
+  /// Lat/lon at 5-decimal precision (~1.1m) is included so two distinct pings
+  /// that happen to land in the same millisecond (possible under heavy RX
+  /// traffic) don't collide on a shared key.
+  String _coverageKey(String type, DateTime ts, double lat, double lon) =>
+      '${type}_${ts.millisecondsSinceEpoch}_'
+      '${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
 
   /// Diff-syncs native coverage symbols (TX/RX/DISC/Trace) against app state.
   /// One symbol per ping, image varies by type/success state, opacity reflects
@@ -1928,7 +1986,7 @@ class _MapWidgetState extends State<MapWidget> {
       required bool success,
       required int idForMetadata,
     }) async {
-      final key = _coverageKey(type, ts);
+      final key = _coverageKey(type, ts, lat, lon);
       final isFocused = _isFocusedPing(lat, lon, ts);
       // In focus mode, hide every coverage marker except the focused ping.
       // Skipping wantedKeys lets the cleanup loop remove them entirely so the
@@ -2475,7 +2533,21 @@ class _MapWidgetState extends State<MapWidget> {
   /// Compute a version hash of all data that affects the marker list.
   /// When this changes, the cached marker list is rebuilt; otherwise it's reused
   /// across camera-change rebuilds (which happen at ~60Hz during pan/zoom).
+  ///
+  /// Captures **in-place** mutations too: TX pings grow `heardRepeaters` during
+  /// the 7s echo window, and DISC entries grow `discoveredNodes` as late
+  /// responses land. Summing counts makes the hash sensitive to these additions
+  /// even though the parent list length doesn't change.
   int _computeMarkerDataVersion(AppStateProvider appState) {
+    int txEchoTotal = 0;
+    for (final p in appState.txPings) {
+      txEchoTotal += p.heardRepeaters.length;
+    }
+    int discNodeTotal = 0;
+    for (final e in appState.discLogEntries) {
+      discNodeTotal += e.discoveredNodes.length;
+    }
+
     return Object.hash(
       appState.txPings.length,
       appState.rxPings.length,
@@ -2489,9 +2561,12 @@ class _MapWidgetState extends State<MapWidget> {
       _focusedPingTimestamp,
       _focusedRepeaters.length,
       appState.preferences.gpsMarkerStyle,
+      appState.preferences.markerStyle,
       appState.currentPosition?.latitude,
       appState.currentPosition?.longitude,
       _computedHeading,
+      txEchoTotal,
+      discNodeTotal,
     );
   }
 
