@@ -4475,7 +4475,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[GEOFENCE] In zone: $newZoneName ($newZoneCode)');
 
         if (newZoneCode.isNotEmpty) {
-          await _fetchRepeatersForZone(newZoneCode);
+          _fetchRepeatersForZone(newZoneCode); // fire-and-forget — don't block zone check
         }
       } else {
         _currentZone = null;
