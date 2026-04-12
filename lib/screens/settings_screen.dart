@@ -2001,6 +2001,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           message = 'Authentication failed - Advert your device on the mesh';
           backgroundColor = Colors.red;
           break;
+        case OfflineUploadResult.gpsRequired:
+          message = 'GPS required - enable location services to upload';
+          backgroundColor = Colors.red;
+          break;
         case OfflineUploadResult.partialFailure:
           message = 'Partial upload - some pings failed';
           backgroundColor = Colors.orange;

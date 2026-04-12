@@ -71,6 +71,8 @@ enum OfflineUploadResult {
   partialFailure,
   /// Another upload is already in progress
   uploadInProgress,
+  /// GPS position required but not available
+  gpsRequired,
 }
 
 /// Main application state provider
@@ -3626,7 +3628,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     onProgress?.call('Authenticating...');
 
-    // 3. Authenticate with offline_mode: true, skipSessionStore: true
+    // 3. Check GPS before auth — the server requires current coordinates for geo-auth
+    if (_currentPosition == null) {
+      debugError('[OFFLINE] Upload requires GPS - location services not available');
+      return OfflineUploadResult.gpsRequired;
+    }
+
+    // 4. Authenticate with offline_mode: true, skipSessionStore: true
     //    This prevents writing to shared _sessionId/_txAllowed/etc.
     debugLog('[OFFLINE] Authenticating for offline upload with device: $deviceName');
     final authResult = await _apiService.requestAuth(
