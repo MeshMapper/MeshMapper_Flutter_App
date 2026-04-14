@@ -107,8 +107,22 @@ class PayloadType {
 class CryptoService {
   /// Fixed key for "Public" channel
   static final Uint8List publicChannelFixedKey = Uint8List.fromList([
-    0x8b, 0x33, 0x87, 0xe9, 0xc5, 0xcd, 0xea, 0x6a,
-    0xc9, 0xe5, 0xed, 0xba, 0xa1, 0x15, 0xcd, 0x72,
+    0x8b,
+    0x33,
+    0x87,
+    0xe9,
+    0xc5,
+    0xcd,
+    0xea,
+    0x6a,
+    0xc9,
+    0xe5,
+    0xed,
+    0xba,
+    0xa1,
+    0x15,
+    0xcd,
+    0x72,
   ]);
 
   /// Derive a 16-byte channel key from a hashtag channel name using SHA-256
@@ -228,8 +242,10 @@ class PacketMetadata {
 
     final int header = raw[0];
     final int routeType = header & PacketHeader.routeMask;
-    final int payloadType = (header >> PacketHeader.typeShift) & PacketHeader.typeMask;
-    final int protocolVersion = (header >> PacketHeader.verShift) & PacketHeader.verMask;
+    final int payloadType =
+        (header >> PacketHeader.typeShift) & PacketHeader.typeMask;
+    final int protocolVersion =
+        (header >> PacketHeader.verShift) & PacketHeader.verMask;
 
     // Calculate offset for Path Length based on route type
     int pathLengthOffset = 1;
@@ -427,9 +443,12 @@ void main(List<String> arguments) {
 
   // Print packet metadata
   print('PACKET METADATA');
-  print('  Header: 0x${metadata.header.toRadixString(16).padLeft(2, '0').toUpperCase()}');
-  print('    Route Type: ${RouteType.getName(metadata.routeType)} (0x${metadata.routeType.toRadixString(16).padLeft(2, '0')})');
-  print('    Payload Type: ${PayloadType.getName(metadata.payloadType)} (0x${metadata.payloadType.toRadixString(16).padLeft(2, '0')})');
+  print(
+      '  Header: 0x${metadata.header.toRadixString(16).padLeft(2, '0').toUpperCase()}');
+  print(
+      '    Route Type: ${RouteType.getName(metadata.routeType)} (0x${metadata.routeType.toRadixString(16).padLeft(2, '0')})');
+  print(
+      '    Payload Type: ${PayloadType.getName(metadata.payloadType)} (0x${metadata.payloadType.toRadixString(16).padLeft(2, '0')})');
   print('    Protocol Version: ${metadata.protocolVersion}');
   print('  Path Length: ${metadata.pathLength} bytes');
 
@@ -444,10 +463,12 @@ void main(List<String> arguments) {
     print('  Path: (empty)');
   }
 
-  print('  Encrypted Payload: ${formatHex(metadata.encryptedPayload)} (${metadata.encryptedPayload.length} bytes)');
+  print(
+      '  Encrypted Payload: ${formatHex(metadata.encryptedPayload)} (${metadata.encryptedPayload.length} bytes)');
 
   if (metadata.channelHash != null) {
-    print('  Channel Hash: 0x${metadata.channelHash!.toRadixString(16).padLeft(2, '0').toUpperCase()}');
+    print(
+        '  Channel Hash: 0x${metadata.channelHash!.toRadixString(16).padLeft(2, '0').toUpperCase()}');
   }
   print('');
 
@@ -514,7 +535,8 @@ void main(List<String> arguments) {
     print('');
     print('  Known channel hashes:');
     for (final entry in channels.entries) {
-      print('    0x${entry.key.toRadixString(16).padLeft(2, '0').toUpperCase()} -> ${entry.value.channelName}');
+      print(
+          '    0x${entry.key.toRadixString(16).padLeft(2, '0').toUpperCase()} -> ${entry.value.channelName}');
     }
     printValidationResults(steps, false, 'Unknown channel hash');
     return;

@@ -84,16 +84,18 @@ class OfflineModeToggle extends StatelessWidget {
   }
 
   /// Show confirmation dialog explaining what the mode does
-  static Future<bool?> _showConfirmDialog(BuildContext context, bool switchingToOffline) {
-    final title = switchingToOffline ? 'Enable Offline Mode?' : 'Switch to Online Mode?';
+  static Future<bool?> _showConfirmDialog(
+      BuildContext context, bool switchingToOffline) {
+    final title =
+        switchingToOffline ? 'Enable Offline Mode?' : 'Switch to Online Mode?';
     final icon = switchingToOffline ? Icons.cloud_off : Icons.cloud_done;
     final iconColor = switchingToOffline ? Colors.orange : Colors.green;
     final description = switchingToOffline
         ? 'Wardrive data will be saved locally on your device instead of uploading to MeshMapper.\n\n'
-          'This is useful when you have poor cell connectivity or the API is in maintenance.\n\n'
-          'You can upload saved data later from the Settings tab.'
+            'This is useful when you have poor cell connectivity or the API is in maintenance.\n\n'
+            'You can upload saved data later from the Settings tab.'
         : 'Wardrive data will be uploaded to MeshMapper immediately as you drive.\n\n'
-          'This requires an active internet connection.';
+            'This requires an active internet connection.';
     final confirmLabel = switchingToOffline ? 'Go Offline' : 'Go Online';
 
     return showDialog<bool>(
@@ -147,7 +149,8 @@ class OfflineModeToggle extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => handleOfflineModeToggle(context, appState, offlineMode, isConnected),
+        onTap: () => handleOfflineModeToggle(
+            context, appState, offlineMode, isConnected),
         borderRadius: BorderRadius.circular(10),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),

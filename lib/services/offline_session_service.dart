@@ -10,10 +10,10 @@ class OfflineSession {
   final DateTime createdAt;
   final int pingCount;
   final Map<String, dynamic> data;
-  final String? devicePublicKey;  // Device public key for auth during upload
-  final String? deviceName;       // Device name for display
-  final String? contactUri;       // Signed contact URI for registration during upload
-  final bool uploaded;            // Track upload status
+  final String? devicePublicKey; // Device public key for auth during upload
+  final String? deviceName; // Device name for display
+  final String? contactUri; // Signed contact URI for registration during upload
+  final bool uploaded; // Track upload status
 
   OfflineSession({
     required this.filename,
@@ -106,14 +106,18 @@ class OfflineSessionService {
   /// Load sessions from storage
   Future<void> _loadSessions() async {
     final sessionsJson = _prefs?.getStringList(_sessionsKey) ?? [];
-    _sessions = sessionsJson.map((json) {
-      try {
-        return OfflineSession.fromJson(jsonDecode(json) as Map<String, dynamic>);
-      } catch (e) {
-        debugError('[OFFLINE] Failed to parse session: $e');
-        return null;
-      }
-    }).whereType<OfflineSession>().toList();
+    _sessions = sessionsJson
+        .map((json) {
+          try {
+            return OfflineSession.fromJson(
+                jsonDecode(json) as Map<String, dynamic>);
+          } catch (e) {
+            debugError('[OFFLINE] Failed to parse session: $e');
+            return null;
+          }
+        })
+        .whereType<OfflineSession>()
+        .toList();
 
     // Sort by date, newest first
     _sessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -129,10 +133,12 @@ class OfflineSessionService {
   /// Generate filename for new session
   String _generateFilename() {
     final now = DateTime.now();
-    final dateStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final dateStr =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
     // Check if we already have sessions for today
-    final todaySessions = _sessions.where((s) => s.filename.startsWith(dateStr)).length;
+    final todaySessions =
+        _sessions.where((s) => s.filename.startsWith(dateStr)).length;
 
     if (todaySessions == 0) {
       return '$dateStr.json';
@@ -183,7 +189,8 @@ class OfflineSessionService {
     _sessions.insert(0, session); // Add at beginning (newest first)
     await _saveSessions();
 
-    debugLog('[OFFLINE] Saved session: $filename with ${pings.length} pings (device: ${deviceName ?? "unknown"})');
+    debugLog(
+        '[OFFLINE] Saved session: $filename with ${pings.length} pings (device: ${deviceName ?? "unknown"})');
   }
 
   /// Update the current in-progress session with the latest pings snapshot.
@@ -202,7 +209,8 @@ class OfflineSessionService {
 
     // If we have a tracked session, update it in-place
     if (_currentSessionFilename != null) {
-      final index = _sessions.indexWhere((s) => s.filename == _currentSessionFilename);
+      final index =
+          _sessions.indexWhere((s) => s.filename == _currentSessionFilename);
       if (index != -1) {
         final existing = _sessions[index];
         final updatedData = Map<String, dynamic>.from(existing.data);
@@ -219,11 +227,13 @@ class OfflineSessionService {
           contactUri: contactUri ?? existing.contactUri,
         );
         await _saveSessions();
-        debugLog('[OFFLINE] Updated session: ${existing.filename} with ${pings.length} pings');
+        debugLog(
+            '[OFFLINE] Updated session: ${existing.filename} with ${pings.length} pings');
         return;
       }
       // Session was deleted externally — fall through to create new
-      debugWarn('[OFFLINE] Tracked session $_currentSessionFilename not found, creating new');
+      debugWarn(
+          '[OFFLINE] Tracked session $_currentSessionFilename not found, creating new');
       _currentSessionFilename = null;
     }
 
@@ -237,7 +247,8 @@ class OfflineSessionService {
     // saveSession inserts at index 0 (newest first)
     if (_sessions.isNotEmpty) {
       _currentSessionFilename = _sessions.first.filename;
-      debugLog('[OFFLINE] Tracking new auto-save session: $_currentSessionFilename');
+      debugLog(
+          '[OFFLINE] Tracking new auto-save session: $_currentSessionFilename');
     }
   }
 

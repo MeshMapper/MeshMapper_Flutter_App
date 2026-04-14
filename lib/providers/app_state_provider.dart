@@ -3,7 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
-import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
+import 'package:flutter/widgets.dart'
+    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -30,7 +31,8 @@ import '../services/gps_simulator_service.dart';
 import '../services/meshcore/channel_service.dart';
 import '../services/meshcore/connection.dart';
 import '../services/meshcore/crypto_service.dart';
-import '../services/meshcore/packet_validator.dart' show PacketValidator, ChannelInfo;
+import '../services/meshcore/packet_validator.dart'
+    show PacketValidator, ChannelInfo;
 import '../services/meshcore/rx_logger.dart';
 import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
@@ -46,10 +48,13 @@ import '../utils/debug_logger_io.dart';
 enum AutoMode {
   /// Active Mode: Sends pings on movement, listens for RX responses
   active,
+
   /// Passive Mode: Listening only (no transmit)
   passive,
+
   /// Hybrid Mode: Alternates Discovery + Active pings each interval
   hybrid,
+
   /// Trace Mode: Zero-hop trace to specific repeater
   targeted,
 }
@@ -61,16 +66,22 @@ enum OverlayPingType { tx, disc, trace, rx }
 enum OfflineUploadResult {
   /// Upload completed successfully
   success,
+
   /// Session file not found
   notFound,
+
   /// Session data is invalid or empty
   invalidSession,
+
   /// API authentication failed
   authFailed,
+
   /// Some pings failed to upload
   partialFailure,
+
   /// Another upload is already in progress
   uploadInProgress,
+
   /// GPS position required but not available
   gpsRequired,
 }
@@ -90,11 +101,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final DeviceModelService _deviceModelService;
   late final CustomApiService _customApiService;
   final AudioService _audioService = AudioService();
-  late final CooldownTimer _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
-  late final ManualPingCooldownTimer _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
+  late final CooldownTimer
+      _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
+  late final ManualPingCooldownTimer
+      _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
   late final AutoPingTimer _autoPingTimer;
   late final RxWindowTimer _rxWindowTimer;
-  late final DiscoveryWindowTimer _discoveryWindowTimer; // Discovery listening window (Passive Mode)
+  late final DiscoveryWindowTimer
+      _discoveryWindowTimer; // Discovery listening window (Passive Mode)
   MeshCoreConnection? _meshCoreConnection;
   PingService? _pingService;
   UnifiedRxHandler? _unifiedRxHandler;
@@ -111,8 +125,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   ConnectionStep _connectionStep = ConnectionStep.disconnected;
   String? _connectionError;
-  bool _isAuthError = false;  // Track if connection failed due to auth
-  bool _isNetworkError = false;  // Track if connection failed due to network
+  bool _isAuthError = false; // Track if connection failed due to auth
+  bool _isNetworkError = false; // Track if connection failed due to network
 
   // Bluetooth adapter state (on/off)
   BluetoothAdapterState _bluetoothAdapterState = BluetoothAdapterState.unknown;
@@ -125,8 +139,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   GpsStatus _gpsStatus = GpsStatus.permissionDenied;
   Position? _currentPosition;
   ({double lat, double lon})? _lastKnownPosition;
-  DateTime? _lastPositionSaveTime; // Throttle position saves to every 30 seconds
-  bool _firstGpsLockLogged = false; // Track if we've logged first GPS lock message
+  DateTime?
+      _lastPositionSaveTime; // Throttle position saves to every 30 seconds
+  bool _firstGpsLockLogged =
+      false; // Track if we've logged first GPS lock message
 
   // Device info
   DeviceModel? _deviceModel;
@@ -144,7 +160,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The device name to display (prefers SelfInfo name over BLE advertisement name)
   /// SelfInfo name reflects user's chosen name in MeshCore; BLE name may be cached/stale
-  String? get displayDeviceName => _displayDeviceName ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
+  String? get displayDeviceName =>
+      _displayDeviceName ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
 
   // Ping state
   PingStats _pingStats = const PingStats();
@@ -177,7 +194,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<TraceLogEntry> _traceLogEntries = [];
 
   // Top repeaters overlay — updated live on each ping event
-  List<({String repeaterId, double snr, OverlayPingType type})> _topRepeatersOverlay = [];
+  List<({String repeaterId, double snr, OverlayPingType type})>
+      _topRepeatersOverlay = [];
   ({String repeaterId, double snr})? _rxOverlaySlot;
   Timer? _rxOverlayWindowTimer;
 
@@ -191,8 +209,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   UserPreferences _preferences = const UserPreferences();
 
   // Anonymous mode state
-  String? _originalDeviceName;       // Real name stored before rename
-  bool _isAnonymousRenamed = false;  // Device currently renamed to "Anonymous"
+  String? _originalDeviceName; // Real name stored before rename
+  bool _isAnonymousRenamed = false; // Device currently renamed to "Anonymous"
 
   /// Per-device antenna preferences: maps companion name → external antenna bool
   Map<String, bool> _deviceAntennaPreferences = {};
@@ -228,11 +246,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isCheckingZone = false;
 
   // Zone check retry state
-  String? _zoneCheckError;           // Error message from last failed check (null = no error)
-  String? _zoneCheckErrorReason;     // 'network', 'gps_inaccurate', 'gps_stale', 'server_error'
-  int _zoneCheckRetryCountdown = 0;  // Seconds until next retry (0 = not counting)
-  Timer? _zoneCheckRetryTimer;       // Fires to trigger the retry
-  Timer? _zoneCheckCountdownTimer;   // Ticks every 1s for UI countdown
+  String?
+      _zoneCheckError; // Error message from last failed check (null = no error)
+  String?
+      _zoneCheckErrorReason; // 'network', 'gps_inaccurate', 'gps_stale', 'server_error'
+  int _zoneCheckRetryCountdown =
+      0; // Seconds until next retry (0 = not counting)
+  Timer? _zoneCheckRetryTimer; // Fires to trigger the retry
+  Timer? _zoneCheckCountdownTimer; // Ticks every 1s for UI countdown
 
   // Maintenance mode state
   bool _maintenanceMode = false;
@@ -274,9 +295,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Zone grace period — pauses wardriving when outside_zone, resumes on zone re-entry
   bool _isInZoneGracePeriod = false;
-  Timer? _zoneGraceTimer;              // 5-minute overall timeout
-  Timer? _zoneGracePollingTimer;       // 5-second zone polling
-  Timer? _zoneGraceCountdownTimer;     // 1-second UI countdown tick
+  Timer? _zoneGraceTimer; // 5-minute overall timeout
+  Timer? _zoneGracePollingTimer; // 5-second zone polling
+  Timer? _zoneGraceCountdownTimer; // 1-second UI countdown tick
   int _zoneGraceSecondsRemaining = 0;
   bool _autoPingWasEnabledBeforeGrace = false;
   AutoMode _autoModeBeforeGrace = AutoMode.active;
@@ -311,10 +332,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _scope;
 
   // Path hash mode tracking (for multi-byte path support)
-  int? _originalPathHashMode; // Device's mode BEFORE we changed it (from DeviceInfo)
-  bool _userChangedPathMode = false; // True if user manually changed hopBytes while connected
-  int _hopBytes = 1; // Runtime-only: current hop byte size (read from device, not persisted)
-  int _traceHopBytes = 1; // Runtime-only: trace byte size (1, 2, or 4 — bitshift encoding)
+  int?
+      _originalPathHashMode; // Device's mode BEFORE we changed it (from DeviceInfo)
+  bool _userChangedPathMode =
+      false; // True if user manually changed hopBytes while connected
+  int _hopBytes =
+      1; // Runtime-only: current hop byte size (read from device, not persisted)
+  int _traceHopBytes =
+      1; // Runtime-only: trace byte size (1, 2, or 4 — bitshift encoding)
 
   // Noise floor session tracking (for graph feature)
   NoiseFloorSession? _currentNoiseFloorSession;
@@ -359,7 +384,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isNetworkError => _isNetworkError;
   BluetoothAdapterState get bluetoothAdapterState => _bluetoothAdapterState;
   bool get isBluetoothOn => _bluetoothAdapterState == BluetoothAdapterState.on;
-  bool get isBluetoothOff => _bluetoothAdapterState == BluetoothAdapterState.off;
+  bool get isBluetoothOff =>
+      _bluetoothAdapterState == BluetoothAdapterState.off;
   GpsStatus get gpsStatus => _gpsStatus;
   Position? get currentPosition => _currentPosition;
   ({double lat, double lon})? get lastKnownPosition => _lastKnownPosition;
@@ -371,14 +397,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get autoPingEnabled => _autoPingEnabled;
   AutoMode get autoMode => _autoMode;
   bool get isPingSending => _isPingSending;
-  bool get isPingInProgress => _pingService?.pingInProgress ?? false;  // True during entire ping + RX window (for auto pings)
-  bool get isDiscoveryListening => _pingService?.isDiscoveryListening ?? false;  // True during discovery listening window (for Passive Mode)
+  bool get isPingInProgress =>
+      _pingService?.pingInProgress ??
+      false; // True during entire ping + RX window (for auto pings)
+  bool get isDiscoveryListening =>
+      _pingService?.isDiscoveryListening ??
+      false; // True during discovery listening window (for Passive Mode)
   /// Check if auto-ping disable is pending (waiting for RX window)
   bool get isPendingDisable => _pingService?.pendingDisable ?? false;
+
   /// True when running any mode that does TX (Active or Hybrid)
-  bool get isTxModeRunning => _autoPingEnabled && (_autoMode == AutoMode.active || _autoMode == AutoMode.hybrid);
+  bool get isTxModeRunning =>
+      _autoPingEnabled &&
+      (_autoMode == AutoMode.active || _autoMode == AutoMode.hybrid);
+
   /// True when running Trace Mode (zero-hop trace)
-  bool get isTargetedModeRunning => _autoPingEnabled && _autoMode == AutoMode.targeted;
+  bool get isTargetedModeRunning =>
+      _autoPingEnabled && _autoMode == AutoMode.targeted;
   String? get targetRepeaterId => _targetRepeaterId;
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
@@ -389,13 +424,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<RxPing> get rxPings => List.unmodifiable(_rxPings);
 
   /// Top 3 repeaters by best SNR from TX/DISC/Trace pings
-  List<({String repeaterId, double snr, OverlayPingType type})> get topRepeatersBySnr => _topRepeatersOverlay;
+  List<({String repeaterId, double snr, OverlayPingType type})>
+      get topRepeatersBySnr => _topRepeatersOverlay;
+
   /// Best RX observation in the current 5-second window
   ({String repeaterId, double snr})? get rxOverlaySlot => _rxOverlaySlot;
 
   /// Update the top repeaters overlay with results from the latest TX/DISC/Trace ping.
   /// Replaces all 3 slots entirely (no carryover from previous pings).
-  void _updateTopRepeaters(List<({String repeaterId, double snr})> current, OverlayPingType type) {
+  void _updateTopRepeaters(
+      List<({String repeaterId, double snr})> current, OverlayPingType type) {
     final bestSnr = <String, double>{};
     for (final r in current) {
       final key = r.repeaterId.toUpperCase();
@@ -419,7 +457,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } else {
       _rxOverlaySlot = entry;
-      _rxOverlayWindowTimer = Timer(Duration(seconds: _preferences.autoPingInterval), () {
+      _rxOverlayWindowTimer =
+          Timer(Duration(seconds: _preferences.autoPingInterval), () {
         // Window closed — slot stays until next RX or cleared
       });
     }
@@ -432,21 +471,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxOverlayWindowTimer?.cancel();
     _rxOverlayWindowTimer = null;
   }
+
   List<TxLogEntry> get txLogEntries => List.unmodifiable(_txLogEntries);
   List<RxLogEntry> get rxLogEntries => List.unmodifiable(_rxLogEntries);
   List<DiscLogEntry> get discLogEntries => List.unmodifiable(_discLogEntries);
-  List<TraceLogEntry> get traceLogEntries => List.unmodifiable(_traceLogEntries);
-  List<UserErrorEntry> get errorLogEntries => List.unmodifiable(_errorLogEntries);
+  List<TraceLogEntry> get traceLogEntries =>
+      List.unmodifiable(_traceLogEntries);
+  List<UserErrorEntry> get errorLogEntries =>
+      List.unmodifiable(_errorLogEntries);
   List<UnifiedPingLogEntry> get unifiedPingLogEntries {
     final merged = <UnifiedPingLogEntry>[
-      ..._txLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.tx, timestamp: e.timestamp, entry: e)),
-      ..._rxLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.rx, timestamp: e.timestamp, entry: e)),
-      ..._discLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.disc, timestamp: e.timestamp, entry: e)),
-      ..._traceLogEntries.map((e) => UnifiedPingLogEntry(type: PingLogType.trace, timestamp: e.timestamp, entry: e)),
+      ..._txLogEntries.map((e) => UnifiedPingLogEntry(
+          type: PingLogType.tx, timestamp: e.timestamp, entry: e)),
+      ..._rxLogEntries.map((e) => UnifiedPingLogEntry(
+          type: PingLogType.rx, timestamp: e.timestamp, entry: e)),
+      ..._discLogEntries.map((e) => UnifiedPingLogEntry(
+          type: PingLogType.disc, timestamp: e.timestamp, entry: e)),
+      ..._traceLogEntries.map((e) => UnifiedPingLogEntry(
+          type: PingLogType.trace, timestamp: e.timestamp, entry: e)),
     ];
     merged.sort();
     return merged;
   }
+
   ({double lat, double lon})? get mapNavigationTarget => _mapNavigationTarget;
   int get mapNavigationTrigger => _mapNavigationTrigger;
   bool get requestMapTabSwitch => _requestMapTabSwitch;
@@ -476,7 +523,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
   String? get nearestZoneName => _nearestZone?['name'] as String?;
   String? get nearestZoneCode => _nearestZone?['code'] as String?;
-  double? get nearestZoneDistanceKm => (_nearestZone?['distance_km'] as num?)?.toDouble();
+  double? get nearestZoneDistanceKm =>
+      (_nearestZone?['distance_km'] as num?)?.toDouble();
 
   // Zone check retry getters
   String? get zoneCheckError => _zoneCheckError;
@@ -546,11 +594,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isApiRxOnlyMode => hasApiSession && !txAllowed && rxAllowed;
   bool get enforceHybrid => _apiService.enforceHybrid;
   bool get enforceDiscDrop => _apiService.enforceDiscDrop;
-  bool get discDropEnabled => _preferences.discDropEnabled || _apiService.enforceDiscDrop;
+  bool get discDropEnabled =>
+      _preferences.discDropEnabled || _apiService.enforceDiscDrop;
   int get minModeInterval => _apiService.minModeInterval;
   bool get enforceHopBytes => _apiService.enforceHopBytes;
   int get hopBytes => _hopBytes;
-  int get effectiveHopBytes => enforceHopBytes ? _apiService.apiHopBytes : _hopBytes;
+  int get effectiveHopBytes =>
+      enforceHopBytes ? _apiService.apiHopBytes : _hopBytes;
   int get traceHopBytes => _traceHopBytes;
   bool get supportsMultiBytePaths => _originalPathHashMode != null;
 
@@ -573,11 +623,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // Countdown timers
-  CooldownTimer get cooldownTimer => _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
-  ManualPingCooldownTimer get manualPingCooldownTimer => _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
+  CooldownTimer get cooldownTimer =>
+      _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
+  ManualPingCooldownTimer get manualPingCooldownTimer =>
+      _manualPingCooldownTimer; // Manual ping cooldown (15 seconds)
   AutoPingTimer get autoPingTimer => _autoPingTimer;
   RxWindowTimer get rxWindowTimer => _rxWindowTimer;
-  DiscoveryWindowTimer get discoveryWindowTimer => _discoveryWindowTimer; // Discovery listening window (Passive Mode)
+  DiscoveryWindowTimer get discoveryWindowTimer =>
+      _discoveryWindowTimer; // Discovery listening window (Passive Mode)
 
   // ============================================
   // Initialization
@@ -596,11 +649,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Initialize custom API forwarding service
     _customApiService = CustomApiService(prefsGetter: () => _preferences);
     _customApiService.onError = (message) {
-      logError('Custom API: $message', severity: ErrorSeverity.warning, autoSwitch: false);
+      logError('Custom API: $message',
+          severity: ErrorSeverity.warning, autoSwitch: false);
     };
     _customApiService.contactGetter = () {
       final pk = _devicePublicKey;
-      return (pk != null && pk.length >= 8) ? pk.substring(0, 8).toUpperCase() : null;
+      return (pk != null && pk.length >= 8)
+          ? pk.substring(0, 8).toUpperCase()
+          : null;
     };
     _customApiService.iataGetter = () => zoneCode ?? _preferences.iataCode;
     _apiQueueService.customApiService = _customApiService;
@@ -622,7 +678,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Initialize countdown timers with notifyListeners callback for smooth UI updates
     _cooldownTimer = CooldownTimer(onUpdate: notifyListeners);
-    _manualPingCooldownTimer = ManualPingCooldownTimer(onUpdate: notifyListeners);
+    _manualPingCooldownTimer =
+        ManualPingCooldownTimer(onUpdate: notifyListeners);
     _autoPingTimer = AutoPingTimer(onUpdate: notifyListeners);
     _rxWindowTimer = RxWindowTimer(onUpdate: notifyListeners);
     _discoveryWindowTimer = DiscoveryWindowTimer(onUpdate: notifyListeners);
@@ -650,9 +707,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Update background service notification with queue size
       if (_autoPingEnabled) {
-        final modeName = _autoMode == AutoMode.passive ? 'Passive Mode'
-            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode'
-            : _autoMode == AutoMode.targeted ? 'Trace Mode' : 'Active Mode';
+        final modeName = _autoMode == AutoMode.passive
+            ? 'Passive Mode'
+            : _autoMode == AutoMode.hybrid
+                ? 'Hybrid Mode'
+                : _autoMode == AutoMode.targeted
+                    ? 'Trace Mode'
+                    : 'Active Mode';
         BackgroundServiceManager.updateNotification(
           mode: modeName,
           txCount: _pingStats.txCount,
@@ -666,7 +727,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pingStats = _pingStats.copyWith(
         successfulUploads: _pingStats.successfulUploads + uploadedCount,
       );
-      debugLog('[APP] Upload success: +$uploadedCount items (total: ${_pingStats.successfulUploads})');
+      debugLog(
+          '[APP] Upload success: +$uploadedCount items (total: ${_pingStats.successfulUploads})');
       notifyListeners();
 
       // Schedule overlay tile refresh after server has time to regenerate tiles
@@ -709,7 +771,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Listen to Bluetooth adapter state changes (on/off)
     debugLog('[INIT] Setting up Bluetooth adapter state listener...');
-    _adapterStateSubscription = _bluetoothService.adapterStateStream.listen((state) {
+    _adapterStateSubscription =
+        _bluetoothService.adapterStateStream.listen((state) {
       final previousState = _bluetoothAdapterState;
       _bluetoothAdapterState = state;
 
@@ -725,7 +788,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Listen to Bluetooth connection changes
     debugLog('[INIT] Setting up BLE connection listener...');
     await _connectionSubscription?.cancel();
-    _connectionSubscription = _bluetoothService.connectionStream.listen((status) async {
+    _connectionSubscription =
+        _bluetoothService.connectionStream.listen((status) async {
       _connectionStatus = status;
       if (status == ConnectionStatus.disconnected) {
         // Check if this is an unexpected disconnect during active wardriving
@@ -735,7 +799,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         if (_isInZoneGracePeriod) {
           // BLE disconnected during zone grace period — abandon grace, full cleanup
-          debugLog('[CONN] BLE disconnect during zone grace period — full cleanup');
+          debugLog(
+              '[CONN] BLE disconnect during zone grace period — full cleanup');
           _cancelZoneGraceTimers();
           _isInZoneGracePeriod = false;
           _zoneGraceSecondsRemaining = 0;
@@ -743,14 +808,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _autoPingWasEnabledBeforeGrace = false;
           await _fullDisconnectCleanup();
         } else if (wasConnected && hasRemembered && isUnexpected && !kIsWeb) {
-          debugLog('[CONN] Unexpected BLE disconnect detected - starting auto-reconnect');
+          debugLog(
+              '[CONN] Unexpected BLE disconnect detected - starting auto-reconnect');
           await _startAutoReconnect();
         } else if (!_isAutoReconnecting) {
           // Normal disconnect (user-requested or no remembered device)
           await _fullDisconnectCleanup();
         } else {
           // Disconnected during a reconnect attempt - _attemptReconnect handles retry
-          debugLog('[CONN] BLE disconnect during reconnect attempt - will retry');
+          debugLog(
+              '[CONN] BLE disconnect during reconnect attempt - will retry');
         }
       }
       notifyListeners();
@@ -769,23 +836,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Log when we transition to locked state (permission granted + GPS available)
         if (status == GpsStatus.locked) {
-          debugLog('[GPS] GPS lock acquired - zone check should trigger on first position');
+          debugLog(
+              '[GPS] GPS lock acquired - zone check should trigger on first position');
         }
         // Log when permission is denied or GPS disabled
         if (status == GpsStatus.permissionDenied) {
-          debugLog('[GPS] Location permission denied - zone checks will be blocked');
+          debugLog(
+              '[GPS] Location permission denied - zone checks will be blocked');
         } else if (status == GpsStatus.disabled) {
-          debugLog('[GPS] Location services disabled - zone checks will be blocked');
+          debugLog(
+              '[GPS] Location services disabled - zone checks will be blocked');
         }
       }
       notifyListeners();
     });
-    _gpsStatus = _gpsService.status;  // Sync initial status
+    _gpsStatus = _gpsService.status; // Sync initial status
     debugLog('[INIT] Initial GPS status: $_gpsStatus');
 
     debugLog('[INIT] Setting up GPS position listener...');
     await _gpsPositionSubscription?.cancel();
-    _gpsPositionSubscription = _gpsService.positionStream.listen((position) async {
+    _gpsPositionSubscription =
+        _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
       notifyListeners();
 
@@ -798,7 +869,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[GEOFENCE] First GPS lock, triggering zone check');
         await checkZoneStatus();
         _firstGpsLockLogged = true;
-      } else if (_inZone == null && _preferences.offlineMode && !_firstGpsLockLogged) {
+      } else if (_inZone == null &&
+          _preferences.offlineMode &&
+          !_firstGpsLockLogged) {
         debugLog('[GEOFENCE] First GPS lock skipped: offline mode enabled');
         _firstGpsLockLogged = true;
       }
@@ -806,14 +879,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Check zone every 100m movement (while disconnected)
       // This allows users to know if they've entered/exited a zone while moving
       // Skip zone checks when offline mode is enabled
-      if (!isConnected && !_preferences.offlineMode && _shouldRecheckZone(position)) {
+      if (!isConnected &&
+          !_preferences.offlineMode &&
+          _shouldRecheckZone(position)) {
         // Throttle log to once per 30s to avoid spam while driving
         final now = DateTime.now();
-        if (_lastZoneCheckLogTime == null || now.difference(_lastZoneCheckLogTime!) >= const Duration(seconds: 30)) {
+        if (_lastZoneCheckLogTime == null ||
+            now.difference(_lastZoneCheckLogTime!) >=
+                const Duration(seconds: 30)) {
           if (_zoneCheckSuppressedCount > 0) {
-            debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone (suppressed $_zoneCheckSuppressedCount similar in last 30s)');
+            debugLog(
+                '[GEOFENCE] Moved 100m+ while disconnected, rechecking zone (suppressed $_zoneCheckSuppressedCount similar in last 30s)');
           } else {
-            debugLog('[GEOFENCE] Moved 100m+ while disconnected, rechecking zone');
+            debugLog(
+                '[GEOFENCE] Moved 100m+ while disconnected, rechecking zone');
           }
           _lastZoneCheckLogTime = now;
           _zoneCheckSuppressedCount = 0;
@@ -857,15 +936,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         'isCheckingZone=$_isCheckingZone, hasPosition=${_currentPosition != null}');
 
     await _gpsService.startWatching();
-    _gpsStatus = _gpsService.status;  // Sync after restart
+    _gpsStatus = _gpsService.status; // Sync after restart
 
     debugLog('[GPS] GPS restarted, new status: $_gpsStatus');
-    debugLog('[GPS] Post-restart state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+    debugLog(
+        '[GPS] Post-restart state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
         'hasPosition=${_currentPosition != null}');
 
     // If we now have a position and zone hasn't been checked, trigger check
-    if (_currentPosition != null && _inZone == null && !_preferences.offlineMode) {
-      debugLog('[GPS] Permission granted with existing position - triggering zone check');
+    if (_currentPosition != null &&
+        _inZone == null &&
+        !_preferences.offlineMode) {
+      debugLog(
+          '[GPS] Permission granted with existing position - triggering zone check');
       await checkZoneStatus();
     }
     notifyListeners();
@@ -923,7 +1006,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (!isEnabled) {
       debugLog('[SCAN] Bluetooth still disabled after retries');
-      _connectionError = 'Bluetooth is disabled. Please enable Bluetooth and try again.';
+      _connectionError =
+          'Bluetooth is disabled. Please enable Bluetooth and try again.';
       notifyListeners();
       return;
     }
@@ -938,21 +1022,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Listen for discovered devices using subscription so stopScan() can cancel
     DiscoveredDevice? selectedDevice;
     final completer = Completer<void>();
-    _activeScanSubscription = _bluetoothService.scanForDevices(
+    _activeScanSubscription = _bluetoothService
+        .scanForDevices(
       timeout: const Duration(seconds: 15),
-    ).listen(
+    )
+        .listen(
       (device) {
         if (!_discoveredDevices.any((d) => d.id == device.id)) {
           // Prefer remembered device name (from SelfInfo) over BLE cache
           var enrichedDevice = device;
-          if (_rememberedDevice != null && device.id == _rememberedDevice!.id &&
+          if (_rememberedDevice != null &&
+              device.id == _rememberedDevice!.id &&
               device.name != _rememberedDevice!.name) {
             enrichedDevice = DiscoveredDevice(
               id: device.id,
               name: _rememberedDevice!.name,
               rssi: device.rssi,
             );
-            debugLog('[SCAN] Using remembered name "${_rememberedDevice!.name}" instead of BLE name "${device.name}"');
+            debugLog(
+                '[SCAN] Using remembered name "${_rememberedDevice!.name}" instead of BLE name "${device.name}"');
           }
           _discoveredDevices.add(enrichedDevice);
           selectedDevice = enrichedDevice;
@@ -1024,7 +1112,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           final publicKey = _meshCoreConnection!.devicePublicKey;
           if (publicKey == null) {
             debugError('[APP] Cannot request auth: no public key');
-            return {'success': false, 'reason': 'no_public_key', 'message': 'Device public key not available'};
+            return {
+              'success': false,
+              'reason': 'no_public_key',
+              'message': 'Device public key not available'
+            };
           }
 
           // Anonymous mode: rename device before auth so mesh pings broadcast as "Anonymous"
@@ -1036,7 +1128,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                 await _meshCoreConnection!.setAdvertName('Anonymous');
                 _isAnonymousRenamed = true;
                 _displayDeviceName = 'Anonymous';
-                debugLog('[CONN] Anonymous mode: renamed from "$realName" to "Anonymous"');
+                debugLog(
+                    '[CONN] Anonymous mode: renamed from "$realName" to "Anonymous"');
                 // Short delay for firmware to process
                 await Future.delayed(const Duration(milliseconds: 300));
               } catch (e) {
@@ -1049,16 +1142,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           // Resolve device name: use "Anonymous" if renamed, otherwise SelfInfo name
           final deviceName = _isAnonymousRenamed
               ? 'Anonymous'
-              : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''));
+              : (_meshCoreConnection!.selfInfo?.name ??
+                  connectedDeviceName?.replaceFirst('MeshCore-', ''));
           if (deviceName == null || deviceName.isEmpty) {
-            debugError('[APP] Cannot request auth: could not retrieve device name');
-            return {'success': false, 'reason': 'no_device_name', 'message': 'Could not retrieve device name'};
+            debugError(
+                '[APP] Cannot request auth: could not retrieve device name');
+            return {
+              'success': false,
+              'reason': 'no_device_name',
+              'message': 'Could not retrieve device name'
+            };
           }
 
           // ============================================================
           // STAGE 1: Try existing public_key authentication
           // ============================================================
-          debugLog('[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
+          debugLog(
+              '[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
 
           final result = await _apiService.requestAuth(
             reason: 'connect',
@@ -1067,7 +1167,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             appVersion: _appVersion,
             power: _preferences.powerLevel,
             iataCode: zoneCode ?? _preferences.iataCode,
-            model: _meshCoreConnection!.deviceModel?.manufacturer ?? _meshCoreConnection!.deviceInfo?.manufacturer ?? 'Unknown',
+            model: _meshCoreConnection!.deviceModel?.manufacturer ??
+                _meshCoreConnection!.deviceInfo?.manufacturer ??
+                'Unknown',
             lat: _currentPosition?.latitude,
             lon: _currentPosition?.longitude,
             accuracyMeters: _currentPosition?.accuracy,
@@ -1078,7 +1180,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _maintenanceMode = true;
             _maintenanceMessage = result['maintenance_message'] as String?;
             _maintenanceUrl = result['maintenance_url'] as String?;
-            debugLog('[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
+            debugLog(
+                '[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
             _startMaintenancePolling();
             notifyListeners();
             return {
@@ -1115,12 +1218,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             };
           }
 
-          debugLog('[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
+          debugLog(
+              '[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
 
           // If Stage 1 failed due to GPS issues, Stage 2 will also fail with same bad data
           final stage1Reason = result['reason'] as String?;
           if (stage1Reason == 'gps_inaccurate' || stage1Reason == 'gps_stale') {
-            debugError('[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
+            debugError(
+                '[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
             return {
               'success': false,
               'reason': stage1Reason,
@@ -1137,13 +1242,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           try {
             debugLog('[APP] Requesting signed contact URI from device...');
             contactUri = await _meshCoreConnection!.exportContact();
-            debugLog('[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
+            debugLog(
+                '[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
           } catch (e) {
             debugError('[APP] Failed to get contact URI from device: $e');
             return {
               'success': false,
               'reason': 'registration_failed',
-              'message': 'Companion not found in backend and failed to register via API'
+              'message':
+                  'Companion not found in backend and failed to register via API'
             };
           }
 
@@ -1155,7 +1262,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             appVersion: _appVersion,
             power: _preferences.powerLevel,
             iataCode: zoneCode ?? _preferences.iataCode,
-            model: _meshCoreConnection!.deviceModel?.manufacturer ?? _meshCoreConnection!.deviceInfo?.manufacturer ?? 'Unknown',
+            model: _meshCoreConnection!.deviceModel?.manufacturer ??
+                _meshCoreConnection!.deviceInfo?.manufacturer ??
+                'Unknown',
             lat: _currentPosition?.latitude,
             lon: _currentPosition?.longitude,
             accuracyMeters: _currentPosition?.accuracy,
@@ -1171,9 +1280,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
 
           if (registerResult['success'] != true) {
-            final serverReason = registerResult['reason'] as String? ?? 'registration_failed';
+            final serverReason =
+                registerResult['reason'] as String? ?? 'registration_failed';
             final serverMessage = registerResult['message'] as String?;
-            debugError('[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
+            debugError(
+                '[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
             return {
               'success': false,
               'reason': serverReason,
@@ -1208,10 +1319,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (step == ConnectionStep.connected) {
           // Update device info
           _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
-          _firmwareVersionString = _meshCoreConnection!.deviceInfo?.firmwareVersionString;
+          _firmwareVersionString =
+              _meshCoreConnection!.deviceInfo?.firmwareVersionString;
           _deviceModel = _meshCoreConnection!.deviceModel;
           _devicePublicKey = _meshCoreConnection!.devicePublicKey;
-          debugLog('[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
+          debugLog(
+              '[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
 
           // Persist device info for bug reports when disconnected
           // Use original name (not "Anonymous") for bug report identification
@@ -1222,7 +1335,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             // Always strip MeshCore- prefix if present
             deviceName = deviceName.replaceFirst('MeshCore-', '');
           }
-          if (deviceName != null && deviceName.isNotEmpty && _devicePublicKey != null) {
+          if (deviceName != null &&
+              deviceName.isNotEmpty &&
+              _devicePublicKey != null) {
             _saveLastConnectedDevice(deviceName, _devicePublicKey!);
           }
 
@@ -1240,7 +1355,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       });
 
       // Listen for noise floor updates
-      _noiseFloorSubscription = _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
+      _noiseFloorSubscription =
+          _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
         _currentNoiseFloor = noiseFloor;
         // Record sample to current noise floor session (if active)
         _recordNoiseFloorSample(noiseFloor);
@@ -1248,7 +1364,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       });
 
       // Listen for battery updates
-      _batterySubscription = _meshCoreConnection!.batteryStream.listen((batteryPercent) {
+      _batterySubscription =
+          _meshCoreConnection!.batteryStream.listen((batteryPercent) {
         _currentBatteryPercent = batteryPercent;
         notifyListeners();
       });
@@ -1261,16 +1378,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Update preferences if device model was recognized (for display/API reporting)
       // Note: This does NOT change the radio's TX power - it only sets what power level to REPORT
-      if (connectionResult.deviceModelMatched && connectionResult.deviceModel != null) {
+      if (connectionResult.deviceModelMatched &&
+          connectionResult.deviceModel != null) {
         final device = connectionResult.deviceModel!;
         _preferences = _preferences.copyWith(
           powerLevel: device.power,
           txPower: device.txPower,
-          autoPowerSet: true, // Indicates power was auto-detected from device model
+          autoPowerSet:
+              true, // Indicates power was auto-detected from device model
           powerLevelSet: false, // Clear stale manual flag from previous session
         );
         notifyListeners();
-        debugLog('[MODEL] Device recognized: ${device.shortName} - reporting ${device.power}W in API calls');
+        debugLog(
+            '[MODEL] Device recognized: ${device.shortName} - reporting ${device.power}W in API calls');
       }
 
       // Note: API session acquisition is now handled by the auth callback
@@ -1287,7 +1407,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Update unified RX handler's validator with new channel configuration
       if (_unifiedRxHandler != null) {
-        final allowedChannelsData = ChannelService.getAllowedChannelsForValidator();
+        final allowedChannelsData =
+            ChannelService.getAllowedChannelsForValidator();
         final allowedChannels = <int, ChannelInfo>{};
         for (final entry in allowedChannelsData.entries) {
           allowedChannels[entry.key] = ChannelInfo(
@@ -1301,7 +1422,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           disableRssiFilter: _preferences.disableRssiFilter,
         );
         _unifiedRxHandler!.updateValidator(newValidator);
-        debugLog('[APP] PacketValidator updated with ${allowedChannels.length} channels: '
+        debugLog(
+            '[APP] PacketValidator updated with ${allowedChannels.length} channels: '
             '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
       }
 
@@ -1310,7 +1432,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Any other value (e.g., "ottawa") → derive TransportKey and set scope
       final apiScopes = _apiService.scopes;
       final firstScope = apiScopes.isNotEmpty ? apiScopes.first : null;
-      final isWildcard = firstScope == null || firstScope == '*' || firstScope == '#*';
+      final isWildcard =
+          firstScope == null || firstScope == '*' || firstScope == '#*';
       if (!isWildcard) {
         final scopeName = firstScope;
         _scope = scopeName.startsWith('#') ? scopeName : '#$scopeName';
@@ -1337,8 +1460,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Enforce minimum auto-ping interval if required by regional admin
       if (_preferences.autoPingInterval < _apiService.minModeInterval) {
-        _preferences = _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
-        debugLog('[CONN] Auto-ping interval bumped to ${_apiService.minModeInterval}s by regional admin');
+        _preferences = _preferences.copyWith(
+            autoPingInterval: _apiService.minModeInterval);
+        debugLog(
+            '[CONN] Auto-ping interval bumped to ${_apiService.minModeInterval}s by regional admin');
       }
 
       // Configure multi-byte path hash mode on radio
@@ -1363,7 +1488,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         shouldIgnoreRepeater: (String repeaterId) {
           final prefs = _preferences;
           if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
-            return PacketValidator.isCarpeaterIdMatch(repeaterId, prefs.ignoreRepeaterId!);
+            return PacketValidator.isCarpeaterIdMatch(
+                repeaterId, prefs.ignoreRepeaterId!);
           }
           return false;
         },
@@ -1377,13 +1503,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // External antenna must be explicitly set (yes or no) before pinging
         return _preferences.externalAntennaSet;
       };
-      
+
       _pingService!.checkPowerLevelConfigured = () {
         // Power is configured if:
         // - Auto-detected from device model, OR
         // - Manually selected by user, OR
         // - Device model is known (has default power)
-        return _preferences.autoPowerSet || _preferences.powerLevelSet || _deviceModel != null;
+        return _preferences.autoPowerSet ||
+            _preferences.powerLevelSet ||
+            _deviceModel != null;
       };
 
       // Get external antenna value for API payloads
@@ -1450,9 +1578,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Update background service notification with current stats
         if (_autoPingEnabled) {
-          final modeName = _autoMode == AutoMode.passive ? 'Passive Mode'
-            : _autoMode == AutoMode.hybrid ? 'Hybrid Mode'
-            : _autoMode == AutoMode.targeted ? 'Trace Mode' : 'Active Mode';
+          final modeName = _autoMode == AutoMode.passive
+              ? 'Passive Mode'
+              : _autoMode == AutoMode.hybrid
+                  ? 'Hybrid Mode'
+                  : _autoMode == AutoMode.targeted
+                      ? 'Trace Mode'
+                      : 'Active Mode';
           BackgroundServiceManager.updateNotification(
             mode: modeName,
             txCount: _pingStats.txCount,
@@ -1465,14 +1597,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Handle real-time echo updates - update TxLogEntry as echoes are received
       _pingService!.onEchoReceived = (txPing, repeater, isNew) {
         debugLog('[APP] ========== ECHO CALLBACK RECEIVED ==========');
-        debugLog('[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
+        debugLog(
+            '[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
         debugLog('[APP] TxLogEntries count: ${_txLogEntries.length}');
 
         // Find the matching TxLogEntry and update its events
         if (_txLogEntries.isNotEmpty) {
           final lastEntry = _txLogEntries.last;
           // Verify it's the right entry by timestamp (should be within a few seconds)
-          final timeDiff = lastEntry.timestamp.difference(txPing.timestamp).inSeconds.abs();
+          final timeDiff =
+              lastEntry.timestamp.difference(txPing.timestamp).inSeconds.abs();
           if (timeDiff <= 10) {
             // Build updated events list
             final existingEvents = List<RxEvent>.from(lastEntry.events);
@@ -1489,7 +1623,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               _audioService.playReceiveSound();
             } else {
               // Update existing event's SNR
-              final idx = existingEvents.indexWhere((e) => e.repeaterId == repeater.repeaterId);
+              final idx = existingEvents
+                  .indexWhere((e) => e.repeaterId == repeater.repeaterId);
               if (idx >= 0) {
                 existingEvents[idx] = newEvent;
               }
@@ -1504,19 +1639,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               events: existingEvents,
             );
             _txLogEntries[_txLogEntries.length - 1] = updatedEntry;
-            debugLog('[APP] Updated TxLogEntry with ${existingEvents.length} events (real-time)');
+            debugLog(
+                '[APP] Updated TxLogEntry with ${existingEvents.length} events (real-time)');
 
             // Update top repeaters overlay with current TX echoes
-            _updateTopRepeaters(existingEvents
-                .where((e) => e.snr != null)
-                .map((e) => (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
-                .toList(), OverlayPingType.tx);
+            _updateTopRepeaters(
+                existingEvents
+                    .where((e) => e.snr != null)
+                    .map((e) =>
+                        (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
+                    .toList(),
+                OverlayPingType.tx);
 
             debugLog('[APP] Calling notifyListeners() to update UI');
             notifyListeners();
             debugLog('[APP] notifyListeners() completed');
           } else {
-            debugLog('[APP] Timestamp mismatch: lastEntry=${lastEntry.timestamp}, txPing=${txPing.timestamp}, diff=${timeDiff}s');
+            debugLog(
+                '[APP] Timestamp mismatch: lastEntry=${lastEntry.timestamp}, txPing=${txPing.timestamp}, diff=${timeDiff}s');
           }
         } else {
           debugLog('[APP] WARNING: _txLogEntries is empty, cannot update');
@@ -1533,7 +1673,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Track idle time for auto-stop
         if (skipReason != null) {
           // Ping was skipped — check if idle too long
-          if (_preferences.autoStopAfterIdle && _idleAutoStopReference != null) {
+          if (_preferences.autoStopAfterIdle &&
+              _idleAutoStopReference != null) {
             final elapsed = DateTime.now().difference(_idleAutoStopReference!);
             if (elapsed >= _autoStopIdleTimeout) {
               _triggerIdleAutoStop();
@@ -1552,15 +1693,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Wire up real-time disc node discovery callback (like onEchoReceived)
       _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
-        debugLog('[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
+        debugLog(
+            '[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
         if (isNew) {
           _audioService.playReceiveSound();
         }
 
         // Update top repeaters overlay with all discovered nodes from this ping
-        _updateTopRepeaters(discPing.discoveredNodes
-            .map((n) => (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
-            .toList(), OverlayPingType.disc);
+        _updateTopRepeaters(
+            discPing.discoveredNodes
+                .map((n) =>
+                    (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
+                .toList(),
+            OverlayPingType.disc);
 
         notifyListeners();
       };
@@ -1577,11 +1722,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           lat = lastTx.latitude;
           lon = lastTx.longitude;
           if (lastTx.events.isNotEmpty) {
-            repeaters = lastTx.events.map((e) => MarkerRepeaterInfo(
-              repeaterId: e.repeaterId,
-              snr: e.snr ?? 0.0,
-              rssi: e.rssi ?? 0,
-            )).toList();
+            repeaters = lastTx.events
+                .map((e) => MarkerRepeaterInfo(
+                      repeaterId: e.repeaterId,
+                      snr: e.snr ?? 0.0,
+                      rssi: e.rssi ?? 0,
+                    ))
+                .toList();
           }
         }
 
@@ -1606,12 +1753,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           lat = lastDisc.latitude;
           lon = lastDisc.longitude;
           if (lastDisc.discoveredNodes.isNotEmpty) {
-            repeaters = lastDisc.discoveredNodes.map((n) => MarkerRepeaterInfo(
-              repeaterId: n.repeaterId,
-              snr: n.localSnr,
-              rssi: n.localRssi,
-              pubkeyHex: n.pubkeyHex,
-            )).toList();
+            repeaters = lastDisc.discoveredNodes
+                .map((n) => MarkerRepeaterInfo(
+                      repeaterId: n.repeaterId,
+                      snr: n.localSnr,
+                      rssi: n.localRssi,
+                      pubkeyHex: n.pubkeyHex,
+                    ))
+                .toList();
           }
         }
 
@@ -1648,11 +1797,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           lat = lastTrace.latitude;
           lon = lastTrace.longitude;
           if (result != null && result.success) {
-            repeaters = [MarkerRepeaterInfo(
-              repeaterId: result.targetRepeaterId,
-              snr: result.localSnr,
-              rssi: result.localRssi,
-            )];
+            repeaters = [
+              MarkerRepeaterInfo(
+                repeaterId: result.targetRepeaterId,
+                snr: result.localSnr,
+                rssi: result.localRssi,
+              )
+            ];
             // Update the log entry with success data
             _traceLogEntries[0] = TraceLogEntry(
               timestamp: lastTrace.timestamp,
@@ -1681,7 +1832,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Wire up discovery carpeater drop callback (for DiscTracker RSSI failsafe)
       _pingService!.onDiscCarpeaterDrop = (String repeaterId, String reason) {
-        debugLog('[APP] Discovery carpeater drop: repeater=$repeaterId, reason=$reason');
+        debugLog(
+            '[APP] Discovery carpeater drop: repeater=$repeaterId, reason=$reason');
         logError('Discovery Dropped\nPossible carpeater: $repeaterId\n$reason',
             severity: ErrorSeverity.warning, autoSwitch: false);
       };
@@ -1735,20 +1887,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Update remembered device with real name (not "Anonymous")
         // BLE advertisement name may be stale after device rename
-        final realName = _isAnonymousRenamed ? (_originalDeviceName ?? selfInfoName) : selfInfoName;
+        final realName = _isAnonymousRenamed
+            ? (_originalDeviceName ?? selfInfoName)
+            : selfInfoName;
         if (_rememberedDevice != null && _rememberedDevice!.id == device.id) {
           final updatedName = 'MeshCore-$realName';
           if (_rememberedDevice!.name != updatedName) {
-            await _saveRememberedDevice(DiscoveredDevice(id: device.id, name: updatedName));
-            debugLog('[APP] Updated remembered device name from SelfInfo: $updatedName');
+            await _saveRememberedDevice(
+                DiscoveredDevice(id: device.id, name: updatedName));
+            debugLog(
+                '[APP] Updated remembered device name from SelfInfo: $updatedName');
           }
         }
       }
 
       // Restore per-device antenna preference if previously saved
       // Use original name for keying, not "Anonymous"
-      final resolvedName = _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
-      if (resolvedName != null && _deviceAntennaPreferences.containsKey(resolvedName)) {
+      final resolvedName =
+          _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
+      if (resolvedName != null &&
+          _deviceAntennaPreferences.containsKey(resolvedName)) {
         final savedAntenna = _deviceAntennaPreferences[resolvedName]!;
         _preferences = _preferences.copyWith(
           externalAntenna: savedAntenna,
@@ -1756,12 +1914,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
         _antennaRestoredFromDevice = true;
         _savePreferences();
-        debugLog('[APP] Restored antenna preference for "$resolvedName": ${savedAntenna ? "external" : "device"}');
+        debugLog(
+            '[APP] Restored antenna preference for "$resolvedName": ${savedAntenna ? "external" : "device"}');
         notifyListeners();
       }
 
       // Restore per-device power override if previously saved
-      if (resolvedName != null && _devicePowerOverrides.containsKey(resolvedName)) {
+      if (resolvedName != null &&
+          _devicePowerOverrides.containsKey(resolvedName)) {
         final saved = _devicePowerOverrides[resolvedName]!;
         _preferences = _preferences.copyWith(
           powerLevel: (saved['powerLevel'] as num).toDouble(),
@@ -1771,7 +1931,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
         _powerRestoredFromDevice = true;
         _savePreferences();
-        debugLog('[APP] Restored power override for "$resolvedName": ${saved['powerLevel']}W');
+        debugLog(
+            '[APP] Restored power override for "$resolvedName": ${saved['powerLevel']}W');
         notifyListeners();
       }
 
@@ -1780,7 +1941,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (txAllowed && rxAllowed) {
           debugLog('[CONN] Connected with full access (TX + RX allowed)');
         } else if (rxAllowed) {
-          debugLog('[CONN] Connected with RX-only access (TX not allowed, zone at TX capacity)');
+          debugLog(
+              '[CONN] Connected with RX-only access (TX not allowed, zone at TX capacity)');
         } else {
           debugLog('[CONN] Connected with limited access');
         }
@@ -1818,7 +1980,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (validation != PingValidation.valid) {
         debugLog('[CONN] Ping validation after connect: $validation');
       }
-
     } catch (e) {
       debugError('[APP] Connection failed: $e');
 
@@ -1849,7 +2010,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (parts.length > 1) {
           final errorParts = parts[1].split(':');
           final reason = errorParts.isNotEmpty ? errorParts[0] : 'unknown';
-          final serverMessage = errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
+          final serverMessage =
+              errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
           _isNetworkError = reason == 'network_error';
           _connectionError = _getErrorMessage(reason, serverMessage);
         } else {
@@ -1859,7 +2021,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _isAuthError = false;
         _isNetworkError = false;
         // Provide clean user-facing messages for common BLE errors
-        if (errorStr.contains('timeout') || errorStr.contains('Timeout') || errorStr.contains('timed out')) {
+        if (errorStr.contains('timeout') ||
+            errorStr.contains('Timeout') ||
+            errorStr.contains('timed out')) {
           _connectionError = 'Bluetooth connection scan timed out';
         } else {
           _connectionError = errorStr.replaceFirst('Exception: ', '');
@@ -1879,8 +2043,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _txTracker!.disableRssiFilter = _preferences.disableRssiFilter;
 
     // Set CARpeater prefix for pass-through (replaces shouldIgnoreRepeater)
-    _txTracker!.carpeaterPrefix = _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
-    debugLog('[APP] TxTracker.carpeaterPrefix set to ${_txTracker!.carpeaterPrefix ?? 'null'}');
+    _txTracker!.carpeaterPrefix =
+        _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
+    debugLog(
+        '[APP] TxTracker.carpeaterPrefix set to ${_txTracker!.carpeaterPrefix ?? 'null'}');
 
     // Log TX carpeater drops to error log (without navigating to error tab)
     _txTracker!.onCarpeaterDrop = (String repeaterId, String reason) {
@@ -1893,16 +2059,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Create RX logger (stored for use when enabling Passive Mode)
     _rxLogger = RxLogger(
       // CARpeater prefix for pass-through (replaces shouldIgnoreRepeater)
-      carpeaterPrefix: _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null,
+      carpeaterPrefix:
+          _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null,
       // Immediate observation callback - fires when packet is first validated
       // Creates pin IMMEDIATELY for NEW repeaters (first time in current batch)
       onObservation: (observation) {
         try {
-          debugLog('[APP] Immediate RX observation: repeater=${observation.repeaterId}, '
+          debugLog(
+              '[APP] Immediate RX observation: repeater=${observation.repeaterId}, '
               'snr=${observation.snr ?? 'null'}, location=${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)}');
 
           // Log current batch tracking state for debugging
-          debugLog('[APP] Current batch tracking: ${_currentBatchRepeaters.length} repeaters: $_currentBatchRepeaters');
+          debugLog(
+              '[APP] Current batch tracking: ${_currentBatchRepeaters.length} repeaters: $_currentBatchRepeaters');
 
           // Check if repeater already has a pin in CURRENT BATCH (not all-time)
           // This allows new pins after batch flushes (25m movement)
@@ -1924,7 +2093,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             // Increment RX count immediately when pin is created (not on batch flush)
             _pingStats = _pingStats.copyWith(rxCount: _pingStats.rxCount + 1);
 
-            debugLog('[APP] Created IMMEDIATE RX pin for repeater: ${observation.repeaterId} '
+            debugLog(
+                '[APP] Created IMMEDIATE RX pin for repeater: ${observation.repeaterId} '
                 'at ${observation.lat.toStringAsFixed(5)},${observation.lon.toStringAsFixed(5)} '
                 '(batch tracking: ${_currentBatchRepeaters.length} repeaters, rxCount: ${_pingStats.rxCount})');
             // Update RX overlay slot immediately
@@ -1948,7 +2118,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             );
             notifyListeners();
           } else {
-            debugLog('[APP] Repeater ${observation.repeaterId} already has pin in current batch, SNR will update on flush if better');
+            debugLog(
+                '[APP] Repeater ${observation.repeaterId} already has pin in current batch, SNR will update on flush if better');
           }
         } catch (e, stackTrace) {
           debugError('[APP] Error in immediate observation callback: $e');
@@ -1961,7 +2132,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       onRxEntry: (entry) async {
         try {
           debugLog('[APP] ========== BATCH FLUSH CALLBACK ==========');
-          debugLog('[APP] Finalized RX entry (best SNR): repeater=${entry.repeaterId}, '
+          debugLog(
+              '[APP] Finalized RX entry (best SNR): repeater=${entry.repeaterId}, '
               'snr=${entry.snr ?? 'null'}, location=${entry.lat.toStringAsFixed(5)},${entry.lon.toStringAsFixed(5)}');
 
           final repeaterKey = entry.repeaterId.toUpperCase();
@@ -1980,20 +2152,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             // Update the pin's SNR to the best from this batch
             final existingPin = _rxPings[lastPinIndex];
             // Only update if new SNR is non-null and better (null never replaces non-null)
-            final shouldUpdateSnr = entry.snr != null && entry.snr! > existingPin.snr;
+            final shouldUpdateSnr =
+                entry.snr != null && entry.snr! > existingPin.snr;
             if (shouldUpdateSnr) {
               _rxPings[lastPinIndex] = RxPing(
-                latitude: existingPin.latitude,   // KEEP batch start location
+                latitude: existingPin.latitude, // KEEP batch start location
                 longitude: existingPin.longitude, // KEEP batch start location
                 repeaterId: entry.repeaterId,
                 timestamp: entry.timestamp,
-                snr: entry.snr ?? existingPin.snr, // UPDATE to best SNR from batch
+                snr: entry.snr ??
+                    existingPin.snr, // UPDATE to best SNR from batch
                 rssi: entry.rssi ?? existingPin.rssi,
               );
-              debugLog('[APP] Updated RX pin SNR for repeater=${entry.repeaterId}: '
+              debugLog(
+                  '[APP] Updated RX pin SNR for repeater=${entry.repeaterId}: '
                   '${existingPin.snr.toStringAsFixed(2)} -> ${entry.snr?.toStringAsFixed(2) ?? 'null'}');
             } else {
-              debugLog('[APP] RX pin SNR unchanged for repeater=${entry.repeaterId}: '
+              debugLog(
+                  '[APP] RX pin SNR unchanged for repeater=${entry.repeaterId}: '
                   'batch best ${entry.snr?.toStringAsFixed(2) ?? 'null'} <= pin ${existingPin.snr.toStringAsFixed(2)}');
             }
           } else {
@@ -2008,7 +2184,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             );
             _rxPings.add(newRxPing);
             if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
-            debugLog('[APP] Created FALLBACK RX pin for repeater=${entry.repeaterId} '
+            debugLog(
+                '[APP] Created FALLBACK RX pin for repeater=${entry.repeaterId} '
                 'at ${entry.lat.toStringAsFixed(5)},${entry.lon.toStringAsFixed(5)}');
           }
 
@@ -2080,7 +2257,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             severity: ErrorSeverity.warning, autoSwitch: false);
       },
     );
-    
+
     // Create packet validator with ALL allowed channels (#wardriving, #testing, #ottawa, Public)
     final allowedChannelsData = ChannelService.getAllowedChannelsForValidator();
     final allowedChannels = <int, ChannelInfo>{};
@@ -2091,7 +2268,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         hash: entry.value.hash,
       );
     }
-    debugLog('[APP] PacketValidator configured with ${allowedChannels.length} channels: '
+    debugLog(
+        '[APP] PacketValidator configured with ${allowedChannels.length} channels: '
         '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
     final validator = PacketValidator(
       allowedChannels: allowedChannels,
@@ -2104,15 +2282,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       rxLogger: _rxLogger!,
       validator: validator,
     );
-    
+
     // Subscribe to LogRxData stream
-    _logRxDataSubscription = _meshCoreConnection!.logRxDataStream.listen((data) {
+    _logRxDataSubscription =
+        _meshCoreConnection!.logRxDataStream.listen((data) {
       _unifiedRxHandler!.handlePacket(data.raw, data.snr, data.rssi);
     });
-    
+
     // Start listening
     _unifiedRxHandler!.startListening();
-    
+
     debugLog('[APP] Unified RX handler created and listening');
   }
 
@@ -2134,14 +2313,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Map TX bytes to trace bytes (3-byte traces not possible, use 4)
       _traceHopBytes = deviceHopBytes == 3 ? 4 : deviceHopBytes;
       _pingService?.traceHopBytes = _traceHopBytes;
-      debugLog('[PATH] Read device path mode: $deviceHopBytes-byte (trace: $_traceHopBytes-byte)');
+      debugLog(
+          '[PATH] Read device path mode: $deviceHopBytes-byte (trace: $_traceHopBytes-byte)');
     } else {
       _hopBytes = 1;
       _traceHopBytes = 1;
     }
 
     final effective = effectiveHopBytes;
-    final deviceMode = _originalPathHashMode ?? 0; // null = old firmware, treat as 0 (1-byte)
+    final deviceMode =
+        _originalPathHashMode ?? 0; // null = old firmware, treat as 0 (1-byte)
     final deviceHopBytes = deviceMode + 1;
 
     if (effective != deviceHopBytes && _originalPathHashMode != null) {
@@ -2151,7 +2332,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _hopBytes = effective; // Update runtime state to reflect new mode
         _traceHopBytes = effective == 3 ? 4 : effective;
         _pingService?.traceHopBytes = _traceHopBytes;
-        debugLog('[PATH] Set path hash mode: device was $deviceHopBytes-byte, now $effective-byte (trace: $_traceHopBytes-byte)');
+        debugLog(
+            '[PATH] Set path hash mode: device was $deviceHopBytes-byte, now $effective-byte (trace: $_traceHopBytes-byte)');
 
         // Show warning popup if changing from 1-byte to multi-byte
         if (deviceMode == 0 && effective > 1) {
@@ -2166,13 +2348,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } else if (_originalPathHashMode == null && effective > 1) {
       // Old firmware doesn't support multi-byte paths — warn user, fall back to 1-byte
-      debugWarn('[PATH] Device firmware does not report path_hash_mode, cannot set $effective-byte paths');
+      debugWarn(
+          '[PATH] Device firmware does not report path_hash_mode, cannot set $effective-byte paths');
       if (enforceHopBytes) {
-        _pendingPathHashWarning = (hopBytes: effective, reason: 'firmware_unsupported');
+        _pendingPathHashWarning =
+            (hopBytes: effective, reason: 'firmware_unsupported');
         notifyListeners();
       }
     } else {
-      debugLog('[PATH] Path hash mode OK: device=$deviceHopBytes-byte, effective=$effective-byte');
+      debugLog(
+          '[PATH] Path hash mode OK: device=$deviceHopBytes-byte, effective=$effective-byte');
     }
   }
 
@@ -2182,7 +2367,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_originalPathHashMode == null) return;
 
     if (_userChangedPathMode) {
-      debugLog('[PATH] User manually changed path mode, not restoring on disconnect');
+      debugLog(
+          '[PATH] User manually changed path mode, not restoring on disconnect');
       _originalPathHashMode = null;
       _userChangedPathMode = false;
       return;
@@ -2195,12 +2381,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_hopBytes != originalHopBytes) {
       try {
         await _meshCoreConnection?.setPathHashMode(originalMode);
-        debugLog('[PATH] Restored path hash mode to original: $originalHopBytes-byte');
+        debugLog(
+            '[PATH] Restored path hash mode to original: $originalHopBytes-byte');
       } catch (e) {
         debugError('[PATH] Failed to restore path hash mode: $e');
       }
     } else {
-      debugLog('[PATH] Path mode unchanged from original ($originalHopBytes-byte), no restore needed');
+      debugLog(
+          '[PATH] Path mode unchanged from original ($originalHopBytes-byte), no restore needed');
     }
     _originalPathHashMode = null;
     _userChangedPathMode = false;
@@ -2211,7 +2399,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_originalPathHashMode == null) {
       // Old firmware — can't send command, show warning
       debugWarn('[PATH] Cannot change path mode: firmware does not support it');
-      _pendingPathHashWarning = (hopBytes: newHopBytes, reason: 'firmware_unsupported');
+      _pendingPathHashWarning =
+          (hopBytes: newHopBytes, reason: 'firmware_unsupported');
       _hopBytes = 1; // Force back to 1
       notifyListeners();
       return;
@@ -2230,7 +2419,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final mode = newHopBytes - 1; // Convert 1/2/3 → mode 0/1/2
     _meshCoreConnection?.setPathHashMode(mode);
-    debugLog('[PATH] User changed path mode to $newHopBytes-byte (trace: $_traceHopBytes-byte, sent to radio)');
+    debugLog(
+        '[PATH] User changed path mode to $newHopBytes-byte (trace: $_traceHopBytes-byte, sent to radio)');
     notifyListeners();
   }
 
@@ -2261,7 +2451,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Pending path hash warning data (for UI to show dialog)
   ({int hopBytes, String reason})? _pendingPathHashWarning;
-  ({int hopBytes, String reason})? get pendingPathHashWarning => _pendingPathHashWarning;
+  ({int hopBytes, String reason})? get pendingPathHashWarning =>
+      _pendingPathHashWarning;
 
   /// Clear the pending warning after UI has shown it
   void clearPathHashWarning() {
@@ -2406,7 +2597,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService = null;
 
     // Do NOT release API session or clear API queue
-    debugLog('[CONN] Auto-reconnect: preserved API session, cleaned up BLE objects');
+    debugLog(
+        '[CONN] Auto-reconnect: preserved API session, cleaned up BLE objects');
 
     notifyListeners();
 
@@ -2423,40 +2615,48 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Attempt a single reconnection
   void _attemptReconnect() {
     if (_reconnectAttempt >= _maxReconnectAttempts) {
-      debugLog('[CONN] Auto-reconnect: max attempts reached ($_maxReconnectAttempts)');
+      debugLog(
+          '[CONN] Auto-reconnect: max attempts reached ($_maxReconnectAttempts)');
       _abandonAutoReconnect();
       return;
     }
 
     _reconnectAttempt++;
-    debugLog('[CONN] Auto-reconnect attempt $_reconnectAttempt of $_maxReconnectAttempts');
+    debugLog(
+        '[CONN] Auto-reconnect attempt $_reconnectAttempt of $_maxReconnectAttempts');
     notifyListeners();
 
     // Use longer delay after bond errors to give iOS time to clear stale keys
-    final delay = _lastReconnectWasBondError ? _reconnectDelayAfterBondError : _reconnectDelay;
+    final delay = _lastReconnectWasBondError
+        ? _reconnectDelayAfterBondError
+        : _reconnectDelay;
 
     // Delay before attempting reconnection
     _reconnectTimer = Timer(delay, () async {
       if (!_isAutoReconnecting) return; // Cancelled while waiting
 
       try {
-        debugLog('[CONN] Auto-reconnect: calling reconnectToRememberedDevice()');
+        debugLog(
+            '[CONN] Auto-reconnect: calling reconnectToRememberedDevice()');
         await reconnectToRememberedDevice();
 
         // If we get here and connection step is 'connected', success!
         if (_connectionStep == ConnectionStep.connected) {
-          debugLog('[CONN] Auto-reconnect succeeded on attempt $_reconnectAttempt');
+          debugLog(
+              '[CONN] Auto-reconnect succeeded on attempt $_reconnectAttempt');
           _lastReconnectWasBondError = false;
           _onReconnectSuccess();
         } else if (_isAutoReconnecting) {
           // Connection failed but didn't throw - try again
-          debugLog('[CONN] Auto-reconnect: connection did not complete, retrying...');
+          debugLog(
+              '[CONN] Auto-reconnect: connection did not complete, retrying...');
           _connectionStep = ConnectionStep.reconnecting;
           notifyListeners();
           _attemptReconnect();
         }
       } catch (e) {
-        debugError('[CONN] Auto-reconnect attempt $_reconnectAttempt failed: $e');
+        debugError(
+            '[CONN] Auto-reconnect attempt $_reconnectAttempt failed: $e');
         if (_isAutoReconnecting) {
           // Check for iOS apple-code 14 (Peer removed pairing information)
           // The MeshCore device cleared its bond keys — clear iOS stale bond before retrying
@@ -2479,10 +2679,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _idleDisconnectTimer = Timer(_idleDisconnectTimeout, () {
       if (!isConnected || _autoPingEnabled) return;
       debugLog('[IDLE] 15-minute idle timeout reached — disconnecting');
-      logError('Disconnected: 15 minutes of inactivity', severity: ErrorSeverity.warning);
+      logError('Disconnected: 15 minutes of inactivity',
+          severity: ErrorSeverity.warning);
       disconnect();
     });
-    debugLog('[IDLE] Idle disconnect timer started (${_idleDisconnectTimeout.inMinutes} min)');
+    debugLog(
+        '[IDLE] Idle disconnect timer started (${_idleDisconnectTimeout.inMinutes} min)');
   }
 
   /// Cancel the idle disconnect timer
@@ -2497,11 +2699,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Detect iOS apple-code 14/15 bond errors and clear the stale bond before retry
   Future<void> _handleBondErrorIfNeeded(Object error) async {
     final errorStr = error.toString();
-    if (errorStr.contains('apple-code: 14') || errorStr.contains('apple-code: 15') || errorStr.contains('Peer removed pairing information')) {
+    if (errorStr.contains('apple-code: 14') ||
+        errorStr.contains('apple-code: 15') ||
+        errorStr.contains('Peer removed pairing information')) {
       _lastReconnectWasBondError = true;
       final deviceId = _rememberedDevice?.id;
       if (deviceId != null) {
-        debugLog('[CONN] Bond error detected (apple-code 14/15) — clearing stale bond for $deviceId');
+        debugLog(
+            '[CONN] Bond error detected (apple-code 14/15) — clearing stale bond for $deviceId');
         await _bluetoothService.removeBond(deviceId);
       }
     }
@@ -2523,7 +2728,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectAttempt = 0;
     _autoPingWasEnabled = false;
 
-    debugLog('[CONN] Auto-reconnect complete, restoring state (autoPing=$wasAutoPing, mode=$previousMode)');
+    debugLog(
+        '[CONN] Auto-reconnect complete, restoring state (autoPing=$wasAutoPing, mode=$previousMode)');
 
     // Restore auto-ping if it was active
     if (wasAutoPing) {
@@ -2537,13 +2743,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _userRequestedDisconnect ||
             _connectionStep != ConnectionStep.connected ||
             _pingService == null) {
-          debugLog('[CONN] Skipping delayed auto-ping restore (stale or disconnected state)');
+          debugLog(
+              '[CONN] Skipping delayed auto-ping restore (stale or disconnected state)');
           return;
         }
 
         if (!_autoPingEnabled) {
           toggleAutoPing(previousMode);
-          debugLog('[CONN] Auto-ping restored after reconnect (mode=$previousMode)');
+          debugLog(
+              '[CONN] Auto-ping restored after reconnect (mode=$previousMode)');
         }
       });
     } else {
@@ -2582,7 +2790,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Reset antenna and power settings so user must choose again on next connect
     _antennaRestoredFromDevice = false;
     _powerRestoredFromDevice = false;
-    _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
+    _preferences = _preferences.copyWith(
+        externalAntenna: false, externalAntennaSet: false);
     _savePreferences();
 
     // Reset anonymous mode state (BLE already gone, can't restore name)
@@ -2671,11 +2880,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_isAnonymousRenamed && _originalDeviceName != null) {
       try {
         await _meshCoreConnection?.setAdvertName(_originalDeviceName!);
-        debugLog('[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
+        debugLog(
+            '[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
       } catch (e) {
         debugError('[CONN] Anonymous mode: failed to restore name: $e');
-        logError('Anonymous Mode: Failed to restore device name. Device may still show as "Anonymous".',
-            severity: ErrorSeverity.warning, autoSwitch: false);
+        logError(
+            'Anonymous Mode: Failed to restore device name. Device may still show as "Anonymous".',
+            severity: ErrorSeverity.warning,
+            autoSwitch: false);
       }
       _isAnonymousRenamed = false;
       _originalDeviceName = null;
@@ -2709,7 +2921,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Disconnect BLE (don't call disconnect() twice - meshCoreConnection.disconnect() already does it)
     await _meshCoreConnection?.disconnect();
-    
+
     // Cancel stream subscriptions
     await _noiseFloorSubscription?.cancel();
     _noiseFloorSubscription = null;
@@ -2730,7 +2942,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _displayDeviceName = null;
     _antennaRestoredFromDevice = false;
     _powerRestoredFromDevice = false;
-    _preferences = _preferences.copyWith(externalAntenna: false, externalAntennaSet: false);
+    _preferences = _preferences.copyWith(
+        externalAntenna: false, externalAntennaSet: false);
     _savePreferences();
     _currentNoiseFloor = null;
     _currentBatteryPercent = null;
@@ -2830,7 +3043,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
 
     if (!result.isValid) {
-      debugWarn('[API] Session check failed: ${result.reason} - ${result.message ?? "Session expired"}');
+      debugWarn(
+          '[API] Session check failed: ${result.reason} - ${result.message ?? "Session expired"}');
       // Note: onSessionError callback will trigger disconnect for critical errors
       return false;
     }
@@ -2851,7 +3065,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         ? DateTime.now().difference(_idleAutoStopReference!).inMinutes
         : 30;
     debugLog('[AUTO] Auto-stop triggered: idle for $elapsed minutes');
-    logError('Auto-ping stopped: no movement for 30 minutes', severity: ErrorSeverity.warning, autoSwitch: false);
+    logError('Auto-ping stopped: no movement for 30 minutes',
+        severity: ErrorSeverity.warning, autoSwitch: false);
     _idleAutoStopReference = null;
     toggleAutoPing(_autoMode);
   }
@@ -2919,7 +3134,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Passive Mode is listening only, no cooldown needed
       if (isTxMode) {
         _cooldownTimer.start(5000);
-        debugLog('[${mode.name.toUpperCase()} MODE] Shared cooldown started (5s) - blocks TX Ping and TX modes');
+        debugLog(
+            '[${mode.name.toUpperCase()} MODE] Shared cooldown started (5s) - blocks TX Ping and TX modes');
       } else {
         debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
       }
@@ -2936,7 +3152,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Block starting if shared cooldown is active (TX modes only)
       // Passive Mode is listening only and can start during cooldown
       if (isTxMode && _cooldownTimer.isRunning) {
-        debugLog('[${mode.name.toUpperCase()} MODE] Start blocked by shared cooldown');
+        debugLog(
+            '[${mode.name.toUpperCase()} MODE] Start blocked by shared cooldown');
         return false;
       }
 
@@ -2967,7 +3184,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Set interval from user preferences before starting
       final intervalMs = _preferences.autoPingInterval * 1000;
       _pingService!.setAutoPingInterval(intervalMs);
-      debugLog('[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
+      debugLog(
+          '[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
 
       final started = await _pingService!.enableAutoPing(
         passiveMode: isPassive,
@@ -2978,7 +3196,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!started) {
         // Blocked by cooldown or already enabled
         if (_pingService!.isInCooldown()) {
-          debugLog('[PING] Auto mode start blocked by cooldown (${_pingService!.getRemainingCooldownSeconds()}s remaining)');
+          debugLog(
+              '[PING] Auto mode start blocked by cooldown (${_pingService!.getRemainingCooldownSeconds()}s remaining)');
         } else {
           debugLog('[PING] Auto mode start blocked');
         }
@@ -2991,7 +3210,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _idleAutoStopReference = DateTime.now();
 
       // Start noise floor session for graph tracking
-      final sessionLabel = isPassive ? 'passive' : isHybrid ? 'hybrid' : isTargeted ? 'targeted' : 'active';
+      final sessionLabel = isPassive
+          ? 'passive'
+          : isHybrid
+              ? 'hybrid'
+              : isTargeted
+                  ? 'targeted'
+                  : 'active';
       _startNoiseFloorSession(sessionLabel);
 
       // Enable heartbeat for all auto-ping modes (not offline mode)
@@ -3011,7 +3236,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // Start background service for continuous operation
-      final modeName = isPassive ? 'Passive Mode' : isHybrid ? 'Hybrid Mode' : isTargeted ? 'Trace Mode' : 'Active Mode';
+      final modeName = isPassive
+          ? 'Passive Mode'
+          : isHybrid
+              ? 'Hybrid Mode'
+              : isTargeted
+                  ? 'Trace Mode'
+                  : 'Active Mode';
       await BackgroundServiceManager.startService(
         mode: modeName,
         txCount: _pingStats.txCount,
@@ -3050,7 +3281,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_discLogEntries.length > _maxLogEntries) {
       _discLogEntries.removeLast();
     }
-    debugLog('[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
+    debugLog(
+        '[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
     notifyListeners();
   }
 
@@ -3060,14 +3292,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_traceLogEntries.length > _maxLogEntries) {
       _traceLogEntries.removeLast();
     }
-    debugLog('[APP] Trace log entry added: target=${entry.targetRepeaterId}, success=${entry.success}');
+    debugLog(
+        '[APP] Trace log entry added: target=${entry.targetRepeaterId}, success=${entry.success}');
 
     // Update top repeaters overlay with successful trace result
     if (entry.success && entry.localSnr != null) {
       // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay
       final id = entry.targetRepeaterId.toUpperCase();
       final displayId = id.length > 6 ? id.substring(0, 6) : id;
-      _updateTopRepeaters([(repeaterId: displayId, snr: entry.localSnr!)], OverlayPingType.trace);
+      _updateTopRepeaters([(repeaterId: displayId, snr: entry.localSnr!)],
+          OverlayPingType.trace);
     }
 
     notifyListeners();
@@ -3075,13 +3309,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Log a user-facing error message
   /// Set [autoSwitch] to false to log without navigating to error log tab
-  void logError(String message, {ErrorSeverity severity = ErrorSeverity.error, bool autoSwitch = true}) {
+  void logError(String message,
+      {ErrorSeverity severity = ErrorSeverity.error, bool autoSwitch = true}) {
     _errorLogEntries.add(UserErrorEntry(
       timestamp: DateTime.now(),
       message: message,
       severity: severity,
     ));
-    if (_errorLogEntries.length > _maxErrorEntries) _errorLogEntries.removeAt(0);
+    if (_errorLogEntries.length > _maxErrorEntries) {
+      _errorLogEntries.removeAt(0);
+    }
     if (autoSwitch) {
       _requestErrorLogSwitch = true; // Auto-switch to error log
     }
@@ -3129,9 +3366,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     // Hot-switch while connected
-    return enabled
-        ? await _switchToOfflineMode()
-        : await _switchToOnlineMode();
+    return enabled ? await _switchToOfflineMode() : await _switchToOnlineMode();
   }
 
   /// Simple offline mode change (when not connected)
@@ -3158,7 +3393,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _stopOfflineAutoSaveTimer();
       // Re-check zone status when exiting offline mode
       if (_currentPosition != null) {
-        debugLog('[GEOFENCE] Re-checking zone status after offline mode disabled');
+        debugLog(
+            '[GEOFENCE] Re-checking zone status after offline mode disabled');
         checkZoneStatus();
       }
     }
@@ -3257,13 +3493,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               connectedDeviceName?.replaceFirst('MeshCore-', ''));
 
       if (deviceName == null || deviceName.isEmpty) {
-        debugError('[APP] Cannot switch to online mode: no device name available');
+        debugError(
+            '[APP] Cannot switch to online mode: no device name available');
         _modeSwitchError = 'Device name not available';
         return (success: false, error: _modeSwitchError);
       }
 
       if (_devicePublicKey == null) {
-        debugError('[APP] Cannot switch to online mode: no public key available');
+        debugError(
+            '[APP] Cannot switch to online mode: no public key available');
         _modeSwitchError = 'Device public key not available';
         return (success: false, error: _modeSwitchError);
       }
@@ -3280,17 +3518,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       if (zoneCode == null) {
         debugError('[APP] Cannot switch to online mode: not in a zone');
-        _modeSwitchError = 'Could not determine your zone. Check GPS and internet connection.';
+        _modeSwitchError =
+            'Could not determine your zone. Check GPS and internet connection.';
         return (success: false, error: _modeSwitchError);
       }
 
       // ============================================================
       // STAGE 1: Try existing public_key authentication
       // ============================================================
-      debugLog('[APP] Stage 1: Attempting auth with public_key: ${_devicePublicKey!.substring(0, 16)}...');
+      debugLog(
+          '[APP] Stage 1: Attempting auth with public_key: ${_devicePublicKey!.substring(0, 16)}...');
 
       final modelString = _meshCoreConnection?.deviceModel?.manufacturer ??
-               _meshCoreConnection?.deviceInfo?.manufacturer ?? 'Unknown';
+          _meshCoreConnection?.deviceInfo?.manufacturer ??
+          'Unknown';
 
       var result = await _apiService.requestAuth(
         reason: 'connect',
@@ -3310,10 +3551,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _maintenanceMode = true;
         _maintenanceMessage = result['maintenance_message'] as String?;
         _maintenanceUrl = result['maintenance_url'] as String?;
-        debugLog('[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
+        debugLog(
+            '[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
         _startMaintenancePolling();
         notifyListeners();
-        _modeSwitchError = _maintenanceMessage ?? 'Service is under maintenance';
+        _modeSwitchError =
+            _maintenanceMessage ?? 'Service is under maintenance';
         return (success: false, error: _modeSwitchError);
       }
 
@@ -3333,11 +3576,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (success: false, error: _modeSwitchError);
       } else {
         // Stage 1 failed — check if Stage 2 is worth attempting
-        debugLog('[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
+        debugLog(
+            '[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
 
         final stage1Reason = result['reason'] as String?;
         if (stage1Reason == 'gps_inaccurate' || stage1Reason == 'gps_stale') {
-          debugError('[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
+          debugError(
+              '[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
           _modeSwitchError = result['message'] as String? ?? 'GPS error';
           return (success: false, error: _modeSwitchError);
         }
@@ -3351,10 +3596,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         try {
           debugLog('[APP] Requesting signed contact URI from device...');
           contactUri = await _meshCoreConnection!.exportContact();
-          debugLog('[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
+          debugLog(
+              '[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
         } catch (e) {
           debugError('[APP] Failed to get contact URI from device: $e');
-          _modeSwitchError = 'Companion not found in backend and failed to register via API';
+          _modeSwitchError =
+              'Companion not found in backend and failed to register via API';
           return (success: false, error: _modeSwitchError);
         }
 
@@ -3378,9 +3625,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         if (registerResult['success'] != true) {
-          final serverReason = registerResult['reason'] as String? ?? 'registration_failed';
+          final serverReason =
+              registerResult['reason'] as String? ?? 'registration_failed';
           final serverMessage = registerResult['message'] as String?;
-          debugError('[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
+          debugError(
+              '[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
           _modeSwitchError = serverMessage ?? 'Registration rejected by server';
           return (success: false, error: _modeSwitchError);
         }
@@ -3509,7 +3758,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Note: Connection already validates device name exists, so this should never be null
     final offlineDeviceName = _isAnonymousRenamed
         ? _originalDeviceName
-        : (_meshCoreConnection?.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''));
+        : (_meshCoreConnection?.selfInfo?.name ??
+            connectedDeviceName?.replaceFirst('MeshCore-', ''));
     await _offlineSessionService.saveSession(
       pings,
       devicePublicKey: _devicePublicKey,
@@ -3525,14 +3775,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Periodically auto-save offline pings to prevent data loss from app kill.
   /// Uses a non-destructive snapshot so in-memory accumulation continues.
   void _autoSaveOfflinePings() {
-    if (!_preferences.offlineMode || _apiQueueService.offlinePingCount == 0) return;
+    if (!_preferences.offlineMode || _apiQueueService.offlinePingCount == 0) {
+      return;
+    }
 
     final pings = _apiQueueService.getOfflinePingsSnapshot();
     if (pings.isEmpty) return;
 
     final offlineDeviceName = _isAnonymousRenamed
         ? _originalDeviceName
-        : (_meshCoreConnection?.selfInfo?.name ?? connectedDeviceName?.replaceFirst('MeshCore-', ''));
+        : (_meshCoreConnection?.selfInfo?.name ??
+            connectedDeviceName?.replaceFirst('MeshCore-', ''));
 
     _offlineSessionService.updateCurrentSession(
       pings,
@@ -3582,7 +3835,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (success) {
         // Delete the session file on successful upload
         await _offlineSessionService.deleteSession(filename);
-        debugLog('[API] Uploaded and deleted offline session: $filename (${pings.length} pings)');
+        debugLog(
+            '[API] Uploaded and deleted offline session: $filename (${pings.length} pings)');
       } else {
         debugError('[API] Failed to upload offline session: $filename');
       }
@@ -3607,7 +3861,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }) async {
     // Concurrency guard — only one offline upload at a time
     if (_isUploadingOfflineSession) {
-      debugWarn('[OFFLINE] Upload already in progress, rejecting concurrent request');
+      debugWarn(
+          '[OFFLINE] Upload already in progress, rejecting concurrent request');
       return OfflineUploadResult.uploadInProgress;
     }
 
@@ -3615,7 +3870,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     try {
-      return await _uploadOfflineSessionIsolated(filename, onProgress: onProgress);
+      return await _uploadOfflineSessionIsolated(filename,
+          onProgress: onProgress);
     } finally {
       _isUploadingOfflineSession = false;
       notifyListeners();
@@ -3662,13 +3918,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // 3. Check GPS before auth — the server requires current coordinates for geo-auth
     if (_currentPosition == null) {
-      debugError('[OFFLINE] Upload requires GPS - location services not available');
+      debugError(
+          '[OFFLINE] Upload requires GPS - location services not available');
       return OfflineUploadResult.gpsRequired;
     }
 
     // 4. Authenticate with offline_mode: true, skipSessionStore: true
     //    This prevents writing to shared _sessionId/_txAllowed/etc.
-    debugLog('[OFFLINE] Authenticating for offline upload with device: $deviceName');
+    debugLog(
+        '[OFFLINE] Authenticating for offline upload with device: $deviceName');
     final authResult = await _apiService.requestAuth(
       reason: 'connect',
       publicKey: publicKey,
@@ -3697,7 +3955,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Stage 2: If unknown_device and we have a stored contactUri, attempt registration
       if (reason == 'unknown_device' && session.contactUri != null) {
-        debugLog('[OFFLINE] Stage 2: Attempting registration via stored contact URI...');
+        debugLog(
+            '[OFFLINE] Stage 2: Attempting registration via stored contact URI...');
         final registerResult = await _apiService.requestAuth(
           reason: 'register',
           contactUri: session.contactUri,
@@ -3719,7 +3978,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return OfflineUploadResult.authFailed;
         }
 
-        debugLog('[OFFLINE] Stage 2 succeeded: device registered for offline upload');
+        debugLog(
+            '[OFFLINE] Stage 2 succeeded: device registered for offline upload');
         effectiveAuth = registerResult;
       } else {
         debugError('[OFFLINE] Auth failed: $reason');
@@ -3734,7 +3994,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return OfflineUploadResult.authFailed;
     }
 
-    debugLog('[OFFLINE] Authenticated with isolated session: $offlineSessionId');
+    debugLog(
+        '[OFFLINE] Authenticated with isolated session: $offlineSessionId');
 
     // Delay after auth before posting
     await Future.delayed(const Duration(seconds: 1));
@@ -3750,7 +4011,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       onProgress?.call('Batch $batchNum/$totalBatches');
 
       final batch = pings.skip(i).take(batchSize).toList();
-      final result = await _apiService.uploadBatchWithSessionId(batch, offlineSessionId);
+      final result =
+          await _apiService.uploadBatchWithSessionId(batch, offlineSessionId);
       if (result == UploadResult.success) {
         uploadedCount += batch.length;
         debugLog('[OFFLINE] Uploaded batch $batchNum: ${batch.length} pings');
@@ -3779,7 +4041,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return OfflineUploadResult.success;
     } else {
-      debugWarn('[OFFLINE] Partial upload: $uploadedCount/${pings.length} pings from $filename');
+      debugWarn(
+          '[OFFLINE] Partial upload: $uploadedCount/${pings.length} pings from $filename');
       notifyListeners();
       return OfflineUploadResult.partialFailure;
     }
@@ -3803,7 +4066,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Update user preferences
   void updatePreferences(UserPreferences preferences) {
-    debugLog('[APP] Preferences updated: externalAntennaSet=${preferences.externalAntennaSet}, '
+    debugLog(
+        '[APP] Preferences updated: externalAntennaSet=${preferences.externalAntennaSet}, '
         'externalAntenna=${preferences.externalAntenna}, autoPowerSet=${preferences.autoPowerSet}');
 
     _preferences = preferences;
@@ -3813,26 +4077,32 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _powerRestoredFromDevice = false;
 
     // Persist antenna choice per device name (use original name, not "Anonymous")
-    final deviceName = _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
+    final deviceName =
+        _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
     if (deviceName != null && preferences.externalAntennaSet) {
       _deviceAntennaPreferences[deviceName] = preferences.externalAntenna;
       _saveDeviceAntennaPreferences();
-      debugLog('[APP] Saved antenna preference for "$deviceName": ${preferences.externalAntenna ? "external" : "device"}');
+      debugLog(
+          '[APP] Saved antenna preference for "$deviceName": ${preferences.externalAntenna ? "external" : "device"}');
     }
 
     // Persist power override per device name
-    if (deviceName != null && preferences.powerLevelSet && !preferences.autoPowerSet) {
+    if (deviceName != null &&
+        preferences.powerLevelSet &&
+        !preferences.autoPowerSet) {
       _devicePowerOverrides[deviceName] = {
         'powerLevel': preferences.powerLevel,
         'txPower': preferences.txPower,
       };
       _saveDevicePowerOverrides();
-      debugLog('[APP] Saved power override for "$deviceName": ${preferences.powerLevel}W');
+      debugLog(
+          '[APP] Saved power override for "$deviceName": ${preferences.powerLevel}W');
     } else if (deviceName != null && preferences.autoPowerSet) {
       // User re-selected the auto-detected value — clear any saved override
       if (_devicePowerOverrides.remove(deviceName) != null) {
         _saveDevicePowerOverrides();
-        debugLog('[APP] Cleared power override for "$deviceName" (auto-detected selected)');
+        debugLog(
+            '[APP] Cleared power override for "$deviceName" (auto-detected selected)');
       }
     }
 
@@ -3843,7 +4113,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _syncCarpeaterPrefix();
 
     // Propagate min ping distance to GpsService and PingService
-    _gpsService.setMinPingDistance(preferences.minPingDistanceMeters.toDouble());
+    _gpsService
+        .setMinPingDistance(preferences.minPingDistanceMeters.toDouble());
     PingService.currentMinDistance = preferences.minPingDistanceMeters;
 
     notifyListeners();
@@ -3859,7 +4130,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     // If connected, disconnect and reconnect for clean auth session
-    if (_connectionStatus == ConnectionStatus.connected && _meshCoreConnection != null) {
+    if (_connectionStatus == ConnectionStatus.connected &&
+        _meshCoreConnection != null) {
       final deviceToReconnect = _bluetoothService.connectedDevice;
       if (deviceToReconnect != null) {
         _requestConnectionTabSwitch = true;
@@ -3874,7 +4146,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Propagate carpeaterPrefix to live TxTracker and RxLogger
   void _syncCarpeaterPrefix() {
-    final prefix = _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
+    final prefix =
+        _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
     if (_txTracker != null) {
       _txTracker!.carpeaterPrefix = prefix;
       debugLog('[APP] Synced TxTracker.carpeaterPrefix = ${prefix ?? 'null'}');
@@ -3931,7 +4204,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void setColorVisionType(String type) {
     _preferences = _preferences.copyWith(colorVisionType: type);
     PingColors.setColorVisionType(
-      ColorVisionType.values.firstWhere((e) => e.name == type, orElse: () => ColorVisionType.none),
+      ColorVisionType.values.firstWhere((e) => e.name == type,
+          orElse: () => ColorVisionType.none),
     );
     debugLog('[A11Y] Color vision type set to $type');
     notifyListeners();
@@ -4012,7 +4286,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Play disconnect alert if enabled (triple beep for unexpected ping stop)
   void _playDisconnectAlert() {
-    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) return;
+    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) {
+      return;
+    }
     debugLog('[AUDIO] Playing disconnect alert — pinging stopped unexpectedly');
     _audioService.playAlertSound();
   }
@@ -4096,13 +4372,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Rate limiting should warn but not disconnect (per PORTED_APP behavior)
     if (reason == 'rate_limited') {
-      debugWarn('[API] Rate limited - continuing without disconnect: $userMessage');
+      debugWarn(
+          '[API] Rate limited - continuing without disconnect: $userMessage');
       return;
     }
 
     // Zone grace period: intercept outside_zone during active session
     if (reason == 'outside_zone' && _isInZoneGracePeriod) {
-      debugLog('[ZONE GRACE] outside_zone during grace period — already handling');
+      debugLog(
+          '[ZONE GRACE] outside_zone during grace period — already handling');
       return;
     }
     if (reason == 'outside_zone' && isConnected && !_isInZoneGracePeriod) {
@@ -4158,7 +4436,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               deviceName: offlineDeviceName,
               contactUri: _offlineContactUri,
             );
-            debugLog('[APP] Preserved ${queuedPings.length} queued pings to offline storage on session expiry');
+            debugLog(
+                '[APP] Preserved ${queuedPings.length} queued pings to offline storage on session expiry');
           }
         } catch (e) {
           debugError('[APP] Failed to preserve queue to offline storage: $e');
@@ -4172,7 +4451,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Handle maintenance mode while connected - end session and log error
-  Future<void> _handleMaintenanceModeConnected(String message, String? url) async {
+  Future<void> _handleMaintenanceModeConnected(
+      String message, String? url) async {
     debugLog('[MAINTENANCE] Ending session due to maintenance mode');
 
     // Alert if auto-ping was running (maintenance is not user-initiated)
@@ -4181,7 +4461,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     // Log to error log (this sets _requestErrorLogSwitch = true)
-    logError('Maintenance Mode Enabled: $message', severity: ErrorSeverity.warning);
+    logError('Maintenance Mode Enabled: $message',
+        severity: ErrorSeverity.warning);
 
     // Disconnect (ends session, cleans up)
     await disconnect();
@@ -4212,7 +4493,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Start periodic polling to check if maintenance mode has ended
   void _startMaintenancePolling() {
     _maintenanceCheckTimer?.cancel();
-    _maintenanceCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+    _maintenanceCheckTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) async {
       if (!_maintenanceMode) {
         _maintenanceCheckTimer?.cancel();
         _maintenanceCheckTimer = null;
@@ -4242,7 +4524,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Validate GPS position for API calls
   /// Returns (isValid, errorMessage, errorCode) tuple
-  ({bool isValid, String? errorMessage, String? errorCode}) _validateGps(Position? position) {
+  ({bool isValid, String? errorMessage, String? errorCode}) _validateGps(
+      Position? position) {
     if (position == null) {
       return (
         isValid: false,
@@ -4256,7 +4539,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (ageSeconds > _maxGpsAgeSeconds) {
       return (
         isValid: false,
-        errorMessage: 'GPS data is ${ageSeconds}s old (max ${_maxGpsAgeSeconds}s)',
+        errorMessage:
+            'GPS data is ${ageSeconds}s old (max ${_maxGpsAgeSeconds}s)',
         errorCode: 'gps_stale',
       );
     }
@@ -4265,7 +4549,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (position.accuracy > _maxGpsAccuracyMeters) {
       return (
         isValid: false,
-        errorMessage: 'GPS accuracy is ${position.accuracy.toStringAsFixed(0)}m (max ${_maxGpsAccuracyMeters.toStringAsFixed(0)}m)',
+        errorMessage:
+            'GPS accuracy is ${position.accuracy.toStringAsFixed(0)}m (max ${_maxGpsAccuracyMeters.toStringAsFixed(0)}m)',
         errorCode: 'gps_inaccurate',
       );
     }
@@ -4304,7 +4589,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Schedule a zone check retry with countdown timer for UI feedback
-  void _scheduleZoneCheckRetry({required int seconds, required String error, required String reason}) {
+  void _scheduleZoneCheckRetry(
+      {required int seconds, required String error, required String reason}) {
     // Cancel any existing timers
     _zoneCheckRetryTimer?.cancel();
     _zoneCheckCountdownTimer?.cancel();
@@ -4345,11 +4631,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Should be called on app launch and every 100m of GPS movement while disconnected
   Future<void> checkZoneStatus() async {
     debugLog('[GEOFENCE] checkZoneStatus() called');
-    debugLog('[GEOFENCE] Pre-check state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+    debugLog(
+        '[GEOFENCE] Pre-check state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
         'hasPosition=${_currentPosition != null}, gpsStatus=$_gpsStatus');
 
     if (_currentPosition == null) {
-      debugLog('[GEOFENCE] Cannot check zone status: no GPS position (gpsStatus=$_gpsStatus)');
+      debugLog(
+          '[GEOFENCE] Cannot check zone status: no GPS position (gpsStatus=$_gpsStatus)');
       return;
     }
 
@@ -4359,18 +4647,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     if (_isCheckingZone) {
-      debugLog('[GEOFENCE] Zone check already in progress, skipping duplicate call');
+      debugLog(
+          '[GEOFENCE] Zone check already in progress, skipping duplicate call');
       return;
     }
 
-    debugLog('[GEOFENCE] Starting zone check - setting isCheckingZone=true (previous inZone=$_inZone)');
+    debugLog(
+        '[GEOFENCE] Starting zone check - setting isCheckingZone=true (previous inZone=$_inZone)');
     _isCheckingZone = true;
     // Don't clear error or notify here — keep current error view visible during retry
     // to avoid a full-screen flash. Error is cleared in finally block on success,
     // or overwritten by _scheduleZoneCheckRetry on failure.
 
     try {
-      debugLog('[GEOFENCE] Making API call to check zone at ${_currentPosition!.latitude.toStringAsFixed(5)}, '
+      debugLog(
+          '[GEOFENCE] Making API call to check zone at ${_currentPosition!.latitude.toStringAsFixed(5)}, '
           '${_currentPosition!.longitude.toStringAsFixed(5)} (accuracy: ${_currentPosition!.accuracy.toStringAsFixed(1)}m)');
 
       final result = await _apiService.checkZoneStatus(
@@ -4380,7 +4671,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         appVersion: _appVersion,
       );
 
-      debugLog('[GEOFENCE] API response received: ${result != null ? 'valid' : 'null'}');
+      debugLog(
+          '[GEOFENCE] API response received: ${result != null ? 'valid' : 'null'}');
 
       if (result == null) {
         // Update position even on failure to prevent zone check flooding
@@ -4403,7 +4695,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _maintenanceMode = true;
         _maintenanceMessage = result['maintenance_message'] as String?;
         _maintenanceUrl = result['maintenance_url'] as String?;
-        debugLog('[MAINTENANCE] Zone check returned maintenance: $_maintenanceMessage');
+        debugLog(
+            '[MAINTENANCE] Zone check returned maintenance: $_maintenanceMessage');
 
         // Start polling to detect when maintenance ends
         _startMaintenancePolling();
@@ -4420,8 +4713,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final success = result['success'] == true;
       if (!success) {
         final reason = result['reason'] as String?;
-        final message = result['message'] as String? ?? 'Zone status check failed';
-        debugError('[GEOFENCE] Zone status check failed: reason=$reason, message=$message');
+        final message =
+            result['message'] as String? ?? 'Zone status check failed';
+        debugError(
+            '[GEOFENCE] Zone status check failed: reason=$reason, message=$message');
 
         if (reason == 'gps_inaccurate') {
           logError('GPS Accuracy Error\n$message', autoSwitch: false);
@@ -4436,14 +4731,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         } else if (reason == 'zone_disabled') {
           final errorMsg = _getErrorMessage(reason, message);
           logError(errorMsg);
-          _scheduleZoneCheckRetry(seconds: 30, error: errorMsg, reason: reason!);
+          _scheduleZoneCheckRetry(
+              seconds: 30, error: errorMsg, reason: reason!);
         } else if (reason == 'bad_key' || reason == 'invalid_request') {
           final errorMsg = _getErrorMessage(reason, message);
           logError(errorMsg);
-          _scheduleZoneCheckRetry(seconds: 60, error: errorMsg, reason: reason!);
+          _scheduleZoneCheckRetry(
+              seconds: 60, error: errorMsg, reason: reason!);
         } else {
           // Unknown server errors — use server message
-          _scheduleZoneCheckRetry(seconds: 15, error: message, reason: 'server_error');
+          _scheduleZoneCheckRetry(
+              seconds: 15, error: message, reason: 'server_error');
         }
 
         return;
@@ -4475,14 +4773,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[GEOFENCE] In zone: $newZoneName ($newZoneCode)');
 
         if (newZoneCode.isNotEmpty) {
-          _fetchRepeatersForZone(newZoneCode); // fire-and-forget — don't block zone check
+          _fetchRepeatersForZone(
+              newZoneCode); // fire-and-forget — don't block zone check
         }
       } else {
         _currentZone = null;
         _nearestZone = result['nearest_zone'] as Map<String, dynamic>?;
         final nearestName = _nearestZone?['name'] ?? 'Unknown';
-        final distanceKm = (_nearestZone?['distance_km'] as num?)?.toStringAsFixed(1) ?? '?';
-        debugWarn('[GEOFENCE] Outside zone. Nearest: $nearestName (${distanceKm}km away)');
+        final distanceKm =
+            (_nearestZone?['distance_km'] as num?)?.toStringAsFixed(1) ?? '?';
+        debugWarn(
+            '[GEOFENCE] Outside zone. Nearest: $nearestName (${distanceKm}km away)');
 
         // Clear repeaters when exiting zone
         _repeaters = [];
@@ -4493,7 +4794,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugError('[GEOFENCE] Zone status check error: $e');
     } finally {
       _isCheckingZone = false;
-      debugLog('[GEOFENCE] Zone check complete - final state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
+      debugLog(
+          '[GEOFENCE] Zone check complete - final state: inZone=$_inZone, isCheckingZone=$_isCheckingZone, '
           'zoneName=${_currentZone?['name']}, zoneCode=${_currentZone?['code']}');
       notifyListeners();
     }
@@ -4509,11 +4811,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // If auth response includes slot data, use it directly (forward-compatible)
     if (authResult.containsKey('slots_available')) {
       _currentZone!['slots_available'] = authResult['slots_available'];
-      debugLog('[CAPACITY] Updated slots_available from auth: ${authResult['slots_available']}');
+      debugLog(
+          '[CAPACITY] Updated slots_available from auth: ${authResult['slots_available']}');
     }
     if (authResult.containsKey('slots_max')) {
       _currentZone!['slots_max'] = authResult['slots_max'];
-      debugLog('[CAPACITY] Updated slots_max from auth: ${authResult['slots_max']}');
+      debugLog(
+          '[CAPACITY] Updated slots_max from auth: ${authResult['slots_max']}');
     }
 
     // Sync at_capacity with tx_allowed
@@ -4523,7 +4827,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // If auth says TX not allowed and server didn't provide slot data, set slots to 0
     if (!authTxAllowed && !authResult.containsKey('slots_available')) {
       _currentZone!['slots_available'] = 0;
-      debugLog('[CAPACITY] Zone at TX capacity per auth, set slots_available=0');
+      debugLog(
+          '[CAPACITY] Zone at TX capacity per auth, set slots_available=0');
     }
 
     // If auth says TX allowed and we have slot data but server didn't provide updated count,
@@ -4581,8 +4886,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _startZoneGracePeriod() async {
     if (_isInZoneGracePeriod) return;
     _isInZoneGracePeriod = true;
-    debugLog('[ZONE GRACE] Entering zone grace period (${_zoneGraceTimeout.inMinutes}m timeout)');
-    logError('Left wardriving zone. Searching for nearby zone...', severity: ErrorSeverity.warning, autoSwitch: false);
+    debugLog(
+        '[ZONE GRACE] Entering zone grace period (${_zoneGraceTimeout.inMinutes}m timeout)');
+    logError('Left wardriving zone. Searching for nearby zone...',
+        severity: ErrorSeverity.warning, autoSwitch: false);
 
     // Save auto-ping state for restoration on zone re-entry
     _autoPingWasEnabledBeforeGrace = _autoPingEnabled;
@@ -4664,18 +4971,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // checkZoneStatus updates _inZone and calls notifyListeners (overlay auto-updates)
     if (_inZone == true) {
       final reEnteredZoneCode = _currentZone?['code'] as String? ?? '';
-      debugLog('[ZONE GRACE] Zone re-entered: ${_currentZone?['name']} ($reEnteredZoneCode)');
+      debugLog(
+          '[ZONE GRACE] Zone re-entered: ${_currentZone?['name']} ($reEnteredZoneCode)');
 
       // If re-entering a DIFFERENT zone, do a full zone transfer instead of simple resume
       if (_sessionZoneCode != null &&
           reEnteredZoneCode.isNotEmpty &&
           reEnteredZoneCode != _sessionZoneCode) {
-        debugLog('[ZONE GRACE] Re-entered different zone ($reEnteredZoneCode vs session $_sessionZoneCode) — transferring');
+        debugLog(
+            '[ZONE GRACE] Re-entered different zone ($reEnteredZoneCode vs session $_sessionZoneCode) — transferring');
         _cancelZoneGraceTimers();
         _isInZoneGracePeriod = false;
         _zoneGraceSecondsRemaining = 0;
         _autoPingWasEnabledBeforeGrace = false;
-        await _handleZoneTransfer(reEnteredZoneCode, _currentZone?['name'] ?? 'Unknown');
+        await _handleZoneTransfer(
+            reEnteredZoneCode, _currentZone?['name'] ?? 'Unknown');
         return;
       }
 
@@ -4696,8 +5006,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _zoneGraceSecondsRemaining = 0;
     _autoPingWasEnabledBeforeGrace = false;
 
-    debugLog('[ZONE GRACE] Resuming wardriving (autoPing=$wasAutoPing, mode=$previousMode)');
-    logError('Re-entered wardriving zone. Resuming...', severity: ErrorSeverity.info, autoSwitch: false);
+    debugLog(
+        '[ZONE GRACE] Resuming wardriving (autoPing=$wasAutoPing, mode=$previousMode)');
+    logError('Re-entered wardriving zone. Resuming...',
+        severity: ErrorSeverity.info, autoSwitch: false);
 
     // Re-enable heartbeat
     _apiService.enableHeartbeat(
@@ -4723,7 +5035,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _userRequestedDisconnect ||
             _connectionStep != ConnectionStep.connected ||
             _pingService == null) {
-          debugLog('[ZONE GRACE] Skipping auto-ping restore (stale or disconnected state)');
+          debugLog(
+              '[ZONE GRACE] Skipping auto-ping restore (stale or disconnected state)');
           return;
         }
         if (!_autoPingEnabled) {
@@ -4770,7 +5083,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Handle zone-to-zone transfer during active wardriving session.
   /// Releases old zone session and acquires new session for target zone.
   /// Preserves BLE connection and radio configuration.
-  Future<void> _handleZoneTransfer(String newZoneCode, String newZoneName) async {
+  Future<void> _handleZoneTransfer(
+      String newZoneCode, String newZoneName) async {
     if (_isZoneTransferInProgress) {
       debugLog('[ZONE] Transfer already in progress, skipping');
       return;
@@ -4833,7 +5147,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           : (_meshCoreConnection?.selfInfo?.name ??
               connectedDeviceName?.replaceFirst('MeshCore-', ''));
 
-      if (_devicePublicKey == null || deviceName == null || _currentPosition == null) {
+      if (_devicePublicKey == null ||
+          deviceName == null ||
+          _currentPosition == null) {
         debugError('[ZONE] Cannot transfer: missing device key, name, or GPS');
         await disconnect();
         return;
@@ -4848,7 +5164,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         power: _preferences.powerLevel,
         iataCode: newZoneCode,
         model: _meshCoreConnection?.deviceModel?.manufacturer ??
-               _meshCoreConnection?.deviceInfo?.manufacturer ?? 'Unknown',
+            _meshCoreConnection?.deviceInfo?.manufacturer ??
+            'Unknown',
         lat: _currentPosition!.latitude,
         lon: _currentPosition!.longitude,
         accuracyMeters: _currentPosition!.accuracy,
@@ -4857,7 +5174,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 10. Check auth result
       if (result == null) {
         debugError('[ZONE] Auth failed for zone $newZoneCode: network error');
-        logError('Zone transfer failed: unable to reach server', severity: ErrorSeverity.error);
+        logError('Zone transfer failed: unable to reach server',
+            severity: ErrorSeverity.error);
         await disconnect();
         return;
       }
@@ -4875,8 +5193,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (result['success'] != true) {
         final reason = result['reason'] as String? ?? 'unknown';
         final message = result['message'] as String? ?? 'Auth failed';
-        debugError('[ZONE] Auth failed for zone $newZoneCode: $reason - $message');
-        logError('Zone transfer failed: $message', severity: ErrorSeverity.error);
+        debugError(
+            '[ZONE] Auth failed for zone $newZoneCode: $reason - $message');
+        logError('Zone transfer failed: $message',
+            severity: ErrorSeverity.error);
         await disconnect();
         return;
       }
@@ -4899,7 +5219,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // 13. Update PacketValidator with new channel configuration
       if (_unifiedRxHandler != null) {
-        final allowedChannelsData = ChannelService.getAllowedChannelsForValidator();
+        final allowedChannelsData =
+            ChannelService.getAllowedChannelsForValidator();
         final allowedChannels = <int, ChannelInfo>{};
         for (final entry in allowedChannelsData.entries) {
           allowedChannels[entry.key] = ChannelInfo(
@@ -4913,13 +5234,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           disableRssiFilter: _preferences.disableRssiFilter,
         );
         _unifiedRxHandler!.updateValidator(newValidator);
-        debugLog('[ZONE] PacketValidator updated with ${allowedChannels.length} channels');
+        debugLog(
+            '[ZONE] PacketValidator updated with ${allowedChannels.length} channels');
       }
 
       // 14. Update flood scope from new auth response
       final apiScopes = _apiService.scopes;
       final firstScope = apiScopes.isNotEmpty ? apiScopes.first : null;
-      final isWildcard = firstScope == null || firstScope == '*' || firstScope == '#*';
+      final isWildcard =
+          firstScope == null || firstScope == '*' || firstScope == '#*';
       if (!isWildcard) {
         final scopeName = firstScope;
         _scope = scopeName.startsWith('#') ? scopeName : '#$scopeName';
@@ -4948,8 +5271,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[ZONE] Discovery drop force-enabled by new zone admin');
       }
       if (_preferences.autoPingInterval < _apiService.minModeInterval) {
-        _preferences = _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
-        debugLog('[ZONE] Auto-ping interval bumped to ${_apiService.minModeInterval}s by new zone admin');
+        _preferences = _preferences.copyWith(
+            autoPingInterval: _apiService.minModeInterval);
+        debugLog(
+            '[ZONE] Auto-ping interval bumped to ${_apiService.minModeInterval}s by new zone admin');
       }
 
       // 16. Reconfigure path hash mode if new zone requires different hop bytes
@@ -4988,7 +5313,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               _userRequestedDisconnect ||
               _connectionStep != ConnectionStep.connected ||
               _pingService == null) {
-            debugLog('[ZONE] Skipping auto-ping restore (stale or disconnected state)');
+            debugLog(
+                '[ZONE] Skipping auto-ping restore (stale or disconnected state)');
             return;
           }
           if (!_autoPingEnabled) {
@@ -5041,7 +5367,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
         notifyListeners();
       } else {
-        debugWarn('[MAP] No repeaters returned for zone $iata — will retry on next zone check');
+        debugWarn(
+            '[MAP] No repeaters returned for zone $iata — will retry on next zone check');
       }
     } catch (e) {
       debugError('[MAP] Failed to fetch repeaters: $e');
@@ -5292,7 +5619,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Load a route file (KML or GPX)
   bool loadSimulatorRoute(String content, {String? filename}) {
-    final success = _gpsService.simulator.loadRoute(content, filename: filename);
+    final success =
+        _gpsService.simulator.loadRoute(content, filename: filename);
     if (success) {
       _gpsSimulatorPattern = SimulatorPattern.route;
       // If simulator is running, it will automatically use the new route
@@ -5351,7 +5679,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Attempt to recover from Hive corruption
-  Future<Box<dynamic>?> _attemptHiveRecovery(String boxName, Duration timeout) async {
+  Future<Box<dynamic>?> _attemptHiveRecovery(
+      String boxName, Duration timeout) async {
     try {
       debugLog('[HIVE] Deleting corrupted box "$boxName"...');
       await Hive.deleteBoxFromDisk(boxName);
@@ -5365,7 +5694,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return box;
     } catch (e) {
       debugError('[HIVE] Recovery failed for "$boxName": $e');
-      logError('Storage for "$boxName" unavailable - some settings may not persist');
+      logError(
+          'Storage for "$boxName" unavailable - some settings may not persist');
       return null;
     }
   }
@@ -5381,7 +5711,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final json = box.get('device');
       if (json != null) {
-        _rememberedDevice = RememberedDevice.fromJson(Map<String, dynamic>.from(json));
+        _rememberedDevice =
+            RememberedDevice.fromJson(Map<String, dynamic>.from(json));
         debugLog('[APP] Loaded remembered device: ${_rememberedDevice!.name}');
         notifyListeners();
       }
@@ -5466,13 +5797,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final json = box.get('preferences');
       if (json != null) {
-        _preferences = UserPreferences.fromJson(Map<String, dynamic>.from(json));
-        debugLog('[APP] Loaded preferences: interval=${_preferences.autoPingInterval}s, '
+        _preferences =
+            UserPreferences.fromJson(Map<String, dynamic>.from(json));
+        debugLog(
+            '[APP] Loaded preferences: interval=${_preferences.autoPingInterval}s, '
             'ignoreCarpeater=${_preferences.ignoreCarpeater}, '
             'ignoreRepeaterId=${_preferences.ignoreRepeaterId}');
 
         // Apply saved min ping distance to GpsService and PingService
-        _gpsService.setMinPingDistance(_preferences.minPingDistanceMeters.toDouble());
+        _gpsService
+            .setMinPingDistance(_preferences.minPingDistanceMeters.toDouble());
         PingService.currentMinDistance = _preferences.minPingDistanceMeters;
 
         // Apply saved color vision type
@@ -5516,7 +5850,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final raw = box.get('device_antenna_preferences');
       if (raw != null) {
         _deviceAntennaPreferences = Map<String, bool>.from(raw as Map);
-        debugLog('[APP] Loaded antenna preferences for ${_deviceAntennaPreferences.length} device(s)');
+        debugLog(
+            '[APP] Loaded antenna preferences for ${_deviceAntennaPreferences.length} device(s)');
       }
     } catch (e) {
       debugLog('[APP] Failed to load device antenna preferences: $e');
@@ -5548,9 +5883,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final raw = box.get('device_power_overrides');
       if (raw != null) {
         _devicePowerOverrides = (raw as Map).map(
-          (key, value) => MapEntry(key.toString(), Map<String, dynamic>.from(value as Map)),
+          (key, value) =>
+              MapEntry(key.toString(), Map<String, dynamic>.from(value as Map)),
         );
-        debugLog('[APP] Loaded power overrides for ${_devicePowerOverrides.length} device(s)');
+        debugLog(
+            '[APP] Loaded power overrides for ${_devicePowerOverrides.length} device(s)');
       }
     } catch (e) {
       debugLog('[APP] Failed to load device power overrides: $e');
@@ -5579,10 +5916,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (box == null) return;
 
     try {
-      _lastConnectedDeviceName = box.get('last_connected_device_name') as String?;
+      _lastConnectedDeviceName =
+          box.get('last_connected_device_name') as String?;
       _lastConnectedPublicKey = box.get('last_connected_public_key') as String?;
       if (_lastConnectedDeviceName != null) {
-        debugLog('[APP] Loaded last connected device: $_lastConnectedDeviceName');
+        debugLog(
+            '[APP] Loaded last connected device: $_lastConnectedDeviceName');
       }
     } catch (e) {
       debugLog('[APP] Failed to load last connected device: $e');
@@ -5590,7 +5929,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Save last connected device info to Hive storage
-  Future<void> _saveLastConnectedDevice(String deviceName, String publicKey) async {
+  Future<void> _saveLastConnectedDevice(
+      String deviceName, String publicKey) async {
     final box = await _openBoxSafely(_preferencesBoxName);
     if (box == null) return;
 
@@ -5681,34 +6021,45 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[HIVE] Opening typed box "$_noiseFloorSessionBoxName"...');
 
     try {
-      final box = await Hive.openBox<NoiseFloorSession>(_noiseFloorSessionBoxName).timeout(timeout);
-      debugLog('[HIVE] Typed box "$_noiseFloorSessionBoxName" opened successfully');
+      final box =
+          await Hive.openBox<NoiseFloorSession>(_noiseFloorSessionBoxName)
+              .timeout(timeout);
+      debugLog(
+          '[HIVE] Typed box "$_noiseFloorSessionBoxName" opened successfully');
       return box;
     } on TimeoutException {
-      debugError('[HIVE] Typed box "$_noiseFloorSessionBoxName" timed out - attempting recovery');
+      debugError(
+          '[HIVE] Typed box "$_noiseFloorSessionBoxName" timed out - attempting recovery');
       return _attemptNoiseFloorBoxRecovery(timeout);
     } catch (e) {
-      debugError('[HIVE] Typed box "$_noiseFloorSessionBoxName" failed: $e - attempting recovery');
+      debugError(
+          '[HIVE] Typed box "$_noiseFloorSessionBoxName" failed: $e - attempting recovery');
       return _attemptNoiseFloorBoxRecovery(timeout);
     }
   }
 
   /// Attempt to recover from Hive corruption for noise floor box
-  Future<Box<NoiseFloorSession>?> _attemptNoiseFloorBoxRecovery(Duration timeout) async {
+  Future<Box<NoiseFloorSession>?> _attemptNoiseFloorBoxRecovery(
+      Duration timeout) async {
     try {
       debugLog('[HIVE] Deleting corrupted box "$_noiseFloorSessionBoxName"...');
       await Hive.deleteBoxFromDisk(_noiseFloorSessionBoxName);
       debugLog('[HIVE] Retrying open...');
 
       // Notify user that cleanup happened
-      logError('Storage for "$_noiseFloorSessionBoxName" was corrupted and has been reset');
+      logError(
+          'Storage for "$_noiseFloorSessionBoxName" was corrupted and has been reset');
 
-      final box = await Hive.openBox<NoiseFloorSession>(_noiseFloorSessionBoxName).timeout(timeout);
-      debugLog('[HIVE] Typed box "$_noiseFloorSessionBoxName" opened after recovery');
+      final box =
+          await Hive.openBox<NoiseFloorSession>(_noiseFloorSessionBoxName)
+              .timeout(timeout);
+      debugLog(
+          '[HIVE] Typed box "$_noiseFloorSessionBoxName" opened after recovery');
       return box;
     } catch (e) {
       debugError('[HIVE] Recovery failed for "$_noiseFloorSessionBoxName": $e');
-      logError('Storage for "$_noiseFloorSessionBoxName" unavailable - noise floor graphs will not persist');
+      logError(
+          'Storage for "$_noiseFloorSessionBoxName" unavailable - noise floor graphs will not persist');
       return null;
     }
   }
@@ -5724,7 +6075,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       _storedNoiseFloorSessions = _noiseFloorSessionBox!.values.toList()
         ..sort((a, b) => b.startTime.compareTo(a.startTime)); // Newest first
-      debugLog('[GRAPH] Loaded ${_storedNoiseFloorSessions.length} stored noise floor sessions');
+      debugLog(
+          '[GRAPH] Loaded ${_storedNoiseFloorSessions.length} stored noise floor sessions');
     } catch (e) {
       debugError('[GRAPH] Failed to load noise floor sessions: $e');
       _storedNoiseFloorSessions = [];
@@ -5787,7 +6139,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_currentNoiseFloorSession == null) return;
 
     _currentNoiseFloorSession!.endTime = DateTime.now();
-    debugLog('[GRAPH] Ended session: ${_currentNoiseFloorSession!.durationDisplay}, '
+    debugLog(
+        '[GRAPH] Ended session: ${_currentNoiseFloorSession!.durationDisplay}, '
         '${_currentNoiseFloorSession!.samples.length} samples, '
         '${_currentNoiseFloorSession!.markers.length} markers');
 
