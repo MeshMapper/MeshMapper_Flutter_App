@@ -44,7 +44,8 @@ class PermissionDisclosureService {
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
               SizedBox(height: 12),
-              _BulletPoint(text: 'Track where you send pings on the mesh network'),
+              _BulletPoint(
+                  text: 'Track where you send pings on the mesh network'),
               _BulletPoint(text: 'Map coverage areas for the community'),
               _BulletPoint(text: 'Record which repeaters hear your device'),
               SizedBox(height: 16),
@@ -79,7 +80,8 @@ class PermissionDisclosureService {
 
   /// Show the background location disclosure (for "Always" permission)
   /// Returns true if user accepts, false if they decline
-  static Future<bool> showBackgroundLocationDisclosure(BuildContext context) async {
+  static Future<bool> showBackgroundLocationDisclosure(
+      BuildContext context) async {
     final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -103,8 +105,12 @@ class PermissionDisclosureService {
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
               SizedBox(height: 12),
-              _BulletPoint(text: 'Continue tracking coverage while the app is minimized'),
-              _BulletPoint(text: 'Send automatic pings during extended wardriving sessions'),
+              _BulletPoint(
+                  text:
+                      'Continue tracking coverage while the app is minimized'),
+              _BulletPoint(
+                  text:
+                      'Send automatic pings during extended wardriving sessions'),
               SizedBox(height: 16),
               Text(
                 'This grants "always on" location access, but we only collect what\'s needed: tagging pings while wardriving and checking if you\'re in a supported zone.',

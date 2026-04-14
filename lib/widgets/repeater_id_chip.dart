@@ -34,10 +34,10 @@ class RepeaterIdChip extends StatelessWidget {
   Widget build(BuildContext context) {
     // Scale font size down for longer IDs
     final effectiveFontSize = repeaterId.length > 4
-        ? fontSize - 2.0  // 6-char IDs (3-byte)
+        ? fontSize - 2.0 // 6-char IDs (3-byte)
         : repeaterId.length > 2
-            ? fontSize - 1.0  // 4-char IDs (2-byte)
-            : fontSize;        // 2-char IDs (1-byte)
+            ? fontSize - 1.0 // 4-char IDs (2-byte)
+            : fontSize; // 2-char IDs (1-byte)
 
     final child = Row(
       mainAxisSize: MainAxisSize.min,
@@ -57,7 +57,10 @@ class RepeaterIdChip extends StatelessWidget {
         Icon(
           Icons.info_outline,
           size: fontSize - 1,
-          color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+          color: Theme.of(context)
+              .colorScheme
+              .onSurfaceVariant
+              .withValues(alpha: 0.5),
         ),
       ],
     );
@@ -80,7 +83,8 @@ class RepeaterIdChip extends StatelessWidget {
   ///
   /// When [fromLatLng] is provided, distances are measured from that point
   /// (e.g. the ping's GPS location) instead of the user's current position.
-  static void showRepeaterPopup(BuildContext context, String repeaterId, {String? fullHexId, ({double lat, double lon})? fromLatLng}) {
+  static void showRepeaterPopup(BuildContext context, String repeaterId,
+      {String? fullHexId, ({double lat, double lon})? fromLatLng}) {
     final appState = Provider.of<AppStateProvider>(context, listen: false);
     final repeaters = appState.repeaters;
 
@@ -106,7 +110,8 @@ class RepeaterIdChip extends StatelessWidget {
           ? fullHexId.substring(0, 8)
           : repeaterId;
       final matches = repeaters
-          .where((r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
+          .where(
+              (r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
           .toList();
 
       if (matches.isEmpty) {
@@ -130,17 +135,23 @@ class RepeaterIdChip extends StatelessWidget {
         // Sort by distance (closest first) when a reference point is available
         if (refLat != null && refLon != null) {
           matches.sort((a, b) {
-            final distA = GpsService.distanceBetween(refLat, refLon, a.lat, a.lon);
-            final distB = GpsService.distanceBetween(refLat, refLon, b.lat, b.lon);
+            final distA =
+                GpsService.distanceBetween(refLat, refLon, a.lat, a.lon);
+            final distB =
+                GpsService.distanceBetween(refLat, refLon, b.lat, b.lon);
             return distA.compareTo(distB);
           });
         }
 
-        final regionOverride = appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+        final regionOverride =
+            appState.enforceHopBytes ? appState.effectiveHopBytes : null;
         content = Column(
           mainAxisSize: MainAxisSize.min,
           children: matches
-              .map((r) => _buildRepeaterRow(context, r, refLat: refLat, refLon: refLon, regionHopBytesOverride: regionOverride))
+              .map((r) => _buildRepeaterRow(context, r,
+                  refLat: refLat,
+                  refLon: refLon,
+                  regionHopBytesOverride: regionOverride))
               .toList(),
         );
       }
@@ -205,7 +216,8 @@ class RepeaterIdChip extends StatelessWidget {
     int? regionHopBytesOverride,
   }) {
     final isActive = repeater.isActive;
-    final badgeColor = isActive ? PingColors.repeaterActive : PingColors.repeaterDead;
+    final badgeColor =
+        isActive ? PingColors.repeaterActive : PingColors.repeaterDead;
     final statusText = isActive ? 'Active' : 'Stale';
     final statusIcon = isActive ? Icons.circle : Icons.circle_outlined;
 
@@ -213,7 +225,10 @@ class RepeaterIdChip extends StatelessWidget {
     String? distanceText;
     if (refLat != null && refLon != null) {
       final meters = GpsService.distanceBetween(
-        refLat, refLon, repeater.lat, repeater.lon,
+        refLat,
+        refLon,
+        repeater.lat,
+        repeater.lon,
       );
       debugLog('[UI] Distance to ${repeater.name}: '
           'from (${refLat.toStringAsFixed(5)}, ${refLon.toStringAsFixed(5)}) '
@@ -225,8 +240,7 @@ class RepeaterIdChip extends StatelessWidget {
       if (meters < 1000) {
         distanceText = formatMeters(meters, isImperial: isImperial);
       } else {
-        distanceText =
-            formatKilometers(meters / 1000, isImperial: isImperial);
+        distanceText = formatKilometers(meters / 1000, isImperial: isImperial);
       }
     }
 
@@ -235,7 +249,9 @@ class RepeaterIdChip extends StatelessWidget {
       child: Row(
         children: [
           // Colored badge — circle for short IDs, pill for longer
-          _buildHexBadge(repeater.displayHexId(overrideHopBytes: regionHopBytesOverride), badgeColor),
+          _buildHexBadge(
+              repeater.displayHexId(overrideHopBytes: regionHopBytesOverride),
+              badgeColor),
           const SizedBox(width: 12),
           // Repeater name + distance subtitle
           Expanded(
@@ -268,7 +284,8 @@ class RepeaterIdChip extends StatelessWidget {
                           distanceText,
                           style: TextStyle(
                             fontSize: 11,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ],
@@ -314,9 +331,8 @@ class RepeaterIdChip extends StatelessWidget {
     return Container(
       constraints: const BoxConstraints(minWidth: 28),
       height: 28,
-      padding: isLong
-          ? const EdgeInsets.symmetric(horizontal: 5)
-          : EdgeInsets.zero,
+      padding:
+          isLong ? const EdgeInsets.symmetric(horizontal: 5) : EdgeInsets.zero,
       decoration: BoxDecoration(
         color: color,
         borderRadius: BorderRadius.circular(14),

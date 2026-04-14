@@ -95,7 +95,8 @@ class BackgroundServiceManager {
       // (e.g., Android resurrecting a previously-killed foreground service).
       final isRunning = await _service!.isRunning();
       if (isRunning) {
-        debugLog('[BACKGROUND] Service unexpectedly running after configure(), stopping it');
+        debugLog(
+            '[BACKGROUND] Service unexpectedly running after configure(), stopping it');
         _service!.invoke('stop');
       }
 
@@ -221,7 +222,8 @@ class BackgroundServiceManager {
   static Future<void> cleanupOrphanedService() async {
     if (kIsWeb) return;
     try {
-      debugLog('[BACKGROUND] Dismissing any orphaned notification from previous session');
+      debugLog(
+          '[BACKGROUND] Dismissing any orphaned notification from previous session');
       final plugin = FlutterLocalNotificationsPlugin();
       await plugin.cancel(_notificationId);
       debugLog('[BACKGROUND] Orphaned notification cleanup complete');

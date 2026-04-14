@@ -24,7 +24,8 @@ class ConnectionScreen extends StatefulWidget {
   State<ConnectionScreen> createState() => _ConnectionScreenState();
 }
 
-class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBindingObserver {
+class _ConnectionScreenState extends State<ConnectionScreen>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
@@ -125,7 +126,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       if (pathWarning != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
-          _showPathHashWarning(context, pathWarning.hopBytes, pathWarning.reason);
+          _showPathHashWarning(
+              context, pathWarning.hopBytes, pathWarning.reason);
           appState.clearPathHashWarning();
         });
       }
@@ -234,10 +236,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     );
   }
 
-  Widget _buildConnectionProgress(BuildContext context, AppStateProvider appState) {
+  Widget _buildConnectionProgress(
+      BuildContext context, AppStateProvider appState) {
     final step = appState.connectionStep;
     final totalSteps = ConnectionStepExtension.totalSteps;
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
 
     return SafeArea(
       child: Center(
@@ -272,7 +276,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   }
 
   Widget _buildZoneGraceView(BuildContext context, AppStateProvider appState) {
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     final nearestName = appState.nearestZoneName;
     final nearestDistance = appState.nearestZoneDistanceKm;
     final hasNearestInfo = nearestName != null && nearestDistance != null;
@@ -299,7 +304,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 Text(
                   'Nearest: $nearestName (${nearestDistance.toStringAsFixed(1)} km)',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withValues(alpha: 0.7),
                       ),
                   textAlign: TextAlign.center,
                 ),
@@ -322,14 +330,20 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                     height: 14,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.5),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Text(
                     'Searching for zone...',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.5),
                         ),
                   ),
                 ],
@@ -346,8 +360,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     );
   }
 
-  Widget _buildZoneTransferView(BuildContext context, AppStateProvider appState) {
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+  Widget _buildZoneTransferView(
+      BuildContext context, AppStateProvider appState) {
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     final from = appState.zoneTransferFrom ?? '?';
     final to = appState.zoneTransferTo ?? '?';
 
@@ -368,7 +384,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               Text(
                 '$from → $to',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.7),
                     ),
               ),
               SizedBox(height: isLandscape ? 8 : 12),
@@ -380,14 +399,20 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                     height: 14,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.5),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Text(
                     'Re-authenticating...',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.5),
                         ),
                   ),
                 ],
@@ -404,8 +429,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     );
   }
 
-  Widget _buildReconnectingView(BuildContext context, AppStateProvider appState) {
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+  Widget _buildReconnectingView(
+      BuildContext context, AppStateProvider appState) {
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     final deviceName = appState.rememberedDevice?.displayName ?? 'device';
 
     return SafeArea(
@@ -425,14 +452,20 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               Text(
                 'Attempt ${appState.reconnectAttempt} of 3',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.7),
                     ),
               ),
               const SizedBox(height: 4),
               Text(
                 deviceName,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.5),
                     ),
               ),
               SizedBox(height: isLandscape ? 16 : 24),
@@ -459,7 +492,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       if (semverMatch != null) {
         version = semverMatch.group(1);
       } else {
-        final nightlyMatch = RegExp(r'(nightly-[a-f0-9]+)').firstMatch(fwString);
+        final nightlyMatch =
+            RegExp(r'(nightly-[a-f0-9]+)').firstMatch(fwString);
         if (nightlyMatch != null) {
           version = nightlyMatch.group(1);
         }
@@ -468,7 +502,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     if (version == null) {
       final manufacturerString = appState.manufacturerString;
       if (manufacturerString != null) {
-        final versionRegex = RegExp(r'(v[\d.]+|nightly-[a-f0-9]+|\d+\.\d+\.\d+)');
+        final versionRegex =
+            RegExp(r'(v[\d.]+|nightly-[a-f0-9]+|\d+\.\d+\.\d+)');
         final match = versionRegex.firstMatch(manufacturerString);
         if (match != null) {
           version = match.group(1);
@@ -476,12 +511,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       }
     }
 
-    final hardware = appState.deviceModel?.shortName ?? appState.manufacturerString ?? 'Unknown';
+    final hardware = appState.deviceModel?.shortName ??
+        appState.manufacturerString ??
+        'Unknown';
     final platform = appState.deviceModel?.platform;
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     final prefs = appState.preferences;
     final isAutoMode = appState.autoPingEnabled;
-    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
+    final isPowerSet = prefs.autoPowerSet ||
+        prefs.powerLevelSet ||
+        appState.deviceModel != null;
 
     // Compact device summary card
     final deviceSummaryCard = Card(
@@ -494,7 +534,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             // Header: BT icon + name/status
             Row(
               children: [
-                const Icon(Icons.bluetooth_connected, color: Colors.green, size: 20),
+                const Icon(Icons.bluetooth_connected,
+                    color: Colors.green, size: 20),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
@@ -503,15 +544,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       Text(
                         deviceName,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
+                              fontWeight: FontWeight.bold,
+                            ),
                         overflow: TextOverflow.ellipsis,
                       ),
                       Text(
                         'Connected',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.green,
-                        ),
+                              color: Colors.green,
+                            ),
                       ),
                     ],
                   ),
@@ -526,8 +567,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               runSpacing: 4,
               children: [
                 _buildDetailChip(context, Icons.memory, hardware),
-                if (version != null) _buildDetailChip(context, Icons.code, version),
-                if (platform != null) _buildDetailChip(context, Icons.developer_board, platform),
+                if (version != null)
+                  _buildDetailChip(context, Icons.code, version),
+                if (platform != null)
+                  _buildDetailChip(context, Icons.developer_board, platform),
               ],
             ),
 
@@ -606,7 +649,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: InkWell(
-        onTap: isAutoMode ? null : () => _showPowerLevelSelector(context, appState),
+        onTap: isAutoMode
+            ? null
+            : () => _showPowerLevelSelector(context, appState),
         borderRadius: BorderRadius.circular(4),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 2),
@@ -622,10 +667,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.bolt, size: 16, color: isPowerSet ? Colors.amber.shade700 : Colors.orange),
+                  Icon(Icons.bolt,
+                      size: 16,
+                      color:
+                          isPowerSet ? Colors.amber.shade700 : Colors.orange),
                   const SizedBox(width: 4),
                   Text(
-                    isPowerSet ? prefs.powerLevelDisplay : 'Unknown - tap to set',
+                    isPowerSet
+                        ? prefs.powerLevelDisplay
+                        : 'Unknown - tap to set',
                     style: TextStyle(
                       fontWeight: FontWeight.w500,
                       color: isPowerSet ? null : Colors.orange,
@@ -633,7 +683,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                   ),
                   if (prefs.autoPowerSet) ...[
                     const SizedBox(width: 4),
-                    const Icon(Icons.auto_awesome, size: 14, color: Colors.green),
+                    const Icon(Icons.auto_awesome,
+                        size: 14, color: Colors.green),
                     const SizedBox(width: 2),
                     const Text(
                       'Auto',
@@ -643,7 +694,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                  ] else if (prefs.powerLevelSet && !prefs.autoPowerSet && appState.deviceModel != null) ...[
+                  ] else if (prefs.powerLevelSet &&
+                      !prefs.autoPowerSet &&
+                      appState.deviceModel != null) ...[
                     const SizedBox(width: 4),
                     const Icon(Icons.edit, size: 14, color: Colors.orange),
                     const SizedBox(width: 2),
@@ -658,7 +711,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                   ],
                   if (!isAutoMode) ...[
                     const SizedBox(width: 4),
-                    const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
+                    const Icon(Icons.chevron_right,
+                        size: 16, color: Colors.grey),
                   ],
                 ],
               ),
@@ -694,8 +748,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       ),
     );
   }
-
-
 
   Widget _buildPublicKeyRow(BuildContext context, String publicKey) {
     // Show truncated key for display (first 8 + ... + last 8)
@@ -841,17 +893,19 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                     decoration: BoxDecoration(
                       color: Colors.blue.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                      border:
+                          Border.all(color: Colors.blue.withValues(alpha: 0.4)),
                     ),
-                    child: const Icon(Icons.verified_user, color: Colors.blue, size: 20),
+                    child: const Icon(Icons.verified_user,
+                        color: Colors.blue, size: 20),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
                       'Registration Methods',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                            fontWeight: FontWeight.w600,
+                          ),
                     ),
                   ),
                   IconButton(
@@ -875,7 +929,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       color: Colors.green,
                       title: 'Mesh',
                       trustLevel: 'Most trusted',
-                      description: 'Your companion\'s signed advert was heard over the mesh by a LetsMesh Observer and collected via MQTT. This confirms your radio is actively participating in the network.',
+                      description:
+                          'Your companion\'s signed advert was heard over the mesh by a LetsMesh Observer and collected via MQTT. This confirms your radio is actively participating in the network.',
                       isCurrentType: currentType == 'Mesh',
                     ),
                     const SizedBox(height: 12),
@@ -885,7 +940,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       color: Colors.blue,
                       title: 'API',
                       trustLevel: 'Trusted',
-                      description: 'We registered your companion using a signed advert via the MeshMapper API. We haven\'t heard you over the mesh yet, but your device identity is verified.',
+                      description:
+                          'We registered your companion using a signed advert via the MeshMapper API. We haven\'t heard you over the mesh yet, but your device identity is verified.',
                       isCurrentType: currentType == 'API',
                     ),
                     const SizedBox(height: 12),
@@ -895,7 +951,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       color: Colors.orange,
                       title: 'Manual',
                       trustLevel: 'Basic',
-                      description: 'An administrator manually added your device. Go wardriving to upgrade to Mesh verification!',
+                      description:
+                          'An administrator manually added your device. Go wardriving to upgrade to Mesh verification!',
                       isCurrentType: currentType == 'Manual',
                     ),
                   ],
@@ -924,7 +981,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       decoration: BoxDecoration(
         color: isCurrentType ? color.withValues(alpha: 0.1) : null,
         borderRadius: BorderRadius.circular(8),
-        border: isCurrentType ? Border.all(color: color.withValues(alpha: 0.4)) : null,
+        border: isCurrentType
+            ? Border.all(color: color.withValues(alpha: 0.4))
+            : null,
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -949,13 +1008,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                       trustLevel,
                       style: TextStyle(
                         fontSize: 11,
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                        color:
+                            theme.colorScheme.onSurface.withValues(alpha: 0.6),
                       ),
                     ),
                     if (isCurrentType) ...[
                       const SizedBox(width: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                           color: color,
                           borderRadius: BorderRadius.circular(4),
@@ -988,11 +1049,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     );
   }
 
-  void _showPowerLevelSelector(BuildContext context, AppStateProvider appState) {
+  void _showPowerLevelSelector(
+      BuildContext context, AppStateProvider appState) {
     final prefs = appState.preferences;
     final deviceModel = appState.deviceModel;
     // Only show selection if power has been set (auto or manual)
-    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || deviceModel != null;
+    final isPowerSet =
+        prefs.autoPowerSet || prefs.powerLevelSet || deviceModel != null;
     final currentPower = isPowerSet ? prefs.powerLevel : null;
 
     // Helper to handle power selection with confirmation for overrides
@@ -1040,7 +1103,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             powerLevel: value,
             txPower: PowerLevel.getTxPower(value),
             autoPowerSet: false,
-            powerLevelSet: true,  // Mark as manually set
+            powerLevelSet: true, // Mark as manually set
           ),
         );
         Navigator.pop(context);
@@ -1061,8 +1124,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 padding: const EdgeInsets.all(12),
                 margin: const EdgeInsets.only(bottom: 16),
                 decoration: BoxDecoration(
-                  color: (prefs.autoPowerSet ? Colors.green : Colors.orange).withValues(alpha: 0.1),
-                  border: Border.all(color: prefs.autoPowerSet ? Colors.green : Colors.orange),
+                  color: (prefs.autoPowerSet ? Colors.green : Colors.orange)
+                      .withValues(alpha: 0.1),
+                  border: Border.all(
+                      color: prefs.autoPowerSet ? Colors.green : Colors.orange),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
@@ -1097,7 +1162,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 mainAxisSize: MainAxisSize.min,
                 children: PowerLevel.values.map((power) {
                   final isSelected = power == currentPower;
-                  final isRecommended = deviceModel != null && power == deviceModel.power;
+                  final isRecommended =
+                      deviceModel != null && power == deviceModel.power;
 
                   // Create a temp preferences object to get the display string with dBm
                   final tempPrefs = UserPreferences(powerLevel: power);
@@ -1105,10 +1171,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                   return RadioListTile<double>(
                     title: Row(
                       children: [
-                        Flexible(child: Text(tempPrefs.powerLevelDisplayWithDbm)),
+                        Flexible(
+                            child: Text(tempPrefs.powerLevelDisplayWithDbm)),
                         if (isRecommended) ...[
                           const SizedBox(width: 8),
-                          const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                          const Icon(Icons.check_circle,
+                              size: 16, color: Colors.green),
                         ],
                       ],
                     ),
@@ -1157,7 +1225,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 );
                 Navigator.pop(context);
               },
-              child: const Text('Reset to Auto', style: TextStyle(color: Colors.green)),
+              child: const Text('Reset to Auto',
+                  style: TextStyle(color: Colors.green)),
             ),
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -1169,7 +1238,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
   }
 
   Widget _buildError(BuildContext context, AppStateProvider appState) {
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
 
     return SafeArea(
       child: Center(
@@ -1187,7 +1257,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               Text(
                 appState.isNetworkError
                     ? 'Server Unreachable'
-                    : appState.isAuthError ? 'Authentication Failed' : 'Connection Failed',
+                    : appState.isAuthError
+                        ? 'Authentication Failed'
+                        : 'Connection Failed',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
@@ -1226,24 +1298,24 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       locationIcon = Icons.gps_off;
       locationText = '-';
       locationColor = Colors.grey;
-    // Check maintenance mode
+      // Check maintenance mode
     } else if (appState.maintenanceMode) {
       locationIcon = Icons.engineering;
       locationText = 'Maintenance';
       locationColor = Colors.orange;
-    // Network error: show wifi off indicator
+      // Network error: show wifi off indicator
     } else if (appState.zoneCheckErrorReason == 'network') {
       locationIcon = Icons.wifi_off;
       locationText = 'No Internet';
       locationColor = Colors.red;
-    // GPS error: show GPS issue indicator
+      // GPS error: show GPS issue indicator
     } else if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
-               appState.zoneCheckErrorReason == 'gps_stale') {
+        appState.zoneCheckErrorReason == 'gps_stale') {
       locationIcon = Icons.gps_off;
       locationText = 'GPS Unavailable';
       locationColor = Colors.orange;
-    // Show "Checking Zone..." whenever a zone check is in progress
-    // This provides consistent UI feedback during both initial and re-checks
+      // Show "Checking Zone..." whenever a zone check is in progress
+      // This provides consistent UI feedback during both initial and re-checks
     } else if (appState.isCheckingZone) {
       locationIcon = Icons.location_searching;
       locationText = 'Checking Zone...';
@@ -1367,7 +1439,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     required String message,
     Widget? action,
   }) {
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
 
     // Use Center with CustomScrollView for both vertical centering and scroll capability
     return Center(
@@ -1392,7 +1465,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 message,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.7),
                     ),
               ),
               if (action != null) ...[
@@ -1408,7 +1484,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
   Widget _buildDeviceList(BuildContext context, AppStateProvider appState) {
     // Offline mode bypasses both zone and maintenance checks
-    final canConnect = appState.offlineMode || (appState.inZone == true && !appState.maintenanceMode);
+    final canConnect = appState.offlineMode ||
+        (appState.inZone == true && !appState.maintenanceMode);
 
     // Show maintenance message (takes priority over zone checks)
     if (appState.maintenanceMode && !appState.offlineMode) {
@@ -1433,7 +1510,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               ),
               const SizedBox(height: 8),
               Text(
-                appState.maintenanceMessage ?? 'Service is temporarily unavailable.',
+                appState.maintenanceMessage ??
+                    'Service is temporarily unavailable.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 14,
@@ -1447,13 +1525,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 icon: const Icon(Icons.cloud_off),
                 label: const Text('Enable Offline Mode'),
                 style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                 ),
               ),
               if (appState.maintenanceUrl != null) ...[
                 const SizedBox(height: 12),
                 OutlinedButton.icon(
-                  onPressed: () => _launchMaintenanceUrl(appState.maintenanceUrl!),
+                  onPressed: () =>
+                      _launchMaintenanceUrl(appState.maintenanceUrl!),
                   icon: const Icon(Icons.open_in_new, size: 18),
                   label: const Text('More Info'),
                 ),
@@ -1470,12 +1550,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
+                    Icon(Icons.info_outline,
+                        size: 18, color: Colors.blue.shade700),
                     const SizedBox(width: 8),
                     Flexible(
                       child: Text(
                         'Wardrive offline now, upload when service is restored.',
-                        style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
+                        style: TextStyle(
+                            fontSize: 13, color: Colors.blue.shade700),
                       ),
                     ),
                   ],
@@ -1507,8 +1589,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
       String message = 'Your geo zone is not on-boarded into MeshMapper.';
       if (nearestName != null && distKmValue != null) {
-        final zoneDisplay = nearestCode != null ? '$nearestName ($nearestCode)' : nearestName;
-        final dist = formatKilometers(distKmValue, isImperial: appState.preferences.isImperial);
+        final zoneDisplay =
+            nearestCode != null ? '$nearestName ($nearestCode)' : nearestName;
+        final dist = formatKilometers(distKmValue,
+            isImperial: appState.preferences.isImperial);
         message += '\n\nNearest zone is $zoneDisplay, $dist away.';
       }
 
@@ -1578,7 +1662,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                     icon: const Icon(Icons.cloud_off),
                     label: const Text('Enable Offline Mode'),
                     style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 12),
                     ),
                   ),
                   const SizedBox(height: 32),
@@ -1587,17 +1672,20 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
                     decoration: BoxDecoration(
                       color: Colors.blue.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                      border:
+                          Border.all(color: Colors.blue.withValues(alpha: 0.3)),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
+                        Icon(Icons.info_outline,
+                            size: 18, color: Colors.blue.shade700),
                         const SizedBox(width: 8),
                         Flexible(
                           child: Text(
                             'Wardrive offline now, upload when service is restored.',
-                            style: TextStyle(fontSize: 13, color: Colors.blue.shade700),
+                            style: TextStyle(
+                                fontSize: 13, color: Colors.blue.shade700),
                           ),
                         ),
                       ],
@@ -1619,13 +1707,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
             title: appState.zoneCheckErrorReason == 'gps_inaccurate'
                 ? 'GPS Accuracy Error'
                 : 'GPS Stale Error',
-            message: '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
+            message:
+                '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
             action: FilledButton.icon(
               onPressed: () => appState.checkZoneStatus(),
               icon: const Icon(Icons.refresh),
               label: const Text('Retry Zone Check'),
               style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               ),
             ),
           );
@@ -1657,7 +1747,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       return Column(
         children: [
           const LinearProgressIndicator(),
-          Expanded(child: _buildDeviceListView(context, appState, canConnect: canConnect)),
+          Expanded(
+              child: _buildDeviceListView(context, appState,
+                  canConnect: canConnect)),
         ],
       );
     }
@@ -1666,7 +1758,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
       // Show remembered device option if available (mobile only)
       final remembered = appState.rememberedDevice;
       if (!kIsWeb && remembered != null) {
-        return _buildRememberedDeviceView(context, appState, remembered, canConnect: canConnect);
+        return _buildRememberedDeviceView(context, appState, remembered,
+            canConnect: canConnect);
       }
 
       // Show GPS disabled message when location services are off
@@ -1679,7 +1772,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           icon: Icons.gps_off,
           iconColor: Colors.red.withValues(alpha: 0.7),
           title: 'Location Services Disabled',
-          message: 'Please enable Location Services to verify you\'re in an allowed zone.',
+          message:
+              'Please enable Location Services to verify you\'re in an allowed zone.',
           action: isIOS
               ? null
               : ElevatedButton.icon(
@@ -1697,7 +1791,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
           icon: Icons.location_off,
           iconColor: Colors.orange.withValues(alpha: 0.7),
           title: 'GPS Permission Required',
-          message: 'Location access is needed to verify you\'re in an allowed zone.',
+          message:
+              'Location access is needed to verify you\'re in an allowed zone.',
           action: ElevatedButton.icon(
             onPressed: () => _requestLocationPermission(appState),
             icon: const Icon(Icons.location_on),
@@ -1742,7 +1837,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     RememberedDevice remembered, {
     bool canConnect = true,
   }) {
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
 
     return SingleChildScrollView(
       child: Center(
@@ -1772,7 +1868,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               ),
               SizedBox(height: isLandscape ? 12 : 24),
               ElevatedButton.icon(
-                onPressed: canConnect ? () => appState.reconnectToRememberedDevice() : null,
+                onPressed: canConnect
+                    ? () => appState.reconnectToRememberedDevice()
+                    : null,
                 icon: const Icon(Icons.bluetooth_connected),
                 label: Text(canConnect
                     ? 'Reconnect'
@@ -1819,7 +1917,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
     );
   }
 
-  Widget _buildDeviceListView(BuildContext context, AppStateProvider appState, {bool canConnect = true}) {
+  Widget _buildDeviceListView(BuildContext context, AppStateProvider appState,
+      {bool canConnect = true}) {
     return ListView.builder(
       itemCount: appState.discoveredDevices.length,
       itemBuilder: (context, index) {
@@ -1947,9 +2046,8 @@ class _DeviceListTile extends StatelessWidget {
         device.id,
         style: TextStyle(color: enabled ? null : Colors.grey),
       ),
-      trailing: device.rssi != null
-          ? _buildRssiChip(device.rssi!, enabled)
-          : null,
+      trailing:
+          device.rssi != null ? _buildRssiChip(device.rssi!, enabled) : null,
       enabled: enabled,
       onTap: onTap,
     );
