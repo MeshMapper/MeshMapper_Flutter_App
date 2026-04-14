@@ -189,15 +189,12 @@ class ApiService {
       }
 
       Map<String, dynamic>? data;
-      if (response.statusCode == 200) {
+      try {
         data = json.decode(response.body) as Map<String, dynamic>;
-      } else if (response.body.isNotEmpty) {
-        // Try to parse structured error responses (e.g., 403 gps_inaccurate)
-        try {
-          data = json.decode(response.body) as Map<String, dynamic>;
-        } catch (e) {
-          debugWarn('[API] Non-JSON response body (HTML error page, etc.): $e');
-        }
+      } on FormatException {
+        // CDN/proxy can return HTML error pages with HTTP 200
+        debugError('[API] Non-JSON response from /status (HTTP ${response.statusCode}): '
+            '${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
       }
 
       _logApiCall(

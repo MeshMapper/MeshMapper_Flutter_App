@@ -407,6 +407,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
+        // Zone transfer overlay (both orientations)
+        if (appState.isZoneTransferInProgress)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black54,
+              child: Center(
+                child: _buildZoneTransferOverlay(appState),
+              ),
+            ),
+          ),
+
         // Portrait: bottom control panel
         if (!isLandscape)
           Positioned(
@@ -821,6 +832,86 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 20),
             OutlinedButton(
               onPressed: () => appState.cancelZoneGracePeriod(),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.orange.shade400,
+                side: BorderSide(color: Colors.orange.shade400),
+              ),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Zone transfer overlay shown centered over the map during zone-to-zone transfer
+  Widget _buildZoneTransferOverlay(AppStateProvider appState) {
+    final from = appState.zoneTransferFrom ?? '?';
+    final to = appState.zoneTransferTo ?? '?';
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 260),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(
+              color: Colors.orange.shade400,
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Changing Zone...',
+              style: TextStyle(
+                color: Colors.grey.shade100,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '$from → $to',
+              style: TextStyle(
+                color: Colors.grey.shade400,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.grey.shade500,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Re-authenticating...',
+                  style: TextStyle(
+                    color: Colors.grey.shade500,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton(
+              onPressed: () => appState.cancelZoneTransfer(),
               style: OutlinedButton.styleFrom(
                 foregroundColor: Colors.orange.shade400,
                 side: BorderSide(color: Colors.orange.shade400),

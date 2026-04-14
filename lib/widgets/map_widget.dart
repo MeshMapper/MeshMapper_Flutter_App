@@ -461,7 +461,7 @@ class _MapWidgetState extends State<MapWidget> {
   /// the markers themselves don't need a per-frame rebuild — they're rendered
   /// by the native map engine and stay in sync automatically. The only thing
   /// we still need to do here is update the GPS marker's iconRotate when the
-  /// camera bearing changes, because for rotating styles (arrow/walk/pacman)
+  /// camera bearing changes, because for rotating styles (arrow/walk/chomper)
   /// iconRotate = heading - bearing and the bearing animates continuously in
   /// heading mode. Throttled by a small bearing delta to avoid spamming
   /// updateSymbol.
@@ -1687,7 +1687,7 @@ class _MapWidgetState extends State<MapWidget> {
         'bike': const _BikeMarkerPainter(),
         'boat': const _BoatMarkerPainter(),
         'walk': const _WalkMarkerPainter(),
-        'pacman': const _PacmanMarkerPainter(),
+        'chomper': const _ChomperMarkerPainter(),
       };
       for (final entry in gpsPainters.entries) {
         final bytes = await _renderPainterToPng(entry.value, gpsSize);
@@ -2088,7 +2088,7 @@ class _MapWidgetState extends State<MapWidget> {
   /// user's heading (vs staying screen-aligned). Arrow/walk/pacman face the
   /// heading; car/bike/boat icons stay upright on a rotated map.
   bool _gpsStyleFacesHeading(String style) =>
-      style == 'arrow' || style == 'walk' || style == 'pacman';
+      style == 'arrow' || style == 'walk' || style == 'chomper';
 
   /// Computes the iconRotate value for the GPS marker.
   ///
@@ -2096,7 +2096,7 @@ class _MapWidgetState extends State<MapWidget> {
   /// which resolves to `viewport` for point symbols — meaning iconRotate is
   /// applied in screen space, not map space. That has two consequences:
   ///
-  ///  - Rotating styles (arrow/walk/pacman) must point in the direction of
+  ///  - Rotating styles (arrow/walk/chomper) must point in the direction of
   ///    travel both in always-north mode (where bearing = 0, so iconRotate
   ///    = heading) AND in heading mode (where the map is rotated so that
   ///    direction-of-travel is screen-up — so iconRotate should be 0).
@@ -2135,7 +2135,7 @@ class _MapWidgetState extends State<MapWidget> {
 
     final style = appState.preferences.gpsMarkerStyle;
     // Use the derived heading (updated by _computeHeading in build()) so the
-    // arrow/walk/pacman markers actually point in the direction of travel
+    // arrow/walk/chomper markers actually point in the direction of travel
     // even when pos.heading is stale or unset.
     final iconRotate = _gpsIconRotate(style, _computedHeading ?? 0);
 
@@ -2162,7 +2162,7 @@ class _MapWidgetState extends State<MapWidget> {
 
   /// Updates only the GPS symbol's iconRotate. Called from the camera-change
   /// listener when the bearing changes — under viewport alignment, rotating
-  /// styles (arrow/walk/pacman) are the ones whose iconRotate depends on the
+  /// styles (arrow/walk/chomper) are the ones whose iconRotate depends on the
   /// bearing (iconRotate = heading - bearing), so they need refreshing as the
   /// bearing animates. Non-rotating styles use iconRotate = 0 and don't care.
   /// Cheaper than calling [_syncGpsSymbol] which also updates position.
@@ -5041,9 +5041,9 @@ class _WalkMarkerPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-/// Paints a Pac-Man for GPS position marker — mouth faces up (direction of travel)
-class _PacmanMarkerPainter extends CustomPainter {
-  const _PacmanMarkerPainter();
+/// Paints a Chomper (cyan wedge) GPS position marker — mouth faces up (direction of travel)
+class _ChomperMarkerPainter extends CustomPainter {
+  const _ChomperMarkerPainter();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -5051,10 +5051,10 @@ class _PacmanMarkerPainter extends CustomPainter {
     final cy = size.height / 2;
     const radius = 10.0;
 
-    // Mouth opening angle: 45° total (22.5° each side of the top)
+    // Mouth opening angle: 70° total (35° each side of the top)
     // In canvas coordinates, 0° = 3 o'clock, so "up" = -90° = -π/2.
-    // Arc sweeps clockwise. We start at (-90 - 22.5)° and sweep (360 - 45)°.
-    const mouthAngle = 45.0 * (math.pi / 180);
+    // Arc sweeps clockwise. We start at (-90 + 35)° and sweep (360 - 70)°.
+    const mouthAngle = 70.0 * (math.pi / 180);
     const startAngle = -math.pi / 2 + mouthAngle / 2; // right edge of mouth
     const sweepAngle = 2 * math.pi - mouthAngle;
 
@@ -5074,9 +5074,9 @@ class _PacmanMarkerPainter extends CustomPainter {
       ..close();
     canvas.drawPath(outlinePath, outlinePaint);
 
-    // Yellow Pac-Man body
+    // Cyan body
     final bodyPaint = Paint()
-      ..color = const Color(0xFFFFEB3B) // Material yellow
+      ..color = const Color(0xFF00BCD4)
       ..style = PaintingStyle.fill;
 
     final bodyPath = ui.Path()
@@ -5089,12 +5089,6 @@ class _PacmanMarkerPainter extends CustomPainter {
       )
       ..close();
     canvas.drawPath(bodyPath, bodyPaint);
-
-    // Eye — small black circle, offset toward the mouth side (upper-left of center)
-    final eyePaint = Paint()
-      ..color = Colors.black
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(Offset(cx - 2.5, cy - 4.5), 1.5, eyePaint);
   }
 
   @override

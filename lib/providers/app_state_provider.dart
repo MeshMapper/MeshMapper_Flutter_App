@@ -71,6 +71,8 @@ enum OfflineUploadResult {
   partialFailure,
   /// Another upload is already in progress
   uploadInProgress,
+  /// GPS position required but not available
+  gpsRequired,
 }
 
 /// Main application state provider
@@ -279,6 +281,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _autoPingWasEnabledBeforeGrace = false;
   AutoMode _autoModeBeforeGrace = AutoMode.active;
   static const Duration _zoneGraceTimeout = Duration(minutes: 5);
+
+  // Zone transfer state — tracks session zone for zone-to-zone detection
+  String? _sessionZoneCode;
+  bool _isZoneTransferInProgress = false;
+  String? _zoneTransferFrom;
+  String? _zoneTransferTo;
 
   // Geofence zone check log throttle (while disconnected)
   DateTime? _lastZoneCheckLogTime;
@@ -500,6 +508,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String get zoneGraceCountdownFormatted =>
       '${(_zoneGraceSecondsRemaining ~/ 60).toString().padLeft(2, '0')}:'
       '${(_zoneGraceSecondsRemaining % 60).toString().padLeft(2, '0')}';
+
+  // Zone transfer getters
+  bool get isZoneTransferInProgress => _isZoneTransferInProgress;
+  String? get zoneTransferFrom => _zoneTransferFrom;
+  String? get zoneTransferTo => _zoneTransferTo;
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
@@ -1772,6 +1785,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugLog('[CONN] Connected with limited access');
         }
 
+        // Track session zone for zone-to-zone transfer detection
+        _sessionZoneCode = zoneCode;
+
         // Start periodic zone refresh to keep slot counts current
         if (!_preferences.offlineMode) {
           _startZoneRefreshTimer();
@@ -2729,6 +2745,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _regionalChannels = [];
     _scope = null;
 
+    // Clear zone transfer state
+    _sessionZoneCode = null;
+    _isZoneTransferInProgress = false;
+    _zoneTransferFrom = null;
+    _zoneTransferTo = null;
+
     // Clear discovered devices so user must scan fresh
     _discoveredDevices = [];
 
@@ -3119,6 +3141,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Offline mode ${enabled ? 'enabled' : 'disabled'}');
 
     if (enabled) {
+      // Cancel zone check retries — offline mode doesn't need zone validation
+      _clearZoneCheckError();
+      _isCheckingZone = false;
+      _stopMaintenancePolling();
       // Start periodic auto-save to prevent data loss from app kill
       _startOfflineAutoSaveTimer();
       // Clear zone data when entering offline mode
@@ -3184,6 +3210,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // 5b. Start periodic auto-save to prevent data loss from app kill
       _startOfflineAutoSaveTimer();
+
+      // 5c. Cancel zone check retries and maintenance polling
+      _clearZoneCheckError();
+      _isCheckingZone = false;
+      _stopMaintenancePolling();
 
       // 6. Clear zone data
       _inZone = null;
@@ -3379,6 +3410,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Re-initialize channel service with regional channels
         await ChannelService.setRegionalChannels(_regionalChannels);
       }
+
+      // Track session zone for zone-to-zone transfer detection
+      _sessionZoneCode = zoneCode;
 
       debugLog('[APP] Successfully switched to online mode');
       return (success: true, error: null);
@@ -3626,7 +3660,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     onProgress?.call('Authenticating...');
 
-    // 3. Authenticate with offline_mode: true, skipSessionStore: true
+    // 3. Check GPS before auth — the server requires current coordinates for geo-auth
+    if (_currentPosition == null) {
+      debugError('[OFFLINE] Upload requires GPS - location services not available');
+      return OfflineUploadResult.gpsRequired;
+    }
+
+    // 4. Authenticate with offline_mode: true, skipSessionStore: true
     //    This prevents writing to shared _sessionId/_txAllowed/etc.
     debugLog('[OFFLINE] Authenticating for offline upload with device: $deviceName');
     final authResult = await _apiService.requestAuth(
@@ -4326,6 +4366,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    if (_preferences.offlineMode) {
+      debugLog('[GEOFENCE] Skipping zone check: offline mode enabled');
+      return;
+    }
+
     if (_isCheckingZone) {
       debugLog('[GEOFENCE] Zone check already in progress, skipping duplicate call');
       return;
@@ -4419,15 +4464,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _inZone = result['in_zone'] == true;
 
       if (_inZone!) {
-        _currentZone = result['zone'] as Map<String, dynamic>?;
-        _nearestZone = null;
-        final zoneName = _currentZone?['name'] ?? 'Unknown';
-        final zoneCode = _currentZone?['code'] as String? ?? '';
-        debugLog('[GEOFENCE] In zone: $zoneName ($zoneCode)');
+        final newZone = result['zone'] as Map<String, dynamic>?;
+        final newZoneCode = newZone?['code'] as String? ?? '';
+        final newZoneName = newZone?['name'] ?? 'Unknown';
 
-        // Fetch repeaters for this zone
-        if (zoneCode.isNotEmpty) {
-          await _fetchRepeatersForZone(zoneCode);
+        // Detect zone-to-zone transition during active session
+        if (isConnected &&
+            !_preferences.offlineMode &&
+            _sessionZoneCode != null &&
+            newZoneCode.isNotEmpty &&
+            newZoneCode != _sessionZoneCode &&
+            !_isInZoneGracePeriod &&
+            !_isZoneTransferInProgress) {
+          _currentZone = newZone;
+          _nearestZone = null;
+          await _handleZoneTransfer(newZoneCode, newZoneName);
+          return;
+        }
+
+        _currentZone = newZone;
+        _nearestZone = null;
+        debugLog('[GEOFENCE] In zone: $newZoneName ($newZoneCode)');
+
+        if (newZoneCode.isNotEmpty) {
+          _fetchRepeatersForZone(newZoneCode); // fire-and-forget — don't block zone check
         }
       } else {
         _currentZone = null;
@@ -4615,7 +4675,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // checkZoneStatus updates _inZone and calls notifyListeners (overlay auto-updates)
     if (_inZone == true) {
-      debugLog('[ZONE GRACE] Zone re-entered: ${_currentZone?['name']}');
+      final reEnteredZoneCode = _currentZone?['code'] as String? ?? '';
+      debugLog('[ZONE GRACE] Zone re-entered: ${_currentZone?['name']} ($reEnteredZoneCode)');
+
+      // If re-entering a DIFFERENT zone, do a full zone transfer instead of simple resume
+      if (_sessionZoneCode != null &&
+          reEnteredZoneCode.isNotEmpty &&
+          reEnteredZoneCode != _sessionZoneCode) {
+        debugLog('[ZONE GRACE] Re-entered different zone ($reEnteredZoneCode vs session $_sessionZoneCode) — transferring');
+        _cancelZoneGraceTimers();
+        _isInZoneGracePeriod = false;
+        _zoneGraceSecondsRemaining = 0;
+        _autoPingWasEnabledBeforeGrace = false;
+        await _handleZoneTransfer(reEnteredZoneCode, _currentZone?['name'] ?? 'Unknown');
+        return;
+      }
+
       await _onZoneGraceReEntry();
     }
   }
@@ -4700,6 +4775,265 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _abandonZoneGracePeriod();
   }
 
+  // ============================================
+  // Zone-to-Zone Transfer
+  // ============================================
+
+  /// Handle zone-to-zone transfer during active wardriving session.
+  /// Releases old zone session and acquires new session for target zone.
+  /// Preserves BLE connection and radio configuration.
+  Future<void> _handleZoneTransfer(String newZoneCode, String newZoneName) async {
+    if (_isZoneTransferInProgress) {
+      debugLog('[ZONE] Transfer already in progress, skipping');
+      return;
+    }
+
+    final oldZoneCode = _sessionZoneCode ?? 'unknown';
+    _isZoneTransferInProgress = true;
+    _zoneTransferFrom = oldZoneCode;
+    _zoneTransferTo = newZoneCode;
+    debugLog('[ZONE] Starting zone transfer: $oldZoneCode → $newZoneCode');
+    notifyListeners();
+
+    try {
+      // 1. Save auto-ping state for restoration
+      final wasAutoPing = _autoPingEnabled;
+      final previousMode = _autoMode;
+
+      // 2. Pause auto-ping and wardriving activity
+      _autoPingTimer.stop();
+      _rxWindowTimer.stop();
+      _cooldownTimer.stop();
+      if (_autoPingEnabled) {
+        _autoPingEnabled = false;
+        _idleAutoStopReference = null;
+        debugLog('[ZONE] Auto-ping paused for zone transfer');
+      }
+
+      // 3. Disable heartbeat (old session is about to be released)
+      _apiService.disableHeartbeat();
+
+      // 4. Stop RX logger (no valid session context during transfer)
+      _rxLogger?.stopWardriving(trigger: 'zone_transfer');
+
+      // 5. Stop zone refresh timer (we're handling the zone change now)
+      _stopZoneRefreshTimer();
+
+      // 6. Cancel idle disconnect timer
+      _cancelIdleDisconnectTimer();
+
+      // 7. Clear API queue (items were created for old zone's session)
+      await _apiQueueService.clearOnDisconnect();
+
+      // 8. Release old session (best effort)
+      if (_devicePublicKey != null && _apiService.hasSession) {
+        debugLog('[ZONE] Releasing old session for zone $oldZoneCode');
+        try {
+          await _apiService.requestAuth(
+            reason: 'disconnect',
+            publicKey: _devicePublicKey!,
+          );
+          debugLog('[ZONE] Old session released');
+        } catch (e) {
+          debugError('[ZONE] Failed to release old session: $e');
+        }
+      }
+
+      // 9. Acquire new session for target zone
+      final deviceName = _isAnonymousRenamed
+          ? 'Anonymous'
+          : (_meshCoreConnection?.selfInfo?.name ??
+              connectedDeviceName?.replaceFirst('MeshCore-', ''));
+
+      if (_devicePublicKey == null || deviceName == null || _currentPosition == null) {
+        debugError('[ZONE] Cannot transfer: missing device key, name, or GPS');
+        await disconnect();
+        return;
+      }
+
+      debugLog('[ZONE] Requesting auth for zone $newZoneCode');
+      final result = await _apiService.requestAuth(
+        reason: 'connect',
+        publicKey: _devicePublicKey!,
+        who: deviceName,
+        appVersion: _appVersion,
+        power: _preferences.powerLevel,
+        iataCode: newZoneCode,
+        model: _meshCoreConnection?.deviceModel?.manufacturer ??
+               _meshCoreConnection?.deviceInfo?.manufacturer ?? 'Unknown',
+        lat: _currentPosition!.latitude,
+        lon: _currentPosition!.longitude,
+        accuracyMeters: _currentPosition!.accuracy,
+      );
+
+      // 10. Check auth result
+      if (result == null) {
+        debugError('[ZONE] Auth failed for zone $newZoneCode: network error');
+        logError('Zone transfer failed: unable to reach server', severity: ErrorSeverity.error);
+        await disconnect();
+        return;
+      }
+
+      if (result['maintenance'] == true) {
+        _maintenanceMode = true;
+        _maintenanceMessage = result['maintenance_message'] as String?;
+        _maintenanceUrl = result['maintenance_url'] as String?;
+        _startMaintenancePolling();
+        notifyListeners();
+        await disconnect();
+        return;
+      }
+
+      if (result['success'] != true) {
+        final reason = result['reason'] as String? ?? 'unknown';
+        final message = result['message'] as String? ?? 'Auth failed';
+        debugError('[ZONE] Auth failed for zone $newZoneCode: $reason - $message');
+        logError('Zone transfer failed: $message', severity: ErrorSeverity.error);
+        await disconnect();
+        return;
+      }
+
+      // 11. Auth succeeded — update session zone code
+      _sessionZoneCode = newZoneCode;
+      debugLog('[ZONE] Auth succeeded for zone $newZoneCode');
+
+      if (result['type'] != null) {
+        _authType = result['type'] as String;
+      }
+
+      _syncZoneCapacityFromAuth(result);
+
+      // 12. Update regional channels from new auth response
+      final apiChannels = _apiService.channels;
+      await ChannelService.setRegionalChannels(apiChannels);
+      _regionalChannels = ChannelService.getRegionalChannelNames();
+      debugLog('[ZONE] Regional channels updated: $_regionalChannels');
+
+      // 13. Update PacketValidator with new channel configuration
+      if (_unifiedRxHandler != null) {
+        final allowedChannelsData = ChannelService.getAllowedChannelsForValidator();
+        final allowedChannels = <int, ChannelInfo>{};
+        for (final entry in allowedChannelsData.entries) {
+          allowedChannels[entry.key] = ChannelInfo(
+            channelName: entry.value.channelName,
+            key: entry.value.key,
+            hash: entry.value.hash,
+          );
+        }
+        final newValidator = PacketValidator(
+          allowedChannels: allowedChannels,
+          disableRssiFilter: _preferences.disableRssiFilter,
+        );
+        _unifiedRxHandler!.updateValidator(newValidator);
+        debugLog('[ZONE] PacketValidator updated with ${allowedChannels.length} channels');
+      }
+
+      // 14. Update flood scope from new auth response
+      final apiScopes = _apiService.scopes;
+      final firstScope = apiScopes.isNotEmpty ? apiScopes.first : null;
+      final isWildcard = firstScope == null || firstScope == '*' || firstScope == '#*';
+      if (!isWildcard) {
+        final scopeName = firstScope;
+        _scope = scopeName.startsWith('#') ? scopeName : '#$scopeName';
+        final scopeKey = CryptoService.deriveScopeKey(scopeName);
+        debugLog('[ZONE] Setting flood scope: $scopeName');
+        await _meshCoreConnection!.setFloodScope(scopeKey);
+      } else {
+        if (_scope != null) {
+          try {
+            await _meshCoreConnection?.clearFloodScope();
+          } catch (e) {
+            debugLog('[ZONE] Failed to clear flood scope: $e');
+          }
+        }
+        _scope = null;
+        debugLog('[ZONE] No regional scope — using unscoped flood');
+      }
+
+      // 15. Enforce regional admin policies from new zone
+      if (_apiService.enforceHybrid && !_preferences.hybridModeEnabled) {
+        _preferences = _preferences.copyWith(hybridModeEnabled: true);
+        debugLog('[ZONE] Hybrid mode force-enabled by new zone admin');
+      }
+      if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
+        _preferences = _preferences.copyWith(discDropEnabled: true);
+        debugLog('[ZONE] Discovery drop force-enabled by new zone admin');
+      }
+      if (_preferences.autoPingInterval < _apiService.minModeInterval) {
+        _preferences = _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
+        debugLog('[ZONE] Auto-ping interval bumped to ${_apiService.minModeInterval}s by new zone admin');
+      }
+
+      // 16. Reconfigure path hash mode if new zone requires different hop bytes
+      await _configurePathHashMode();
+      if (_pingService != null) {
+        _pingService!.hopBytes = effectiveHopBytes;
+        _pingService!.traceHopBytes = _traceHopBytes;
+      }
+
+      // 17. Fetch repeaters for the new zone
+      _repeatersLoaded = false;
+      _repeatersLoadedForIata = null;
+      await _fetchRepeatersForZone(newZoneCode);
+
+      // 18. Re-enable heartbeat
+      _apiService.enableHeartbeat(
+        gpsProvider: () {
+          final pos = _gpsService.lastPosition;
+          if (pos == null) return null;
+          return (lat: pos.latitude, lon: pos.longitude);
+        },
+      );
+
+      // 19. Restart zone refresh timer
+      _startZoneRefreshTimer();
+
+      // 20. Prepare API queue for fresh data in new zone
+      await _apiQueueService.clearBeforeConnect();
+
+      // 21. Restore auto-ping if it was active
+      if (wasAutoPing) {
+        _restoreAutoPingTimer?.cancel();
+        _restoreAutoPingTimer = Timer(const Duration(milliseconds: 500), () {
+          _restoreAutoPingTimer = null;
+          if (_isDisposed ||
+              _userRequestedDisconnect ||
+              _connectionStep != ConnectionStep.connected ||
+              _pingService == null) {
+            debugLog('[ZONE] Skipping auto-ping restore (stale or disconnected state)');
+            return;
+          }
+          if (!_autoPingEnabled) {
+            toggleAutoPing(previousMode);
+            debugLog('[ZONE] Auto-ping restored (mode=$previousMode)');
+          }
+        });
+      } else {
+        _startIdleDisconnectTimer();
+      }
+
+      debugLog('[ZONE] Zone transfer complete: $oldZoneCode → $newZoneCode');
+    } catch (e) {
+      debugError('[ZONE] Zone transfer error: $e');
+      logError('Zone transfer failed: $e', severity: ErrorSeverity.error);
+      await disconnect();
+    } finally {
+      _isZoneTransferInProgress = false;
+      _zoneTransferFrom = null;
+      _zoneTransferTo = null;
+      notifyListeners();
+    }
+  }
+
+  /// Cancel zone transfer (user-triggered from UI cancel button).
+  Future<void> cancelZoneTransfer() async {
+    debugLog('[ZONE] Zone transfer cancelled by user');
+    _isZoneTransferInProgress = false;
+    _zoneTransferFrom = null;
+    _zoneTransferTo = null;
+    await disconnect();
+  }
+
   /// Fetch repeaters for a zone (called when zone is discovered)
   /// Only fetches once per IATA code to avoid redundant network requests
   Future<void> _fetchRepeatersForZone(String iata) async {
@@ -4712,11 +5046,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[MAP] Fetching repeaters for zone: $iata');
     try {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
-      _repeaters = fetchedRepeaters;
-      _repeatersLoaded = true;
-      _repeatersLoadedForIata = iata;
-      debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
-      notifyListeners();
+      if (fetchedRepeaters.isNotEmpty) {
+        _repeaters = fetchedRepeaters;
+        _repeatersLoaded = true;
+        _repeatersLoadedForIata = iata;
+        debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
+        notifyListeners();
+      } else {
+        debugWarn('[MAP] No repeaters returned for zone $iata — will retry on next zone check');
+      }
     } catch (e) {
       debugError('[MAP] Failed to fetch repeaters: $e');
     }

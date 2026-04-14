@@ -104,6 +104,9 @@ class PacketMetadata {
 
     // Extract encrypted payload after path data
     final int payloadOffset = pathDataOffset + pathByteLen;
+    if (payloadOffset > raw.length) {
+      throw RangeError('Packet too short: payload offset $payloadOffset exceeds packet length ${raw.length}');
+    }
     final Uint8List encryptedPayload = raw.sublist(payloadOffset);
 
     debugLog('[RX PARSE] Parsed metadata: header=0x${header.toRadixString(16).padLeft(2, '0')}, '
