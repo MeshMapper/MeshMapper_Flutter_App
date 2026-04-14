@@ -109,6 +109,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
 
   /// Routes to the correct sub-view (zone bar is already rendered above)
   Widget _buildStateContent(BuildContext context, AppStateProvider appState) {
+    // Show zone transfer in progress
+    if (appState.isZoneTransferInProgress) {
+      return _buildZoneTransferView(context, appState);
+    }
+
     // Show zone grace period state
     if (appState.isInZoneGracePeriod) {
       return _buildZoneGraceView(context, appState);
@@ -332,6 +337,64 @@ class _ConnectionScreenState extends State<ConnectionScreen> with WidgetsBinding
               SizedBox(height: isLandscape ? 16 : 24),
               OutlinedButton(
                 onPressed: () => appState.cancelZoneGracePeriod(),
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildZoneTransferView(BuildContext context, AppStateProvider appState) {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final from = appState.zoneTransferFrom ?? '?';
+    final to = appState.zoneTransferTo ?? '?';
+
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(isLandscape ? 16 : 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              SizedBox(height: isLandscape ? 12 : 24),
+              Text(
+                'Changing Zone...',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '$from → $to',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                    ),
+              ),
+              SizedBox(height: isLandscape ? 8 : 12),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Re-authenticating...',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                        ),
+                  ),
+                ],
+              ),
+              SizedBox(height: isLandscape ? 16 : 24),
+              OutlinedButton(
+                onPressed: () => appState.cancelZoneTransfer(),
                 child: const Text('Cancel'),
               ),
             ],
