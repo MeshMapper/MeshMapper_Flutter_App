@@ -253,12 +253,12 @@ class ChannelInfo {
     final channelIndex = reader.readByte();
     final name = reader.readCString(32);
     final remainingBytes = reader.remainingBytesCount;
-    
+
     // Protocol v8 uses 16-byte (128-bit) keys, v1 used 32-byte keys
     if (remainingBytes != 16 && remainingBytes != 32) {
       throw Exception('ChannelInfo has unexpected key length: $remainingBytes');
     }
-    
+
     return ChannelInfo(
       channelIndex: channelIndex,
       name: name,

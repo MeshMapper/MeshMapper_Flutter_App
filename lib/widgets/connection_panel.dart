@@ -31,7 +31,8 @@ class ConnectionPanel extends StatelessWidget {
     return _buildAntennaSelector(context, appState, prefs);
   }
 
-  Widget _buildAntennaSelector(BuildContext context, AppStateProvider appState, prefs) {
+  Widget _buildAntennaSelector(
+      BuildContext context, AppStateProvider appState, prefs) {
     final isSet = prefs.externalAntennaSet;
     final hasExternal = prefs.externalAntenna;
     final colorScheme = Theme.of(context).colorScheme;
@@ -64,7 +65,8 @@ class ConnectionPanel extends StatelessWidget {
             child: Icon(
               Icons.settings_input_antenna,
               size: 20,
-              color: isSet ? colorScheme.onSurfaceVariant : Colors.orange.shade700,
+              color:
+                  isSet ? colorScheme.onSurfaceVariant : Colors.orange.shade700,
             ),
           ),
           const SizedBox(width: 12),
@@ -84,7 +86,8 @@ class ConnectionPanel extends StatelessWidget {
                 if (appState.antennaRestoredFromDevice)
                   Text(
                     'Remembered for ${appState.displayDeviceName}',
-                    style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant),
+                    style: TextStyle(
+                        fontSize: 11, color: colorScheme.onSurfaceVariant),
                   ),
               ],
             ),
@@ -108,7 +111,8 @@ class ConnectionPanel extends StatelessWidget {
                   onTap: () {
                     debugLog('[UI] External antenna button pressed: No');
                     appState.updatePreferences(
-                      prefs.copyWith(externalAntenna: false, externalAntennaSet: true),
+                      prefs.copyWith(
+                          externalAntenna: false, externalAntennaSet: true),
                     );
                   },
                 ),
@@ -119,7 +123,8 @@ class ConnectionPanel extends StatelessWidget {
                   onTap: () {
                     debugLog('[UI] External antenna button pressed: Yes');
                     appState.updatePreferences(
-                      prefs.copyWith(externalAntenna: true, externalAntennaSet: true),
+                      prefs.copyWith(
+                          externalAntenna: true, externalAntennaSet: true),
                     );
                   },
                 ),
@@ -153,7 +158,12 @@ class ConnectionPanel extends StatelessWidget {
               : Colors.transparent,
           borderRadius: BorderRadius.circular(6),
           boxShadow: isSelected && !isDark
-              ? [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 2, offset: const Offset(0, 1))]
+              ? [
+                  BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.1),
+                      blurRadius: 2,
+                      offset: const Offset(0, 1))
+                ]
               : null,
         ),
         child: Text(
@@ -162,8 +172,12 @@ class ConnectionPanel extends StatelessWidget {
             fontSize: 13,
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
             color: isSelected
-                ? (isDark ? Colors.white : const Color(0xFF1E293B)) // slate-800 for light
-                : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)), // slate-400/500
+                ? (isDark
+                    ? Colors.white
+                    : const Color(0xFF1E293B)) // slate-800 for light
+                : (isDark
+                    ? const Color(0xFF94A3B8)
+                    : const Color(0xFF64748B)), // slate-400/500
           ),
         ),
       ),

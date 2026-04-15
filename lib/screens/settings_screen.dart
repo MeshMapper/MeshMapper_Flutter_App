@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:io' show File;
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -44,13 +45,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _versionTapCount = 0;
   DateTime? _lastVersionTap;
 
-  Future<void> _showUploadLogsDialog(BuildContext context, AppStateProvider appState) async {
+  Future<void> _showUploadLogsDialog(
+      BuildContext context, AppStateProvider appState) async {
     final result = await showUploadLogsDialog(context, appState);
 
     if (!context.mounted || result == null) return;
 
     if (result.success) {
-      String message = 'Uploaded ${result.uploadedCount} log file${result.uploadedCount == 1 ? '' : 's'}';
+      String message =
+          'Uploaded ${result.uploadedCount} log file${result.uploadedCount == 1 ? '' : 's'}';
       if (result.failedCount > 0) {
         message += ' (${result.failedCount} failed)';
       }
@@ -116,11 +119,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: Colors.amber.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                  border:
+                      Border.all(color: Colors.amber.withValues(alpha: 0.3)),
                 ),
                 child: const Row(
                   children: [
@@ -142,23 +147,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 prefs.themeMode == 'dark' ? Icons.dark_mode : Icons.light_mode,
               ),
               title: const Text('Theme'),
-              subtitle: Text(prefs.themeMode == 'dark' ? 'Dark mode' : 'Light mode'),
+              subtitle:
+                  Text(prefs.themeMode == 'dark' ? 'Dark mode' : 'Light mode'),
               value: prefs.themeMode == 'dark',
               onChanged: (isDark) {
                 appState.setThemeMode(isDark ? 'dark' : 'light');
               },
             ),
-            if (!kIsWeb)
-              _BackgroundModeToggle(appState: appState),
+            if (!kIsWeb) _BackgroundModeToggle(appState: appState),
             SwitchListTile(
-              secondary: Icon(prefs.mapTilesEnabled ? Icons.map : Icons.map_outlined),
+              secondary:
+                  Icon(prefs.mapTilesEnabled ? Icons.map : Icons.map_outlined),
               title: const Text('Disable Map Tiles'),
               subtitle: Text(prefs.mapTilesEnabled
                   ? 'Map and coverage tiles load normally'
                   : 'Network tiles disabled · downloaded regions still visible'),
               value: !prefs.mapTilesEnabled,
               onChanged: (value) {
-                appState.updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
+                appState
+                    .updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
               },
             ),
             if (!kIsWeb)
@@ -186,9 +193,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   max: 1.0,
                   divisions: 7,
                   label: '${(prefs.coverageOverlayOpacity * 100).round()}%',
-                  onChanged: (value) => appState.setCoverageOverlayOpacity(value),
+                  onChanged: (value) =>
+                      appState.setCoverageOverlayOpacity(value),
                 ),
-                trailing: Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
+                trailing:
+                    Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
               ),
             ListTile(
               leading: const Icon(Icons.visibility),
@@ -202,7 +211,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 prefs.isImperial ? Icons.square_foot : Icons.straighten,
               ),
               title: const Text('Units'),
-              subtitle: Text(prefs.isImperial ? 'Imperial (mi, ft)' : 'Metric (km, m)'),
+              subtitle: Text(
+                  prefs.isImperial ? 'Imperial (mi, ft)' : 'Metric (km, m)'),
               value: prefs.isImperial,
               onChanged: (isImperial) {
                 appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
@@ -211,10 +221,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SwitchListTile(
               secondary: const Icon(Icons.cell_tower),
               title: const Text('Top Repeaters on Map'),
-              subtitle: const Text('Show top 3 repeaters by SNR from last ping'),
+              subtitle:
+                  const Text('Show top 3 repeaters by SNR from last ping'),
               value: prefs.showTopRepeaters,
               onChanged: (value) {
-                appState.updatePreferences(prefs.copyWith(showTopRepeaters: value));
+                appState
+                    .updatePreferences(prefs.copyWith(showTopRepeaters: value));
               },
             ),
             ListTile(
@@ -232,9 +244,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: () => _showGpsMarkerSelector(context, appState),
             ),
             SwitchListTile(
-              secondary: Icon(appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
+              secondary: Icon(
+                  appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
               title: const Text('Sound Notifications'),
-              subtitle: Text(appState.isSoundEnabled ? 'Plays on ping events' : 'Silent'),
+              subtitle: Text(
+                  appState.isSoundEnabled ? 'Plays on ping events' : 'Silent'),
               value: appState.isSoundEnabled,
               onChanged: (_) => appState.toggleSoundEnabled(),
             ),
@@ -249,14 +263,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               SwitchListTile(
                 secondary: const SizedBox(width: 24),
                 title: const Text('Response Received'),
-                subtitle: const Text('Sound when repeater echo or RX is received'),
+                subtitle:
+                    const Text('Sound when repeater echo or RX is received'),
                 value: appState.isRxSoundEnabled,
                 onChanged: (value) => appState.setRxSoundEnabled(value),
               ),
               SwitchListTile(
                 secondary: const SizedBox(width: 24),
                 title: const Text('Disconnect Alert'),
-                subtitle: const Text('Triple beep when pinging stops unexpectedly'),
+                subtitle:
+                    const Text('Triple beep when pinging stops unexpectedly'),
                 value: appState.isDisconnectAlertEnabled,
                 onChanged: (value) => appState.setDisconnectAlertEnabled(value),
               ),
@@ -272,17 +288,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? 'Device broadcasts as "Anonymous"'
                   : 'Device uses its real name'),
               value: prefs.anonymousMode,
-              onChanged: isAutoMode ? null : (value) {
-                if (value) {
-                  _showEnableAnonymousConfirmation(context, appState);
-                } else {
-                  if (appState.connectionStatus == ConnectionStatus.connected) {
-                    _showDisableAnonymousConfirmation(context, appState);
-                  } else {
-                    appState.setAnonymousMode(false);
-                  }
-                }
-              },
+              onChanged: isAutoMode
+                  ? null
+                  : (value) {
+                      if (value) {
+                        _showEnableAnonymousConfirmation(context, appState);
+                      } else {
+                        if (appState.connectionStatus ==
+                            ConnectionStatus.connected) {
+                          _showDisableAnonymousConfirmation(context, appState);
+                        } else {
+                          appState.setAnonymousMode(false);
+                        }
+                      }
+                    },
             ),
             ListTile(
               leading: const Icon(Icons.timer),
@@ -290,7 +309,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               subtitle: Text(prefs.autoPingIntervalDisplay),
               trailing: const Icon(Icons.chevron_right),
               enabled: !isAutoMode,
-              onTap: isAutoMode ? null : () => _showIntervalSelector(context, appState),
+              onTap: isAutoMode
+                  ? null
+                  : () => _showIntervalSelector(context, appState),
             ),
             ListTile(
               leading: const Icon(Icons.straighten),
@@ -298,16 +319,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               subtitle: Text(prefs.minPingDistanceDisplay),
               trailing: const Icon(Icons.chevron_right),
               enabled: !isAutoMode,
-              onTap: isAutoMode ? null : () => _showDistanceSelector(context, appState),
+              onTap: isAutoMode
+                  ? null
+                  : () => _showDistanceSelector(context, appState),
             ),
             SwitchListTile(
               secondary: const Icon(Icons.timer_off),
               title: const Text('Auto-Stop After Idle'),
-              subtitle: const Text('Stops auto-ping after 30 min without movement'),
+              subtitle:
+                  const Text('Stops auto-ping after 30 min without movement'),
               value: prefs.autoStopAfterIdle,
-              onChanged: isAutoMode ? null : (value) {
-                appState.updatePreferences(prefs.copyWith(autoStopAfterIdle: value));
-              },
+              onChanged: isAutoMode
+                  ? null
+                  : (value) {
+                      appState.updatePreferences(
+                          prefs.copyWith(autoStopAfterIdle: value));
+                    },
             ),
           ]),
 
@@ -317,7 +344,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               secondary: const Icon(Icons.compare_arrows),
               title: Row(
                 children: [
-                  const Flexible(child: Text('Hybrid Mode', overflow: TextOverflow.ellipsis)),
+                  const Flexible(
+                      child:
+                          Text('Hybrid Mode', overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
                   IconButton(
                     onPressed: () => _showHybridModeInfo(context),
@@ -339,15 +368,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     )
                   : const Text('Combines Active and Passive modes'),
               value: appState.enforceHybrid ? true : prefs.hybridModeEnabled,
-              onChanged: (isAutoMode || appState.enforceHybrid) ? null : (value) {
-                appState.updatePreferences(prefs.copyWith(hybridModeEnabled: value));
-              },
+              onChanged: (isAutoMode || appState.enforceHybrid)
+                  ? null
+                  : (value) {
+                      appState.updatePreferences(
+                          prefs.copyWith(hybridModeEnabled: value));
+                    },
             ),
             SwitchListTile(
               secondary: const Icon(Icons.signal_wifi_off),
               title: Row(
                 children: [
-                  const Flexible(child: Text('Discovery Drop', overflow: TextOverflow.ellipsis)),
+                  const Flexible(
+                      child: Text('Discovery Drop',
+                          overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
                   IconButton(
                     onPressed: () => _showDiscDropInfo(context),
@@ -369,13 +403,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     )
                   : const Text('Count failed discoveries as failed pings'),
               value: appState.enforceDiscDrop ? true : prefs.discDropEnabled,
-              onChanged: (isAutoMode || appState.enforceDiscDrop) ? null : (value) {
-                if (value == true) {
-                  _showDiscDropEnableConfirmation(context, appState);
-                } else {
-                  appState.updatePreferences(prefs.copyWith(discDropEnabled: false));
-                }
-              },
+              onChanged: (isAutoMode || appState.enforceDiscDrop)
+                  ? null
+                  : (value) {
+                      if (value == true) {
+                        _showDiscDropEnableConfirmation(context, appState);
+                      } else {
+                        appState.updatePreferences(
+                            prefs.copyWith(discDropEnabled: false));
+                      }
+                    },
             ),
           ]),
 
@@ -384,17 +421,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SwitchListTile(
               secondary: const Icon(Icons.filter_alt),
               title: const Text('CARpeater Filter'),
-              subtitle: Text(prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
-                  ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
-                  : 'Tap to set CARpeater repeater ID'),
+              subtitle: Text(
+                  prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
+                      ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
+                      : 'Tap to set CARpeater repeater ID'),
               value: prefs.ignoreCarpeater,
-              onChanged: isAutoMode ? null : (value) {
-                if (value && prefs.ignoreRepeaterId == null) {
-                  _showRepeaterIdDialog(context, appState);
-                } else {
-                  appState.updatePreferences(prefs.copyWith(ignoreCarpeater: value));
-                }
-              },
+              onChanged: isAutoMode
+                  ? null
+                  : (value) {
+                      if (value && prefs.ignoreRepeaterId == null) {
+                        _showRepeaterIdDialog(context, appState);
+                      } else {
+                        appState.updatePreferences(
+                            prefs.copyWith(ignoreCarpeater: value));
+                      }
+                    },
             ),
             if (prefs.ignoreCarpeater)
               ListTile(
@@ -405,7 +446,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : 'Not set'),
                 trailing: const Icon(Icons.chevron_right),
                 enabled: !isAutoMode,
-                onTap: isAutoMode ? null : () => _showRepeaterIdDialog(context, appState),
+                onTap: isAutoMode
+                    ? null
+                    : () => _showRepeaterIdDialog(context, appState),
               ),
             SwitchListTile(
               secondary: const Icon(Icons.shield_outlined),
@@ -414,13 +457,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? 'Allows all signal strengths'
                   : 'Drops signals stronger than -30 dBm'),
               value: prefs.disableRssiFilter,
-              onChanged: isAutoMode ? null : (value) {
-                if (value) {
-                  _showDisableRssiFilterConfirmation(context, appState);
-                } else {
-                  appState.updatePreferences(prefs.copyWith(disableRssiFilter: false));
-                }
-              },
+              onChanged: isAutoMode
+                  ? null
+                  : (value) {
+                      if (value) {
+                        _showDisableRssiFilterConfirmation(context, appState);
+                      } else {
+                        appState.updatePreferences(
+                            prefs.copyWith(disableRssiFilter: false));
+                      }
+                    },
             ),
           ]),
 
@@ -430,7 +476,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: const Icon(Icons.linear_scale),
               title: Row(
                 children: [
-                  const Flexible(child: Text('TX Bytes', overflow: TextOverflow.ellipsis)),
+                  const Flexible(
+                      child: Text('TX Bytes', overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
                   IconButton(
                     onPressed: () => _showHopBytesInfo(context),
@@ -462,14 +509,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             )
                           : const Text('Repeater ID size in TX/RX path hops'),
               trailing: DropdownButton<int>(
-                value: appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes,
+                value: appState.enforceHopBytes
+                    ? appState.effectiveHopBytes
+                    : appState.hopBytes,
                 underline: const SizedBox(),
                 items: const [
                   DropdownMenuItem(value: 1, child: Text('1')),
                   DropdownMenuItem(value: 2, child: Text('2')),
                   DropdownMenuItem(value: 3, child: Text('3')),
                 ],
-                onChanged: (!appState.isConnected || isAutoMode || appState.enforceHopBytes || !appState.supportsMultiBytePaths)
+                onChanged: (!appState.isConnected ||
+                        isAutoMode ||
+                        appState.enforceHopBytes ||
+                        !appState.supportsMultiBytePaths)
                     ? null
                     : (value) {
                         if (value != null) appState.setHopBytes(value);
@@ -480,7 +532,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: const Icon(Icons.gps_fixed),
               title: Row(
                 children: [
-                  const Flexible(child: Text('Trace Bytes', overflow: TextOverflow.ellipsis)),
+                  const Flexible(
+                      child:
+                          Text('Trace Bytes', overflow: TextOverflow.ellipsis)),
                   const SizedBox(width: 4),
                   IconButton(
                     onPressed: () => _showTraceBytesInfo(context),
@@ -514,7 +568,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   DropdownMenuItem(value: 2, child: Text('2')),
                   DropdownMenuItem(value: 4, child: Text('4')),
                 ],
-                onChanged: (!appState.isConnected || isAutoMode || !appState.supportsMultiBytePaths)
+                onChanged: (!appState.isConnected ||
+                        isAutoMode ||
+                        !appState.supportsMultiBytePaths)
                     ? null
                     : (value) {
                         if (value != null) appState.setTraceHopBytes(value);
@@ -545,7 +601,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : 'Keeps #wardriving channel on device'),
               value: prefs.deleteChannelOnDisconnect,
               onChanged: (value) {
-                appState.updatePreferences(prefs.copyWith(deleteChannelOnDisconnect: value));
+                appState.updatePreferences(
+                    prefs.copyWith(deleteChannelOnDisconnect: value));
               },
             ),
           ]),
@@ -600,12 +657,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
               )
             else
               ...appState.offlineSessions.map((session) => _OfflineSessionTile(
-                session: session,
-                uploadEnabled: !appState.isUploadingOfflineSession,
-                onUpload: () => _uploadOfflineSession(context, appState, session.filename),
-                onDelete: () => _confirmDeleteOfflineSession(context, appState, session.filename),
-                onDownload: () => _downloadOfflineSession(context, appState, session.filename),
-              )),
+                    session: session,
+                    uploadEnabled: !appState.isUploadingOfflineSession,
+                    onUpload: () => _uploadOfflineSession(
+                        context, appState, session.filename),
+                    onDelete: () => _confirmDeleteOfflineSession(
+                        context, appState, session.filename),
+                    onDownload: () => _downloadOfflineSession(
+                        context, appState, session.filename),
+                  )),
           ]),
 
           // API Endpoints
@@ -622,13 +682,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? (prefs.customApiUrl ?? 'Not configured')
                   : 'Forward pings to a third-party server'),
               value: prefs.customApiEnabled,
-              onChanged: isAutoMode ? null : (value) {
-                if (value) {
-                  _showCustomApiDisclaimer(context, appState);
-                } else {
-                  appState.updatePreferences(prefs.copyWith(customApiEnabled: false));
-                }
-              },
+              onChanged: isAutoMode
+                  ? null
+                  : (value) {
+                      if (value) {
+                        _showCustomApiDisclaimer(context, appState);
+                      } else {
+                        appState.updatePreferences(
+                            prefs.copyWith(customApiEnabled: false));
+                      }
+                    },
             ),
             if (prefs.customApiEnabled) ...[
               ListTile(
@@ -636,29 +699,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: const Text('Endpoint URL'),
                 subtitle: Text(prefs.customApiUrl ?? 'Not set'),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: isAutoMode ? null : () => _showCustomApiUrlDialog(context, appState),
+                onTap: isAutoMode
+                    ? null
+                    : () => _showCustomApiUrlDialog(context, appState),
               ),
               ListTile(
                 leading: const SizedBox(width: 24),
                 title: const Text('API Key'),
-                subtitle: Text(prefs.customApiKey != null ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022' : 'Not set'),
+                subtitle: Text(prefs.customApiKey != null
+                    ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
+                    : 'Not set'),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: isAutoMode ? null : () => _showCustomApiKeyDialog(context, appState),
+                onTap: isAutoMode
+                    ? null
+                    : () => _showCustomApiKeyDialog(context, appState),
               ),
               SwitchListTile(
                 secondary: const SizedBox(width: 24),
                 title: const Text('Include Contact Key'),
-                subtitle: const Text('Share device public key prefix with endpoint'),
+                subtitle:
+                    const Text('Share device public key prefix with endpoint'),
                 value: prefs.customApiIncludeContact,
-                onChanged: isAutoMode ? null : (value) {
-                  appState.updatePreferences(prefs.copyWith(customApiIncludeContact: value));
-                },
+                onChanged: isAutoMode
+                    ? null
+                    : (value) {
+                        appState.updatePreferences(
+                            prefs.copyWith(customApiIncludeContact: value));
+                      },
               ),
               ListTile(
                 leading: const Icon(Icons.content_paste),
                 title: const Text('Import from Clipboard'),
                 subtitle: const Text('Paste a meshmapper:// config link'),
-                onTap: isAutoMode ? null : () => _importCustomApiFromClipboard(context, appState),
+                onTap: isAutoMode
+                    ? null
+                    : () => _importCustomApiFromClipboard(context, appState),
               ),
             ],
           ]),
@@ -686,7 +761,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: const FaIcon(FontAwesomeIcons.github),
               title: const Text('GitHub'),
               subtitle: const Text('View issues and source code'),
-              onTap: () => _launchUrl('https://github.com/MeshMapper/MeshMapper_Project'),
+              onTap: () => _launchUrl(
+                  'https://github.com/MeshMapper/MeshMapper_Project'),
             ),
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.discord),
@@ -697,7 +773,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ListTile(
               leading: const Icon(Icons.groups),
               title: const Text('Community'),
-              subtitle: const Text('Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
+              subtitle: const Text(
+                  'Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
               onTap: () => _launchUrl('https://ottawamesh.ca/'),
             ),
             ListTile(
@@ -714,12 +791,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
               SwitchListTile(
                 secondary: const Icon(Icons.exit_to_app),
                 title: const Text('Close App After Disconnect'),
-                subtitle: const Text('Automatically exit the app when disconnecting'),
+                subtitle:
+                    const Text('Automatically exit the app when disconnecting'),
                 value: prefs.closeAppAfterDisconnect,
-                onChanged: (value) => appState.setCloseAppAfterDisconnect(value),
+                onChanged: (value) =>
+                    appState.setCloseAppAfterDisconnect(value),
               ),
               ListTile(
-                leading: const Icon(Icons.power_settings_new, color: Colors.red),
+                leading:
+                    const Icon(Icons.power_settings_new, color: Colors.red),
                 title: const Text('Close App'),
                 subtitle: const Text('Exit the app completely'),
                 onTap: () => _showCloseAppConfirmation(context, appState),
@@ -749,7 +829,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     if (appState.isGpsSimulatorEnabled) ...[
                       const SizedBox(width: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                           color: Colors.orange,
                           borderRadius: BorderRadius.circular(4),
@@ -787,13 +868,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     min: 10,
                     max: 120,
                     divisions: 11,
-                    label: formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
+                    label: formatSpeed(appState.gpsSimulatorSpeed,
+                        isImperial: prefs.isImperial),
                     onChanged: (value) {
                       appState.setGpsSimulatorSpeed(value);
                     },
                   ),
                   trailing: Text(
-                    formatSpeed(appState.gpsSimulatorSpeed, isImperial: prefs.isImperial),
+                    formatSpeed(appState.gpsSimulatorSpeed,
+                        isImperial: prefs.isImperial),
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
@@ -809,15 +892,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       items: [
                         const DropdownMenuItem(
                           value: SimulatorPattern.straight,
-                          child: Text('Straight Line', overflow: TextOverflow.ellipsis),
+                          child: Text('Straight Line',
+                              overflow: TextOverflow.ellipsis),
                         ),
                         const DropdownMenuItem(
                           value: SimulatorPattern.circle,
-                          child: Text('Circle', overflow: TextOverflow.ellipsis),
+                          child:
+                              Text('Circle', overflow: TextOverflow.ellipsis),
                         ),
                         const DropdownMenuItem(
                           value: SimulatorPattern.randomWalk,
-                          child: Text('Random Walk', overflow: TextOverflow.ellipsis),
+                          child: Text('Random Walk',
+                              overflow: TextOverflow.ellipsis),
                         ),
                         if (appState.hasSimulatorRoute)
                           DropdownMenuItem(
@@ -898,7 +984,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     if (appState.debugLogsEnabled) ...[
                       const SizedBox(width: 8),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                           color: Colors.orange,
                           borderRadius: BorderRadius.circular(4),
@@ -929,7 +1016,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   }
                 },
               ),
-              if (appState.debugLogsEnabled || appState.debugLogFiles.isNotEmpty) ...[
+              if (appState.debugLogsEnabled ||
+                  appState.debugLogFiles.isNotEmpty) ...[
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                   child: Row(
@@ -945,12 +1033,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         TextButton.icon(
                           icon: const Icon(Icons.cloud_upload, size: 18),
                           label: const Text('Upload'),
-                          onPressed: () => _showUploadLogsDialog(context, appState),
+                          onPressed: () =>
+                              _showUploadLogsDialog(context, appState),
                         ),
                         TextButton.icon(
                           icon: const Icon(Icons.delete_sweep, size: 18),
                           label: const Text('Delete All'),
-                          onPressed: () => _confirmDeleteAllLogs(context, appState),
+                          onPressed: () =>
+                              _confirmDeleteAllLogs(context, appState),
                         ),
                       ],
                     ],
@@ -961,7 +1051,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     padding: const EdgeInsets.all(16),
                     child: Text(
                       'No debug logs yet',
-                      style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                      style:
+                          TextStyle(color: Colors.grey.shade500, fontSize: 13),
                     ),
                   )
                 else
@@ -971,19 +1062,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     final filename = file.path.split('/').last;
                     final sizeBytes = file.lengthSync();
                     final isCurrentLog = index == 0;
-                    final timestampMatch = RegExp(r'meshmapper-debug-(\d+)\.txt').firstMatch(filename);
+                    final timestampMatch =
+                        RegExp(r'meshmapper-debug-(\d+)\.txt')
+                            .firstMatch(filename);
                     final fileDate = timestampMatch != null
-                        ? DateTime.fromMillisecondsSinceEpoch(int.parse(timestampMatch.group(1)!) * 1000)
+                        ? DateTime.fromMillisecondsSinceEpoch(
+                            int.parse(timestampMatch.group(1)!) * 1000)
                         : null;
-                    final dateStr = fileDate != null ? DateFormat('MMM d, h:mm a').format(fileDate) : filename;
+                    final dateStr = fileDate != null
+                        ? DateFormat('MMM d, h:mm a').format(fileDate)
+                        : filename;
 
                     String sizeDisplay;
-                    final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
+                    final partCount =
+                        DebugFileLogger.estimatePartCount(sizeBytes);
                     if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
-                      final sizeMb = (sizeBytes / 1024 / 1024).toStringAsFixed(1);
+                      final sizeMb =
+                          (sizeBytes / 1024 / 1024).toStringAsFixed(1);
                       sizeDisplay = '$sizeMb MB ($partCount parts)';
                     } else {
-                      sizeDisplay = '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                      sizeDisplay =
+                          '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
                     }
                     if (isCurrentLog) {
                       sizeDisplay = '$sizeDisplay (current)';
@@ -991,7 +1090,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                     return ListTile(
                       leading: const Icon(Icons.description, size: 20),
-                      title: Text(dateStr, style: const TextStyle(fontSize: 13)),
+                      title:
+                          Text(dateStr, style: const TextStyle(fontSize: 13)),
                       subtitle: Text(
                         sizeDisplay,
                         style: const TextStyle(fontSize: 11),
@@ -1001,7 +1101,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         children: [
                           IconButton(
                             icon: const Icon(Icons.visibility, size: 20),
-                            onPressed: () => _showLogViewer(context, appState, file),
+                            onPressed: () =>
+                                _showLogViewer(context, appState, file),
                             tooltip: 'View',
                           ),
                           IconButton(
@@ -1022,27 +1123,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String _markerStyleLabel(String style) {
     switch (style) {
-      case 'circle': return 'Outlined Dot';
-      case 'pin': return 'Pin';
-      case 'diamond': return 'Diamond';
+      case 'circle':
+        return 'Outlined Dot';
+      case 'pin':
+        return 'Pin';
+      case 'diamond':
+        return 'Diamond';
       case 'dot':
-      default: return 'Dot';
+      default:
+        return 'Dot';
     }
   }
 
   String _gpsMarkerLabel(String style) {
     switch (style) {
-      case 'car': return 'Car';
-      case 'bike': return 'Bike';
-      case 'boat': return 'Boat';
-      case 'walk': return 'Walk';
-      case 'chomper': return 'Chomper';
+      case 'car':
+        return 'Car';
+      case 'bike':
+        return 'Bike';
+      case 'boat':
+        return 'Boat';
+      case 'walk':
+        return 'Walk';
+      case 'chomper':
+        return 'Chomper';
       case 'arrow':
-      default: return 'Arrow';
+      default:
+        return 'Arrow';
     }
   }
 
-  void _showMarkerStyleSelector(BuildContext context, AppStateProvider appState) {
+  void _showMarkerStyleSelector(
+      BuildContext context, AppStateProvider appState) {
     final options = [
       ('dot', 'Dot', Icons.circle),
       ('circle', 'Outlined Dot', Icons.circle_outlined),
@@ -1060,13 +1172,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Map Marker Style', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              child: Text('Map Marker Style',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
             RadioGroup<String>(
               groupValue: appState.preferences.markerStyle,
               onChanged: (v) {
                 if (v != null) {
-                  appState.updatePreferences(appState.preferences.copyWith(markerStyle: v));
+                  appState.updatePreferences(
+                      appState.preferences.copyWith(markerStyle: v));
                 }
                 Navigator.pop(context);
               },
@@ -1109,13 +1223,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('GPS Marker', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              child: Text('GPS Marker',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
             RadioGroup<String>(
               groupValue: appState.preferences.gpsMarkerStyle,
               onChanged: (v) {
                 if (v != null) {
-                  appState.updatePreferences(appState.preferences.copyWith(gpsMarkerStyle: v));
+                  appState.updatePreferences(
+                      appState.preferences.copyWith(gpsMarkerStyle: v));
                 }
                 Navigator.pop(context);
               },
@@ -1148,13 +1264,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
     };
   }
 
-  void _showColorVisionSelector(BuildContext context, AppStateProvider appState) {
+  void _showColorVisionSelector(
+      BuildContext context, AppStateProvider appState) {
     final options = [
       ('none', 'Default', 'Standard color palette'),
-      ('protanopia', 'Protanopia', 'Red-blind — difficulty distinguishing red and green'),
-      ('deuteranopia', 'Deuteranopia', 'Green-blind — difficulty distinguishing red and green'),
-      ('tritanopia', 'Tritanopia', 'Blue-blind — difficulty distinguishing blue and yellow'),
-      ('achromatopsia', 'Achromatopsia', 'Total color blindness — sees in greyscale'),
+      (
+        'protanopia',
+        'Protanopia',
+        'Red-blind — difficulty distinguishing red and green'
+      ),
+      (
+        'deuteranopia',
+        'Deuteranopia',
+        'Green-blind — difficulty distinguishing red and green'
+      ),
+      (
+        'tritanopia',
+        'Tritanopia',
+        'Blue-blind — difficulty distinguishing blue and yellow'
+      ),
+      (
+        'achromatopsia',
+        'Achromatopsia',
+        'Total color blindness — sees in greyscale'
+      ),
     ];
     showModalBottomSheet(
       context: context,
@@ -1167,7 +1300,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Color Vision', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              child: Text('Color Vision',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
             RadioGroup<String>(
               groupValue: appState.preferences.colorVisionType,
@@ -1182,7 +1316,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     RadioListTile<String>(
                       secondary: const Icon(Icons.visibility),
                       title: Text(label),
-                      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+                      subtitle:
+                          Text(subtitle, style: const TextStyle(fontSize: 12)),
                       value: value,
                     ),
                 ],
@@ -1195,7 +1330,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildSection(BuildContext context, String title, List<Widget> children) {
+  Widget _buildSection(
+      BuildContext context, String title, List<Widget> children) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Card(
@@ -1232,7 +1368,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _showBugReportDialog(BuildContext context, AppStateProvider appState) async {
+  Future<void> _showBugReportDialog(
+      BuildContext context, AppStateProvider appState) async {
     final result = await showBugReportDialog(context, appState);
 
     if (!context.mounted || result == null) return;
@@ -1252,7 +1389,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         message,
         duration: const Duration(seconds: 5),
         actionLabel: result.issueUrl != null ? 'View' : null,
-        onAction: result.issueUrl != null ? () => _launchUrl(result.issueUrl!) : null,
+        onAction:
+            result.issueUrl != null ? () => _launchUrl(result.issueUrl!) : null,
       );
     } else if (result.errorMessage != null) {
       AppToast.error(
@@ -1313,7 +1451,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showDisableRssiFilterConfirmation(BuildContext context, AppStateProvider appState) {
+  void _showDisableRssiFilterConfirmation(
+      BuildContext context, AppStateProvider appState) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1346,7 +1485,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showEnableAnonymousConfirmation(BuildContext context, AppStateProvider appState) {
+  void _showEnableAnonymousConfirmation(
+      BuildContext context, AppStateProvider appState) {
     final isConnected = appState.connectionStatus == ConnectionStatus.connected;
     showDialog(
       context: context,
@@ -1380,7 +1520,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showDisableAnonymousConfirmation(BuildContext context, AppStateProvider appState) {
+  void _showDisableAnonymousConfirmation(
+      BuildContext context, AppStateProvider appState) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1425,21 +1566,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontSize: 14),
             ),
             SizedBox(height: 12),
-            Text('How it works:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            Text('How it works:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             SizedBox(height: 4),
             Text(
               'Discovery \u2192 wait \u2192 TX Ping \u2192 wait \u2192 Discovery \u2192 ...',
               style: TextStyle(fontSize: 13, fontFamily: 'monospace'),
             ),
             SizedBox(height: 12),
-            Text('Interval timing:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            Text('Interval timing:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             SizedBox(height: 4),
             Text(
               'At 15s interval, each ping type fires every 30s. Discovery\'s 30s firmware rate limit is naturally respected.',
               style: TextStyle(fontSize: 13),
             ),
             SizedBox(height: 12),
-            Text('When enabled:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            Text('When enabled:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             SizedBox(height: 4),
             Text(
               '\u2022 Replaces the Active button with Hybrid\n'
@@ -1496,7 +1640,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showDiscDropEnableConfirmation(BuildContext context, AppStateProvider appState) {
+  void _showDiscDropEnableConfirmation(
+      BuildContext context, AppStateProvider appState) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1718,7 +1863,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               final tile = RadioListTile<int>(
                 title: Text(
                   '$interval seconds',
-                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.bold),
                 ),
                 subtitle: isDisabled
                     ? const Text(
@@ -1826,7 +1972,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               textCapitalization: TextCapitalization.characters,
               onChanged: (value) {
                 // Keep only valid hex characters
-                final filtered = value.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
+                final filtered =
+                    value.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
                 if (filtered != value) {
                   controller.value = controller.value.copyWith(
                     text: filtered,
@@ -1870,7 +2017,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
                 Navigator.pop(context);
               } else {
-                AppToast.warning(context, 'Please enter exactly 6 hex digits (3-byte ID).');
+                AppToast.warning(
+                    context, 'Please enter exactly 6 hex digits (3-byte ID).');
               }
             },
             child: const Text('Save'),
@@ -1880,7 +2028,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Future<void> _pickRouteFile(BuildContext context, AppStateProvider appState) async {
+  Future<void> _pickRouteFile(
+      BuildContext context, AppStateProvider appState) async {
     try {
       debugLog('[SETTINGS] Opening file picker...');
 
@@ -1898,9 +2047,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (result != null && result.files.isNotEmpty) {
           debugLog('[SETTINGS] File picked: ${result.files.first.name}');
           final file = result.files.first;
-          final content = file.bytes != null
-              ? String.fromCharCodes(file.bytes!)
-              : null;
+          final content =
+              file.bytes != null ? String.fromCharCodes(file.bytes!) : null;
 
           if (content != null && context.mounted) {
             debugLog('[SETTINGS] File content loaded, ${content.length} chars');
@@ -1934,7 +2082,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _processRouteFile(BuildContext context, AppStateProvider appState, String content, String filename) {
+  void _processRouteFile(BuildContext context, AppStateProvider appState,
+      String content, String filename) {
     debugLog('[SETTINGS] Calling loadSimulatorRoute...');
     final success = appState.loadSimulatorRoute(
       content,
@@ -1955,7 +2104,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _uploadOfflineSession(BuildContext context, AppStateProvider appState, String filename) async {
+  Future<void> _uploadOfflineSession(
+      BuildContext context, AppStateProvider appState, String filename) async {
     // Progress text notifier for updating dialog without rebuilding screen
     final progressNotifier = ValueNotifier<String>('Authenticating...');
 
@@ -2055,7 +2205,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  void _confirmDeleteOfflineSession(BuildContext context, AppStateProvider appState, String filename) {
+  void _confirmDeleteOfflineSession(
+      BuildContext context, AppStateProvider appState, String filename) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -2081,9 +2232,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _downloadOfflineSession(BuildContext context, AppStateProvider appState, String filename) {
+  void _downloadOfflineSession(
+      BuildContext context, AppStateProvider appState, String filename) {
     try {
-      final sessionData = appState.offlineSessionService.getSessionData(filename);
+      final sessionData =
+          appState.offlineSessionService.getSessionData(filename);
       if (sessionData == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -2095,7 +2248,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
 
       // Convert to pretty JSON
-      final jsonString = const JsonEncoder.withIndent('  ').convert(sessionData);
+      final jsonString =
+          const JsonEncoder.withIndent('  ').convert(sessionData);
 
       if (kIsWeb && isWebFileHelpersAvailable) {
         // Web: Create a blob and trigger download
@@ -2162,7 +2316,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   /// Show debug log viewer dialog
-  void _showLogViewer(BuildContext context, AppStateProvider appState, File file) async {
+  void _showLogViewer(
+      BuildContext context, AppStateProvider appState, File file) async {
     await appState.viewDebugLog(file);
 
     if (!context.mounted) return;
@@ -2194,7 +2349,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showCustomApiDisclaimer(BuildContext context, AppStateProvider appState) {
+  void _showCustomApiDisclaimer(
+      BuildContext context, AppStateProvider appState) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -2252,7 +2408,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showCustomApiUrlDialog(BuildContext context, AppStateProvider appState) {
+  void _showCustomApiUrlDialog(
+      BuildContext context, AppStateProvider appState) {
     final controller = TextEditingController(
       text: appState.preferences.customApiUrl ?? '',
     );
@@ -2312,7 +2469,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showCustomApiKeyDialog(BuildContext context, AppStateProvider appState) {
+  void _showCustomApiKeyDialog(
+      BuildContext context, AppStateProvider appState) {
     final controller = TextEditingController(
       text: appState.preferences.customApiKey ?? '',
     );
@@ -2351,7 +2509,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Future<void> _importCustomApiFromClipboard(BuildContext context, AppStateProvider appState) async {
+  Future<void> _importCustomApiFromClipboard(
+      BuildContext context, AppStateProvider appState) async {
     final clipData = await Clipboard.getData('text/plain');
     final text = clipData?.text?.trim();
 
@@ -2374,11 +2533,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final key = uri.queryParameters['key'];
 
       if (rawUrl == null || rawUrl.isEmpty) {
-        if (context.mounted) AppToast.error(context, 'Link is missing the url parameter');
+        if (context.mounted)
+          AppToast.error(context, 'Link is missing the url parameter');
         return;
       }
       if (key == null || key.isEmpty) {
-        if (context.mounted) AppToast.error(context, 'Link is missing the key parameter');
+        if (context.mounted)
+          AppToast.error(context, 'Link is missing the key parameter');
         return;
       }
 
@@ -2387,7 +2548,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // Validate the constructed URL
       final parsed = Uri.tryParse(fullUrl);
       if (parsed == null || !parsed.hasAuthority) {
-        if (context.mounted) AppToast.error(context, 'Invalid URL in link: $rawUrl');
+        if (context.mounted)
+          AppToast.error(context, 'Invalid URL in link: $rawUrl');
         return;
       }
 
@@ -2404,11 +2566,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       debugLog('[CUSTOM API] Imported endpoint from clipboard: $fullUrl');
     } catch (e) {
       debugError('[CUSTOM API] Failed to parse clipboard link: $e');
-      if (context.mounted) AppToast.error(context, 'Invalid meshmapper:// link');
+      if (context.mounted)
+        AppToast.error(context, 'Invalid meshmapper:// link');
     }
   }
 
-  void _showCloseAppConfirmation(BuildContext context, AppStateProvider appState) {
+  void _showCloseAppConfirmation(
+      BuildContext context, AppStateProvider appState) {
     final isConnected = appState.isConnected;
 
     showDialog(
@@ -2488,7 +2652,9 @@ class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
 
   Future<void> _requestPermission() async {
     // Show prominent disclosure before requesting background location
-    final accepted = await PermissionDisclosureService.showBackgroundLocationDisclosure(context);
+    final accepted =
+        await PermissionDisclosureService.showBackgroundLocationDisclosure(
+            context);
     if (!accepted) {
       return; // User declined
     }
@@ -2623,7 +2789,10 @@ class _OfflineSessionTile extends StatelessWidget {
           if (isUploaded)
             const Text(
               'Uploaded',
-              style: TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.w500),
+              style: TextStyle(
+                  color: Colors.green,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500),
             ),
           if (session.deviceName != null)
             Text(

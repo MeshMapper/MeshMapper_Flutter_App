@@ -179,7 +179,8 @@ class UserPreferences {
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
       mapStyle: (json['mapStyle'] as String?) ?? 'liberty',
-      closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
+      closeAppAfterDisconnect:
+          (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
@@ -189,7 +190,8 @@ class UserPreferences {
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
-      deleteChannelOnDisconnect: (json['deleteChannelOnDisconnect'] as bool?) ?? true,
+      deleteChannelOnDisconnect:
+          (json['deleteChannelOnDisconnect'] as bool?) ?? true,
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
@@ -197,13 +199,17 @@ class UserPreferences {
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
-      coverageOverlayOpacity: (json['coverageOverlayOpacity'] as num?)?.toDouble() ?? 0.7,
-      disconnectAlertEnabled: (json['disconnectAlertEnabled'] as bool?) ?? false,
+      coverageOverlayOpacity:
+          (json['coverageOverlayOpacity'] as num?)?.toDouble() ?? 0.7,
+      disconnectAlertEnabled:
+          (json['disconnectAlertEnabled'] as bool?) ?? false,
       customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
       customApiUrl: json['customApiUrl'] as String?,
       customApiKey: json['customApiKey'] as String?,
-      customApiDisclaimerAccepted: (json['customApiDisclaimerAccepted'] as bool?) ?? false,
-      customApiIncludeContact: (json['customApiIncludeContact'] as bool?) ?? true,
+      customApiDisclaimerAccepted:
+          (json['customApiDisclaimerAccepted'] as bool?) ?? false,
+      customApiIncludeContact:
+          (json['customApiIncludeContact'] as bool?) ?? true,
     );
   }
 
@@ -313,10 +319,12 @@ class UserPreferences {
       powerLevelSet: powerLevelSet ?? this.powerLevelSet,
       offlineMode: offlineMode ?? this.offlineMode,
       iataCode: iataCode ?? this.iataCode,
-      backgroundModeEnabled: backgroundModeEnabled ?? this.backgroundModeEnabled,
+      backgroundModeEnabled:
+          backgroundModeEnabled ?? this.backgroundModeEnabled,
       developerModeEnabled: developerModeEnabled ?? this.developerModeEnabled,
       mapStyle: mapStyle ?? this.mapStyle,
-      closeAppAfterDisconnect: closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
+      closeAppAfterDisconnect:
+          closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
       themeMode: themeMode ?? this.themeMode,
       unitSystem: unitSystem ?? this.unitSystem,
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
@@ -326,21 +334,27 @@ class UserPreferences {
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
-      deleteChannelOnDisconnect: deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
-      minPingDistanceMeters: minPingDistanceMeters ?? this.minPingDistanceMeters,
+      deleteChannelOnDisconnect:
+          deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
+      minPingDistanceMeters:
+          minPingDistanceMeters ?? this.minPingDistanceMeters,
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
-      coverageOverlayOpacity: coverageOverlayOpacity ?? this.coverageOverlayOpacity,
-      disconnectAlertEnabled: disconnectAlertEnabled ?? this.disconnectAlertEnabled,
+      coverageOverlayOpacity:
+          coverageOverlayOpacity ?? this.coverageOverlayOpacity,
+      disconnectAlertEnabled:
+          disconnectAlertEnabled ?? this.disconnectAlertEnabled,
       customApiEnabled: customApiEnabled ?? this.customApiEnabled,
       customApiUrl: customApiUrl ?? this.customApiUrl,
       customApiKey: customApiKey ?? this.customApiKey,
-      customApiDisclaimerAccepted: customApiDisclaimerAccepted ?? this.customApiDisclaimerAccepted,
-      customApiIncludeContact: customApiIncludeContact ?? this.customApiIncludeContact,
+      customApiDisclaimerAccepted:
+          customApiDisclaimerAccepted ?? this.customApiDisclaimerAccepted,
+      customApiIncludeContact:
+          customApiIncludeContact ?? this.customApiIncludeContact,
     );
   }
 

@@ -16,7 +16,8 @@ class LogScreen extends StatefulWidget {
   State<LogScreen> createState() => _LogScreenState();
 }
 
-class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMixin {
+class _LogScreenState extends State<LogScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final _allPingsKey = GlobalKey<_AllPingsTabState>();
 
@@ -68,7 +69,8 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
             },
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'copy', child: Text('Copy CSV')),
-              const PopupMenuItem(value: 'clear', child: Text('Clear all logs')),
+              const PopupMenuItem(
+                  value: 'clear', child: Text('Clear all logs')),
             ],
           ),
         ],
@@ -80,8 +82,12 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
             dividerHeight: 1,
             labelPadding: EdgeInsets.zero,
             tabs: [
-              Tab(height: 32, text: 'All Pings${totalPings > 0 ? ' ($totalPings)' : ''}'),
-              Tab(height: 32, text: 'Errors${errorCount > 0 ? ' ($errorCount)' : ''}'),
+              Tab(
+                  height: 32,
+                  text: 'All Pings${totalPings > 0 ? ' ($totalPings)' : ''}'),
+              Tab(
+                  height: 32,
+                  text: 'Errors${errorCount > 0 ? ' ($errorCount)' : ''}'),
             ],
           ),
         ),
@@ -120,7 +126,9 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
       final filtered = tabState._filteredEntries;
       if (filtered.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No matching entries to copy'), duration: Duration(seconds: 2)),
+          const SnackBar(
+              content: Text('No matching entries to copy'),
+              duration: Duration(seconds: 2)),
         );
         return;
       }
@@ -131,7 +139,10 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
       }
       Clipboard.setData(ClipboardData(text: buffer.toString()));
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${filtered.length} filtered entries copied to clipboard'), duration: const Duration(seconds: 2)),
+        SnackBar(
+            content:
+                Text('${filtered.length} filtered entries copied to clipboard'),
+            duration: const Duration(seconds: 2)),
       );
       return;
     }
@@ -143,7 +154,9 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
 
     if (tx.isEmpty && rx.isEmpty && disc.isEmpty && trace.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No ping log entries to copy'), duration: Duration(seconds: 2)),
+        const SnackBar(
+            content: Text('No ping log entries to copy'),
+            duration: Duration(seconds: 2)),
       );
       return;
     }
@@ -161,7 +174,8 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
 
     if (rx.isNotEmpty) {
       buffer.writeln('--- RX Log ---');
-      buffer.writeln('timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude');
+      buffer.writeln(
+          'timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude');
       for (final entry in rx) {
         buffer.writeln(entry.toCsv());
       }
@@ -170,7 +184,8 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
 
     if (disc.isNotEmpty) {
       buffer.writeln('--- DISC Log ---');
-      buffer.writeln('timestamp,latitude,longitude,noisefloor,node_count,nodes');
+      buffer
+          .writeln('timestamp,latitude,longitude,noisefloor,node_count,nodes');
       for (final entry in disc) {
         buffer.writeln(entry.toCsv());
       }
@@ -179,7 +194,8 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
 
     if (trace.isNotEmpty) {
       buffer.writeln('--- TRC Log ---');
-      buffer.writeln('timestamp,target_repeater,local_snr,local_rssi,remote_snr,latitude,longitude,noisefloor,success');
+      buffer.writeln(
+          'timestamp,target_repeater,local_snr,local_rssi,remote_snr,latitude,longitude,noisefloor,success');
       for (final entry in trace) {
         buffer.writeln(entry.toCsv());
       }
@@ -187,14 +203,18 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
 
     Clipboard.setData(ClipboardData(text: buffer.toString()));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('All ping logs copied to clipboard'), duration: Duration(seconds: 2)),
+      const SnackBar(
+          content: Text('All ping logs copied to clipboard'),
+          duration: Duration(seconds: 2)),
     );
   }
 
   void _copyErrorLogToCsv(BuildContext context, List<UserErrorEntry> entries) {
     if (entries.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No error log entries to copy'), duration: Duration(seconds: 2)),
+        const SnackBar(
+            content: Text('No error log entries to copy'),
+            duration: Duration(seconds: 2)),
       );
       return;
     }
@@ -206,7 +226,9 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
     }
     Clipboard.setData(ClipboardData(text: buffer.toString()));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Error log copied to clipboard'), duration: Duration(seconds: 2)),
+      const SnackBar(
+          content: Text('Error log copied to clipboard'),
+          duration: Duration(seconds: 2)),
     );
   }
 
@@ -215,7 +237,8 @@ class _LogScreenState extends State<LogScreen> with SingleTickerProviderStateMix
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Clear All Logs?'),
-        content: const Text('This will clear TX, RX, DISC, TRC, and error logs.'),
+        content:
+            const Text('This will clear TX, RX, DISC, TRC, and error logs.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -299,7 +322,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
 
   /// Resolve a short repeater ID to known repeater names via prefix matching.
   static ({List<String> names, bool ambiguous}) _resolveRepeaterNames(
-    String repeaterId, List<Repeater> repeaters,
+    String repeaterId,
+    List<Repeater> repeaters,
   ) {
     final idLower = repeaterId.toLowerCase();
     final matches = repeaters
@@ -330,7 +354,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         for (final event in tx.events) {
           if (event.repeaterId.toLowerCase().startsWith(query)) return true;
           final resolved = _resolveRepeaterNames(event.repeaterId, repeaters);
-          if (resolved.names.any((n) => n.toLowerCase().contains(query))) return true;
+          if (resolved.names.any((n) => n.toLowerCase().contains(query)))
+            return true;
         }
         return false;
       case PingLogType.rx:
@@ -342,31 +367,37 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         final disc = entry.asDisc;
         for (final node in disc.discoveredNodes) {
           if (node.repeaterId.toLowerCase().startsWith(query)) return true;
-          if (node.pubkeyHex != null && node.pubkeyHex!.toLowerCase().startsWith(query)) return true;
+          if (node.pubkeyHex != null &&
+              node.pubkeyHex!.toLowerCase().startsWith(query)) return true;
           final resolved = _resolveRepeaterNames(node.repeaterId, repeaters);
-          if (resolved.names.any((n) => n.toLowerCase().contains(query))) return true;
+          if (resolved.names.any((n) => n.toLowerCase().contains(query)))
+            return true;
         }
         return false;
       case PingLogType.trace:
         final trace = entry.asTrace;
         if (trace.targetRepeaterId.toLowerCase().startsWith(query)) return true;
-        final resolved = _resolveRepeaterNames(trace.targetRepeaterId, repeaters);
+        final resolved =
+            _resolveRepeaterNames(trace.targetRepeaterId, repeaters);
         return resolved.names.any((n) => n.toLowerCase().contains(query));
     }
   }
 
   /// Whether an entry should show the ambiguity indicator.
   /// Only shown when searching by name (non-hex query) and a repeater ID is ambiguous.
-  bool _shouldShowAmbiguity(UnifiedPingLogEntry entry, List<Repeater> repeaters) {
+  bool _shouldShowAmbiguity(
+      UnifiedPingLogEntry entry, List<Repeater> repeaters) {
     if (_searchQuery.isEmpty || _isHexQuery(_searchQuery)) return false;
 
     switch (entry.type) {
       case PingLogType.tx:
-        return entry.asTx.events.any((e) => _isAmbiguousId(e.repeaterId, repeaters));
+        return entry.asTx.events
+            .any((e) => _isAmbiguousId(e.repeaterId, repeaters));
       case PingLogType.rx:
         return _isAmbiguousId(entry.asRx.repeaterId, repeaters);
       case PingLogType.disc:
-        return entry.asDisc.discoveredNodes.any((n) => _isAmbiguousId(n.repeaterId, repeaters));
+        return entry.asDisc.discoveredNodes
+            .any((n) => _isAmbiguousId(n.repeaterId, repeaters));
       case PingLogType.trace:
         return _isAmbiguousId(entry.asTrace.targetRepeaterId, repeaters);
     }
@@ -412,11 +443,19 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 contentPadding: const EdgeInsets.symmetric(vertical: 8),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
+                  borderSide: BorderSide(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.3)),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
+                  borderSide: BorderSide(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.3)),
                 ),
               ),
               onChanged: (value) => setState(() => _searchQuery = value.trim()),
@@ -429,19 +468,29 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           child: Container(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
+              border: Border.all(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outline
+                      .withValues(alpha: 0.3)),
             ),
             clipBehavior: Clip.antiAlias,
             child: IntrinsicHeight(
               child: Row(
                 children: [
-                  _buildFilterSegment(PingLogType.tx, 'TX', widget.txCount, PingColors.txSuccess, isFirst: true),
+                  _buildFilterSegment(PingLogType.tx, 'TX', widget.txCount,
+                      PingColors.txSuccess,
+                      isFirst: true),
                   _segmentDivider(context),
-                  _buildFilterSegment(PingLogType.rx, 'RX', widget.rxCount, PingColors.rx),
+                  _buildFilterSegment(
+                      PingLogType.rx, 'RX', widget.rxCount, PingColors.rx),
                   _segmentDivider(context),
-                  _buildFilterSegment(PingLogType.disc, 'DISC', widget.discCount, PingColors.discSuccess),
+                  _buildFilterSegment(PingLogType.disc, 'DISC',
+                      widget.discCount, PingColors.discSuccess),
                   _segmentDivider(context),
-                  _buildFilterSegment(PingLogType.trace, 'TRC', widget.traceCount, PingColors.traceSuccess, isLast: true),
+                  _buildFilterSegment(PingLogType.trace, 'TRC',
+                      widget.traceCount, PingColors.traceSuccess,
+                      isLast: true),
                 ],
               ),
             ),
@@ -464,7 +513,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         hasEntries && _searchQuery.isNotEmpty
                             ? 'No results for \'$_searchQuery\''
                             : 'No pings logged yet',
-                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        style: TextStyle(
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
                     ],
                   ),
@@ -474,12 +525,19 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final unified = filtered[index];
-                    final showAmbiguity = _shouldShowAmbiguity(unified, widget.repeaters);
+                    final showAmbiguity =
+                        _shouldShowAmbiguity(unified, widget.repeaters);
                     return switch (unified.type) {
-                      PingLogType.tx => _buildTxCard(context, unified.asTx, showAmbiguity: showAmbiguity),
-                      PingLogType.rx => _buildRxCard(context, unified.asRx, showAmbiguity: showAmbiguity),
-                      PingLogType.disc => _buildDiscCard(context, unified.asDisc, showAmbiguity: showAmbiguity),
-                      PingLogType.trace => _buildTraceCard(context, unified.asTrace, showAmbiguity: showAmbiguity),
+                      PingLogType.tx => _buildTxCard(context, unified.asTx,
+                          showAmbiguity: showAmbiguity),
+                      PingLogType.rx => _buildRxCard(context, unified.asRx,
+                          showAmbiguity: showAmbiguity),
+                      PingLogType.disc => _buildDiscCard(
+                          context, unified.asDisc,
+                          showAmbiguity: showAmbiguity),
+                      PingLogType.trace => _buildTraceCard(
+                          context, unified.asTrace,
+                          showAmbiguity: showAmbiguity),
                     };
                   },
                 ),
@@ -488,7 +546,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildFilterSegment(PingLogType type, String label, int count, Color color, {bool isFirst = false, bool isLast = false}) {
+  Widget _buildFilterSegment(
+      PingLogType type, String label, int count, Color color,
+      {bool isFirst = false, bool isLast = false}) {
     final active = _activeFilters.contains(type);
     return Expanded(
       child: GestureDetector(
@@ -504,16 +564,28 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                  color: active ? color : Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
+                  color: active
+                      ? color
+                      : Theme.of(context)
+                          .colorScheme
+                          .onSurfaceVariant
+                          .withValues(alpha: 0.6),
                 ),
               ),
               if (count > 0) ...[
                 const SizedBox(width: 4),
                 Container(
-                  constraints: const BoxConstraints(minWidth: 18, minHeight: 16),
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  constraints:
+                      const BoxConstraints(minWidth: 18, minHeight: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                   decoration: BoxDecoration(
-                    color: active ? color : Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+                    color: active
+                        ? color
+                        : Theme.of(context)
+                            .colorScheme
+                            .onSurfaceVariant
+                            .withValues(alpha: 0.3),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   alignment: Alignment.center,
@@ -600,19 +672,23 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // TX Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildTxCard(BuildContext context, TxLogEntry entry, {bool showAmbiguity = false}) {
+  Widget _buildTxCard(BuildContext context, TxLogEntry entry,
+      {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
       child: InkWell(
-        onTap: () => appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
+        onTap: () =>
+            appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.tx, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
+              _buildCardHeader(context, PingLogType.tx, entry.timeString,
+                  entry.locationString,
+                  showAmbiguity: showAmbiguity),
               // Repeaters table
               if (entry.events.isNotEmpty) ...[
                 const SizedBox(height: 10),
@@ -640,7 +716,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+        border: Border.all(
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
       ),
       child: Column(
         children: [
@@ -670,9 +748,17 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(
           children: [
-            RepeaterIdChip(repeaterId: event.repeaterId, fontSize: 14, width: 60),
-            Expanded(child: Center(child: _buildChip(event.snr?.toStringAsFixed(1) ?? '-', snrColor))),
-            Expanded(child: Center(child: _buildChip(event.rssi != null ? '${event.rssi}' : '-', rssiColor))),
+            RepeaterIdChip(
+                repeaterId: event.repeaterId, fontSize: 14, width: 60),
+            Expanded(
+                child: Center(
+                    child: _buildChip(
+                        event.snr?.toStringAsFixed(1) ?? '-', snrColor))),
+            Expanded(
+                child: Center(
+                    child: _buildChip(
+                        event.rssi != null ? '${event.rssi}' : '-',
+                        rssiColor))),
           ],
         ),
       ),
@@ -683,7 +769,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // RX Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildRxCard(BuildContext context, RxLogEntry entry, {bool showAmbiguity = false}) {
+  Widget _buildRxCard(BuildContext context, RxLogEntry entry,
+      {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
     final snrColor = _snrColor(entry.severity);
     final rssiColor = _rssiColor(entry.rssi);
@@ -692,43 +779,71 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       margin: const EdgeInsets.only(bottom: 8),
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
       child: InkWell(
-        onTap: () => appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
+        onTap: () =>
+            appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.rx, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
+              _buildCardHeader(context, PingLogType.rx, entry.timeString,
+                  entry.locationString,
+                  showAmbiguity: showAmbiguity),
               const SizedBox(height: 10),
               // Repeater table (single row)
               Container(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
                 ),
                 child: Column(
                   children: [
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
                       child: Row(
                         children: [
-                          SizedBox(width: 60, child: _tableHeader(context, 'Node')),
-                          Expanded(child: _tableHeader(context, 'SNR', center: true)),
-                          Expanded(child: _tableHeader(context, 'RSSI', center: true)),
+                          SizedBox(
+                              width: 60, child: _tableHeader(context, 'Node')),
+                          Expanded(
+                              child:
+                                  _tableHeader(context, 'SNR', center: true)),
+                          Expanded(
+                              child:
+                                  _tableHeader(context, 'RSSI', center: true)),
                         ],
                       ),
                     ),
                     Divider(height: 1, color: Theme.of(context).dividerColor),
                     InkWell(
-                      onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.repeaterId),
+                      onTap: () => RepeaterIdChip.showRepeaterPopup(
+                          context, entry.repeaterId),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
                         child: Row(
                           children: [
-                            RepeaterIdChip(repeaterId: entry.repeaterId, fontSize: 14, width: 60),
-                            Expanded(child: Center(child: _buildChip(entry.snr?.toStringAsFixed(1) ?? '-', snrColor))),
-                            Expanded(child: Center(child: _buildChip(entry.rssi != null ? '${entry.rssi}' : '-', rssiColor))),
+                            RepeaterIdChip(
+                                repeaterId: entry.repeaterId,
+                                fontSize: 14,
+                                width: 60),
+                            Expanded(
+                                child: Center(
+                                    child: _buildChip(
+                                        entry.snr?.toStringAsFixed(1) ?? '-',
+                                        snrColor))),
+                            Expanded(
+                                child: Center(
+                                    child: _buildChip(
+                                        entry.rssi != null
+                                            ? '${entry.rssi}'
+                                            : '-',
+                                        rssiColor))),
                           ],
                         ),
                       ),
@@ -747,44 +862,63 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // DISC Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildDiscCard(BuildContext context, DiscLogEntry entry, {bool showAmbiguity = false}) {
+  Widget _buildDiscCard(BuildContext context, DiscLogEntry entry,
+      {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
       child: InkWell(
-        onTap: () => appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
+        onTap: () =>
+            appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.disc, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
+              _buildCardHeader(context, PingLogType.disc, entry.timeString,
+                  entry.locationString,
+                  showAmbiguity: showAmbiguity),
               // Nodes table
               if (entry.discoveredNodes.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 Container(
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                    border: Border.all(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .outline
+                            .withValues(alpha: 0.5)),
                   ),
                   child: Column(
                     children: [
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
                         child: Row(
                           children: [
-                            SizedBox(width: 70, child: _tableHeader(context, 'Node')),
-                            Expanded(child: _tableHeader(context, 'RX SNR', center: true)),
-                            Expanded(child: _tableHeader(context, 'RX RSSI', center: true)),
-                            Expanded(child: _tableHeader(context, 'TX SNR', center: true)),
+                            SizedBox(
+                                width: 70,
+                                child: _tableHeader(context, 'Node')),
+                            Expanded(
+                                child: _tableHeader(context, 'RX SNR',
+                                    center: true)),
+                            Expanded(
+                                child: _tableHeader(context, 'RX RSSI',
+                                    center: true)),
+                            Expanded(
+                                child: _tableHeader(context, 'TX SNR',
+                                    center: true)),
                           ],
                         ),
                       ),
                       Divider(height: 1, color: Theme.of(context).dividerColor),
-                      ...entry.discoveredNodes.map((node) => _buildDiscNodeRow(context, node)),
+                      ...entry.discoveredNodes
+                          .map((node) => _buildDiscNodeRow(context, node)),
                     ],
                   ),
                 ),
@@ -812,7 +946,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
 
     return InkWell(
-      onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex),
+      onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId,
+          fullHexId: node.pubkeyHex),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(
@@ -821,7 +956,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
               width: 70,
               child: Row(
                 children: [
-                  Flexible(child: RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 14)),
+                  Flexible(
+                      child: RepeaterIdChip(
+                          repeaterId: node.repeaterId, fontSize: 14)),
                   Text(
                     node.nodeTypeLabel,
                     style: TextStyle(
@@ -833,9 +970,17 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 ],
               ),
             ),
-            Expanded(child: Center(child: _buildChip(node.localSnr.toStringAsFixed(1), rxSnrColor))),
-            Expanded(child: Center(child: _buildChip('${node.localRssi}', rssiColor))),
-            Expanded(child: Center(child: _buildChip(node.remoteSnr.toStringAsFixed(1), txSnrColor))),
+            Expanded(
+                child: Center(
+                    child: _buildChip(
+                        node.localSnr.toStringAsFixed(1), rxSnrColor))),
+            Expanded(
+                child:
+                    Center(child: _buildChip('${node.localRssi}', rssiColor))),
+            Expanded(
+                child: Center(
+                    child: _buildChip(
+                        node.remoteSnr.toStringAsFixed(1), txSnrColor))),
           ],
         ),
       ),
@@ -846,7 +991,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // Trace Card
   // ---------------------------------------------------------------------------
 
-  Widget _buildTraceCard(BuildContext context, TraceLogEntry entry, {bool showAmbiguity = false}) {
+  Widget _buildTraceCard(BuildContext context, TraceLogEntry entry,
+      {bool showAmbiguity = false}) {
     final colorScheme = Theme.of(context).colorScheme;
     final appState = context.read<AppStateProvider>();
 
@@ -854,13 +1000,16 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       margin: const EdgeInsets.only(bottom: 8),
       color: colorScheme.surfaceContainerHigh,
       child: InkWell(
-        onTap: () => appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
+        onTap: () =>
+            appState.navigateToMapCoordinates(entry.latitude, entry.longitude),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildCardHeader(context, PingLogType.trace, entry.timeString, entry.locationString, showAmbiguity: showAmbiguity),
+              _buildCardHeader(context, PingLogType.trace, entry.timeString,
+                  entry.locationString,
+                  showAmbiguity: showAmbiguity),
               // Results table
               if (entry.success) ...[
                 const SizedBox(height: 10),
@@ -868,18 +1017,28 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                   decoration: BoxDecoration(
                     color: colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: colorScheme.outline.withValues(alpha: 0.5)),
+                    border: Border.all(
+                        color: colorScheme.outline.withValues(alpha: 0.5)),
                   ),
                   child: Column(
                     children: [
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
                         child: Row(
                           children: [
-                            SizedBox(width: 70, child: _tableHeader(context, 'Node')),
-                            Expanded(child: _tableHeader(context, 'RX SNR', center: true)),
-                            Expanded(child: _tableHeader(context, 'RX RSSI', center: true)),
-                            Expanded(child: _tableHeader(context, 'TX SNR', center: true)),
+                            SizedBox(
+                                width: 70,
+                                child: _tableHeader(context, 'Node')),
+                            Expanded(
+                                child: _tableHeader(context, 'RX SNR',
+                                    center: true)),
+                            Expanded(
+                                child: _tableHeader(context, 'RX RSSI',
+                                    center: true)),
+                            Expanded(
+                                child: _tableHeader(context, 'TX SNR',
+                                    center: true)),
                           ],
                         ),
                       ),
@@ -915,10 +1074,23 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       child: Row(
         children: [
-          SizedBox(width: 70, child: RepeaterIdChip(repeaterId: entry.targetRepeaterId, fontSize: 14)),
-          Expanded(child: Center(child: _buildChip(entry.localSnr?.toStringAsFixed(1) ?? '-', rxSnrColor))),
-          Expanded(child: Center(child: _buildChip(entry.localRssi != null ? '${entry.localRssi}' : '-', rssiColor))),
-          Expanded(child: Center(child: _buildChip(entry.remoteSnr?.toStringAsFixed(1) ?? '-', txSnrColor))),
+          SizedBox(
+              width: 70,
+              child: RepeaterIdChip(
+                  repeaterId: entry.targetRepeaterId, fontSize: 14)),
+          Expanded(
+              child: Center(
+                  child: _buildChip(
+                      entry.localSnr?.toStringAsFixed(1) ?? '-', rxSnrColor))),
+          Expanded(
+              child: Center(
+                  child: _buildChip(
+                      entry.localRssi != null ? '${entry.localRssi}' : '-',
+                      rssiColor))),
+          Expanded(
+              child: Center(
+                  child: _buildChip(
+                      entry.remoteSnr?.toStringAsFixed(1) ?? '-', txSnrColor))),
         ],
       ),
     );
@@ -928,7 +1100,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // Shared helpers
   // ---------------------------------------------------------------------------
 
-  static Widget _buildCardHeader(BuildContext context, PingLogType type, String timeString, String locationString, {bool showAmbiguity = false}) {
+  static Widget _buildCardHeader(BuildContext context, PingLogType type,
+      String timeString, String locationString,
+      {bool showAmbiguity = false}) {
     return Row(
       children: [
         _buildTypeBadge(type),
@@ -936,7 +1110,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           const SizedBox(width: 2),
           Tooltip(
             message: 'Repeater ID matches multiple nodes',
-            child: Icon(Icons.help_outline, size: 14, color: Colors.amber.shade700),
+            child: Icon(Icons.help_outline,
+                size: 14, color: Colors.amber.shade700),
           ),
         ],
         const SizedBox(width: 6),
@@ -950,7 +1125,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           ),
         ),
         const Spacer(),
-        Icon(Icons.location_on, size: 14, color: Theme.of(context).colorScheme.onSurfaceVariant),
+        Icon(Icons.location_on,
+            size: 14, color: Theme.of(context).colorScheme.onSurfaceVariant),
         const SizedBox(width: 2),
         Text(
           locationString,
@@ -964,7 +1140,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  static Widget _tableHeader(BuildContext context, String text, {bool center = false}) {
+  static Widget _tableHeader(BuildContext context, String text,
+      {bool center = false}) {
     return Text(
       text,
       textAlign: center ? TextAlign.center : TextAlign.left,
@@ -1014,9 +1191,12 @@ class _ErrorLogTab extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.check_circle_outline, size: 48, color: Colors.green),
+            const Icon(Icons.check_circle_outline,
+                size: 48, color: Colors.green),
             const SizedBox(height: 16),
-            Text('No errors logged', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            Text('No errors logged',
+                style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant)),
           ],
         ),
       );

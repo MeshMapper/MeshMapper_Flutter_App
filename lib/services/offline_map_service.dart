@@ -45,9 +45,9 @@ class OfflineMapRegion {
       bounds: region.definition.bounds,
       minZoom: region.definition.minZoom,
       maxZoom: region.definition.maxZoom,
-      createdAt: DateTime.tryParse(
-              (meta[_MetaKeys.createdAt] as String?) ?? '') ??
-          DateTime.now(),
+      createdAt:
+          DateTime.tryParse((meta[_MetaKeys.createdAt] as String?) ?? '') ??
+              DateTime.now(),
       // Platform channel JSON round-trip can return int as num/double.
       estimatedBytes: (meta[_MetaKeys.estimatedBytes] as num?)?.toInt() ?? 0,
     );
@@ -154,8 +154,7 @@ class OfflineMapService extends ChangeNotifier {
     try {
       await _initNotifications();
       final prefs = await SharedPreferences.getInstance();
-      _storageLimitMb =
-          prefs.getInt(_storageLimitKey) ?? defaultStorageLimitMb;
+      _storageLimitMb = prefs.getInt(_storageLimitKey) ?? defaultStorageLimitMb;
       await refreshRegions();
       _initialized = true;
       notifyListeners();
@@ -332,13 +331,11 @@ class OfflineMapService extends ChangeNotifier {
     int total = 0;
     for (int z = minZoom.floor(); z <= maxZoom.ceil(); z++) {
       final tilesPerSide = 1 << z; // 2^z
-      final lonFraction = (bounds.northeast.longitude -
-              bounds.southwest.longitude)
-          .abs() /
-          360.0;
+      final lonFraction =
+          (bounds.northeast.longitude - bounds.southwest.longitude).abs() /
+              360.0;
       final latFraction =
-          (bounds.northeast.latitude - bounds.southwest.latitude).abs() /
-              180.0;
+          (bounds.northeast.latitude - bounds.southwest.latitude).abs() / 180.0;
       final xTiles = (lonFraction * tilesPerSide).ceil().clamp(1, tilesPerSide);
       final yTiles = (latFraction * tilesPerSide).ceil().clamp(1, tilesPerSide);
       total += xTiles * yTiles;
@@ -464,8 +461,7 @@ class OfflineMapService extends ChangeNotifier {
       // Throttle notification updates to every 2% to avoid flooding
       final percent = status.progress.round();
       if (percent % 2 == 0) {
-        _showProgressNotification(
-            _downloadingRegionName ?? 'Region', percent);
+        _showProgressNotification(_downloadingRegionName ?? 'Region', percent);
       }
     } else {
       // Error status

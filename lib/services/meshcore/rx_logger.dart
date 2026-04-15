@@ -9,14 +9,14 @@ import 'packet_validator.dart';
 /// Reference: handleRxLogging() + handleRxBatching() in wardrive.js (lines 3812-4140)
 class RxLogger {
   bool isWardriving = false;
-  
+
   /// Map of repeaterId (hex) -> RxBatch
   final Map<String, RxBatch> _batchBuffer = {};
-  
+
   /// Configuration constants
   static const int batchDistanceMeters = 25;
   static const Duration batchTimeout = Duration(seconds: 30);
-  
+
   /// Callback for batched/finalized RX entries (API queue posting)
   final Future<void> Function(RxApiEntry) onRxEntry;
 
@@ -67,14 +67,15 @@ class RxLogger {
     PacketValidator validator,
   ) async {
     if (!isWardriving) return false;
-    
+
     try {
       debugLog('[RX LOG] Processing packet for passive logging');
-      
+
       // VALIDATION: Check path length (need at least one hop)
       // Packets with no path are direct transmissions and don't provide repeater coverage info
       if (metadata.pathHashCount == 0) {
-        debugLog('[RX LOG] Ignoring: no path (direct transmission, not via repeater)');
+        debugLog(
+            '[RX LOG] Ignoring: no path (direct transmission, not via repeater)');
         return false;
       }
 
@@ -88,7 +89,8 @@ class RxLogger {
 
       // CARpeater check: the carpeater is co-located with us, so it only
       // appears as the last hop (the delivery repeater) on RX packets
-      if (carpeaterPrefix != null && PacketValidator.isCarpeaterIdMatch(lastHopHex, carpeaterPrefix!)) {
+      if (carpeaterPrefix != null &&
+          PacketValidator.isCarpeaterIdMatch(lastHopHex, carpeaterPrefix!)) {
         if (metadata.pathHashCount < 2) {
           debugLog('[RX LOG] CARpeater pass-through: single-hop, dropping');
           return false;
@@ -98,7 +100,8 @@ class RxLogger {
         carpeaterStripped = true;
         reportedSnr = null;
         reportedRssi = null;
-        debugLog('[RX LOG] CARpeater pass-through: stripped $lastHopHex, reporting underlying repeater $repeaterId');
+        debugLog(
+            '[RX LOG] CARpeater pass-through: stripped $lastHopHex, reporting underlying repeater $repeaterId');
       } else {
         repeaterId = lastHopHex;
       }
@@ -114,14 +117,18 @@ class RxLogger {
       // Must run before RSSI check so user never sees confusing "RSSI too strong"
       // errors for a device they told the app to ignore
       // Skip for CARpeater pass-through (CARpeater itself was already handled)
-      if (!carpeaterStripped && shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
-        debugLog('[RX LOG] ❌ Ignoring repeater $repeaterId (user carpeater filter)');
+      if (!carpeaterStripped &&
+          shouldIgnoreRepeater != null &&
+          shouldIgnoreRepeater!(repeaterId)) {
+        debugLog(
+            '[RX LOG] ❌ Ignoring repeater $repeaterId (user carpeater filter)');
         return false;
       }
 
       // PACKET FILTER: Validate packet before logging
       // Skip RSSI check for CARpeater pass-through
-      final validation = await validator.validate(metadata, skipRssiCheck: carpeaterStripped);
+      final validation =
+          await validator.validate(metadata, skipRssiCheck: carpeaterStripped);
       if (!validation.valid) {
         final rawHex = metadata.raw
             .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
@@ -131,12 +138,14 @@ class RxLogger {
 
         // Log carpeater drops to error log (without auto-switching)
         if (validation.reason == 'carpeater-rssi') {
-          onCarpeaterDrop?.call(repeaterId, 'RSSI too strong (${metadata.rssi} dBm)');
+          onCarpeaterDrop?.call(
+              repeaterId, 'RSSI too strong (${metadata.rssi} dBm)');
         }
         return false;
       }
 
-      debugLog('[RX LOG] Packet heard via ${carpeaterStripped ? 'underlying' : 'last'} hop: $repeaterId, '
+      debugLog(
+          '[RX LOG] Packet heard via ${carpeaterStripped ? 'underlying' : 'last'} hop: $repeaterId, '
           'SNR=$reportedSnr, path_length=${metadata.pathHashCount}${carpeaterStripped ? ' (CARpeater stripped)' : ''}');
 
       debugLog('[RX LOG] ✅ Packet validated and passed filter');
@@ -172,15 +181,17 @@ class RxLogger {
         // IMPORTANT: Use the batch's bestObservation which has the FIRST location
         // where we heard this repeater, not the current GPS location.
         // This ensures map pins stay at the original location.
-        final batchedObservation = _batchBuffer[repeaterId]?.bestObservation ?? observation;
+        final batchedObservation =
+            _batchBuffer[repeaterId]?.bestObservation ?? observation;
         onObservation?.call(batchedObservation);
         debugLog('[RX LOG] ✅ Observation kept in batch: repeater=$repeaterId, '
             'snr=${batchedObservation.snr ?? 'null'}, location=${batchedObservation.lat.toStringAsFixed(5)},${batchedObservation.lon.toStringAsFixed(5)}');
       } else {
-        debugLog('[RX LOG] ⏭️  Observation ignored (worse SNR): repeater=$repeaterId, '
+        debugLog(
+            '[RX LOG] ⏭️  Observation ignored (worse SNR): repeater=$repeaterId, '
             'snr=$reportedSnr, current_best=${_batchBuffer[repeaterId]?.bestObservation.snr}');
       }
-      
+
       return true;
     } catch (error, stackTrace) {
       debugError('[RX LOG] Error processing passive RX: $error');
@@ -223,7 +234,8 @@ class RxLogger {
       );
       _batchBuffer[repeaterId] = buffer;
       wasKept = true; // New repeater, observation is kept
-      debugLog('[RX BATCH] First observation for repeater $repeaterId: SNR=$snr');
+      debugLog(
+          '[RX BATCH] First observation for repeater $repeaterId: SNR=$snr');
 
       // Start 30-second timeout timer for this repeater
       buffer.timeoutTimer = Timer(batchTimeout, () {
@@ -250,8 +262,8 @@ class RxLogger {
           rssi: rssi,
           pathLength: pathLength,
           header: header,
-          lat: buffer.firstLocation.lat,  // Keep original location
-          lon: buffer.firstLocation.lon,  // Keep original location
+          lat: buffer.firstLocation.lat, // Keep original location
+          lon: buffer.firstLocation.lon, // Keep original location
           timestamp: DateTime.now(),
           metadata: metadata,
         );
@@ -276,7 +288,8 @@ class RxLogger {
         '(threshold=${batchDistanceMeters}m)');
 
     if (distance >= batchDistanceMeters) {
-      debugLog('[RX BATCH] Distance threshold met for repeater $repeaterId, flushing');
+      debugLog(
+          '[RX BATCH] Distance threshold met for repeater $repeaterId, flushing');
       await _flushRepeater(repeaterId);
     }
 
@@ -285,43 +298,45 @@ class RxLogger {
 
   /// Check all active RX batches for distance threshold on GPS position update
   /// Called from GPS service when position changes
-  Future<void> checkDistanceTriggers(({double lat, double lon}) currentLocation) async {
+  Future<void> checkDistanceTriggers(
+      ({double lat, double lon}) currentLocation) async {
     if (_batchBuffer.isEmpty) {
       return; // No active batches to check
     }
 
-    debugLog('[RX BATCH] Checking ${_batchBuffer.length} active batch(es) for distance trigger');
-    
+    debugLog(
+        '[RX BATCH] Checking ${_batchBuffer.length} active batch(es) for distance trigger');
+
     final repeatersToFlush = <String>[];
-    
+
     // Check each active batch
     for (final entry in _batchBuffer.entries) {
       final repeaterId = entry.key;
       final buffer = entry.value;
-      
+
       final distance = _calculateHaversineDistance(
         currentLocation.lat,
         currentLocation.lon,
         buffer.firstLocation.lat,
         buffer.firstLocation.lon,
       );
-      
+
       debugLog('[RX BATCH] Distance check for repeater $repeaterId: '
           '${distance.toStringAsFixed(2)}m from first observation '
           '(threshold=${batchDistanceMeters}m)');
-      
+
       if (distance >= batchDistanceMeters) {
         debugLog('[RX BATCH] Distance threshold met for repeater $repeaterId, '
             'marking for flush');
         repeatersToFlush.add(repeaterId);
       }
     }
-    
+
     // Flush all repeaters that met the distance threshold
     for (final repeaterId in repeatersToFlush) {
       await _flushRepeater(repeaterId);
     }
-    
+
     if (repeatersToFlush.isNotEmpty) {
       debugLog('[RX BATCH] Flushed ${repeatersToFlush.length} repeater(s) '
           'due to GPS movement');
@@ -331,20 +346,20 @@ class RxLogger {
   /// Flush a single repeater's batch - post best observation to API
   Future<void> _flushRepeater(String repeaterId) async {
     debugLog('[RX BATCH] Flushing repeater $repeaterId');
-    
+
     final buffer = _batchBuffer[repeaterId];
     if (buffer == null) {
       debugLog('[RX BATCH] No buffer to flush for repeater $repeaterId');
       return;
     }
-    
+
     // Clear timeout timer if it exists
     buffer.timeoutTimer?.cancel();
     buffer.timeoutTimer = null;
     debugLog('[RX BATCH] Cleared timeout timer for repeater $repeaterId');
-    
+
     final best = buffer.bestObservation;
-    
+
     // Build API entry using BEST observation's location
     final entry = RxApiEntry(
       repeaterId: repeaterId,
@@ -357,13 +372,13 @@ class RxLogger {
       timestamp: best.timestamp,
       metadata: best.metadata,
     );
-    
+
     debugLog('[RX BATCH] Posting repeater $repeaterId: snr=${best.snr}, '
         'location=${best.lat.toStringAsFixed(5)},${best.lon.toStringAsFixed(5)}');
-    
+
     // Queue for API posting
     await onRxEntry(entry);
-    
+
     // Remove from buffer
     _batchBuffer.remove(repeaterId);
     debugLog('[RX BATCH] Repeater $repeaterId removed from buffer');
@@ -373,18 +388,18 @@ class RxLogger {
   Future<void> flushAllBatches({String trigger = 'session_end'}) async {
     debugLog('[RX BATCH] Flushing all repeaters, trigger=$trigger, '
         'active_repeaters=${_batchBuffer.length}');
-    
+
     if (_batchBuffer.isEmpty) {
       debugLog('[RX BATCH] No repeaters to flush');
       return;
     }
-    
+
     // Iterate all repeaters and flush each one
     final repeaterIds = _batchBuffer.keys.toList();
     for (final repeaterId in repeaterIds) {
       await _flushRepeater(repeaterId);
     }
-    
+
     debugLog('[RX BATCH] All repeaters flushed: ${repeaterIds.length} total');
   }
 
@@ -397,18 +412,18 @@ class RxLogger {
     double lon2,
   ) {
     const earthRadiusM = 6371000.0;
-    
+
     final dLat = _degreesToRadians(lat2 - lat1);
     final dLon = _degreesToRadians(lon2 - lon1);
-    
+
     final a = sin(dLat / 2) * sin(dLat / 2) +
         cos(_degreesToRadians(lat1)) *
             cos(_degreesToRadians(lat2)) *
             sin(dLon / 2) *
             sin(dLon / 2);
-    
+
     final c = 2 * atan2(sqrt(a), sqrt(1 - a));
-    
+
     return earthRadiusM * c;
   }
 
@@ -427,12 +442,12 @@ class RxLogger {
   /// Dispose of resources
   void dispose() {
     debugLog('[RX LOG] Disposing RX Logger');
-    
+
     // Cancel all timeout timers
     for (final buffer in _batchBuffer.values) {
       buffer.timeoutTimer?.cancel();
     }
-    
+
     _batchBuffer.clear();
     isWardriving = false;
   }
@@ -454,8 +469,8 @@ class RxBatch {
 /// Single RX observation
 class RxObservation {
   final String repeaterId; // Hex ID of the repeater
-  final double? snr;       // Null for CARpeater pass-through
-  final int? rssi;         // Null for CARpeater pass-through
+  final double? snr; // Null for CARpeater pass-through
+  final int? rssi; // Null for CARpeater pass-through
   final int pathLength;
   final int header;
   final double lat;
@@ -481,8 +496,8 @@ class RxApiEntry {
   final String repeaterId;
   final double lat;
   final double lon;
-  final double? snr;   // Null for CARpeater pass-through
-  final int? rssi;     // Null for CARpeater pass-through
+  final double? snr; // Null for CARpeater pass-through
+  final int? rssi; // Null for CARpeater pass-through
   final int pathLength;
   final int header;
   final DateTime timestamp;
