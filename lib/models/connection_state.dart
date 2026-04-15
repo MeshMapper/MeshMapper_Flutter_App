@@ -2,16 +2,16 @@
 enum ConnectionStatus {
   /// Not connected to any device
   disconnected,
-  
+
   /// Currently scanning for devices
   scanning,
-  
+
   /// Connecting to device
   connecting,
-  
+
   /// Connected and ready
   connected,
-  
+
   /// Connection error occurred
   error,
 }
@@ -27,31 +27,31 @@ enum ConnectionStep {
 
   /// Step 1: BLE GATT connect
   bleConnecting,
-  
+
   /// Step 2: Protocol handshake
   protocolHandshake,
-  
+
   /// Step 3: Device info query
   deviceQuery,
-  
+
   /// Step 4: Device identification (match device model for display/reporting)
   powerConfiguration,
-  
+
   /// Step 5: Time synchronization
   timeSync,
-  
+
   /// Step 6: API slot acquisition
   slotAcquisition,
-  
+
   /// Step 7: Channel setup (#wardriving)
   channelSetup,
-  
+
   /// Step 8: GPS initialization
   gpsInit,
-  
+
   /// Step 9: Fully connected and ready
   connected,
-  
+
   /// Error state
   error,
 }
@@ -60,13 +60,13 @@ enum ConnectionStep {
 enum GpsStatus {
   /// GPS permissions not granted
   permissionDenied,
-  
+
   /// GPS is disabled on device
   disabled,
-  
+
   /// Searching for GPS signal
   searching,
-  
+
   /// GPS lock acquired
   locked,
 

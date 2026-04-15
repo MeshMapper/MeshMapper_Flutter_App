@@ -7,7 +7,7 @@ part 'ping_data.g.dart';
 enum PingType {
   @HiveField(0)
   tx,
-  
+
   @HiveField(1)
   rx,
 }
@@ -48,7 +48,8 @@ class TxPing {
   /// Note: power is stored in dBm but the message format uses watts
   /// The actual message is built in PingService with the correct watts value
   String toMessageFormat({double? powerWatts}) {
-    final coordsStr = '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
+    final coordsStr =
+        '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
     final pw = powerWatts ?? 0.3; // Default to 0.3w if not provided
     return '@[MapperBot] $coordsStr [${pw.toStringAsFixed(1)}w]';
   }
@@ -70,19 +71,19 @@ class TxPing {
 class RxPing {
   @HiveField(0)
   final double latitude;
-  
+
   @HiveField(1)
   final double longitude;
-  
+
   @HiveField(2)
   final String repeaterId;
-  
+
   @HiveField(3)
   final DateTime timestamp;
-  
+
   @HiveField(4)
   final double snr;
-  
+
   @HiveField(5)
   final int rssi;
 

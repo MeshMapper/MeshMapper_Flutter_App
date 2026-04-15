@@ -34,7 +34,10 @@ class DiscTracker {
   /// Number of bytes per hop in path hash (1, 2, or 3). Controls repeater ID length.
   final int hopBytes;
 
-  DiscTracker({this.shouldIgnoreRepeater, this.disableRssiFilter = false, this.hopBytes = 1});
+  DiscTracker(
+      {this.shouldIgnoreRepeater,
+      this.disableRssiFilter = false,
+      this.hopBytes = 1});
 
   /// Callback fired when discovery window completes
   void Function(List<DiscoveredNode> discoveredNodes)? onWindowComplete;
@@ -48,7 +51,8 @@ class DiscTracker {
     Duration windowDuration = const Duration(seconds: 7),
   }) {
     debugLog('[DISC] Starting discovery tracking');
-    debugLog('[DISC] Tag: ${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
+    debugLog(
+        '[DISC] Tag: ${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
 
     isListening = true;
     startTime = DateTime.now();
@@ -58,12 +62,14 @@ class DiscTracker {
     _windowTimer?.cancel();
     _windowTimer = Timer(windowDuration, _endWindow);
 
-    debugLog('[DISC] Discovery tracking window started (${windowDuration.inSeconds}s)');
+    debugLog(
+        '[DISC] Discovery tracking window started (${windowDuration.inSeconds}s)');
   }
 
   /// Stop tracking and return collected nodes
   List<DiscoveredNode> stopTracking() {
-    debugLog('[DISC] Stopping discovery tracking (discovered ${nodes.length} nodes)');
+    debugLog(
+        '[DISC] Stopping discovery tracking (discovered ${nodes.length} nodes)');
 
     final result = nodes.values.toList();
 
@@ -116,14 +122,16 @@ class DiscTracker {
 
       // Check if this is a discovery response (upper nibble = 0x90)
       if (upperNibble != DiscoveryConstants.discoverRespFlag) {
-        debugLog('[DISC] Not a discovery response: flags=0x${flags.toRadixString(16).padLeft(2, '0')}');
+        debugLog(
+            '[DISC] Not a discovery response: flags=0x${flags.toRadixString(16).padLeft(2, '0')}');
         return false;
       }
 
       // Check node type (lower nibble must be REPEATER=0x01 or ROOM=0x02)
       if (lowerNibble != DiscoveryConstants.nodeTypeRepeater &&
           lowerNibble != DiscoveryConstants.nodeTypeRoom) {
-        debugLog('[DISC] Ignoring node type: 0x${lowerNibble.toRadixString(16)}');
+        debugLog(
+            '[DISC] Ignoring node type: 0x${lowerNibble.toRadixString(16)}');
         return false;
       }
 
@@ -135,28 +143,36 @@ class DiscTracker {
 
       // Extract public key (bytes 7-38)
       final pubkey = rawBytes.sublist(7, 39);
-      final pubkeyHex = pubkey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').toUpperCase();
+      final pubkeyHex = pubkey
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join('')
+          .toUpperCase();
 
       // Get repeater ID (first N hex chars based on hopBytes setting)
       final repeaterId = pubkeyHex.substring(0, hopBytes * 2);
 
       // Check if this repeater should be ignored (user carpeater filter)
       if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
-        debugLog('[DISC] Ignoring repeater $repeaterId (user carpeater filter)');
+        debugLog(
+            '[DISC] Ignoring repeater $repeaterId (user carpeater filter)');
         return false;
       }
 
       // Check RSSI (carpeater failsafe)
       if (disableRssiFilter) {
-        debugLog('[DISC] RSSI filter disabled by user, skipping carpeater check');
+        debugLog(
+            '[DISC] RSSI filter disabled by user, skipping carpeater check');
       } else if (PacketValidator.isCarpeater(localRssi)) {
-        debugLog('[DISC] ❌ DROPPED: RSSI too strong ($localRssi ≥ ${PacketValidator.maxRssiThreshold}) '
+        debugLog(
+            '[DISC] ❌ DROPPED: RSSI too strong ($localRssi ≥ ${PacketValidator.maxRssiThreshold}) '
             '- possible carpeater, repeater=$repeaterId');
         onCarpeaterDrop?.call(repeaterId, 'RSSI too strong ($localRssi dBm)');
         return false;
       }
 
-      final nodeType = lowerNibble == DiscoveryConstants.nodeTypeRepeater ? 'REPEATER' : 'ROOM';
+      final nodeType = lowerNibble == DiscoveryConstants.nodeTypeRepeater
+          ? 'REPEATER'
+          : 'ROOM';
 
       debugLog('[DISC] Received response from $repeaterId ($nodeType): '
           'localSnr=${localSnr.toStringAsFixed(2)}, remoteSnr=${remoteSnr.toStringAsFixed(2)}, '
@@ -212,12 +228,14 @@ class DiscTracker {
 
 /// Discovered node data
 class DiscoveredNode {
-  final String repeaterId;     // First N hex chars of pubkey based on hopBytes (e.g., "4E", "4E7A", "4E7A3B")
-  final int nodeType;          // 0x01 = REPEATER, 0x02 = ROOM
-  final double localSnr;       // SNR as seen by local device (dB)
-  final int localRssi;         // RSSI as seen by local device (dBm)
-  final double remoteSnr;      // SNR as seen by remote node (dB)
-  final String pubkeyFull;     // Full 32-byte public key as hex (local only, not sent to API)
+  final String
+      repeaterId; // First N hex chars of pubkey based on hopBytes (e.g., "4E", "4E7A", "4E7A3B")
+  final int nodeType; // 0x01 = REPEATER, 0x02 = ROOM
+  final double localSnr; // SNR as seen by local device (dB)
+  final int localRssi; // RSSI as seen by local device (dBm)
+  final double remoteSnr; // SNR as seen by remote node (dB)
+  final String
+      pubkeyFull; // Full 32-byte public key as hex (local only, not sent to API)
 
   DiscoveredNode({
     required this.repeaterId,
@@ -229,8 +247,10 @@ class DiscoveredNode {
   });
 
   /// Get node type as display string
-  String get nodeTypeName => nodeType == DiscoveryConstants.nodeTypeRepeater ? 'REPEATER' : 'ROOM';
+  String get nodeTypeName =>
+      nodeType == DiscoveryConstants.nodeTypeRepeater ? 'REPEATER' : 'ROOM';
 
   /// Get short display label: "(R)" for REPEATER, "(RM)" for ROOM
-  String get nodeTypeLabel => nodeType == DiscoveryConstants.nodeTypeRepeater ? '(R)' : '(RM)';
+  String get nodeTypeLabel =>
+      nodeType == DiscoveryConstants.nodeTypeRepeater ? '(R)' : '(RM)';
 }

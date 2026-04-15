@@ -6,9 +6,9 @@ import '../../utils/debug_logger_io.dart';
 /// Result of a trace path probe to a specific repeater
 class TraceResult {
   final String targetRepeaterId;
-  final double localSnr;    // SNR we measured on the return (path_snrs[1] / 4.0)
-  final int localRssi;      // RSSI from BLE event metadata
-  final double remoteSnr;   // SNR the repeater measured (path_snrs[0] / 4.0)
+  final double localSnr; // SNR we measured on the return (path_snrs[1] / 4.0)
+  final int localRssi; // RSSI from BLE event metadata
+  final double remoteSnr; // SNR the repeater measured (path_snrs[0] / 4.0)
   final bool success;
 
   const TraceResult({
@@ -52,7 +52,8 @@ class TraceTracker {
     Duration windowDuration = const Duration(seconds: 7),
   }) {
     debugLog('[TRACE] Starting trace tracking for repeater $targetRepeaterId');
-    debugLog('[TRACE] Tag: ${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
+    debugLog(
+        '[TRACE] Tag: ${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
 
     isListening = true;
     _expectedTag = tag;
@@ -65,7 +66,8 @@ class TraceTracker {
     _windowTimer?.cancel();
     _windowTimer = Timer(windowDuration, _endWindow);
 
-    debugLog('[TRACE] Trace tracking window started (${windowDuration.inSeconds}s)');
+    debugLog(
+        '[TRACE] Trace tracking window started (${windowDuration.inSeconds}s)');
   }
 
   /// Handle incoming trace data packet (0x89)
@@ -86,7 +88,8 @@ class TraceTracker {
     try {
       // Minimum: 1 (reserved) + 1 (path_len) + 1 (flags) + 4 (tag) + 4 (auth) = 11 bytes
       if (rawBytes.length < 11) {
-        debugLog('[TRACE] Packet too short: ${rawBytes.length} bytes (need at least 11)');
+        debugLog(
+            '[TRACE] Packet too short: ${rawBytes.length} bytes (need at least 11)');
         return false;
       }
 
@@ -99,7 +102,8 @@ class TraceTracker {
       final hashSize = 1 << (flags & 3); // 1, 2, 4, or 8 bytes per hop
       final hopCount = hashSize > 0 ? pathLen ~/ hashSize : 0;
 
-      debugLog('[TRACE] pathLen=0x${pathLen.toRadixString(16)}, hashSize=$hashSize, hopCount=$hopCount');
+      debugLog(
+          '[TRACE] pathLen=0x${pathLen.toRadixString(16)}, hashSize=$hashSize, hopCount=$hopCount');
 
       // Extract tag (bytes 3-6)
       final tag = rawBytes.sublist(3, 7);
@@ -127,7 +131,8 @@ class TraceTracker {
       final pathEnd = pathStart + (hopCount * hashSize);
 
       if (rawBytes.length < pathEnd) {
-        debugLog('[TRACE] Packet too short for path hashes: need $pathEnd, have ${rawBytes.length}');
+        debugLog(
+            '[TRACE] Packet too short for path hashes: need $pathEnd, have ${rawBytes.length}');
         return false;
       }
 
@@ -135,7 +140,10 @@ class TraceTracker {
       String repeaterId = '';
       if (hopCount > 0) {
         final idBytes = rawBytes.sublist(pathStart, pathStart + hashSize);
-        repeaterId = idBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').toUpperCase();
+        repeaterId = idBytes
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join('')
+            .toUpperCase();
       }
 
       // Extract path SNRs (hopCount+1 bytes after path hashes)
@@ -179,7 +187,8 @@ class TraceTracker {
 
   /// Stop tracking and return result
   TraceResult? stopTracking() {
-    debugLog('[TRACE] Stopping trace tracking (result: ${_result != null ? 'received' : 'none'})');
+    debugLog(
+        '[TRACE] Stopping trace tracking (result: ${_result != null ? 'received' : 'none'})');
 
     final result = _result;
     isListening = false;
@@ -192,7 +201,8 @@ class TraceTracker {
 
   /// Handle trace window completion
   void _endWindow() {
-    debugLog('[TRACE] Trace window ended (result: ${_result != null ? 'success' : 'no response'})');
+    debugLog(
+        '[TRACE] Trace window ended (result: ${_result != null ? 'success' : 'no response'})');
 
     final result = _result;
     isListening = false;

@@ -10,6 +10,4 @@
 // debugError('[TAG] error');
 // ```
 
-export 'debug_logger_stub.dart'
-    if (dart.library.html) 'debug_logger.dart';
-
+export 'debug_logger_stub.dart' if (dart.library.html) 'debug_logger.dart';

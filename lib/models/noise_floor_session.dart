@@ -163,11 +163,11 @@ class NoiseFloorSession extends HiveObject {
 
   /// Display name for the mode
   String get modeDisplay => switch (mode) {
-    'active' => 'Active Mode',
-    'hybrid' => 'Hybrid Mode',
-    'targeted' => 'Trace Mode',
-    _ => 'Passive Mode',
-  };
+        'active' => 'Active Mode',
+        'hybrid' => 'Hybrid Mode',
+        'targeted' => 'Trace Mode',
+        _ => 'Passive Mode',
+      };
 
   /// Formatted duration string (M:SS or H:MM:SS for long sessions)
   String get durationDisplay {

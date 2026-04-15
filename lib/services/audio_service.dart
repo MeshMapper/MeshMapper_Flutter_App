@@ -25,8 +25,10 @@ class AudioService {
   AudioPlayer? _rxPlayer;
   bool _initialized = false;
   bool _enabled = false; // Disabled by default, remembered once user changes it
-  bool _txEnabled = true; // TX sound sub-toggle (only matters when master is on)
-  bool _rxEnabled = true; // RX sound sub-toggle (only matters when master is on)
+  bool _txEnabled =
+      true; // TX sound sub-toggle (only matters when master is on)
+  bool _rxEnabled =
+      true; // RX sound sub-toggle (only matters when master is on)
   Timer? _focusReleaseTimer;
 
   /// Whether the audio service is initialized
@@ -148,13 +150,15 @@ class AudioService {
       debugError('[AUDIO] Hive box "$boxName" timed out - attempting recovery');
       return _attemptRecovery(boxName, timeout);
     } catch (e) {
-      debugError('[AUDIO] Hive box "$boxName" failed: $e - attempting recovery');
+      debugError(
+          '[AUDIO] Hive box "$boxName" failed: $e - attempting recovery');
       return _attemptRecovery(boxName, timeout);
     }
   }
 
   /// Attempt to recover from Hive corruption
-  Future<Box<dynamic>?> _attemptRecovery(String boxName, Duration timeout) async {
+  Future<Box<dynamic>?> _attemptRecovery(
+      String boxName, Duration timeout) async {
     try {
       debugLog('[AUDIO] Deleting corrupted box "$boxName"...');
       await Hive.deleteBoxFromDisk(boxName);
@@ -163,7 +167,8 @@ class AudioService {
       debugLog('[AUDIO] Box "$boxName" opened after recovery');
       return box;
     } catch (e) {
-      debugError('[AUDIO] Recovery failed for "$boxName": $e - operating without persistence');
+      debugError(
+          '[AUDIO] Recovery failed for "$boxName": $e - operating without persistence');
       return null;
     }
   }
@@ -182,7 +187,8 @@ class AudioService {
 
   /// Shared playback logic for both TX and RX sounds.
   /// Ensures audio session is active before playing and debounces focus release.
-  Future<void> _playSound(AudioPlayer? player, String assetPath, String label) async {
+  Future<void> _playSound(
+      AudioPlayer? player, String assetPath, String label) async {
     if (!_initialized || !_enabled || player == null) return;
 
     try {
