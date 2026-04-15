@@ -165,7 +165,8 @@ class _BugReportSheetState extends State<BugReportSheet> {
           'not-connected';
 
       // Use last connected device name (companion name without MeshCore- prefix)
-      final deviceName = widget.appState.lastConnectedDeviceName ?? 'not-connected';
+      final deviceName =
+          widget.appState.lastConnectedDeviceName ?? 'not-connected';
 
       // Format description with username if provided
       final username = _usernameController.text.trim();
@@ -193,7 +194,8 @@ class _BugReportSheetState extends State<BugReportSheet> {
       if (!mounted) return;
 
       if (result.success) {
-        debugLog('[BUG REPORT] Report submitted successfully: ${result.issueUrl}');
+        debugLog(
+            '[BUG REPORT] Report submitted successfully: ${result.issueUrl}');
         Navigator.of(context).pop(result);
       } else {
         setState(() {
@@ -245,13 +247,15 @@ class _BugReportSheetState extends State<BugReportSheet> {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           child: Row(
             children: [
-              Icon(Icons.feedback_outlined, color: theme.colorScheme.primary, size: 28),
+              Icon(Icons.feedback_outlined,
+                  color: theme.colorScheme.primary, size: 28),
               const SizedBox(width: 12),
               Text('Submit Feedback', style: theme.textTheme.titleLarge),
               const Spacer(),
               IconButton(
                 icon: const Icon(Icons.close),
-                onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+                onPressed:
+                    _isSubmitting ? null : () => Navigator.of(context).pop(),
                 tooltip: 'Close',
               ),
             ],
@@ -270,271 +274,294 @@ class _BugReportSheetState extends State<BugReportSheet> {
               child: ListView(
                 controller: widget.scrollController,
                 padding: const EdgeInsets.all(20),
-                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              children: [
-                // Ticket type selector - SegmentedButton
-                _buildSectionLabel(theme, Icons.category, 'Report Type'),
-                const SizedBox(height: 8),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(
-                      value: 'bug',
-                      label: Text('Bug'),
-                      icon: Icon(Icons.bug_report, size: 18),
-                    ),
-                    ButtonSegment(
-                      value: 'enhancement',
-                      label: Text('Feature'),
-                      icon: Icon(Icons.lightbulb_outline, size: 18),
-                    ),
-                  ],
-                  selected: {_ticketType},
-                  onSelectionChanged: _isSubmitting
-                      ? null
-                      : (selected) => setState(() => _ticketType = selected.first),
-                  showSelectedIcon: false,
-                ),
-                const SizedBox(height: 24),
-
-                // Username field (optional, auto-populated from remembered device)
-                _buildSectionLabel(theme, Icons.person, 'Username (optional)'),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _usernameController,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: _buildInputDecoration(
-                    theme,
-                    hintText: 'Your MeshCore companion name',
-                  ),
-                  maxLength: 50,
-                  enabled: !_isSubmitting,
-                ),
-                const SizedBox(height: 16),
-
-                // Title field
-                _buildSectionLabel(theme, Icons.title, 'Title'),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _titleController,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: _buildInputDecoration(
-                    theme,
-                    hintText: 'Brief summary of the issue',
-                  ),
-                  maxLength: 100,
-                  enabled: !_isSubmitting,
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Title is required';
-                    }
-                    if (value.trim().length < 5) {
-                      return 'Title must be at least 5 characters';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-
-                // Description field
-                _buildSectionLabel(theme, Icons.description, 'Description'),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _descriptionController,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: _buildInputDecoration(
-                    theme,
-                    hintText: 'Describe the issue or feature request...',
-                    alignLabelWithHint: true,
-                  ),
-                  maxLines: 5,
-                  maxLength: 2000,
-                  enabled: !_isSubmitting,
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Description is required';
-                    }
-                    if (value.trim().length < 20) {
-                      return 'Please provide more detail (at least 20 characters)';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-
-                // Platform selector
-                _buildSectionLabel(theme, Icons.devices, 'Platform'),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    _buildPlatformChip(theme, 'App', 'app', Icons.phone_android),
-                    _buildPlatformChip(theme, 'Map', 'map', Icons.map),
-                    _buildPlatformChip(theme, 'Other', 'other', Icons.more_horiz),
-                  ],
-                ),
-
-                // Debug logs section (mobile only)
-                if (!kIsWeb && _isLoadingFiles) ...[
-                  const SizedBox(height: 24),
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: theme.colorScheme.outline.withValues(alpha: 0.3),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: theme.colorScheme.primary,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          'Preparing log files...',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                // Debug logs section - always visible when files available
-                if (!kIsWeb && !_isLoadingFiles && _availableLogFiles.isNotEmpty) ...[
-                  const SizedBox(height: 24),
-                  _buildSectionLabel(theme, Icons.description, 'Debug Logs'),
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                children: [
+                  // Ticket type selector - SegmentedButton
+                  _buildSectionLabel(theme, Icons.category, 'Report Type'),
                   const SizedBox(height: 8),
-                  Container(
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(
+                        value: 'bug',
+                        label: Text('Bug'),
+                        icon: Icon(Icons.bug_report, size: 18),
                       ),
+                      ButtonSegment(
+                        value: 'enhancement',
+                        label: Text('Feature'),
+                        icon: Icon(Icons.lightbulb_outline, size: 18),
+                      ),
+                    ],
+                    selected: {_ticketType},
+                    onSelectionChanged: _isSubmitting
+                        ? null
+                        : (selected) =>
+                            setState(() => _ticketType = selected.first),
+                    showSelectedIcon: false,
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Username field (optional, auto-populated from remembered device)
+                  _buildSectionLabel(
+                      theme, Icons.person, 'Username (optional)'),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    controller: _usernameController,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: _buildInputDecoration(
+                      theme,
+                      hintText: 'Your MeshCore companion name',
                     ),
-                    child: Column(
-                      children: [
-                        // Header with attach toggle
-                        SwitchListTile(
-                          title: const Text('Include with feedback'),
-                          subtitle: Text(
-                            'Select logs to attach to this report',
-                            style: theme.textTheme.bodySmall?.copyWith(
+                    maxLength: 50,
+                    enabled: !_isSubmitting,
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Title field
+                  _buildSectionLabel(theme, Icons.title, 'Title'),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    controller: _titleController,
+                    textCapitalization: TextCapitalization.sentences,
+                    decoration: _buildInputDecoration(
+                      theme,
+                      hintText: 'Brief summary of the issue',
+                    ),
+                    maxLength: 100,
+                    enabled: !_isSubmitting,
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Title is required';
+                      }
+                      if (value.trim().length < 5) {
+                        return 'Title must be at least 5 characters';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Description field
+                  _buildSectionLabel(theme, Icons.description, 'Description'),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    controller: _descriptionController,
+                    textCapitalization: TextCapitalization.sentences,
+                    decoration: _buildInputDecoration(
+                      theme,
+                      hintText: 'Describe the issue or feature request...',
+                      alignLabelWithHint: true,
+                    ),
+                    maxLines: 5,
+                    maxLength: 2000,
+                    enabled: !_isSubmitting,
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Description is required';
+                      }
+                      if (value.trim().length < 20) {
+                        return 'Please provide more detail (at least 20 characters)';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Platform selector
+                  _buildSectionLabel(theme, Icons.devices, 'Platform'),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      _buildPlatformChip(
+                          theme, 'App', 'app', Icons.phone_android),
+                      _buildPlatformChip(theme, 'Map', 'map', Icons.map),
+                      _buildPlatformChip(
+                          theme, 'Other', 'other', Icons.more_horiz),
+                    ],
+                  ),
+
+                  // Debug logs section (mobile only)
+                  if (!kIsWeb && _isLoadingFiles) ...[
+                    const SizedBox(height: 24),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color:
+                              theme.colorScheme.outline.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Preparing log files...',
+                            style: theme.textTheme.bodyMedium?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
                           ),
-                          value: _uploadLogs,
-                          onChanged: _isSubmitting
-                              ? null
-                              : (value) {
-                                  setState(() {
-                                    _uploadLogs = value;
-                                    if (!_uploadLogs) {
-                                      _selectedLogFiles.clear();
-                                    }
-                                  });
-                                },
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                        ),
-                        Divider(
-                          height: 1,
-                          color: theme.colorScheme.outline.withValues(alpha: 0.3),
-                        ),
-                        // Log file list - only shown when toggle is on
-                        if (_uploadLogs)
-                          ...List.generate(_availableLogFiles.length, (index) {
-                            final file = _availableLogFiles[index];
-                            final filename = file.path.split('/').last;
-                            final sizeBytes = file.lengthSync();
-                            final isSelected = _selectedLogFiles.contains(file.path);
-
-                            // Format size and show part count for oversized files
-                            String sizeDisplay;
-                            final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
-                            if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
-                              final sizeMb = (sizeBytes / 1024 / 1024).toStringAsFixed(1);
-                              sizeDisplay = '$sizeMb MB ($partCount parts)';
-                            } else {
-                              sizeDisplay = '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
-                            }
-
-                            return ListTile(
-                              dense: true,
-                              leading: Checkbox(
-                                value: isSelected,
-                                onChanged: _isSubmitting
-                                    ? null
-                                    : (_) => _toggleFile(file.path),
-                              ),
-                              title: Text(
-                                filename,
-                                style: const TextStyle(fontSize: 13),
-                              ),
-                              trailing: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.surfaceContainerHighest,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  sizeDisplay,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              onTap: _isSubmitting ? null : () => _toggleFile(file.path),
-                            );
-                          }),
-                      ],
-                    ),
-                  ),
-                ],
-
-                // Error message
-                if (_errorMessage != null) ...[
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.error.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: theme.colorScheme.error.withValues(alpha: 0.3),
+                        ],
                       ),
                     ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.error_outline,
-                          size: 20,
-                          color: theme.colorScheme.error,
+                  ],
+                  // Debug logs section - always visible when files available
+                  if (!kIsWeb &&
+                      !_isLoadingFiles &&
+                      _availableLogFiles.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    _buildSectionLabel(theme, Icons.description, 'Debug Logs'),
+                    const SizedBox(height: 8),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color:
+                              theme.colorScheme.outline.withValues(alpha: 0.3),
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _errorMessage!,
-                            style: TextStyle(color: theme.colorScheme.error),
+                      ),
+                      child: Column(
+                        children: [
+                          // Header with attach toggle
+                          SwitchListTile(
+                            title: const Text('Include with feedback'),
+                            subtitle: Text(
+                              'Select logs to attach to this report',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            value: _uploadLogs,
+                            onChanged: _isSubmitting
+                                ? null
+                                : (value) {
+                                    setState(() {
+                                      _uploadLogs = value;
+                                      if (!_uploadLogs) {
+                                        _selectedLogFiles.clear();
+                                      }
+                                    });
+                                  },
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 4),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                          Divider(
+                            height: 1,
+                            color: theme.colorScheme.outline
+                                .withValues(alpha: 0.3),
+                          ),
+                          // Log file list - only shown when toggle is on
+                          if (_uploadLogs)
+                            ...List.generate(_availableLogFiles.length,
+                                (index) {
+                              final file = _availableLogFiles[index];
+                              final filename = file.path.split('/').last;
+                              final sizeBytes = file.lengthSync();
+                              final isSelected =
+                                  _selectedLogFiles.contains(file.path);
 
-                // Bottom padding for safe area
-                SizedBox(height: MediaQuery.of(context).padding.bottom + 80),
-              ],
+                              // Format size and show part count for oversized files
+                              String sizeDisplay;
+                              final partCount =
+                                  DebugFileLogger.estimatePartCount(sizeBytes);
+                              if (sizeBytes >=
+                                  DebugFileLogger.maxUploadSizeBytes) {
+                                final sizeMb = (sizeBytes / 1024 / 1024)
+                                    .toStringAsFixed(1);
+                                sizeDisplay = '$sizeMb MB ($partCount parts)';
+                              } else {
+                                sizeDisplay =
+                                    '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                              }
+
+                              return ListTile(
+                                dense: true,
+                                leading: Checkbox(
+                                  value: isSelected,
+                                  onChanged: _isSubmitting
+                                      ? null
+                                      : (_) => _toggleFile(file.path),
+                                ),
+                                title: Text(
+                                  filename,
+                                  style: const TextStyle(fontSize: 13),
+                                ),
+                                trailing: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: theme
+                                        .colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    sizeDisplay,
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ),
+                                onTap: _isSubmitting
+                                    ? null
+                                    : () => _toggleFile(file.path),
+                              );
+                            }),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // Error message
+                  if (_errorMessage != null) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.error.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: theme.colorScheme.error.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 20,
+                            color: theme.colorScheme.error,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _errorMessage!,
+                              style: TextStyle(color: theme.colorScheme.error),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // Bottom padding for safe area
+                  SizedBox(height: MediaQuery.of(context).padding.bottom + 80),
+                ],
+              ),
             ),
           ),
-        ),
         ),
 
         // Sticky bottom action bar
@@ -557,7 +584,8 @@ class _BugReportSheetState extends State<BugReportSheet> {
             children: [
               Expanded(
                 child: OutlinedButton(
-                  onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+                  onPressed:
+                      _isSubmitting ? null : () => Navigator.of(context).pop(),
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
@@ -613,7 +641,8 @@ class _BugReportSheetState extends State<BugReportSheet> {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           child: Row(
             children: [
-              Icon(Icons.feedback_outlined, color: theme.colorScheme.primary, size: 28),
+              Icon(Icons.feedback_outlined,
+                  color: theme.colorScheme.primary, size: 28),
               const SizedBox(width: 12),
               Text('Submitting...', style: theme.textTheme.titleLarge),
             ],
@@ -635,7 +664,8 @@ class _BugReportSheetState extends State<BugReportSheet> {
                     width: 80,
                     height: 80,
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+                      color: theme.colorScheme.primaryContainer
+                          .withValues(alpha: 0.3),
                       shape: BoxShape.circle,
                     ),
                     child: Center(
@@ -653,7 +683,9 @@ class _BugReportSheetState extends State<BugReportSheet> {
 
                   // Status text
                   Text(
-                    _progressStatus.isNotEmpty ? _progressStatus : 'Please wait...',
+                    _progressStatus.isNotEmpty
+                        ? _progressStatus
+                        : 'Please wait...',
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
@@ -680,7 +712,8 @@ class _BugReportSheetState extends State<BugReportSheet> {
                           borderRadius: BorderRadius.circular(6),
                           child: LinearProgressIndicator(
                             value: _progress,
-                            backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                            backgroundColor:
+                                theme.colorScheme.surfaceContainerHighest,
                             color: theme.colorScheme.primary,
                             minHeight: 8,
                           ),

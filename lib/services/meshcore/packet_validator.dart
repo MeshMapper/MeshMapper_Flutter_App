@@ -12,7 +12,7 @@ class PacketValidator {
   /// Packets stronger than this are likely from co-located repeaters
   /// Reference: MAX_RX_RSSI_THRESHOLD in wardrive.js
   static const int maxRssiThreshold = -30;
-  
+
   /// Minimum printable character ratio (60%)
   /// Lowered from 90% to allow emojis and Unicode in messages
   /// Still filters out completely corrupted data
@@ -24,33 +24,40 @@ class PacketValidator {
   /// When true, skip RSSI carpeater check (user setting)
   final bool disableRssiFilter;
 
-  PacketValidator({required this.allowedChannels, this.disableRssiFilter = false});
+  PacketValidator(
+      {required this.allowedChannels, this.disableRssiFilter = false});
 
   /// Validate packet for RX wardriving
   /// Returns ValidationResult with success/failure and reason
   /// [skipRssiCheck] - When true, skip the RSSI carpeater check (used for CARpeater pass-through)
-  Future<ValidationResult> validate(PacketMetadata metadata, {bool skipRssiCheck = false}) async {
+  Future<ValidationResult> validate(PacketMetadata metadata,
+      {bool skipRssiCheck = false}) async {
     try {
       // Log packet for debugging
       final rawHex = metadata.raw
           .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
           .join(' ');
       debugLog('[RX FILTER] ========== VALIDATING PACKET ==========');
-      debugLog('[RX FILTER] Raw packet (${metadata.raw.length} bytes): $rawHex');
-      debugLog('[RX FILTER] Header: 0x${metadata.header.toRadixString(16).padLeft(2, '0')} | '
+      debugLog(
+          '[RX FILTER] Raw packet (${metadata.raw.length} bytes): $rawHex');
+      debugLog(
+          '[RX FILTER] Header: 0x${metadata.header.toRadixString(16).padLeft(2, '0')} | '
           'PathHashCount: ${metadata.pathHashCount} | SNR: ${metadata.snr}');
 
       // VALIDATION 1: Check RSSI (carpeater filter)
       if (skipRssiCheck) {
         debugLog('[RX FILTER] RSSI check skipped (CARpeater pass-through)');
       } else if (disableRssiFilter) {
-        debugLog('[RX FILTER] RSSI filter disabled by user, skipping carpeater check');
+        debugLog(
+            '[RX FILTER] RSSI filter disabled by user, skipping carpeater check');
       } else if (isCarpeater(metadata.rssi)) {
-        debugLog('[RX FILTER] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ $maxRssiThreshold) - '
+        debugLog(
+            '[RX FILTER] ❌ DROPPED: RSSI too strong (${metadata.rssi} ≥ $maxRssiThreshold) - '
             'possible carpeater (RSSI failsafe)');
         return ValidationResult.failed('carpeater-rssi');
       } else {
-        debugLog('[RX FILTER] ✓ RSSI OK (${metadata.rssi} < $maxRssiThreshold)');
+        debugLog(
+            '[RX FILTER] ✓ RSSI OK (${metadata.rssi} < $maxRssiThreshold)');
       }
 
       // VALIDATION 2: Check packet type
@@ -83,7 +90,8 @@ class PacketValidator {
 
     // Extract channel hash
     final channelHash = metadata.channelHash!;
-    debugLog('[RX FILTER] Channel hash: 0x${channelHash.toRadixString(16).padLeft(2, '0')}');
+    debugLog(
+        '[RX FILTER] Channel hash: 0x${channelHash.toRadixString(16).padLeft(2, '0')}');
 
     // Check if channel is in allowed list
     final channelInfo = allowedChannels[channelHash];
@@ -109,7 +117,8 @@ class PacketValidator {
     // Decrypted structure: [4 bytes timestamp][1 byte flags][message text]
     // Skip first 5 bytes to get the actual message
     if (decryptedBytes.length < 5) {
-      debugLog('[RX FILTER] ❌ DROPPED: Decrypted data too short (${decryptedBytes.length} bytes, need 5+)');
+      debugLog(
+          '[RX FILTER] ❌ DROPPED: Decrypted data too short (${decryptedBytes.length} bytes, need 5+)');
       return ValidationResult.failed('decrypted too short');
     }
 
@@ -122,21 +131,24 @@ class PacketValidator {
       // Remove trailing nulls and trim
       plaintext = plaintext.replaceAll(RegExp(r'\x00+$'), '').trim();
     } catch (e) {
-      debugLog('[RX FILTER] ❌ DROPPED: Failed to convert decrypted bytes to string');
+      debugLog(
+          '[RX FILTER] ❌ DROPPED: Failed to convert decrypted bytes to string');
       return ValidationResult.failed('decode failed');
     }
 
     // Sanitize for logging: remove replacement characters to avoid Flutter UTF-8 warnings
     final sanitizedForLog = plaintext
-        .replaceAll('\uFFFD', '')  // Remove replacement characters
-        .replaceAll(RegExp(r'[^\x20-\x7E]'), '');  // Keep only printable ASCII
-    final logPreview = sanitizedForLog.substring(0, sanitizedForLog.length.clamp(0, 60));
+        .replaceAll('\uFFFD', '') // Remove replacement characters
+        .replaceAll(RegExp(r'[^\x20-\x7E]'), ''); // Keep only printable ASCII
+    final logPreview =
+        sanitizedForLog.substring(0, sanitizedForLog.length.clamp(0, 60));
     debugLog('[RX FILTER] Decrypted message (${plaintext.length} chars): '
         '"$logPreview${sanitizedForLog.length > 60 ? '...' : ''}"');
 
     // Check printable ratio
     final printableRatio = getPrintableRatio(plaintext);
-    debugLog('[RX FILTER] Printable ratio: ${(printableRatio * 100).toFixed(1)}% '
+    debugLog(
+        '[RX FILTER] Printable ratio: ${(printableRatio * 100).toFixed(1)}% '
         '(threshold: ${(minPrintableRatio * 100).toFixed(1)}%)');
 
     if (printableRatio < minPrintableRatio) {
@@ -163,7 +175,8 @@ class PacketValidator {
       return ValidationResult.failed(nameResult.reason);
     }
 
-    debugLog('[RX FILTER] ✅ KEPT: ADVERT passed all validations (name="${nameResult.name}")');
+    debugLog(
+        '[RX FILTER] ✅ KEPT: ADVERT passed all validations (name="${nameResult.name}")');
     return ValidationResult.success();
   }
 
@@ -199,7 +212,6 @@ class PacketValidator {
     return printableCount / text.length;
   }
 
-
   /// Parse ADVERT packet name field
   /// Reference: parseAdvertName() in wardrive.js lines 3353-3419
   static AdvertNameResult parseAdvertName(Uint8List payload) {
@@ -221,7 +233,8 @@ class PacketValidator {
 
       // Read flags byte from appData
       final flags = payload[appDataOffset];
-      debugLog('[RX FILTER] ADVERT flags: 0x${flags.toRadixString(16).padLeft(2, '0')}');
+      debugLog(
+          '[RX FILTER] ADVERT flags: 0x${flags.toRadixString(16).padLeft(2, '0')}');
 
       // Flag masks (from advert.js)
       const advNameMask = 0x80;
@@ -259,7 +272,8 @@ class PacketValidator {
       // Remove trailing nulls and whitespace
       name = name.replaceAll(RegExp(r'\x00+$'), '').trim();
 
-      debugLog('[RX FILTER] ADVERT name extracted: "$name" (${name.length} chars)');
+      debugLog(
+          '[RX FILTER] ADVERT name extracted: "$name" (${name.length} chars)');
 
       if (name.isEmpty) {
         return const AdvertNameResult(
@@ -271,7 +285,8 @@ class PacketValidator {
 
       // Check if name is printable (use same threshold as messages)
       final printableRatio = getPrintableRatio(name);
-      debugLog('[RX FILTER] ADVERT name printable ratio: ${(printableRatio * 100).toFixed(1)}%');
+      debugLog(
+          '[RX FILTER] ADVERT name printable ratio: ${(printableRatio * 100).toFixed(1)}%');
 
       if (printableRatio < minPrintableRatio) {
         return AdvertNameResult(

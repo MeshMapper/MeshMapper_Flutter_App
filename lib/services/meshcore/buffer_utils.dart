@@ -106,7 +106,6 @@ class BufferReader {
     }
     return value;
   }
-
 }
 
 /// Buffer writer for creating binary data for MeshCore devices
@@ -155,16 +154,16 @@ class BufferWriter {
   void writeCString(String string, int maxLength) {
     final encoded = utf8.encode(string);
     final bytes = Uint8List(maxLength);
-    
+
     // Copy string bytes up to maxLength - 1
     final copyLength = math.min(encoded.length, maxLength - 1);
     for (int i = 0; i < copyLength; i++) {
       bytes[i] = encoded[i];
     }
-    
+
     // Ensure last byte is null terminator
     bytes[maxLength - 1] = 0;
-    
+
     writeBytes(bytes);
   }
 

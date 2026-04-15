@@ -69,10 +69,16 @@ class _RepeaterPickerBodyState extends State<_RepeaterPickerBody> {
       // By distance if GPS available
       if (position != null) {
         final distA = GpsService.distanceBetween(
-          position.latitude, position.longitude, a.lat, a.lon,
+          position.latitude,
+          position.longitude,
+          a.lat,
+          a.lon,
         );
         final distB = GpsService.distanceBetween(
-          position.latitude, position.longitude, b.lat, b.lon,
+          position.latitude,
+          position.longitude,
+          b.lat,
+          b.lon,
         );
         return distA.compareTo(distB);
       }
@@ -227,20 +233,23 @@ class _RepeaterTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isActive = repeater.isActive;
-    final badgeColor = isActive ? PingColors.repeaterActive : PingColors.repeaterDead;
+    final badgeColor =
+        isActive ? PingColors.repeaterActive : PingColors.repeaterDead;
     final statusIcon = isActive ? Icons.circle : Icons.circle_outlined;
 
     // Distance text
     String? distanceText;
     if (position != null) {
       final meters = GpsService.distanceBetween(
-        position!.latitude, position!.longitude, repeater.lat, repeater.lon,
+        position!.latitude,
+        position!.longitude,
+        repeater.lat,
+        repeater.lon,
       );
       if (meters < 1000) {
         distanceText = formatMeters(meters, isImperial: isImperial);
       } else {
-        distanceText =
-            formatKilometers(meters / 1000, isImperial: isImperial);
+        distanceText = formatKilometers(meters / 1000, isImperial: isImperial);
       }
     }
 
@@ -323,8 +332,7 @@ class _RepeaterTile extends StatelessWidget {
               decoration: BoxDecoration(
                 color: badgeColor.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(10),
-                border:
-                    Border.all(color: badgeColor.withValues(alpha: 0.4)),
+                border: Border.all(color: badgeColor.withValues(alpha: 0.4)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
