@@ -5348,6 +5348,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await disconnect();
   }
 
+  /// Force a repeater refetch when the cached list is empty (e.g. popup open,
+  /// offline session, startup race). Uses the current zone if known, otherwise
+  /// falls back to the user-configured IATA. No-op if neither is available or
+  /// if repeaters are already loaded.
+  Future<void> refetchRepeatersIfPossible() async {
+    if (_repeaters.isNotEmpty) return;
+    final iata = (zoneCode?.isNotEmpty == true)
+        ? zoneCode
+        : _preferences.iataCode;
+    if (iata == null || iata.isEmpty) {
+      debugLog('[MAP] refetchRepeatersIfPossible: no IATA available, skipping');
+      return;
+    }
+    _repeatersLoaded = false;
+    _repeatersLoadedForIata = null;
+    await _fetchRepeatersForZone(iata);
+  }
+
   /// Fetch repeaters for a zone (called when zone is discovered)
   /// Only fetches once per IATA code to avoid redundant network requests
   Future<void> _fetchRepeatersForZone(String iata) async {
