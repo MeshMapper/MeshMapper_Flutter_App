@@ -29,6 +29,7 @@ import '../widgets/bug_report_dialog.dart';
 import '../widgets/upload_logs_dialog.dart';
 import 'package:intl/intl.dart';
 import '../widgets/app_toast.dart';
+import 'offline_maps_screen.dart';
 
 /// Settings screen for user preferences and API configuration
 class SettingsScreen extends StatefulWidget {
@@ -154,12 +155,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: const Text('Disable Map Tiles'),
               subtitle: Text(prefs.mapTilesEnabled
                   ? 'Map and coverage tiles load normally'
-                  : 'Disabled to save mobile data'),
+                  : 'Network tiles disabled · downloaded regions still visible'),
               value: !prefs.mapTilesEnabled,
               onChanged: (value) {
                 appState.updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
               },
             ),
+            if (!kIsWeb)
+              ListTile(
+                leading: const Icon(Icons.download_for_offline),
+                title: const Text('Offline Maps'),
+                subtitle: const Text('Download map tiles for offline use'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const OfflineMapsScreen(),
+                    ),
+                  );
+                },
+              ),
             if (prefs.mapTilesEnabled)
               ListTile(
                 leading: const Icon(Icons.opacity),
