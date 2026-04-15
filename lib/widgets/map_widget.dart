@@ -383,6 +383,10 @@ class _MapWidgetState extends State<MapWidget> {
   // Tile load failure detection — shows a banner if map tiles haven't loaded
   // within a timeout after style load. Cleared when onMapIdle fires.
   bool _tileLoadFailed = false;
+
+  /// Tracks the last-applied mapTilesEnabled value so we can detect changes
+  /// in _buildMap and call setOffline() without a full style reload.
+  bool? _lastMapTilesEnabled;
   Timer? _tileLoadTimeoutTimer;
   static const _tileLoadTimeoutSeconds = 8;
 
@@ -1038,10 +1042,23 @@ class _MapWidgetState extends State<MapWidget> {
 
   Widget _buildMap(AppStateProvider appState, LatLng center) {
     final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
-    // When mapTilesEnabled is false, use a blank style (just background) to save mobile data
-    final newStyleUrl = appState.preferences.mapTilesEnabled
-        ? mapStyle.styleUrl
-        : _blankStyleJson;
+    // Always use the real style so downloaded offline tiles can render from
+    // cache. Network access is controlled via setOffline() instead.
+    final newStyleUrl = mapStyle.styleUrl;
+
+    // Detect mapTilesEnabled toggle changes and switch MapLibre between
+    // online (network tiles) and offline (cache-only) mode. This avoids
+    // a full style reload — the same style stays loaded but MapLibre stops
+    // or starts making network requests for tiles.
+    final tilesEnabled = appState.preferences.mapTilesEnabled;
+    if (_lastMapTilesEnabled != tilesEnabled && _isMapReady) {
+      _lastMapTilesEnabled = tilesEnabled;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setOffline(!tilesEnabled);
+        debugPrint('[MAP] setOffline(${!tilesEnabled}) — tiles ${tilesEnabled ? "enabled" : "disabled (cache only)"}');
+      });
+    }
 
     // Style changes flow through MapLibreMap.styleString — the plugin's
     // didUpdateWidget detects the new value and fires a native setStyle.
@@ -1412,8 +1429,14 @@ class _MapWidgetState extends State<MapWidget> {
       // Start tile-load timeout. If onMapIdle doesn't fire within N seconds,
       // we assume tiles are failing to load (network down, server error, etc.)
       // and surface a banner. Cleared as soon as onMapIdle fires.
+      // When tiles are disabled (cache-only mode), suppress the warning — cached
+      // tiles load instantly or not at all; a timeout would be misleading.
       _tileLoadTimeoutTimer?.cancel();
-      if (appState.preferences.mapTilesEnabled) {
+      final tilesEnabled = appState.preferences.mapTilesEnabled;
+      _lastMapTilesEnabled = tilesEnabled;
+      // Ensure MapLibre offline mode matches the user's preference.
+      setOffline(!tilesEnabled);
+      if (tilesEnabled) {
         _tileLoadFailed = false;
         _tileLoadTimeoutTimer = Timer(const Duration(seconds: _tileLoadTimeoutSeconds), () {
           if (mounted && !_tileLoadFailed) {
@@ -1422,7 +1445,7 @@ class _MapWidgetState extends State<MapWidget> {
           }
         });
       } else {
-        // Blank style — never show the warning
+        // Cache-only mode — never show the tile-load warning
         _tileLoadFailed = false;
       }
 
