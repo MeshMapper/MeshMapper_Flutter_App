@@ -15,6 +15,7 @@ import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
 import 'services/background_service.dart';
 import 'services/debug_file_logger.dart';
+import 'services/offline_map_service.dart';
 import 'utils/debug_logger_io.dart';
 
 void main() async {
@@ -67,6 +68,11 @@ void main() async {
   // (Android foreground service can survive app process death)
   if (!kIsWeb) {
     await BackgroundServiceManager.cleanupOrphanedService();
+  }
+
+  // Clean up any stale offline map download notification
+  if (!kIsWeb) {
+    await OfflineMapService().cleanupOrphanedNotification();
   }
 
   runApp(MeshMapperApp(initialThemeMode: initialThemeMode));
@@ -214,6 +220,9 @@ class MeshMapperApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(
           create: (_) => AppStateProvider(bluetoothService: bluetoothService),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => OfflineMapService()..initialize(),
         ),
       ],
       child: _ThemedApp(initialThemeMode: initialThemeMode),
