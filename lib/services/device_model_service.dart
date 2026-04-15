@@ -6,7 +6,7 @@ import '../models/device_model.dart';
 
 /// Device model service for auto-power selection
 /// Ported from parseDeviceModel() and autoSetPowerLevel() in wardrive.js
-/// 
+///
 /// CRITICAL: Correct power configuration is essential for PA amplifier models
 /// to prevent hardware damage.
 class DeviceModelService {
@@ -24,9 +24,10 @@ class DeviceModelService {
     if (_isLoaded) return;
 
     try {
-      final jsonString = await rootBundle.loadString('assets/device-models.json');
+      final jsonString =
+          await rootBundle.loadString('assets/device-models.json');
       final jsonData = json.decode(jsonString) as Map<String, dynamic>;
-      
+
       final database = DeviceModelsDatabase.fromJson(jsonData);
       _models = database.devices;
       _isLoaded = true;
@@ -39,7 +40,7 @@ class DeviceModelService {
 
   /// Match device manufacturer string to known model
   /// Reference: parseDeviceModel() in wardrive.js
-  /// 
+  ///
   /// Strips build suffix (e.g., "nightly-e31c46f") and matches against database
   DeviceModel? matchDevice(String manufacturerString) {
     if (_models.isEmpty) return null;
@@ -68,7 +69,7 @@ class DeviceModelService {
     final parts = cleanManufacturer.split(RegExp(r'[\s\-_()]+'));
     for (final model in _models) {
       final modelParts = model.manufacturer.split(RegExp(r'[\s\-_()]+'));
-      
+
       // Check if key identifying parts match
       int matchCount = 0;
       for (final modelPart in modelParts) {
@@ -76,7 +77,7 @@ class DeviceModelService {
           matchCount++;
         }
       }
-      
+
       // Require at least 2 matching parts
       if (matchCount >= 2) {
         return model;

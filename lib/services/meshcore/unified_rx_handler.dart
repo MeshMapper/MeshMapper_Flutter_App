@@ -41,7 +41,7 @@ class UnifiedRxHandler {
   /// Start unified RX listening
   void startListening() {
     if (isListening) return;
-    
+
     debugLog('[UNIFIED RX] Starting unified RX listening');
     isListening = true;
     debugLog('[UNIFIED RX] ✅ Unified listening started successfully');
@@ -50,7 +50,7 @@ class UnifiedRxHandler {
   /// Stop unified RX listening
   void stopListening() {
     if (!isListening) return;
-    
+
     debugLog('[UNIFIED RX] Stopping unified RX listening');
     isListening = false;
     debugLog('[UNIFIED RX] ✅ Unified listening stopped');
@@ -62,17 +62,18 @@ class UnifiedRxHandler {
     try {
       // Defensive check: ensure listener is marked as active
       if (!isListening) {
-        debugWarn('[UNIFIED RX] Received event but listener marked inactive - reactivating');
+        debugWarn(
+            '[UNIFIED RX] Received event but listener marked inactive - reactivating');
         isListening = true;
       }
-      
+
       // Parse metadata ONCE
       final metadata = PacketMetadata.fromRawPacket(
         raw: rawPacket,
         snr: snr,
         rssi: rssi,
       );
-      
+
       debugLog('[UNIFIED RX] Packet received: '
           'header=0x${metadata.header.toRadixString(16)}, '
           'pathHashSize=${metadata.pathHashSize}, pathHashCount=${metadata.pathHashCount}');
@@ -83,7 +84,8 @@ class UnifiedRxHandler {
       if (metadata.isTrace) {
         final tt = traceTracker;
         if (tt != null && tt.isListening) {
-          debugLog('[UNIFIED RX] Trace packet in 0x88 - storing BLE metadata for 0x89 handler');
+          debugLog(
+              '[UNIFIED RX] Trace packet in 0x88 - storing BLE metadata for 0x89 handler');
           tt.pendingBleSnr = metadata.snr;
           tt.pendingBleRssi = metadata.rssi;
         }
@@ -99,16 +101,15 @@ class UnifiedRxHandler {
           return;
         }
       }
-      
+
       // Route to RX wardriving if active
       if (rxLogger.isWardriving) {
         debugLog('[UNIFIED RX] RX wardriving active - logging observation');
         await rxLogger.handlePacket(metadata, validator);
       }
-      
+
       // If neither active, packet is received but ignored
       // Listener stays on, just not processing for wardriving
-      
     } catch (error, stackTrace) {
       debugError('[UNIFIED RX] Error processing rx_log entry: $error');
       debugError('[UNIFIED RX] Stack trace: $stackTrace');

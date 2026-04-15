@@ -120,7 +120,8 @@ Future<void> _requestPermissions() async {
 Future<void> _requestiOSPermissions() async {
   // Note: Location permission is now requested AFTER showing the prominent disclosure
   // dialog in MainScaffold (required for Google Play compliance)
-  debugLog('[APP] iOS: Skipping location permission (handled after disclosure)');
+  debugLog(
+      '[APP] iOS: Skipping location permission (handled after disclosure)');
 
   // Trigger Core Bluetooth authorization by checking adapter state
   // This will cause iOS to show the Bluetooth permission prompt if not already granted
@@ -138,7 +139,8 @@ Future<void> _requestiOSPermissions() async {
           .where((state) => state == fbp.BluetoothAdapterState.on)
           .first
           .timeout(const Duration(seconds: 3), onTimeout: () {
-        debugLog('[APP] iOS: Bluetooth authorization timeout (user may have denied or BT is off)');
+        debugLog(
+            '[APP] iOS: Bluetooth authorization timeout (user may have denied or BT is off)');
         return fbp.BluetoothAdapterState.off;
       });
     }
@@ -171,36 +173,39 @@ Future<void> _requestAndroidPermissions() async {
 
 // Dark theme - Tailwind Slate palette
 const darkColorScheme = ColorScheme.dark(
-  primary: Color(0xFF059669),       // emerald-600 (main actions)
+  primary: Color(0xFF059669), // emerald-600 (main actions)
   onPrimary: Colors.white,
-  secondary: Color(0xFF0284C7),     // sky-600 (TX ping)
+  secondary: Color(0xFF0284C7), // sky-600 (TX ping)
   onSecondary: Colors.white,
-  tertiary: Color(0xFF4F46E5),      // indigo-600 (auto modes)
+  tertiary: Color(0xFF4F46E5), // indigo-600 (auto modes)
   onTertiary: Colors.white,
-  surface: Color(0xFF1E293B),       // slate-800 (cards/panels)
-  onSurface: Color(0xFFF1F5F9),     // slate-100 (primary text)
-  onSurfaceVariant: Color(0xFFCBD5E1), // slate-300 (muted text, brighter for contrast)
+  surface: Color(0xFF1E293B), // slate-800 (cards/panels)
+  onSurface: Color(0xFFF1F5F9), // slate-100 (primary text)
+  onSurfaceVariant:
+      Color(0xFFCBD5E1), // slate-300 (muted text, brighter for contrast)
   surfaceContainerHighest: Color(0xFF0F172A), // slate-900 (main bg)
-  outline: Color(0xFF334155),       // slate-700 (borders)
-  error: Color(0xFFF87171),         // red-400
+  outline: Color(0xFF334155), // slate-700 (borders)
+  error: Color(0xFFF87171), // red-400
   onError: Colors.white,
 );
 
 // Light theme - Tailwind Slate palette (inverted)
 // Note: Using darker grays for better text contrast
 const lightColorScheme = ColorScheme.light(
-  primary: Color(0xFF059669),       // emerald-600
+  primary: Color(0xFF059669), // emerald-600
   onPrimary: Colors.white,
-  secondary: Color(0xFF0284C7),     // sky-600
+  secondary: Color(0xFF0284C7), // sky-600
   onSecondary: Colors.white,
-  tertiary: Color(0xFF4F46E5),      // indigo-600
+  tertiary: Color(0xFF4F46E5), // indigo-600
   onTertiary: Colors.white,
-  surface: Color(0xFFF8FAFC),       // slate-50 (cards/panels)
-  onSurface: Color(0xFF0F172A),     // slate-900 (primary text - darker for contrast)
-  onSurfaceVariant: Color(0xFF475569), // slate-600 (muted text - darker for readability)
+  surface: Color(0xFFF8FAFC), // slate-50 (cards/panels)
+  onSurface:
+      Color(0xFF0F172A), // slate-900 (primary text - darker for contrast)
+  onSurfaceVariant:
+      Color(0xFF475569), // slate-600 (muted text - darker for readability)
   surfaceContainerHighest: Color(0xFFFFFFFF), // white (main bg)
-  outline: Color(0xFFCBD5E1),       // slate-300 (borders)
-  error: Color(0xFFDC2626),         // red-600
+  outline: Color(0xFFCBD5E1), // slate-300 (borders)
+  error: Color(0xFFDC2626), // red-600
   onError: Colors.white,
 );
 
@@ -212,9 +217,8 @@ class MeshMapperApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Create platform-appropriate Bluetooth service
-    final BluetoothService bluetoothService = kIsWeb
-        ? WebBluetoothService()
-        : MobileBluetoothService();
+    final BluetoothService bluetoothService =
+        kIsWeb ? WebBluetoothService() : MobileBluetoothService();
 
     return MultiProvider(
       providers: [
@@ -269,7 +273,8 @@ class _ThemedAppState extends State<_ThemedApp> {
             scaffoldBackgroundColor: const Color(0xFFF1F5F9), // slate-100
             appBarTheme: const AppBarTheme(
               backgroundColor: Color(0xFFF8FAFC), // slate-50
-              foregroundColor: Color(0xFF0F172A), // slate-900 (darker for contrast)
+              foregroundColor:
+                  Color(0xFF0F172A), // slate-900 (darker for contrast)
             ),
             cardTheme: CardThemeData(
               color: const Color(0xFFF8FAFC), // slate-50

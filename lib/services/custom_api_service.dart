@@ -49,7 +49,8 @@ class CustomApiService {
     if (prefs.customApiKey == null || prefs.customApiKey!.isEmpty) return;
 
     // Enrich with contact and iata (custom API only — never sent to MeshMapper)
-    final contact = prefs.customApiIncludeContact ? contactGetter?.call() : null;
+    final contact =
+        prefs.customApiIncludeContact ? contactGetter?.call() : null;
     final iata = iataGetter?.call();
 
     final enriched = pings.map((ping) {
@@ -86,16 +87,21 @@ class CustomApiService {
       stopwatch.stop();
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        debugLog('[CUSTOM API] Forward SUCCESS: ${pings.length} items in ${stopwatch.elapsedMilliseconds}ms');
+        debugLog(
+            '[CUSTOM API] Forward SUCCESS: ${pings.length} items in ${stopwatch.elapsedMilliseconds}ms');
       } else {
         final errorType = 'http_${response.statusCode}';
-        debugError('[CUSTOM API] Forward failed: HTTP ${response.statusCode} (${stopwatch.elapsedMilliseconds}ms)');
-        debugError('[CUSTOM API]   Body: ${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
-        _throttledError(errorType, 'Custom API returned HTTP ${response.statusCode}');
+        debugError(
+            '[CUSTOM API] Forward failed: HTTP ${response.statusCode} (${stopwatch.elapsedMilliseconds}ms)');
+        debugError(
+            '[CUSTOM API]   Body: ${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
+        _throttledError(
+            errorType, 'Custom API returned HTTP ${response.statusCode}');
       }
     } on TimeoutException {
       stopwatch.stop();
-      debugError('[CUSTOM API] Forward timed out after ${_requestTimeout.inSeconds}s');
+      debugError(
+          '[CUSTOM API] Forward timed out after ${_requestTimeout.inSeconds}s');
       _throttledError('timeout', 'Custom API request timed out');
     } catch (e) {
       stopwatch.stop();
@@ -124,7 +130,8 @@ class CustomApiService {
   String _describeError(Object e) {
     final full = e.toString();
     // Look for SocketException detail (e.g. "Failed host lookup: 'blah.blah'")
-    final socketMatch = RegExp(r'SocketException: (.+?)(?:,|\()').firstMatch(full);
+    final socketMatch =
+        RegExp(r'SocketException: (.+?)(?:,|\()').firstMatch(full);
     if (socketMatch != null) return socketMatch.group(1)!.trim();
     // Look for OS-level message
     final osMatch = RegExp(r'OS Error: (.+?)(?:,|\))').firstMatch(full);

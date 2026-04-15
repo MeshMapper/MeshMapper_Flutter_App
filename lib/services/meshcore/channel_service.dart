@@ -38,13 +38,17 @@ class ChannelService {
     // Always add #wardriving (required for TX)
     final wardrivingKey = CryptoService.getChannelKey(wardrivingChannelName);
     final wardrivingHash = CryptoService.computeChannelHash(wardrivingKey);
-    _allowedChannels[wardrivingChannelName] = _ChannelData(key: wardrivingKey, hash: wardrivingHash);
+    _allowedChannels[wardrivingChannelName] =
+        _ChannelData(key: wardrivingKey, hash: wardrivingHash);
     debugLog('[CHANNEL] Added: $wardrivingChannelName -> hash=$wardrivingHash');
 
     // Add regional channels from API
     for (final name in channelNames) {
-      final channelName = name.toLowerCase() == 'public' ? 'Public' :
-                          name.startsWith('#') ? name : '#$name';
+      final channelName = name.toLowerCase() == 'public'
+          ? 'Public'
+          : name.startsWith('#')
+              ? name
+              : '#$name';
 
       // Skip if already added
       if (_allowedChannels.containsKey(channelName)) continue;
@@ -95,7 +99,8 @@ class ChannelService {
 
   /// Get all allowed channels for RX validation
   /// Returns a map of channel hash -> channel info for use with PacketValidator
-  static Map<int, ({String channelName, Uint8List key, int hash})> getAllowedChannelsForValidator() {
+  static Map<int, ({String channelName, Uint8List key, int hash})>
+      getAllowedChannelsForValidator() {
     final result = <int, ({String channelName, Uint8List key, int hash})>{};
     for (final entry in _allowedChannels.entries) {
       result[entry.value.hash] = (
@@ -114,7 +119,8 @@ class ChannelService {
   /// @param connection - Active MeshCore connection
   /// @returns ChannelInfo for the created channel
   /// @throws Exception if no empty slots or creation fails
-  static Future<ChannelInfo> createWardrivingChannel(MeshCoreConnection connection) async {
+  static Future<ChannelInfo> createWardrivingChannel(
+      MeshCoreConnection connection) async {
     debugLog('[CHANNEL] Attempting to create channel: $wardrivingChannelName');
 
     // Get all channels
@@ -143,9 +149,11 @@ class ChannelService {
     final channelKey = CryptoService.deriveChannelKey(wardrivingChannelName);
 
     // Create the channel
-    debugLog('[CHANNEL] Creating channel $wardrivingChannelName at index $emptyIdx');
+    debugLog(
+        '[CHANNEL] Creating channel $wardrivingChannelName at index $emptyIdx');
     await connection.setChannel(emptyIdx, wardrivingChannelName, channelKey);
-    debugLog('[CHANNEL] Channel $wardrivingChannelName created successfully at index $emptyIdx');
+    debugLog(
+        '[CHANNEL] Channel $wardrivingChannelName created successfully at index $emptyIdx');
 
     // Return channel info
     return ChannelInfo(
@@ -161,7 +169,8 @@ class ChannelService {
   ///
   /// @param connection - Active MeshCore connection
   /// @returns ChannelInfo for the wardriving channel
-  static Future<ChannelInfo> ensureWardrivingChannel(MeshCoreConnection connection) async {
+  static Future<ChannelInfo> ensureWardrivingChannel(
+      MeshCoreConnection connection) async {
     debugLog('[CHANNEL] Looking up channel: $wardrivingChannelName');
 
     // Scan ALL channels to find #wardriving or first empty slot
@@ -179,7 +188,8 @@ class ChannelService {
           try {
             channel = await connection.getChannel(channelIdx);
           } catch (e) {
-            debugLog('[CHANNEL] First getChannel failed (likely spurious OK), retrying: $e');
+            debugLog(
+                '[CHANNEL] First getChannel failed (likely spurious OK), retrying: $e');
             await Future.delayed(const Duration(milliseconds: 100));
             channel = await connection.getChannel(channelIdx);
           }
@@ -189,7 +199,8 @@ class ChannelService {
 
         // Found existing #wardriving channel - return immediately!
         if (channel.name == wardrivingChannelName) {
-          debugLog('[CHANNEL] Found existing channel at index ${channel.channelIndex} (scanned ${channelIdx + 1} channels)');
+          debugLog(
+              '[CHANNEL] Found existing channel at index ${channel.channelIndex} (scanned ${channelIdx + 1} channels)');
           return channel;
         }
 
@@ -211,16 +222,20 @@ class ChannelService {
 
     // #wardriving not found - create it at first empty slot
     if (firstEmptySlot == null) {
-      debugError('[CHANNEL] No empty channel slots found in first $channelIdx channels');
+      debugError(
+          '[CHANNEL] No empty channel slots found in first $channelIdx channels');
       throw Exception(
         'No empty channel slots available. Please free a channel slot on your companion first.',
       );
     }
 
-    debugLog('[CHANNEL] #wardriving not found in $channelIdx channels, creating at index $firstEmptySlot');
+    debugLog(
+        '[CHANNEL] #wardriving not found in $channelIdx channels, creating at index $firstEmptySlot');
     final channelKey = CryptoService.deriveChannelKey(wardrivingChannelName);
-    await connection.setChannel(firstEmptySlot, wardrivingChannelName, channelKey);
-    debugLog('[CHANNEL] Channel $wardrivingChannelName created successfully at index $firstEmptySlot');
+    await connection.setChannel(
+        firstEmptySlot, wardrivingChannelName, channelKey);
+    debugLog(
+        '[CHANNEL] Channel $wardrivingChannelName created successfully at index $firstEmptySlot');
 
     return ChannelInfo(
       channelIndex: firstEmptySlot,
@@ -230,7 +245,7 @@ class ChannelService {
   }
 
   /// Delete #wardriving channel on disconnect
-  /// 
+  ///
   /// @param connection - Active MeshCore connection
   /// @param channelIdx - Index of the channel to delete
   static Future<void> deleteWardrivingChannel(

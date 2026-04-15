@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 /// - Non-persistent (always starts disabled on app launch)
 class DebugFileLogger {
   static const int maxLogFiles = 10;
+
   /// Maximum file size for upload (4.5MB, 0.5MB safety margin under 5MB server limit)
   static const int maxUploadSizeBytes = 4718592;
   static File? _currentLogFile;
@@ -293,7 +294,8 @@ class DebugFileLogger {
 
     for (final line in lines) {
       final lineBytes = line.length + 1; // +1 for newline
-      if (currentSize + lineBytes > maxUploadSizeBytes && currentChunk.isNotEmpty) {
+      if (currentSize + lineBytes > maxUploadSizeBytes &&
+          currentChunk.isNotEmpty) {
         chunkLines.add(currentChunk);
         currentChunk = [];
         currentSize = 0;

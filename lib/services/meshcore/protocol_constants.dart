@@ -18,12 +18,14 @@ class BleUuids {
 
   /// Nordic UART Service UUID
   static const String serviceUuid = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
-  
+
   /// RX Characteristic (we write to this, device reads from it)
-  static const String characteristicRxUuid = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E';
-  
+  static const String characteristicRxUuid =
+      '6E400002-B5A3-F393-E0A9-E50E24DCCA9E';
+
   /// TX Characteristic (device writes to this, we read from it)
-  static const String characteristicTxUuid = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
+  static const String characteristicTxUuid =
+      '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
 }
 
 /// Command codes sent to device
@@ -63,7 +65,8 @@ class CommandCodes {
   static const int signData = 34;
   static const int signFinish = 35;
   static const int sendTracePath = 36;
-  static const int sendControlData = 55; // 0x37 - CMD_SEND_CONTROL_DATA (discovery)
+  static const int sendControlData =
+      55; // 0x37 - CMD_SEND_CONTROL_DATA (discovery)
   static const int setOtherParams = 38;
   static const int sendTelemetryReq = 39;
   static const int setFloodScope = 54; // 0x36 - CMD_SET_FLOOD_SCOPE
@@ -115,7 +118,8 @@ class PushCodes {
   static const int newAdvert = 0x8A;
   static const int telemetryResponse = 0x8B;
   static const int binaryResponse = 0x8C;
-  static const int controlData = 0x8E; // PUSH_CODE_CONTROL_DATA (discovery response)
+  static const int controlData =
+      0x8E; // PUSH_CODE_CONTROL_DATA (discovery response)
 }
 
 /// Text message types
@@ -140,11 +144,11 @@ class StatsTypes {
 class PacketHeader {
   PacketHeader._();
 
-  static const int routeMask = 0x03;   // 2-bits
+  static const int routeMask = 0x03; // 2-bits
   static const int typeShift = 2;
-  static const int typeMask = 0x0F;    // 4-bits
+  static const int typeMask = 0x0F; // 4-bits
   static const int verShift = 6;
-  static const int verMask = 0x03;     // 2-bits
+  static const int verMask = 0x03; // 2-bits
 }
 
 /// Route types

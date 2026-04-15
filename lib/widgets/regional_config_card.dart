@@ -27,7 +27,8 @@ class RegionalConfigCard extends StatelessWidget {
     }
 
     // When offline mode is enabled, show "-" for zone fields
-    final displayZoneName = isOfflineMode ? '-' : (zoneName ?? 'Not configured');
+    final displayZoneName =
+        isOfflineMode ? '-' : (zoneName ?? 'Not configured');
     final displayZoneCode = isOfflineMode ? '-' : zoneCode;
 
     return Card(
@@ -41,19 +42,22 @@ class RegionalConfigCard extends StatelessWidget {
               children: [
                 Icon(
                   isOfflineMode ? Icons.cloud_off : Icons.public,
-                  color: isOfflineMode ? Colors.orange : Theme.of(context).colorScheme.primary,
+                  color: isOfflineMode
+                      ? Colors.orange
+                      : Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(width: 8),
                 Text(
                   'Regional Configuration',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+                        fontWeight: FontWeight.bold,
+                      ),
                 ),
                 if (isOfflineMode) ...[
                   const SizedBox(width: 8),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: Colors.orange,
                       borderRadius: BorderRadius.circular(4),
@@ -137,16 +141,16 @@ class RegionalConfigCard extends StatelessWidget {
                 Text(
                   'Regional Settings',
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                        fontWeight: FontWeight.w600,
+                      ),
                 ),
                 const Spacer(),
                 if (displayZone != null)
                   Text(
                     displayZone,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                   ),
               ],
             ),
@@ -172,7 +176,8 @@ class RegionalConfigCard extends StatelessWidget {
   }
 
   /// Compact labeled row: small label on left, chips on right
-  Widget _buildCompactRow(BuildContext context, String label, List<Widget> chips) {
+  Widget _buildCompactRow(
+      BuildContext context, String label, List<Widget> chips) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -201,7 +206,8 @@ class RegionalConfigCard extends StatelessWidget {
     );
   }
 
-  Widget _buildInfoRow(BuildContext context, IconData icon, String label, String? value,
+  Widget _buildInfoRow(
+      BuildContext context, IconData icon, String label, String? value,
       {bool isOffline = false}) {
     return Row(
       children: [
@@ -211,20 +217,26 @@ class RegionalConfigCard extends StatelessWidget {
         if (value != null) ...[
           const SizedBox(width: 8),
           Expanded(
-            child: Text(value, style: TextStyle(
-              color: isOffline
-                  ? Colors.orange.shade700
-                  : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-            )),
+            child: Text(value,
+                style: TextStyle(
+                  color: isOffline
+                      ? Colors.orange.shade700
+                      : Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.7),
+                )),
           ),
         ],
       ],
     );
   }
 
-  Widget _buildChannelChip(BuildContext context, String name, {bool isDefault = false}) {
+  Widget _buildChannelChip(BuildContext context, String name,
+      {bool isDefault = false}) {
     // Public channel doesn't use # prefix; scope/plain values pass through as-is
-    final displayName = name == 'Public' ? name : (name.startsWith('#') ? name : '#$name');
+    final displayName =
+        name == 'Public' ? name : (name.startsWith('#') ? name : '#$name');
     // If it doesn't look like a channel name, show raw value (e.g. scope "Global")
     final isChannel = name.startsWith('#') || name == 'Public';
     final label = isChannel ? displayName : name;
@@ -247,7 +259,9 @@ class RegionalConfigCard extends StatelessWidget {
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w500,
-          color: isDefault ? Colors.grey : Theme.of(context).colorScheme.onPrimaryContainer,
+          color: isDefault
+              ? Colors.grey
+              : Theme.of(context).colorScheme.onPrimaryContainer,
         ),
       ),
     );
