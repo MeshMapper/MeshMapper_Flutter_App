@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
+import '../utils/ping_colors.dart';
 
 part 'noise_floor_session.g.dart';
 
@@ -35,6 +36,12 @@ enum PingEventType {
 
   @HiveField(4)
   discFail, // Grey: Discovery no response
+
+  @HiveField(5)
+  traceSuccess, // Cyan: Trace got response
+
+  @HiveField(6)
+  traceFail, // Grey: Trace no response
 }
 
 /// Repeater info for graph markers
@@ -94,11 +101,13 @@ class PingEventMarker extends HiveObject {
 
   /// Get the color for this event type
   Color get color => switch (type) {
-        PingEventType.txSuccess => Colors.green,
-        PingEventType.txFail => Colors.red,
-        PingEventType.rx => Colors.blue,
-        PingEventType.discSuccess => Colors.purple,
-        PingEventType.discFail => Colors.grey,
+        PingEventType.txSuccess => PingColors.txSuccess,
+        PingEventType.txFail => PingColors.txFail,
+        PingEventType.rx => PingColors.rx,
+        PingEventType.discSuccess => PingColors.discSuccess,
+        PingEventType.discFail => PingColors.discFail,
+        PingEventType.traceSuccess => PingColors.traceSuccess,
+        PingEventType.traceFail => PingColors.noResponse,
       };
 
   /// Get a display label for this event type
@@ -108,6 +117,8 @@ class PingEventMarker extends HiveObject {
         PingEventType.rx => 'RX',
         PingEventType.discSuccess => 'DISC Success',
         PingEventType.discFail => 'DISC Fail',
+        PingEventType.traceSuccess => 'Trace Success',
+        PingEventType.traceFail => 'Trace Fail',
       };
 }
 
@@ -152,10 +163,11 @@ class NoiseFloorSession extends HiveObject {
 
   /// Display name for the mode
   String get modeDisplay => switch (mode) {
-    'active' => 'Active Mode',
-    'hybrid' => 'Hybrid Mode',
-    _ => 'Passive Mode',
-  };
+        'active' => 'Active Mode',
+        'hybrid' => 'Hybrid Mode',
+        'targeted' => 'Trace Mode',
+        _ => 'Passive Mode',
+      };
 
   /// Formatted duration string (M:SS or H:MM:SS for long sessions)
   String get durationDisplay {

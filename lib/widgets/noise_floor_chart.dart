@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/noise_floor_session.dart';
 import '../providers/app_state_provider.dart';
+import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
 
 /// Interactive noise floor chart with pinch-to-zoom and pan
@@ -11,13 +12,16 @@ class InteractiveNoiseFloorChart extends StatefulWidget {
   final NoiseFloorSession session;
   final bool isLive;
 
-  const InteractiveNoiseFloorChart({super.key, required this.session, this.isLive = false});
+  const InteractiveNoiseFloorChart(
+      {super.key, required this.session, this.isLive = false});
 
   @override
-  State<InteractiveNoiseFloorChart> createState() => InteractiveNoiseFloorChartState();
+  State<InteractiveNoiseFloorChart> createState() =>
+      InteractiveNoiseFloorChartState();
 }
 
-class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> {
+class InteractiveNoiseFloorChartState
+    extends State<InteractiveNoiseFloorChart> {
   // View window in seconds
   late double _viewStart;
   late double _viewEnd;
@@ -67,7 +71,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     final effectiveTotal = newTotal < 60 ? 60.0 : newTotal;
 
     // Detect if user is at full (unzoomed) view: start near 0 and end near total
-    final isFullView = _viewStart < 2.0 && (_totalDuration - _viewEnd).abs() < 2.0;
+    final isFullView =
+        _viewStart < 2.0 && (_totalDuration - _viewEnd).abs() < 2.0;
 
     _totalDuration = effectiveTotal;
 
@@ -91,14 +96,18 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
   double get _visibleDuration => _viewEnd - _viewStart;
   double get _zoomLevel => _totalDuration / _visibleDuration;
 
-  void _handleScaleStart(ScaleStartDetails details, double chartWidth, double chartLeft) {
+  void _handleScaleStart(
+      ScaleStartDetails details, double chartWidth, double chartLeft) {
     _gestureStartViewStart = _viewStart;
     _gestureStartViewEnd = _viewEnd;
     _gestureStartFocalX = details.localFocalPoint.dx;
   }
 
-  void _handleScaleUpdate(ScaleUpdateDetails details, double chartWidth, double chartLeft) {
-    if (_gestureStartViewStart == null || _gestureStartViewEnd == null || _gestureStartFocalX == null) {
+  void _handleScaleUpdate(
+      ScaleUpdateDetails details, double chartWidth, double chartLeft) {
+    if (_gestureStartViewStart == null ||
+        _gestureStartViewEnd == null ||
+        _gestureStartFocalX == null) {
       return;
     }
 
@@ -109,7 +118,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     newDuration = newDuration.clamp(_minVisibleSeconds, _totalDuration);
 
     // Calculate focal point ratio in chart space
-    final focalRatio = ((_gestureStartFocalX! - chartLeft) / chartWidth).clamp(0.0, 1.0);
+    final focalRatio =
+        ((_gestureStartFocalX! - chartLeft) / chartWidth).clamp(0.0, 1.0);
 
     // Time at focal point in original view
     final focalTime = _gestureStartViewStart! + (startDuration * focalRatio);
@@ -149,7 +159,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
   }
 
   /// Check if tap hit a marker and show popup if so
-  void _handleTap(TapUpDetails details, double chartWidth, double chartLeft, double chartHeight, double chartTop) {
+  void _handleTap(TapUpDetails details, double chartWidth, double chartLeft,
+      double chartHeight, double chartTop) {
     final session = widget.session;
     if (session.markers.isEmpty || session.samples.isEmpty) return;
 
@@ -160,7 +171,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
 
     // Find if tap is within any marker
     for (final marker in session.markers) {
-      final elapsed = marker.timestamp.difference(session.startTime).inSeconds.toDouble();
+      final elapsed =
+          marker.timestamp.difference(session.startTime).inSeconds.toDouble();
 
       if (elapsed < _viewStart || elapsed > _viewEnd) continue;
 
@@ -175,7 +187,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       final tapX = details.localPosition.dx;
       final tapY = details.localPosition.dy;
 
-      final distance = ((tapX - markerX) * (tapX - markerX) + (tapY - markerY) * (tapY - markerY));
+      final distance = ((tapX - markerX) * (tapX - markerX) +
+          (tapY - markerY) * (tapY - markerY));
       if (distance <= _markerTapRadius * _markerTapRadius) {
         _showMarkerDetails(marker, noiseFloorOnLine.round());
         return;
@@ -184,9 +197,14 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
   }
 
   /// Interpolate noise floor at given elapsed time
-  double _interpolateNoiseFloor(double elapsedSeconds, NoiseFloorSession session) {
-    if (session.samples.isEmpty) return widget.session.noiseFloorRange.min.toDouble();
-    if (session.samples.length == 1) return session.samples.first.noiseFloor.toDouble();
+  double _interpolateNoiseFloor(
+      double elapsedSeconds, NoiseFloorSession session) {
+    if (session.samples.isEmpty) {
+      return widget.session.noiseFloorRange.min.toDouble();
+    }
+    if (session.samples.length == 1) {
+      return session.samples.first.noiseFloor.toDouble();
+    }
 
     NoiseFloorSample? before;
     NoiseFloorSample? after;
@@ -194,7 +212,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     double afterElapsed = 0;
 
     for (final sample in session.samples) {
-      final sampleElapsed = sample.timestamp.difference(session.startTime).inSeconds.toDouble();
+      final sampleElapsed =
+          sample.timestamp.difference(session.startTime).inSeconds.toDouble();
 
       if (sampleElapsed <= elapsedSeconds) {
         before = sample;
@@ -209,8 +228,10 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     if (before == null) return session.samples.first.noiseFloor.toDouble();
     if (after == null) return before.noiseFloor.toDouble();
 
-    final timeFraction = (elapsedSeconds - beforeElapsed) / (afterElapsed - beforeElapsed);
-    return before.noiseFloor + (after.noiseFloor - before.noiseFloor) * timeFraction;
+    final timeFraction =
+        (elapsedSeconds - beforeElapsed) / (afterElapsed - beforeElapsed);
+    return before.noiseFloor +
+        (after.noiseFloor - before.noiseFloor) * timeFraction;
   }
 
   /// Show marker details popup as a modern bottom sheet
@@ -221,6 +242,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       PingEventType.rx => 'RX Received',
       PingEventType.discSuccess => 'Discovery Success',
       PingEventType.discFail => 'Discovery Failed',
+      PingEventType.traceSuccess => 'Trace Success',
+      PingEventType.traceFail => 'Trace Failed',
     };
 
     final eventDescription = switch (marker.type) {
@@ -229,6 +252,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       PingEventType.rx => 'Received passive observation',
       PingEventType.discSuccess => 'Discovery got response',
       PingEventType.discFail => 'Discovery got no response',
+      PingEventType.traceSuccess => 'Trace got response from target',
+      PingEventType.traceFail => 'Trace got no response from target',
     };
 
     final hasLocation = marker.latitude != null && marker.longitude != null;
@@ -255,7 +280,10 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                     width: 40,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurfaceVariant
+                          .withValues(alpha: 0.3),
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
@@ -277,8 +305,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                     Text(
                       eventTypeLabel,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                            fontWeight: FontWeight.w600,
+                          ),
                     ),
                     const Spacer(),
                     Text(
@@ -320,7 +348,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                           context,
                           icon: Icons.location_on,
                           label: 'Location',
-                          value: '${marker.latitude!.toStringAsFixed(4)}, ${marker.longitude!.toStringAsFixed(4)}',
+                          value:
+                              '${marker.latitude!.toStringAsFixed(4)}, ${marker.longitude!.toStringAsFixed(4)}',
                           compact: true,
                         ),
                       ),
@@ -329,19 +358,26 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                 ),
 
                 // Repeaters section (table format like TX log)
-                if (marker.repeaters != null && marker.repeaters!.isNotEmpty) ...[
+                if (marker.repeaters != null &&
+                    marker.repeaters!.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   Container(
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      color:
+                          Theme.of(context).colorScheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                      border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outline
+                              .withValues(alpha: 0.5)),
                     ),
                     child: Column(
                       children: [
                         // Header row
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
                           child: Row(
                             children: [
                               SizedBox(
@@ -351,7 +387,9 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                                   style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -362,7 +400,9 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                                   style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -373,16 +413,20 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                                   style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        Divider(height: 1, color: Theme.of(context).dividerColor),
+                        Divider(
+                            height: 1, color: Theme.of(context).dividerColor),
                         // Data rows
-                        ...marker.repeaters!.map((r) => _buildRepeaterRow(context, r)),
+                        ...marker.repeaters!
+                            .map((r) => _buildRepeaterRow(context, r)),
                       ],
                     ),
                   ),
@@ -396,7 +440,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                     child: FilledButton.icon(
                       onPressed: () {
                         // Get references before popping
-                        final appState = Provider.of<AppStateProvider>(context, listen: false);
+                        final appState = Provider.of<AppStateProvider>(context,
+                            listen: false);
                         final navigator = Navigator.of(context);
 
                         // Pop the bottom sheet first
@@ -407,7 +452,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                         navigator.popUntil((route) => route.isFirst);
 
                         // Navigate to map and center on location
-                        appState.navigateToMapCoordinates(marker.latitude!, marker.longitude!);
+                        appState.navigateToMapCoordinates(
+                            marker.latitude!, marker.longitude!);
                       },
                       icon: const Icon(Icons.map, size: 18),
                       label: const Text('View on Map'),
@@ -439,7 +485,10 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        color: Theme.of(context)
+            .colorScheme
+            .surfaceContainerHighest
+            .withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -478,38 +527,25 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
 
   /// Build a table row for a repeater (matching TX log style)
   Widget _buildRepeaterRow(BuildContext context, MarkerRepeaterInfo repeater) {
-    // SNR color: good (>5), fair (-1 to 5), poor (<-1)
-    Color snrColor;
-    if (repeater.snr <= -1) {
-      snrColor = Colors.red;
-    } else if (repeater.snr <= 5) {
-      snrColor = Colors.orange;
-    } else {
-      snrColor = Colors.green;
-    }
-
-    // RSSI color based on signal strength
-    Color rssiColor;
-    if (repeater.rssi >= -70) {
-      rssiColor = Colors.green;
-    } else if (repeater.rssi >= -100) {
-      rssiColor = Colors.orange;
-    } else {
-      rssiColor = Colors.red;
-    }
+    final snrColor = PingColors.snrColor(repeater.snr);
+    final rssiColor = PingColors.rssiColor(repeater.rssi);
 
     return InkWell(
-      onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId, fullHexId: repeater.pubkeyHex),
+      onTap: () => RepeaterIdChip.showRepeaterPopup(
+          context, repeater.repeaterId,
+          fullHexId: repeater.pubkeyHex),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Row(
           children: [
             // Node ID
-            RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 11, width: 50),
+            RepeaterIdChip(
+                repeaterId: repeater.repeaterId, fontSize: 11, width: 50),
             // SNR chip
             Expanded(
               child: Center(
-                child: _buildValueChip(repeater.snr.toStringAsFixed(1), snrColor),
+                child:
+                    _buildValueChip(repeater.snr.toStringAsFixed(1), snrColor),
               ),
             ),
             // RSSI chip
@@ -587,24 +623,32 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final chartWidth = constraints.maxWidth - leftPadding - rightPadding;
+              final chartWidth =
+                  constraints.maxWidth - leftPadding - rightPadding;
 
-              final chartHeight = constraints.maxHeight - topPadding - 36.0; // 36 = bottom axis reserved
+              final chartHeight = constraints.maxHeight -
+                  topPadding -
+                  36.0; // 36 = bottom axis reserved
 
               return RawGestureDetector(
                 gestures: <Type, GestureRecognizerFactory>{
-                  ScaleGestureRecognizer: GestureRecognizerFactoryWithHandlers<ScaleGestureRecognizer>(
+                  ScaleGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                      ScaleGestureRecognizer>(
                     () => ScaleGestureRecognizer(),
                     (ScaleGestureRecognizer instance) {
-                      instance.onStart = (details) => _handleScaleStart(details, chartWidth, leftPadding);
-                      instance.onUpdate = (details) => _handleScaleUpdate(details, chartWidth, leftPadding);
+                      instance.onStart = (details) =>
+                          _handleScaleStart(details, chartWidth, leftPadding);
+                      instance.onUpdate = (details) =>
+                          _handleScaleUpdate(details, chartWidth, leftPadding);
                       instance.onEnd = _handleScaleEnd;
                     },
                   ),
-                  TapGestureRecognizer: GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                  TapGestureRecognizer: GestureRecognizerFactoryWithHandlers<
+                      TapGestureRecognizer>(
                     () => TapGestureRecognizer(),
                     (TapGestureRecognizer instance) {
-                      instance.onTapUp = (details) => _handleTap(details, chartWidth, leftPadding, chartHeight, topPadding);
+                      instance.onTapUp = (details) => _handleTap(details,
+                          chartWidth, leftPadding, chartHeight, topPadding);
                     },
                   ),
                 },
@@ -613,7 +657,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                   children: [
                     // Line chart - wrapped in IgnorePointer so it doesn't steal gestures
                     Padding(
-                      padding: const EdgeInsets.only(top: topPadding, right: rightPadding),
+                      padding: const EdgeInsets.only(
+                          top: topPadding, right: rightPadding),
                       child: IgnorePointer(
                         child: LineChart(
                           LineChartData(
@@ -634,7 +679,8 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
                     ),
                     // Marker overlay
                     Padding(
-                      padding: const EdgeInsets.only(top: topPadding, right: rightPadding),
+                      padding: const EdgeInsets.only(
+                          top: topPadding, right: rightPadding),
                       child: IgnorePointer(
                         child: CustomPaint(
                           size: Size.infinite,
@@ -676,13 +722,15 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
 
   LineChartBarData _buildLineData(NoiseFloorSession session) {
     // Return cached data if session hasn't changed (prevents rebuilding during zoom)
-    if (_cachedLineData != null && _cachedSession == session &&
+    if (_cachedLineData != null &&
+        _cachedSession == session &&
         _cachedSampleCount == session.samples.length) {
       return _cachedLineData!;
     }
 
     final spots = session.samples.map((s) {
-      final elapsed = s.timestamp.difference(session.startTime).inSeconds.toDouble();
+      final elapsed =
+          s.timestamp.difference(session.startTime).inSeconds.toDouble();
       return FlSpot(elapsed, s.noiseFloor.toDouble());
     }).toList();
 
@@ -698,26 +746,26 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       return ((dbm - minY) / yRange).clamp(0.0, 1.0);
     }
 
-    // Smooth gradient with faded transitions
+    // Smooth gradient with faded transitions (palette-aware)
     final lineColors = [
-      Colors.green,
-      Colors.green,
-      Colors.orange,
-      Colors.red,
-      Colors.red,
+      PingColors.noiseFloorGood,
+      PingColors.noiseFloorGood,
+      PingColors.noiseFloorMedium,
+      PingColors.noiseFloorBad,
+      PingColors.noiseFloorBad,
     ];
     final fillColors = [
-      Colors.green.withValues(alpha: 0.2),
-      Colors.green.withValues(alpha: 0.15),
-      Colors.orange.withValues(alpha: 0.12),
-      Colors.red.withValues(alpha: 0.1),
-      Colors.red.withValues(alpha: 0.08),
+      PingColors.noiseFloorGood.withValues(alpha: 0.2),
+      PingColors.noiseFloorGood.withValues(alpha: 0.15),
+      PingColors.noiseFloorMedium.withValues(alpha: 0.12),
+      PingColors.noiseFloorBad.withValues(alpha: 0.1),
+      PingColors.noiseFloorBad.withValues(alpha: 0.08),
     ];
     final stops = [
       0.0,
-      yToStop(-100),  // Start fading from green
-      yToStop(-90),   // Orange in middle
-      yToStop(-80),   // Fade to red
+      yToStop(-100), // Start fading from green
+      yToStop(-90), // Orange in middle
+      yToStop(-80), // Fade to red
       1.0,
     ];
 
@@ -844,11 +892,12 @@ class InteractiveNoiseFloorChartState extends State<InteractiveNoiseFloorChart> 
       runSpacing: 8,
       alignment: WrapAlignment.center,
       children: [
-        _legendItem(context, Colors.green, 'TX Success'),
-        _legendItem(context, Colors.red, 'TX Fail'),
-        _legendItem(context, Colors.blue, 'RX'),
-        _legendItem(context, Colors.purple, 'DISC Success'),
-        _legendItem(context, Colors.grey, 'DISC Fail'),
+        _legendItem(context, PingColors.txSuccess, 'TX Success'),
+        _legendItem(context, PingColors.txFail, 'TX Fail'),
+        _legendItem(context, PingColors.rx, 'RX'),
+        _legendItem(context, PingColors.discSuccess, 'DISC Success'),
+        _legendItem(context, PingColors.traceSuccess, 'Trace Success'),
+        _legendItem(context, PingColors.noResponse, 'No Response'),
       ],
     );
   }
@@ -930,7 +979,8 @@ class _MarkerPainter extends CustomPainter {
     if (visibleRange <= 0 || chartWidth <= 0 || chartHeight <= 0) return;
 
     for (final marker in session.markers) {
-      final elapsed = marker.timestamp.difference(session.startTime).inSeconds.toDouble();
+      final elapsed =
+          marker.timestamp.difference(session.startTime).inSeconds.toDouble();
 
       if (elapsed < minX || elapsed > maxX) continue;
 
@@ -959,7 +1009,9 @@ class _MarkerPainter extends CustomPainter {
 
   double _interpolateNoiseFloor(double elapsedSeconds) {
     if (session.samples.isEmpty) return minY;
-    if (session.samples.length == 1) return session.samples.first.noiseFloor.toDouble();
+    if (session.samples.length == 1) {
+      return session.samples.first.noiseFloor.toDouble();
+    }
 
     NoiseFloorSample? before;
     NoiseFloorSample? after;
@@ -967,7 +1019,8 @@ class _MarkerPainter extends CustomPainter {
     double afterElapsed = 0;
 
     for (final sample in session.samples) {
-      final sampleElapsed = sample.timestamp.difference(session.startTime).inSeconds.toDouble();
+      final sampleElapsed =
+          sample.timestamp.difference(session.startTime).inSeconds.toDouble();
 
       if (sampleElapsed <= elapsedSeconds) {
         before = sample;
@@ -982,8 +1035,10 @@ class _MarkerPainter extends CustomPainter {
     if (before == null) return session.samples.first.noiseFloor.toDouble();
     if (after == null) return before.noiseFloor.toDouble();
 
-    final timeFraction = (elapsedSeconds - beforeElapsed) / (afterElapsed - beforeElapsed);
-    return before.noiseFloor + (after.noiseFloor - before.noiseFloor) * timeFraction;
+    final timeFraction =
+        (elapsedSeconds - beforeElapsed) / (afterElapsed - beforeElapsed);
+    return before.noiseFloor +
+        (after.noiseFloor - before.noiseFloor) * timeFraction;
   }
 
   @override

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 import '../widgets/connection_panel.dart';
 import '../widgets/map_widget.dart';
 import '../widgets/ping_controls.dart';
@@ -67,11 +68,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return _isControlsMinimized ? 60 : 320;
   }
 
-
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
 
     // In landscape: no AppBar, everything on map overlays
     if (isLandscape) {
@@ -147,7 +148,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Stats row for AppBar/floating status bar (matches StatusBar exactly)
-  Widget _buildAppBarStats(AppStateProvider appState, {bool withTapHandlers = false}) {
+  Widget _buildAppBarStats(AppStateProvider appState,
+      {bool withTapHandlers = false}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -155,7 +157,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildAppBarStatChip(
           Icons.arrow_upward,
           appState.pingStats.txCount,
-          Colors.green,
+          PingColors.txSuccess,
           onTap: withTapHandlers ? () => _showInfoPopup('tx', appState) : null,
         ),
         const SizedBox(width: 8),
@@ -163,7 +165,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildAppBarStatChip(
           Icons.arrow_downward,
           appState.pingStats.rxCount,
-          Colors.blue,
+          PingColors.rx,
           onTap: withTapHandlers ? () => _showInfoPopup('rx', appState) : null,
         ),
         const SizedBox(width: 8),
@@ -171,8 +173,18 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildAppBarStatChip(
           Icons.radar,
           appState.pingStats.discCount,
-          const Color(0xFF7B68EE),
-          onTap: withTapHandlers ? () => _showInfoPopup('disc', appState) : null,
+          PingColors.discSuccess,
+          onTap:
+              withTapHandlers ? () => _showInfoPopup('disc', appState) : null,
+        ),
+        const SizedBox(width: 8),
+        // Trace count
+        _buildAppBarStatChip(
+          Icons.route,
+          appState.pingStats.traceCount,
+          PingColors.traceSuccess,
+          onTap:
+              withTapHandlers ? () => _showInfoPopup('trace', appState) : null,
         ),
         const SizedBox(width: 8),
         // Upload count
@@ -180,14 +192,16 @@ class _HomeScreenState extends State<HomeScreen> {
           Icons.cloud_done,
           appState.pingStats.successfulUploads,
           Colors.teal.shade400,
-          onTap: withTapHandlers ? () => _showInfoPopup('upload', appState) : null,
+          onTap:
+              withTapHandlers ? () => _showInfoPopup('upload', appState) : null,
         ),
       ],
     );
   }
 
   /// Stat chip for AppBar (same style as StatusBar)
-  Widget _buildAppBarStatChip(IconData icon, int value, Color color, {VoidCallback? onTap}) {
+  Widget _buildAppBarStatChip(IconData icon, int value, Color color,
+      {VoidCallback? onTap}) {
     final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -230,7 +244,8 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => Padding(
-        padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(context).viewPadding.bottom),
+        padding: EdgeInsets.fromLTRB(
+            20, 20, 20, 20 + MediaQuery.of(context).viewPadding.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -291,48 +306,102 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Get content for the popup based on ID
-  (String, String, IconData, Color) _getPopupContent(String id, AppStateProvider appState) {
+  (String, String, IconData, Color) _getPopupContent(
+      String id, AppStateProvider appState) {
     switch (id) {
       case 'gps':
         if (appState.offlineMode) {
-          return ('Offline Mode Active', 'Pings are saved locally. Zone detection is paused until you go back online.', Icons.flight, Colors.grey);
+          return (
+            'Offline Mode Active',
+            'Pings are saved locally. Zone detection is paused until you go back online.',
+            Icons.flight,
+            Colors.grey
+          );
         }
         if (appState.inZone == true && appState.zoneCode != null) {
           if (!appState.isConnected) {
-            return ('${appState.zoneName ?? appState.zoneCode} Zone',
+            return (
+              '${appState.zoneName ?? appState.zoneCode} Zone',
               'You\'re in an authorized zone. Connect to a device to start wardriving.',
-              Icons.flight, Colors.grey);
+              Icons.flight,
+              Colors.grey
+            );
           }
           if (!appState.txAllowed) {
-            return ('${appState.zoneName ?? appState.zoneCode} Zone',
+            return (
+              '${appState.zoneName ?? appState.zoneCode} Zone',
               'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive Mode is allowed.',
-              Icons.flight, Colors.red);
+              Icons.flight,
+              Colors.red
+            );
           }
-          return ('${appState.zoneName ?? appState.zoneCode} Zone',
+          return (
+            '${appState.zoneName ?? appState.zoneCode} Zone',
             'You\'re in an active zone with ${appState.zoneSlotsAvailable ?? "?"} TX slots available. Ready to wardrive!',
-            Icons.flight, Colors.green);
+            Icons.flight,
+            Colors.green
+          );
         }
         if (appState.inZone == false) {
           final nearest = appState.nearestZoneName ?? 'Unknown';
           final distKm = appState.nearestZoneDistanceKm;
           final dist = distKm != null
-              ? formatKilometers(distKm, isImperial: appState.preferences.isImperial)
+              ? formatKilometers(distKm,
+                  isImperial: appState.preferences.isImperial)
               : '?';
-          return ('Outside Coverage Area', 'Nearest zone is $nearest, $dist away. Enter a zone to start wardriving.', Icons.flight, Colors.orange);
+          return (
+            'Outside Coverage Area',
+            'Nearest zone is $nearest, $dist away. Enter a zone to start wardriving.',
+            Icons.flight,
+            Colors.orange
+          );
         }
-        return ('Locating...', 'Acquiring GPS signal and checking your zone status.', Icons.gps_not_fixed, Colors.blue);
+        return (
+          'Locating...',
+          'Acquiring GPS signal and checking your zone status.',
+          Icons.gps_not_fixed,
+          Colors.blue
+        );
 
       case 'tx':
-        return ('TX Packets', 'TX packets that have been sent out. These are messages to the #wardriving channel.', Icons.arrow_upward, Colors.green);
+        return (
+          'TX Packets',
+          'TX packets that have been sent out. These are messages to the #wardriving channel.',
+          Icons.arrow_upward,
+          PingColors.txSuccess
+        );
 
       case 'rx':
-        return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, Colors.blue);
+        return (
+          'RX Packets',
+          'RX packets that we have heard from the mesh. These were not initiated by us.',
+          Icons.arrow_downward,
+          PingColors.rx
+        );
 
       case 'disc':
-        return ('Discovery Requests', 'Discovery request packets we have sent out.', Icons.radar, const Color(0xFF7B68EE));
+        return (
+          'Discovery Requests',
+          'Discovery request packets we have sent out.',
+          Icons.radar,
+          PingColors.discSuccess
+        );
+
+      case 'trace':
+        return (
+          'Trace Responses',
+          'Trace path requests that received a response from the target repeater.',
+          Icons.route,
+          PingColors.traceSuccess
+        );
 
       case 'upload':
-        return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
+        return (
+          'Uploaded',
+          'Pings sent to MeshMapper servers. Your data helps build the community coverage map!',
+          Icons.cloud_done,
+          Colors.teal
+        );
 
       default:
         return ('Info', '', Icons.info, Colors.grey);
@@ -380,6 +449,28 @@ class _HomeScreenState extends State<HomeScreen> {
               color: Colors.black54,
               child: Center(
                 child: _buildReconnectingOverlay(appState),
+              ),
+            ),
+          ),
+
+        // Zone grace period overlay (both orientations)
+        if (appState.isInZoneGracePeriod)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black54,
+              child: Center(
+                child: _buildZoneGraceOverlay(appState),
+              ),
+            ),
+          ),
+
+        // Zone transfer overlay (both orientations)
+        if (appState.isZoneTransferInProgress)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black54,
+              child: Center(
+                child: _buildZoneTransferOverlay(appState),
               ),
             ),
           ),
@@ -542,7 +633,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(20),
                     child: Padding(
                       padding: const EdgeInsets.all(8),
-                      child: Icon(Icons.help_outline, size: 22, color: Colors.grey.shade400),
+                      child: Icon(Icons.help_outline,
+                          size: 22, color: Colors.grey.shade400),
                     ),
                   ),
                 ),
@@ -554,7 +646,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(20),
                     child: Padding(
                       padding: const EdgeInsets.all(8),
-                      child: Icon(Icons.close, size: 22, color: Colors.grey.shade400),
+                      child: Icon(Icons.close,
+                          size: 22, color: Colors.grey.shade400),
                     ),
                   ),
                 ),
@@ -642,12 +735,13 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Icon(icon, size: 14, color: color),
           const SizedBox(width: 4),
-          Text(text, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+          Text(text,
+              style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w600, color: color)),
         ],
       ),
     );
   }
-
 
   /// Reconnecting overlay shown centered over the map during auto-reconnect
   Widget _buildReconnectingOverlay(AppStateProvider appState) {
@@ -714,6 +808,182 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Zone grace period overlay shown centered over the map when outside zone
+  Widget _buildZoneGraceOverlay(AppStateProvider appState) {
+    final nearestName = appState.nearestZoneName;
+    final nearestDistance = appState.nearestZoneDistanceKm;
+    final hasNearestInfo = nearestName != null && nearestDistance != null;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 260),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.location_off,
+              color: Colors.orange.shade400,
+              size: 36,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Out of Zone',
+              style: TextStyle(
+                color: Colors.grey.shade100,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            if (hasNearestInfo) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Nearest: $nearestName (${nearestDistance.toStringAsFixed(1)} km)',
+                style: TextStyle(
+                  color: Colors.grey.shade400,
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+            const SizedBox(height: 16),
+            Text(
+              appState.zoneGraceCountdownFormatted,
+              style: TextStyle(
+                color: Colors.orange.shade400,
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.grey.shade500,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching for zone...',
+                  style: TextStyle(
+                    color: Colors.grey.shade500,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton(
+              onPressed: () => appState.cancelZoneGracePeriod(),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.orange.shade400,
+                side: BorderSide(color: Colors.orange.shade400),
+              ),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Zone transfer overlay shown centered over the map during zone-to-zone transfer
+  Widget _buildZoneTransferOverlay(AppStateProvider appState) {
+    final from = appState.zoneTransferFrom ?? '?';
+    final to = appState.zoneTransferTo ?? '?';
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 260),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(
+              color: Colors.orange.shade400,
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Changing Zone...',
+              style: TextStyle(
+                color: Colors.grey.shade100,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '$from → $to',
+              style: TextStyle(
+                color: Colors.grey.shade400,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.grey.shade500,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Re-authenticating...',
+                  style: TextStyle(
+                    color: Colors.grey.shade500,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton(
+              onPressed: () => appState.cancelZoneTransfer(),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.orange.shade400,
+                side: BorderSide(color: Colors.orange.shade400),
+              ),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildControlPanel() {
     return Card(
       margin: const EdgeInsets.all(8),
@@ -722,7 +992,8 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           // Header with help and minimize buttons
           ListTile(
-            title: const Text('Controls', style: TextStyle(fontWeight: FontWeight.bold)),
+            title: const Text('Controls',
+                style: TextStyle(fontWeight: FontWeight.bold)),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -797,7 +1068,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Show help bottom sheet explaining each control
   void _showControlsHelp(BuildContext context) {
-    final prefs = Provider.of<AppStateProvider>(context, listen: false).preferences;
+    final prefs =
+        Provider.of<AppStateProvider>(context, listen: false).preferences;
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
@@ -851,7 +1123,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: Icons.settings_input_antenna,
                 color: Colors.orange,
                 title: 'External Antenna',
-                description: 'Enable if using an external antenna (ex: mag mount on roof of car). We store this along with pings as external antennas can make a big difference in reception.',
+                description:
+                    'Enable if using an external antenna (ex: mag mount on roof of car). We store this along with pings as external antennas can make a big difference in reception.',
               ),
 
               // Send Ping button
@@ -859,12 +1132,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: Icons.cell_tower,
                 color: const Color(0xFF0EA5E9),
                 title: 'Send Ping',
-                description: 'Send a single ping to #wardriving and track which repeaters heard it.',
+                description:
+                    'Send a single ping to #wardriving and track which repeaters heard it.',
               ),
 
               // Active Mode / Hybrid Mode button
               _buildHelpItem(
-                icon: prefs.hybridModeEnabled ? Icons.compare_arrows : Icons.sensors,
+                icon: prefs.hybridModeEnabled
+                    ? Icons.compare_arrows
+                    : Icons.sensors,
                 color: const Color(0xFF6366F1),
                 title: prefs.hybridModeEnabled ? 'Hybrid Mode' : 'Active Mode',
                 description: prefs.hybridModeEnabled
@@ -877,23 +1153,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: Icons.hearing,
                 color: const Color(0xFF6366F1),
                 title: 'Passive Mode',
-                description: 'Sends zero-hop discovery pings every 30s, tracks nearby repeaters and received mesh traffic.',
+                description:
+                    'Sends zero-hop discovery pings every 30s, tracks nearby repeaters and received mesh traffic.',
               ),
 
-              // Offline mode toggle
+              // Trace Mode
               _buildHelpItem(
-                icon: Icons.cloud_off,
-                color: Colors.orange,
-                title: 'Offline Mode',
-                description: 'Save pings locally instead of uploading immediately. Useful when you have poor connectivity. Upload saved sessions later from the Settings tab.',
-              ),
-
-              // Sound toggle
-              _buildHelpItem(
-                icon: Icons.volume_up,
-                color: Colors.blue,
-                title: 'Sound',
-                description: 'Sonar tone when sending TX/Discovery pings. Message tone when receiving valid RX packets, heard repeaters, or discovery responses.',
+                icon: Icons.gps_fixed,
+                color: Colors.cyan,
+                title: 'Trace Mode',
+                description:
+                    'Sends a zero-hop trace to a specific repeater by its hex ID at your set interval. Shows signal quality (SNR/RSSI) for that one repeater over time — useful for antenna alignment or testing a specific node.',
               ),
 
               const SizedBox(height: 8),
@@ -995,9 +1265,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Get color based on noise floor value (lower is better)
   Color _getNoiseFloorColor(int noiseFloor) {
-    if (noiseFloor <= -100) return Colors.green;   // -100 to -120: great
-    if (noiseFloor <= -90) return Colors.orange;   // -90 to -100: okay
-    return Colors.red;                              // 0 to -90: bad
+    return PingColors.noiseFloorColor(noiseFloor.toDouble());
   }
 
   /// Get battery icon based on percentage
@@ -1017,4 +1285,3 @@ class _HomeScreenState extends State<HomeScreen> {
     return Colors.red;
   }
 }
-

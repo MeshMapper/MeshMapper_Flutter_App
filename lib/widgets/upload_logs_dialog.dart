@@ -64,7 +64,7 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
 
   Future<void> _loadUploadableFiles() async {
     try {
-      final files = await DebugFileLogger.listUploadableLogFiles();
+      final files = await widget.appState.prepareDebugLogsForUpload();
       if (mounted) {
         setState(() {
           _availableLogFiles = files;
@@ -162,15 +162,16 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
       // Build the upload list using the user's selection applied to the freshly rotated files.
       // Selected paths from before rotation still match, plus any newly rotated file is included.
       final selectedPaths = Set<String>.from(_selectedLogFiles);
-      final filesToUpload = freshFiles
-          .where((f) => selectedPaths.contains(f.path))
-          .toList();
+      final filesToUpload =
+          freshFiles.where((f) => selectedPaths.contains(f.path)).toList();
 
       // If the rotation produced a new file that wasn't in the original selection
       // (i.e. the previously-active log that just got rotated), include it too
       // since the user selected "all" initially and this file has new content.
-      final newFiles = freshFiles.where((f) => !selectedPaths.contains(f.path)).toList();
-      if (newFiles.isNotEmpty && selectedPaths.length == _availableLogFiles.length) {
+      final newFiles =
+          freshFiles.where((f) => !selectedPaths.contains(f.path)).toList();
+      if (newFiles.isNotEmpty &&
+          selectedPaths.length == _availableLogFiles.length) {
         filesToUpload.addAll(newFiles);
       }
 
@@ -191,7 +192,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
       final publicKey = widget.appState.devicePublicKey ??
           widget.appState.lastConnectedPublicKey ??
           'not-connected';
-      final deviceName = widget.appState.lastConnectedDeviceName ?? 'not-connected';
+      final deviceName =
+          widget.appState.lastConnectedDeviceName ?? 'not-connected';
       final userNotes = _descriptionController.text.trim();
 
       int uploadedCount = 0;
@@ -220,7 +222,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
           onProgress: (p) {
             _onProgressUpdate(BugReportProgress(
               status: p.status,
-              progress: (progressBase + p.progress * progressPerFile).clamp(0.0, 1.0),
+              progress:
+                  (progressBase + p.progress * progressPerFile).clamp(0.0, 1.0),
               currentFile: i + 1,
               totalFiles: totalFiles,
             ));
@@ -242,7 +245,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
         success: uploadedCount > 0,
         uploadedCount: uploadedCount,
         failedCount: failedCount,
-        errorMessage: failedCount > 0 ? '$failedCount file(s) failed to upload' : null,
+        errorMessage:
+            failedCount > 0 ? '$failedCount file(s) failed to upload' : null,
       );
 
       Navigator.of(context).pop(result);
@@ -287,13 +291,15 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           child: Row(
             children: [
-              Icon(Icons.cloud_upload_outlined, color: theme.colorScheme.primary, size: 28),
+              Icon(Icons.cloud_upload_outlined,
+                  color: theme.colorScheme.primary, size: 28),
               const SizedBox(width: 12),
               Text('Upload Logs', style: theme.textTheme.titleLarge),
               const Spacer(),
               IconButton(
                 icon: const Icon(Icons.close),
-                onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+                onPressed:
+                    _isSubmitting ? null : () => Navigator.of(context).pop(),
                 tooltip: 'Close',
               ),
             ],
@@ -312,13 +318,15 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
               child: ListView(
                 controller: widget.scrollController,
                 padding: const EdgeInsets.all(20),
-                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
                 children: [
                   // Explanation text
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+                      color: theme.colorScheme.primaryContainer
+                          .withValues(alpha: 0.3),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
                         color: theme.colorScheme.primary.withValues(alpha: 0.3),
@@ -355,7 +363,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                     textCapitalization: TextCapitalization.sentences,
                     decoration: _buildInputDecoration(
                       theme,
-                      hintText: 'Briefly describe why you\'re uploading these logs...',
+                      hintText:
+                          'Briefly describe why you\'re uploading these logs...',
                       alignLabelWithHint: true,
                     ),
                     maxLines: 3,
@@ -381,10 +390,12 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withValues(alpha: 0.5),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                          color:
+                              theme.colorScheme.outline.withValues(alpha: 0.3),
                         ),
                       ),
                       child: Row(
@@ -411,10 +422,12 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withValues(alpha: 0.5),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                          color:
+                              theme.colorScheme.outline.withValues(alpha: 0.3),
                         ),
                       ),
                       child: Row(
@@ -437,17 +450,20 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                   else
                     Container(
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withValues(alpha: 0.5),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                          color:
+                              theme.colorScheme.outline.withValues(alpha: 0.3),
                         ),
                       ),
                       child: Column(
                         children: [
                           // Select all / deselect all header
                           Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 8),
                             child: Row(
                               children: [
                                 Text(
@@ -460,7 +476,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                                 TextButton(
                                   onPressed: () {
                                     setState(() {
-                                      if (_selectedLogFiles.length == _availableLogFiles.length) {
+                                      if (_selectedLogFiles.length ==
+                                          _availableLogFiles.length) {
                                         _selectedLogFiles.clear();
                                       } else {
                                         _selectedLogFiles.clear();
@@ -471,7 +488,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                                     });
                                   },
                                   child: Text(
-                                    _selectedLogFiles.length == _availableLogFiles.length
+                                    _selectedLogFiles.length ==
+                                            _availableLogFiles.length
                                         ? 'Deselect All'
                                         : 'Select All',
                                   ),
@@ -481,22 +499,28 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                           ),
                           Divider(
                             height: 1,
-                            color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                            color: theme.colorScheme.outline
+                                .withValues(alpha: 0.3),
                           ),
                           // File list
                           ...List.generate(_availableLogFiles.length, (index) {
                             final file = _availableLogFiles[index];
                             final filename = file.path.split('/').last;
                             final sizeBytes = file.lengthSync();
-                            final isSelected = _selectedLogFiles.contains(file.path);
+                            final isSelected =
+                                _selectedLogFiles.contains(file.path);
 
                             String sizeDisplay;
-                            final partCount = DebugFileLogger.estimatePartCount(sizeBytes);
-                            if (sizeBytes >= DebugFileLogger.maxUploadSizeBytes) {
-                              final sizeMb = (sizeBytes / 1024 / 1024).toStringAsFixed(1);
+                            final partCount =
+                                DebugFileLogger.estimatePartCount(sizeBytes);
+                            if (sizeBytes >=
+                                DebugFileLogger.maxUploadSizeBytes) {
+                              final sizeMb =
+                                  (sizeBytes / 1024 / 1024).toStringAsFixed(1);
                               sizeDisplay = '$sizeMb MB ($partCount parts)';
                             } else {
-                              sizeDisplay = '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+                              sizeDisplay =
+                                  '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
                             }
 
                             return ListTile(
@@ -512,9 +536,11 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                                 style: const TextStyle(fontSize: 13),
                               ),
                               trailing: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: theme.colorScheme.surfaceContainerHighest,
+                                  color:
+                                      theme.colorScheme.surfaceContainerHighest,
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: Text(
@@ -524,7 +550,9 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                                   ),
                                 ),
                               ),
-                              onTap: _isSubmitting ? null : () => _toggleFile(file.path),
+                              onTap: _isSubmitting
+                                  ? null
+                                  : () => _toggleFile(file.path),
                             );
                           }),
                         ],
@@ -589,7 +617,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
             children: [
               Expanded(
                 child: OutlinedButton(
-                  onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+                  onPressed:
+                      _isSubmitting ? null : () => Navigator.of(context).pop(),
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
@@ -642,7 +671,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           child: Row(
             children: [
-              Icon(Icons.cloud_upload_outlined, color: theme.colorScheme.primary, size: 28),
+              Icon(Icons.cloud_upload_outlined,
+                  color: theme.colorScheme.primary, size: 28),
               const SizedBox(width: 12),
               Text('Uploading...', style: theme.textTheme.titleLarge),
             ],
@@ -663,7 +693,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                     width: 80,
                     height: 80,
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+                      color: theme.colorScheme.primaryContainer
+                          .withValues(alpha: 0.3),
                       shape: BoxShape.circle,
                     ),
                     child: Center(
@@ -678,16 +709,16 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                     ),
                   ),
                   const SizedBox(height: 32),
-
                   Text(
-                    _progressStatus.isNotEmpty ? _progressStatus : 'Please wait...',
+                    _progressStatus.isNotEmpty
+                        ? _progressStatus
+                        : 'Please wait...',
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 8),
-
                   if (_totalFiles != null && _currentFile != null)
                     Text(
                       'File $_currentFile of $_totalFiles',
@@ -696,7 +727,6 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                       ),
                     ),
                   const SizedBox(height: 24),
-
                   SizedBox(
                     width: 250,
                     child: Column(
@@ -705,7 +735,8 @@ class _UploadLogsSheetState extends State<UploadLogsSheet> {
                           borderRadius: BorderRadius.circular(6),
                           child: LinearProgressIndicator(
                             value: _progress,
-                            backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                            backgroundColor:
+                                theme.colorScheme.surfaceContainerHighest,
                             color: theme.colorScheme.primary,
                             minHeight: 8,
                           ),

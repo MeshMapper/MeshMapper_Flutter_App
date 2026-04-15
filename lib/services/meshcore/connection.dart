@@ -17,12 +17,16 @@ class DeviceQueryResponse {
   final int protocolVersion;
   final String manufacturer;
   final String? firmwareBuildDate; // Added in protocol v8
-  final int? pathHashMode; // 0=1-byte, 1=2-byte, 2=3-byte (null if old firmware, v10+)
+  final String?
+      firmwareVersionString; // e.g. "v1.14.0-9f1a3ea" (v7+, 20-byte C-string)
+  final int?
+      pathHashMode; // 0=1-byte, 1=2-byte, 2=3-byte (null if old firmware, v10+)
 
   const DeviceQueryResponse({
     required this.protocolVersion,
     required this.manufacturer,
     this.firmwareBuildDate,
+    this.firmwareVersionString,
     this.pathHashMode,
   });
 }
@@ -45,7 +49,10 @@ class SelfInfo {
   });
 
   /// Get public key as hex string
-  String get publicKeyHex => publicKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').toUpperCase();
+  String get publicKeyHex => publicKey
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join('')
+      .toUpperCase();
 }
 
 /// MeshCore connection manager
@@ -63,11 +70,16 @@ class SelfInfo {
 /// 9. Connected State
 class MeshCoreConnection {
   final BluetoothService _bluetooth;
+  bool _disposed = false;
   final _stepController = StreamController<ConnectionStep>.broadcast();
-  final _channelMessageController = StreamController<ChannelMessage>.broadcast();
+  final _channelMessageController =
+      StreamController<ChannelMessage>.broadcast();
   final _rawDataController = StreamController<Map<String, dynamic>>.broadcast();
-  final _logRxDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
-  final _controlDataController = StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
+  final _logRxDataController =
+      StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
+  final _controlDataController =
+      StreamController<({Uint8List raw, double snr, int rssi})>.broadcast();
+  final _traceDataController = StreamController<Uint8List>.broadcast();
   final _noiseFloorController = StreamController<int>.broadcast();
   final _batteryController = StreamController<int>.broadcast();
 
@@ -81,6 +93,7 @@ class MeshCoreConnection {
   Completer<DeviceQueryResponse>? _deviceQueryCompleter;
   Completer<SelfInfo>? _selfInfoCompleter;
   Completer<void>? _sentCompleter;
+  Completer<void>? _setTimeCompleter;
   Completer<ChannelInfo>? _channelInfoCompleter;
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
@@ -103,7 +116,8 @@ class MeshCoreConnection {
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
   Timer? _batteryTimer;
 
-  MeshCoreConnection({required BluetoothService bluetooth}) : _bluetooth = bluetooth {
+  MeshCoreConnection({required BluetoothService bluetooth})
+      : _bluetooth = bluetooth {
     _dataSubscription = _bluetooth.dataStream.listen(_onFrameReceived);
   }
 
@@ -111,16 +125,23 @@ class MeshCoreConnection {
   Stream<ConnectionStep> get stepStream => _stepController.stream;
 
   /// Stream of channel messages (for RX pings)
-  Stream<ChannelMessage> get channelMessageStream => _channelMessageController.stream;
+  Stream<ChannelMessage> get channelMessageStream =>
+      _channelMessageController.stream;
 
   /// Stream of raw data pushes
   Stream<Map<String, dynamic>> get rawDataStream => _rawDataController.stream;
 
   /// Stream of LogRxData packets (for unified RX handler)
-  Stream<({Uint8List raw, double snr, int rssi})> get logRxDataStream => _logRxDataController.stream;
+  Stream<({Uint8List raw, double snr, int rssi})> get logRxDataStream =>
+      _logRxDataController.stream;
 
   /// Stream of ControlData packets (for discovery responses)
-  Stream<({Uint8List raw, double snr, int rssi})> get controlDataStream => _controlDataController.stream;
+  Stream<({Uint8List raw, double snr, int rssi})> get controlDataStream =>
+      _controlDataController.stream;
+
+  /// Stream of TraceData packets (for trace path responses)
+  /// 0x89 has NO snr/rssi prefix — raw bytes are the trace payload directly
+  Stream<Uint8List> get traceDataStream => _traceDataController.stream;
 
   /// Stream of noise floor updates (dBm)
   Stream<int> get noiseFloorStream => _noiseFloorController.stream;
@@ -164,13 +185,16 @@ class MeshCoreConnection {
   /// Wardriving channel hash (for echo correlation) - null if not connected
   int? get wardrivingChannelHash {
     final channel = _wardrivingChannel;
-    return channel != null ? CryptoService.computeChannelHash(channel.secret) : null;
+    return channel != null
+        ? CryptoService.computeChannelHash(channel.secret)
+        : null;
   }
 
   void _updateStep(ConnectionStep step) {
     _currentStep = step;
-    if (_stepController.isClosed) {
-      debugError('[CONN] Cannot update step - controller is closed!');
+    if (_disposed || _stepController.isClosed) {
+      debugLog(
+          '[CONN] Ignoring step update on disposed connection (expected during reconnect)');
       return;
     }
     debugLog('[CONN] Step: $step');
@@ -180,9 +204,13 @@ class MeshCoreConnection {
   /// Execute the full connection workflow
   /// Returns (deviceModel, deviceModelMatched) for display/reporting purposes
   /// Note: This method does NOT modify radio TX power settings - it only reads device info
-  Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(String deviceId, List<DeviceModel> deviceModels) async {
+  Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(
+      String deviceId, List<DeviceModel> deviceModels) async {
+    if (_disposed) {
+      throw Exception('Connection instance has been disposed');
+    }
     bool deviceModelMatched = false;
-    
+
     try {
       // Step 1: BLE Connect
       _updateStep(ConnectionStep.bleConnecting);
@@ -194,7 +222,8 @@ class MeshCoreConnection {
 
       // Step 3: Device Query
       _updateStep(ConnectionStep.deviceQuery);
-      _deviceInfo = await deviceQuery(ProtocolConstants.supportedCompanionProtocolVersion);
+      _deviceInfo = await deviceQuery(
+          ProtocolConstants.supportedCompanionProtocolVersion);
 
       // Step 3b: Get Self Info (contains public key)
       // This is critical for geo-auth API authentication
@@ -204,7 +233,8 @@ class MeshCoreConnection {
         if (pubKeyHex == null) {
           throw Exception('getSelfInfo() returned null public key');
         }
-        debugLog('[CONN] Public key acquired: ${pubKeyHex.substring(0, 16)}...');
+        debugLog(
+            '[CONN] Public key acquired: ${pubKeyHex.substring(0, 16)}...');
       } catch (e) {
         debugError('[CONN] Failed to get self info (public key): $e');
         // Public key is REQUIRED for geo-auth API
@@ -220,9 +250,11 @@ class MeshCoreConnection {
       final matchedModel = _deviceModel;
       if (matchedModel != null) {
         deviceModelMatched = true;
-        debugLog('[CONN] Device identified: ${matchedModel.shortName} (reports ${matchedModel.power}W / ${matchedModel.txPower}dBm)');
+        debugLog(
+            '[CONN] Device identified: ${matchedModel.shortName} (reports ${matchedModel.power}W / ${matchedModel.txPower}dBm)');
       } else {
-        debugLog('[CONN] Device model not recognized - user must manually select power level for reporting');
+        debugLog(
+            '[CONN] Device model not recognized - user must manually select power level for reporting');
       }
 
       // Step 5: Time Sync
@@ -237,20 +269,24 @@ class MeshCoreConnection {
         if (authResult == null || authResult['success'] != true) {
           final reason = authResult?['reason'] ?? 'unknown';
           final message = authResult?['message'] ?? 'Authentication failed';
-          debugError('[CONN] API session acquisition failed: $reason - $message');
+          debugError(
+              '[CONN] API session acquisition failed: $reason - $message');
           // Throw with reason code prefix for proper error handling
           throw Exception('AUTH_FAILED:$reason:$message');
         }
-        debugLog('[CONN] API session acquired successfully (session_id: ${authResult['session_id']})');
+        debugLog(
+            '[CONN] API session acquired successfully (session_id: ${authResult['session_id']})');
       } else {
-        debugLog('[CONN] No auth callback set, skipping API session acquisition');
+        debugLog(
+            '[CONN] No auth callback set, skipping API session acquisition');
       }
 
       // Step 7: Channel Setup
       _updateStep(ConnectionStep.channelSetup);
       debugLog('[CONN] Creating #wardriving channel');
       _wardrivingChannel = await ChannelService.ensureWardrivingChannel(this);
-      debugLog('[CONN] Channel ready: ${_wardrivingChannel?.name ?? 'unknown'} (CH:${_wardrivingChannel?.channelIndex ?? -1})');
+      debugLog(
+          '[CONN] Channel ready: ${_wardrivingChannel?.name ?? 'unknown'} (CH:${_wardrivingChannel?.channelIndex ?? -1})');
 
       // Step 8: GPS Init (handled externally)
       _updateStep(ConnectionStep.gpsInit);
@@ -270,7 +306,10 @@ class MeshCoreConnection {
       // This may fail on older firmware (< v1.11.0)
       _startNoiseFloorPolling();
 
-      return (deviceModel: _deviceModel, deviceModelMatched: deviceModelMatched);
+      return (
+        deviceModel: _deviceModel,
+        deviceModelMatched: deviceModelMatched
+      );
     } catch (e) {
       debugError('[CONN] Connection failed: $e');
       _updateStep(ConnectionStep.error);
@@ -326,24 +365,25 @@ class MeshCoreConnection {
 
   /// Match manufacturer string to device model
   /// Reference: parseDeviceModel() in wardrive.js
-  DeviceModel? _matchDeviceModel(String manufacturer, List<DeviceModel> models) {
+  DeviceModel? _matchDeviceModel(
+      String manufacturer, List<DeviceModel> models) {
     // Strip build suffix (e.g., "nightly-e31c46f")
     final cleanManufacturer = manufacturer.split(' ').first;
-    
+
     for (final model in models) {
       if (manufacturer.contains(model.manufacturer) ||
           cleanManufacturer.contains(model.manufacturer)) {
         return model;
       }
     }
-    
+
     // Try partial match on short name
     for (final model in models) {
       if (manufacturer.toLowerCase().contains(model.shortName.toLowerCase())) {
         return model;
       }
     }
-    
+
     return null;
   }
 
@@ -352,20 +392,38 @@ class MeshCoreConnection {
     if (frame.isEmpty) return;
 
     try {
-      debugLog('[CONN] Frame received (${frame.length} bytes): ${_hexDump(frame)}');
-      
+      debugLog(
+          '[CONN] Frame received (${frame.length} bytes): ${_hexDump(frame)}');
+
       final reader = BufferReader(frame);
       final responseCode = reader.readByte();
-      
-      debugLog('[CONN] Response code: 0x${responseCode.toRadixString(16).padLeft(2, '0')} ($responseCode)');
+
+      debugLog(
+          '[CONN] Response code: 0x${responseCode.toRadixString(16).padLeft(2, '0')} ($responseCode)');
 
       switch (responseCode) {
         case ResponseCodes.ok:
           debugLog('[CONN] Received OK response');
+          _setTimeCompleter?.complete();
+          _setTimeCompleter = null;
           break;
         case ResponseCodes.err:
-          final errorCode = reader.remainingBytesCount > 0 ? reader.readByte() : 0;
+          final errorCode =
+              reader.remainingBytesCount > 0 ? reader.readByte() : 0;
           debugLog('[CONN] Received ERR response (error code: $errorCode)');
+          // Time sync: error code 6 (ERR_CODE_ILLEGAL_ARG) means "no sync needed" — treat as success
+          if (_setTimeCompleter != null) {
+            if (errorCode == 6) {
+              debugLog(
+                  '[CONN] Time sync not needed (error code 6) - treating as success');
+            } else {
+              debugWarn(
+                  '[CONN] Time sync error (code $errorCode) - continuing anyway');
+            }
+            _setTimeCompleter?.complete();
+            _setTimeCompleter = null;
+            break;
+          }
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
           _statsCompleter?.completeError(errException);
@@ -401,6 +459,9 @@ class MeshCoreConnection {
         case PushCodes.controlData:
           _onControlDataPush(reader);
           break;
+        case PushCodes.traceData:
+          _onTraceDataPush(reader);
+          break;
         case ResponseCodes.stats:
           _onStatsResponse(reader);
           break;
@@ -412,7 +473,8 @@ class MeshCoreConnection {
           break;
         default:
           // Log unhandled response codes (like JS implementation)
-          debugLog('[CONN] Unhandled frame: code=$responseCode (0x${responseCode.toRadixString(16).padLeft(2, '0')})');
+          debugLog(
+              '[CONN] Unhandled frame: code=$responseCode (0x${responseCode.toRadixString(16).padLeft(2, '0')})');
           break;
       }
     } catch (e, stack) {
@@ -446,10 +508,12 @@ class MeshCoreConnection {
 
       // Parse additional fields from v9+ firmware
       int? pathHashMode;
+      String? firmwareVersionString;
       if (reader.remainingBytesCount > 0) {
-        // FIRMWARE_VERSION: 20 bytes (skip)
+        // FIRMWARE_VERSION: 20-byte null-terminated C-string
         if (reader.remainingBytesCount >= 20) {
-          reader.readBytes(20); // firmware version string
+          firmwareVersionString = reader.readCString(20);
+          debugLog('[CONN] Firmware version string: $firmwareVersionString');
         }
 
         // client_repeat: 1 byte (v9+, skip)
@@ -460,7 +524,8 @@ class MeshCoreConnection {
         // path_hash_mode: 1 byte (v10+)
         if (reader.remainingBytesCount >= 1) {
           pathHashMode = reader.readByte();
-          debugLog('[CONN] Device path hash mode: $pathHashMode (${pathHashMode + 1}-byte hops)');
+          debugLog(
+              '[CONN] Device path hash mode: $pathHashMode (${pathHashMode + 1}-byte hops)');
         }
       }
 
@@ -471,6 +536,7 @@ class MeshCoreConnection {
         protocolVersion: firmwareVer,
         manufacturer: manufacturerModel,
         firmwareBuildDate: buildDate,
+        firmwareVersionString: firmwareVersionString,
         pathHashMode: pathHashMode,
       );
 
@@ -482,12 +548,12 @@ class MeshCoreConnection {
       reader.readBytes(32); // skip public key
 
       debugLog('[CONN] Manufacturer: $manufacturer');
-      
+
       final response = DeviceQueryResponse(
         protocolVersion: firmwareVer,
         manufacturer: manufacturer,
       );
-      
+
       _deviceQueryCompleter?.complete(response);
       _deviceQueryCompleter = null;
     }
@@ -508,14 +574,14 @@ class MeshCoreConnection {
       // Skip additional fields added in newer firmware versions
       // These fields exist between publicKey and name
       if (reader.remainingBytesCount >= 22) {
-        reader.readInt32LE();  // advLat
-        reader.readInt32LE();  // advLon
-        reader.readBytes(3);   // reserved
-        reader.readByte();     // manualAddContacts
+        reader.readInt32LE(); // advLat
+        reader.readInt32LE(); // advLon
+        reader.readBytes(3); // reserved
+        reader.readByte(); // manualAddContacts
         reader.readUInt32LE(); // radioFreq
         reader.readUInt32LE(); // radioBw
-        reader.readByte();     // radioSf
-        reader.readByte();     // radioCr
+        reader.readByte(); // radioSf
+        reader.readByte(); // radioCr
       }
 
       // Read name from remaining bytes
@@ -530,7 +596,8 @@ class MeshCoreConnection {
       );
 
       _selfInfo = selfInfo;
-      debugLog('[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}...');
+      debugLog(
+          '[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}...');
 
       _selfInfoCompleter?.complete(selfInfo);
       _selfInfoCompleter = null;
@@ -609,18 +676,42 @@ class MeshCoreConnection {
     _controlDataController.add((raw: raw, snr: snr, rssi: rssi));
   }
 
+  void _onTraceDataPush(BufferReader reader) {
+    // 0x89 TraceData has NO snr/rssi prefix (unlike 0x88 LogRxData).
+    // The entire remaining payload is the trace response:
+    // [reserved][path_len][flags][tag:4][auth:4][path_hashes][path_snrs]
+    final raw = reader.readRemainingBytes();
+
+    debugLog('[CONN] Received trace data: ${raw.length} bytes');
+
+    _traceDataController.add(raw);
+  }
+
   void _onStatsResponse(BufferReader reader) {
     // Stats response format (from web client):
     // <stats_type:1> <noise:int16> <last_rssi:int8> <last_snr:int8> <tx_air_secs:uint32> <rx_air_secs:uint32>
+    // Valid stats payload is 13 bytes. Some firmware versions send peer info
+    // frames on the same response code (0x18) at 82+ bytes — reject those.
+    if (reader.remainingBytesCount > 30) {
+      _statsCompleter?.complete(0);
+      _statsCompleter = null;
+      return;
+    }
     try {
       final statsType = reader.readByte();
       if (statsType == StatsTypes.radio) {
         final noiseFloor = reader.readInt16LE();
         // Skip remaining fields (lastRssi, lastSnr, txAirSecs, rxAirSecs)
-        _lastNoiseFloor = noiseFloor;
-        _noiseFloorController.add(noiseFloor); // Emit to stream
-        debugLog('[CONN] Noise floor updated: ${noiseFloor}dBm');
-        _statsCompleter?.complete(noiseFloor);
+        if (noiseFloor == 0) {
+          // MeshCore 1.14.x AGC reset zeroes out noise floor briefly; discard
+          debugLog('[CONN] Noise floor reading is 0dBm (AGC reset), ignoring');
+          _statsCompleter?.complete(0);
+        } else {
+          _lastNoiseFloor = noiseFloor;
+          _noiseFloorController.add(noiseFloor); // Emit to stream
+          debugLog('[CONN] Noise floor updated: ${noiseFloor}dBm');
+          _statsCompleter?.complete(noiseFloor);
+        }
       } else {
         debugLog('[CONN] Unknown stats type: $statsType');
         _statsCompleter?.complete(0);
@@ -642,7 +733,8 @@ class MeshCoreConnection {
       // Consume any remaining bytes (firmware may send extended format)
       if (reader.remainingBytesCount > 0) {
         final extraBytes = reader.readRemainingBytes();
-        debugLog('[CONN] Battery response has ${extraBytes.length} extra bytes (ignoring)');
+        debugLog(
+            '[CONN] Battery response has ${extraBytes.length} extra bytes (ignoring)');
       }
 
       _batteryController.add(percent); // Emit percentage to stream
@@ -664,10 +756,13 @@ class MeshCoreConnection {
   void _onExportContactResponse(BufferReader reader) {
     try {
       final advertPacketBytes = reader.readRemainingBytes();
-      final hexString = advertPacketBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+      final hexString = advertPacketBytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join('');
       final contactUri = 'meshcore://$hexString';
 
-      debugLog('[CONN] Received export contact: ${contactUri.substring(0, 50)}...');
+      debugLog(
+          '[CONN] Received export contact: ${contactUri.substring(0, 50)}...');
 
       _exportContactCompleter?.complete(contactUri);
       _exportContactCompleter = null;
@@ -700,7 +795,8 @@ class MeshCoreConnection {
 
   /// Get device self info (includes public key)
   /// Reference: getSelfInfo() in connection.js
-  Future<SelfInfo> getSelfInfo({Duration timeout = const Duration(seconds: 5)}) async {
+  Future<SelfInfo> getSelfInfo(
+      {Duration timeout = const Duration(seconds: 5)}) async {
     _selfInfoCompleter = Completer<SelfInfo>();
 
     // Save reference to future BEFORE sending command to avoid race condition
@@ -734,12 +830,23 @@ class MeshCoreConnection {
     );
   }
 
-  /// Set device time
+  /// Set device time and await OK/ERROR response from device
   Future<void> setDeviceTime(int epochSecs) async {
+    _setTimeCompleter = Completer<void>();
+    final future = _setTimeCompleter!.future;
+
     final data = BufferWriter();
     data.writeByte(CommandCodes.setDeviceTime);
     data.writeUInt32LE(epochSecs);
     await _sendToRadio(data);
+
+    return future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        _setTimeCompleter = null;
+        debugWarn('[CONN] Time sync timed out - continuing anyway');
+      },
+    );
   }
 
   /// Set TX power
@@ -779,10 +886,11 @@ class MeshCoreConnection {
     final future = _channelInfoCompleter!.future;
 
     final data = BufferWriter();
-    data.writeByte(CommandCodes.getChannel);  // 31 (0x1F)
+    data.writeByte(CommandCodes.getChannel); // 31 (0x1F)
     data.writeByte(channelIdx);
     final bytes = data.toBytes();
-    debugLog('[CONN] getChannel bytes: ${bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
+    debugLog(
+        '[CONN] getChannel bytes: ${bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
     await _bluetooth.write(bytes);
 
     return future.timeout(
@@ -860,7 +968,8 @@ class MeshCoreConnection {
   Future<ChannelInfo?> findChannelBySecret(Uint8List secret) async {
     final channels = await getChannels();
     try {
-      return channels.firstWhere((channel) => _areBuffersEqual(channel.secret, secret));
+      return channels
+          .firstWhere((channel) => _areBuffersEqual(channel.secret, secret));
     } catch (e) {
       return null; // Not found
     }
@@ -877,7 +986,8 @@ class MeshCoreConnection {
 
   /// Send channel text message (for TX pings)
   /// Reference: sendCommandSendChannelTxtMsg in connection.js
-  Future<void> sendChannelTextMessage(int txtType, int channelIdx, int senderTimestamp, String text) async {
+  Future<void> sendChannelTextMessage(
+      int txtType, int channelIdx, int senderTimestamp, String text) async {
     _sentCompleter = Completer<void>();
 
     // Save reference to future BEFORE sending command to avoid race condition
@@ -901,9 +1011,10 @@ class MeshCoreConnection {
   }
 
   /// Send ping to #wardriving channel
-  /// Format: @[MapperBot] LAT, LON [power]
+  /// Format: @[MapperBot] LAT, LON
+  /// Power is no longer included in the mesh message — it is sent per-ping in the API payload instead
   /// Reference: buildPayload() in wardrive.js
-  Future<void> sendPing(double lat, double lon, double powerWatts) async {
+  Future<void> sendPing(double lat, double lon) async {
     final channel = _wardrivingChannel;
     if (channel == null) {
       throw Exception('Wardriving channel not initialized');
@@ -911,13 +1022,12 @@ class MeshCoreConnection {
 
     // Format coordinates to 5 decimal places with comma separator
     final coordsStr = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
-    // Format power as "X.Xw" (e.g., "1.0w", "0.3w")
-    final powerStr = '${powerWatts.toStringAsFixed(1)}w';
-    final message = '@[MapperBot] $coordsStr [$powerStr]';
+    final message = '@[MapperBot] $coordsStr';
 
     debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    await sendChannelTextMessage(TxtTypes.plain, channel.channelIndex, timestamp, message);
+    await sendChannelTextMessage(
+        TxtTypes.plain, channel.channelIndex, timestamp, message);
   }
 
   /// Send discovery request to find nearby repeaters/rooms
@@ -945,13 +1055,56 @@ class MeshCoreConnection {
         '${tag.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}');
 
     final data = BufferWriter();
-    data.writeByte(CommandCodes.sendControlData);     // 0x37
-    data.writeByte(DiscoveryConstants.discoverReqFlag);  // 0x80 = DISCOVER_REQ
-    data.writeByte(DiscoveryConstants.typeFilterRepeaterRoom);  // 0x0C = REPEATER | ROOM
-    data.writeBytes(tag);                              // 4-byte random tag
-    data.writeUInt32LE(0);                             // timestamp = 0 (discover all)
+    data.writeByte(CommandCodes.sendControlData); // 0x37
+    data.writeByte(DiscoveryConstants.discoverReqFlag); // 0x80 = DISCOVER_REQ
+    data.writeByte(
+        DiscoveryConstants.typeFilterRepeaterRoom); // 0x0C = REPEATER | ROOM
+    data.writeBytes(tag); // 4-byte random tag
+    data.writeUInt32LE(0); // timestamp = 0 (discover all)
     await _sendToRadio(data);
 
+    return tag;
+  }
+
+  /// Send trace path to a specific repeater (targeted ping / zero-hop trace)
+  /// Returns the 4-byte tag used for matching the response
+  /// [hopBytes] controls trace ID size: 1, 2, or 4 bytes (bitshift encoding)
+  Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes,
+      {int hopBytes = 1}) async {
+    final random = Random.secure();
+    final tag = Uint8List.fromList([
+      random.nextInt(256),
+      random.nextInt(256),
+      random.nextInt(256),
+      random.nextInt(256),
+    ]);
+
+    // Trace uses bitshift encoding: actual_bytes = 1 << path_sz
+    // 1 → path_sz=0, 2 → path_sz=1, 4 → path_sz=2
+    final int pathSz;
+    switch (hopBytes) {
+      case 4:
+        pathSz = 2;
+        break;
+      case 2:
+        pathSz = 1;
+        break;
+      default:
+        pathSz = 0;
+        break;
+    }
+    final int flags = pathSz & 0x03;
+
+    debugLog(
+        '[CONN] Sending trace to ${repeaterIdBytes.map((b) => b.toRadixString(16).padLeft(2, "0")).join("")} (traceBytes=$hopBytes, path_sz=$pathSz)');
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.sendTracePath); // 0x24
+    data.writeBytes(tag); // 4-byte tag
+    data.writeUInt32LE(0); // auth_code = 0
+    data.writeByte(flags); // flags with path_sz in bits 0-1
+    data.writeBytes(repeaterIdBytes); // target repeater ID
+    await _sendToRadio(data);
     return tag;
   }
 
@@ -964,12 +1117,13 @@ class MeshCoreConnection {
 
   /// Export signed contact URI for API authentication
   /// Returns meshcore:// URI containing signed ADVERT packet
-  Future<String> exportContact({Duration timeout = const Duration(seconds: 5)}) async {
+  Future<String> exportContact(
+      {Duration timeout = const Duration(seconds: 5)}) async {
     _exportContactCompleter = Completer<String>();
     final future = _exportContactCompleter!.future;
 
     final data = BufferWriter();
-    data.writeByte(CommandCodes.exportContact);  // 0x11
+    data.writeByte(CommandCodes.exportContact); // 0x11
     await _sendToRadio(data);
 
     return future.timeout(
@@ -1032,7 +1186,8 @@ class MeshCoreConnection {
       _noiseFloorFailCount++;
       debugLog('[CONN] Noise floor fetch failed ($_noiseFloorFailCount/3): $e');
       if (_noiseFloorFailCount >= 3) {
-        debugLog('[CONN] Noise floor polling stopped after 3 consecutive failures');
+        debugLog(
+            '[CONN] Noise floor polling stopped after 3 consecutive failures');
         _stopNoiseFloorPolling();
       }
     } finally {
@@ -1100,14 +1255,17 @@ class MeshCoreConnection {
 
   /// Dispose of resources
   void dispose() {
+    _disposed = true;
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
+    _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();
     _channelMessageController.close();
     _rawDataController.close();
     _logRxDataController.close();
     _controlDataController.close();
+    _traceDataController.close();
     _noiseFloorController.close();
     _batteryController.close();
   }

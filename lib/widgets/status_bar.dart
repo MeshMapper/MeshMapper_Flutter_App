@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/ping_colors.dart';
 
 /// Status bar showing GPS, connection, and queue status
 class StatusBar extends StatefulWidget {
@@ -57,7 +58,8 @@ class _StatusBarState extends State<StatusBar> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => Padding(
-        padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(context).viewPadding.bottom),
+        padding: EdgeInsets.fromLTRB(
+            20, 20, 20, 20 + MediaQuery.of(context).viewPadding.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -118,48 +120,102 @@ class _StatusBarState extends State<StatusBar> {
   }
 
   /// Get content for the popup based on ID
-  (String, String, IconData, Color) _getPopupContent(String id, AppStateProvider appState) {
+  (String, String, IconData, Color) _getPopupContent(
+      String id, AppStateProvider appState) {
     switch (id) {
       case 'gps':
         if (appState.offlineMode) {
-          return ('Offline Mode Active', 'Pings are saved locally. Zone detection is paused until you go back online.', Icons.flight, Colors.grey);
+          return (
+            'Offline Mode Active',
+            'Pings are saved locally. Zone detection is paused until you go back online.',
+            Icons.flight,
+            Colors.grey
+          );
         }
         if (appState.inZone == true && appState.zoneCode != null) {
           if (!appState.isConnected) {
-            return ('${appState.zoneName ?? appState.zoneCode} Zone',
+            return (
+              '${appState.zoneName ?? appState.zoneCode} Zone',
               'You\'re in an authorized zone. Connect to a device to start wardriving.',
-              Icons.flight, Colors.grey);
+              Icons.flight,
+              Colors.grey
+            );
           }
           if (!appState.txAllowed) {
-            return ('${appState.zoneName ?? appState.zoneCode} Zone',
+            return (
+              '${appState.zoneName ?? appState.zoneCode} Zone',
               'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive Mode is allowed.',
-              Icons.flight, Colors.red);
+              Icons.flight,
+              Colors.red
+            );
           }
-          return ('${appState.zoneName ?? appState.zoneCode} Zone',
+          return (
+            '${appState.zoneName ?? appState.zoneCode} Zone',
             'You\'re in an active zone with ${appState.zoneSlotsAvailable ?? "?"} TX slots available. Ready to wardrive!',
-            Icons.flight, Colors.green);
+            Icons.flight,
+            Colors.green
+          );
         }
         if (appState.inZone == false) {
           final nearest = appState.nearestZoneName ?? 'Unknown';
           final distKm = appState.nearestZoneDistanceKm;
           final dist = distKm != null
-              ? formatKilometers(distKm, isImperial: appState.preferences.isImperial)
+              ? formatKilometers(distKm,
+                  isImperial: appState.preferences.isImperial)
               : '?';
-          return ('Outside Coverage Area', 'Nearest zone is $nearest, $dist away. Enter a zone to start wardriving.', Icons.flight, Colors.orange);
+          return (
+            'Outside Coverage Area',
+            'Nearest zone is $nearest, $dist away. Enter a zone to start wardriving.',
+            Icons.flight,
+            Colors.orange
+          );
         }
-        return ('Locating...', 'Acquiring GPS signal and checking your zone status.', Icons.gps_not_fixed, Colors.blue);
+        return (
+          'Locating...',
+          'Acquiring GPS signal and checking your zone status.',
+          Icons.gps_not_fixed,
+          Colors.blue
+        );
 
       case 'tx':
-        return ('TX Packets', 'TX packets that have been sent out. These are messages to the #wardriving channel.', Icons.arrow_upward, Colors.green);
+        return (
+          'TX Packets',
+          'TX packets that have been sent out. These are messages to the #wardriving channel.',
+          Icons.arrow_upward,
+          PingColors.txSuccess
+        );
 
       case 'rx':
-        return ('RX Packets', 'RX packets that we have heard from the mesh. These were not initiated by us.', Icons.arrow_downward, Colors.blue);
+        return (
+          'RX Packets',
+          'RX packets that we have heard from the mesh. These were not initiated by us.',
+          Icons.arrow_downward,
+          PingColors.rx
+        );
 
       case 'disc':
-        return ('Discovery Requests', 'Discovery requests we have heard a response for.', Icons.radar, const Color(0xFF7B68EE));
+        return (
+          'Discovery Requests',
+          'Discovery requests we have heard a response for.',
+          Icons.radar,
+          PingColors.discSuccess
+        );
+
+      case 'trace':
+        return (
+          'Trace Responses',
+          'Trace path requests that received a response from the target repeater.',
+          Icons.route,
+          PingColors.traceSuccess
+        );
 
       case 'upload':
-        return ('Uploaded', 'Pings sent to MeshMapper servers. Your data helps build the community coverage map!', Icons.cloud_done, Colors.teal);
+        return (
+          'Uploaded',
+          'Pings sent to MeshMapper servers. Your data helps build the community coverage map!',
+          Icons.cloud_done,
+          Colors.teal
+        );
 
       default:
         return ('Info', '', Icons.info, Colors.grey);
@@ -176,7 +232,11 @@ class _StatusBarState extends State<StatusBar> {
       icon = Icons.flight;
       color = Colors.grey;
       text = '-';
-      return _buildStatChip(icon: icon, value: text, color: color, onTap: () => _showInfoPopup(context, 'gps'));
+      return _buildStatChip(
+          icon: icon,
+          value: text,
+          color: color,
+          onTap: () => _showInfoPopup(context, 'gps'));
     }
 
     // Show GPS region (e.g., "YOW") when locked and inside a zone
@@ -187,7 +247,8 @@ class _StatusBarState extends State<StatusBar> {
           icon = Icons.flight;
           color = appState.isConnected
               ? (appState.txAllowed ? Colors.green : Colors.red)
-              : Colors.grey;  // Grey when not connected, red when zone is at TX capacity
+              : Colors
+                  .grey; // Grey when not connected, red when zone is at TX capacity
           text = appState.zoneCode!;
         } else if (appState.inZone == false) {
           // GPS locked but outside any zone
@@ -225,7 +286,11 @@ class _StatusBarState extends State<StatusBar> {
         break;
     }
 
-    return _buildStatChip(icon: icon, value: text, color: color, onTap: () => _showInfoPopup(context, 'gps'));
+    return _buildStatChip(
+        icon: icon,
+        value: text,
+        color: color,
+        onTap: () => _showInfoPopup(context, 'gps'));
   }
 
   Widget _buildStatsIndicator(BuildContext context, AppStateProvider appState) {
@@ -236,7 +301,7 @@ class _StatusBarState extends State<StatusBar> {
         _AnimatedStatChip(
           icon: Icons.arrow_upward,
           value: appState.pingStats.txCount,
-          color: Colors.green,
+          color: PingColors.txSuccess,
           onTap: () => _showInfoPopup(context, 'tx'),
         ),
 
@@ -246,7 +311,7 @@ class _StatusBarState extends State<StatusBar> {
         _AnimatedStatChip(
           icon: Icons.arrow_downward,
           value: appState.pingStats.rxCount,
-          color: Colors.blue,
+          color: PingColors.rx,
           onTap: () => _showInfoPopup(context, 'rx'),
         ),
 
@@ -256,8 +321,18 @@ class _StatusBarState extends State<StatusBar> {
         _AnimatedStatChip(
           icon: Icons.radar,
           value: appState.pingStats.discCount,
-          color: const Color(0xFF7B68EE),  // DISC purple
+          color: PingColors.discSuccess,
           onTap: () => _showInfoPopup(context, 'disc'),
+        ),
+
+        const SizedBox(width: 8),
+
+        // Trace count chip (animated)
+        _AnimatedStatChip(
+          icon: Icons.route,
+          value: appState.pingStats.traceCount,
+          color: PingColors.traceSuccess,
+          onTap: () => _showInfoPopup(context, 'trace'),
         ),
 
         const SizedBox(width: 8),
@@ -378,7 +453,8 @@ class _AnimatedStatChipState extends State<_AnimatedStatChip>
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: widget.color.withValues(alpha: _highlightAnimation.value),
+                color:
+                    widget.color.withValues(alpha: _highlightAnimation.value),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: widget.color.withValues(alpha: 0.4)),
               ),

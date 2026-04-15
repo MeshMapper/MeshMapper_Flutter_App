@@ -52,6 +52,10 @@ class ApiQueueItem extends HiveObject {
   @HiveField(14)
   final bool externalAntenna;
 
+  /// Radio power in watts (e.g., 0.3, 1.0, 2.0) — included in every API post
+  @HiveField(15)
+  final double? power;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -63,6 +67,7 @@ class ApiQueueItem extends HiveObject {
     this.retryCount = 0,
     this.lastRetryAt,
     this.noiseFloor,
+    this.power,
   });
 
   /// Create from TX ping
@@ -74,6 +79,7 @@ class ApiQueueItem extends HiveObject {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) {
     return ApiQueueItem(
       type: 'TX',
@@ -81,9 +87,11 @@ class ApiQueueItem extends HiveObject {
       longitude: longitude,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
       heardRepeats: heardRepeats,
-      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate — flush timer controls upload timing
+      canUploadAfter: DateTime.now()
+          .millisecondsSinceEpoch, // Immediate — flush timer controls upload timing
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
   }
 
@@ -96,6 +104,7 @@ class ApiQueueItem extends HiveObject {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) {
     return ApiQueueItem(
       type: 'RX',
@@ -106,6 +115,7 @@ class ApiQueueItem extends HiveObject {
       canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
   }
 
@@ -123,9 +133,11 @@ class ApiQueueItem extends HiveObject {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) {
     // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
-    final heardRepeats = '$repeaterId:$nodeType:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}:$pubkeyFull';
+    final heardRepeats =
+        '$repeaterId:$nodeType:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}:$pubkeyFull';
     return ApiQueueItem(
       type: 'DISC',
       latitude: latitude,
@@ -135,6 +147,36 @@ class ApiQueueItem extends HiveObject {
       canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
+    );
+  }
+
+  /// Create from a successful TRACE ping (targeted zero-hop trace)
+  /// heardRepeats format: "repeaterId:localSnr:localRssi:remoteSnr"
+  factory ApiQueueItem.fromTrace({
+    required double latitude,
+    required double longitude,
+    required String repeaterId,
+    required double localSnr,
+    required int localRssi,
+    required double remoteSnr,
+    required int timestamp,
+    required bool externalAntenna,
+    int? noiseFloor,
+    double? power,
+  }) {
+    final heardRepeats =
+        '$repeaterId:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
+    return ApiQueueItem(
+      type: 'TRACE',
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: heardRepeats,
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
+      externalAntenna: externalAntenna,
+      noiseFloor: noiseFloor,
+      power: power,
     );
   }
 
@@ -145,6 +187,7 @@ class ApiQueueItem extends HiveObject {
     required int timestamp,
     required bool externalAntenna,
     int? noiseFloor,
+    double? power,
   }) {
     return ApiQueueItem(
       type: 'DISC',
@@ -155,11 +198,31 @@ class ApiQueueItem extends HiveObject {
       canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
+      power: power,
     );
   }
 
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
+    // For TRACE type, parse the heardRepeats field to extract individual values
+    if (type == 'TRACE') {
+      // Format: "repeaterId:localSnr:localRssi:remoteSnr"
+      final parts = heardRepeats.split(':');
+      return {
+        'type': type,
+        'lat': latitude,
+        'lon': longitude,
+        'noisefloor': noiseFloor,
+        'repeater_id': parts.isNotEmpty ? parts[0] : '',
+        'local_snr': parts.length > 1 ? double.tryParse(parts[1]) : null,
+        'local_rssi': parts.length > 2 ? int.tryParse(parts[2]) : null,
+        'remote_snr': parts.length > 3 ? double.tryParse(parts[3]) : null,
+        'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
+        'external_antenna': externalAntenna,
+        'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+      };
+    }
+
     // For DISC type, parse the heardRepeats field to extract individual values
     if (type == 'DISC') {
       // Failed discovery (no nodes responded)
@@ -172,6 +235,7 @@ class ApiQueueItem extends HiveObject {
           'repeater_id': 'None',
           'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
           'external_antenna': externalAntenna,
+          'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
         };
       }
 
@@ -188,8 +252,10 @@ class ApiQueueItem extends HiveObject {
         'local_rssi': parts.length > 3 ? int.tryParse(parts[3]) ?? 0 : 0,
         'remote_snr': parts.length > 4 ? double.tryParse(parts[4]) ?? 0.0 : 0.0,
         'public_key': parts.length > 5 ? parts[5] : '',
-        'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
+        'timestamp': timestamp.millisecondsSinceEpoch ~/
+            1000, // Unix timestamp in seconds
         'external_antenna': externalAntenna,
+        'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
       };
     }
 
@@ -199,8 +265,10 @@ class ApiQueueItem extends HiveObject {
       'lon': longitude,
       'noisefloor': noiseFloor,
       'heard_repeats': heardRepeats,
-      'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
+      'timestamp':
+          timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
       'external_antenna': externalAntenna,
+      'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
     };
   }
 
@@ -218,7 +286,8 @@ class ApiQueueItem extends HiveObject {
   }
 
   /// Check if item is eligible for upload based on canUploadAfter
-  bool get isUploadEligible => DateTime.now().millisecondsSinceEpoch >= canUploadAfter;
+  bool get isUploadEligible =>
+      DateTime.now().millisecondsSinceEpoch >= canUploadAfter;
 
   /// Mark as retried
   void markRetried() {
@@ -228,5 +297,6 @@ class ApiQueueItem extends HiveObject {
   }
 
   @override
-  String toString() => 'ApiQueueItem($type, $latitude, $longitude, retries=$retryCount)';
+  String toString() =>
+      'ApiQueueItem($type, $latitude, $longitude, retries=$retryCount)';
 }

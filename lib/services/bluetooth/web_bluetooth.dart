@@ -13,14 +13,16 @@ import 'bluetooth_service.dart';
 class WebBluetoothService implements BluetoothService {
   final _connectionController = StreamController<ConnectionStatus>.broadcast();
   final _dataController = StreamController<Uint8List>.broadcast();
-  final fwb.FlutterWebBluetoothInterface _webBluetooth = fwb.FlutterWebBluetooth.instance;
+  final fwb.FlutterWebBluetoothInterface _webBluetooth =
+      fwb.FlutterWebBluetooth.instance;
 
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   DiscoveredDevice? _connectedDevice;
   fwb.BluetoothDevice? _device;
   fwb.BluetoothDevice? _pendingDevice; // Store device from scan for connect()
-  fwb.BluetoothCharacteristic? _rxCharacteristic;  // For writing (device RX)
-  fwb.BluetoothCharacteristic? _txCharacteristic;  // For notifications (device TX)
+  fwb.BluetoothCharacteristic? _rxCharacteristic; // For writing (device RX)
+  fwb.BluetoothCharacteristic?
+      _txCharacteristic; // For notifications (device TX)
   StreamSubscription<ByteData>? _notificationSubscription;
 
   @override
@@ -73,13 +75,15 @@ class WebBluetoothService implements BluetoothService {
     // Web Bluetooth doesn't support scanning - uses requestDevice dialog
     // This is a stub that will yield devices from the request dialog
     _updateStatus(ConnectionStatus.scanning);
-    debugLog('[BLE] Opening device picker with service filter: ${BleUuids.serviceUuid}');
-    
+    debugLog(
+        '[BLE] Opening device picker with service filter: ${BleUuids.serviceUuid}');
+
     try {
       // Request device filtered by MeshCore service UUID (matches JS implementation)
       final device = await _webBluetooth.requestDevice(
         fwb.RequestOptionsBuilder([
-          fwb.RequestFilterBuilder(services: [BleUuids.serviceUuid.toLowerCase()]),
+          fwb.RequestFilterBuilder(
+              services: [BleUuids.serviceUuid.toLowerCase()]),
         ]),
       );
 
@@ -89,7 +93,8 @@ class WebBluetoothService implements BluetoothService {
 
       final deviceName = device.name ?? 'MeshCore Device';
       if (device.name == null) {
-        debugWarn('[BLE] WARNING: Device ${device.id} has no name during scan, using fallback "MeshCore Device"');
+        debugWarn(
+            '[BLE] WARNING: Device ${device.id} has no name during scan, using fallback "MeshCore Device"');
       }
       yield DiscoveredDevice(
         id: device.id,
@@ -123,7 +128,7 @@ class WebBluetoothService implements BluetoothService {
         debugError('[BLE] No pending device - must call scanForDevices first');
         throw Exception('No device selected. Please scan for devices first.');
       }
-      
+
       _device = _pendingDevice;
       _pendingDevice = null; // Clear pending
       debugLog('[BLE] Using stored device: ${_device!.name ?? _device!.id}');
@@ -137,7 +142,7 @@ class WebBluetoothService implements BluetoothService {
       debugLog('[BLE] Discovering services...');
       final services = await _device!.discoverServices();
       debugLog('[BLE] Found ${services.length} services');
-      
+
       // Find our MeshCore service
       fwb.BluetoothService? meshCoreService;
       for (final service in services) {
@@ -148,7 +153,7 @@ class WebBluetoothService implements BluetoothService {
           break;
         }
       }
-      
+
       if (meshCoreService == null) {
         throw Exception('MeshCore service not found');
       }
@@ -179,14 +184,15 @@ class WebBluetoothService implements BluetoothService {
       try {
         await _txCharacteristic!.startNotifications();
         debugLog('[BLE] Notifications started, setting up listener...');
-        
+
         // HIGH-LEVEL API: BluetoothCharacteristic.value is a Stream<ByteData>
         _notificationSubscription = _txCharacteristic!.value.listen(
           (ByteData data) {
             try {
               // Convert ByteData to Uint8List
-              final buffer = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-              
+              final buffer = data.buffer
+                  .asUint8List(data.offsetInBytes, data.lengthInBytes);
+
               if (buffer.isNotEmpty) {
                 debugLog('[BLE] Received ${buffer.length} bytes');
                 _dataController.add(buffer);
@@ -209,7 +215,8 @@ class WebBluetoothService implements BluetoothService {
 
       final deviceName = _device!.name ?? 'MeshCore Device';
       if (_device!.name == null) {
-        debugWarn('[BLE] WARNING: Device ${_device!.id} has no name during connect, using fallback "MeshCore Device"');
+        debugWarn(
+            '[BLE] WARNING: Device ${_device!.id} has no name during connect, using fallback "MeshCore Device"');
       }
       _connectedDevice = DiscoveredDevice(
         id: _device!.id,
@@ -260,6 +267,11 @@ class WebBluetoothService implements BluetoothService {
   void cacheDeviceInfo(DiscoveredDevice device) {
     // Web Bluetooth uses _pendingDevice from requestDevice dialog
     // No caching needed - this method is for mobile remembered devices
+  }
+
+  @override
+  Future<void> removeBond(String deviceId) async {
+    // Web Bluetooth does not support bond management
   }
 
   @override

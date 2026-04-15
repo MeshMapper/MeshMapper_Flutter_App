@@ -73,6 +73,48 @@ class UserPreferences {
   /// Discovery drop: count failed discoveries as failed pings and report to API
   final bool discDropEnabled;
 
+  /// Delete wardriving channel from radio on disconnect
+  final bool deleteChannelOnDisconnect;
+
+  /// Minimum ping distance in meters (25m floor, user can increase)
+  final int minPingDistanceMeters;
+
+  /// Auto-stop auto-ping after 30 minutes of idle (no movement)
+  final bool autoStopAfterIdle;
+
+  /// Show top 3 repeaters by SNR on the map during wardriving
+  final bool showTopRepeaters;
+
+  /// Coverage marker style on the map (dot, pin, diamond)
+  final String markerStyle;
+
+  /// GPS position marker style (arrow, car, bike, boat, walk)
+  final String gpsMarkerStyle;
+
+  /// Color vision type for accessibility (none, protanopia, deuteranopia, tritanopia, achromatopsia)
+  final String colorVisionType;
+
+  /// Download map tiles (base map + coverage overlay). When false, no tile network requests are made to save mobile data.
+  final bool mapTilesEnabled;
+
+  /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
+  final bool disconnectAlertEnabled;
+
+  /// Custom API endpoint enabled (forwards wardrive payload to third-party URL)
+  final bool customApiEnabled;
+
+  /// Custom API endpoint URL (must be HTTPS)
+  final String? customApiUrl;
+
+  /// Custom API endpoint key (sent as X-API-Key header)
+  final String? customApiKey;
+
+  /// Whether the user has accepted the third-party data sharing disclaimer
+  final bool customApiDisclaimerAccepted;
+
+  /// Include device public key prefix in custom API payload (contact field)
+  final bool customApiIncludeContact;
+
   const UserPreferences({
     this.powerLevel = 0.3,
     this.txPower = 22,
@@ -91,13 +133,27 @@ class UserPreferences {
     this.closeAppAfterDisconnect = false,
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
-    this.hybridModeEnabled = false,
+    this.hybridModeEnabled = true,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
     this.disableRssiFilter = false,
     this.anonymousMode = false,
     this.discDropEnabled = false,
+    this.deleteChannelOnDisconnect = true,
+    this.minPingDistanceMeters = 25,
+    this.autoStopAfterIdle = true,
+    this.showTopRepeaters = false,
+    this.markerStyle = 'dot',
+    this.gpsMarkerStyle = 'arrow',
+    this.colorVisionType = 'none',
+    this.mapTilesEnabled = true,
+    this.disconnectAlertEnabled = false,
+    this.customApiEnabled = false,
+    this.customApiUrl,
+    this.customApiKey,
+    this.customApiDisclaimerAccepted = false,
+    this.customApiIncludeContact = true,
   });
 
   /// Create from JSON (for persistence)
@@ -117,17 +173,43 @@ class UserPreferences {
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
       mapStyle: (json['mapStyle'] as String?) ?? 'dark',
-      closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
+      closeAppAfterDisconnect:
+          (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
-      hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? false,
+      hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
+      deleteChannelOnDisconnect:
+          (json['deleteChannelOnDisconnect'] as bool?) ?? true,
+      minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
+      autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
+      showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
+      markerStyle: (json['markerStyle'] as String?) ?? 'dot',
+      gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
+      colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
+      mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
+      disconnectAlertEnabled:
+          (json['disconnectAlertEnabled'] as bool?) ?? false,
+      customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
+      customApiUrl: json['customApiUrl'] as String?,
+      customApiKey: json['customApiKey'] as String?,
+      customApiDisclaimerAccepted:
+          (json['customApiDisclaimerAccepted'] as bool?) ?? false,
+      customApiIncludeContact:
+          (json['customApiIncludeContact'] as bool?) ?? true,
     );
+  }
+
+  /// Migrate the legacy 'pacman' gps marker id to 'chomper' after the rename.
+  static String _migrateGpsMarkerStyle(String? value) {
+    if (value == null) return 'arrow';
+    if (value == 'pacman') return 'chomper';
+    return value;
   }
 
   /// Convert to JSON (for persistence)
@@ -157,6 +239,20 @@ class UserPreferences {
       'disableRssiFilter': disableRssiFilter,
       'anonymousMode': anonymousMode,
       'discDropEnabled': discDropEnabled,
+      'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
+      'minPingDistanceMeters': minPingDistanceMeters,
+      'autoStopAfterIdle': autoStopAfterIdle,
+      'showTopRepeaters': showTopRepeaters,
+      'markerStyle': markerStyle,
+      'gpsMarkerStyle': gpsMarkerStyle,
+      'colorVisionType': colorVisionType,
+      'mapTilesEnabled': mapTilesEnabled,
+      'disconnectAlertEnabled': disconnectAlertEnabled,
+      'customApiEnabled': customApiEnabled,
+      'customApiUrl': customApiUrl,
+      'customApiKey': customApiKey,
+      'customApiDisclaimerAccepted': customApiDisclaimerAccepted,
+      'customApiIncludeContact': customApiIncludeContact,
     };
   }
 
@@ -186,6 +282,20 @@ class UserPreferences {
     bool? disableRssiFilter,
     bool? anonymousMode,
     bool? discDropEnabled,
+    bool? deleteChannelOnDisconnect,
+    int? minPingDistanceMeters,
+    bool? autoStopAfterIdle,
+    bool? showTopRepeaters,
+    String? markerStyle,
+    String? gpsMarkerStyle,
+    String? colorVisionType,
+    bool? mapTilesEnabled,
+    bool? disconnectAlertEnabled,
+    bool? customApiEnabled,
+    String? customApiUrl,
+    String? customApiKey,
+    bool? customApiDisclaimerAccepted,
+    bool? customApiIncludeContact,
   }) {
     return UserPreferences(
       powerLevel: powerLevel ?? this.powerLevel,
@@ -199,10 +309,12 @@ class UserPreferences {
       powerLevelSet: powerLevelSet ?? this.powerLevelSet,
       offlineMode: offlineMode ?? this.offlineMode,
       iataCode: iataCode ?? this.iataCode,
-      backgroundModeEnabled: backgroundModeEnabled ?? this.backgroundModeEnabled,
+      backgroundModeEnabled:
+          backgroundModeEnabled ?? this.backgroundModeEnabled,
       developerModeEnabled: developerModeEnabled ?? this.developerModeEnabled,
       mapStyle: mapStyle ?? this.mapStyle,
-      closeAppAfterDisconnect: closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
+      closeAppAfterDisconnect:
+          closeAppAfterDisconnect ?? this.closeAppAfterDisconnect,
       themeMode: themeMode ?? this.themeMode,
       unitSystem: unitSystem ?? this.unitSystem,
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
@@ -212,6 +324,25 @@ class UserPreferences {
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
+      deleteChannelOnDisconnect:
+          deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
+      minPingDistanceMeters:
+          minPingDistanceMeters ?? this.minPingDistanceMeters,
+      autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
+      showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
+      markerStyle: markerStyle ?? this.markerStyle,
+      gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
+      colorVisionType: colorVisionType ?? this.colorVisionType,
+      mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
+      disconnectAlertEnabled:
+          disconnectAlertEnabled ?? this.disconnectAlertEnabled,
+      customApiEnabled: customApiEnabled ?? this.customApiEnabled,
+      customApiUrl: customApiUrl ?? this.customApiUrl,
+      customApiKey: customApiKey ?? this.customApiKey,
+      customApiDisclaimerAccepted:
+          customApiDisclaimerAccepted ?? this.customApiDisclaimerAccepted,
+      customApiIncludeContact:
+          customApiIncludeContact ?? this.customApiIncludeContact,
     );
   }
 
@@ -236,6 +367,9 @@ class UserPreferences {
     if (autoPingInterval == 60) return '60 seconds';
     return '$autoPingInterval seconds';
   }
+
+  /// Get min ping distance display string
+  String get minPingDistanceDisplay => '${minPingDistanceMeters}m';
 
   @override
   bool operator ==(Object other) {
@@ -263,7 +397,21 @@ class UserPreferences {
         other.mapRotationLocked == mapRotationLocked &&
         other.disableRssiFilter == disableRssiFilter &&
         other.anonymousMode == anonymousMode &&
-        other.discDropEnabled == discDropEnabled;
+        other.discDropEnabled == discDropEnabled &&
+        other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
+        other.minPingDistanceMeters == minPingDistanceMeters &&
+        other.autoStopAfterIdle == autoStopAfterIdle &&
+        other.showTopRepeaters == showTopRepeaters &&
+        other.markerStyle == markerStyle &&
+        other.gpsMarkerStyle == gpsMarkerStyle &&
+        other.colorVisionType == colorVisionType &&
+        other.mapTilesEnabled == mapTilesEnabled &&
+        other.disconnectAlertEnabled == disconnectAlertEnabled &&
+        other.customApiEnabled == customApiEnabled &&
+        other.customApiUrl == customApiUrl &&
+        other.customApiKey == customApiKey &&
+        other.customApiDisclaimerAccepted == customApiDisclaimerAccepted &&
+        other.customApiIncludeContact == customApiIncludeContact;
   }
 
   @override
@@ -292,6 +440,20 @@ class UserPreferences {
       disableRssiFilter,
       anonymousMode,
       discDropEnabled,
+      deleteChannelOnDisconnect,
+      minPingDistanceMeters,
+      autoStopAfterIdle,
+      showTopRepeaters,
+      markerStyle,
+      gpsMarkerStyle,
+      colorVisionType,
+      mapTilesEnabled,
+      disconnectAlertEnabled,
+      customApiEnabled,
+      customApiUrl,
+      customApiKey,
+      customApiDisclaimerAccepted,
+      customApiIncludeContact,
     ]);
   }
 
@@ -325,4 +487,9 @@ class AutoPingInterval {
   static const int slow = 60; // 60 seconds
 
   static const List<int> values = [fast, normal, slow];
+}
+
+/// Minimum ping distance (meters)
+class MinPingDistance {
+  static const int min = 25;
 }

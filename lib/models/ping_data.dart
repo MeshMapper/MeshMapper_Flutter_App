@@ -7,7 +7,7 @@ part 'ping_data.g.dart';
 enum PingType {
   @HiveField(0)
   tx,
-  
+
   @HiveField(1)
   rx,
 }
@@ -48,7 +48,8 @@ class TxPing {
   /// Note: power is stored in dBm but the message format uses watts
   /// The actual message is built in PingService with the correct watts value
   String toMessageFormat({double? powerWatts}) {
-    final coordsStr = '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
+    final coordsStr =
+        '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
     final pw = powerWatts ?? 0.3; // Default to 0.3w if not provided
     return '@[MapperBot] $coordsStr [${pw.toStringAsFixed(1)}w]';
   }
@@ -70,19 +71,19 @@ class TxPing {
 class RxPing {
   @HiveField(0)
   final double latitude;
-  
+
   @HiveField(1)
   final double longitude;
-  
+
   @HiveField(2)
   final String repeaterId;
-  
+
   @HiveField(3)
   final DateTime timestamp;
-  
+
   @HiveField(4)
   final double snr;
-  
+
   @HiveField(5)
   final int rssi;
 
@@ -139,6 +140,7 @@ class PingStats {
   final int txCount;
   final int rxCount;
   final int discCount; // Discovery count (Passive Mode)
+  final int traceCount; // Trace count (Targeted Mode)
   final int successfulUploads;
   final int failedUploads;
   final int queuedCount;
@@ -147,6 +149,7 @@ class PingStats {
     this.txCount = 0,
     this.rxCount = 0,
     this.discCount = 0,
+    this.traceCount = 0,
     this.successfulUploads = 0,
     this.failedUploads = 0,
     this.queuedCount = 0,
@@ -156,6 +159,7 @@ class PingStats {
     int? txCount,
     int? rxCount,
     int? discCount,
+    int? traceCount,
     int? successfulUploads,
     int? failedUploads,
     int? queuedCount,
@@ -164,6 +168,7 @@ class PingStats {
       txCount: txCount ?? this.txCount,
       rxCount: rxCount ?? this.rxCount,
       discCount: discCount ?? this.discCount,
+      traceCount: traceCount ?? this.traceCount,
       successfulUploads: successfulUploads ?? this.successfulUploads,
       failedUploads: failedUploads ?? this.failedUploads,
       queuedCount: queuedCount ?? this.queuedCount,

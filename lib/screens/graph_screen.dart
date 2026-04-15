@@ -19,12 +19,14 @@ class GraphScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Noise Floor History'),
+        toolbarHeight: 40,
+        title:
+            const Text('Noise Floor History', style: TextStyle(fontSize: 18)),
         automaticallyImplyLeading: false,
         actions: [
           if (sessions.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(Icons.delete_outline, size: 20),
               onPressed: () => _confirmClearSessions(context, appState),
               tooltip: 'Clear all sessions',
             ),
@@ -78,7 +80,8 @@ class GraphScreen extends StatelessWidget {
           _SessionListTile(
             session: currentSession,
             isActive: true,
-            onTap: () => _openFullScreenGraph(context, currentSession, isLive: true),
+            onTap: () =>
+                _openFullScreenGraph(context, currentSession, isLive: true),
           ),
           if (sessions.isNotEmpty) const Divider(),
         ],
@@ -93,10 +96,12 @@ class GraphScreen extends StatelessWidget {
     );
   }
 
-  void _openFullScreenGraph(BuildContext context, NoiseFloorSession session, {bool isLive = false}) {
+  void _openFullScreenGraph(BuildContext context, NoiseFloorSession session,
+      {bool isLive = false}) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => _FullScreenGraphPage(session: session, isLive: isLive),
+        builder: (context) =>
+            _FullScreenGraphPage(session: session, isLive: isLive),
       ),
     );
   }
@@ -106,7 +111,8 @@ class GraphScreen extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Clear All Sessions?'),
-        content: const Text('This will delete all saved noise floor session graphs. The current active session will not be affected.'),
+        content: const Text(
+            'This will delete all saved noise floor session graphs. The current active session will not be affected.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -148,7 +154,8 @@ class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
     _session = widget.session;
     if (widget.isLive) {
       _liveTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-        final current = context.read<AppStateProvider>().currentNoiseFloorSession;
+        final current =
+            context.read<AppStateProvider>().currentNoiseFloorSession;
         if (current != null) {
           setState(() {
             _session = current;

@@ -29,9 +29,11 @@ class BackgroundServiceManager {
   static bool _isRunning = false;
 
   /// Initialize the background service.
-  /// Called lazily on first startService() call.
-  /// On Android, configure() may start the foreground service as a side effect,
-  /// so this should NOT be called eagerly at app startup.
+  /// Called lazily on first startService() call — never at app startup.
+  /// On Android, configure() may start the foreground service as a side effect
+  /// (service resurrection), so this MUST only be called when we actually
+  /// intend to start the service. Startup orphan cleanup uses
+  /// cleanupOrphanedService() which cancels the notification directly.
   static Future<void> initialize() async {
     // Skip on web - no background service support
     if (kIsWeb) {
@@ -93,7 +95,8 @@ class BackgroundServiceManager {
       // (e.g., Android resurrecting a previously-killed foreground service).
       final isRunning = await _service!.isRunning();
       if (isRunning) {
-        debugLog('[BACKGROUND] Service unexpectedly running after configure(), stopping it');
+        debugLog(
+            '[BACKGROUND] Service unexpectedly running after configure(), stopping it');
         _service!.invoke('stop');
       }
 
@@ -207,14 +210,25 @@ class BackgroundServiceManager {
   /// Clean up any orphaned foreground service from a previous app session.
   /// On Android, the foreground service can survive app process death.
   /// Call this at app startup to ensure no stale notification persists.
+  ///
+  /// This intentionally does NOT call initialize()/configure(), because
+  /// configure() with isForegroundMode:true can cause Android to resurrect
+  /// a killed foreground service as a side effect — producing a phantom
+  /// notification hours later (the "3am notification" bug).
+  ///
+  /// Instead, we cancel the notification directly by ID. Without its
+  /// required notification, Android will terminate any orphaned foreground
+  /// service within seconds.
   static Future<void> cleanupOrphanedService() async {
     if (kIsWeb) return;
     try {
-      debugLog('[BACKGROUND] Checking for orphaned service from previous session');
-      await initialize();
-      // initialize() has a defense check that stops any running service
+      debugLog(
+          '[BACKGROUND] Dismissing any orphaned notification from previous session');
+      final plugin = FlutterLocalNotificationsPlugin();
+      await plugin.cancel(_notificationId);
+      debugLog('[BACKGROUND] Orphaned notification cleanup complete');
     } catch (e) {
-      debugError('[BACKGROUND] Failed to cleanup orphaned service: $e');
+      debugError('[BACKGROUND] Failed to cleanup orphaned notification: $e');
     }
   }
 
@@ -249,6 +263,8 @@ class BackgroundServiceManager {
         String body;
         if (mode == 'Passive Mode') {
           body = 'RX: $rxCount | Queue: $queueSize';
+        } else if (mode == 'Trace Mode') {
+          body = 'Trace: $txCount | RX: $rxCount | Queue: $queueSize';
         } else {
           body = 'TX: $txCount | RX: $rxCount | Queue: $queueSize';
         }
