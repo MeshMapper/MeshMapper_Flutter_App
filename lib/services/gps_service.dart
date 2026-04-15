@@ -15,15 +15,15 @@ import 'gps_simulator_service.dart';
 class GpsService {
   /// Minimum distance (meters) from last ping before allowing new ping
   static const double minDistanceMeters = 25.0;
-  
+
   /// Maximum GPS age for manual pings (60 seconds)
   /// Reference: GPS_WATCH_MAX_AGE_MS in wardrive.js
   static const Duration maxGpsAgeForManualPing = Duration(seconds: 60);
-  
+
   /// Maximum GPS accuracy threshold for pings (100 meters)
   /// Reference: GPS_ACCURACY_THRESHOLD_M in wardrive.js docs
   static const double maxAccuracyMetersForPing = 100.0;
-  
+
   /// Maximum GPS accuracy threshold for zone checks (50 meters)
   /// Reference: getValidGpsForZoneCheck() in wardrive.js
   static const double maxAccuracyMetersForZoneCheck = 50.0;
@@ -36,8 +36,10 @@ class GpsService {
 
   /// Set the minimum ping distance (clamped to 25m floor)
   void setMinPingDistance(double meters) {
-    _configuredMinDistance = meters < minDistanceMeters ? minDistanceMeters : meters;
-    debugLog('[GPS] Min ping distance set to ${_configuredMinDistance.toInt()}m');
+    _configuredMinDistance =
+        meters < minDistanceMeters ? minDistanceMeters : meters;
+    debugLog(
+        '[GPS] Min ping distance set to ${_configuredMinDistance.toInt()}m');
   }
 
   final _statusController = StreamController<GpsStatus>.broadcast();
@@ -105,7 +107,8 @@ class GpsService {
     }
 
     if (permission == LocationPermission.deniedForever) {
-      debugLog('[GPS] Permission denied forever - user must enable in Settings');
+      debugLog(
+          '[GPS] Permission denied forever - user must enable in Settings');
       _updateStatus(GpsStatus.permissionDenied);
       return false;
     }
@@ -143,7 +146,8 @@ class GpsService {
 
     // If denied forever, can't request again - user must go to settings
     if (current == LocationPermission.deniedForever) {
-      debugLog('[GPS] Permission denied forever - user must enable in Settings');
+      debugLog(
+          '[GPS] Permission denied forever - user must enable in Settings');
       return false;
     }
 
@@ -176,7 +180,8 @@ class GpsService {
     // Ensure only one active position stream subscription exists.
     // startWatching() can be called multiple times (e.g. after permission flow).
     if (_positionSubscription != null) {
-      debugLog('[GPS] Existing position subscription found, restarting watcher');
+      debugLog(
+          '[GPS] Existing position subscription found, restarting watcher');
       await _positionSubscription?.cancel();
       _positionSubscription = null;
     }
@@ -185,7 +190,8 @@ class GpsService {
     final serviceEnabled = await isLocationServiceEnabled();
     debugLog('[GPS] Location services check: enabled=$serviceEnabled');
     if (!serviceEnabled) {
-      debugLog('[GPS] Location services DISABLED at system level - user must enable in Settings');
+      debugLog(
+          '[GPS] Location services DISABLED at system level - user must enable in Settings');
       _updateStatus(GpsStatus.disabled);
       return;
     }
@@ -199,18 +205,22 @@ class GpsService {
       final permission = await Geolocator.checkPermission();
       final hasPermission = permission == LocationPermission.always ||
           permission == LocationPermission.whileInUse;
-      debugLog('[GPS] Permission check: $permission (hasPermission=$hasPermission)');
+      debugLog(
+          '[GPS] Permission check: $permission (hasPermission=$hasPermission)');
       if (!hasPermission) {
         if (permission == LocationPermission.deniedForever) {
-          debugLog('[GPS] Permission denied forever - user must enable in Settings');
+          debugLog(
+              '[GPS] Permission denied forever - user must enable in Settings');
         } else {
-          debugLog('[GPS] Permission not granted - waiting for disclosure flow');
+          debugLog(
+              '[GPS] Permission not granted - waiting for disclosure flow');
         }
         _updateStatus(GpsStatus.permissionDenied);
         return;
       }
     } else {
-      debugLog('[GPS] Web platform - skipping permission pre-check, will prompt via position stream');
+      debugLog(
+          '[GPS] Web platform - skipping permission pre-check, will prompt via position stream');
     }
 
     debugLog('[GPS] Starting position stream listener...');
@@ -228,11 +238,13 @@ class GpsService {
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 10, // Trigger every 10m movement (check RX batches at 25m)
+        distanceFilter:
+            10, // Trigger every 10m movement (check RX batches at 25m)
       ),
     ).listen(
       (position) {
-        debugLog('[GPS SERVICE] Position stream fired: lat=${position.latitude.toStringAsFixed(5)}, '
+        debugLog(
+            '[GPS SERVICE] Position stream fired: lat=${position.latitude.toStringAsFixed(5)}, '
             'lon=${position.longitude.toStringAsFixed(5)}, accuracy=${position.accuracy.toStringAsFixed(1)}m');
         _lastPosition = position;
         _positionController.add(position);
@@ -253,7 +265,8 @@ class GpsService {
         desiredAccuracy: LocationAccuracy.high,
         timeLimit: const Duration(seconds: 15),
       );
-      debugLog('[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
+      debugLog(
+          '[GPS] Initial position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
       _lastPosition = position;
       // Note: Don't emit via _positionController here — the stream listener
@@ -261,7 +274,8 @@ class GpsService {
       // would cause duplicate position events (~0.15ms apart).
       _updateStatus(GpsStatus.locked);
     } catch (e) {
-      debugLog('[GPS] Initial position request failed: $e (will wait for stream updates)');
+      debugLog(
+          '[GPS] Initial position request failed: $e (will wait for stream updates)');
       // Will receive updates from stream
     }
   }
@@ -303,19 +317,19 @@ class GpsService {
     final age = DateTime.now().difference(position.timestamp);
     return age <= maxGpsAgeForManualPing;
   }
-  
+
   /// Check if GPS position has acceptable accuracy for pings (< 100m)
   /// Reference: GPS_ACCURACY_THRESHOLD_M in wardrive.js
   bool isAccuracyAcceptableForPing(Position position) {
     return position.accuracy <= maxAccuracyMetersForPing;
   }
-  
+
   /// Check if GPS position has acceptable accuracy for zone checks (< 50m)
   /// Reference: getValidGpsForZoneCheck() in wardrive.js
   bool isAccuracyAcceptableForZoneCheck(Position position) {
     return position.accuracy <= maxAccuracyMetersForZoneCheck;
   }
-  
+
   /// Validate position for ping operation
   /// Checks freshness (< 60s old) and accuracy (< 100m)
   /// Returns null if valid, error message if invalid
@@ -326,17 +340,17 @@ class GpsService {
       debugWarn('[GPS] Position too old: ${age}s (max 60s)');
       return 'GPS data too old ($age seconds)';
     }
-    
+
     // Check accuracy
     if (!isAccuracyAcceptableForPing(position)) {
       final accuracy = position.accuracy.toInt();
       debugWarn('[GPS] Position too inaccurate: ${accuracy}m (max 100m)');
       return 'GPS accuracy too low ($accuracy meters)';
     }
-    
+
     return null; // Valid
   }
-  
+
   /// Validate position for zone check operation
   /// Checks freshness (< 60s old) and accuracy (< 50m, stricter than ping)
   /// Returns null if valid, error message if invalid
@@ -347,21 +361,22 @@ class GpsService {
       debugWarn('[GPS] [AUTH] Position too old: ${age}s (max 60s)');
       return 'GPS data too old ($age seconds)';
     }
-    
+
     // Check accuracy (stricter for zone checks)
     if (!isAccuracyAcceptableForZoneCheck(position)) {
       final accuracy = position.accuracy.toInt();
       debugWarn('[GPS] [AUTH] Position too inaccurate: ${accuracy}m (max 50m)');
       return 'GPS accuracy too low ($accuracy meters)';
     }
-    
+
     return null; // Valid
   }
 
   /// Request a fresh GPS position from the hardware for auto-ping accuracy.
   /// On mobile, this forces a warm-start GPS read (typically < 1 second when
   /// GPS is already streaming). Falls back to lastPosition on timeout/error.
-  Future<Position?> getFreshPosition({Duration timeout = const Duration(seconds: 3)}) async {
+  Future<Position?> getFreshPosition(
+      {Duration timeout = const Duration(seconds: 3)}) async {
     // Simulator provides its own positions — use cached
     if (_simulatorEnabled) {
       return _lastPosition;
@@ -372,7 +387,8 @@ class GpsService {
         desiredAccuracy: LocationAccuracy.high,
         timeLimit: timeout,
       );
-      debugLog('[GPS] Fresh position acquired: ${position.latitude.toStringAsFixed(5)}, '
+      debugLog(
+          '[GPS] Fresh position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
       _lastPosition = position;
       return position;

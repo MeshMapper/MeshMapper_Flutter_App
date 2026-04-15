@@ -35,10 +35,13 @@ class MobileBluetoothService implements BluetoothService {
   }
 
   void _ensureControllers() {
-    if (_isDisposed || _connectionController == null || _connectionController!.isClosed) {
+    if (_isDisposed ||
+        _connectionController == null ||
+        _connectionController!.isClosed) {
       _initControllers();
     }
   }
+
   DiscoveredDevice? _connectedDevice;
   fbp.BluetoothDevice? _bleDevice;
   fbp.BluetoothCharacteristic? _rxCharacteristic;
@@ -135,19 +138,21 @@ class MobileBluetoothService implements BluetoothService {
       debugLog('[BLE] iOS location permission check: $locationPermission');
 
       if (locationPermission == LocationPermission.deniedForever) {
-        debugLog('[BLE] iOS location permission permanently denied - user must enable in Settings');
+        debugLog(
+            '[BLE] iOS location permission permanently denied - user must enable in Settings');
         throw BlePermissionDeniedException(
-          'Location permission required for Bluetooth scanning. '
-          'Please enable in Settings > Privacy & Security > Location Services > MeshMapper'
-        );
+            'Location permission required for Bluetooth scanning. '
+            'Please enable in Settings > Privacy & Security > Location Services > MeshMapper');
       }
 
       if (locationPermission == LocationPermission.denied) {
-        debugLog('[BLE] iOS location permission not yet granted (disclosure flow will handle)');
+        debugLog(
+            '[BLE] iOS location permission not yet granted (disclosure flow will handle)');
         return false;
       }
 
-      debugLog('[BLE] iOS permissions OK - Core Bluetooth will prompt for Bluetooth access when scanning');
+      debugLog(
+          '[BLE] iOS permissions OK - Core Bluetooth will prompt for Bluetooth access when scanning');
       return true;
     } else {
       // Android: Use bluetoothScan and bluetoothConnect (Android 12+)
@@ -155,18 +160,26 @@ class MobileBluetoothService implements BluetoothService {
       // Location requests are handled by the disclosure flow in MainScaffold.
       final bluetoothScan = await Permission.bluetoothScan.request();
       final bluetoothConnect = await Permission.bluetoothConnect.request();
-      final location = await Permission.locationWhenInUse.status; // CHECK only, don't request
+      final location = await Permission
+          .locationWhenInUse.status; // CHECK only, don't request
 
-      debugLog('[BLE] Android permission check - scan: $bluetoothScan, connect: $bluetoothConnect, location: $location');
+      debugLog(
+          '[BLE] Android permission check - scan: $bluetoothScan, connect: $bluetoothConnect, location: $location');
 
       // Check for permanently denied permissions
-      if (bluetoothScan.isPermanentlyDenied || bluetoothConnect.isPermanentlyDenied || location.isPermanentlyDenied) {
+      if (bluetoothScan.isPermanentlyDenied ||
+          bluetoothConnect.isPermanentlyDenied ||
+          location.isPermanentlyDenied) {
         final denied = <String>[];
         if (bluetoothScan.isPermanentlyDenied) denied.add('Bluetooth Scan');
-        if (bluetoothConnect.isPermanentlyDenied) denied.add('Bluetooth Connect');
+        if (bluetoothConnect.isPermanentlyDenied) {
+          denied.add('Bluetooth Connect');
+        }
         if (location.isPermanentlyDenied) denied.add('Location');
-        debugLog('[BLE] Android permissions permanently denied: ${denied.join(", ")}');
-        throw BlePermissionDeniedException('${denied.join(", ")} permission(s) denied. Please enable in Settings');
+        debugLog(
+            '[BLE] Android permissions permanently denied: ${denied.join(", ")}');
+        throw BlePermissionDeniedException(
+            '${denied.join(", ")} permission(s) denied. Please enable in Settings');
       }
 
       final granted = bluetoothScan.isGranted &&
@@ -185,7 +198,7 @@ class MobileBluetoothService implements BluetoothService {
   Stream<DiscoveredDevice> scanForDevices({Duration? timeout}) async* {
     final controller = StreamController<DiscoveredDevice>();
     _scanController = controller;
-    
+
     _updateStatus(ConnectionStatus.scanning);
 
     try {
@@ -203,9 +216,11 @@ class MobileBluetoothService implements BluetoothService {
       _scanSubscription = fbp.FlutterBluePlus.scanResults.listen((results) {
         for (final result in results) {
           final hasName = result.device.platformName.isNotEmpty;
-          final deviceName = hasName ? result.device.platformName : 'MeshCore Device';
+          final deviceName =
+              hasName ? result.device.platformName : 'MeshCore Device';
           if (!hasName) {
-            debugLog('[BLE] WARNING: Device ${result.device.remoteId.str} has no platformName during scan, using fallback "MeshCore Device"');
+            debugLog(
+                '[BLE] WARNING: Device ${result.device.remoteId.str} has no platformName during scan, using fallback "MeshCore Device"');
           }
           final device = DiscoveredDevice(
             id: result.device.remoteId.str,
@@ -222,7 +237,9 @@ class MobileBluetoothService implements BluetoothService {
 
       // Complete stream when scan naturally stops (timeout or platform stop)
       unawaited(() async {
-        await fbp.FlutterBluePlus.isScanning.where((isScanning) => !isScanning).first;
+        await fbp.FlutterBluePlus.isScanning
+            .where((isScanning) => !isScanning)
+            .first;
         if (!controller.isClosed) {
           await controller.close();
         }
@@ -296,7 +313,8 @@ class MobileBluetoothService implements BluetoothService {
         debugLog('[BLE] Connecting to GATT...');
         await _bleDevice!.connect(
           timeout: const Duration(seconds: 15),
-          mtu: null,  // Disable automatic MTU negotiation during connect to avoid race condition errors on Android
+          mtu:
+              null, // Disable automatic MTU negotiation during connect to avoid race condition errors on Android
         );
         debugLog('[BLE] GATT connected');
 
@@ -313,7 +331,8 @@ class MobileBluetoothService implements BluetoothService {
           } catch (e) {
             // MTU negotiation failure is not fatal - continue with default MTU
             // Some older devices may not support MTU negotiation
-            debugLog('[BLE] MTU negotiation failed (continuing with default): $e');
+            debugLog(
+                '[BLE] MTU negotiation failed (continuing with default): $e');
           }
         } else {
           // iOS auto-negotiates MTU, just log the current value
@@ -326,7 +345,8 @@ class MobileBluetoothService implements BluetoothService {
         // Flutter Blue Plus emits the current state immediately when you subscribe,
         // but we only want to react to CHANGES, not the initial state.
         // This prevents false disconnection triggers during connection setup.
-        _connectionStateSubscription = _bleDevice!.connectionState.skip(1).listen((state) {
+        _connectionStateSubscription =
+            _bleDevice!.connectionState.skip(1).listen((state) {
           debugLog('[BLE] Connection state changed: $state');
           if (state == fbp.BluetoothConnectionState.disconnected) {
             _handleDisconnection();
@@ -364,8 +384,11 @@ class MobileBluetoothService implements BluetoothService {
         // Enable notifications on TX characteristic
         debugLog('[BLE] Enabling notifications...');
         await _txCharacteristic!.setNotifyValue(true);
-        _notificationSubscription = _txCharacteristic!.lastValueStream.listen((value) {
-          if (value.isNotEmpty && _dataController != null && !_dataController!.isClosed) {
+        _notificationSubscription =
+            _txCharacteristic!.lastValueStream.listen((value) {
+          if (value.isNotEmpty &&
+              _dataController != null &&
+              !_dataController!.isClosed) {
             _dataController!.add(Uint8List.fromList(value));
           }
         });
@@ -380,41 +403,48 @@ class MobileBluetoothService implements BluetoothService {
           deviceName = _bleDevice!.platformName;
         } else {
           deviceName = 'MeshCore Device';
-          debugLog('[BLE] WARNING: No device name available for $deviceId during connect - no scan cache, empty platformName. Using fallback "MeshCore Device"');
+          debugLog(
+              '[BLE] WARNING: No device name available for $deviceId during connect - no scan cache, empty platformName. Using fallback "MeshCore Device"');
         }
         _connectedDevice = DiscoveredDevice(
           id: deviceId,
           name: deviceName,
         );
         if (deviceName == 'MeshCore Device') {
-          debugLog('[BLE] WARNING: Connected device name is "MeshCore Device" (from scan: ${scannedDevice != null}, scanName: ${scannedDevice?.name}, platformName: ${_bleDevice!.platformName})');
+          debugLog(
+              '[BLE] WARNING: Connected device name is "MeshCore Device" (from scan: ${scannedDevice != null}, scanName: ${scannedDevice?.name}, platformName: ${_bleDevice!.platformName})');
         } else {
-          debugLog('[BLE] Device name: $deviceName (from scan: ${scannedDevice != null}, platformName: ${_bleDevice!.platformName})');
+          debugLog(
+              '[BLE] Device name: $deviceName (from scan: ${scannedDevice != null}, platformName: ${_bleDevice!.platformName})');
         }
 
         debugLog('[BLE] Connection complete');
         _updateStatus(ConnectionStatus.connected);
         return; // Success - exit retry loop
-
       } catch (e, stackTrace) {
         final errorStr = e.toString();
 
         // Check for Android error 133 (GATT_ERROR) - a well-known Android BLE stack issue
         // that typically succeeds on retry
-        final isError133 = Platform.isAndroid && errorStr.contains('android-code: 133');
+        final isError133 =
+            Platform.isAndroid && errorStr.contains('android-code: 133');
 
         // Check for iOS apple-code 14 (Peer removed pairing information) or
         // apple-code 15 (Failed to encrypt the connection) — both indicate stale bond keys
         final isBondError = Platform.isIOS &&
-            (errorStr.contains('apple-code: 14') || errorStr.contains('apple-code: 15') || errorStr.contains('Peer removed pairing information'));
+            (errorStr.contains('apple-code: 14') ||
+                errorStr.contains('apple-code: 15') ||
+                errorStr.contains('Peer removed pairing information'));
 
         if ((isError133 || isBondError) && attempt < _maxRetries) {
           if (isBondError) {
-            debugLog('[BLE] Bond error (apple-code 14/15) on attempt $attempt, removing bond and retrying...');
+            debugLog(
+                '[BLE] Bond error (apple-code 14/15) on attempt $attempt, removing bond and retrying...');
             await removeBond(deviceId);
             await Future.delayed(const Duration(seconds: 2));
           } else {
-            debugLog('[BLE] Error 133 on attempt $attempt, retrying after delay...');
+            debugLog(
+                '[BLE] Error 133 on attempt $attempt, retrying after delay...');
             await Future.delayed(_retryDelay);
           }
           // Force cleanup before retry

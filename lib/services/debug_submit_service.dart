@@ -135,7 +135,8 @@ class DebugSubmitService {
     );
 
     if (ticketResult == null || ticketResult['success'] != true) {
-      final error = ticketResult?['message'] as String? ?? 'Failed to create ticket';
+      final error =
+          ticketResult?['message'] as String? ?? 'Failed to create ticket';
       debugError('[BUG REPORT] FAILED: Ticket creation failed: $error');
       debugLog('[BUG REPORT] ========================================');
       return BugReportResult.error(error);
@@ -167,11 +168,13 @@ class DebugSubmitService {
         debugLog('[BUG REPORT] ----------------------------------------');
         debugLog('[BUG REPORT] File ${i + 1}/$totalFiles: $filename');
 
-        reportProgress('Uploading $filename...', fileProgress, currentFile: i + 1);
+        reportProgress('Uploading $filename...', fileProgress,
+            currentFile: i + 1);
 
         // Add delay before file uploads to prevent server overload
         if (totalFiles > 1) {
-          final delayMs = i == 0 ? 500 : 1000; // 500ms before first, 1s between others
+          final delayMs =
+              i == 0 ? 500 : 1000; // 500ms before first, 1s between others
           debugLog('[BUG REPORT] Waiting ${delayMs}ms before upload...');
           await Future.delayed(Duration(milliseconds: delayMs));
         }
@@ -188,16 +191,20 @@ class DebugSubmitService {
         if (success) {
           uploadedCount++;
           debugLog('[BUG REPORT] File ${i + 1}/$totalFiles: SUCCESS');
-          reportProgress('Uploaded $filename', fileProgress + progressPerFile, currentFile: i + 1);
+          reportProgress('Uploaded $filename', fileProgress + progressPerFile,
+              currentFile: i + 1);
         } else {
           failedCount++;
           debugError('[BUG REPORT] File ${i + 1}/$totalFiles: FAILED');
-          reportProgress('Failed to upload $filename', fileProgress + progressPerFile, currentFile: i + 1);
+          reportProgress(
+              'Failed to upload $filename', fileProgress + progressPerFile,
+              currentFile: i + 1);
         }
       }
 
       debugLog('[BUG REPORT] ----------------------------------------');
-      debugLog('[BUG REPORT] Upload summary: $uploadedCount succeeded, $failedCount failed');
+      debugLog(
+          '[BUG REPORT] Upload summary: $uploadedCount succeeded, $failedCount failed');
     }
 
     reportProgress('Finalizing...', 0.95);
@@ -205,7 +212,8 @@ class DebugSubmitService {
     debugLog('[BUG REPORT] ========================================');
     debugLog('[BUG REPORT] Bug report submission complete');
     debugLog('[BUG REPORT] Issue: #$issueNumber');
-    debugLog('[BUG REPORT] Files: $uploadedCount uploaded, $failedCount failed');
+    debugLog(
+        '[BUG REPORT] Files: $uploadedCount uploaded, $failedCount failed');
     debugLog('[BUG REPORT] ========================================');
 
     reportProgress('Complete!', 1.0);
@@ -250,13 +258,15 @@ class DebugSubmitService {
     }
 
     // File was split into chunks
-    debugLog('[BUG REPORT] File $filename (${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB) split into ${chunks.length} chunks');
+    debugLog(
+        '[BUG REPORT] File $filename (${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB) split into ${chunks.length} chunks');
 
     bool allSucceeded = true;
     try {
       for (int i = 0; i < chunks.length; i++) {
         final chunkName = chunks[i].path.split('/').last;
-        debugLog('[BUG REPORT] Uploading chunk ${i + 1}/${chunks.length}: $chunkName');
+        debugLog(
+            '[BUG REPORT] Uploading chunk ${i + 1}/${chunks.length}: $chunkName');
 
         if (i > 0) {
           // Delay between chunk uploads
@@ -274,11 +284,13 @@ class DebugSubmitService {
         );
 
         if (!success) {
-          debugError('[BUG REPORT] Chunk ${i + 1}/${chunks.length} failed: $chunkName');
+          debugError(
+              '[BUG REPORT] Chunk ${i + 1}/${chunks.length} failed: $chunkName');
           allSucceeded = false;
           break;
         }
-        debugLog('[BUG REPORT] Chunk ${i + 1}/${chunks.length} uploaded successfully');
+        debugLog(
+            '[BUG REPORT] Chunk ${i + 1}/${chunks.length} uploaded successfully');
       }
     } finally {
       // Always clean up temp chunk files
@@ -306,7 +318,8 @@ class DebugSubmitService {
       final fileHash = await computeFileHash(file);
       final fileSize = await file.length();
       final fileSizeKb = (fileSize / 1024).toStringAsFixed(1);
-      debugLog('[BUG REPORT] File size: $fileSizeKb KB, Hash: ${fileHash.substring(0, 16)}...');
+      debugLog(
+          '[BUG REPORT] File size: $fileSizeKb KB, Hash: ${fileHash.substring(0, 16)}...');
 
       // Step 2: Request upload URL
       debugLog('[BUG REPORT] Step 2/4: Requesting upload URL...');
@@ -320,10 +333,12 @@ class DebugSubmitService {
       );
 
       if (session == null) {
-        debugError('[BUG REPORT] FAILED: Could not get upload URL for: $filename');
+        debugError(
+            '[BUG REPORT] FAILED: Could not get upload URL for: $filename');
         return false;
       }
-      debugLog('[BUG REPORT] SUCCESS: Got upload session: ${session.sessionId}');
+      debugLog(
+          '[BUG REPORT] SUCCESS: Got upload session: ${session.sessionId}');
 
       // Step 3: Upload the file (with retry logic)
       debugLog('[BUG REPORT] Step 3/4: Uploading file data...');
@@ -343,19 +358,22 @@ class DebugSubmitService {
 
         if (attempt < maxRetries) {
           final delaySeconds = attempt * 2; // 2s, 4s backoff
-          debugWarn('[BUG REPORT] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
+          debugWarn(
+              '[BUG REPORT] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
           await Future.delayed(Duration(seconds: delaySeconds));
         }
       }
 
       if (!uploadSuccess) {
-        debugError('[BUG REPORT] FAILED: File upload failed after $maxRetries attempts for: $filename');
+        debugError(
+            '[BUG REPORT] FAILED: File upload failed after $maxRetries attempts for: $filename');
         return false;
       }
 
       // Step 4: Complete the upload with GitHub issue reference
       debugLog('[BUG REPORT] Step 4/4: Confirming upload...');
-      final userNotes = issueNumber != null ? 'GitHub Issue: $issueNumber' : null;
+      final userNotes =
+          issueNumber != null ? 'GitHub Issue: $issueNumber' : null;
       if (userNotes != null) {
         debugLog('[BUG REPORT] User notes: $userNotes');
       }
@@ -369,8 +387,10 @@ class DebugSubmitService {
       );
 
       if (!completeSuccess) {
-        debugWarn('[BUG REPORT] WARNING: Upload confirmation failed for: $filename');
-        debugWarn('[BUG REPORT] File was uploaded but confirmation failed - treating as success');
+        debugWarn(
+            '[BUG REPORT] WARNING: Upload confirmation failed for: $filename');
+        debugWarn(
+            '[BUG REPORT] File was uploaded but confirmation failed - treating as success');
       } else {
         debugLog('[BUG REPORT] SUCCESS: Upload confirmed');
       }
@@ -407,20 +427,26 @@ class DebugSubmitService {
       debugLog('[BUG REPORT]   body: ${body.length} chars');
 
       final stopwatch = Stopwatch()..start();
-      final response = await _client.post(
-        Uri.parse(url),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _client
+          .post(
+            Uri.parse(url),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 30));
       stopwatch.stop();
 
-      debugLog('[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
+      debugLog(
+          '[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
       if (response.statusCode != 200) {
         debugError('[BUG REPORT] HTTP error: ${response.statusCode}');
         debugError('[BUG REPORT] Response body: ${response.body}');
-        return {'success': false, 'message': 'Server error: ${response.statusCode}'};
+        return {
+          'success': false,
+          'message': 'Server error: ${response.statusCode}'
+        };
       }
 
       final data = json.decode(response.body) as Map<String, dynamic>;
@@ -466,21 +492,26 @@ class DebugSubmitService {
       debugLog('[BUG REPORT] POST $url');
       debugLog('[BUG REPORT] Request payload:');
       debugLog('[BUG REPORT]   device_id: $deviceId');
-      debugLog('[BUG REPORT]   public_key: ${publicKey.length > 20 ? '${publicKey.substring(0, 20)}...' : publicKey}');
-      debugLog('[BUG REPORT]   file_size_bytes: $fileSizeBytes ($fileSizeKb KB)');
+      debugLog(
+          '[BUG REPORT]   public_key: ${publicKey.length > 20 ? '${publicKey.substring(0, 20)}...' : publicKey}');
+      debugLog(
+          '[BUG REPORT]   file_size_bytes: $fileSizeBytes ($fileSizeKb KB)');
       debugLog('[BUG REPORT]   file_hash: ${fileHash.substring(0, 16)}...');
       debugLog('[BUG REPORT]   app_version: $appVersion');
       debugLog('[BUG REPORT]   platform: $platform');
 
       final stopwatch = Stopwatch()..start();
-      final response = await _client.post(
-        Uri.parse(url),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _client
+          .post(
+            Uri.parse(url),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 30));
       stopwatch.stop();
 
-      debugLog('[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
+      debugLog(
+          '[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
       if (response.statusCode != 200) {
@@ -492,7 +523,8 @@ class DebugSubmitService {
       final data = json.decode(response.body) as Map<String, dynamic>;
       debugLog('[BUG REPORT] Response JSON:');
       debugLog('[BUG REPORT]   session_id: ${data['session_id']}');
-      debugLog('[BUG REPORT]   upload_url: ${data['upload_url'] != null ? '(present)' : '(missing)'}');
+      debugLog(
+          '[BUG REPORT]   upload_url: ${data['upload_url'] != null ? '(present)' : '(missing)'}');
       debugLog('[BUG REPORT]   expires_at: ${data['expires_at']}');
 
       if (data['upload_url'] == null || data['session_id'] == null) {
@@ -532,15 +564,19 @@ class DebugSubmitService {
       ));
 
       final stopwatch = Stopwatch()..start();
-      final streamedResponse = await request.send().timeout(const Duration(seconds: 120));
+      final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 120));
       final response = await http.Response.fromStream(streamedResponse);
       stopwatch.stop();
 
-      final durationSec = (stopwatch.elapsedMilliseconds / 1000).toStringAsFixed(1);
+      final durationSec =
+          (stopwatch.elapsedMilliseconds / 1000).toStringAsFixed(1);
       final speedKbps = fileSize > 0
-          ? ((fileSize / 1024) / (stopwatch.elapsedMilliseconds / 1000)).toStringAsFixed(1)
+          ? ((fileSize / 1024) / (stopwatch.elapsedMilliseconds / 1000))
+              .toStringAsFixed(1)
           : '0';
-      debugLog('[BUG REPORT] Upload completed in ${durationSec}s ($speedKbps KB/s)');
+      debugLog(
+          '[BUG REPORT] Upload completed in ${durationSec}s ($speedKbps KB/s)');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
       if (response.statusCode != 200) {
@@ -556,7 +592,8 @@ class DebugSubmitService {
         debugLog('[BUG REPORT]   message: ${data['message']}');
       }
       if (data['stored_hash'] != null) {
-        debugLog('[BUG REPORT]   stored_hash: ${data['stored_hash'].toString().substring(0, 16)}...');
+        debugLog(
+            '[BUG REPORT]   stored_hash: ${data['stored_hash'].toString().substring(0, 16)}...');
       }
 
       final success = data['success'] == true;
@@ -598,14 +635,17 @@ class DebugSubmitService {
       }
 
       final stopwatch = Stopwatch()..start();
-      final response = await _client.post(
-        Uri.parse(url),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _client
+          .post(
+            Uri.parse(url),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 30));
       stopwatch.stop();
 
-      debugLog('[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
+      debugLog(
+          '[BUG REPORT] Response received in ${stopwatch.elapsedMilliseconds}ms');
       debugLog('[BUG REPORT] HTTP Status: ${response.statusCode}');
 
       if (response.statusCode != 200) {
@@ -658,7 +698,8 @@ class DebugSubmitService {
 
       if (isChunked) {
         final fileSize = await file.length();
-        debugLog('[DEBUG UPLOAD] File (${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB) split into $totalChunks chunks');
+        debugLog(
+            '[DEBUG UPLOAD] File (${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB) split into $totalChunks chunks');
       }
 
       // Progress range: 0.1 to 0.9 divided across chunks
@@ -676,9 +717,11 @@ class DebugSubmitService {
           }
 
           void reportChunkProgress(String status, double chunkProgress) {
-            final overallProgress = chunkBase + (chunkProgress * progressPerChunk);
+            final overallProgress =
+                chunkBase + (chunkProgress * progressPerChunk);
             onProgress?.call(BugReportProgress(
-              status: isChunked ? '$status (part ${i + 1}/$totalChunks)' : status,
+              status:
+                  isChunked ? '$status (part ${i + 1}/$totalChunks)' : status,
               progress: overallProgress.clamp(0.0, 1.0),
               currentFile: isChunked ? i + 1 : 1,
               totalFiles: isChunked ? totalChunks : 1,
@@ -697,7 +740,8 @@ class DebugSubmitService {
           final fileHash = await computeFileHash(chunk);
           final chunkSize = await chunk.length();
           final chunkSizeKb = (chunkSize / 1024).toStringAsFixed(1);
-          debugLog('[DEBUG UPLOAD] Chunk size: $chunkSizeKb KB, Hash: ${fileHash.substring(0, 16)}...');
+          debugLog(
+              '[DEBUG UPLOAD] Chunk size: $chunkSizeKb KB, Hash: ${fileHash.substring(0, 16)}...');
 
           // Step 2: Request upload URL
           reportChunkProgress('Requesting upload...', 0.2);
@@ -712,7 +756,8 @@ class DebugSubmitService {
           );
 
           if (session == null) {
-            debugError('[DEBUG UPLOAD] FAILED: Could not get upload URL for $chunkName');
+            debugError(
+                '[DEBUG UPLOAD] FAILED: Could not get upload URL for $chunkName');
             allSucceeded = false;
             break;
           }
@@ -737,13 +782,15 @@ class DebugSubmitService {
 
             if (attempt < maxRetries) {
               final delaySeconds = attempt * 2;
-              debugWarn('[DEBUG UPLOAD] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
+              debugWarn(
+                  '[DEBUG UPLOAD] Upload attempt $attempt/$maxRetries failed, retrying in ${delaySeconds}s...');
               await Future.delayed(Duration(seconds: delaySeconds));
             }
           }
 
           if (!uploadSuccess) {
-            debugError('[DEBUG UPLOAD] FAILED: Upload failed after $maxRetries attempts for $chunkName');
+            debugError(
+                '[DEBUG UPLOAD] FAILED: Upload failed after $maxRetries attempts for $chunkName');
             allSucceeded = false;
             break;
           }
@@ -760,7 +807,8 @@ class DebugSubmitService {
           );
 
           if (!completeSuccess) {
-            debugWarn('[DEBUG UPLOAD] Confirmation failed but file was uploaded');
+            debugWarn(
+                '[DEBUG UPLOAD] Confirmation failed but file was uploaded');
           }
 
           debugLog('[DEBUG UPLOAD] Chunk ${i + 1}/$totalChunks complete');
@@ -781,7 +829,8 @@ class DebugSubmitService {
           totalFiles: totalChunks,
         ));
         debugLog('[DEBUG UPLOAD] ========================================');
-        debugLog('[DEBUG UPLOAD] Upload complete: $filename${isChunked ? ' ($totalChunks chunks)' : ''}');
+        debugLog(
+            '[DEBUG UPLOAD] Upload complete: $filename${isChunked ? ' ($totalChunks chunks)' : ''}');
         debugLog('[DEBUG UPLOAD] ========================================');
       } else {
         debugLog('[DEBUG UPLOAD] ========================================');

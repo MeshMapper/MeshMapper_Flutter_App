@@ -33,7 +33,7 @@ class ApiService {
   static const Duration heartbeatBuffer = Duration(minutes: 1);
 
   final http.Client _client;
-  bool _heartbeatEnabled = false;  // Track if heartbeat mode is active
+  bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
   bool _txAllowed = false;
   bool _rxAllowed = false;
@@ -91,7 +91,8 @@ class ApiService {
   /// Check if response indicates maintenance mode, trigger callback if so
   bool _checkMaintenanceMode(Map<String, dynamic> response) {
     if (response['maintenance'] == true) {
-      final message = response['maintenance_message'] as String? ?? 'Service is under maintenance';
+      final message = response['maintenance_message'] as String? ??
+          'Service is under maintenance';
       final url = response['maintenance_url'] as String?;
       debugLog('[MAINTENANCE] Maintenance mode detected: $message');
       onMaintenanceMode?.call(message, url);
@@ -109,7 +110,8 @@ class ApiService {
     Map<String, dynamic>? request,
     dynamic response,
   }) {
-    final durationSec = (stopwatch.elapsedMilliseconds / 1000).toStringAsFixed(2);
+    final durationSec =
+        (stopwatch.elapsedMilliseconds / 1000).toStringAsFixed(2);
 
     String reqSummary;
     if (request != null) {
@@ -136,13 +138,13 @@ class ApiService {
 
   /// Check if we have a valid session
   bool get hasSession => _sessionId != null;
-  
+
   /// Check if TX is allowed
   bool get txAllowed => _txAllowed;
-  
+
   /// Check if RX is allowed
   bool get rxAllowed => _rxAllowed;
-  
+
   /// Get session ID
   String? get sessionId => _sessionId;
 
@@ -174,17 +176,21 @@ class ApiService {
         'key': apiKey,
       };
 
-      final response = await _client.post(
-        Uri.parse(geoAuthStatusUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 10));
+      final response = await _client
+          .post(
+            Uri.parse(geoAuthStatusUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 10));
 
       stopwatch.stop();
 
       if (response.statusCode != 200) {
-        debugError('[API] /wardrive-api.php/status returned HTTP ${response.statusCode}');
-        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError(
+            '[API] /wardrive-api.php/status returned HTTP ${response.statusCode}');
+        debugError(
+            '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
         debugError('[API]   Response headers: ${response.headers}');
       }
 
@@ -193,7 +199,8 @@ class ApiService {
         data = json.decode(response.body) as Map<String, dynamic>;
       } on FormatException {
         // CDN/proxy can return HTML error pages with HTTP 200
-        debugError('[API] Non-JSON response from /status (HTTP ${response.statusCode}): '
+        debugError(
+            '[API] Non-JSON response from /status (HTTP ${response.statusCode}): '
             '${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
       }
 
@@ -226,8 +233,8 @@ class ApiService {
   /// @returns Map with success, session_id, tx_allowed, rx_allowed, expires_at, reason, message
   Future<Map<String, dynamic>?> requestAuth({
     required String reason,
-    String? publicKey,        // Now optional - either publicKey or contactUri required
-    String? contactUri,       // NEW: for registration flow
+    String? publicKey, // Now optional - either publicKey or contactUri required
+    String? contactUri, // NEW: for registration flow
     String? who,
     String? appVersion,
     double? power,
@@ -269,7 +276,9 @@ class ApiService {
 
         if (who != null) payload['who'] = who;
         payload['ver'] = appVersion ?? 'UNKNOWN';
-        if (power != null) payload['power'] = '${power}w';  // Wattage (0.3w, 0.6w, 1.0w, 2.0w)
+        if (power != null) {
+          payload['power'] = '${power}w'; // Wattage (0.3w, 0.6w, 1.0w, 2.0w)
+        }
         if (iataCode != null) payload['iata'] = iataCode;
         if (model != null) payload['model'] = model;
         payload['coords'] = {
@@ -283,24 +292,29 @@ class ApiService {
         payload['session_id'] = sessionId ?? _sessionId;
       }
 
-      final response = await _client.post(
-        Uri.parse(geoAuthUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 10));
+      final response = await _client
+          .post(
+            Uri.parse(geoAuthUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 10));
 
       stopwatch.stop();
 
       if (response.statusCode != 200) {
-        debugError('[API] /wardrive-api.php/auth returned HTTP ${response.statusCode}');
-        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError(
+            '[API] /wardrive-api.php/auth returned HTTP ${response.statusCode}');
+        debugError(
+            '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
 
       Map<String, dynamic> data;
       try {
         data = json.decode(response.body) as Map<String, dynamic>;
       } on FormatException {
-        debugError('[API] Non-JSON response from /auth (HTTP ${response.statusCode}): '
+        debugError(
+            '[API] Non-JSON response from /auth (HTTP ${response.statusCode}): '
             '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
         rethrow;
       }
@@ -316,7 +330,8 @@ class ApiService {
 
       // Store session info on successful connect or register
       // Note: 'register' now returns full auth response directly (no retry needed)
-      if ((reason == 'connect' || reason == 'register') && data['success'] == true) {
+      if ((reason == 'connect' || reason == 'register') &&
+          data['success'] == true) {
         if (!skipSessionStore) {
           _sessionId = data['session_id'] as String?;
           _txAllowed = data['tx_allowed'] == true;
@@ -367,7 +382,8 @@ class ApiService {
           if (hopBytes is int && hopBytes >= 1 && hopBytes <= 3) {
             _apiHopBytes = hopBytes;
             if (_apiHopBytes > 1) {
-              debugLog('[API] Regional admin enforces $_apiHopBytes-byte paths');
+              debugLog(
+                  '[API] Regional admin enforces $_apiHopBytes-byte paths');
             }
           } else {
             _apiHopBytes = 1;
@@ -397,7 +413,8 @@ class ApiService {
   ///
   /// @param entries List of wardrive entries (TX/RX)
   /// @returns Map with success, expires_at, reason, message
-  Future<Map<String, dynamic>?> submitWardriveData(List<Map<String, dynamic>> entries) async {
+  Future<Map<String, dynamic>?> submitWardriveData(
+      List<Map<String, dynamic>> entries) async {
     if (_sessionId == null) {
       throw Exception('Cannot submit: no session_id');
     }
@@ -410,32 +427,37 @@ class ApiService {
         'data': entries,
       };
 
-      final response = await _client.post(
-        Uri.parse(wardriveEndpoint),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _client
+          .post(
+            Uri.parse(wardriveEndpoint),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 30));
 
       stopwatch.stop();
 
       if (response.statusCode != 200) {
-        debugError('[API] /wardrive-api.php/wardrive returned HTTP ${response.statusCode}');
-        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError(
+            '[API] /wardrive-api.php/wardrive returned HTTP ${response.statusCode}');
+        debugError(
+            '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
 
       Map<String, dynamic> data;
       try {
         data = json.decode(response.body) as Map<String, dynamic>;
       } on FormatException {
-        debugError('[API] Non-JSON response from /wardrive (HTTP ${response.statusCode}): '
+        debugError(
+            '[API] Non-JSON response from /wardrive (HTTP ${response.statusCode}): '
             '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
         rethrow;
       }
 
       // Log with data summary including external_antenna values
-      final antennaSummary = entries.map((e) =>
-        '${e['type']}:external_antenna=${e['external_antenna']}'
-      ).join(', ');
+      final antennaSummary = entries
+          .map((e) => '${e['type']}:external_antenna=${e['external_antenna']}')
+          .join(', ');
       _logApiCall(
         endpoint: '/wardrive-api.php/wardrive',
         method: 'POST',
@@ -486,24 +508,29 @@ class ApiService {
         };
       }
 
-      final response = await _client.post(
-        Uri.parse(wardriveEndpoint),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _client
+          .post(
+            Uri.parse(wardriveEndpoint),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 30));
 
       stopwatch.stop();
 
       if (response.statusCode != 200) {
-        debugError('[API] /wardrive-api.php/wardrive (heartbeat) returned HTTP ${response.statusCode}');
-        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError(
+            '[API] /wardrive-api.php/wardrive (heartbeat) returned HTTP ${response.statusCode}');
+        debugError(
+            '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
 
       Map<String, dynamic> data;
       try {
         data = json.decode(response.body) as Map<String, dynamic>;
       } on FormatException {
-        debugError('[API] Non-JSON response from /wardrive heartbeat (HTTP ${response.statusCode}): '
+        debugError(
+            '[API] Non-JSON response from /wardrive heartbeat (HTTP ${response.statusCode}): '
             '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
         rethrow;
       }
@@ -533,7 +560,8 @@ class ApiService {
       return data;
     } catch (e) {
       stopwatch.stop();
-      debugError('[API] POST /wardrive-api.php/wardrive (heartbeat) failed: $e');
+      debugError(
+          '[API] POST /wardrive-api.php/wardrive (heartbeat) failed: $e');
       return null;
     }
   }
@@ -547,7 +575,11 @@ class ApiService {
   }) async {
     if (_sessionId == null) {
       debugWarn('[SESSION] No session to validate');
-      return (isValid: false, reason: 'no_session', message: 'No active session');
+      return (
+        isValid: false,
+        reason: 'no_session',
+        message: 'No active session'
+      );
     }
 
     debugLog('[SESSION] Checking session validity via heartbeat...');
@@ -555,11 +587,16 @@ class ApiService {
 
     if (result == null) {
       debugWarn('[SESSION] Session check failed: no response');
-      return (isValid: false, reason: 'no_response', message: 'Server did not respond');
+      return (
+        isValid: false,
+        reason: 'no_response',
+        message: 'Server did not respond'
+      );
     }
 
     if (result['success'] == true) {
-      debugLog('[SESSION] Session is valid (expires_at: ${result['expires_at']})');
+      debugLog(
+          '[SESSION] Session is valid (expires_at: ${result['expires_at']})');
       return (isValid: true, reason: null, message: null);
     }
 
@@ -570,9 +607,15 @@ class ApiService {
 
     // Trigger session error callback for critical errors
     const criticalErrors = {
-      'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
-      'invalid_key', 'unauthorized', 'bad_key',
-      'zone_full', 'zone_disabled',
+      'session_expired',
+      'session_invalid',
+      'session_revoked',
+      'bad_session',
+      'invalid_key',
+      'unauthorized',
+      'bad_key',
+      'zone_full',
+      'zone_disabled',
     };
     if (criticalErrors.contains(reason)) {
       _clearSession();
@@ -628,14 +671,17 @@ class ApiService {
     // Calculate when to send heartbeat (1 minute before expiry)
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final secondsUntilExpiry = expiresAt - now;
-    final secondsUntilHeartbeat = secondsUntilExpiry - heartbeatBuffer.inSeconds;
+    final secondsUntilHeartbeat =
+        secondsUntilExpiry - heartbeatBuffer.inSeconds;
 
     if (secondsUntilHeartbeat <= 0) {
       // Session is about to expire or already expired - send heartbeat immediately
-      debugWarn('[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
+      debugWarn(
+          '[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
       _sendScheduledHeartbeat();
     } else {
-      debugLog('[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
+      debugLog(
+          '[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
 
       _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
         debugLog('[HEARTBEAT] Timer fired, sending keepalive');
@@ -662,11 +708,14 @@ class ApiService {
       if (_heartbeatRetryCount < _maxHeartbeatRetries) {
         final delay = min(30 * pow(2, _heartbeatRetryCount).toInt(), 120);
         _heartbeatRetryCount++;
-        debugWarn('[HEARTBEAT] Network error, scheduling retry $_heartbeatRetryCount/$_maxHeartbeatRetries in ${delay}s');
+        debugWarn(
+            '[HEARTBEAT] Network error, scheduling retry $_heartbeatRetryCount/$_maxHeartbeatRetries in ${delay}s');
         _heartbeatRetryTimer?.cancel();
-        _heartbeatRetryTimer = Timer(Duration(seconds: delay), _sendScheduledHeartbeat);
+        _heartbeatRetryTimer =
+            Timer(Duration(seconds: delay), _sendScheduledHeartbeat);
       } else {
-        debugError('[HEARTBEAT] Network error, all $_maxHeartbeatRetries retries exhausted');
+        debugError(
+            '[HEARTBEAT] Network error, all $_maxHeartbeatRetries retries exhausted');
       }
       _onSessionExpiring?.call();
     } else {
@@ -676,9 +725,15 @@ class ApiService {
       debugWarn('[HEARTBEAT] Heartbeat failed: $reason - $message');
 
       const criticalErrors = {
-        'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
-        'invalid_key', 'unauthorized', 'bad_key',
-        'zone_full', 'zone_disabled',
+        'session_expired',
+        'session_invalid',
+        'session_revoked',
+        'bad_session',
+        'invalid_key',
+        'unauthorized',
+        'bad_key',
+        'zone_full',
+        'zone_disabled',
       };
 
       if (criticalErrors.contains(reason)) {
@@ -773,7 +828,8 @@ class ApiService {
       // outside_zone: preserve session (backend auto-transfers on zone re-entry),
       // but discard this batch (gap-GPS coords would be rejected again)
       if (reason == 'outside_zone') {
-        debugWarn('[API] Upload batch outside_zone — discarding batch, preserving session');
+        debugWarn(
+            '[API] Upload batch outside_zone — discarding batch, preserving session');
         final message = result['message'] as String?;
         onSessionError?.call(reason, message);
         return UploadResult.nonRetryable;
@@ -781,10 +837,15 @@ class ApiService {
 
       // Errors where the batch data itself is invalid — retrying won't help
       const nonRetryableErrors = {
-        'gps_inaccurate', 'gps_stale', 'invalid_request', 'zone_disabled', 'outofdate',
+        'gps_inaccurate',
+        'gps_stale',
+        'invalid_request',
+        'zone_disabled',
+        'outofdate',
       };
       if (nonRetryableErrors.contains(reason)) {
-        debugWarn('[API] Upload batch non-retryable error: $reason - discarding batch');
+        debugWarn(
+            '[API] Upload batch non-retryable error: $reason - discarding batch');
         return UploadResult.nonRetryable;
       }
 
@@ -803,9 +864,11 @@ class ApiService {
     try {
       final url = 'https://${iata.toLowerCase()}.meshmapper.net$endpoint';
 
-      final response = await _client.get(
-        Uri.parse(url),
-      ).timeout(const Duration(seconds: 15));
+      final response = await _client
+          .get(
+            Uri.parse(url),
+          )
+          .timeout(const Duration(seconds: 15));
 
       stopwatch.stop();
 
@@ -820,7 +883,8 @@ class ApiService {
         return [];
       }
 
-      final List<dynamic> jsonList = json.decode(response.body) as List<dynamic>;
+      final List<dynamic> jsonList =
+          json.decode(response.body) as List<dynamic>;
       final repeaters = <Repeater>[];
 
       for (final item in jsonList) {
@@ -865,31 +929,36 @@ class ApiService {
         'data': entries,
       };
 
-      final response = await _client.post(
-        Uri.parse(wardriveEndpoint),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(payload),
-      ).timeout(const Duration(seconds: 30));
+      final response = await _client
+          .post(
+            Uri.parse(wardriveEndpoint),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 30));
 
       stopwatch.stop();
 
       if (response.statusCode != 200) {
-        debugError('[API] /wardrive-api.php/wardrive (offline) returned HTTP ${response.statusCode}');
-        debugError('[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError(
+            '[API] /wardrive-api.php/wardrive (offline) returned HTTP ${response.statusCode}');
+        debugError(
+            '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
 
       Map<String, dynamic> data;
       try {
         data = json.decode(response.body) as Map<String, dynamic>;
       } on FormatException {
-        debugError('[API] Non-JSON response from /wardrive offline (HTTP ${response.statusCode}): '
+        debugError(
+            '[API] Non-JSON response from /wardrive offline (HTTP ${response.statusCode}): '
             '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
         rethrow;
       }
 
-      final antennaSummary = entries.map((e) =>
-        '${e['type']}:external_antenna=${e['external_antenna']}'
-      ).join(', ');
+      final antennaSummary = entries
+          .map((e) => '${e['type']}:external_antenna=${e['external_antenna']}')
+          .join(', ');
       _logApiCall(
         endpoint: '/wardrive-api.php/wardrive (offline)',
         method: 'POST',
@@ -933,9 +1002,16 @@ class ApiService {
 
       // For offline uploads, session/auth errors are non-retryable but do NOT cascade
       const criticalErrors = {
-        'session_expired', 'session_invalid', 'session_revoked', 'bad_session',
-        'invalid_key', 'unauthorized', 'bad_key',
-        'outside_zone', 'zone_full', 'zone_disabled',
+        'session_expired',
+        'session_invalid',
+        'session_revoked',
+        'bad_session',
+        'invalid_key',
+        'unauthorized',
+        'bad_key',
+        'outside_zone',
+        'zone_full',
+        'zone_disabled',
       };
       if (criticalErrors.contains(reason)) {
         debugError('[API] Offline upload batch session error: $reason');
@@ -943,10 +1019,15 @@ class ApiService {
       }
 
       const nonRetryableErrors = {
-        'gps_inaccurate', 'gps_stale', 'invalid_request', 'zone_disabled', 'outofdate',
+        'gps_inaccurate',
+        'gps_stale',
+        'invalid_request',
+        'zone_disabled',
+        'outofdate',
       };
       if (nonRetryableErrors.contains(reason)) {
-        debugWarn('[API] Offline upload batch non-retryable error: $reason - discarding batch');
+        debugWarn(
+            '[API] Offline upload batch non-retryable error: $reason - discarding batch');
         return UploadResult.nonRetryable;
       }
 

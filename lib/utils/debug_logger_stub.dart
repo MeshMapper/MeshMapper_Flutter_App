@@ -22,7 +22,7 @@ class DebugLogger {
 
     // Enable debug logging by default on all builds
     _debugEnabled = true;
-    
+
     if (_debugEnabled) {
       debugPrint('[DEBUG] Debug logging ENABLED (debug mode)');
     }
@@ -39,7 +39,12 @@ class DebugLogger {
   /// Log a general info message to the console.
   /// Use tagged format: debugLog('[BLE] Connected to device');
   static void log(String message, [Object? arg1, Object? arg2, Object? arg3]) {
-    final args = [message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
+    final args = [
+      message,
+      if (arg1 != null) arg1,
+      if (arg2 != null) arg2,
+      if (arg3 != null) arg3
+    ];
     final formattedMessage = args.join(' ');
 
     // Console logging only in debug mode
@@ -54,7 +59,13 @@ class DebugLogger {
   /// Log a warning message to the console.
   /// Use tagged format: debugWarn('[GPS] Position stale, re-acquiring');
   static void warn(String message, [Object? arg1, Object? arg2, Object? arg3]) {
-    final args = ['⚠️', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
+    final args = [
+      '⚠️',
+      message,
+      if (arg1 != null) arg1,
+      if (arg2 != null) arg2,
+      if (arg3 != null) arg3
+    ];
     final formattedMessage = args.join(' ');
 
     // Console logging only in debug mode
@@ -68,8 +79,15 @@ class DebugLogger {
 
   /// Log an error message to the console.
   /// Use tagged format: debugError('[API] Failed to post queue', error);
-  static void error(String message, [Object? arg1, Object? arg2, Object? arg3]) {
-    final args = ['❌', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
+  static void error(String message,
+      [Object? arg1, Object? arg2, Object? arg3]) {
+    final args = [
+      '❌',
+      message,
+      if (arg1 != null) arg1,
+      if (arg2 != null) arg2,
+      if (arg3 != null) arg3
+    ];
     final formattedMessage = args.join(' ');
 
     // Console logging only in debug mode
