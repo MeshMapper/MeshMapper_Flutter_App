@@ -30,6 +30,7 @@ import '../widgets/bug_report_dialog.dart';
 import '../widgets/upload_logs_dialog.dart';
 import 'package:intl/intl.dart';
 import '../widgets/app_toast.dart';
+import 'offline_maps_screen.dart';
 
 /// Settings screen for user preferences and API configuration
 class SettingsScreen extends StatefulWidget {
@@ -160,13 +161,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: const Text('Disable Map Tiles'),
               subtitle: Text(prefs.mapTilesEnabled
                   ? 'Map and coverage tiles load normally'
-                  : 'Disabled to save mobile data'),
+                  : 'Network tiles disabled · downloaded regions still visible'),
               value: !prefs.mapTilesEnabled,
               onChanged: (value) {
                 appState
                     .updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
               },
             ),
+            if (!kIsWeb)
+              ListTile(
+                leading: const Icon(Icons.download_for_offline),
+                title: const Text('Offline Maps'),
+                subtitle: const Text('Download map tiles for offline use'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const OfflineMapsScreen(),
+                    ),
+                  );
+                },
+              ),
             if (prefs.mapTilesEnabled)
               ListTile(
                 leading: const Icon(Icons.opacity),
@@ -177,9 +193,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   max: 1.0,
                   divisions: 7,
                   label: '${(prefs.coverageOverlayOpacity * 100).round()}%',
-                  onChanged: (value) => appState.setCoverageOverlayOpacity(value),
+                  onChanged: (value) =>
+                      appState.setCoverageOverlayOpacity(value),
                 ),
-                trailing: Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
+                trailing:
+                    Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
               ),
             ListTile(
               leading: const Icon(Icons.visibility),
@@ -2515,15 +2533,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final key = uri.queryParameters['key'];
 
       if (rawUrl == null || rawUrl.isEmpty) {
-        if (context.mounted) {
+        if (context.mounted)
           AppToast.error(context, 'Link is missing the url parameter');
-        }
         return;
       }
       if (key == null || key.isEmpty) {
-        if (context.mounted) {
+        if (context.mounted)
           AppToast.error(context, 'Link is missing the key parameter');
-        }
         return;
       }
 
@@ -2532,9 +2548,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // Validate the constructed URL
       final parsed = Uri.tryParse(fullUrl);
       if (parsed == null || !parsed.hasAuthority) {
-        if (context.mounted) {
+        if (context.mounted)
           AppToast.error(context, 'Invalid URL in link: $rawUrl');
-        }
         return;
       }
 
@@ -2551,9 +2566,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       debugLog('[CUSTOM API] Imported endpoint from clipboard: $fullUrl');
     } catch (e) {
       debugError('[CUSTOM API] Failed to parse clipboard link: $e');
-      if (context.mounted) {
+      if (context.mounted)
         AppToast.error(context, 'Invalid meshmapper:// link');
-      }
     }
   }
 
