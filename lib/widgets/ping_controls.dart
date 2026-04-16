@@ -1163,22 +1163,26 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool showFullText,
   }) {
     if (isPingSending) return showFullText ? 'Sending...' : '...';
-    if (rxWindowActive)
+    if (rxWindowActive) {
       return showFullText
           ? 'Listening ${rxWindowRemaining}s'
           : '${rxWindowRemaining}s';
-    if (manualCooldownActive)
+    }
+    if (manualCooldownActive) {
       return showFullText
           ? 'Cooldown ${manualCooldownRemaining}s'
           : '${manualCooldownRemaining}s';
-    if (discoveryWindowActive)
+    }
+    if (discoveryWindowActive) {
       return showFullText
           ? 'Cooldown ${discoveryWindowRemaining}s'
           : '${discoveryWindowRemaining}s';
-    if (cooldownActive)
+    }
+    if (cooldownActive) {
       return showFullText
           ? 'Cooldown ${cooldownRemaining}s'
           : '${cooldownRemaining}s';
+    }
     return null;
   }
 
@@ -1201,33 +1205,39 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     int discoveryWindowRemaining = 0,
   }) {
     if (isPendingDisable) {
-      if (rxWindowActive)
+      if (rxWindowActive) {
         return showFullText
             ? 'Stopping ${rxWindowRemaining}s'
             : '${rxWindowRemaining}s';
-      if (discoveryWindowActive)
+      }
+      if (discoveryWindowActive) {
         return showFullText
             ? 'Stopping ${discoveryWindowRemaining}s'
             : '${discoveryWindowRemaining}s';
+      }
       return showFullText ? 'Stopping...' : '...';
     }
     if (isActiveModeRunning) {
-      if (discoveryWindowActive)
+      if (discoveryWindowActive) {
         return showFullText
             ? 'Listening ${discoveryWindowRemaining}s'
             : '${discoveryWindowRemaining}s';
-      if (isPingInProgress && !rxWindowActive)
+      }
+      if (isPingInProgress && !rxWindowActive) {
         return showFullText ? 'Sending...' : '...';
-      if (rxWindowActive)
+      }
+      if (rxWindowActive) {
         return showFullText
             ? 'Listening ${rxWindowRemaining}s'
             : '${rxWindowRemaining}s';
-      if (autoPingWaiting)
+      }
+      if (autoPingWaiting) {
         return showFullText
             ? (isSkipped
                 ? 'Skipped ${autoPingRemaining}s'
                 : 'Waiting ${autoPingRemaining}s')
             : '${autoPingRemaining}s';
+      }
     }
     // Show cooldown if this button caused it
     if (cooldownActive && isExpandedDuringCooldown) {
@@ -1253,16 +1263,18 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool isSkipped,
   }) {
     if (isPassiveModeRunning) {
-      if (discoveryWindowActive)
+      if (discoveryWindowActive) {
         return showFullText
             ? 'Listening ${discoveryWindowRemaining}s'
             : '${discoveryWindowRemaining}s';
-      if (autoPingWaiting)
+      }
+      if (autoPingWaiting) {
         return showFullText
             ? (isSkipped
                 ? 'Skipped ${autoPingRemaining}s'
                 : 'Waiting ${autoPingRemaining}s')
             : '${autoPingRemaining}s';
+      }
     }
     // Show cooldown if this button caused it
     if (cooldownActive && isExpandedDuringCooldown) {
@@ -1288,16 +1300,18 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool isSkipped,
   }) {
     if (isTargetedRunning) {
-      if (discoveryWindowActive)
+      if (discoveryWindowActive) {
         return showFullText
             ? 'Listening ${discoveryWindowRemaining}s'
             : '${discoveryWindowRemaining}s';
-      if (autoPingWaiting)
+      }
+      if (autoPingWaiting) {
         return showFullText
             ? (isSkipped
                 ? 'Skipped ${autoPingRemaining}s'
                 : 'Next in ${autoPingRemaining}s')
             : '${autoPingRemaining}s';
+      }
       return showFullText ? 'Stop' : null;
     }
     // Show cooldown if this button caused it

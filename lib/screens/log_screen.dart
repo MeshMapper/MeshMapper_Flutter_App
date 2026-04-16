@@ -354,8 +354,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         for (final event in tx.events) {
           if (event.repeaterId.toLowerCase().startsWith(query)) return true;
           final resolved = _resolveRepeaterNames(event.repeaterId, repeaters);
-          if (resolved.names.any((n) => n.toLowerCase().contains(query)))
+          if (resolved.names.any((n) => n.toLowerCase().contains(query))) {
             return true;
+          }
         }
         return false;
       case PingLogType.rx:
@@ -368,10 +369,13 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         for (final node in disc.discoveredNodes) {
           if (node.repeaterId.toLowerCase().startsWith(query)) return true;
           if (node.pubkeyHex != null &&
-              node.pubkeyHex!.toLowerCase().startsWith(query)) return true;
-          final resolved = _resolveRepeaterNames(node.repeaterId, repeaters);
-          if (resolved.names.any((n) => n.toLowerCase().contains(query)))
+              node.pubkeyHex!.toLowerCase().startsWith(query)) {
             return true;
+          }
+          final resolved = _resolveRepeaterNames(node.repeaterId, repeaters);
+          if (resolved.names.any((n) => n.toLowerCase().contains(query))) {
+            return true;
+          }
         }
         return false;
       case PingLogType.trace:

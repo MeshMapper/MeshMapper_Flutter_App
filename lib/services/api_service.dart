@@ -276,8 +276,9 @@ class ApiService {
 
         if (who != null) payload['who'] = who;
         payload['ver'] = appVersion ?? 'UNKNOWN';
-        if (power != null)
+        if (power != null) {
           payload['power'] = '${power}w'; // Wattage (0.3w, 0.6w, 1.0w, 2.0w)
+        }
         if (iataCode != null) payload['iata'] = iataCode;
         if (model != null) payload['model'] = model;
         payload['coords'] = {
