@@ -79,7 +79,7 @@ class PingControls extends StatelessWidget {
       blockingIcon = Icons.settings_input_antenna;
       blockingColor = Colors.orange;
     } else if (!isPowerSet) {
-      blockingHint = 'Select power level in Settings';
+      blockingHint = 'Select power level in Connect tab';
       blockingIcon = Icons.bolt;
       blockingColor = Colors.orange;
     } else if (validation == PingValidation.noGpsLock) {
