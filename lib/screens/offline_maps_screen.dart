@@ -449,7 +449,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
 
     if (result != null) {
       await service.setStorageLimit(result);
-      if (mounted) {
+      if (context.mounted) {
         AppToast.success(context, 'Storage limit set to $result MB');
       }
     }
@@ -469,7 +469,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
 
     // Toast is handled by the _onServiceUpdate listener when the download
     // completes (which may happen long after this page returns).
-    if (started == true && mounted) {
+    if (started == true && context.mounted) {
       AppToast.simple(
           context, 'Download started — check notifications for progress');
     }
@@ -506,7 +506,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
 
     if (confirmed == true) {
       final success = await service.deleteRegion(region.id);
-      if (mounted) {
+      if (context.mounted) {
         if (success) {
           AppToast.success(context, '"${region.name}" deleted');
         } else {
@@ -543,7 +543,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
 
     if (confirmed == true) {
       await service.deleteAllRegions();
-      if (mounted) {
+      if (context.mounted) {
         AppToast.success(context, 'All regions deleted');
       }
     }
@@ -612,9 +612,12 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   final _nameController = TextEditingController();
   String _selectedStyle = 'Liberty';
   double _minZoom = 6;
-  double _maxZoom = 14;
+  double _maxZoom = 15;
   bool _submitting = false;
   String? _error;
+
+  // Default center (Ottawa)
+  static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
 
   // Bounds selection via interactive map
   MapLibreMapController? _mapController;
@@ -670,8 +673,23 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
 
   @override
   Widget build(BuildContext context) {
+    final appState = context.watch<AppStateProvider>();
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+
+    // Determine map center - prefer current GPS, fallback to last known, then Ottawa
+    LatLng center = _defaultCenter;
+    if (appState.currentPosition != null) {
+      center = LatLng(
+        appState.currentPosition!.latitude,
+        appState.currentPosition!.longitude,
+      );
+    } else if (appState.lastKnownPosition != null) {
+      center = LatLng(
+        appState.lastKnownPosition!.lat,
+        appState.lastKnownPosition!.lon,
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -687,8 +705,8 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
               children: [
                 MapLibreMap(
                   styleString: _downloadStyles[_selectedStyle]!,
-                  initialCameraPosition: const CameraPosition(
-                    target: LatLng(49.28, -123.12), // Vancouver default
+                  initialCameraPosition: CameraPosition(
+                    target: center, // Vancouver default
                     zoom: 10,
                   ),
                   onMapCreated: (controller) {
@@ -1019,8 +1037,9 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   }
 
   Future<void> _drawBoundsOverlay() async {
-    if (_mapController == null || _boundsSW == null || _boundsNE == null)
+    if (_mapController == null || _boundsSW == null || _boundsNE == null) {
       return;
+    }
 
     final sw = _boundsSW!;
     final ne = _boundsNE!;

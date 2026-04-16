@@ -160,7 +160,6 @@ class OfflineMapService extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('[OFFLINE_MAP] Init error: $e');
-      _initialized = true;
       notifyListeners();
     }
   }
