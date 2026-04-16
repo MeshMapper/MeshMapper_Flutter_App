@@ -31,8 +31,8 @@ const _satelliteStyleJson =
 /// (saves mobile data while still showing markers and overlays).
 /// Includes a `glyphs` URL so native annotations using textField (repeater
 /// hex IDs, distance labels) can render their text even when tiles are off.
-const _blankStyleJson =
-    '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"#0F172A"}}]}';
+// const _blankStyleJson =
+//     '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"#0F172A"}}]}';
 
 /// Default font stack used for all native text labels (textField property).
 /// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
@@ -594,8 +594,9 @@ class _MapWidgetState extends State<MapWidget> {
   /// Smoothly animate the map rotation to match heading
   /// MapLibre bearing is clockwise from north (same as GPS heading)
   void _animateToRotation(double targetHeading) {
-    if (_mapController == null || !_isMapReady || !mounted || _alwaysNorth)
+    if (_mapController == null || !_isMapReady || !mounted || _alwaysNorth) {
       return;
+    }
 
     final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
 

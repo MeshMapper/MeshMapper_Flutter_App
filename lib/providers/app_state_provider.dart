@@ -3316,8 +3316,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       message: message,
       severity: severity,
     ));
-    if (_errorLogEntries.length > _maxErrorEntries)
+    if (_errorLogEntries.length > _maxErrorEntries) {
       _errorLogEntries.removeAt(0);
+    }
     if (autoSwitch) {
       _requestErrorLogSwitch = true; // Auto-switch to error log
     }
@@ -3774,8 +3775,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Periodically auto-save offline pings to prevent data loss from app kill.
   /// Uses a non-destructive snapshot so in-memory accumulation continues.
   void _autoSaveOfflinePings() {
-    if (!_preferences.offlineMode || _apiQueueService.offlinePingCount == 0)
+    if (!_preferences.offlineMode || _apiQueueService.offlinePingCount == 0) {
       return;
+    }
 
     final pings = _apiQueueService.getOfflinePingsSnapshot();
     if (pings.isEmpty) return;
@@ -4298,8 +4300,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Play disconnect alert if enabled (triple beep for unexpected ping stop)
   void _playDisconnectAlert() {
-    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled)
+    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) {
       return;
+    }
     debugLog('[AUDIO] Playing disconnect alert — pinging stopped unexpectedly');
     _audioService.playAlertSound();
   }
