@@ -9,10 +9,10 @@ import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 
 /// Debug logging utility that mirrors MeshMapper_WebClient debug system.
-/// 
+///
 /// Logs are only output when DEBUG_ENABLED is true (set via `?debug=1` URL param).
 /// All log messages should use tagged format: `[TAG] message`
-/// 
+///
 /// Common tags: [BLE], [GPS], [PING], [API], [RX], [UI], [CONN]
 class DebugLogger {
   static bool _debugEnabled = false;
@@ -30,7 +30,7 @@ class DebugLogger {
         final uri = Uri.base;
         final debugParam = uri.queryParameters['debug'];
         _debugEnabled = debugParam == '1' || debugParam == 'true';
-        
+
         if (_debugEnabled) {
           _consoleLog('[DEBUG] Debug logging ENABLED via URL param');
         }
@@ -56,9 +56,14 @@ class DebugLogger {
   /// Use tagged format: debugLog('[BLE] Connected to device');
   static void log(String message, [Object? arg1, Object? arg2, Object? arg3]) {
     if (!_debugEnabled) return;
-    
-    final args = [message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
-    
+
+    final args = [
+      message,
+      if (arg1 != null) arg1,
+      if (arg2 != null) arg2,
+      if (arg3 != null) arg3
+    ];
+
     if (kIsWeb) {
       _consoleLog(args.join(' '));
     } else {
@@ -70,9 +75,15 @@ class DebugLogger {
   /// Use tagged format: debugWarn('[GPS] Position stale, re-acquiring');
   static void warn(String message, [Object? arg1, Object? arg2, Object? arg3]) {
     if (!_debugEnabled) return;
-    
-    final args = ['⚠️', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
-    
+
+    final args = [
+      '⚠️',
+      message,
+      if (arg1 != null) arg1,
+      if (arg2 != null) arg2,
+      if (arg3 != null) arg3
+    ];
+
     if (kIsWeb) {
       _consoleWarn(args.join(' '));
     } else {
@@ -82,11 +93,18 @@ class DebugLogger {
 
   /// Log an error message to the console.
   /// Use tagged format: debugError('[API] Failed to post queue', error);
-  static void error(String message, [Object? arg1, Object? arg2, Object? arg3]) {
+  static void error(String message,
+      [Object? arg1, Object? arg2, Object? arg3]) {
     if (!_debugEnabled) return;
-    
-    final args = ['❌', message, if (arg1 != null) arg1, if (arg2 != null) arg2, if (arg3 != null) arg3];
-    
+
+    final args = [
+      '❌',
+      message,
+      if (arg1 != null) arg1,
+      if (arg2 != null) arg2,
+      if (arg3 != null) arg3
+    ];
+
     if (kIsWeb) {
       _consoleError(args.join(' '));
     } else {

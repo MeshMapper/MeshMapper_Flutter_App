@@ -7,11 +7,11 @@ import '../utils/debug_logger_io.dart';
 /// The app adapts all semantic colors (ping types, signal quality,
 /// repeater status, noise floor) to a distinguishable palette.
 enum ColorVisionType {
-  none,           // Default — current palette
-  protanopia,     // Red-blind (~1% males)
-  deuteranopia,   // Green-blind (~1% males)
-  tritanopia,     // Blue-blind (~0.003%)
-  achromatopsia,  // Total color blindness (monochrome)
+  none, // Default — current palette
+  protanopia, // Red-blind (~1% males)
+  deuteranopia, // Green-blind (~1% males)
+  tritanopia, // Blue-blind (~0.003%)
+  achromatopsia, // Total color blindness (monochrome)
 }
 
 /// Immutable palette holding every semantic color the app uses.
@@ -119,20 +119,20 @@ class ColorPalettes {
   /// Protanopia (red-blind) — replaces red/green axis with blue/orange.
   /// Also used for deuteranopia since both are red-green CVD.
   static const protanopia = ColorPalette(
-    txSuccess: Color(0xFF0072B2),       // Wong blue
+    txSuccess: Color(0xFF0072B2), // Wong blue
     txSuccessLegend: Color(0xFF56B4E9), // Wong sky blue
-    txFail: Color(0xFFD55E00),          // Wong vermillion
-    rx: Color(0xFFCC79A7),              // Wong reddish purple
-    discSuccess: Color(0xFF56B4E9),     // Wong sky blue
-    discFail: Color(0xFF9E9E9E),        // Grey (unchanged)
-    traceSuccess: Color(0xFF009E73),    // Wong bluish green
-    noResponse: Color(0xFF9E9E9E),      // Grey (unchanged)
-    signalGood: Color(0xFF0072B2),      // Blue
-    signalMedium: Color(0xFFF0E442),    // Wong yellow
-    signalBad: Color(0xFFD55E00),       // Vermillion
-    repeaterActive: Color(0xFFCC79A7),  // Reddish purple
-    repeaterNew: Color(0xFFF0E442),     // Yellow
-    repeaterDead: Color(0xFF9E9E9E),    // Grey
+    txFail: Color(0xFFD55E00), // Wong vermillion
+    rx: Color(0xFFCC79A7), // Wong reddish purple
+    discSuccess: Color(0xFF56B4E9), // Wong sky blue
+    discFail: Color(0xFF9E9E9E), // Grey (unchanged)
+    traceSuccess: Color(0xFF009E73), // Wong bluish green
+    noResponse: Color(0xFF9E9E9E), // Grey (unchanged)
+    signalGood: Color(0xFF0072B2), // Blue
+    signalMedium: Color(0xFFF0E442), // Wong yellow
+    signalBad: Color(0xFFD55E00), // Vermillion
+    repeaterActive: Color(0xFFCC79A7), // Reddish purple
+    repeaterNew: Color(0xFFF0E442), // Yellow
+    repeaterDead: Color(0xFF9E9E9E), // Grey
     repeaterDuplicate: Color(0xFFD55E00), // Vermillion
     noiseFloorGood: Color(0xFF0072B2),
     noiseFloorMedium: Color(0xFFF0E442),
@@ -148,20 +148,20 @@ class ColorPalettes {
   /// Tritanopia (blue-blind) — replaces blue/cyan with orange/vermillion.
   /// Red/green distinction is preserved since tritan users can see those.
   static const tritanopia = ColorPalette(
-    txSuccess: Color(0xFF009E73),       // Wong bluish green
+    txSuccess: Color(0xFF009E73), // Wong bluish green
     txSuccessLegend: Color(0xFF22C55E), // Bright green (visible)
-    txFail: Color(0xFFD55E00),          // Wong vermillion
-    rx: Color(0xFFCC79A7),              // Wong reddish purple
-    discSuccess: Color(0xFFE69F00),     // Wong orange (replaces cyan)
-    discFail: Color(0xFF9E9E9E),        // Grey (unchanged)
-    traceSuccess: Color(0xFFD55E00),    // Vermillion (replaces cyan)
-    noResponse: Color(0xFF9E9E9E),      // Grey (unchanged)
-    signalGood: Color(0xFF009E73),      // Bluish green
-    signalMedium: Color(0xFFE69F00),    // Orange
-    signalBad: Color(0xFFD55E00),       // Vermillion
-    repeaterActive: Color(0xFFCC79A7),  // Reddish purple
-    repeaterNew: Color(0xFFE69F00),     // Orange
-    repeaterDead: Color(0xFF9E9E9E),    // Grey
+    txFail: Color(0xFFD55E00), // Wong vermillion
+    rx: Color(0xFFCC79A7), // Wong reddish purple
+    discSuccess: Color(0xFFE69F00), // Wong orange (replaces cyan)
+    discFail: Color(0xFF9E9E9E), // Grey (unchanged)
+    traceSuccess: Color(0xFFD55E00), // Vermillion (replaces cyan)
+    noResponse: Color(0xFF9E9E9E), // Grey (unchanged)
+    signalGood: Color(0xFF009E73), // Bluish green
+    signalMedium: Color(0xFFE69F00), // Orange
+    signalBad: Color(0xFFD55E00), // Vermillion
+    repeaterActive: Color(0xFFCC79A7), // Reddish purple
+    repeaterNew: Color(0xFFE69F00), // Orange
+    repeaterDead: Color(0xFF9E9E9E), // Grey
     repeaterDuplicate: Color(0xFFD55E00), // Vermillion
     noiseFloorGood: Color(0xFF009E73),
     noiseFloorMedium: Color(0xFFE69F00),
@@ -178,20 +178,20 @@ class ColorPalettes {
   /// Relies on maximum brightness contrast between categories.
   /// Secondary indicators (icons, text) are essential with this palette.
   static const achromatopsia = ColorPalette(
-    txSuccess: Color(0xFFE0E0E0),       // Light
+    txSuccess: Color(0xFFE0E0E0), // Light
     txSuccessLegend: Color(0xFFE0E0E0),
-    txFail: Color(0xFF616161),          // Dark
-    rx: Color(0xFF9E9E9E),             // Medium
-    discSuccess: Color(0xFFBDBDBD),     // Medium-light
-    discFail: Color(0xFF757575),        // Medium-dark
-    traceSuccess: Color(0xFF757575),    // Medium-dark
-    noResponse: Color(0xFF616161),      // Dark
-    signalGood: Color(0xFFE0E0E0),      // Light
-    signalMedium: Color(0xFF9E9E9E),    // Medium
-    signalBad: Color(0xFF424242),       // Very dark
-    repeaterActive: Color(0xFFE0E0E0),  // Light
-    repeaterNew: Color(0xFFBDBDBD),     // Medium-light
-    repeaterDead: Color(0xFF616161),     // Dark
+    txFail: Color(0xFF616161), // Dark
+    rx: Color(0xFF9E9E9E), // Medium
+    discSuccess: Color(0xFFBDBDBD), // Medium-light
+    discFail: Color(0xFF757575), // Medium-dark
+    traceSuccess: Color(0xFF757575), // Medium-dark
+    noResponse: Color(0xFF616161), // Dark
+    signalGood: Color(0xFFE0E0E0), // Light
+    signalMedium: Color(0xFF9E9E9E), // Medium
+    signalBad: Color(0xFF424242), // Very dark
+    repeaterActive: Color(0xFFE0E0E0), // Light
+    repeaterNew: Color(0xFFBDBDBD), // Medium-light
+    repeaterDead: Color(0xFF616161), // Dark
     repeaterDuplicate: Color(0xFF424242), // Very dark
     noiseFloorGood: Color(0xFFE0E0E0),
     noiseFloorMedium: Color(0xFF9E9E9E),

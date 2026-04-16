@@ -252,6 +252,22 @@ extension MapStyleExtension on MapStyle {
   }
 }
 
+<<<<<<< HEAD
+=======
+/// Custom tile provider that silently handles HTTP errors (404, 503, etc.)
+/// instead of flooding the console with exceptions
+final class SilentCancellableNetworkTileProvider
+    extends CancellableNetworkTileProvider {
+  SilentCancellableNetworkTileProvider()
+      : super(
+          dioClient: Dio(
+            BaseOptions(
+              validateStatus: (status) => true, // Accept all status codes
+            ),
+          ),
+        );
+}
+>>>>>>> a431a6a (format with dart)
 
 /// Resolved repeater with SNR and ambiguity info for ping focus mode.
 /// Line color is based on [snr] (green/yellow/red). When a short hex ID
@@ -302,11 +318,14 @@ class _MapWidgetState extends State<MapWidget> {
   bool _prefsApplied = false; // Guard to load saved prefs only once
   bool _isMapReady = false;
   LatLng? _lastGpsPosition;
-  bool _hasInitialZoomed = false; // Track if we've done the one-time initial zoom to GPS
-  bool _hasZoomedToLastKnown = false; // Track if we've zoomed to last known position (before GPS)
+  bool _hasInitialZoomed =
+      false; // Track if we've done the one-time initial zoom to GPS
+  bool _hasZoomedToLastKnown =
+      false; // Track if we've zoomed to last known position (before GPS)
 
   // Map rotation mode
-  bool _alwaysNorth = true; // true = north always up, false = rotate with heading
+  bool _alwaysNorth =
+      true; // true = north always up, false = rotate with heading
   double? _lastHeading; // Track last heading for smooth rotation
 
   // Desired camera zoom while auto-follow is active. Set when the user taps
@@ -479,7 +498,7 @@ class _MapWidgetState extends State<MapWidget> {
     super.didUpdateWidget(oldWidget);
     // When padding changes (panel opened/closed/minimized/orientation change), re-center if auto-following
     if ((widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels ||
-         widget.rightPaddingPixels != oldWidget.rightPaddingPixels) &&
+            widget.rightPaddingPixels != oldWidget.rightPaddingPixels) &&
         _autoFollow &&
         _isMapReady &&
         _lastGpsPosition != null) {
@@ -508,6 +527,66 @@ class _MapWidgetState extends State<MapWidget> {
     }
   }
 
+<<<<<<< HEAD
+=======
+  /// Smoothly animate the map to a new position
+  void _animateToPosition(LatLng target) {
+    if (!_isMapReady || !mounted) return;
+
+    // Get current position
+    final currentCenter = _mapController.camera.center;
+
+    // Skip if already at target (within small threshold)
+    final distance =
+        const Distance().as(LengthUnit.Meter, currentCenter, target);
+    if (distance < 1) return; // Less than 1 meter, don't animate
+
+    // Cancel any running animation
+    _animationController?.stop();
+    _animationController?.dispose();
+
+    // Create new animation controller
+    // Duration based on distance - shorter for small movements, longer for big jumps
+    final duration = Duration(milliseconds: distance < 100 ? 200 : 300);
+
+    _animationController = AnimationController(
+      duration: duration,
+      vsync: this,
+    );
+
+    _animation = CurvedAnimation(
+      parent: _animationController!,
+      curve: Curves.easeOutCubic, // Smooth deceleration
+    );
+
+    _animationStartPosition = currentCenter;
+    _animationEndPosition = target;
+
+    _animation!.addListener(() {
+      if (!mounted ||
+          _animationStartPosition == null ||
+          _animationEndPosition == null) {
+        return;
+      }
+
+      // Interpolate between start and end positions
+      final t = _animation!.value;
+      final lat = _animationStartPosition!.latitude +
+          ((_animationEndPosition!.latitude -
+                  _animationStartPosition!.latitude) *
+              t);
+      final lng = _animationStartPosition!.longitude +
+          ((_animationEndPosition!.longitude -
+                  _animationStartPosition!.longitude) *
+              t);
+
+      _mapController.move(LatLng(lat, lng), _mapController.camera.zoom);
+    });
+
+    _animationController!.forward();
+  }
+
+>>>>>>> a431a6a (format with dart)
   /// Smoothly animate the map to a new position with zoom
   void _animateToPositionWithZoom(LatLng target, double targetZoom) {
     if (_mapController == null || !_isMapReady || !mounted) return;
@@ -541,15 +620,57 @@ class _MapWidgetState extends State<MapWidget> {
       )),
       duration: Duration(milliseconds: durationMs),
     );
+<<<<<<< HEAD
   }
 
   /// Zoom to fit a focused ping and its connected repeaters on screen
   void _zoomToFocusBounds(LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
     if (_mapController == null || !_isMapReady || !mounted) return;
+=======
 
-    final points = [pingLocation, ...repeaters.map((r) => LatLng(r.repeater.lat, r.repeater.lon))];
+    _animationStartPosition = currentCenter;
+    _animationEndPosition = target;
+
+    _animation!.addListener(() {
+      if (!mounted ||
+          _animationStartPosition == null ||
+          _animationEndPosition == null) {
+        return;
+      }
+
+      // Interpolate between start and end positions
+      final t = _animation!.value;
+      final lat = _animationStartPosition!.latitude +
+          ((_animationEndPosition!.latitude -
+                  _animationStartPosition!.latitude) *
+              t);
+      final lng = _animationStartPosition!.longitude +
+          ((_animationEndPosition!.longitude -
+                  _animationStartPosition!.longitude) *
+              t);
+
+      // Interpolate zoom
+      final zoom = currentZoom + ((targetZoom - currentZoom) * t);
+
+      _mapController.move(LatLng(lat, lng), zoom);
+    });
+
+    _animationController!.forward();
+  }
+
+  /// Zoom to fit a focused ping and its connected repeaters on screen
+  void _zoomToFocusBounds(
+      LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
+    if (!_isMapReady || !mounted) return;
+>>>>>>> a431a6a (format with dart)
+
+    final points = [
+      pingLocation,
+      ...repeaters.map((r) => LatLng(r.repeater.lat, r.repeater.lon))
+    ];
     if (points.length < 2) return;
 
+<<<<<<< HEAD
     // Build bounding box from all points
     double minLat = points[0].latitude, maxLat = points[0].latitude;
     double minLon = points[0].longitude, maxLon = points[0].longitude;
@@ -563,6 +684,14 @@ class _MapWidgetState extends State<MapWidget> {
       southwest: LatLng(minLat, minLon),
       northeast: LatLng(maxLat, maxLon),
     );
+=======
+    final fitted = CameraFit.coordinates(
+      coordinates: points,
+      padding: EdgeInsets.fromLTRB(
+          60, 60, 60, MediaQuery.of(context).size.height * 0.4),
+      maxZoom: 15,
+    ).fit(_mapController.camera);
+>>>>>>> a431a6a (format with dart)
 
     final bottomPad = MediaQuery.of(context).size.height * 0.4;
     _mapController!.animateCamera(
@@ -590,6 +719,7 @@ class _MapWidgetState extends State<MapWidget> {
       CameraUpdate.bearingTo(targetHeading),
       duration: Duration(milliseconds: delta.abs() < 45 ? 300 : 500),
     );
+<<<<<<< HEAD
   }
 
   /// Produce a reliable heading in degrees (0..360) from successive GPS fixes.
@@ -656,12 +786,54 @@ class _MapWidgetState extends State<MapWidget> {
     double? atBearing,
   ]) {
     if (_mapController == null || !_isMapReady) return position;
+=======
+
+    _rotationAnimation = CurvedAnimation(
+      parent: _rotationAnimationController!,
+      curve: Curves.easeInOutCubic, // Smooth acceleration and deceleration
+    );
+
+    _rotationStartAngle = currentRotation;
+    _rotationEndAngle = currentRotation + delta;
+
+    _rotationAnimation!.addListener(() {
+      if (!mounted ||
+          _rotationStartAngle == null ||
+          _rotationEndAngle == null) {
+        return;
+      }
+
+      // Interpolate between start and end angles
+      final t = _rotationAnimation!.value;
+      final rotation = _rotationStartAngle! +
+          ((_rotationEndAngle! - _rotationStartAngle!) * t);
+
+      _mapController.rotate(rotation);
+    });
+
+    _rotationAnimationController!.forward();
+  }
+
+  /// Offset a lat/lon position by screen pixels (to account for UI overlays)
+  /// Shifts the map center to keep the GPS marker centered in the visible map area
+  /// - bottomPadding: shifts center down (portrait mode with bottom panel)
+  /// - rightPadding: shifts center left (landscape mode with side panel)
+  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding,
+      [double rightPadding = 0, double? atZoom]) {
+    if (!_isMapReady) return position;
+>>>>>>> a431a6a (format with dart)
     if (bottomPadding <= 0 && rightPadding <= 0) return position;
 
     // Get meters per pixel at the target zoom (or current camera zoom).
     // Approx: 40075km / (256 * 2^zoom) at equator, adjusted by cos(lat)
+<<<<<<< HEAD
     final zoom = atZoom ?? _mapController!.cameraPosition?.zoom ?? _defaultZoom;
     final metersPerPixel = 40075000 / (256 * math.pow(2, zoom)) *
+=======
+    final zoom = atZoom ?? _mapController.camera.zoom;
+    final metersPerPixel = 40075000 /
+        (256 * math.pow(2, zoom)) *
+>>>>>>> a431a6a (format with dart)
         math.cos(position.latitude * math.pi / 180);
 
     // Start with the offset expressed as if the map were north-up
@@ -675,7 +847,13 @@ class _MapWidgetState extends State<MapWidget> {
     }
     if (rightPadding > 0) {
       final meterOffset = (rightPadding / 2) * metersPerPixel;
+<<<<<<< HEAD
       lonOffset = -(meterOffset / (111000 * math.cos(position.latitude * math.pi / 180)));
+=======
+      // Longitude degrees per meter varies with latitude
+      lonOffset = -(meterOffset /
+          (111000 * math.cos(position.latitude * math.pi / 180)));
+>>>>>>> a431a6a (format with dart)
     }
 
     // When the map is rotated, "screen-down" no longer points geographic
@@ -698,7 +876,8 @@ class _MapWidgetState extends State<MapWidget> {
       lonOffset = rotatedLon;
     }
 
-    return LatLng(position.latitude + latOffset, position.longitude + lonOffset);
+    return LatLng(
+        position.latitude + latOffset, position.longitude + lonOffset);
   }
 
   @override
@@ -764,9 +943,14 @@ class _MapWidgetState extends State<MapWidget> {
             if (_autoFollow) {
               // Auto-follow is on and panel may be open — apply panel offset so
               // the marker appears centered in the visible map area.
-              final adjustedPosition = _offsetPositionForPadding(initialPosition, widget.bottomPaddingPixels, widget.rightPaddingPixels, 16.0);
+              final adjustedPosition = _offsetPositionForPadding(
+                  initialPosition,
+                  widget.bottomPaddingPixels,
+                  widget.rightPaddingPixels,
+                  16.0);
               _animateToPositionWithZoom(adjustedPosition, 16.0);
-              debugLog('[MAP] Initial zoom to GPS position (with panel offset)');
+              debugLog(
+                  '[MAP] Initial zoom to GPS position (with panel offset)');
             } else {
               _animateToPositionWithZoom(initialPosition, 16.0);
               debugLog('[MAP] Initial zoom to GPS position');
@@ -801,6 +985,7 @@ class _MapWidgetState extends State<MapWidget> {
           }
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _autoFollow) {
+<<<<<<< HEAD
               final adjustedPosition = _offsetPositionForPadding(
                 newPosition,
                 widget.bottomPaddingPixels,
@@ -813,6 +998,13 @@ class _MapWidgetState extends State<MapWidget> {
                 zoom: targetZoom,
                 bearing: targetBearing,
               );
+=======
+              // Apply offset for bottom padding when control panel is open
+              final adjustedPosition = _offsetPositionForPadding(newPosition,
+                  widget.bottomPaddingPixels, widget.rightPaddingPixels);
+              _animateToPosition(
+                  adjustedPosition); // Smooth animation instead of jump
+>>>>>>> a431a6a (format with dart)
             }
           });
         }
@@ -829,7 +1021,8 @@ class _MapWidgetState extends State<MapWidget> {
           // panel offset was computed). Heading mode will begin rotating
           // on the next GPS update when heading changes.
           _lastHeading = heading;
-          debugLog('[MAP] First heading after startup (${heading.toStringAsFixed(1)}°) — stored without rotating');
+          debugLog(
+              '[MAP] First heading after startup (${heading.toStringAsFixed(1)}°) — stored without rotating');
         } else if ((heading - _lastHeading!).abs() > 2) {
           _lastHeading = heading;
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -848,11 +1041,13 @@ class _MapWidgetState extends State<MapWidget> {
 
     // Handle navigation trigger from log screen or graph
     // Reset map state and navigate to the target location
-    if (_isMapReady && appState.mapNavigationTrigger != _lastNavigationTrigger) {
+    if (_isMapReady &&
+        appState.mapNavigationTrigger != _lastNavigationTrigger) {
       _lastNavigationTrigger = appState.mapNavigationTrigger;
       final target = appState.mapNavigationTarget;
       if (target != null) {
         // Reset map controls to default state
+<<<<<<< HEAD
         _autoFollow = false;      // Disable center on GPS
         _autoFollowDesiredZoom = null;
         _alwaysNorth = true;      // Set to north-up mode
@@ -860,6 +1055,12 @@ class _MapWidgetState extends State<MapWidget> {
         _lastHeading = null;      // Reset heading tracking
         _bearingAnchor = null;    // Reset derived-heading anchor
         _computedHeading = null;
+=======
+        _autoFollow = false; // Disable center on GPS
+        _alwaysNorth = true; // Set to north-up mode
+        _rotationLocked = false; // Unlock rotation
+        _lastHeading = null; // Reset heading tracking
+>>>>>>> a431a6a (format with dart)
 
         // Navigate to the coordinates with close zoom (18 = street level view)
         // Center directly on target without offset - we want the pin in the middle
@@ -880,6 +1081,7 @@ class _MapWidgetState extends State<MapWidget> {
       }
     }
 
+<<<<<<< HEAD
     // Sync native annotations whenever marker data changes (provider triggers
     // a rebuild). The version hash detects changes to ping/repeater counts,
     // GPS position, focus state, prefs, etc. Native annotations stay in sync
@@ -916,6 +1118,10 @@ class _MapWidgetState extends State<MapWidget> {
     }
 
     final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+=======
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+>>>>>>> a431a6a (format with dart)
     // Get safe area padding for dynamic island/notch in landscape
     final safePadding = MediaQuery.of(context).padding;
     final topPadding = isLandscape ? 16.0 : 8.0;
@@ -1006,7 +1212,8 @@ class _MapWidgetState extends State<MapWidget> {
   Widget _buildCollapsibleMapControls(AppStateProvider appState) {
     // Use external state if provided, otherwise use internal state
     final isExpanded = widget.mapControlsExpanded ?? _mapControlsExpanded;
-    final onToggle = widget.onMapControlsToggle ?? () => setState(() => _mapControlsExpanded = !_mapControlsExpanded);
+    final onToggle = widget.onMapControlsToggle ??
+        () => setState(() => _mapControlsExpanded = !_mapControlsExpanded);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1030,8 +1237,7 @@ class _MapWidgetState extends State<MapWidget> {
           ),
         ),
         // Map controls (only when expanded) - below the toggle button
-        if (isExpanded)
-          _buildMapControls(appState),
+        if (isExpanded) _buildMapControls(appState),
       ],
     );
   }
@@ -1126,6 +1332,7 @@ class _MapWidgetState extends State<MapWidget> {
           // listener on `controller.onFeatureTapped` in _onMapCreated
           // instead — that fires for taps on custom layer features.
         ),
+<<<<<<< HEAD
         // No widget marker overlay — markers are now native MapLibre
         // annotations rendered by the platform view itself.
       ],
@@ -1286,6 +1493,149 @@ class _MapWidgetState extends State<MapWidget> {
           _repeaterClusterCountLayerId,
           _repeaterClusterBubbleLayerId,
           _repeaterIndividualLayerId,
+=======
+        children: [
+          // Tile layer (dynamic based on selected style from preferences)
+          // Skipped entirely when map tiles are disabled to save mobile data
+          if (appState.preferences.mapTilesEnabled)
+            Builder(
+              builder: (context) {
+                final mapStyle =
+                    MapStyleExtension.fromString(appState.preferences.mapStyle);
+                return TileLayer(
+                  urlTemplate: mapStyle.urlTemplate,
+                  subdomains: mapStyle.subdomains ?? const [],
+                  userAgentPackageName: 'com.meshmapper.app',
+                  maxZoom: 17,
+                  retinaMode: mapStyle.supportsRetina &&
+                      RetinaMode.isHighDensity(context),
+                  tileDisplay: const TileDisplay.fadeIn(
+                    reloadStartOpacity: 1.0,
+                  ),
+                  tileProvider: SilentCancellableNetworkTileProvider(),
+                );
+              },
+            ),
+
+          // MeshMapper coverage overlay (only when zone code available, overlay enabled, and tiles enabled)
+          if (appState.preferences.mapTilesEnabled &&
+              appState.zoneCode != null &&
+              _showMeshMapperOverlay)
+            TileLayer(
+              urlTemplate:
+                  'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}${appState.preferences.colorVisionType != 'none' ? '&cvd=${appState.preferences.colorVisionType}' : ''}',
+              userAgentPackageName: 'com.meshmapper.app',
+              minZoom: 3,
+              maxZoom: 17,
+              tileDisplay: const TileDisplay.fadeIn(
+                reloadStartOpacity: 1.0,
+              ),
+              tileProvider: SilentCancellableNetworkTileProvider(),
+            ),
+
+          // Coverage markers (TX, RX, DISC, Trace) — sorted by timestamp, newest on top
+          // During focus mode, the focused marker is excluded and rendered in its own top layer
+          MarkerLayer(
+            markers: _buildCoverageMarkers(
+              txPings: appState.txPings,
+              rxPings: appState.rxPings,
+              discEntries: appState.discLogEntries,
+              discDropEnabled: appState.discDropEnabled,
+              traceEntries: appState.traceLogEntries,
+              excludeFocused: _focusedPingLocation != null,
+            ),
+          ),
+
+          // Focus mode: polylines from focused ping to each connected repeater
+          // Line color = SNR (green/yellow/red). Ambiguous matches get a white border.
+          if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty)
+            PolylineLayer(
+              polylines: _focusedRepeaters.map((r) {
+                final lineColor =
+                    r.snr != null ? PingColors.snrColor(r.snr!) : Colors.grey;
+                return Polyline(
+                  points: [
+                    _focusedPingLocation!,
+                    LatLng(r.repeater.lat, r.repeater.lon)
+                  ],
+                  color: lineColor.withValues(alpha: 0.9),
+                  strokeWidth: 3.5,
+                  isDotted: true,
+                  borderStrokeWidth: r.ambiguous ? 1.5 : 0,
+                  borderColor:
+                      r.ambiguous ? Colors.white.withValues(alpha: 0.6) : null,
+                );
+              }).toList(),
+            ),
+
+          // Repeater markers (magenta with ID, rotate with map)
+          // During focus mode, split into two layers: faded repeaters below, connected on top
+          if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty) ...[
+            // Faded non-connected repeaters (below)
+            MarkerLayer(
+              rotate: true,
+              markers: _buildRepeaterMarkers(
+                appState.repeaters,
+                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+                onlyFaded: true,
+              ),
+            ),
+            // Distance labels (middle)
+            MarkerLayer(
+              rotate: true,
+              markers: _buildFocusDistanceLabels(appState),
+            ),
+            // Connected repeaters (on top)
+            MarkerLayer(
+              rotate: true,
+              markers: _buildRepeaterMarkers(
+                appState.repeaters,
+                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+                onlyConnected: true,
+              ),
+            ),
+            // Focused ping marker (above everything except GPS)
+            MarkerLayer(
+              markers: _buildFocusedPingMarker(
+                txPings: appState.txPings,
+                rxPings: appState.rxPings,
+                discEntries: appState.discLogEntries,
+                discDropEnabled: appState.discDropEnabled,
+                traceEntries: appState.traceLogEntries,
+              ),
+            ),
+          ] else
+            // Normal mode: single layer with all repeaters
+            MarkerLayer(
+              rotate: true,
+              markers: _buildRepeaterMarkers(
+                appState.repeaters,
+                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
+              ),
+            ),
+
+          // Current position marker
+          if (appState.currentPosition != null)
+            MarkerLayer(
+              // Vehicle/boat icons stay upright by counter-rotating against map rotation;
+              // arrow, walk, and chomper rotate with heading (handled by Transform.rotate in the painter)
+              rotate: appState.preferences.gpsMarkerStyle != 'arrow' &&
+                  appState.preferences.gpsMarkerStyle != 'walk' &&
+                  appState.preferences.gpsMarkerStyle != 'chomper',
+              markers: [
+                Marker(
+                  point: LatLng(
+                    appState.currentPosition!.latitude,
+                    appState.currentPosition!.longitude,
+                  ),
+                  width: 48,
+                  height: 48,
+                  child: _buildCurrentPositionMarker(
+                      appState.currentPosition!.heading),
+                ),
+              ],
+            ),
+>>>>>>> a431a6a (format with dart)
         ],
         null,
       );
@@ -2670,14 +3020,15 @@ class _MapWidgetState extends State<MapWidget> {
               columnWidths: const {
                 0: IntrinsicColumnWidth(), // dot
                 1: IntrinsicColumnWidth(), // ID
-                2: FixedColumnWidth(8),    // spacer
+                2: FixedColumnWidth(8), // spacer
                 3: IntrinsicColumnWidth(), // SNR
               },
               children: [
                 for (final r in topRepeaters)
                   _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type)),
                 if (rxSlot != null)
-                  _overlayRow(rxSlot.repeaterId, rxSlot.snr, _overlayTypeColor(OverlayPingType.rx)),
+                  _overlayRow(rxSlot.repeaterId, rxSlot.snr,
+                      _overlayTypeColor(OverlayPingType.rx)),
               ],
             ),
         ],
@@ -2710,11 +3061,15 @@ class _MapWidgetState extends State<MapWidget> {
           ),
           const SizedBox(width: 6),
           Text(
-            hasGps ? formatMeters(position.accuracy, isImperial: appState.preferences.isImperial) : 'No GPS',
+            hasGps
+                ? formatMeters(position.accuracy,
+                    isImperial: appState.preferences.isImperial)
+                : 'No GPS',
             style: TextStyle(
               fontSize: 11,
               fontFamily: 'monospace',
-              color: hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
+              color:
+                  hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
             ),
           ),
           // Distance since last TX ping (like wardrive.js)
@@ -2727,7 +3082,8 @@ class _MapWidgetState extends State<MapWidget> {
             ),
             const SizedBox(width: 4),
             Text(
-              formatMeters(distanceFromLastPing, isImperial: appState.preferences.isImperial),
+              formatMeters(distanceFromLastPing,
+                  isImperial: appState.preferences.isImperial),
               style: const TextStyle(
                 fontSize: 11,
                 fontFamily: 'monospace',
@@ -2748,7 +3104,8 @@ class _MapWidgetState extends State<MapWidget> {
 
   /// Map controls (always vertical, used inside collapsible wrapper)
   Widget _buildMapControls(AppStateProvider appState) {
-    final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+    final mapStyle =
+        MapStyleExtension.fromString(appState.preferences.mapStyle);
 
     return Container(
       decoration: BoxDecoration(
@@ -2770,7 +3127,9 @@ class _MapWidgetState extends State<MapWidget> {
             _buildControlDivider(),
             _buildControlButton(
               icon: Icons.layers,
-              tooltip: _showMeshMapperOverlay ? 'Hide Coverage Overlay' : 'Show Coverage Overlay',
+              tooltip: _showMeshMapperOverlay
+                  ? 'Hide Coverage Overlay'
+                  : 'Show Coverage Overlay',
               onPressed: _toggleMeshMapperOverlay,
               isActive: _showMeshMapperOverlay,
             ),
@@ -2780,14 +3139,17 @@ class _MapWidgetState extends State<MapWidget> {
           _buildControlButton(
             icon: _autoFollow ? Icons.my_location : Icons.location_searching,
             tooltip: _autoFollow ? 'Following GPS' : 'Center on Position',
-            onPressed: appState.currentPosition != null ? _centerOnPosition : null,
+            onPressed:
+                appState.currentPosition != null ? _centerOnPosition : null,
             isActive: _autoFollow,
           ),
           _buildControlDivider(),
           // Always North toggle
           _buildControlButton(
             icon: _alwaysNorth ? Icons.navigation : Icons.explore,
-            tooltip: _alwaysNorth ? 'Always North (Click to Rotate with Heading)' : 'Rotating with Heading (Click for Always North)',
+            tooltip: _alwaysNorth
+                ? 'Always North (Click to Rotate with Heading)'
+                : 'Rotating with Heading (Click for Always North)',
             onPressed: _toggleNorthMode,
             isActive: !_alwaysNorth,
           ),
@@ -2849,7 +3211,8 @@ class _MapWidgetState extends State<MapWidget> {
 
   void _cycleMapStyle(AppStateProvider appState) {
     const styles = MapStyle.values;
-    final currentStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
+    final currentStyle =
+        MapStyleExtension.fromString(appState.preferences.mapStyle);
     final currentIndex = styles.indexOf(currentStyle);
     final newStyle = styles[(currentIndex + 1) % styles.length];
     appState.setMapStyle(newStyle.name);
@@ -2880,6 +3243,7 @@ class _MapWidgetState extends State<MapWidget> {
         _autoFollowDesiredZoom = targetZoom;
       });
       appState.setMapAutoFollow(true);
+<<<<<<< HEAD
       // Bundle target + zoom + bearing into one animation so the
       // initial centering can't be half-cancelled by a racing GPS tick.
       final double targetBearing = (!_alwaysNorth && _computedHeading != null)
@@ -2898,6 +3262,13 @@ class _MapWidgetState extends State<MapWidget> {
         bearing: targetBearing,
         durationMs: 500,
       );
+=======
+      // Apply offset for bottom padding when control panel is open
+      final adjustedPosition = _offsetPositionForPadding(targetPosition,
+          widget.bottomPaddingPixels, widget.rightPaddingPixels);
+      _animateToPositionWithZoom(
+          adjustedPosition, 17.0); // Street level zoom when enabling follow
+>>>>>>> a431a6a (format with dart)
     }
   }
 
@@ -2926,6 +3297,33 @@ class _MapWidgetState extends State<MapWidget> {
             CameraUpdate.bearingTo(0),
             duration: const Duration(milliseconds: 500),
           );
+<<<<<<< HEAD
+=======
+
+          _rotationAnimation = CurvedAnimation(
+            parent: _rotationAnimationController!,
+            curve: Curves.easeInOutCubic,
+          );
+
+          _rotationStartAngle = currentRotation;
+          _rotationEndAngle = 0.0; // North
+
+          _rotationAnimation!.addListener(() {
+            if (!mounted ||
+                _rotationStartAngle == null ||
+                _rotationEndAngle == null) {
+              return;
+            }
+
+            final t = _rotationAnimation!.value;
+            final rotation = _rotationStartAngle! +
+                ((_rotationEndAngle! - _rotationStartAngle!) * t);
+
+            _mapController.rotate(rotation);
+          });
+
+          _rotationAnimationController!.forward();
+>>>>>>> a431a6a (format with dart)
         }
       } else if (!_alwaysNorth && appState.currentPosition != null) {
         // If switching to heading mode, immediately start rotating to current heading
@@ -2956,6 +3354,33 @@ class _MapWidgetState extends State<MapWidget> {
             CameraUpdate.bearingTo(0),
             duration: const Duration(milliseconds: 500),
           );
+<<<<<<< HEAD
+=======
+
+          _rotationAnimation = CurvedAnimation(
+            parent: _rotationAnimationController!,
+            curve: Curves.easeInOutCubic,
+          );
+
+          _rotationStartAngle = currentRotation;
+          _rotationEndAngle = 0.0; // North
+
+          _rotationAnimation!.addListener(() {
+            if (!mounted ||
+                _rotationStartAngle == null ||
+                _rotationEndAngle == null) {
+              return;
+            }
+
+            final t = _rotationAnimation!.value;
+            final rotation = _rotationStartAngle! +
+                ((_rotationEndAngle! - _rotationStartAngle!) * t);
+
+            _mapController.rotate(rotation);
+          });
+
+          _rotationAnimationController!.forward();
+>>>>>>> a431a6a (format with dart)
         }
       }
     });
@@ -2986,7 +3411,8 @@ class _MapWidgetState extends State<MapWidget> {
                     decoration: BoxDecoration(
                       color: Colors.blue.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                      border:
+                          Border.all(color: Colors.blue.withValues(alpha: 0.4)),
                     ),
                     child: const Icon(Icons.map, color: Colors.blue, size: 24),
                   ),
@@ -2995,8 +3421,8 @@ class _MapWidgetState extends State<MapWidget> {
                     child: Text(
                       'Legend & Info',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                            fontWeight: FontWeight.w600,
+                          ),
                     ),
                   ),
                   IconButton(
@@ -3018,246 +3444,374 @@ class _MapWidgetState extends State<MapWidget> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         // Map Markers section
-              Text(
-                'Map Markers',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                ),
-                child: Column(
-                  children: [
-                    _buildLegendItem(
-                      context: context,
-                      color: PingColors.txSuccessLegend,
-                      label: 'TX',
-                      description: 'Location where you sent a ping and heard a repeater',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLegendItem(
-                      context: context,
-                      color: PingColors.txFail,
-                      label: 'TX',
-                      description: 'Location where you sent a ping but no repeater was heard',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLegendItem(
-                      context: context,
-                      color: PingColors.rx,
-                      label: 'RX',
-                      description: 'Location where you received a message from the mesh',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLegendItem(
-                      context: context,
-                      color: PingColors.discSuccess,
-                      label: 'DISC',
-                      description: 'Location where you sent a discovery request and a repeater responded',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLegendItem(
-                      context: context,
-                      color: PingColors.traceSuccess,
-                      label: 'TRC',
-                      description: 'Location where a trace reached the repeater',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
-                    _buildLegendItem(
-                      context: context,
-                      color: PingColors.discFail,
-                      label: 'DISC',
-                      description: 'Location where you sent a discovery request but no repeater responded',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2)),
-                    _buildLegendItem(
-                      context: context,
-                      color: PingColors.noResponse,
-                      label: 'TRC',
-                      description: 'Location where a trace got no response',
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 20),
+                        Text(
+                          'Map Markers',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outline
+                                    .withValues(alpha: 0.3)),
+                          ),
+                          child: Column(
+                            children: [
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.txSuccessLegend,
+                                label: 'TX',
+                                description:
+                                    'Location where you sent a ping and heard a repeater',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.txFail,
+                                label: 'TX',
+                                description:
+                                    'Location where you sent a ping but no repeater was heard',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.rx,
+                                label: 'RX',
+                                description:
+                                    'Location where you received a message from the mesh',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.discSuccess,
+                                label: 'DISC',
+                                description:
+                                    'Location where you sent a discovery request and a repeater responded',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.traceSuccess,
+                                label: 'TRC',
+                                description:
+                                    'Location where a trace reached the repeater',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.2)),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.discFail,
+                                label: 'DISC',
+                                description:
+                                    'Location where you sent a discovery request but no repeater responded',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.2)),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.noResponse,
+                                label: 'TRC',
+                                description:
+                                    'Location where a trace got no response',
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
 
-              // Coverage Layer section
-              Text(
-                'Coverage Layer',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                ),
-                child: Column(
-                  children: [
-                    _buildLayerItem(
-                      context: context,
-                      color: PingColors.coverageBidir,
-                      label: 'BIDIR',
-                      description: 'Heard repeats from the mesh AND successfully routed through it',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLayerItem(
-                      context: context,
-                      color: PingColors.coverageDisc,
-                      label: 'DISC',
-                      description: 'Wardriving app sent a discovery packet and heard a reply',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLayerItem(
-                      context: context,
-                      color: PingColors.coverageTx,
-                      label: 'TX',
-                      description: 'Successfully routed through, but no repeats heard back',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLayerItem(
-                      context: context,
-                      color: PingColors.coverageRx,
-                      label: 'RX',
-                      description: 'Heard mesh traffic but did not transmit',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLayerItem(
-                      context: context,
-                      color: PingColors.coverageDead,
-                      label: 'DEAD',
-                      description: 'Repeater heard it, but no other radio received the repeat',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildLayerItem(
-                      context: context,
-                      color: PingColors.coverageDrop,
-                      label: 'DROP',
-                      description: 'No repeats heard AND no successful route',
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 20),
+                        // Coverage Layer section
+                        Text(
+                          'Coverage Layer',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outline
+                                    .withValues(alpha: 0.3)),
+                          ),
+                          child: Column(
+                            children: [
+                              _buildLayerItem(
+                                context: context,
+                                color: PingColors.coverageBidir,
+                                label: 'BIDIR',
+                                description:
+                                    'Heard repeats from the mesh AND successfully routed through it',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLayerItem(
+                                context: context,
+                                color: PingColors.coverageDisc,
+                                label: 'DISC',
+                                description:
+                                    'Wardriving app sent a discovery packet and heard a reply',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLayerItem(
+                                context: context,
+                                color: PingColors.coverageTx,
+                                label: 'TX',
+                                description:
+                                    'Successfully routed through, but no repeats heard back',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLayerItem(
+                                context: context,
+                                color: PingColors.coverageRx,
+                                label: 'RX',
+                                description:
+                                    'Heard mesh traffic but did not transmit',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLayerItem(
+                                context: context,
+                                color: PingColors.coverageDead,
+                                label: 'DEAD',
+                                description:
+                                    'Repeater heard it, but no other radio received the repeat',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildLayerItem(
+                                context: context,
+                                color: PingColors.coverageDrop,
+                                label: 'DROP',
+                                description:
+                                    'No repeats heard AND no successful route',
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
 
-              // Sound Notifications section
-              Text(
-                'Sound Notifications',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                ),
-                child: Column(
-                  children: [
-                    _buildSoundItem(
-                      context: context,
-                      icon: Icons.cell_tower,
-                      label: 'TX Sound',
-                      description: 'Plays when sending a ping or discovery request',
-                      onPlay: () {
-                        final appState = context.read<AppStateProvider>();
-                        appState.audioService.playTransmitSound();
-                      },
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildSoundItem(
-                      context: context,
-                      icon: Icons.hearing,
-                      label: 'RX Sound',
-                      description: 'Plays when a repeater echo or mesh message is received',
-                      onPlay: () {
-                        final appState = context.read<AppStateProvider>();
-                        appState.audioService.playReceiveSound();
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 20),
+                        // Sound Notifications section
+                        Text(
+                          'Sound Notifications',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outline
+                                    .withValues(alpha: 0.3)),
+                          ),
+                          child: Column(
+                            children: [
+                              _buildSoundItem(
+                                context: context,
+                                icon: Icons.cell_tower,
+                                label: 'TX Sound',
+                                description:
+                                    'Plays when sending a ping or discovery request',
+                                onPlay: () {
+                                  final appState =
+                                      context.read<AppStateProvider>();
+                                  appState.audioService.playTransmitSound();
+                                },
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildSoundItem(
+                                context: context,
+                                icon: Icons.hearing,
+                                label: 'RX Sound',
+                                description:
+                                    'Plays when a repeater echo or mesh message is received',
+                                onPlay: () {
+                                  final appState =
+                                      context.read<AppStateProvider>();
+                                  appState.audioService.playReceiveSound();
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
 
-              // Map Controls section
-              Text(
-                'Map Controls',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                ),
-                child: Column(
-                  children: [
-                    _buildHelpItem(
-                      context: context,
-                      icon: Icons.dark_mode,
-                      label: 'Map Style',
-                      description: 'Cycle between Dark, Light, and Satellite map styles',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildHelpItem(
-                      context: context,
-                      icon: Icons.layers,
-                      label: 'Coverage Overlay',
-                      description: 'Toggle MeshMapper coverage overlay showing community-reported mesh coverage',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildHelpItem(
-                      context: context,
-                      icon: Icons.my_location,
-                      label: 'Center/Follow',
-                      description: 'Center map on GPS position. Tap again to toggle auto-follow mode',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildHelpItem(
-                      context: context,
-                      icon: Icons.navigation,
-                      label: 'Always North',
-                      description: 'Toggle between always-north orientation or rotate with heading',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildHelpItem(
-                      context: context,
-                      icon: Icons.sync_disabled,
-                      label: 'Lock Rotation',
-                      description: 'Prevent accidental rotation of the map',
-                    ),
-                    Divider(height: 1, color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3)),
-                    _buildHelpItem(
-                      context: context,
-                      icon: Icons.info_outline,
-                      label: 'Legend & Info',
-                      description: 'Show this help popup with legend and control explanations',
-                    ),
-                  ],
-                ),
-              ),
+                        // Map Controls section
+                        Text(
+                          'Map Controls',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outline
+                                    .withValues(alpha: 0.3)),
+                          ),
+                          child: Column(
+                            children: [
+                              _buildHelpItem(
+                                context: context,
+                                icon: Icons.dark_mode,
+                                label: 'Map Style',
+                                description:
+                                    'Cycle between Dark, Light, and Satellite map styles',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildHelpItem(
+                                context: context,
+                                icon: Icons.layers,
+                                label: 'Coverage Overlay',
+                                description:
+                                    'Toggle MeshMapper coverage overlay showing community-reported mesh coverage',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildHelpItem(
+                                context: context,
+                                icon: Icons.my_location,
+                                label: 'Center/Follow',
+                                description:
+                                    'Center map on GPS position. Tap again to toggle auto-follow mode',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildHelpItem(
+                                context: context,
+                                icon: Icons.navigation,
+                                label: 'Always North',
+                                description:
+                                    'Toggle between always-north orientation or rotate with heading',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildHelpItem(
+                                context: context,
+                                icon: Icons.sync_disabled,
+                                label: 'Lock Rotation',
+                                description:
+                                    'Prevent accidental rotation of the map',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildHelpItem(
+                                context: context,
+                                icon: Icons.info_outline,
+                                label: 'Legend & Info',
+                                description:
+                                    'Show this help popup with legend and control explanations',
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -3274,8 +3828,13 @@ class _MapWidgetState extends State<MapWidget> {
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
                             colors: [
-                              Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0),
-                              Theme.of(context).colorScheme.surfaceContainerHighest,
+                              Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest
+                                  .withValues(alpha: 0),
+                              Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest,
                             ],
                           ),
                         ),
@@ -3469,6 +4028,117 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   /// Build a coverage marker child widget based on the user's marker style preference.
+<<<<<<< HEAD
+=======
+  Widget _buildCoverageMarkerChild(Color color) {
+    final style = context.read<AppStateProvider>().preferences.markerStyle;
+    switch (style) {
+      case 'circle':
+        return Container(
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2.0),
+            boxShadow: const [
+              BoxShadow(
+                  color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))
+            ],
+          ),
+        );
+      case 'pin':
+        return CustomPaint(
+          size: const Size(20, 20),
+          painter: _PinMarkerPainter(color),
+        );
+      case 'diamond':
+        return CustomPaint(
+          size: const Size(20, 20),
+          painter: _DiamondMarkerPainter(color),
+        );
+      case 'dot':
+      default:
+        return Container(
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(
+                color: Colors.white.withValues(alpha: 0.6), width: 1.5),
+            boxShadow: const [
+              BoxShadow(
+                  color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))
+            ],
+          ),
+        );
+    }
+  }
+
+  /// Build all coverage dot markers sorted by timestamp (oldest first = drawn underneath).
+  /// Newer pings always render on top regardless of type.
+  List<Marker> _buildCoverageMarkers({
+    required List<TxPing> txPings,
+    required List<RxPing> rxPings,
+    required List<DiscLogEntry> discEntries,
+    required bool discDropEnabled,
+    required List<TraceLogEntry> traceEntries,
+    bool excludeFocused = false,
+  }) {
+    final timestamped = <(DateTime, Marker)>[
+      for (final ping in txPings)
+        if (!excludeFocused ||
+            !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
+          (ping.timestamp, _buildTxMarker(ping)),
+      for (final ping in rxPings)
+        if (!excludeFocused ||
+            !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
+          (ping.timestamp, _buildRxMarker(ping)),
+      for (final entry in discEntries)
+        if (!excludeFocused ||
+            !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
+          (entry.timestamp, _buildDiscMarker(entry, discDropEnabled)),
+      for (final entry in traceEntries)
+        if (!excludeFocused ||
+            !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
+          (entry.timestamp, _buildTraceMarker(entry)),
+    ];
+
+    timestamped.sort((a, b) => a.$1.compareTo(b.$1));
+    return timestamped.map((e) => e.$2).toList();
+  }
+
+  /// Build just the focused ping marker for rendering in its own top layer.
+  List<Marker> _buildFocusedPingMarker({
+    required List<TxPing> txPings,
+    required List<RxPing> rxPings,
+    required List<DiscLogEntry> discEntries,
+    required bool discDropEnabled,
+    required List<TraceLogEntry> traceEntries,
+  }) {
+    if (_focusedPingLocation == null) return [];
+
+    for (final ping in txPings) {
+      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
+        return [_buildTxMarker(ping)];
+      }
+    }
+    for (final ping in rxPings) {
+      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
+        return [_buildRxMarker(ping)];
+      }
+    }
+    for (final entry in discEntries) {
+      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
+        return [_buildDiscMarker(entry, discDropEnabled)];
+      }
+    }
+    for (final entry in traceEntries) {
+      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
+        return [_buildTraceMarker(entry)];
+      }
+    }
+    return [];
+  }
+
+>>>>>>> a431a6a (format with dart)
   /// Check if a ping at given lat/lon/timestamp is the currently focused ping.
   /// Used by the native annotation sync to apply focus-mode styling (size,
   /// opacity) to the focused ping vs other pings.
@@ -3479,6 +4149,83 @@ class _MapWidgetState extends State<MapWidget> {
         _focusedPingLocation!.longitude == lon;
   }
 
+<<<<<<< HEAD
+=======
+  /// Apply focus fade to a marker color. Returns dimmed color if focus is active
+  /// and this marker is not the focused one.
+  Color _applyFocusFade(Color color, bool isFocused) {
+    if (_focusedPingLocation == null || isFocused) return color;
+    return color.withValues(alpha: 0.15);
+  }
+
+  Marker _buildTxMarker(TxPing ping) {
+    final isFocused =
+        _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
+    final color =
+        ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess;
+    final size = isFocused ? 24.0 : 20.0;
+    return Marker(
+      point: LatLng(ping.latitude, ping.longitude),
+      width: size,
+      height: size,
+      child: GestureDetector(
+        onTap: () => _showTxPingDetails(ping),
+        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
+      ),
+    );
+  }
+
+  Marker _buildRxMarker(RxPing ping) {
+    final isFocused =
+        _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
+    final size = isFocused ? 24.0 : 20.0;
+    return Marker(
+      point: LatLng(ping.latitude, ping.longitude),
+      width: size,
+      height: size,
+      child: GestureDetector(
+        onTap: () => _showRxPingDetails(ping),
+        child: _buildCoverageMarkerChild(
+            _applyFocusFade(PingColors.rx, isFocused)),
+      ),
+    );
+  }
+
+  Marker _buildDiscMarker(DiscLogEntry entry, bool discDropEnabled) {
+    final isFocused =
+        _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
+    final color = entry.nodeCount == 0
+        ? (discDropEnabled ? PingColors.txFail : PingColors.discFail)
+        : _discMarkerColor;
+    final size = isFocused ? 24.0 : 20.0;
+    return Marker(
+      point: LatLng(entry.latitude, entry.longitude),
+      width: size,
+      height: size,
+      child: GestureDetector(
+        onTap: () => _showDiscPingDetails(entry),
+        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
+      ),
+    );
+  }
+
+  Marker _buildTraceMarker(TraceLogEntry entry) {
+    final isFocused =
+        _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
+    final color = entry.success ? Colors.cyan : Colors.grey;
+    final size = isFocused ? 24.0 : 20.0;
+    return Marker(
+      point: LatLng(entry.latitude, entry.longitude),
+      width: size,
+      height: size,
+      child: GestureDetector(
+        onTap: () => _showTraceDetails(entry),
+        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
+      ),
+    );
+  }
+
+>>>>>>> a431a6a (format with dart)
   void _showTraceDetails(TraceLogEntry entry) {
     // Activate focus mode for successful traces with a known repeater
     if (entry.success) {
@@ -3487,7 +4234,8 @@ class _MapWidgetState extends State<MapWidget> {
         snrValues: [entry.localSnr],
       );
       if (resolved.isNotEmpty) {
-        _activatePingFocus(LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+        _activatePingFocus(
+            LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
       }
     }
 
@@ -3508,7 +4256,8 @@ class _MapWidgetState extends State<MapWidget> {
         ),
         child: SingleChildScrollView(
           child: Container(
-            padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+            padding: EdgeInsets.fromLTRB(
+                20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3521,9 +4270,11 @@ class _MapWidgetState extends State<MapWidget> {
                       decoration: BoxDecoration(
                         color: Colors.cyan.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
+                        border: Border.all(
+                            color: Colors.cyan.withValues(alpha: 0.4)),
                       ),
-                      child: const Icon(Icons.gps_fixed, color: Colors.cyan, size: 24),
+                      child: const Icon(Icons.gps_fixed,
+                          color: Colors.cyan, size: 24),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -3532,15 +4283,20 @@ class _MapWidgetState extends State<MapWidget> {
                         children: [
                           Text(
                             'Trace',
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleLarge
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
                           ),
                           Text(
                             _formatTime(entry.timestamp),
                             style: TextStyle(
                               fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                         ],
@@ -3558,15 +4314,23 @@ class _MapWidgetState extends State<MapWidget> {
 
                 // Location chip
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                    border: Border.all(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .outline
+                            .withValues(alpha: 0.5)),
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      Icon(Icons.location_on,
+                          size: 16,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -3603,13 +4367,18 @@ class _MapWidgetState extends State<MapWidget> {
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                      border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outline
+                              .withValues(alpha: 0.5)),
                     ),
                     child: Column(
                       children: [
                         // Header row
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
                           child: Row(
                             children: [
                               SizedBox(
@@ -3619,7 +4388,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -3630,7 +4401,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -3641,7 +4414,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -3652,14 +4427,17 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        Divider(height: 1, color: Theme.of(context).dividerColor),
+                        Divider(
+                            height: 1, color: Theme.of(context).dividerColor),
                         // Data row
                         Builder(builder: (context) {
                           final localSnr = entry.localSnr ?? 0;
@@ -3668,15 +4446,24 @@ class _MapWidgetState extends State<MapWidget> {
 
                           final rxSnrColor = PingColors.snrColor(localSnr);
                           final rssiColor = PingColors.rssiColor(localRssi);
-                          final txSnrColor = PingColors.snrColor(remoteSnr.toDouble());
+                          final txSnrColor =
+                              PingColors.snrColor(remoteSnr.toDouble());
 
                           return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, entry.targetRepeaterId, fromLatLng: (lat: entry.latitude, lon: entry.longitude)),
+                            onTap: () => RepeaterIdChip.showRepeaterPopup(
+                                context, entry.targetRepeaterId, fromLatLng: (
+                              lat: entry.latitude,
+                              lon: entry.longitude
+                            )),
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
                               child: Row(
                                 children: [
-                                  RepeaterIdChip(repeaterId: entry.targetRepeaterId, fontSize: 13, width: _nodeColumnWidth()),
+                                  RepeaterIdChip(
+                                      repeaterId: entry.targetRepeaterId,
+                                      fontSize: 13,
+                                      width: _nodeColumnWidth()),
                                   // RX SNR
                                   Expanded(
                                     child: Center(
@@ -3721,6 +4508,56 @@ class _MapWidgetState extends State<MapWidget> {
     ).whenComplete(() => _dismissPingFocus());
   }
 
+<<<<<<< HEAD
+=======
+  /// Build distance label markers at the midpoint of each focus line.
+  List<Marker> _buildFocusDistanceLabels(AppStateProvider appState) {
+    if (_focusedPingLocation == null) return [];
+    final isImperial = appState.preferences.isImperial;
+    final ping = _focusedPingLocation!;
+
+    return _focusedRepeaters.map((r) {
+      final repeaterPos = LatLng(r.repeater.lat, r.repeater.lon);
+      // Midpoint of the line
+      final midLat = (ping.latitude + repeaterPos.latitude) / 2;
+      final midLon = (ping.longitude + repeaterPos.longitude) / 2;
+      // Distance in meters — use GpsService for consistency with repeater popup
+      final meters = GpsService.distanceBetween(
+        ping.latitude,
+        ping.longitude,
+        repeaterPos.latitude,
+        repeaterPos.longitude,
+      );
+      final label = meters < 1000
+          ? formatMeters(meters, isImperial: isImperial)
+          : formatKilometers(meters / 1000, isImperial: isImperial);
+
+      return Marker(
+        point: LatLng(midLat, midLon),
+        width: 70,
+        height: 22,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              fontFamily: 'monospace',
+              color: Colors.white,
+            ),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+>>>>>>> a431a6a (format with dart)
   /// DISC marker color (delegates to active palette)
   static Color get _discMarkerColor => PingColors.discSuccess;
 
@@ -3754,7 +4591,8 @@ class _MapWidgetState extends State<MapWidget> {
           ? fullHex.substring(0, 8)
           : hexIds[i];
       final matches = allRepeaters
-          .where((r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
+          .where(
+              (r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
           .toList();
       final ambiguous = matches.length > 1;
       resolved.addAll(matches.map((r) => _ResolvedRepeater(r, snr, ambiguous)));
@@ -3763,10 +4601,17 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   /// Activate ping focus mode — draw lines, fade markers, zoom to fit.
+<<<<<<< HEAD
   void _activatePingFocus(LatLng pingLocation, DateTime timestamp, List<_ResolvedRepeater> repeaters) {
     final pos = _mapController?.cameraPosition;
     _preFocusCenter = pos?.target;
     _preFocusZoom = pos?.zoom;
+=======
+  void _activatePingFocus(LatLng pingLocation, DateTime timestamp,
+      List<_ResolvedRepeater> repeaters) {
+    _preFocusCenter = _mapController.camera.center;
+    _preFocusZoom = _mapController.camera.zoom;
+>>>>>>> a431a6a (format with dart)
     _wasAutoFollowBeforeFocus = _autoFollow;
     _wasRotatingBeforeFocus = !_alwaysNorth;
 
@@ -3865,10 +4710,7 @@ class _MapWidgetState extends State<MapWidget> {
     for (final repeater in repeaters) {
       idCounts[repeater.id] = (idCounts[repeater.id] ?? 0) + 1;
     }
-    return idCounts.entries
-        .where((e) => e.value > 1)
-        .map((e) => e.key)
-        .toSet();
+    return idCounts.entries.where((e) => e.value > 1).map((e) => e.key).toSet();
   }
 
   /// Get marker color for a repeater based on status priority:
@@ -3883,11 +4725,146 @@ class _MapWidgetState extends State<MapWidget> {
     return _repeaterMarkerColor; // Active (default)
   }
 
+<<<<<<< HEAD
+=======
+  List<Marker> _buildRepeaterMarkers(
+    List<Repeater> repeaters,
+    int? regionHopBytesOverride, {
+    bool onlyFaded = false,
+    bool onlyConnected = false,
+  }) {
+    final duplicateIds = _getDuplicateRepeaterIds(repeaters);
+    final hasFocus = _focusedPingLocation != null;
+
+    return repeaters.where((repeater) {
+      if (!hasFocus) return true; // No focus — include all
+      final isConnected =
+          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
+      if (onlyConnected) return isConnected;
+      if (onlyFaded) return !isConnected;
+      return true;
+    }).map((repeater) {
+      final isDuplicate = duplicateIds.contains(repeater.id);
+      final markerColor = _getRepeaterMarkerColor(repeater, isDuplicate);
+
+      // During focus mode, fade repeaters not connected to the focused ping
+      final isConnected = hasFocus &&
+          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
+      final effectiveColor = (hasFocus && !isConnected)
+          ? markerColor.withValues(alpha: 0.15)
+          : markerColor;
+      final effectiveBorderColor = (hasFocus && !isConnected)
+          ? Colors.white.withValues(alpha: 0.15)
+          : Colors.white;
+      final effectiveTextColor = (hasFocus && !isConnected)
+          ? Colors.white.withValues(alpha: 0.15)
+          : Colors.white;
+
+      // Display hex ID based on per-repeater hop_bytes (or regional admin override)
+      final displayId =
+          repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
+      final effectiveBytes = regionHopBytesOverride ?? repeater.hopBytes;
+      final isLongId = displayId.length > 2;
+      final markerWidth = displayId.length > 4
+          ? 48.0
+          : isLongId
+              ? 40.0
+              : 28.0;
+
+      // Shape varies by hop bytes: 1=square, 2=rounded rect, 3=more rounded
+      final borderRadius = effectiveBytes >= 3
+          ? BorderRadius.circular(8)
+          : effectiveBytes == 2
+              ? BorderRadius.circular(6)
+              : BorderRadius.circular(4);
+
+      return Marker(
+        point: LatLng(repeater.lat, repeater.lon),
+        width: markerWidth,
+        height: 28,
+        child: GestureDetector(
+          onTap: () => _showRepeaterDetails(repeater,
+              isDuplicate: isDuplicate,
+              regionHopBytesOverride: regionHopBytesOverride),
+          child: Container(
+            padding: isLongId
+                ? const EdgeInsets.symmetric(horizontal: 4)
+                : EdgeInsets.zero,
+            decoration: BoxDecoration(
+              color: effectiveColor,
+              borderRadius: borderRadius,
+              border: Border.all(color: effectiveBorderColor, width: 2),
+              boxShadow: (hasFocus && !isConnected)
+                  ? null
+                  : const [
+                      BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 4,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              displayId,
+              style: TextStyle(
+                fontSize: displayId.length > 4
+                    ? 8
+                    : isLongId
+                        ? 9
+                        : 10,
+                fontWeight: FontWeight.bold,
+                color: effectiveTextColor,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  Widget _buildCurrentPositionMarker(double heading) {
+    // Convert heading from degrees to radians
+    // heading is 0-360 degrees, 0 = North, 90 = East
+    final headingRadians = heading * (math.pi / 180);
+    final style = context.read<AppStateProvider>().preferences.gpsMarkerStyle;
+
+    // Arrow, walk, and chomper rotate with heading; vehicle/boat icons don't (they face up)
+    final shouldRotate =
+        style == 'arrow' || style == 'walk' || style == 'chomper';
+
+    final CustomPainter painter;
+    switch (style) {
+      case 'car':
+        painter = const _CarMarkerPainter();
+      case 'bike':
+        painter = const _BikeMarkerPainter();
+      case 'boat':
+        painter = const _BoatMarkerPainter();
+      case 'walk':
+        painter = const _WalkMarkerPainter();
+      case 'chomper':
+        painter = const _ChomperMarkerPainter();
+      case 'arrow':
+      default:
+        painter = const _ArrowPainter();
+    }
+
+    final child = CustomPaint(size: const Size(24, 24), painter: painter);
+    return shouldRotate
+        ? Transform.rotate(angle: headingRadians, child: child)
+        : child;
+  }
+
+>>>>>>> a431a6a (format with dart)
   /// Compute node column width based on hop byte count.
   /// [extraPadding] adds space for additional content (e.g. nodeTypeLabel in DISC popup).
   double _nodeColumnWidth({double extraPadding = 0}) {
     final appState = context.read<AppStateProvider>();
-    final hopBytes = appState.enforceHopBytes ? appState.effectiveHopBytes : appState.hopBytes;
+    final hopBytes = appState.enforceHopBytes
+        ? appState.effectiveHopBytes
+        : appState.hopBytes;
     switch (hopBytes) {
       case 2:
         return 70 + extraPadding;
@@ -3910,7 +4887,8 @@ class _MapWidgetState extends State<MapWidget> {
         snrValues: heardRepeaters.map((r) => r.snr).toList(),
       );
       if (resolved.isNotEmpty) {
-        _activatePingFocus(LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+        _activatePingFocus(
+            LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
       }
     }
 
@@ -3931,7 +4909,8 @@ class _MapWidgetState extends State<MapWidget> {
         ),
         child: SingleChildScrollView(
           child: Container(
-            padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+            padding: EdgeInsets.fromLTRB(
+                20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3945,9 +4924,11 @@ class _MapWidgetState extends State<MapWidget> {
                       decoration: BoxDecoration(
                         color: PingColors.txSuccess.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: PingColors.txSuccess.withValues(alpha: 0.4)),
+                        border: Border.all(
+                            color: PingColors.txSuccess.withValues(alpha: 0.4)),
                       ),
-                      child: Icon(Icons.arrow_upward, color: PingColors.txSuccess, size: 24),
+                      child: Icon(Icons.arrow_upward,
+                          color: PingColors.txSuccess, size: 24),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -3956,15 +4937,20 @@ class _MapWidgetState extends State<MapWidget> {
                         children: [
                           Text(
                             'TX Ping',
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleLarge
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
                           ),
                           Text(
                             _formatTime(ping.timestamp),
                             style: TextStyle(
                               fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                         ],
@@ -3982,15 +4968,23 @@ class _MapWidgetState extends State<MapWidget> {
 
                 // Location chip
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                    border: Border.all(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .outline
+                            .withValues(alpha: 0.5)),
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      Icon(Icons.location_on,
+                          size: 16,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -4009,7 +5003,9 @@ class _MapWidgetState extends State<MapWidget> {
 
                 // Repeaters section header
                 Text(
-                  heardRepeaters.isEmpty ? 'No repeaters heard' : 'Heard Repeaters (${heardRepeaters.length})',
+                  heardRepeaters.isEmpty
+                      ? 'No repeaters heard'
+                      : 'Heard Repeaters (${heardRepeaters.length})',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
@@ -4025,13 +5021,18 @@ class _MapWidgetState extends State<MapWidget> {
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                      border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outline
+                              .withValues(alpha: 0.5)),
                     ),
                     child: Column(
                       children: [
                         // Header row
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
                           child: Row(
                             children: [
                               SizedBox(
@@ -4041,7 +5042,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -4052,7 +5055,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -4063,32 +5068,49 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        Divider(height: 1, color: Theme.of(context).dividerColor),
+                        Divider(
+                            height: 1, color: Theme.of(context).dividerColor),
                         // Data rows
                         ...heardRepeaters.map((repeater) {
-                          final snrColor = repeater.snr != null ? PingColors.snrColor(repeater.snr!) : Colors.grey;
-                          final rssiColor = repeater.rssi != null ? PingColors.rssiColor(repeater.rssi!) : Colors.grey;
+                          final snrColor = repeater.snr != null
+                              ? PingColors.snrColor(repeater.snr!)
+                              : Colors.grey;
+                          final rssiColor = repeater.rssi != null
+                              ? PingColors.rssiColor(repeater.rssi!)
+                              : Colors.grey;
 
                           return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, repeater.repeaterId, fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
+                            onTap: () => RepeaterIdChip.showRepeaterPopup(
+                                context, repeater.repeaterId, fromLatLng: (
+                              lat: ping.latitude,
+                              lon: ping.longitude
+                            )),
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
                               child: Row(
                                 children: [
                                   // Repeater ID
-                                  RepeaterIdChip(repeaterId: repeater.repeaterId, fontSize: 13, width: _nodeColumnWidth()),
+                                  RepeaterIdChip(
+                                      repeaterId: repeater.repeaterId,
+                                      fontSize: 13,
+                                      width: _nodeColumnWidth()),
                                   // SNR
                                   Expanded(
                                     child: Center(
                                       child: _buildStatChip(
-                                        value: repeater.snr?.toStringAsFixed(1) ?? '-',
+                                        value:
+                                            repeater.snr?.toStringAsFixed(1) ??
+                                                '-',
                                         color: snrColor,
                                       ),
                                     ),
@@ -4097,7 +5119,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   Expanded(
                                     child: Center(
                                       child: _buildStatChip(
-                                        value: repeater.rssi != null ? '${repeater.rssi}' : '-',
+                                        value: repeater.rssi != null
+                                            ? '${repeater.rssi}'
+                                            : '-',
                                         color: rssiColor,
                                       ),
                                     ),
@@ -4130,7 +5154,8 @@ class _MapWidgetState extends State<MapWidget> {
       snrValues: [ping.snr],
     );
     if (resolved.isNotEmpty) {
-      _activatePingFocus(LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+      _activatePingFocus(
+          LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
     }
 
     showModalBottomSheet(
@@ -4144,7 +5169,8 @@ class _MapWidgetState extends State<MapWidget> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => Container(
-        padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+        padding: EdgeInsets.fromLTRB(
+            20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4158,9 +5184,11 @@ class _MapWidgetState extends State<MapWidget> {
                   decoration: BoxDecoration(
                     color: Colors.blue.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    border:
+                        Border.all(color: Colors.blue.withValues(alpha: 0.4)),
                   ),
-                  child: const Icon(Icons.arrow_downward, color: Colors.blue, size: 24),
+                  child: const Icon(Icons.arrow_downward,
+                      color: Colors.blue, size: 24),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -4170,8 +5198,8 @@ class _MapWidgetState extends State<MapWidget> {
                       Text(
                         'RX Ping',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                              fontWeight: FontWeight.w600,
+                            ),
                       ),
                       Text(
                         _formatTime(ping.timestamp),
@@ -4199,11 +5227,17 @@ class _MapWidgetState extends State<MapWidget> {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outline
+                        .withValues(alpha: 0.5)),
               ),
               child: Row(
                 children: [
-                  Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  Icon(Icons.location_on,
+                      size: 16,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -4237,13 +5271,18 @@ class _MapWidgetState extends State<MapWidget> {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outline
+                        .withValues(alpha: 0.5)),
               ),
               child: Column(
                 children: [
                   // Header row
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
                     child: Row(
                       children: [
                         SizedBox(
@@ -4253,7 +5292,9 @@ class _MapWidgetState extends State<MapWidget> {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -4264,7 +5305,9 @@ class _MapWidgetState extends State<MapWidget> {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -4275,7 +5318,9 @@ class _MapWidgetState extends State<MapWidget> {
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -4285,13 +5330,19 @@ class _MapWidgetState extends State<MapWidget> {
                   Divider(height: 1, color: Theme.of(context).dividerColor),
                   // Data row
                   InkWell(
-                    onTap: () => RepeaterIdChip.showRepeaterPopup(context, ping.repeaterId, fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
+                    onTap: () => RepeaterIdChip.showRepeaterPopup(
+                        context, ping.repeaterId,
+                        fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
                       child: Row(
                         children: [
                           // Repeater ID
-                          RepeaterIdChip(repeaterId: ping.repeaterId, fontSize: 13, width: _nodeColumnWidth()),
+                          RepeaterIdChip(
+                              repeaterId: ping.repeaterId,
+                              fontSize: 13,
+                              width: _nodeColumnWidth()),
                           // SNR
                           Expanded(
                             child: Center(
@@ -4306,12 +5357,12 @@ class _MapWidgetState extends State<MapWidget> {
                             child: Center(
                               child: _buildStatChip(
                                 value: '${ping.rssi}',
-                              color: rssiColor,
+                                color: rssiColor,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
@@ -4330,10 +5381,12 @@ class _MapWidgetState extends State<MapWidget> {
       final resolved = _resolveRepeatersByHexIds(
         entry.discoveredNodes.map((n) => n.repeaterId).toList(),
         fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
-        snrValues: entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
+        snrValues:
+            entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
       );
       if (resolved.isNotEmpty) {
-        _activatePingFocus(LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+        _activatePingFocus(
+            LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
       }
     }
 
@@ -4354,7 +5407,8 @@ class _MapWidgetState extends State<MapWidget> {
         ),
         child: SingleChildScrollView(
           child: Container(
-            padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+            padding: EdgeInsets.fromLTRB(
+                20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4368,9 +5422,11 @@ class _MapWidgetState extends State<MapWidget> {
                       decoration: BoxDecoration(
                         color: _discMarkerColor.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: _discMarkerColor.withValues(alpha: 0.4)),
+                        border: Border.all(
+                            color: _discMarkerColor.withValues(alpha: 0.4)),
                       ),
-                      child: Icon(Icons.radar, color: _discMarkerColor, size: 24),
+                      child:
+                          Icon(Icons.radar, color: _discMarkerColor, size: 24),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -4379,15 +5435,20 @@ class _MapWidgetState extends State<MapWidget> {
                         children: [
                           Text(
                             'Disc Request',
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleLarge
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
                           ),
                           Text(
                             _formatTime(entry.timestamp),
                             style: TextStyle(
                               fontSize: 13,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                         ],
@@ -4405,15 +5466,23 @@ class _MapWidgetState extends State<MapWidget> {
 
                 // Location chip
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                    border: Border.all(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .outline
+                            .withValues(alpha: 0.5)),
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      Icon(Icons.location_on,
+                          size: 16,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -4450,13 +5519,18 @@ class _MapWidgetState extends State<MapWidget> {
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                      border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outline
+                              .withValues(alpha: 0.5)),
                     ),
                     child: Column(
                       children: [
                         // Header row
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
                           child: Row(
                             children: [
                               SizedBox(
@@ -4466,7 +5540,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -4477,7 +5553,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -4488,7 +5566,9 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
@@ -4499,24 +5579,36 @@ class _MapWidgetState extends State<MapWidget> {
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        Divider(height: 1, color: Theme.of(context).dividerColor),
+                        Divider(
+                            height: 1, color: Theme.of(context).dividerColor),
                         // Data rows
                         ...entry.discoveredNodes.map((node) {
                           final rxSnrColor = PingColors.snrColor(node.localSnr);
-                          final rssiColor = PingColors.rssiColor(node.localRssi);
-                          final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
+                          final rssiColor =
+                              PingColors.rssiColor(node.localRssi);
+                          final txSnrColor =
+                              PingColors.snrColor(node.remoteSnr.toDouble());
 
                           return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId, fullHexId: node.pubkeyHex, fromLatLng: (lat: entry.latitude, lon: entry.longitude)),
+                            onTap: () => RepeaterIdChip.showRepeaterPopup(
+                                context, node.repeaterId,
+                                fullHexId: node.pubkeyHex,
+                                fromLatLng: (
+                                  lat: entry.latitude,
+                                  lon: entry.longitude
+                                )),
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
                               child: Row(
                                 children: [
                                   // Node ID with type
@@ -4524,7 +5616,9 @@ class _MapWidgetState extends State<MapWidget> {
                                     width: _nodeColumnWidth(extraPadding: 20),
                                     child: Row(
                                       children: [
-                                        RepeaterIdChip(repeaterId: node.repeaterId, fontSize: 13),
+                                        RepeaterIdChip(
+                                            repeaterId: node.repeaterId,
+                                            fontSize: 13),
                                         Text(
                                           node.nodeTypeLabel,
                                           style: TextStyle(
@@ -4558,7 +5652,8 @@ class _MapWidgetState extends State<MapWidget> {
                                   Expanded(
                                     child: Center(
                                       child: _buildStatChip(
-                                        value: node.remoteSnr.toStringAsFixed(1),
+                                        value:
+                                            node.remoteSnr.toStringAsFixed(1),
                                         color: txSnrColor,
                                       ),
                                     ),
@@ -4601,7 +5696,8 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   /// Show repeater details popup
-  void _showRepeaterDetails(Repeater repeater, {bool isDuplicate = false, int? regionHopBytesOverride}) {
+  void _showRepeaterDetails(Repeater repeater,
+      {bool isDuplicate = false, int? regionHopBytesOverride}) {
     // Determine icon badge color based on primary status
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
@@ -4627,7 +5723,8 @@ class _MapWidgetState extends State<MapWidget> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => Container(
-        padding: EdgeInsets.fromLTRB(20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+        padding: EdgeInsets.fromLTRB(
+            20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4637,7 +5734,8 @@ class _MapWidgetState extends State<MapWidget> {
               children: [
                 // Icon badge with hex ID (mirrors map marker)
                 Builder(builder: (context) {
-                  final displayId = repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
+                  final displayId = repeater.displayHexId(
+                      overrideHopBytes: regionHopBytesOverride);
                   final isLongId = displayId.length > 2;
                   return Container(
                     constraints: const BoxConstraints(minWidth: 44),
@@ -4667,8 +5765,8 @@ class _MapWidgetState extends State<MapWidget> {
                   child: Text(
                     repeater.name,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                          fontWeight: FontWeight.w600,
+                        ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -4688,7 +5786,8 @@ class _MapWidgetState extends State<MapWidget> {
             Row(
               children: [
                 if (isDuplicate) ...[
-                  _buildRepeaterStatusChip('Duplicate', _repeaterDuplicateColor),
+                  _buildRepeaterStatusChip(
+                      'Duplicate', _repeaterDuplicateColor),
                   const SizedBox(width: 8),
                 ],
                 _buildRepeaterStatusChip(statusLabel, statusColor),
@@ -4702,14 +5801,21 @@ class _MapWidgetState extends State<MapWidget> {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+                border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outline
+                        .withValues(alpha: 0.5)),
               ),
               child: Column(
                 children: [
                   // Location row
                   Row(
                     children: [
-                      Icon(Icons.location_on, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      Icon(Icons.location_on,
+                          size: 16,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -4727,7 +5833,10 @@ class _MapWidgetState extends State<MapWidget> {
                   // Last heard row
                   Row(
                     children: [
-                      Icon(Icons.access_time, size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      Icon(Icons.access_time,
+                          size: 16,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -4907,7 +6016,13 @@ class _BikeMarkerPainter extends CustomPainter {
       ..lineTo(rightWheel.dx, rightWheel.dy) // Down to rear
       ..moveTo(cx, cy - 5)
       ..lineTo(cx + 2, cy - 7); // Handlebar
-    canvas.drawPath(framePath, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 3.5..strokeCap = StrokeCap.round);
+    canvas.drawPath(
+        framePath,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.5
+          ..strokeCap = StrokeCap.round);
 
     // Blue wheels
     canvas.drawCircle(leftWheel, wheelR, bikePaint);
@@ -4961,11 +6076,21 @@ class _BoatMarkerPainter extends CustomPainter {
     canvas.drawPath(hull, fillPaint);
 
     // Mast outline
-    canvas.drawLine(Offset(cx, cy + 2), Offset(cx, cy - 9),
-      Paint()..color = Colors.white..strokeWidth = 3..strokeCap = StrokeCap.round);
+    canvas.drawLine(
+        Offset(cx, cy + 2),
+        Offset(cx, cy - 9),
+        Paint()
+          ..color = Colors.white
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round);
     // Mast
-    canvas.drawLine(Offset(cx, cy + 2), Offset(cx, cy - 9),
-      Paint()..color = const Color(0xFF2196F3)..strokeWidth = 1.5..strokeCap = StrokeCap.round);
+    canvas.drawLine(
+        Offset(cx, cy + 2),
+        Offset(cx, cy - 9),
+        Paint()
+          ..color = const Color(0xFF2196F3)
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round);
 
     // Sail outline
     final sailOutline = ui.Path()
@@ -4981,7 +6106,11 @@ class _BoatMarkerPainter extends CustomPainter {
       ..lineTo(cx + 6, cy - 0.5)
       ..lineTo(cx + 1, cy - 0.5)
       ..close();
-    canvas.drawPath(sail, Paint()..color = const Color(0xFF64B5F6)..style = PaintingStyle.fill);
+    canvas.drawPath(
+        sail,
+        Paint()
+          ..color = const Color(0xFF64B5F6)
+          ..style = PaintingStyle.fill);
   }
 
   @override
@@ -5014,7 +6143,12 @@ class _WalkMarkerPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     // Head outline + fill
-    canvas.drawCircle(Offset(cx, cy - 7), 3.5, Paint()..color = Colors.white..style = PaintingStyle.fill);
+    canvas.drawCircle(
+        Offset(cx, cy - 7),
+        3.5,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.fill);
     canvas.drawCircle(Offset(cx, cy - 7), 2.5, fillPaint);
 
     // Body outline
@@ -5023,9 +6157,11 @@ class _WalkMarkerPainter extends CustomPainter {
     canvas.drawLine(Offset(cx, cy - 4), Offset(cx, cy + 3), personPaint);
 
     // Arms outline
-    canvas.drawLine(Offset(cx - 5, cy - 1), Offset(cx + 5, cy - 1), outlinePaint);
+    canvas.drawLine(
+        Offset(cx - 5, cy - 1), Offset(cx + 5, cy - 1), outlinePaint);
     // Arms
-    canvas.drawLine(Offset(cx - 5, cy - 1), Offset(cx + 5, cy - 1), personPaint);
+    canvas.drawLine(
+        Offset(cx - 5, cy - 1), Offset(cx + 5, cy - 1), personPaint);
 
     // Left leg outline
     canvas.drawLine(Offset(cx, cy + 3), Offset(cx - 4, cy + 10), outlinePaint);
@@ -5105,7 +6241,9 @@ class _PinMarkerPainter extends CustomPainter {
     final cx = size.width / 2;
     final cy = size.height / 2;
 
-    final fillPaint = Paint()..color = color..style = PaintingStyle.fill;
+    final fillPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
     final outlinePaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.8)
       ..style = PaintingStyle.stroke
@@ -5141,11 +6279,13 @@ class _PinMarkerPainter extends CustomPainter {
     canvas.drawCircle(headCenter, headRadius, outlinePaint);
 
     // Inner dot
-    canvas.drawCircle(headCenter, 2.0, Paint()..color = Colors.white.withValues(alpha: 0.9));
+    canvas.drawCircle(
+        headCenter, 2.0, Paint()..color = Colors.white.withValues(alpha: 0.9));
   }
 
   @override
-  bool shouldRepaint(covariant _PinMarkerPainter oldDelegate) => oldDelegate.color != color;
+  bool shouldRepaint(covariant _PinMarkerPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 /// Paints a diamond marker for coverage dots
@@ -5185,7 +6325,8 @@ class _DiamondMarkerPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _DiamondMarkerPainter oldDelegate) => oldDelegate.color != color;
+  bool shouldRepaint(covariant _DiamondMarkerPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 /// Paints a repeater marker shape (filled colored rounded box with white border
@@ -5364,7 +6505,9 @@ class _SoundItemWidgetState extends State<_SoundItemWidget> {
                     : Colors.blue.withValues(alpha: 0.2),
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: _isPlaying ? Colors.blue : Colors.blue.withValues(alpha: 0.5),
+                  color: _isPlaying
+                      ? Colors.blue
+                      : Colors.blue.withValues(alpha: 0.5),
                   width: _isPlaying ? 2 : 1,
                 ),
               ),

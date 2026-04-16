@@ -15,29 +15,44 @@ class PingControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final validation = appState.pingValidation;
-    final manualValidation = appState.manualPingValidation; // Manual ping validation (no distance check)
+    final manualValidation = appState
+        .manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
-    final canPingManual = manualValidation == PingValidation.valid; // For Send Ping button
+    final canPingManual =
+        manualValidation == PingValidation.valid; // For Send Ping button
     final canStartAuto = autoValidation == PingValidation.valid;
-    final isActiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.active;
-    final isPassiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
-    final isHybridModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.hybrid;
+    final isActiveModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.active;
+    final isPassiveModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
+    final isHybridModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.hybrid;
     final isTxModeRunning = isActiveModeRunning || isHybridModeRunning;
     final isTargetedRunning = appState.isTargetedModeRunning;
     final hybridEnabled = appState.preferences.hybridModeEnabled;
-    final isPendingDisable = appState.isPendingDisable; // Disable pending, waiting for RX window to complete
-    final cooldownActive = appState.cooldownTimer.isRunning; // Shared cooldown after disabling Active Mode
+    final isPendingDisable = appState
+        .isPendingDisable; // Disable pending, waiting for RX window to complete
+    final cooldownActive = appState
+        .cooldownTimer.isRunning; // Shared cooldown after disabling Active Mode
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
-    final manualCooldownActive = appState.manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
-    final manualCooldownRemaining = appState.manualPingCooldownTimer.remainingSec;
-    final rxWindowActive = appState.rxWindowTimer.isRunning; // RX listening window after ping
+    final manualCooldownActive = appState
+        .manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
+    final manualCooldownRemaining =
+        appState.manualPingCooldownTimer.remainingSec;
+    final rxWindowActive =
+        appState.rxWindowTimer.isRunning; // RX listening window after ping
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
-    final isPingSending = appState.isPingSending; // True immediately when manual ping button clicked
-    final isPingInProgress = appState.isPingInProgress; // True during entire ping + RX window (includes auto pings)
-    final autoPingWaiting = appState.autoPingTimer.isRunning; // Waiting for next auto ping
+    final isPingSending = appState
+        .isPingSending; // True immediately when manual ping button clicked
+    final isPingInProgress = appState
+        .isPingInProgress; // True during entire ping + RX window (includes auto pings)
+    final autoPingWaiting =
+        appState.autoPingTimer.isRunning; // Waiting for next auto ping
     final autoPingRemaining = appState.autoPingTimer.remainingSec;
-    final autoPingSkipped = appState.autoPingTimer.skipReason != null; // Last ping was skipped (e.g. distance)
-    final discoveryWindowActive = appState.discoveryWindowTimer.isRunning; // Discovery listening window countdown (Passive Mode)
+    final autoPingSkipped = appState.autoPingTimer.skipReason !=
+        null; // Last ping was skipped (e.g. distance)
+    final discoveryWindowActive = appState.discoveryWindowTimer
+        .isRunning; // Discovery listening window countdown (Passive Mode)
     final discoveryWindowRemaining = appState.discoveryWindowTimer.remainingSec;
 
     // TX is blocked when offline mode is active and connected
@@ -53,7 +68,9 @@ class PingControls extends StatelessWidget {
     Color? blockingColor;
 
     final prefs = appState.preferences;
-    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
+    final isPowerSet = prefs.autoPowerSet ||
+        prefs.powerLevelSet ||
+        appState.deviceModel != null;
 
     if (!appState.isConnected) {
       // Don't show hint when disconnected - buttons are obviously disabled
@@ -87,89 +104,135 @@ class PingControls extends StatelessWidget {
         Row(
           children: [
             if (!txNotAllowed) ...[
-            // Send Ping button
-            // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Cooldown Xs" → "Send Ping"
-            // Manual pings use 15-second cooldown, no distance requirement
-            // When Active/Passive Mode is running, just shows "Send Ping" (disabled)
-            Expanded(
-              child: _ActionButton(
-                icon: Icons.cell_tower,
-                label: txBlockedByOffline
-                    ? 'TX Disabled'
-                    : txNotAllowed
-                        ? 'Zone Full'
-                        : isTxModeRunning
-                            ? 'Send Ping'  // Just disabled when Active/Hybrid Mode is running
-                            : isPingSending
-                                ? 'Sending...'
-                                : rxWindowActive
-                                    ? 'Listening ${rxWindowRemaining}s'  // Manual ping listening (works during Passive Mode too)
-                                    : manualCooldownActive
-                                        ? 'Cooldown ${manualCooldownRemaining}s'  // Manual ping 15-second cooldown
-                                        : discoveryWindowActive
-                                            ? 'Cooldown ${discoveryWindowRemaining}s'  // Cooldown during Passive Mode listening
-                                            : cooldownActive
-                                                ? 'Cooldown ${cooldownRemaining}s'  // After Active/Hybrid Mode disabled
-                                                : 'Send Ping',
-                color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPingManual && !isTxModeRunning && !isTargetedRunning && !cooldownActive && !manualCooldownActive && !txBlockedByOffline && !txNotAllowed &&
-                         !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
-                isActive: (isPingSending || rxWindowActive) && !isTxModeRunning,  // Only active during manual ping flow
-                onPressed: () => _sendPing(context, appState),
-                showCooldown: false, // No longer needed - countdown shown in label
-                subtitle: txBlockedByOffline ? 'Offline Mode' : txNotAllowed ? 'Passive Only' : null,  // No "Move Xm" - manual pings have no distance requirement
-                subtitleColor: txBlockedByOffline ? Colors.orange : txNotAllowed ? Colors.red : null,
+              // Send Ping button
+              // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Cooldown Xs" → "Send Ping"
+              // Manual pings use 15-second cooldown, no distance requirement
+              // When Active/Passive Mode is running, just shows "Send Ping" (disabled)
+              Expanded(
+                child: _ActionButton(
+                  icon: Icons.cell_tower,
+                  label: txBlockedByOffline
+                      ? 'TX Disabled'
+                      : txNotAllowed
+                          ? 'Zone Full'
+                          : isTxModeRunning
+                              ? 'Send Ping' // Just disabled when Active/Hybrid Mode is running
+                              : isPingSending
+                                  ? 'Sending...'
+                                  : rxWindowActive
+                                      ? 'Listening ${rxWindowRemaining}s' // Manual ping listening (works during Passive Mode too)
+                                      : manualCooldownActive
+                                          ? 'Cooldown ${manualCooldownRemaining}s' // Manual ping 15-second cooldown
+                                          : discoveryWindowActive
+                                              ? 'Cooldown ${discoveryWindowRemaining}s' // Cooldown during Passive Mode listening
+                                              : cooldownActive
+                                                  ? 'Cooldown ${cooldownRemaining}s' // After Active/Hybrid Mode disabled
+                                                  : 'Send Ping',
+                  color: const Color(0xFF0EA5E9), // sky-500
+                  enabled: canPingManual &&
+                      !isTxModeRunning &&
+                      !isTargetedRunning &&
+                      !cooldownActive &&
+                      !manualCooldownActive &&
+                      !txBlockedByOffline &&
+                      !txNotAllowed &&
+                      !rxWindowActive &&
+                      !isPingSending &&
+                      !discoveryWindowActive &&
+                      !isPendingDisable,
+                  isActive: (isPingSending || rxWindowActive) &&
+                      !isTxModeRunning, // Only active during manual ping flow
+                  onPressed: () => _sendPing(context, appState),
+                  showCooldown:
+                      false, // No longer needed - countdown shown in label
+                  subtitle: txBlockedByOffline
+                      ? 'Offline Mode'
+                      : txNotAllowed
+                          ? 'Passive Only'
+                          : null, // No "Move Xm" - manual pings have no distance requirement
+                  subtitleColor: txBlockedByOffline
+                      ? Colors.orange
+                      : txNotAllowed
+                          ? Colors.red
+                          : null,
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
+              const SizedBox(width: 10),
 
-            // Active/Hybrid Mode button (toggle)
-            // When hybridEnabled: shows as "Hybrid Mode" with compare_arrows icon
-            // When ON: shows "Sending..."/"Discovering..." → "Listening Xs" → "Next ping Xs" cycle
-            // When OFF after being ON: shows "Cooldown Xs" like other buttons
-            // During manual ping: shows "Cooldown Xs" (disabled)
-            Expanded(
-              child: _ActionButton(
-                icon: hybridEnabled ? Icons.compare_arrows : Icons.sensors,
-                label: txBlockedByOffline
-                    ? 'TX Disabled'
-                    : txNotAllowed
-                        ? 'Zone Full'
-                        : isPendingDisable
-                            ? (rxWindowActive
-                                ? 'Stopping ${rxWindowRemaining}s'
-                                : discoveryWindowActive
-                                    ? 'Stopping ${discoveryWindowRemaining}s'
-                                    : 'Stopping...')
-                            : isTxModeRunning
-                                ? (isPingInProgress && !rxWindowActive && !discoveryWindowActive
-                                    ? 'Sending...'
-                                    : discoveryWindowActive
-                                        ? 'Listening ${discoveryWindowRemaining}s'  // Discovery listening window
-                                        : rxWindowActive
-                                            ? 'Listening ${rxWindowRemaining}s'  // TX RX window
-                                            : autoPingWaiting
-                                                ? (autoPingSkipped ? 'Skipped ${autoPingRemaining}s' : 'Next ping ${autoPingRemaining}s')
-                                                : hybridEnabled ? 'Hybrid Mode' : 'Active Mode')
-                                : rxWindowActive
-                                    ? 'Cooldown ${rxWindowRemaining}s'
-                                    : cooldownActive
-                                        ? 'Cooldown ${cooldownRemaining}s'
-                                        : hybridEnabled ? 'Hybrid Mode' : 'Active Mode',
-                color: isPendingDisable
-                    ? Colors.orange
-                    : isTxModeRunning
-                        ? const Color(0xFF22C55E) // green-500
-                        : const Color(0xFF6366F1), // indigo-500
-                enabled: !isPendingDisable && !isTargetedRunning && ((isTxModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed),
-                isActive: isPendingDisable || isTxModeRunning,
-                onPressed: () => hybridEnabled ? _toggleHybridAuto(context, appState) : _toggleTxRxAuto(context, appState),
-                showCooldown: false,
-                subtitle: txBlockedByOffline ? 'Offline Mode' : txNotAllowed ? 'Passive Only' : (isPendingDisable ? 'Stopping' : null),
-                subtitleColor: txBlockedByOffline ? Colors.orange : txNotAllowed ? Colors.red : Colors.orange,
+              // Active/Hybrid Mode button (toggle)
+              // When hybridEnabled: shows as "Hybrid Mode" with compare_arrows icon
+              // When ON: shows "Sending..."/"Discovering..." → "Listening Xs" → "Next ping Xs" cycle
+              // When OFF after being ON: shows "Cooldown Xs" like other buttons
+              // During manual ping: shows "Cooldown Xs" (disabled)
+              Expanded(
+                child: _ActionButton(
+                  icon: hybridEnabled ? Icons.compare_arrows : Icons.sensors,
+                  label: txBlockedByOffline
+                      ? 'TX Disabled'
+                      : txNotAllowed
+                          ? 'Zone Full'
+                          : isPendingDisable
+                              ? (rxWindowActive
+                                  ? 'Stopping ${rxWindowRemaining}s'
+                                  : discoveryWindowActive
+                                      ? 'Stopping ${discoveryWindowRemaining}s'
+                                      : 'Stopping...')
+                              : isTxModeRunning
+                                  ? (isPingInProgress &&
+                                          !rxWindowActive &&
+                                          !discoveryWindowActive
+                                      ? 'Sending...'
+                                      : discoveryWindowActive
+                                          ? 'Listening ${discoveryWindowRemaining}s' // Discovery listening window
+                                          : rxWindowActive
+                                              ? 'Listening ${rxWindowRemaining}s' // TX RX window
+                                              : autoPingWaiting
+                                                  ? (autoPingSkipped
+                                                      ? 'Skipped ${autoPingRemaining}s'
+                                                      : 'Next ping ${autoPingRemaining}s')
+                                                  : hybridEnabled
+                                                      ? 'Hybrid Mode'
+                                                      : 'Active Mode')
+                                  : rxWindowActive
+                                      ? 'Cooldown ${rxWindowRemaining}s'
+                                      : cooldownActive
+                                          ? 'Cooldown ${cooldownRemaining}s'
+                                          : hybridEnabled
+                                              ? 'Hybrid Mode'
+                                              : 'Active Mode',
+                  color: isPendingDisable
+                      ? Colors.orange
+                      : isTxModeRunning
+                          ? const Color(0xFF22C55E) // green-500
+                          : const Color(0xFF6366F1), // indigo-500
+                  enabled: !isPendingDisable &&
+                      !isTargetedRunning &&
+                      ((isTxModeRunning ||
+                              (canStartAuto &&
+                                  !isPassiveModeRunning &&
+                                  !cooldownActive &&
+                                  !isPingSending &&
+                                  !rxWindowActive)) &&
+                          !txBlockedByOffline &&
+                          !txNotAllowed),
+                  isActive: isPendingDisable || isTxModeRunning,
+                  onPressed: () => hybridEnabled
+                      ? _toggleHybridAuto(context, appState)
+                      : _toggleTxRxAuto(context, appState),
+                  showCooldown: false,
+                  subtitle: txBlockedByOffline
+                      ? 'Offline Mode'
+                      : txNotAllowed
+                          ? 'Passive Only'
+                          : (isPendingDisable ? 'Stopping' : null),
+                  subtitleColor: txBlockedByOffline
+                      ? Colors.orange
+                      : txNotAllowed
+                          ? Colors.red
+                          : Colors.orange,
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
+              const SizedBox(width: 10),
             ],
 
             // Passive Mode button (toggle)
@@ -182,24 +245,35 @@ class PingControls extends StatelessWidget {
                 icon: Icons.hearing,
                 label: isPassiveModeRunning
                     ? (discoveryWindowActive
-                        ? 'Listening ${discoveryWindowRemaining}s'  // During discovery listening window
+                        ? 'Listening ${discoveryWindowRemaining}s' // During discovery listening window
                         : autoPingWaiting
-                            ? (autoPingSkipped ? 'Skipped ${autoPingRemaining}s' : 'Next Disc ${autoPingRemaining}s')  // Waiting for next discovery
-                            : 'Passive Mode')  // Initial state before first discovery
+                            ? (autoPingSkipped
+                                ? 'Skipped ${autoPingRemaining}s'
+                                : 'Next Disc ${autoPingRemaining}s') // Waiting for next discovery
+                            : 'Passive Mode') // Initial state before first discovery
                     : isTxModeRunning || isPendingDisable
-                        ? 'Passive Mode'  // Just disabled when Active/Hybrid Mode is running or stopping
+                        ? 'Passive Mode' // Just disabled when Active/Hybrid Mode is running or stopping
                         : rxWindowActive
-                            ? 'Cooldown ${rxWindowRemaining}s'  // During manual ping listening
+                            ? 'Cooldown ${rxWindowRemaining}s' // During manual ping listening
                             : cooldownActive
-                                ? 'Cooldown ${cooldownRemaining}s'  // After Active/Hybrid Mode disabled
+                                ? 'Cooldown ${cooldownRemaining}s' // After Active/Hybrid Mode disabled
                                 : 'Passive Mode',
                 color: isPassiveModeRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500
-                enabled: isPassiveModeRunning || (appState.isConnected && !isTxModeRunning && !isTargetedRunning && !isPendingDisable &&
-                    !isPingSending && !rxWindowActive && !cooldownActive &&
-                    prefs.externalAntennaSet && isPowerSet),
-                isActive: isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting),  // Active during listening/waiting phases
+                enabled: isPassiveModeRunning ||
+                    (appState.isConnected &&
+                        !isTxModeRunning &&
+                        !isTargetedRunning &&
+                        !isPendingDisable &&
+                        !isPingSending &&
+                        !rxWindowActive &&
+                        !cooldownActive &&
+                        prefs.externalAntennaSet &&
+                        isPowerSet),
+                isActive: isPassiveModeRunning &&
+                    (discoveryWindowActive ||
+                        autoPingWaiting), // Active during listening/waiting phases
                 onPressed: () => _toggleRxAuto(context, appState),
               ),
             ),
@@ -231,7 +305,9 @@ class PingControls extends StatelessWidget {
 
         // Targeted Ping controls
         _TargetedPingSection(
-          isAnyModeRunning: isActiveModeRunning || isPassiveModeRunning || isHybridModeRunning,
+          isAnyModeRunning: isActiveModeRunning ||
+              isPassiveModeRunning ||
+              isHybridModeRunning,
           cooldownActive: cooldownActive,
           cooldownRemaining: cooldownRemaining,
         ),
@@ -239,7 +315,8 @@ class PingControls extends StatelessWidget {
     );
   }
 
-  Future<void> _sendPing(BuildContext context, AppStateProvider appState) async {
+  Future<void> _sendPing(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.mediumImpact();
 
     final success = await appState.sendPing();
@@ -249,17 +326,20 @@ class PingControls extends StatelessWidget {
     }
   }
 
-  Future<void> _toggleTxRxAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleTxRxAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.active);
   }
 
-  Future<void> _toggleHybridAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleHybridAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.hybrid);
   }
 
-  Future<void> _toggleRxAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleRxAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.passive);
   }
@@ -274,8 +354,8 @@ class _ActionButton extends StatefulWidget {
   final bool isActive;
   final bool showCooldown;
   final VoidCallback onPressed;
-  final String? subtitle;  // Optional subtitle text (e.g., "Move 5m")
-  final Color? subtitleColor;  // Optional subtitle color
+  final String? subtitle; // Optional subtitle text (e.g., "Move 5m")
+  final Color? subtitleColor; // Optional subtitle color
 
   const _ActionButton({
     required this.icon,
@@ -338,7 +418,8 @@ class _ActionButtonState extends State<_ActionButton>
     // Use color when enabled, active (RX listening), or during cooldown
     // This prevents the button from going grey during cooldown
     final showColor = widget.enabled || widget.isActive || widget.showCooldown;
-    final effectiveColor = showColor ? widget.color : colorScheme.onSurfaceVariant;
+    final effectiveColor =
+        showColor ? widget.color : colorScheme.onSurfaceVariant;
     final borderOpacity = widget.isActive ? 0.6 : 0.3;
 
     return AnimatedBuilder(
@@ -378,7 +459,8 @@ class _ActionButtonState extends State<_ActionButton>
                           size: 26,
                           color: showColor
                               ? effectiveColor
-                              : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                              : colorScheme.onSurfaceVariant
+                                  .withValues(alpha: 0.5),
                         ),
                         // Active indicator dot
                         if (widget.isActive)
@@ -407,9 +489,12 @@ class _ActionButtonState extends State<_ActionButton>
                     widget.label,
                     style: TextStyle(
                       fontSize: 11,
-                      fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
+                      fontWeight:
+                          widget.isActive ? FontWeight.w600 : FontWeight.w500,
                       color: showColor
-                          ? (widget.isActive ? effectiveColor : colorScheme.onSurface)
+                          ? (widget.isActive
+                              ? effectiveColor
+                              : colorScheme.onSurface)
                           : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                     ),
                   ),
@@ -431,7 +516,8 @@ class _ActionButtonState extends State<_ActionButton>
                                 style: TextStyle(
                                   fontSize: 9,
                                   fontWeight: FontWeight.w500,
-                                  color: widget.subtitleColor ?? Colors.orange.shade600,
+                                  color: widget.subtitleColor ??
+                                      Colors.orange.shade600,
                                 ),
                               )
                             : null,
@@ -475,7 +561,9 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final appState = context.read<AppStateProvider>();
       final existing = appState.targetRepeaterId;
-      if (existing != null && existing.isNotEmpty && _controller.text != existing) {
+      if (existing != null &&
+          existing.isNotEmpty &&
+          _controller.text != existing) {
         _controller.text = existing;
       }
     });
@@ -545,14 +633,17 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
     final buttonColor = (isTargetedRunning || _isStarting)
         ? const Color(0xFF22C55E) // green-500 when running/starting
         : Colors.cyan;
-    final effectiveColor = isEnabled ? buttonColor : colorScheme.onSurfaceVariant;
+    final effectiveColor =
+        isEnabled ? buttonColor : colorScheme.onSurfaceVariant;
 
     return Container(
       decoration: BoxDecoration(
-        color: effectiveColor.withValues(alpha: isTargetedRunning ? 0.15 : 0.08),
+        color:
+            effectiveColor.withValues(alpha: isTargetedRunning ? 0.15 : 0.08),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: effectiveColor.withValues(alpha: isTargetedRunning ? 0.5 : 0.25),
+          color:
+              effectiveColor.withValues(alpha: isTargetedRunning ? 0.5 : 0.25),
           width: isTargetedRunning ? 1.5 : 1,
         ),
       ),
@@ -567,7 +658,8 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                       HapticFeedback.lightImpact();
                       if (!isTargetedRunning) {
                         setState(() => _isStarting = true);
-                        appState.setTargetRepeaterId(_controller.text.trim().toUpperCase());
+                        appState.setTargetRepeaterId(
+                            _controller.text.trim().toUpperCase());
                       }
                       await appState.toggleAutoPing(AutoMode.targeted);
                       if (mounted) setState(() => _isStarting = false);
@@ -594,8 +686,13 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                                     : 'Trace Mode',
                         style: TextStyle(
                           fontSize: 13,
-                          fontWeight: isTargetedRunning ? FontWeight.w600 : FontWeight.w500,
-                          color: isEnabled ? colorScheme.onSurface : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                          fontWeight: isTargetedRunning
+                              ? FontWeight.w600
+                              : FontWeight.w500,
+                          color: isEnabled
+                              ? colorScheme.onSurface
+                              : colorScheme.onSurfaceVariant
+                                  .withValues(alpha: 0.5),
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -622,14 +719,16 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                     : colorScheme.onSurface,
               ),
               decoration: InputDecoration(
-                hintText: 'e.g. ${maxLen == 2 ? '4E' : maxLen == 4 ? '4E7A' : maxLen == 8 ? '4E7A3B00' : '4E7A3B'}',
+                hintText:
+                    'e.g. ${maxLen == 2 ? '4E' : maxLen == 4 ? '4E7A' : maxLen == 8 ? '4E7A3B00' : '4E7A3B'}',
                 hintStyle: TextStyle(
                   fontSize: 12,
                   color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                 ),
                 counterText: '',
                 isDense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -705,21 +804,28 @@ class _CompactPingControlsState extends State<CompactPingControls> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
-    final manualValidation = appState.manualPingValidation; // Manual ping validation (no distance check)
+    final manualValidation = appState
+        .manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
-    final canPingManual = manualValidation == PingValidation.valid; // For Send Ping button
+    final canPingManual =
+        manualValidation == PingValidation.valid; // For Send Ping button
     final canStartAuto = autoValidation == PingValidation.valid;
-    final isActiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.active;
-    final isPassiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
-    final isHybridModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.hybrid;
+    final isActiveModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.active;
+    final isPassiveModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
+    final isHybridModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.hybrid;
     final isTxModeRunning = isActiveModeRunning || isHybridModeRunning;
     final isTargetedRunning = appState.isTargetedModeRunning;
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState.isPendingDisable;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
-    final manualCooldownActive = appState.manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
-    final manualCooldownRemaining = appState.manualPingCooldownTimer.remainingSec;
+    final manualCooldownActive = appState
+        .manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
+    final manualCooldownRemaining =
+        appState.manualPingCooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning;
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
     final isPingSending = appState.isPingSending;
@@ -737,12 +843,17 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     final txNotAllowed = appState.isConnected && !appState.txAllowed;
 
     final prefs = appState.preferences;
-    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
+    final isPowerSet = prefs.autoPowerSet ||
+        prefs.powerLevelSet ||
+        appState.deviceModel != null;
 
     // Determine which button is currently active (not during cooldown)
-    final sendPingCurrentlyActive = (isPingSending || rxWindowActive || manualCooldownActive) && !isTxModeRunning;
+    final sendPingCurrentlyActive =
+        (isPingSending || rxWindowActive || manualCooldownActive) &&
+            !isTxModeRunning;
     final activeModeCurrentlyActive = isPendingDisable || isTxModeRunning;
-    final passiveModeCurrentlyActive = isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
+    final passiveModeCurrentlyActive =
+        isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
 
     // Track the last active button for cooldown
     if (sendPingCurrentlyActive) {
@@ -755,14 +866,20 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       _lastActiveButton = _LastActiveButton.targeted;
     }
     // Reset when no cooldown and no activity
-    if (!cooldownActive && !manualCooldownActive && !sendPingCurrentlyActive && !activeModeCurrentlyActive && !passiveModeCurrentlyActive && !isTargetedRunning) {
+    if (!cooldownActive &&
+        !manualCooldownActive &&
+        !sendPingCurrentlyActive &&
+        !activeModeCurrentlyActive &&
+        !passiveModeCurrentlyActive &&
+        !isTargetedRunning) {
       _lastActiveButton = _LastActiveButton.none;
     }
 
     // Determine which button should be expanded
     // During cooldown, the last active button stays expanded
     final sendPingExpanded = sendPingCurrentlyActive ||
-        (manualCooldownActive && _lastActiveButton == _LastActiveButton.sendPing) ||
+        (manualCooldownActive &&
+            _lastActiveButton == _LastActiveButton.sendPing) ||
         (cooldownActive && _lastActiveButton == _LastActiveButton.sendPing);
     final activeModeExpanded = activeModeCurrentlyActive ||
         (cooldownActive && _lastActiveButton == _LastActiveButton.activeMode);
@@ -770,36 +887,80 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         (cooldownActive && _lastActiveButton == _LastActiveButton.passiveMode);
 
     // Determine which buttons are colored (enabled or active)
-    final sendPingEnabled = canPingManual && !isTxModeRunning && !isTargetedRunning && !cooldownActive && !manualCooldownActive && !txBlockedByOffline && !txNotAllowed &&
-                     !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable;
-    final sendPingActive = (isPingSending || rxWindowActive) && !isTxModeRunning && !cooldownActive && !manualCooldownActive;
+    final sendPingEnabled = canPingManual &&
+        !isTxModeRunning &&
+        !isTargetedRunning &&
+        !cooldownActive &&
+        !manualCooldownActive &&
+        !txBlockedByOffline &&
+        !txNotAllowed &&
+        !rxWindowActive &&
+        !isPingSending &&
+        !discoveryWindowActive &&
+        !isPendingDisable;
+    final sendPingActive = (isPingSending || rxWindowActive) &&
+        !isTxModeRunning &&
+        !cooldownActive &&
+        !manualCooldownActive;
     final sendPingShowColor = sendPingEnabled || sendPingActive;
 
-    final activeModeEnabled = !isPendingDisable && !isTargetedRunning && ((isTxModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed);
+    final activeModeEnabled = !isPendingDisable &&
+        !isTargetedRunning &&
+        ((isTxModeRunning ||
+                (canStartAuto &&
+                    !isPassiveModeRunning &&
+                    !cooldownActive &&
+                    !isPingSending &&
+                    !rxWindowActive)) &&
+            !txBlockedByOffline &&
+            !txNotAllowed);
     final activeModeActive = isPendingDisable || isTxModeRunning;
     final activeModeShowColor = activeModeEnabled || activeModeActive;
 
-    final passiveModeEnabled = isPassiveModeRunning || (appState.isConnected && !isTxModeRunning && !isTargetedRunning && !isPendingDisable &&
-                !isPingSending && !rxWindowActive && !cooldownActive &&
-                prefs.externalAntennaSet && isPowerSet);
-    final passiveModeActive = isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
+    final passiveModeEnabled = isPassiveModeRunning ||
+        (appState.isConnected &&
+            !isTxModeRunning &&
+            !isTargetedRunning &&
+            !isPendingDisable &&
+            !isPingSending &&
+            !rxWindowActive &&
+            !cooldownActive &&
+            prefs.externalAntennaSet &&
+            isPowerSet);
+    final passiveModeActive =
+        isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
     final passiveModeShowColor = passiveModeEnabled || passiveModeActive;
 
     // Trace Mode (only relevant when a repeater ID has been entered)
-    final hasTargetRepeaterId = appState.targetRepeaterId != null && appState.targetRepeaterId!.isNotEmpty;
+    final hasTargetRepeaterId = appState.targetRepeaterId != null &&
+        appState.targetRepeaterId!.isNotEmpty;
     final targetedCurrentlyActive = isTargetedRunning;
     final traceModeExpanded = targetedCurrentlyActive ||
         (cooldownActive && _lastActiveButton == _LastActiveButton.targeted);
-    final traceModeEnabled = hasTargetRepeaterId && !isTxModeRunning && !isPassiveModeRunning &&
-        !isPendingDisable && !isPingSending && !rxWindowActive && !cooldownActive &&
-        !manualCooldownActive && appState.isConnected && prefs.externalAntennaSet && isPowerSet;
+    final traceModeEnabled = hasTargetRepeaterId &&
+        !isTxModeRunning &&
+        !isPassiveModeRunning &&
+        !isPendingDisable &&
+        !isPingSending &&
+        !rxWindowActive &&
+        !cooldownActive &&
+        !manualCooldownActive &&
+        appState.isConnected &&
+        prefs.externalAntennaSet &&
+        isPowerSet;
     final traceModeActive = isTargetedRunning;
     final traceModeShowColor = traceModeEnabled || traceModeActive;
 
     // Check if any button is actively expanded (showing label)
-    final anyExpanded = sendPingExpanded || activeModeExpanded || passiveModeExpanded || traceModeExpanded;
+    final anyExpanded = sendPingExpanded ||
+        activeModeExpanded ||
+        passiveModeExpanded ||
+        traceModeExpanded;
     // Check if all buttons are disabled (no color) - used to split space equally in initial state
-    final allDisabled = !sendPingShowColor && !activeModeShowColor && !passiveModeShowColor && (!hasTargetRepeaterId || !traceModeShowColor);
+    final allDisabled = !sendPingShowColor &&
+        !activeModeShowColor &&
+        !passiveModeShowColor &&
+        (!hasTargetRepeaterId || !traceModeShowColor);
 
     // Build the buttons
     final sendPingButton = _CompactActionButton(
@@ -822,9 +983,11 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       isExpanded: sendPingExpanded,
       progress: rxWindowActive && !isTxModeRunning
           ? appState.rxWindowTimer.progress
-          : manualCooldownActive && _lastActiveButton == _LastActiveButton.sendPing
+          : manualCooldownActive &&
+                  _lastActiveButton == _LastActiveButton.sendPing
               ? appState.manualPingCooldownTimer.progress
-              : cooldownActive && _lastActiveButton == _LastActiveButton.sendPing
+              : cooldownActive &&
+                      _lastActiveButton == _LastActiveButton.sendPing
                   ? appState.cooldownTimer.progress
                   : null,
       onPressed: () => _sendPing(context, appState),
@@ -857,13 +1020,18 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       isActive: activeModeActive,
       isExpanded: activeModeExpanded,
       progress: (rxWindowActive || discoveryWindowActive) && isTxModeRunning
-          ? (discoveryWindowActive ? appState.discoveryWindowTimer.progress : appState.rxWindowTimer.progress)
+          ? (discoveryWindowActive
+              ? appState.discoveryWindowTimer.progress
+              : appState.rxWindowTimer.progress)
           : autoPingWaiting && isTxModeRunning
               ? appState.autoPingTimer.progress
-              : cooldownActive && _lastActiveButton == _LastActiveButton.activeMode
+              : cooldownActive &&
+                      _lastActiveButton == _LastActiveButton.activeMode
                   ? appState.cooldownTimer.progress
                   : null,
-      onPressed: () => hybridEnabled ? _toggleHybridAuto(context, appState) : _toggleTxRxAuto(context, appState),
+      onPressed: () => hybridEnabled
+          ? _toggleHybridAuto(context, appState)
+          : _toggleTxRxAuto(context, appState),
     );
 
     final passiveModeButton = _CompactActionButton(
@@ -890,7 +1058,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
           ? appState.discoveryWindowTimer.progress
           : autoPingWaiting && isPassiveModeRunning
               ? appState.autoPingTimer.progress
-              : cooldownActive && _lastActiveButton == _LastActiveButton.passiveMode
+              : cooldownActive &&
+                      _lastActiveButton == _LastActiveButton.passiveMode
                   ? appState.cooldownTimer.progress
                   : null,
       onPressed: () => _toggleRxAuto(context, appState),
@@ -921,7 +1090,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
           ? appState.discoveryWindowTimer.progress
           : autoPingWaiting && isTargetedRunning
               ? appState.autoPingTimer.progress
-              : cooldownActive && _lastActiveButton == _LastActiveButton.targeted
+              : cooldownActive &&
+                      _lastActiveButton == _LastActiveButton.targeted
                   ? appState.cooldownTimer.progress
                   : null,
       onPressed: () {
@@ -937,23 +1107,23 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     return Row(
       children: [
         if (!txNotAllowed) ...[
-        // Send Ping - expanded buttons stay big even when grey (cooldown)
-        if (sendPingExpanded)
-          Expanded(child: sendPingButton)
-        else if (!anyExpanded && (sendPingShowColor || allDisabled))
-          Expanded(child: sendPingButton)
-        else
-          sendPingButton,
-        const SizedBox(width: 6),
+          // Send Ping - expanded buttons stay big even when grey (cooldown)
+          if (sendPingExpanded)
+            Expanded(child: sendPingButton)
+          else if (!anyExpanded && (sendPingShowColor || allDisabled))
+            Expanded(child: sendPingButton)
+          else
+            sendPingButton,
+          const SizedBox(width: 6),
 
-        // Active Mode
-        if (activeModeExpanded)
-          Expanded(child: activeModeButton)
-        else if (!anyExpanded && (activeModeShowColor || allDisabled))
-          Expanded(child: activeModeButton)
-        else
-          activeModeButton,
-        const SizedBox(width: 6),
+          // Active Mode
+          if (activeModeExpanded)
+            Expanded(child: activeModeButton)
+          else if (!anyExpanded && (activeModeShowColor || allDisabled))
+            Expanded(child: activeModeButton)
+          else
+            activeModeButton,
+          const SizedBox(width: 6),
         ],
 
         // Passive Mode
@@ -993,10 +1163,26 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool showFullText,
   }) {
     if (isPingSending) return showFullText ? 'Sending...' : '...';
-    if (rxWindowActive) return showFullText ? 'Listening ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
-    if (manualCooldownActive) return showFullText ? 'Cooldown ${manualCooldownRemaining}s' : '${manualCooldownRemaining}s';
-    if (discoveryWindowActive) return showFullText ? 'Cooldown ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
-    if (cooldownActive) return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
+    if (rxWindowActive) {
+      return showFullText
+          ? 'Listening ${rxWindowRemaining}s'
+          : '${rxWindowRemaining}s';
+    }
+    if (manualCooldownActive) {
+      return showFullText
+          ? 'Cooldown ${manualCooldownRemaining}s'
+          : '${manualCooldownRemaining}s';
+    }
+    if (discoveryWindowActive) {
+      return showFullText
+          ? 'Cooldown ${discoveryWindowRemaining}s'
+          : '${discoveryWindowRemaining}s';
+    }
+    if (cooldownActive) {
+      return showFullText
+          ? 'Cooldown ${cooldownRemaining}s'
+          : '${cooldownRemaining}s';
+    }
     return null;
   }
 
@@ -1019,19 +1205,45 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     int discoveryWindowRemaining = 0,
   }) {
     if (isPendingDisable) {
-      if (rxWindowActive) return showFullText ? 'Stopping ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
-      if (discoveryWindowActive) return showFullText ? 'Stopping ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
+      if (rxWindowActive) {
+        return showFullText
+            ? 'Stopping ${rxWindowRemaining}s'
+            : '${rxWindowRemaining}s';
+      }
+      if (discoveryWindowActive) {
+        return showFullText
+            ? 'Stopping ${discoveryWindowRemaining}s'
+            : '${discoveryWindowRemaining}s';
+      }
       return showFullText ? 'Stopping...' : '...';
     }
     if (isActiveModeRunning) {
-      if (discoveryWindowActive) return showFullText ? 'Listening ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
-      if (isPingInProgress && !rxWindowActive) return showFullText ? 'Sending...' : '...';
-      if (rxWindowActive) return showFullText ? 'Listening ${rxWindowRemaining}s' : '${rxWindowRemaining}s';
-      if (autoPingWaiting) return showFullText ? (isSkipped ? 'Skipped ${autoPingRemaining}s' : 'Waiting ${autoPingRemaining}s') : '${autoPingRemaining}s';
+      if (discoveryWindowActive) {
+        return showFullText
+            ? 'Listening ${discoveryWindowRemaining}s'
+            : '${discoveryWindowRemaining}s';
+      }
+      if (isPingInProgress && !rxWindowActive) {
+        return showFullText ? 'Sending...' : '...';
+      }
+      if (rxWindowActive) {
+        return showFullText
+            ? 'Listening ${rxWindowRemaining}s'
+            : '${rxWindowRemaining}s';
+      }
+      if (autoPingWaiting) {
+        return showFullText
+            ? (isSkipped
+                ? 'Skipped ${autoPingRemaining}s'
+                : 'Waiting ${autoPingRemaining}s')
+            : '${autoPingRemaining}s';
+      }
     }
     // Show cooldown if this button caused it
     if (cooldownActive && isExpandedDuringCooldown) {
-      return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
+      return showFullText
+          ? 'Cooldown ${cooldownRemaining}s'
+          : '${cooldownRemaining}s';
     }
     return null;
   }
@@ -1051,12 +1263,24 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool isSkipped,
   }) {
     if (isPassiveModeRunning) {
-      if (discoveryWindowActive) return showFullText ? 'Listening ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
-      if (autoPingWaiting) return showFullText ? (isSkipped ? 'Skipped ${autoPingRemaining}s' : 'Waiting ${autoPingRemaining}s') : '${autoPingRemaining}s';
+      if (discoveryWindowActive) {
+        return showFullText
+            ? 'Listening ${discoveryWindowRemaining}s'
+            : '${discoveryWindowRemaining}s';
+      }
+      if (autoPingWaiting) {
+        return showFullText
+            ? (isSkipped
+                ? 'Skipped ${autoPingRemaining}s'
+                : 'Waiting ${autoPingRemaining}s')
+            : '${autoPingRemaining}s';
+      }
     }
     // Show cooldown if this button caused it
     if (cooldownActive && isExpandedDuringCooldown) {
-      return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
+      return showFullText
+          ? 'Cooldown ${cooldownRemaining}s'
+          : '${cooldownRemaining}s';
     }
     return null;
   }
@@ -1076,18 +1300,31 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required bool isSkipped,
   }) {
     if (isTargetedRunning) {
-      if (discoveryWindowActive) return showFullText ? 'Listening ${discoveryWindowRemaining}s' : '${discoveryWindowRemaining}s';
-      if (autoPingWaiting) return showFullText ? (isSkipped ? 'Skipped ${autoPingRemaining}s' : 'Next in ${autoPingRemaining}s') : '${autoPingRemaining}s';
+      if (discoveryWindowActive) {
+        return showFullText
+            ? 'Listening ${discoveryWindowRemaining}s'
+            : '${discoveryWindowRemaining}s';
+      }
+      if (autoPingWaiting) {
+        return showFullText
+            ? (isSkipped
+                ? 'Skipped ${autoPingRemaining}s'
+                : 'Next in ${autoPingRemaining}s')
+            : '${autoPingRemaining}s';
+      }
       return showFullText ? 'Stop' : null;
     }
     // Show cooldown if this button caused it
     if (cooldownActive && isExpandedDuringCooldown) {
-      return showFullText ? 'Cooldown ${cooldownRemaining}s' : '${cooldownRemaining}s';
+      return showFullText
+          ? 'Cooldown ${cooldownRemaining}s'
+          : '${cooldownRemaining}s';
     }
     return null;
   }
 
-  Future<void> _sendPing(BuildContext context, AppStateProvider appState) async {
+  Future<void> _sendPing(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.mediumImpact();
 
     final success = await appState.sendPing();
@@ -1097,17 +1334,20 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     }
   }
 
-  Future<void> _toggleTxRxAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleTxRxAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.active);
   }
 
-  Future<void> _toggleHybridAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleHybridAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.hybrid);
   }
 
-  Future<void> _toggleRxAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleRxAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.passive);
   }
@@ -1123,21 +1363,28 @@ class LandscapePingControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
-    final manualValidation = appState.manualPingValidation; // Manual ping validation (no distance check)
+    final manualValidation = appState
+        .manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
-    final canPingManual = manualValidation == PingValidation.valid; // For Send Ping button
+    final canPingManual =
+        manualValidation == PingValidation.valid; // For Send Ping button
     final canStartAuto = autoValidation == PingValidation.valid;
-    final isActiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.active;
-    final isPassiveModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
-    final isHybridModeRunning = appState.autoPingEnabled && appState.autoMode == AutoMode.hybrid;
+    final isActiveModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.active;
+    final isPassiveModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.passive;
+    final isHybridModeRunning =
+        appState.autoPingEnabled && appState.autoMode == AutoMode.hybrid;
     final isTxModeRunning = isActiveModeRunning || isHybridModeRunning;
     final isTargetedRunning = appState.isTargetedModeRunning;
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState.isPendingDisable;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
-    final manualCooldownActive = appState.manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
-    final manualCooldownRemaining = appState.manualPingCooldownTimer.remainingSec;
+    final manualCooldownActive = appState
+        .manualPingCooldownTimer.isRunning; // Manual ping cooldown (15 seconds)
+    final manualCooldownRemaining =
+        appState.manualPingCooldownTimer.remainingSec;
     final rxWindowActive = appState.rxWindowTimer.isRunning;
     final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
     final isPingSending = appState.isPingSending;
@@ -1153,7 +1400,9 @@ class LandscapePingControls extends StatelessWidget {
     final txNotAllowed = appState.isConnected && !appState.txAllowed;
 
     final prefs = appState.preferences;
-    final isPowerSet = prefs.autoPowerSet || prefs.powerLevelSet || appState.deviceModel != null;
+    final isPowerSet = prefs.autoPowerSet ||
+        prefs.powerLevelSet ||
+        appState.deviceModel != null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1172,58 +1421,85 @@ class LandscapePingControls extends StatelessWidget {
         Row(
           children: [
             if (!txNotAllowed) ...[
-            // TX Ping button
-            Expanded(
-              child: _LandscapeIconButton(
-                icon: Icons.cell_tower,
-                tooltip: txNotAllowed ? 'Zone Full (Passive Only)' : 'Send Ping',
-                color: const Color(0xFF0EA5E9), // sky-500
-                enabled: canPingManual && !isTxModeRunning && !isTargetedRunning && !cooldownActive && !manualCooldownActive && !txBlockedByOffline && !txNotAllowed &&
-                         !rxWindowActive && !isPingSending && !discoveryWindowActive && !isPendingDisable,
-                isActive: (isPingSending || rxWindowActive) && !isTxModeRunning,
-                countdown: isPingSending
-                    ? null
-                    : rxWindowActive && !isTxModeRunning
-                        ? rxWindowRemaining
-                        : manualCooldownActive
-                            ? manualCooldownRemaining
-                            : discoveryWindowActive
-                                ? discoveryWindowRemaining
-                                : cooldownActive
-                                    ? cooldownRemaining
-                                    : null,
-                onPressed: () => _sendPing(context, appState),
+              // TX Ping button
+              Expanded(
+                child: _LandscapeIconButton(
+                  icon: Icons.cell_tower,
+                  tooltip:
+                      txNotAllowed ? 'Zone Full (Passive Only)' : 'Send Ping',
+                  color: const Color(0xFF0EA5E9), // sky-500
+                  enabled: canPingManual &&
+                      !isTxModeRunning &&
+                      !isTargetedRunning &&
+                      !cooldownActive &&
+                      !manualCooldownActive &&
+                      !txBlockedByOffline &&
+                      !txNotAllowed &&
+                      !rxWindowActive &&
+                      !isPingSending &&
+                      !discoveryWindowActive &&
+                      !isPendingDisable,
+                  isActive:
+                      (isPingSending || rxWindowActive) && !isTxModeRunning,
+                  countdown: isPingSending
+                      ? null
+                      : rxWindowActive && !isTxModeRunning
+                          ? rxWindowRemaining
+                          : manualCooldownActive
+                              ? manualCooldownRemaining
+                              : discoveryWindowActive
+                                  ? discoveryWindowRemaining
+                                  : cooldownActive
+                                      ? cooldownRemaining
+                                      : null,
+                  onPressed: () => _sendPing(context, appState),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
+              const SizedBox(width: 8),
 
-            // Active/Hybrid Mode button
-            Expanded(
-              child: _LandscapeIconButton(
-                icon: hybridEnabled ? Icons.compare_arrows : Icons.sensors,
-                tooltip: txNotAllowed ? 'Zone Full (Passive Only)' : (hybridEnabled ? 'Hybrid Mode' : 'Active Mode'),
-                color: isPendingDisable
-                    ? Colors.orange
-                    : isTxModeRunning
-                        ? const Color(0xFF22C55E) // green-500
-                        : const Color(0xFF6366F1), // indigo-500
-                enabled: !isPendingDisable && !isTargetedRunning && ((isTxModeRunning || (canStartAuto && !isPassiveModeRunning && !cooldownActive && !isPingSending && !rxWindowActive)) && !txBlockedByOffline && !txNotAllowed),
-                isActive: isPendingDisable || isTxModeRunning,
-                countdown: isTxModeRunning
-                    ? (discoveryWindowActive
-                        ? discoveryWindowRemaining
-                        : rxWindowActive
-                            ? rxWindowRemaining
-                            : autoPingWaiting
-                                ? autoPingRemaining
-                                : null)
-                    : isPendingDisable && (rxWindowActive || discoveryWindowActive)
-                        ? (rxWindowActive ? rxWindowRemaining : discoveryWindowRemaining)
-                        : null,
-                onPressed: () => hybridEnabled ? _toggleHybridAuto(context, appState) : _toggleTxRxAuto(context, appState),
+              // Active/Hybrid Mode button
+              Expanded(
+                child: _LandscapeIconButton(
+                  icon: hybridEnabled ? Icons.compare_arrows : Icons.sensors,
+                  tooltip: txNotAllowed
+                      ? 'Zone Full (Passive Only)'
+                      : (hybridEnabled ? 'Hybrid Mode' : 'Active Mode'),
+                  color: isPendingDisable
+                      ? Colors.orange
+                      : isTxModeRunning
+                          ? const Color(0xFF22C55E) // green-500
+                          : const Color(0xFF6366F1), // indigo-500
+                  enabled: !isPendingDisable &&
+                      !isTargetedRunning &&
+                      ((isTxModeRunning ||
+                              (canStartAuto &&
+                                  !isPassiveModeRunning &&
+                                  !cooldownActive &&
+                                  !isPingSending &&
+                                  !rxWindowActive)) &&
+                          !txBlockedByOffline &&
+                          !txNotAllowed),
+                  isActive: isPendingDisable || isTxModeRunning,
+                  countdown: isTxModeRunning
+                      ? (discoveryWindowActive
+                          ? discoveryWindowRemaining
+                          : rxWindowActive
+                              ? rxWindowRemaining
+                              : autoPingWaiting
+                                  ? autoPingRemaining
+                                  : null)
+                      : isPendingDisable &&
+                              (rxWindowActive || discoveryWindowActive)
+                          ? (rxWindowActive
+                              ? rxWindowRemaining
+                              : discoveryWindowRemaining)
+                          : null,
+                  onPressed: () => hybridEnabled
+                      ? _toggleHybridAuto(context, appState)
+                      : _toggleTxRxAuto(context, appState),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
+              const SizedBox(width: 8),
             ],
 
             // Passive Mode button
@@ -1234,10 +1510,18 @@ class LandscapePingControls extends StatelessWidget {
                 color: isPassiveModeRunning
                     ? const Color(0xFF22C55E) // green-500
                     : const Color(0xFF6366F1), // indigo-500
-                enabled: isPassiveModeRunning || (appState.isConnected && !isTxModeRunning && !isTargetedRunning && !isPendingDisable &&
-                    !isPingSending && !rxWindowActive && !cooldownActive &&
-                    prefs.externalAntennaSet && isPowerSet),
-                isActive: isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting),
+                enabled: isPassiveModeRunning ||
+                    (appState.isConnected &&
+                        !isTxModeRunning &&
+                        !isTargetedRunning &&
+                        !isPendingDisable &&
+                        !isPingSending &&
+                        !rxWindowActive &&
+                        !cooldownActive &&
+                        prefs.externalAntennaSet &&
+                        isPowerSet),
+                isActive: isPassiveModeRunning &&
+                    (discoveryWindowActive || autoPingWaiting),
                 countdown: isPassiveModeRunning
                     ? (discoveryWindowActive
                         ? discoveryWindowRemaining
@@ -1254,7 +1538,9 @@ class LandscapePingControls extends StatelessWidget {
 
         // Targeted Ping controls (Trace Mode)
         _TargetedPingSection(
-          isAnyModeRunning: isActiveModeRunning || isPassiveModeRunning || isHybridModeRunning,
+          isAnyModeRunning: isActiveModeRunning ||
+              isPassiveModeRunning ||
+              isHybridModeRunning,
           cooldownActive: cooldownActive,
           cooldownRemaining: cooldownRemaining,
           compact: true,
@@ -1263,22 +1549,26 @@ class LandscapePingControls extends StatelessWidget {
     );
   }
 
-  Future<void> _sendPing(BuildContext context, AppStateProvider appState) async {
+  Future<void> _sendPing(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.mediumImpact();
     await appState.sendPing();
   }
 
-  Future<void> _toggleTxRxAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleTxRxAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.active);
   }
 
-  Future<void> _toggleHybridAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleHybridAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.hybrid);
   }
 
-  Future<void> _toggleRxAuto(BuildContext context, AppStateProvider appState) async {
+  Future<void> _toggleRxAuto(
+      BuildContext context, AppStateProvider appState) async {
     HapticFeedback.lightImpact();
     await appState.toggleAutoPing(AutoMode.passive);
   }
@@ -1321,20 +1611,26 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w500,
-                  color: externalAntennaSet ? colorScheme.onSurfaceVariant : notSetColor,
+                  color: externalAntennaSet
+                      ? colorScheme.onSurfaceVariant
+                      : notSetColor,
                 ),
               ),
               if (!externalAntennaSet) ...[
                 const SizedBox(width: 4),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                   decoration: BoxDecoration(
                     color: notSetColor.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: const Text(
                     'Required',
-                    style: TextStyle(fontSize: 8, fontWeight: FontWeight.w600, color: notSetColor),
+                    style: TextStyle(
+                        fontSize: 8,
+                        fontWeight: FontWeight.w600,
+                        color: notSetColor),
                   ),
                 ),
               ],
@@ -1347,7 +1643,8 @@ class _LandscapeAntennaSelector extends StatelessWidget {
           decoration: BoxDecoration(
             color: colorScheme.onSurface.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: colorScheme.outline.withValues(alpha: 0.2)),
+            border:
+                Border.all(color: colorScheme.outline.withValues(alpha: 0.2)),
           ),
           child: Row(
             children: [
@@ -1361,22 +1658,30 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                       color: (!externalAntenna && externalAntennaSet)
                           ? Colors.orange.withValues(alpha: 0.25)
                           : Colors.transparent,
-                      borderRadius: const BorderRadius.horizontal(left: Radius.circular(7)),
+                      borderRadius: const BorderRadius.horizontal(
+                          left: Radius.circular(7)),
                     ),
                     alignment: Alignment.center,
                     child: Text(
                       'Internal',
                       style: TextStyle(
                         fontSize: 11,
-                        fontWeight: (!externalAntenna && externalAntennaSet) ? FontWeight.w600 : FontWeight.w500,
-                        color: (!externalAntenna && externalAntennaSet) ? Colors.orange : colorScheme.onSurfaceVariant,
+                        fontWeight: (!externalAntenna && externalAntennaSet)
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                        color: (!externalAntenna && externalAntennaSet)
+                            ? Colors.orange
+                            : colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),
                 ),
               ),
               // Divider
-              Container(width: 1, height: 18, color: colorScheme.outline.withValues(alpha: 0.3)),
+              Container(
+                  width: 1,
+                  height: 18,
+                  color: colorScheme.outline.withValues(alpha: 0.3)),
               // External option
               Expanded(
                 child: GestureDetector(
@@ -1387,15 +1692,20 @@ class _LandscapeAntennaSelector extends StatelessWidget {
                       color: (externalAntenna && externalAntennaSet)
                           ? Colors.orange.withValues(alpha: 0.25)
                           : Colors.transparent,
-                      borderRadius: const BorderRadius.horizontal(right: Radius.circular(7)),
+                      borderRadius: const BorderRadius.horizontal(
+                          right: Radius.circular(7)),
                     ),
                     alignment: Alignment.center,
                     child: Text(
                       'External',
                       style: TextStyle(
                         fontSize: 11,
-                        fontWeight: (externalAntenna && externalAntennaSet) ? FontWeight.w600 : FontWeight.w500,
-                        color: (externalAntenna && externalAntennaSet) ? Colors.orange : colorScheme.onSurfaceVariant,
+                        fontWeight: (externalAntenna && externalAntennaSet)
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                        color: (externalAntenna && externalAntennaSet)
+                            ? Colors.orange
+                            : colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),
@@ -1475,7 +1785,8 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final showColor = widget.enabled || widget.isActive;
-    final effectiveColor = showColor ? widget.color : colorScheme.onSurfaceVariant;
+    final effectiveColor =
+        showColor ? widget.color : colorScheme.onSurfaceVariant;
 
     return AnimatedBuilder(
       animation: _pulseAnimation,
@@ -1495,7 +1806,8 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
                   color: effectiveColor.withValues(alpha: bgOpacity),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: effectiveColor.withValues(alpha: widget.isActive ? 0.5 : 0.25),
+                    color: effectiveColor.withValues(
+                        alpha: widget.isActive ? 0.5 : 0.25),
                     width: widget.isActive ? 1.5 : 1,
                   ),
                 ),
@@ -1506,7 +1818,9 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
                     Icon(
                       widget.icon,
                       size: 24,
-                      color: showColor ? effectiveColor : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                      color: showColor
+                          ? effectiveColor
+                          : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                     ),
                     // Countdown badge (bottom right)
                     if (widget.countdown != null)
@@ -1514,7 +1828,8 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
                         bottom: 4,
                         right: 4,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 1),
                           decoration: BoxDecoration(
                             color: effectiveColor,
                             borderRadius: BorderRadius.circular(6),
@@ -1540,7 +1855,8 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
                           decoration: BoxDecoration(
                             color: const Color(0xFF22C55E),
                             shape: BoxShape.circle,
-                            border: Border.all(color: colorScheme.surface, width: 1.5),
+                            border: Border.all(
+                                color: colorScheme.surface, width: 1.5),
                           ),
                         ),
                       ),
@@ -1566,7 +1882,8 @@ class _CompactActionButton extends StatefulWidget {
   final bool isActive;
   final bool isExpanded; // When true, show icon + label with wider width
   final VoidCallback onPressed;
-  final double? progress; // 0.0 to 1.0 for progress bar fill, null = no progress bar
+  final double?
+      progress; // 0.0 to 1.0 for progress bar fill, null = no progress bar
 
   const _CompactActionButton({
     required this.icon,
@@ -1625,7 +1942,8 @@ class _CompactActionButtonState extends State<_CompactActionButton>
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final showColor = widget.enabled || widget.isActive;
-    final effectiveColor = showColor ? widget.color : colorScheme.onSurfaceVariant;
+    final effectiveColor =
+        showColor ? widget.color : colorScheme.onSurfaceVariant;
     // Show label if colored OR if expanded (shows countdown on grey button during cooldown)
     final hasLabel = widget.label != null && (showColor || widget.isExpanded);
 
@@ -1647,7 +1965,8 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                 color: effectiveColor.withValues(alpha: bgOpacity),
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(
-                  color: effectiveColor.withValues(alpha: widget.isActive ? 0.5 : 0.3),
+                  color: effectiveColor.withValues(
+                      alpha: widget.isActive ? 0.5 : 0.3),
                   width: widget.isActive ? 1.5 : 1,
                 ),
               ),
@@ -1683,7 +2002,10 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                             Icon(
                               widget.icon,
                               size: 18,
-                              color: showColor ? effectiveColor : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                              color: showColor
+                                  ? effectiveColor
+                                  : colorScheme.onSurfaceVariant
+                                      .withValues(alpha: 0.5),
                             ),
                             // Animated label - show when label is provided
                             AnimatedSize(
@@ -1698,8 +2020,13 @@ class _CompactActionButtonState extends State<_CompactActionButton>
                                           widget.label!,
                                           style: TextStyle(
                                             fontSize: 11,
-                                            fontWeight: widget.isActive ? FontWeight.w600 : FontWeight.w500,
-                                            color: showColor ? effectiveColor : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                            fontWeight: widget.isActive
+                                                ? FontWeight.w600
+                                                : FontWeight.w500,
+                                            color: showColor
+                                                ? effectiveColor
+                                                : colorScheme.onSurfaceVariant
+                                                    .withValues(alpha: 0.5),
                                           ),
                                         ),
                                       ],

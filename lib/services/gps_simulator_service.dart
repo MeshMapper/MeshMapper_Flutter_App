@@ -10,10 +10,13 @@ import '../utils/debug_logger_io.dart';
 enum SimulatorPattern {
   /// Move in a straight line in the configured direction
   straight,
+
   /// Move in a circle around the start point
   circle,
+
   /// Random walk with smooth direction changes
   randomWalk,
+
   /// Follow a loaded route (KML/GPX)
   route,
 }
@@ -143,7 +146,8 @@ class GpsSimulatorService {
       _circleAngle = 0;
     }
 
-    debugLog('[GPS SIM] Configured: speed=${_speed}km/h, pattern=$_pattern, heading=$_heading');
+    debugLog(
+        '[GPS SIM] Configured: speed=${_speed}km/h, pattern=$_pattern, heading=$_heading');
   }
 
   /// Start the simulator
@@ -151,7 +155,8 @@ class GpsSimulatorService {
     if (_isRunning) return;
 
     _isRunning = true;
-    debugLog('[GPS SIM] Starting simulator: ${_latitude.toStringAsFixed(5)}, ${_longitude.toStringAsFixed(5)} @ ${_speed}km/h');
+    debugLog(
+        '[GPS SIM] Starting simulator: ${_latitude.toStringAsFixed(5)}, ${_longitude.toStringAsFixed(5)} @ ${_speed}km/h');
 
     // Emit initial position immediately
     _emitPosition();
@@ -184,7 +189,8 @@ class GpsSimulatorService {
     _targetHeading = 45;
     _routeIndex = 0;
     _routeProgress = 0;
-    debugLog('[GPS SIM] Reset to: ${_latitude.toStringAsFixed(5)}, ${_longitude.toStringAsFixed(5)}');
+    debugLog(
+        '[GPS SIM] Reset to: ${_latitude.toStringAsFixed(5)}, ${_longitude.toStringAsFixed(5)}');
   }
 
   /// Load route from KML file content
@@ -236,7 +242,8 @@ class GpsSimulatorService {
       _latitude = _routePoints[0].latitude;
       _longitude = _routePoints[0].longitude;
 
-      debugLog('[GPS SIM] Loaded KML route "$_routeName" with ${_routePoints.length} points');
+      debugLog(
+          '[GPS SIM] Loaded KML route "$_routeName" with ${_routePoints.length} points');
       return true;
     } catch (e) {
       debugLog('[GPS SIM] Error parsing KML: $e');
@@ -263,10 +270,12 @@ class GpsSimulatorService {
         final lat = double.tryParse(pt.getAttribute('lat') ?? '');
         final lon = double.tryParse(pt.getAttribute('lon') ?? '');
         final eleElement = pt.findElements('ele').firstOrNull;
-        final alt = eleElement != null ? double.tryParse(eleElement.innerText) : null;
+        final alt =
+            eleElement != null ? double.tryParse(eleElement.innerText) : null;
 
         if (lat != null && lon != null) {
-          coordinates.add(RoutePoint(latitude: lat, longitude: lon, altitude: alt));
+          coordinates
+              .add(RoutePoint(latitude: lat, longitude: lon, altitude: alt));
         }
       }
 
@@ -309,7 +318,8 @@ class GpsSimulatorService {
       _latitude = _routePoints[0].latitude;
       _longitude = _routePoints[0].longitude;
 
-      debugLog('[GPS SIM] Loaded GPX route "$_routeName" with ${_routePoints.length} points');
+      debugLog(
+          '[GPS SIM] Loaded GPX route "$_routeName" with ${_routePoints.length} points');
       return true;
     } catch (e) {
       debugLog('[GPS SIM] Error parsing GPX: $e');
@@ -320,18 +330,30 @@ class GpsSimulatorService {
   /// Extract route name from GPX document
   String _extractGpxName(XmlDocument document) {
     // Try track name first
-    final trkName = document.findAllElements('trk').firstOrNull
-        ?.findElements('name').firstOrNull?.innerText;
+    final trkName = document
+        .findAllElements('trk')
+        .firstOrNull
+        ?.findElements('name')
+        .firstOrNull
+        ?.innerText;
     if (trkName != null) return trkName;
 
     // Try route name
-    final rteName = document.findAllElements('rte').firstOrNull
-        ?.findElements('name').firstOrNull?.innerText;
+    final rteName = document
+        .findAllElements('rte')
+        .firstOrNull
+        ?.findElements('name')
+        .firstOrNull
+        ?.innerText;
     if (rteName != null) return rteName;
 
     // Try metadata name
-    final metaName = document.findAllElements('metadata').firstOrNull
-        ?.findElements('name').firstOrNull?.innerText;
+    final metaName = document
+        .findAllElements('metadata')
+        .firstOrNull
+        ?.findElements('name')
+        .firstOrNull
+        ?.innerText;
     if (metaName != null) return metaName;
 
     return 'Unnamed Route';
@@ -412,8 +434,10 @@ class GpsSimulatorService {
 
       // Calculate distance between current and next point
       final segmentDistanceM = _haversineDistance(
-        currentPoint.latitude, currentPoint.longitude,
-        nextPoint.latitude, nextPoint.longitude,
+        currentPoint.latitude,
+        currentPoint.longitude,
+        nextPoint.latitude,
+        nextPoint.longitude,
       );
 
       if (segmentDistanceM < 1) {
@@ -461,24 +485,31 @@ class GpsSimulatorService {
     final nextPoint = _routePoints[nextIndex];
 
     final t = _routeProgress.clamp(0.0, 1.0);
-    _latitude = currentPoint.latitude + (nextPoint.latitude - currentPoint.latitude) * t;
-    _longitude = currentPoint.longitude + (nextPoint.longitude - currentPoint.longitude) * t;
+    _latitude = currentPoint.latitude +
+        (nextPoint.latitude - currentPoint.latitude) * t;
+    _longitude = currentPoint.longitude +
+        (nextPoint.longitude - currentPoint.longitude) * t;
 
     // Calculate heading towards next point
     _heading = _calculateBearing(
-      currentPoint.latitude, currentPoint.longitude,
-      nextPoint.latitude, nextPoint.longitude,
+      currentPoint.latitude,
+      currentPoint.longitude,
+      nextPoint.latitude,
+      nextPoint.longitude,
     );
   }
 
   /// Haversine distance between two points in meters
-  double _haversineDistance(double lat1, double lon1, double lat2, double lon2) {
+  double _haversineDistance(
+      double lat1, double lon1, double lat2, double lon2) {
     const R = 6371000.0; // Earth radius in meters
     final dLat = (lat2 - lat1) * pi / 180;
     final dLon = (lon2 - lon1) * pi / 180;
     final a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(lat1 * pi / 180) * cos(lat2 * pi / 180) *
-        sin(dLon / 2) * sin(dLon / 2);
+        cos(lat1 * pi / 180) *
+            cos(lat2 * pi / 180) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
     final c = 2 * atan2(sqrt(a), sqrt(1 - a));
     return R * c;
   }
@@ -490,8 +521,8 @@ class GpsSimulatorService {
     final lat2Rad = lat2 * pi / 180;
 
     final y = sin(dLon) * cos(lat2Rad);
-    final x = cos(lat1Rad) * sin(lat2Rad) -
-        sin(lat1Rad) * cos(lat2Rad) * cos(dLon);
+    final x =
+        cos(lat1Rad) * sin(lat2Rad) - sin(lat1Rad) * cos(lat2Rad) * cos(dLon);
     final bearing = atan2(y, x) * 180 / pi;
     return (bearing + 360) % 360; // Normalize to 0-360
   }
@@ -509,7 +540,8 @@ class GpsSimulatorService {
     // 1 degree latitude ≈ 111 km
     // 1 degree longitude ≈ 111 km * cos(latitude)
     final latChange = (distanceKm / 111) * cos(headingRad);
-    final lonChange = (distanceKm / (111 * cos(_latitude * pi / 180))) * sin(headingRad);
+    final lonChange =
+        (distanceKm / (111 * cos(_latitude * pi / 180))) * sin(headingRad);
 
     _latitude += latChange;
     _longitude += lonChange;
@@ -530,7 +562,8 @@ class GpsSimulatorService {
     // Calculate position on circle
     final angleRad = _circleAngle * pi / 180;
     _latitude = _circleCenterLat + _circleRadius * cos(angleRad);
-    _longitude = _circleCenterLon + _circleRadius * sin(angleRad) / cos(_circleCenterLat * pi / 180);
+    _longitude = _circleCenterLon +
+        _circleRadius * sin(angleRad) / cos(_circleCenterLat * pi / 180);
 
     // Update heading to be tangent to circle
     _heading = (_circleAngle + 90) % 360;
