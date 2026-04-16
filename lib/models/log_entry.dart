@@ -31,7 +31,11 @@ class TxLogEntry {
   String toCsv() {
     final eventsStr = events.isEmpty
         ? 'None'
-        : events.map((e) => e.snr != null ? '${e.repeaterId}(${e.snr!.toStringAsFixed(2)})' : '${e.repeaterId}(null)').join(',');
+        : events
+            .map((e) => e.snr != null
+                ? '${e.repeaterId}(${e.snr!.toStringAsFixed(2)})'
+                : '${e.repeaterId}(null)')
+            .join(',');
     return '${timestamp.toIso8601String()},$latitude,$longitude,$power,$eventsStr';
   }
 }
@@ -39,7 +43,8 @@ class TxLogEntry {
 /// RX Event (repeater that heard a TX ping)
 class RxEvent {
   final String repeaterId; // Hex ID (e.g., "4e", "b7")
-  final double? snr; // Signal-to-noise ratio in dB (null for CARpeater pass-through)
+  final double?
+      snr; // Signal-to-noise ratio in dB (null for CARpeater pass-through)
   final int? rssi; // RSSI in dBm (null for CARpeater pass-through)
 
   RxEvent({
@@ -68,8 +73,10 @@ class RxEvent {
 class RxLogEntry {
   final DateTime timestamp;
   final String repeaterId; // Hex ID (e.g., "4e", "b7")
-  final double? snr; // Signal-to-noise ratio in dB (null for CARpeater pass-through)
-  final int? rssi; // Received signal strength indicator in dBm (null for CARpeater pass-through)
+  final double?
+      snr; // Signal-to-noise ratio in dB (null for CARpeater pass-through)
+  final int?
+      rssi; // Received signal strength indicator in dBm (null for CARpeater pass-through)
   final int pathLength; // Number of hops
   final int header; // Packet header byte
   final double latitude;
@@ -190,7 +197,8 @@ class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
   final DateTime timestamp;
   final dynamic entry;
 
-  UnifiedPingLogEntry({required this.type, required this.timestamp, required this.entry});
+  UnifiedPingLogEntry(
+      {required this.type, required this.timestamp, required this.entry});
 
   TxLogEntry get asTx => entry as TxLogEntry;
   RxLogEntry get asRx => entry as RxLogEntry;
@@ -198,28 +206,29 @@ class UnifiedPingLogEntry implements Comparable<UnifiedPingLogEntry> {
   TraceLogEntry get asTrace => entry as TraceLogEntry;
 
   @override
-  int compareTo(UnifiedPingLogEntry other) => other.timestamp.compareTo(timestamp);
+  int compareTo(UnifiedPingLogEntry other) =>
+      other.timestamp.compareTo(timestamp);
 
   String get timeString => switch (type) {
-    PingLogType.tx => asTx.timeString,
-    PingLogType.rx => asRx.timeString,
-    PingLogType.disc => asDisc.timeString,
-    PingLogType.trace => asTrace.timeString,
-  };
+        PingLogType.tx => asTx.timeString,
+        PingLogType.rx => asRx.timeString,
+        PingLogType.disc => asDisc.timeString,
+        PingLogType.trace => asTrace.timeString,
+      };
 
   String get locationString => switch (type) {
-    PingLogType.tx => asTx.locationString,
-    PingLogType.rx => asRx.locationString,
-    PingLogType.disc => asDisc.locationString,
-    PingLogType.trace => asTrace.locationString,
-  };
+        PingLogType.tx => asTx.locationString,
+        PingLogType.rx => asRx.locationString,
+        PingLogType.disc => asDisc.locationString,
+        PingLogType.trace => asTrace.locationString,
+      };
 
   String toCsv() => switch (type) {
-    PingLogType.tx => 'TX,${asTx.toCsv()}',
-    PingLogType.rx => 'RX,${asRx.toCsv()}',
-    PingLogType.disc => 'DISC,${asDisc.toCsv()}',
-    PingLogType.trace => 'TRC,${asTrace.toCsv()}',
-  };
+        PingLogType.tx => 'TX,${asTx.toCsv()}',
+        PingLogType.rx => 'RX,${asRx.toCsv()}',
+        PingLogType.disc => 'DISC,${asDisc.toCsv()}',
+        PingLogType.trace => 'TRC,${asTrace.toCsv()}',
+      };
 }
 
 /// User Error Entry for error log
@@ -249,9 +258,9 @@ class UserErrorEntry {
 
 /// Error severity levels
 enum ErrorSeverity {
-  info,    // Blue: informational messages
+  info, // Blue: informational messages
   warning, // Orange: warnings
-  error,   // Red: errors
+  error, // Red: errors
 }
 
 /// Discovery Log Entry (discovery protocol observation)
@@ -290,19 +299,24 @@ class DiscLogEntry {
   String toCsv() {
     final nodesStr = discoveredNodes.isEmpty
         ? 'None'
-        : discoveredNodes.map((n) => '${n.repeaterId}${n.nodeTypeLabel}(${n.localSnr.toStringAsFixed(2)})').join(',');
+        : discoveredNodes
+            .map((n) =>
+                '${n.repeaterId}${n.nodeTypeLabel}(${n.localSnr.toStringAsFixed(2)})')
+            .join(',');
     return '${timestamp.toIso8601String()},$latitude,$longitude,${noiseFloor ?? ''},${discoveredNodes.length},$nodesStr';
   }
 }
 
 /// Discovered node entry for log display
 class DiscoveredNodeEntry {
-  final String repeaterId;      // First N hex chars of pubkey based on hopBytes (e.g., "4E", "4E7A", "4E7A3B")
-  final String nodeType;        // "REPEATER" or "ROOM"
-  final double localSnr;        // SNR as seen by local device (dB)
-  final int localRssi;          // RSSI as seen by local device (dBm)
-  final double remoteSnr;       // SNR as seen by remote node (dB)
-  final String? pubkeyHex;      // Full public key hex (64 chars) for exact repeater matching
+  final String
+      repeaterId; // First N hex chars of pubkey based on hopBytes (e.g., "4E", "4E7A", "4E7A3B")
+  final String nodeType; // "REPEATER" or "ROOM"
+  final double localSnr; // SNR as seen by local device (dB)
+  final int localRssi; // RSSI as seen by local device (dBm)
+  final double remoteSnr; // SNR as seen by remote node (dB)
+  final String?
+      pubkeyHex; // Full public key hex (64 chars) for exact repeater matching
 
   DiscoveredNodeEntry({
     required this.repeaterId,

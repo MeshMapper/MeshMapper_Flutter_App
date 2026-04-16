@@ -13,8 +13,8 @@ import '../utils/debug_logger_io.dart';
 class CountdownTimerService {
   Timer? _timer;
   DateTime? _endTime;
-  int? _durationMs;  // Original duration for progress calculation
-  final VoidCallback? onUpdate;  // Callback for UI refresh on each timer tick
+  int? _durationMs; // Original duration for progress calculation
+  final VoidCallback? onUpdate; // Callback for UI refresh on each timer tick
 
   CountdownTimerService({this.onUpdate});
 
@@ -42,11 +42,12 @@ class CountdownTimerService {
   /// @param durationMs - Duration in milliseconds
   void start(int durationMs) {
     stop();
-    _durationMs = durationMs;  // Track original duration for progress
+    _durationMs = durationMs; // Track original duration for progress
     _endTime = DateTime.now().add(Duration(milliseconds: durationMs));
 
     // Start 500ms update timer for responsive countdown
-    _timer = Timer.periodic(const Duration(milliseconds: 500), (_) => _update());
+    _timer =
+        Timer.periodic(const Duration(milliseconds: 500), (_) => _update());
 
     // Trigger immediate update
     _update();
@@ -136,7 +137,8 @@ class ManualPingCooldownTimer extends CountdownTimerService {
     final remaining = remainingMs;
     super.stop();
     if (wasRunning) {
-      debugLog('[TIMER] Manual ping cooldown timer stopped (was ${remaining}ms remaining)');
+      debugLog(
+          '[TIMER] Manual ping cooldown timer stopped (was ${remaining}ms remaining)');
     }
   }
 }

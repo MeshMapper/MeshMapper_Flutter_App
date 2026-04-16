@@ -53,7 +53,8 @@ class _MainScaffoldState extends State<MainScaffold> {
     if (kIsWeb) {
       // Web: No disclosure dialog needed, just request permission
       // This triggers the browser's native location permission prompt
-      debugLog('[DISCLOSURE] Web platform - requesting GPS permission directly');
+      debugLog(
+          '[DISCLOSURE] Web platform - requesting GPS permission directly');
       await _requestWebGpsPermission();
       return;
     }
@@ -109,7 +110,7 @@ class _MainScaffoldState extends State<MainScaffold> {
         return;
       }
       granted = permission == LocationPermission.always ||
-                permission == LocationPermission.whileInUse;
+          permission == LocationPermission.whileInUse;
     } else {
       // Android: only request if needed so previously granted permission just restarts GPS.
       var status = await Permission.locationWhenInUse.status;
@@ -187,7 +188,8 @@ class _MainScaffoldState extends State<MainScaffold> {
       });
     }
 
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(
       body: IndexedStack(
@@ -233,8 +235,12 @@ class _MainScaffoldState extends State<MainScaffold> {
             index: 2,
           ),
           _buildCompactNavItem(
-            icon: appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
-            activeIcon: appState.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
+            icon: appState.isConnected
+                ? Icons.bluetooth_connected
+                : Icons.bluetooth,
+            activeIcon: appState.isConnected
+                ? Icons.bluetooth_connected
+                : Icons.bluetooth,
             index: 3,
             color: appState.isConnected ? Colors.green : null,
           ),
