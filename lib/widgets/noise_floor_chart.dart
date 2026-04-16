@@ -199,12 +199,10 @@ class InteractiveNoiseFloorChartState
   /// Interpolate noise floor at given elapsed time
   double _interpolateNoiseFloor(
       double elapsedSeconds, NoiseFloorSession session) {
-    if (session.samples.isEmpty) {
+    if (session.samples.isEmpty)
       return widget.session.noiseFloorRange.min.toDouble();
-    }
-    if (session.samples.length == 1) {
+    if (session.samples.length == 1)
       return session.samples.first.noiseFloor.toDouble();
-    }
 
     NoiseFloorSample? before;
     NoiseFloorSample? after;
@@ -1009,9 +1007,8 @@ class _MarkerPainter extends CustomPainter {
 
   double _interpolateNoiseFloor(double elapsedSeconds) {
     if (session.samples.isEmpty) return minY;
-    if (session.samples.length == 1) {
+    if (session.samples.length == 1)
       return session.samples.first.noiseFloor.toDouble();
-    }
 
     NoiseFloorSample? before;
     NoiseFloorSample? after;

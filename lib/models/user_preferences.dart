@@ -178,14 +178,9 @@ class UserPreferences {
       iataCode: json['iataCode'] as String?,
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
-<<<<<<< HEAD
       mapStyle: (json['mapStyle'] as String?) ?? 'liberty',
-      closeAppAfterDisconnect: (json['closeAppAfterDisconnect'] as bool?) ?? false,
-=======
-      mapStyle: (json['mapStyle'] as String?) ?? 'dark',
       closeAppAfterDisconnect:
           (json['closeAppAfterDisconnect'] as bool?) ?? false,
->>>>>>> a431a6a (format with dart)
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
@@ -204,13 +199,10 @@ class UserPreferences {
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
-<<<<<<< HEAD
-      coverageOverlayOpacity: (json['coverageOverlayOpacity'] as num?)?.toDouble() ?? 0.7,
-      disconnectAlertEnabled: (json['disconnectAlertEnabled'] as bool?) ?? false,
-=======
+      coverageOverlayOpacity:
+          (json['coverageOverlayOpacity'] as num?)?.toDouble() ?? 0.7,
       disconnectAlertEnabled:
           (json['disconnectAlertEnabled'] as bool?) ?? false,
->>>>>>> a431a6a (format with dart)
       customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
       customApiUrl: json['customApiUrl'] as String?,
       customApiKey: json['customApiKey'] as String?,
@@ -352,13 +344,10 @@ class UserPreferences {
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
-<<<<<<< HEAD
-      coverageOverlayOpacity: coverageOverlayOpacity ?? this.coverageOverlayOpacity,
-      disconnectAlertEnabled: disconnectAlertEnabled ?? this.disconnectAlertEnabled,
-=======
+      coverageOverlayOpacity:
+          coverageOverlayOpacity ?? this.coverageOverlayOpacity,
       disconnectAlertEnabled:
           disconnectAlertEnabled ?? this.disconnectAlertEnabled,
->>>>>>> a431a6a (format with dart)
       customApiEnabled: customApiEnabled ?? this.customApiEnabled,
       customApiUrl: customApiUrl ?? this.customApiUrl,
       customApiKey: customApiKey ?? this.customApiKey,

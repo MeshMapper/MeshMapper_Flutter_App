@@ -3316,9 +3316,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       message: message,
       severity: severity,
     ));
-    if (_errorLogEntries.length > _maxErrorEntries) {
+    if (_errorLogEntries.length > _maxErrorEntries)
       _errorLogEntries.removeAt(0);
-    }
     if (autoSwitch) {
       _requestErrorLogSwitch = true; // Auto-switch to error log
     }
@@ -3775,9 +3774,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Periodically auto-save offline pings to prevent data loss from app kill.
   /// Uses a non-destructive snapshot so in-memory accumulation continues.
   void _autoSaveOfflinePings() {
-    if (!_preferences.offlineMode || _apiQueueService.offlinePingCount == 0) {
+    if (!_preferences.offlineMode || _apiQueueService.offlinePingCount == 0)
       return;
-    }
 
     final pings = _apiQueueService.getOfflinePingsSnapshot();
     if (pings.isEmpty) return;
@@ -4200,7 +4198,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void setCoverageOverlayOpacity(double opacity) {
     final clamped = opacity.clamp(0.3, 1.0);
     _preferences = _preferences.copyWith(coverageOverlayOpacity: clamped);
-    debugLog('[MAP] Coverage overlay opacity set to ${clamped.toStringAsFixed(2)}');
+    debugLog(
+        '[MAP] Coverage overlay opacity set to ${clamped.toStringAsFixed(2)}');
     notifyListeners();
     _savePreferences();
   }
@@ -4299,9 +4298,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Play disconnect alert if enabled (triple beep for unexpected ping stop)
   void _playDisconnectAlert() {
-    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) {
+    if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled)
       return;
-    }
     debugLog('[AUDIO] Playing disconnect alert — pinging stopped unexpectedly');
     _audioService.playAlertSound();
   }
@@ -4736,10 +4734,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           // Schedule a retry so we don't depend solely on the GPS stream firing
           // again — on first launch the stream may stall on a low-accuracy fix
           // and the coverage tile overlay would never load.
-          _scheduleZoneCheckRetry(seconds: 10, error: message, reason: 'gps_inaccurate');
+          _scheduleZoneCheckRetry(
+              seconds: 10, error: message, reason: 'gps_inaccurate');
         } else if (reason == 'gps_stale') {
           logError('GPS Stale Error\n$message', autoSwitch: false);
-          _scheduleZoneCheckRetry(seconds: 10, error: message, reason: 'gps_stale');
+          _scheduleZoneCheckRetry(
+              seconds: 10, error: message, reason: 'gps_stale');
         } else if (reason == 'zone_disabled') {
           final errorMsg = _getErrorMessage(reason, message);
           logError(errorMsg);

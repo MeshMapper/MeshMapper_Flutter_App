@@ -24,13 +24,15 @@ import 'repeater_id_chip.dart';
 /// use `textField`, and MapLibre iOS wedges its resource loader with
 /// NSURLError -1002 if it tries to resolve glyphs against a style that
 /// doesn't declare a glyphs URL.
-const _satelliteStyleJson = '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{"satellite":{"type":"raster","tiles":["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],"tileSize":256,"maxzoom":17}},"layers":[{"id":"satellite-layer","type":"raster","source":"satellite"}]}';
+const _satelliteStyleJson =
+    '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{"satellite":{"type":"raster","tiles":["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],"tileSize":256,"maxzoom":17}},"layers":[{"id":"satellite-layer","type":"raster","source":"satellite"}]}';
 
 /// Blank style with dark background — used when mapTilesEnabled is false
 /// (saves mobile data while still showing markers and overlays).
 /// Includes a `glyphs` URL so native annotations using textField (repeater
 /// hex IDs, distance labels) can render their text even when tiles are off.
-const _blankStyleJson = '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"#0F172A"}}]}';
+const _blankStyleJson =
+    '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"#0F172A"}}]}';
 
 /// Default font stack used for all native text labels (textField property).
 /// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
@@ -252,23 +254,6 @@ extension MapStyleExtension on MapStyle {
   }
 }
 
-<<<<<<< HEAD
-=======
-/// Custom tile provider that silently handles HTTP errors (404, 503, etc.)
-/// instead of flooding the console with exceptions
-final class SilentCancellableNetworkTileProvider
-    extends CancellableNetworkTileProvider {
-  SilentCancellableNetworkTileProvider()
-      : super(
-          dioClient: Dio(
-            BaseOptions(
-              validateStatus: (status) => true, // Accept all status codes
-            ),
-          ),
-        );
-}
->>>>>>> a431a6a (format with dart)
-
 /// Resolved repeater with SNR and ambiguity info for ping focus mode.
 /// Line color is based on [snr] (green/yellow/red). When a short hex ID
 /// matches multiple repeaters, [ambiguous] is true and the line gets a
@@ -342,8 +327,8 @@ class _MapWidgetState extends State<MapWidget> {
   // effectively 0 or -1 when stationary or walking slowly. We keep our own
   // anchor-to-current bearing as a fallback so the arrow/walk marker and
   // heading-mode map rotation behave correctly at low speeds.
-  LatLng? _bearingAnchor;    // last fix used as the bearing origin
-  double? _computedHeading;  // last known-good bearing in degrees 0..360
+  LatLng? _bearingAnchor; // last fix used as the bearing origin
+  double? _computedHeading; // last known-good bearing in degrees 0..360
 
   // MeshMapper overlay toggle (on by default)
   bool _showMeshMapperOverlay = true;
@@ -384,7 +369,8 @@ class _MapWidgetState extends State<MapWidget> {
   // errors in the native log.
   bool _coverageRefreshScheduled = false;
   bool _styleLoaded = false;
-  bool _hasStyleLoadedOnce = false;  // True after first onStyleLoadedCallback (prevents re-centering on style switch)
+  bool _hasStyleLoadedOnce =
+      false; // True after first onStyleLoadedCallback (prevents re-centering on style switch)
 
   // Tracks the last marker data version we synced to native annotations.
   // The build() method computes a version hash from app state and only triggers
@@ -402,6 +388,10 @@ class _MapWidgetState extends State<MapWidget> {
   // Tile load failure detection — shows a banner if map tiles haven't loaded
   // within a timeout after style load. Cleared when onMapIdle fires.
   bool _tileLoadFailed = false;
+
+  /// Tracks the last-applied mapTilesEnabled value so we can detect changes
+  /// in _buildMap and call setOffline() without a full style reload.
+  bool? _lastMapTilesEnabled;
   Timer? _tileLoadTimeoutTimer;
   static const _tileLoadTimeoutSeconds = 8;
 
@@ -425,8 +415,9 @@ class _MapWidgetState extends State<MapWidget> {
   // NOTE: repeaters do NOT use the annotation manager — they live in a custom
   // cluster-enabled GeoJSON source so MapLibre can group nearby markers into
   // count bubbles at low zoom. See _setupRepeaterClusterLayers().
-  final Map<String, Symbol> _coverageSymbols = {};       // key: "{type}_{ts.ms}"
-  final Map<String, Symbol> _distanceLabelSymbols = {};  // key: focused repeater id
+  final Map<String, Symbol> _coverageSymbols = {}; // key: "{type}_{ts.ms}"
+  final Map<String, Symbol> _distanceLabelSymbols =
+      {}; // key: focused repeater id
   // Per focused-repeater metadata used by the collision-avoidance reflow:
   // the image size (for hit-box overlap tests) and the repeater lat/lon (so
   // we can slide the label along the ping→repeater line at a new parameter t).
@@ -436,7 +427,7 @@ class _MapWidgetState extends State<MapWidget> {
   // style-reload path can drop stale names from the map's image cache if ever
   // needed. Right now we just re-addImage on each sync (idempotent).
   final Set<String> _registeredDistanceLabelImages = {};
-  Symbol? _gpsSymbol;                                    // single GPS marker
+  Symbol? _gpsSymbol; // single GPS marker
 
   // Repeater cluster source/layer IDs (custom GeoJSON layer with cluster: true)
   static const _repeaterSourceId = 'repeaters-source';
@@ -469,8 +460,12 @@ class _MapWidgetState extends State<MapWidget> {
       // clear. Remove them explicitly so an in-flight tap that gets queued
       // before the platform channel is torn down can't reach into a disposed
       // State. try/catch swallows the edge case where _onMapCreated never ran.
-      try { controller.onSymbolTapped.remove(_handleSymbolTap); } catch (_) {}
-      try { controller.onFeatureTapped.remove(_handleFeatureTap); } catch (_) {}
+      try {
+        controller.onSymbolTapped.remove(_handleSymbolTap);
+      } catch (_) {}
+      try {
+        controller.onFeatureTapped.remove(_handleFeatureTap);
+      } catch (_) {}
     }
     super.dispose();
   }
@@ -504,9 +499,10 @@ class _MapWidgetState extends State<MapWidget> {
         _lastGpsPosition != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _autoFollow && _lastGpsPosition != null) {
-          final double targetBearing = (!_alwaysNorth && _computedHeading != null)
-              ? _computedHeading!
-              : 0.0;
+          final double targetBearing =
+              (!_alwaysNorth && _computedHeading != null)
+                  ? _computedHeading!
+                  : 0.0;
           final double targetZoom = _autoFollowDesiredZoom ??
               _mapController?.cameraPosition?.zoom ??
               _defaultZoom;
@@ -527,66 +523,6 @@ class _MapWidgetState extends State<MapWidget> {
     }
   }
 
-<<<<<<< HEAD
-=======
-  /// Smoothly animate the map to a new position
-  void _animateToPosition(LatLng target) {
-    if (!_isMapReady || !mounted) return;
-
-    // Get current position
-    final currentCenter = _mapController.camera.center;
-
-    // Skip if already at target (within small threshold)
-    final distance =
-        const Distance().as(LengthUnit.Meter, currentCenter, target);
-    if (distance < 1) return; // Less than 1 meter, don't animate
-
-    // Cancel any running animation
-    _animationController?.stop();
-    _animationController?.dispose();
-
-    // Create new animation controller
-    // Duration based on distance - shorter for small movements, longer for big jumps
-    final duration = Duration(milliseconds: distance < 100 ? 200 : 300);
-
-    _animationController = AnimationController(
-      duration: duration,
-      vsync: this,
-    );
-
-    _animation = CurvedAnimation(
-      parent: _animationController!,
-      curve: Curves.easeOutCubic, // Smooth deceleration
-    );
-
-    _animationStartPosition = currentCenter;
-    _animationEndPosition = target;
-
-    _animation!.addListener(() {
-      if (!mounted ||
-          _animationStartPosition == null ||
-          _animationEndPosition == null) {
-        return;
-      }
-
-      // Interpolate between start and end positions
-      final t = _animation!.value;
-      final lat = _animationStartPosition!.latitude +
-          ((_animationEndPosition!.latitude -
-                  _animationStartPosition!.latitude) *
-              t);
-      final lng = _animationStartPosition!.longitude +
-          ((_animationEndPosition!.longitude -
-                  _animationStartPosition!.longitude) *
-              t);
-
-      _mapController.move(LatLng(lat, lng), _mapController.camera.zoom);
-    });
-
-    _animationController!.forward();
-  }
-
->>>>>>> a431a6a (format with dart)
   /// Smoothly animate the map to a new position with zoom
   void _animateToPositionWithZoom(LatLng target, double targetZoom) {
     if (_mapController == null || !_isMapReady || !mounted) return;
@@ -620,49 +556,12 @@ class _MapWidgetState extends State<MapWidget> {
       )),
       duration: Duration(milliseconds: durationMs),
     );
-<<<<<<< HEAD
-  }
-
-  /// Zoom to fit a focused ping and its connected repeaters on screen
-  void _zoomToFocusBounds(LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
-    if (_mapController == null || !_isMapReady || !mounted) return;
-=======
-
-    _animationStartPosition = currentCenter;
-    _animationEndPosition = target;
-
-    _animation!.addListener(() {
-      if (!mounted ||
-          _animationStartPosition == null ||
-          _animationEndPosition == null) {
-        return;
-      }
-
-      // Interpolate between start and end positions
-      final t = _animation!.value;
-      final lat = _animationStartPosition!.latitude +
-          ((_animationEndPosition!.latitude -
-                  _animationStartPosition!.latitude) *
-              t);
-      final lng = _animationStartPosition!.longitude +
-          ((_animationEndPosition!.longitude -
-                  _animationStartPosition!.longitude) *
-              t);
-
-      // Interpolate zoom
-      final zoom = currentZoom + ((targetZoom - currentZoom) * t);
-
-      _mapController.move(LatLng(lat, lng), zoom);
-    });
-
-    _animationController!.forward();
   }
 
   /// Zoom to fit a focused ping and its connected repeaters on screen
   void _zoomToFocusBounds(
       LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
-    if (!_isMapReady || !mounted) return;
->>>>>>> a431a6a (format with dart)
+    if (_mapController == null || !_isMapReady || !mounted) return;
 
     final points = [
       pingLocation,
@@ -670,7 +569,6 @@ class _MapWidgetState extends State<MapWidget> {
     ];
     if (points.length < 2) return;
 
-<<<<<<< HEAD
     // Build bounding box from all points
     double minLat = points[0].latitude, maxLat = points[0].latitude;
     double minLon = points[0].longitude, maxLon = points[0].longitude;
@@ -684,18 +582,11 @@ class _MapWidgetState extends State<MapWidget> {
       southwest: LatLng(minLat, minLon),
       northeast: LatLng(maxLat, maxLon),
     );
-=======
-    final fitted = CameraFit.coordinates(
-      coordinates: points,
-      padding: EdgeInsets.fromLTRB(
-          60, 60, 60, MediaQuery.of(context).size.height * 0.4),
-      maxZoom: 15,
-    ).fit(_mapController.camera);
->>>>>>> a431a6a (format with dart)
 
     final bottomPad = MediaQuery.of(context).size.height * 0.4;
     _mapController!.animateCamera(
-      CameraUpdate.newLatLngBounds(bounds, left: 60, top: 60, right: 60, bottom: bottomPad),
+      CameraUpdate.newLatLngBounds(bounds,
+          left: 60, top: 60, right: 60, bottom: bottomPad),
       duration: const Duration(milliseconds: 500),
     );
   }
@@ -703,14 +594,19 @@ class _MapWidgetState extends State<MapWidget> {
   /// Smoothly animate the map rotation to match heading
   /// MapLibre bearing is clockwise from north (same as GPS heading)
   void _animateToRotation(double targetHeading) {
-    if (_mapController == null || !_isMapReady || !mounted || _alwaysNorth) return;
+    if (_mapController == null || !_isMapReady || !mounted || _alwaysNorth)
+      return;
 
     final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
 
     // Calculate shortest rotation path
     double delta = targetHeading - currentBearing;
-    while (delta > 180) { delta -= 360; }
-    while (delta < -180) { delta += 360; }
+    while (delta > 180) {
+      delta -= 360;
+    }
+    while (delta < -180) {
+      delta += 360;
+    }
 
     // Skip if rotation change is very small (less than 2 degrees)
     if (delta.abs() < 2) return;
@@ -719,7 +615,6 @@ class _MapWidgetState extends State<MapWidget> {
       CameraUpdate.bearingTo(targetHeading),
       duration: Duration(milliseconds: delta.abs() < 45 ? 300 : 500),
     );
-<<<<<<< HEAD
   }
 
   /// Produce a reliable heading in degrees (0..360) from successive GPS fixes.
@@ -749,13 +644,17 @@ class _MapWidgetState extends State<MapWidget> {
       _bearingAnchor = here;
     } else {
       final moved = Geolocator.distanceBetween(
-        _bearingAnchor!.latitude, _bearingAnchor!.longitude,
-        here.latitude, here.longitude,
+        _bearingAnchor!.latitude,
+        _bearingAnchor!.longitude,
+        here.latitude,
+        here.longitude,
       );
       if (moved >= 5.0) {
         final bearing = Geolocator.bearingBetween(
-          _bearingAnchor!.latitude, _bearingAnchor!.longitude,
-          here.latitude, here.longitude,
+          _bearingAnchor!.latitude,
+          _bearingAnchor!.longitude,
+          here.latitude,
+          here.longitude,
         );
         // bearingBetween returns -180..180; normalize to 0..360.
         _computedHeading = (bearing + 360) % 360;
@@ -786,54 +685,13 @@ class _MapWidgetState extends State<MapWidget> {
     double? atBearing,
   ]) {
     if (_mapController == null || !_isMapReady) return position;
-=======
-
-    _rotationAnimation = CurvedAnimation(
-      parent: _rotationAnimationController!,
-      curve: Curves.easeInOutCubic, // Smooth acceleration and deceleration
-    );
-
-    _rotationStartAngle = currentRotation;
-    _rotationEndAngle = currentRotation + delta;
-
-    _rotationAnimation!.addListener(() {
-      if (!mounted ||
-          _rotationStartAngle == null ||
-          _rotationEndAngle == null) {
-        return;
-      }
-
-      // Interpolate between start and end angles
-      final t = _rotationAnimation!.value;
-      final rotation = _rotationStartAngle! +
-          ((_rotationEndAngle! - _rotationStartAngle!) * t);
-
-      _mapController.rotate(rotation);
-    });
-
-    _rotationAnimationController!.forward();
-  }
-
-  /// Offset a lat/lon position by screen pixels (to account for UI overlays)
-  /// Shifts the map center to keep the GPS marker centered in the visible map area
-  /// - bottomPadding: shifts center down (portrait mode with bottom panel)
-  /// - rightPadding: shifts center left (landscape mode with side panel)
-  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding,
-      [double rightPadding = 0, double? atZoom]) {
-    if (!_isMapReady) return position;
->>>>>>> a431a6a (format with dart)
     if (bottomPadding <= 0 && rightPadding <= 0) return position;
 
     // Get meters per pixel at the target zoom (or current camera zoom).
     // Approx: 40075km / (256 * 2^zoom) at equator, adjusted by cos(lat)
-<<<<<<< HEAD
     final zoom = atZoom ?? _mapController!.cameraPosition?.zoom ?? _defaultZoom;
-    final metersPerPixel = 40075000 / (256 * math.pow(2, zoom)) *
-=======
-    final zoom = atZoom ?? _mapController.camera.zoom;
     final metersPerPixel = 40075000 /
         (256 * math.pow(2, zoom)) *
->>>>>>> a431a6a (format with dart)
         math.cos(position.latitude * math.pi / 180);
 
     // Start with the offset expressed as if the map were north-up
@@ -847,13 +705,8 @@ class _MapWidgetState extends State<MapWidget> {
     }
     if (rightPadding > 0) {
       final meterOffset = (rightPadding / 2) * metersPerPixel;
-<<<<<<< HEAD
-      lonOffset = -(meterOffset / (111000 * math.cos(position.latitude * math.pi / 180)));
-=======
-      // Longitude degrees per meter varies with latitude
       lonOffset = -(meterOffset /
           (111000 * math.cos(position.latitude * math.pi / 180)));
->>>>>>> a431a6a (format with dart)
     }
 
     // When the map is rotated, "screen-down" no longer points geographic
@@ -865,7 +718,8 @@ class _MapWidgetState extends State<MapWidget> {
     // the world direction that corresponds to screen-down at the given
     // bearing, we rotate it clockwise by `bearing` — i.e. by +bearing, not
     // -bearing as the previous implementation did.
-    final bearingDeg = atBearing ?? _mapController!.cameraPosition?.bearing ?? 0;
+    final bearingDeg =
+        atBearing ?? _mapController!.cameraPosition?.bearing ?? 0;
     if (bearingDeg.abs() > 0.1) {
       final rotationRad = bearingDeg * math.pi / 180;
       final cosR = math.cos(rotationRad);
@@ -971,9 +825,10 @@ class _MapWidgetState extends State<MapWidget> {
             _lastGpsPosition!.latitude != newPosition.latitude ||
             _lastGpsPosition!.longitude != newPosition.longitude) {
           _lastGpsPosition = newPosition;
-          final double targetBearing = (!_alwaysNorth && _computedHeading != null)
-              ? _computedHeading!
-              : 0.0;
+          final double targetBearing =
+              (!_alwaysNorth && _computedHeading != null)
+                  ? _computedHeading!
+                  : 0.0;
           final double targetZoom = _autoFollowDesiredZoom ??
               _mapController?.cameraPosition?.zoom ??
               _defaultZoom;
@@ -985,7 +840,6 @@ class _MapWidgetState extends State<MapWidget> {
           }
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _autoFollow) {
-<<<<<<< HEAD
               final adjustedPosition = _offsetPositionForPadding(
                 newPosition,
                 widget.bottomPaddingPixels,
@@ -998,13 +852,6 @@ class _MapWidgetState extends State<MapWidget> {
                 zoom: targetZoom,
                 bearing: targetBearing,
               );
-=======
-              // Apply offset for bottom padding when control panel is open
-              final adjustedPosition = _offsetPositionForPadding(newPosition,
-                  widget.bottomPaddingPixels, widget.rightPaddingPixels);
-              _animateToPosition(
-                  adjustedPosition); // Smooth animation instead of jump
->>>>>>> a431a6a (format with dart)
             }
           });
         }
@@ -1013,7 +860,10 @@ class _MapWidgetState extends State<MapWidget> {
       // Handle map rotation based on heading when NOT auto-following.
       // When auto-follow is on, rotation is bundled into the combined
       // camera update above so we don't race two animateCamera calls.
-      if (!_autoFollow && !_alwaysNorth && _isMapReady && _computedHeading != null) {
+      if (!_autoFollow &&
+          !_alwaysNorth &&
+          _isMapReady &&
+          _computedHeading != null) {
         final heading = _computedHeading!;
         if (_lastHeading == null) {
           // First heading after startup — store without rotating so the
@@ -1047,20 +897,13 @@ class _MapWidgetState extends State<MapWidget> {
       final target = appState.mapNavigationTarget;
       if (target != null) {
         // Reset map controls to default state
-<<<<<<< HEAD
-        _autoFollow = false;      // Disable center on GPS
-        _autoFollowDesiredZoom = null;
-        _alwaysNorth = true;      // Set to north-up mode
-        _rotationLocked = false;  // Unlock rotation
-        _lastHeading = null;      // Reset heading tracking
-        _bearingAnchor = null;    // Reset derived-heading anchor
-        _computedHeading = null;
-=======
         _autoFollow = false; // Disable center on GPS
+        _autoFollowDesiredZoom = null;
         _alwaysNorth = true; // Set to north-up mode
         _rotationLocked = false; // Unlock rotation
         _lastHeading = null; // Reset heading tracking
->>>>>>> a431a6a (format with dart)
+        _bearingAnchor = null; // Reset derived-heading anchor
+        _computedHeading = null;
 
         // Navigate to the coordinates with close zoom (18 = street level view)
         // Center directly on target without offset - we want the pin in the middle
@@ -1081,7 +924,6 @@ class _MapWidgetState extends State<MapWidget> {
       }
     }
 
-<<<<<<< HEAD
     // Sync native annotations whenever marker data changes (provider triggers
     // a rebuild). The version hash detects changes to ping/repeater counts,
     // GPS position, focus state, prefs, etc. Native annotations stay in sync
@@ -1093,7 +935,10 @@ class _MapWidgetState extends State<MapWidget> {
     // window between _registerMapImages and _setupRepeaterClusterLayers
     // (inside _onStyleLoaded) would race ahead and call setGeoJsonSource on
     // a not-yet-created source, throwing "sourceNotFound".
-    if (_isMapReady && _styleLoaded && _imagesRegistered && _clusterLayersReady) {
+    if (_isMapReady &&
+        _styleLoaded &&
+        _imagesRegistered &&
+        _clusterLayersReady) {
       final dataVersion = _computeMarkerDataVersion(appState);
       if (dataVersion != _lastMarkerDataVersion) {
         _lastMarkerDataVersion = dataVersion;
@@ -1117,11 +962,8 @@ class _MapWidgetState extends State<MapWidget> {
       }
     }
 
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
-=======
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
->>>>>>> a431a6a (format with dart)
     // Get safe area padding for dynamic island/notch in landscape
     final safePadding = MediaQuery.of(context).padding;
     final topPadding = isLandscape ? 16.0 : 8.0;
@@ -1243,11 +1085,26 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   Widget _buildMap(AppStateProvider appState, LatLng center) {
-    final mapStyle = MapStyleExtension.fromString(appState.preferences.mapStyle);
-    // When mapTilesEnabled is false, use a blank style (just background) to save mobile data
-    final newStyleUrl = appState.preferences.mapTilesEnabled
-        ? mapStyle.styleUrl
-        : _blankStyleJson;
+    final mapStyle =
+        MapStyleExtension.fromString(appState.preferences.mapStyle);
+    // Always use the real style so downloaded offline tiles can render from
+    // cache. Network access is controlled via setOffline() instead.
+    final newStyleUrl = mapStyle.styleUrl;
+
+    // Detect mapTilesEnabled toggle changes and switch MapLibre between
+    // online (network tiles) and offline (cache-only) mode. This avoids
+    // a full style reload — the same style stays loaded but MapLibre stops
+    // or starts making network requests for tiles.
+    final tilesEnabled = appState.preferences.mapTilesEnabled;
+    if (_lastMapTilesEnabled != tilesEnabled && _isMapReady) {
+      _lastMapTilesEnabled = tilesEnabled;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setOffline(!tilesEnabled);
+        debugPrint(
+            '[MAP] setOffline(${!tilesEnabled}) — tiles ${tilesEnabled ? "enabled" : "disabled (cache only)"}');
+      });
+    }
 
     // Style changes flow through MapLibreMap.styleString — the plugin's
     // didUpdateWidget detects the new value and fires a native setStyle.
@@ -1265,10 +1122,12 @@ class _MapWidgetState extends State<MapWidget> {
     // gps_inaccurate, the style loads with zoneCode=null and the overlay is
     // skipped. When a later retry sets the zone, nothing else would trigger
     // the raster layer.
-    final cacheBustChanged =
-        appState.overlayCacheBust != _lastCacheBust && _isMapReady && _styleLoaded;
-    final zoneChanged =
-        appState.zoneCode != _lastOverlayZoneCode && _isMapReady && _styleLoaded;
+    final cacheBustChanged = appState.overlayCacheBust != _lastCacheBust &&
+        _isMapReady &&
+        _styleLoaded;
+    final zoneChanged = appState.zoneCode != _lastOverlayZoneCode &&
+        _isMapReady &&
+        _styleLoaded;
     if (cacheBustChanged || zoneChanged) {
       if (cacheBustChanged) _lastCacheBust = appState.overlayCacheBust;
       if (zoneChanged) _lastOverlayZoneCode = appState.zoneCode;
@@ -1312,7 +1171,7 @@ class _MapWidgetState extends State<MapWidget> {
           scrollGesturesEnabled: true,
           zoomGesturesEnabled: true,
           tiltGesturesEnabled: false, // 2D wardriving map
-          compassEnabled: false,      // We have our own controls
+          compassEnabled: false, // We have our own controls
           // CRITICAL: must be true so the controller's `cameraPosition` getter
           // stays synced with the platform side. Without this, the Dart-side
           // _cameraPosition is set once at construction and never updated, which
@@ -1332,7 +1191,6 @@ class _MapWidgetState extends State<MapWidget> {
           // listener on `controller.onFeatureTapped` in _onMapCreated
           // instead — that fires for taps on custom layer features.
         ),
-<<<<<<< HEAD
         // No widget marker overlay — markers are now native MapLibre
         // annotations rendered by the platform view itself.
       ],
@@ -1441,8 +1299,7 @@ class _MapWidgetState extends State<MapWidget> {
     // finishes in 200ms, making the tap feel "instant" rather than delayed.
     if (layerId == _repeaterClusterBubbleLayerId ||
         layerId == _repeaterClusterCountLayerId) {
-      final currentZoom =
-          _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+      final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
       final newZoom = math.min(currentZoom + 2, 17.0);
       _mapController?.animateCamera(
         CameraUpdate.newLatLngZoom(coordinates, newZoom),
@@ -1493,149 +1350,6 @@ class _MapWidgetState extends State<MapWidget> {
           _repeaterClusterCountLayerId,
           _repeaterClusterBubbleLayerId,
           _repeaterIndividualLayerId,
-=======
-        children: [
-          // Tile layer (dynamic based on selected style from preferences)
-          // Skipped entirely when map tiles are disabled to save mobile data
-          if (appState.preferences.mapTilesEnabled)
-            Builder(
-              builder: (context) {
-                final mapStyle =
-                    MapStyleExtension.fromString(appState.preferences.mapStyle);
-                return TileLayer(
-                  urlTemplate: mapStyle.urlTemplate,
-                  subdomains: mapStyle.subdomains ?? const [],
-                  userAgentPackageName: 'com.meshmapper.app',
-                  maxZoom: 17,
-                  retinaMode: mapStyle.supportsRetina &&
-                      RetinaMode.isHighDensity(context),
-                  tileDisplay: const TileDisplay.fadeIn(
-                    reloadStartOpacity: 1.0,
-                  ),
-                  tileProvider: SilentCancellableNetworkTileProvider(),
-                );
-              },
-            ),
-
-          // MeshMapper coverage overlay (only when zone code available, overlay enabled, and tiles enabled)
-          if (appState.preferences.mapTilesEnabled &&
-              appState.zoneCode != null &&
-              _showMeshMapperOverlay)
-            TileLayer(
-              urlTemplate:
-                  'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}${appState.preferences.colorVisionType != 'none' ? '&cvd=${appState.preferences.colorVisionType}' : ''}',
-              userAgentPackageName: 'com.meshmapper.app',
-              minZoom: 3,
-              maxZoom: 17,
-              tileDisplay: const TileDisplay.fadeIn(
-                reloadStartOpacity: 1.0,
-              ),
-              tileProvider: SilentCancellableNetworkTileProvider(),
-            ),
-
-          // Coverage markers (TX, RX, DISC, Trace) — sorted by timestamp, newest on top
-          // During focus mode, the focused marker is excluded and rendered in its own top layer
-          MarkerLayer(
-            markers: _buildCoverageMarkers(
-              txPings: appState.txPings,
-              rxPings: appState.rxPings,
-              discEntries: appState.discLogEntries,
-              discDropEnabled: appState.discDropEnabled,
-              traceEntries: appState.traceLogEntries,
-              excludeFocused: _focusedPingLocation != null,
-            ),
-          ),
-
-          // Focus mode: polylines from focused ping to each connected repeater
-          // Line color = SNR (green/yellow/red). Ambiguous matches get a white border.
-          if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty)
-            PolylineLayer(
-              polylines: _focusedRepeaters.map((r) {
-                final lineColor =
-                    r.snr != null ? PingColors.snrColor(r.snr!) : Colors.grey;
-                return Polyline(
-                  points: [
-                    _focusedPingLocation!,
-                    LatLng(r.repeater.lat, r.repeater.lon)
-                  ],
-                  color: lineColor.withValues(alpha: 0.9),
-                  strokeWidth: 3.5,
-                  isDotted: true,
-                  borderStrokeWidth: r.ambiguous ? 1.5 : 0,
-                  borderColor:
-                      r.ambiguous ? Colors.white.withValues(alpha: 0.6) : null,
-                );
-              }).toList(),
-            ),
-
-          // Repeater markers (magenta with ID, rotate with map)
-          // During focus mode, split into two layers: faded repeaters below, connected on top
-          if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty) ...[
-            // Faded non-connected repeaters (below)
-            MarkerLayer(
-              rotate: true,
-              markers: _buildRepeaterMarkers(
-                appState.repeaters,
-                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-                onlyFaded: true,
-              ),
-            ),
-            // Distance labels (middle)
-            MarkerLayer(
-              rotate: true,
-              markers: _buildFocusDistanceLabels(appState),
-            ),
-            // Connected repeaters (on top)
-            MarkerLayer(
-              rotate: true,
-              markers: _buildRepeaterMarkers(
-                appState.repeaters,
-                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-                onlyConnected: true,
-              ),
-            ),
-            // Focused ping marker (above everything except GPS)
-            MarkerLayer(
-              markers: _buildFocusedPingMarker(
-                txPings: appState.txPings,
-                rxPings: appState.rxPings,
-                discEntries: appState.discLogEntries,
-                discDropEnabled: appState.discDropEnabled,
-                traceEntries: appState.traceLogEntries,
-              ),
-            ),
-          ] else
-            // Normal mode: single layer with all repeaters
-            MarkerLayer(
-              rotate: true,
-              markers: _buildRepeaterMarkers(
-                appState.repeaters,
-                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-              ),
-            ),
-
-          // Current position marker
-          if (appState.currentPosition != null)
-            MarkerLayer(
-              // Vehicle/boat icons stay upright by counter-rotating against map rotation;
-              // arrow, walk, and chomper rotate with heading (handled by Transform.rotate in the painter)
-              rotate: appState.preferences.gpsMarkerStyle != 'arrow' &&
-                  appState.preferences.gpsMarkerStyle != 'walk' &&
-                  appState.preferences.gpsMarkerStyle != 'chomper',
-              markers: [
-                Marker(
-                  point: LatLng(
-                    appState.currentPosition!.latitude,
-                    appState.currentPosition!.longitude,
-                  ),
-                  width: 48,
-                  height: 48,
-                  child: _buildCurrentPositionMarker(
-                      appState.currentPosition!.heading),
-                ),
-              ],
-            ),
->>>>>>> a431a6a (format with dart)
         ],
         null,
       );
@@ -1702,7 +1416,8 @@ class _MapWidgetState extends State<MapWidget> {
     // double-registers images. Bail any nested call so the first invocation
     // runs to completion uninterrupted.
     if (_styleLoadInProgress) {
-      debugLog('[MAP] _onStyleLoaded re-entered while already running, skipping');
+      debugLog(
+          '[MAP] _onStyleLoaded re-entered while already running, skipping');
       return;
     }
     _styleLoadInProgress = true;
@@ -1762,17 +1477,25 @@ class _MapWidgetState extends State<MapWidget> {
       // Start tile-load timeout. If onMapIdle doesn't fire within N seconds,
       // we assume tiles are failing to load (network down, server error, etc.)
       // and surface a banner. Cleared as soon as onMapIdle fires.
+      // When tiles are disabled (cache-only mode), suppress the warning — cached
+      // tiles load instantly or not at all; a timeout would be misleading.
       _tileLoadTimeoutTimer?.cancel();
-      if (appState.preferences.mapTilesEnabled) {
+      final tilesEnabled = appState.preferences.mapTilesEnabled;
+      _lastMapTilesEnabled = tilesEnabled;
+      // Ensure MapLibre offline mode matches the user's preference.
+      setOffline(!tilesEnabled);
+      if (tilesEnabled) {
         _tileLoadFailed = false;
-        _tileLoadTimeoutTimer = Timer(const Duration(seconds: _tileLoadTimeoutSeconds), () {
+        _tileLoadTimeoutTimer =
+            Timer(const Duration(seconds: _tileLoadTimeoutSeconds), () {
           if (mounted && !_tileLoadFailed) {
-            debugWarn('[MAP] Tile load timeout — tiles did not finish loading within ${_tileLoadTimeoutSeconds}s');
+            debugWarn(
+                '[MAP] Tile load timeout — tiles did not finish loading within ${_tileLoadTimeoutSeconds}s');
             setState(() => _tileLoadFailed = true);
           }
         });
       } else {
-        // Blank style — never show the warning
+        // Cache-only mode — never show the tile-load warning
         _tileLoadFailed = false;
       }
 
@@ -1849,7 +1572,8 @@ class _MapWidgetState extends State<MapWidget> {
     final cvdParam = appState.preferences.colorVisionType != 'none'
         ? '&cvd=${appState.preferences.colorVisionType}'
         : '';
-    final url = 'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}$cvdParam';
+    final url =
+        'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}$cvdParam';
 
     try {
       await _mapController!.addSource(
@@ -1884,7 +1608,8 @@ class _MapWidgetState extends State<MapWidget> {
         belowLayerId: belowLayer,
       );
       _lastAppliedCoverageOpacity = opacity;
-      debugLog('[MAP] Coverage overlay added (below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
+      debugLog(
+          '[MAP] Coverage overlay added (below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
     } catch (e) {
       debugLog('[MAP] Failed to add coverage overlay: $e');
     }
@@ -1900,7 +1625,8 @@ class _MapWidgetState extends State<MapWidget> {
         RasterLayerProperties(rasterOpacity: opacity),
       );
       _lastAppliedCoverageOpacity = opacity;
-      debugLog('[MAP] Coverage overlay opacity updated to ${opacity.toStringAsFixed(2)}');
+      debugLog(
+          '[MAP] Coverage overlay opacity updated to ${opacity.toStringAsFixed(2)}');
     } catch (e) {
       // Layer may not exist yet (e.g. before first style load or when the
       // overlay is hidden). Safe to ignore — next _addCoverageOverlay call
@@ -2045,7 +1771,8 @@ class _MapWidgetState extends State<MapWidget> {
       }
 
       _imagesRegistered = true;
-      debugLog('[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater + 8 coverage + ${gpsPainters.length} GPS marker images');
+      debugLog(
+          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater + 8 coverage + ${gpsPainters.length} GPS marker images');
       // NOTE: do NOT trigger _syncAllAnnotations here. The repeater cluster
       // source/layers haven't been created yet — _onStyleLoaded calls
       // _setupRepeaterClusterLayers AFTER us, then triggers the initial sync
@@ -2108,7 +1835,8 @@ class _MapWidgetState extends State<MapWidget> {
   /// per-feature properties used by the data-driven symbol layer expressions
   /// (iconImage, color, opacity, hex). Re-pushed to the cluster source whenever
   /// the marker data version changes — MapLibre handles re-clustering natively.
-  Map<String, dynamic> _buildRepeaterFeatureCollection(AppStateProvider appState) {
+  Map<String, dynamic> _buildRepeaterFeatureCollection(
+      AppStateProvider appState) {
     final duplicates = _getDuplicateRepeaterIds(appState.repeaters);
     final hopOverride =
         appState.enforceHopBytes ? appState.effectiveHopBytes : null;
@@ -2189,7 +1917,10 @@ class _MapWidgetState extends State<MapWidget> {
       await _mapController!.addSource(
         _repeaterSourceId,
         const GeojsonSourceProperties(
-          data: <String, dynamic>{'type': 'FeatureCollection', 'features': <dynamic>[]},
+          data: <String, dynamic>{
+            'type': 'FeatureCollection',
+            'features': <dynamic>[]
+          },
           cluster: true,
           clusterRadius: 50,
           clusterMaxZoom: 14,
@@ -2220,7 +1951,10 @@ class _MapWidgetState extends State<MapWidget> {
           textIgnorePlacement: true,
           textFont: _defaultFontStack,
         ),
-        filter: ['!', ['has', 'point_count']],
+        filter: [
+          '!',
+          ['has', 'point_count']
+        ],
         belowLayerId: belowLayer,
       );
 
@@ -2238,8 +1972,10 @@ class _MapWidgetState extends State<MapWidget> {
             'step',
             ['get', 'point_count'],
             18,
-            10, 22,
-            50, 26,
+            10,
+            22,
+            50,
+            26,
           ],
           circleStrokeColor: '#FFFFFF',
           circleStrokeWidth: 2,
@@ -2423,7 +2159,8 @@ class _MapWidgetState extends State<MapWidget> {
     }
 
     // Remove symbols for pings that no longer exist (e.g., user cleared markers)
-    final toRemove = _coverageSymbols.keys.where((k) => !wantedKeys.contains(k)).toList();
+    final toRemove =
+        _coverageSymbols.keys.where((k) => !wantedKeys.contains(k)).toList();
     for (final key in toRemove) {
       final sym = _coverageSymbols.remove(key);
       if (sym != null) {
@@ -2619,7 +2356,11 @@ class _MapWidgetState extends State<MapWidget> {
           lineDasharray: [2, 4],
           lineCap: 'round',
         ),
-        filter: ['==', ['get', 'ambiguous'], true],
+        filter: [
+          '==',
+          ['get', 'ambiguous'],
+          true
+        ],
         belowLayerId: belowLayer,
       );
 
@@ -2722,8 +2463,7 @@ class _MapWidgetState extends State<MapWidget> {
         }
       }
       _distanceLabelImageSize[key] = imageSize;
-      _distanceLabelRepeaterPos[key] =
-          LatLng(r.repeater.lat, r.repeater.lon);
+      _distanceLabelRepeaterPos[key] = LatLng(r.repeater.lat, r.repeater.lon);
 
       final options = SymbolOptions(
         geometry: LatLng(midLat, midLon),
@@ -2752,8 +2492,9 @@ class _MapWidgetState extends State<MapWidget> {
     }
 
     // Remove labels for repeaters no longer in focus
-    final toRemove =
-        _distanceLabelSymbols.keys.where((k) => !wantedKeys.contains(k)).toList();
+    final toRemove = _distanceLabelSymbols.keys
+        .where((k) => !wantedKeys.contains(k))
+        .toList();
     for (final key in toRemove) {
       final sym = _distanceLabelSymbols.remove(key);
       _distanceLabelImageSize.remove(key);
@@ -2819,8 +2560,7 @@ class _MapWidgetState extends State<MapWidget> {
     var cursor = 0;
     for (final id in orderedIds) {
       final repeaterPos = _distanceLabelRepeaterPos[id];
-      final labelSize =
-          _distanceLabelImageSize[id] ?? const Size(60, 18);
+      final labelSize = _distanceLabelImageSize[id] ?? const Size(60, 18);
       if (repeaterPos == null) {
         cursor += candidateTs.length;
         continue;
@@ -3243,12 +2983,10 @@ class _MapWidgetState extends State<MapWidget> {
         _autoFollowDesiredZoom = targetZoom;
       });
       appState.setMapAutoFollow(true);
-<<<<<<< HEAD
       // Bundle target + zoom + bearing into one animation so the
       // initial centering can't be half-cancelled by a racing GPS tick.
-      final double targetBearing = (!_alwaysNorth && _computedHeading != null)
-          ? _computedHeading!
-          : 0.0;
+      final double targetBearing =
+          (!_alwaysNorth && _computedHeading != null) ? _computedHeading! : 0.0;
       final adjustedPosition = _offsetPositionForPadding(
         targetPosition,
         widget.bottomPaddingPixels,
@@ -3262,13 +3000,6 @@ class _MapWidgetState extends State<MapWidget> {
         bearing: targetBearing,
         durationMs: 500,
       );
-=======
-      // Apply offset for bottom padding when control panel is open
-      final adjustedPosition = _offsetPositionForPadding(targetPosition,
-          widget.bottomPaddingPixels, widget.rightPaddingPixels);
-      _animateToPositionWithZoom(
-          adjustedPosition, 17.0); // Street level zoom when enabling follow
->>>>>>> a431a6a (format with dart)
     }
   }
 
@@ -3297,40 +3028,14 @@ class _MapWidgetState extends State<MapWidget> {
             CameraUpdate.bearingTo(0),
             duration: const Duration(milliseconds: 500),
           );
-<<<<<<< HEAD
-=======
-
-          _rotationAnimation = CurvedAnimation(
-            parent: _rotationAnimationController!,
-            curve: Curves.easeInOutCubic,
-          );
-
-          _rotationStartAngle = currentRotation;
-          _rotationEndAngle = 0.0; // North
-
-          _rotationAnimation!.addListener(() {
-            if (!mounted ||
-                _rotationStartAngle == null ||
-                _rotationEndAngle == null) {
-              return;
-            }
-
-            final t = _rotationAnimation!.value;
-            final rotation = _rotationStartAngle! +
-                ((_rotationEndAngle! - _rotationStartAngle!) * t);
-
-            _mapController.rotate(rotation);
-          });
-
-          _rotationAnimationController!.forward();
->>>>>>> a431a6a (format with dart)
         }
       } else if (!_alwaysNorth && appState.currentPosition != null) {
         // If switching to heading mode, immediately start rotating to current heading
         _lastHeading = null; // Force initial rotation
         // Prefer our derived heading; fall back to whatever GPS reports (may
         // be 0 if we haven't moved yet — better than no rotation at all).
-        final initialHeading = _computedHeading ?? appState.currentPosition!.heading;
+        final initialHeading =
+            _computedHeading ?? appState.currentPosition!.heading;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && !_alwaysNorth && appState.currentPosition != null) {
             _animateToRotation(initialHeading);
@@ -3347,40 +3052,16 @@ class _MapWidgetState extends State<MapWidget> {
       _rotationLocked = !_rotationLocked;
 
       // When enabling lock in "Always North" mode, rotate back to north
-      if (_rotationLocked && _isMapReady && _alwaysNorth && _mapController != null) {
+      if (_rotationLocked &&
+          _isMapReady &&
+          _alwaysNorth &&
+          _mapController != null) {
         final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
         if (currentBearing.abs() > 2) {
           _mapController!.animateCamera(
             CameraUpdate.bearingTo(0),
             duration: const Duration(milliseconds: 500),
           );
-<<<<<<< HEAD
-=======
-
-          _rotationAnimation = CurvedAnimation(
-            parent: _rotationAnimationController!,
-            curve: Curves.easeInOutCubic,
-          );
-
-          _rotationStartAngle = currentRotation;
-          _rotationEndAngle = 0.0; // North
-
-          _rotationAnimation!.addListener(() {
-            if (!mounted ||
-                _rotationStartAngle == null ||
-                _rotationEndAngle == null) {
-              return;
-            }
-
-            final t = _rotationAnimation!.value;
-            final rotation = _rotationStartAngle! +
-                ((_rotationEndAngle! - _rotationStartAngle!) * t);
-
-            _mapController.rotate(rotation);
-          });
-
-          _rotationAnimationController!.forward();
->>>>>>> a431a6a (format with dart)
         }
       }
     });
@@ -4028,117 +3709,6 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   /// Build a coverage marker child widget based on the user's marker style preference.
-<<<<<<< HEAD
-=======
-  Widget _buildCoverageMarkerChild(Color color) {
-    final style = context.read<AppStateProvider>().preferences.markerStyle;
-    switch (style) {
-      case 'circle':
-        return Container(
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2.0),
-            boxShadow: const [
-              BoxShadow(
-                  color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))
-            ],
-          ),
-        );
-      case 'pin':
-        return CustomPaint(
-          size: const Size(20, 20),
-          painter: _PinMarkerPainter(color),
-        );
-      case 'diamond':
-        return CustomPaint(
-          size: const Size(20, 20),
-          painter: _DiamondMarkerPainter(color),
-        );
-      case 'dot':
-      default:
-        return Container(
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(
-                color: Colors.white.withValues(alpha: 0.6), width: 1.5),
-            boxShadow: const [
-              BoxShadow(
-                  color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))
-            ],
-          ),
-        );
-    }
-  }
-
-  /// Build all coverage dot markers sorted by timestamp (oldest first = drawn underneath).
-  /// Newer pings always render on top regardless of type.
-  List<Marker> _buildCoverageMarkers({
-    required List<TxPing> txPings,
-    required List<RxPing> rxPings,
-    required List<DiscLogEntry> discEntries,
-    required bool discDropEnabled,
-    required List<TraceLogEntry> traceEntries,
-    bool excludeFocused = false,
-  }) {
-    final timestamped = <(DateTime, Marker)>[
-      for (final ping in txPings)
-        if (!excludeFocused ||
-            !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
-          (ping.timestamp, _buildTxMarker(ping)),
-      for (final ping in rxPings)
-        if (!excludeFocused ||
-            !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
-          (ping.timestamp, _buildRxMarker(ping)),
-      for (final entry in discEntries)
-        if (!excludeFocused ||
-            !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
-          (entry.timestamp, _buildDiscMarker(entry, discDropEnabled)),
-      for (final entry in traceEntries)
-        if (!excludeFocused ||
-            !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
-          (entry.timestamp, _buildTraceMarker(entry)),
-    ];
-
-    timestamped.sort((a, b) => a.$1.compareTo(b.$1));
-    return timestamped.map((e) => e.$2).toList();
-  }
-
-  /// Build just the focused ping marker for rendering in its own top layer.
-  List<Marker> _buildFocusedPingMarker({
-    required List<TxPing> txPings,
-    required List<RxPing> rxPings,
-    required List<DiscLogEntry> discEntries,
-    required bool discDropEnabled,
-    required List<TraceLogEntry> traceEntries,
-  }) {
-    if (_focusedPingLocation == null) return [];
-
-    for (final ping in txPings) {
-      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
-        return [_buildTxMarker(ping)];
-      }
-    }
-    for (final ping in rxPings) {
-      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
-        return [_buildRxMarker(ping)];
-      }
-    }
-    for (final entry in discEntries) {
-      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
-        return [_buildDiscMarker(entry, discDropEnabled)];
-      }
-    }
-    for (final entry in traceEntries) {
-      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
-        return [_buildTraceMarker(entry)];
-      }
-    }
-    return [];
-  }
-
->>>>>>> a431a6a (format with dart)
   /// Check if a ping at given lat/lon/timestamp is the currently focused ping.
   /// Used by the native annotation sync to apply focus-mode styling (size,
   /// opacity) to the focused ping vs other pings.
@@ -4149,83 +3719,6 @@ class _MapWidgetState extends State<MapWidget> {
         _focusedPingLocation!.longitude == lon;
   }
 
-<<<<<<< HEAD
-=======
-  /// Apply focus fade to a marker color. Returns dimmed color if focus is active
-  /// and this marker is not the focused one.
-  Color _applyFocusFade(Color color, bool isFocused) {
-    if (_focusedPingLocation == null || isFocused) return color;
-    return color.withValues(alpha: 0.15);
-  }
-
-  Marker _buildTxMarker(TxPing ping) {
-    final isFocused =
-        _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
-    final color =
-        ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess;
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(ping.latitude, ping.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showTxPingDetails(ping),
-        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
-      ),
-    );
-  }
-
-  Marker _buildRxMarker(RxPing ping) {
-    final isFocused =
-        _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(ping.latitude, ping.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showRxPingDetails(ping),
-        child: _buildCoverageMarkerChild(
-            _applyFocusFade(PingColors.rx, isFocused)),
-      ),
-    );
-  }
-
-  Marker _buildDiscMarker(DiscLogEntry entry, bool discDropEnabled) {
-    final isFocused =
-        _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
-    final color = entry.nodeCount == 0
-        ? (discDropEnabled ? PingColors.txFail : PingColors.discFail)
-        : _discMarkerColor;
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(entry.latitude, entry.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showDiscPingDetails(entry),
-        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
-      ),
-    );
-  }
-
-  Marker _buildTraceMarker(TraceLogEntry entry) {
-    final isFocused =
-        _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
-    final color = entry.success ? Colors.cyan : Colors.grey;
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(entry.latitude, entry.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showTraceDetails(entry),
-        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
-      ),
-    );
-  }
-
->>>>>>> a431a6a (format with dart)
   void _showTraceDetails(TraceLogEntry entry) {
     // Activate focus mode for successful traces with a known repeater
     if (entry.success) {
@@ -4508,56 +4001,6 @@ class _MapWidgetState extends State<MapWidget> {
     ).whenComplete(() => _dismissPingFocus());
   }
 
-<<<<<<< HEAD
-=======
-  /// Build distance label markers at the midpoint of each focus line.
-  List<Marker> _buildFocusDistanceLabels(AppStateProvider appState) {
-    if (_focusedPingLocation == null) return [];
-    final isImperial = appState.preferences.isImperial;
-    final ping = _focusedPingLocation!;
-
-    return _focusedRepeaters.map((r) {
-      final repeaterPos = LatLng(r.repeater.lat, r.repeater.lon);
-      // Midpoint of the line
-      final midLat = (ping.latitude + repeaterPos.latitude) / 2;
-      final midLon = (ping.longitude + repeaterPos.longitude) / 2;
-      // Distance in meters — use GpsService for consistency with repeater popup
-      final meters = GpsService.distanceBetween(
-        ping.latitude,
-        ping.longitude,
-        repeaterPos.latitude,
-        repeaterPos.longitude,
-      );
-      final label = meters < 1000
-          ? formatMeters(meters, isImperial: isImperial)
-          : formatKilometers(meters / 1000, isImperial: isImperial);
-
-      return Marker(
-        point: LatLng(midLat, midLon),
-        width: 70,
-        height: 22,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'monospace',
-              color: Colors.white,
-            ),
-          ),
-        ),
-      );
-    }).toList();
-  }
-
->>>>>>> a431a6a (format with dart)
   /// DISC marker color (delegates to active palette)
   static Color get _discMarkerColor => PingColors.discSuccess;
 
@@ -4601,17 +4044,11 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   /// Activate ping focus mode — draw lines, fade markers, zoom to fit.
-<<<<<<< HEAD
-  void _activatePingFocus(LatLng pingLocation, DateTime timestamp, List<_ResolvedRepeater> repeaters) {
+  void _activatePingFocus(LatLng pingLocation, DateTime timestamp,
+      List<_ResolvedRepeater> repeaters) {
     final pos = _mapController?.cameraPosition;
     _preFocusCenter = pos?.target;
     _preFocusZoom = pos?.zoom;
-=======
-  void _activatePingFocus(LatLng pingLocation, DateTime timestamp,
-      List<_ResolvedRepeater> repeaters) {
-    _preFocusCenter = _mapController.camera.center;
-    _preFocusZoom = _mapController.camera.zoom;
->>>>>>> a431a6a (format with dart)
     _wasAutoFollowBeforeFocus = _autoFollow;
     _wasRotatingBeforeFocus = !_alwaysNorth;
 
@@ -4725,139 +4162,6 @@ class _MapWidgetState extends State<MapWidget> {
     return _repeaterMarkerColor; // Active (default)
   }
 
-<<<<<<< HEAD
-=======
-  List<Marker> _buildRepeaterMarkers(
-    List<Repeater> repeaters,
-    int? regionHopBytesOverride, {
-    bool onlyFaded = false,
-    bool onlyConnected = false,
-  }) {
-    final duplicateIds = _getDuplicateRepeaterIds(repeaters);
-    final hasFocus = _focusedPingLocation != null;
-
-    return repeaters.where((repeater) {
-      if (!hasFocus) return true; // No focus — include all
-      final isConnected =
-          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
-      if (onlyConnected) return isConnected;
-      if (onlyFaded) return !isConnected;
-      return true;
-    }).map((repeater) {
-      final isDuplicate = duplicateIds.contains(repeater.id);
-      final markerColor = _getRepeaterMarkerColor(repeater, isDuplicate);
-
-      // During focus mode, fade repeaters not connected to the focused ping
-      final isConnected = hasFocus &&
-          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
-      final effectiveColor = (hasFocus && !isConnected)
-          ? markerColor.withValues(alpha: 0.15)
-          : markerColor;
-      final effectiveBorderColor = (hasFocus && !isConnected)
-          ? Colors.white.withValues(alpha: 0.15)
-          : Colors.white;
-      final effectiveTextColor = (hasFocus && !isConnected)
-          ? Colors.white.withValues(alpha: 0.15)
-          : Colors.white;
-
-      // Display hex ID based on per-repeater hop_bytes (or regional admin override)
-      final displayId =
-          repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
-      final effectiveBytes = regionHopBytesOverride ?? repeater.hopBytes;
-      final isLongId = displayId.length > 2;
-      final markerWidth = displayId.length > 4
-          ? 48.0
-          : isLongId
-              ? 40.0
-              : 28.0;
-
-      // Shape varies by hop bytes: 1=square, 2=rounded rect, 3=more rounded
-      final borderRadius = effectiveBytes >= 3
-          ? BorderRadius.circular(8)
-          : effectiveBytes == 2
-              ? BorderRadius.circular(6)
-              : BorderRadius.circular(4);
-
-      return Marker(
-        point: LatLng(repeater.lat, repeater.lon),
-        width: markerWidth,
-        height: 28,
-        child: GestureDetector(
-          onTap: () => _showRepeaterDetails(repeater,
-              isDuplicate: isDuplicate,
-              regionHopBytesOverride: regionHopBytesOverride),
-          child: Container(
-            padding: isLongId
-                ? const EdgeInsets.symmetric(horizontal: 4)
-                : EdgeInsets.zero,
-            decoration: BoxDecoration(
-              color: effectiveColor,
-              borderRadius: borderRadius,
-              border: Border.all(color: effectiveBorderColor, width: 2),
-              boxShadow: (hasFocus && !isConnected)
-                  ? null
-                  : const [
-                      BoxShadow(
-                        color: Colors.black26,
-                        blurRadius: 4,
-                        offset: Offset(0, 2),
-                      ),
-                    ],
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              displayId,
-              style: TextStyle(
-                fontSize: displayId.length > 4
-                    ? 8
-                    : isLongId
-                        ? 9
-                        : 10,
-                fontWeight: FontWeight.bold,
-                color: effectiveTextColor,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
-        ),
-      );
-    }).toList();
-  }
-
-  Widget _buildCurrentPositionMarker(double heading) {
-    // Convert heading from degrees to radians
-    // heading is 0-360 degrees, 0 = North, 90 = East
-    final headingRadians = heading * (math.pi / 180);
-    final style = context.read<AppStateProvider>().preferences.gpsMarkerStyle;
-
-    // Arrow, walk, and chomper rotate with heading; vehicle/boat icons don't (they face up)
-    final shouldRotate =
-        style == 'arrow' || style == 'walk' || style == 'chomper';
-
-    final CustomPainter painter;
-    switch (style) {
-      case 'car':
-        painter = const _CarMarkerPainter();
-      case 'bike':
-        painter = const _BikeMarkerPainter();
-      case 'boat':
-        painter = const _BoatMarkerPainter();
-      case 'walk':
-        painter = const _WalkMarkerPainter();
-      case 'chomper':
-        painter = const _ChomperMarkerPainter();
-      case 'arrow':
-      default:
-        painter = const _ArrowPainter();
-    }
-
-    final child = CustomPaint(size: const Size(24, 24), painter: painter);
-    return shouldRotate
-        ? Transform.rotate(angle: headingRadians, child: child)
-        : child;
-  }
-
->>>>>>> a431a6a (format with dart)
   /// Compute node column width based on hop byte count.
   /// [extraPadding] adds space for additional content (e.g. nodeTypeLabel in DISC popup).
   double _nodeColumnWidth({double extraPadding = 0}) {
@@ -6393,7 +5697,7 @@ class _RepeaterShapePainter extends CustomPainter {
 /// styles. Used at startup to generate bitmap variants for native MapLibre
 /// symbols. Reuses _PinMarkerPainter and _DiamondMarkerPainter for those styles.
 class _CoverageMarkerPainter extends CustomPainter {
-  final String style;  // 'circle' / 'pin' / 'diamond' / 'dot'
+  final String style; // 'circle' / 'pin' / 'diamond' / 'dot'
   final Color color;
 
   const _CoverageMarkerPainter({required this.style, required this.color});
@@ -6426,7 +5730,8 @@ class _CoverageMarkerPainter extends CustomPainter {
     canvas.restore();
   }
 
-  void _paintCircle(Canvas canvas, Size size, {required double borderAlpha, required double borderWidth}) {
+  void _paintCircle(Canvas canvas, Size size,
+      {required double borderAlpha, required double borderWidth}) {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = math.min(size.width, size.height) / 2 - 2;
 
