@@ -2533,13 +2533,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final key = uri.queryParameters['key'];
 
       if (rawUrl == null || rawUrl.isEmpty) {
-        if (context.mounted)
+        if (context.mounted) {
           AppToast.error(context, 'Link is missing the url parameter');
+        }
         return;
       }
       if (key == null || key.isEmpty) {
-        if (context.mounted)
+        if (context.mounted) {
           AppToast.error(context, 'Link is missing the key parameter');
+        }
         return;
       }
 
@@ -2548,8 +2550,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // Validate the constructed URL
       final parsed = Uri.tryParse(fullUrl);
       if (parsed == null || !parsed.hasAuthority) {
-        if (context.mounted)
+        if (context.mounted) {
           AppToast.error(context, 'Invalid URL in link: $rawUrl');
+        }
         return;
       }
 
@@ -2566,8 +2569,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       debugLog('[CUSTOM API] Imported endpoint from clipboard: $fullUrl');
     } catch (e) {
       debugError('[CUSTOM API] Failed to parse clipboard link: $e');
-      if (context.mounted)
+      if (context.mounted) {
         AppToast.error(context, 'Invalid meshmapper:// link');
+      }
     }
   }
 

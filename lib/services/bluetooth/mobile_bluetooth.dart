@@ -172,8 +172,9 @@ class MobileBluetoothService implements BluetoothService {
           location.isPermanentlyDenied) {
         final denied = <String>[];
         if (bluetoothScan.isPermanentlyDenied) denied.add('Bluetooth Scan');
-        if (bluetoothConnect.isPermanentlyDenied)
+        if (bluetoothConnect.isPermanentlyDenied) {
           denied.add('Bluetooth Connect');
+        }
         if (location.isPermanentlyDenied) denied.add('Location');
         debugLog(
             '[BLE] Android permissions permanently denied: ${denied.join(", ")}');
