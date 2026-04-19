@@ -115,6 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body: _buildLayout(appState, isLandscape: false),
       floatingActionButton: !_showControlPanel
           ? FloatingActionButton.extended(
+              heroTag: null,
               onPressed: () => setState(() => _showControlPanel = true),
               icon: const Icon(Icons.tune),
               label: const Text('Controls'),
@@ -498,6 +499,7 @@ class _HomeScreenState extends State<HomeScreen> {
             bottom: 16,
             left: leftInset,
             child: FloatingActionButton.small(
+              heroTag: null,
               onPressed: _toggleControlPanel,
               child: const Icon(Icons.tune),
             ),
