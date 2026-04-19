@@ -97,6 +97,11 @@ class UserPreferences {
   /// Download map tiles (base map + coverage overlay). When false, no tile network requests are made to save mobile data.
   final bool mapTilesEnabled;
 
+  /// MeshMapper coverage raster overlay opacity (0.0 = fully transparent,
+  /// 1.0 = fully opaque). Applied to the `meshmapper-overlay-layer` raster
+  /// layer so users can see the base map underneath the coverage squares.
+  final double coverageOverlayOpacity;
+
   /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
   final bool disconnectAlertEnabled;
 
@@ -129,7 +134,7 @@ class UserPreferences {
     this.iataCode,
     this.backgroundModeEnabled = false,
     this.developerModeEnabled = false,
-    this.mapStyle = 'dark',
+    this.mapStyle = 'liberty',
     this.closeAppAfterDisconnect = false,
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
@@ -148,6 +153,7 @@ class UserPreferences {
     this.gpsMarkerStyle = 'arrow',
     this.colorVisionType = 'none',
     this.mapTilesEnabled = true,
+    this.coverageOverlayOpacity = 0.7,
     this.disconnectAlertEnabled = false,
     this.customApiEnabled = false,
     this.customApiUrl,
@@ -172,7 +178,7 @@ class UserPreferences {
       iataCode: json['iataCode'] as String?,
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
-      mapStyle: (json['mapStyle'] as String?) ?? 'dark',
+      mapStyle: (json['mapStyle'] as String?) ?? 'liberty',
       closeAppAfterDisconnect:
           (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
@@ -193,6 +199,8 @@ class UserPreferences {
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
+      coverageOverlayOpacity:
+          (json['coverageOverlayOpacity'] as num?)?.toDouble() ?? 0.7,
       disconnectAlertEnabled:
           (json['disconnectAlertEnabled'] as bool?) ?? false,
       customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
@@ -247,6 +255,7 @@ class UserPreferences {
       'gpsMarkerStyle': gpsMarkerStyle,
       'colorVisionType': colorVisionType,
       'mapTilesEnabled': mapTilesEnabled,
+      'coverageOverlayOpacity': coverageOverlayOpacity,
       'disconnectAlertEnabled': disconnectAlertEnabled,
       'customApiEnabled': customApiEnabled,
       'customApiUrl': customApiUrl,
@@ -290,6 +299,7 @@ class UserPreferences {
     String? gpsMarkerStyle,
     String? colorVisionType,
     bool? mapTilesEnabled,
+    double? coverageOverlayOpacity,
     bool? disconnectAlertEnabled,
     bool? customApiEnabled,
     String? customApiUrl,
@@ -334,6 +344,8 @@ class UserPreferences {
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
+      coverageOverlayOpacity:
+          coverageOverlayOpacity ?? this.coverageOverlayOpacity,
       disconnectAlertEnabled:
           disconnectAlertEnabled ?? this.disconnectAlertEnabled,
       customApiEnabled: customApiEnabled ?? this.customApiEnabled,
@@ -406,6 +418,7 @@ class UserPreferences {
         other.gpsMarkerStyle == gpsMarkerStyle &&
         other.colorVisionType == colorVisionType &&
         other.mapTilesEnabled == mapTilesEnabled &&
+        other.coverageOverlayOpacity == coverageOverlayOpacity &&
         other.disconnectAlertEnabled == disconnectAlertEnabled &&
         other.customApiEnabled == customApiEnabled &&
         other.customApiUrl == customApiUrl &&
@@ -448,6 +461,7 @@ class UserPreferences {
       gpsMarkerStyle,
       colorVisionType,
       mapTilesEnabled,
+      coverageOverlayOpacity,
       disconnectAlertEnabled,
       customApiEnabled,
       customApiUrl,
