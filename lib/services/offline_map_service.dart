@@ -1,7 +1,35 @@
+import 'dart:async';
+
+import 'package:disk_space_plus/disk_space_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../utils/debug_logger_io.dart';
+
+/// A pending download waiting in the FIFO queue.
+class _QueuedDownload {
+  final String name;
+  final LatLngBounds bounds;
+  final String styleUrl;
+  final String styleName;
+  final double minZoom;
+  final double maxZoom;
+  final int estBytes;
+  final Completer<OfflineMapRegion?> completer;
+
+  _QueuedDownload({
+    required this.name,
+    required this.bounds,
+    required this.styleUrl,
+    required this.styleName,
+    required this.minZoom,
+    required this.maxZoom,
+    required this.estBytes,
+    required this.completer,
+  });
+}
 
 /// Metadata keys stored with each offline region.
 class _MetaKeys {
@@ -48,8 +76,13 @@ class OfflineMapRegion {
       createdAt:
           DateTime.tryParse((meta[_MetaKeys.createdAt] as String?) ?? '') ??
               DateTime.now(),
-      // Platform channel JSON round-trip can return int as num/double.
-      estimatedBytes: (meta[_MetaKeys.estimatedBytes] as num?)?.toInt() ?? 0,
+      // Platform channel JSON round-trip can return int as num, double, or
+      // (on some Android paths) a stringified form. Tolerate all three.
+      estimatedBytes: switch (meta[_MetaKeys.estimatedBytes]) {
+        final num n => n.toInt(),
+        final String s => int.tryParse(s) ?? 0,
+        _ => 0,
+      },
     );
   }
 
@@ -129,8 +162,35 @@ class OfflineMapService extends ChangeNotifier {
 
   bool get isDownloading => _downloadProgress != null;
 
+  /// ID of the region currently being downloaded. Set right after MapLibre
+  /// accepts the download; null when idle. Used by [cancelActiveDownload] to
+  /// delete the partial region via `deleteOfflineRegion`.
+  int? _activeRegionId;
+
+  /// Completer tied to the currently-active download. Resolved when
+  /// [_onDownloadEvent] sees Success or Error, or when the download is
+  /// cancelled.
+  Completer<OfflineMapRegion?>? _activeCompleter;
+
+  /// Estimated total bytes for the currently-active download, used by the
+  /// quota pre-check so queued jobs can't jointly bust the limit.
+  int _activeEstBytes = 0;
+
+  /// FIFO queue of pending downloads. Drained one at a time after the
+  /// current download finishes (or is cancelled).
+  final List<_QueuedDownload> _queue = [];
+  int get queueLength => _queue.length;
+
   String? _lastError;
   String? get lastError => _lastError;
+
+  /// Read [lastError] and clear it. Use this in UI that displays the error
+  /// once (banner, toast) so it doesn't linger after dismissal.
+  String? consumeLastError() {
+    final e = _lastError;
+    _lastError = null;
+    return e;
+  }
 
   /// Name of the most recently completed download (for one-shot UI toast).
   /// Call [consumeLastCompletedName] to read and clear.
@@ -159,7 +219,7 @@ class OfflineMapService extends ChangeNotifier {
       _initialized = true;
       notifyListeners();
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Init error: $e');
+      debugError('[OFFLINE_MAP] Init error: $e');
       notifyListeners();
     }
   }
@@ -193,7 +253,7 @@ class OfflineMapService extends ChangeNotifier {
       );
       _notifInitialized = true;
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Notification init error: $e');
+      debugError('[OFFLINE_MAP] Notification init error: $e');
     }
   }
 
@@ -224,7 +284,7 @@ class OfflineMapService extends ChangeNotifier {
         NotificationDetails(android: androidDetails),
       );
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to show progress notification: $e');
+      debugWarn('[OFFLINE_MAP] Failed to show progress notification: $e');
     }
   }
 
@@ -248,7 +308,7 @@ class OfflineMapService extends ChangeNotifier {
         const NotificationDetails(android: androidDetails),
       );
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to show complete notification: $e');
+      debugWarn('[OFFLINE_MAP] Failed to show complete notification: $e');
     }
   }
 
@@ -272,7 +332,7 @@ class OfflineMapService extends ChangeNotifier {
         const NotificationDetails(android: androidDetails),
       );
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to show error notification: $e');
+      debugWarn('[OFFLINE_MAP] Failed to show error notification: $e');
     }
   }
 
@@ -280,7 +340,7 @@ class OfflineMapService extends ChangeNotifier {
     try {
       await _notifPlugin.cancel(_progressNotifId);
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to dismiss notification: $e');
+      debugWarn('[OFFLINE_MAP] Failed to dismiss notification: $e');
     }
   }
 
@@ -296,14 +356,14 @@ class OfflineMapService extends ChangeNotifier {
         try {
           parsed.add(OfflineMapRegion.fromOfflineRegion(r));
         } catch (e) {
-          debugPrint('[OFFLINE_MAP] Failed to parse region ${r.id}: $e');
+          debugWarn('[OFFLINE_MAP] Failed to parse region ${r.id}: $e');
         }
       }
       _regions = parsed;
       _regions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
       notifyListeners();
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to list regions: $e');
+      debugError('[OFFLINE_MAP] Failed to list regions: $e');
     }
   }
 
@@ -316,7 +376,7 @@ class OfflineMapService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_storageLimitKey, _storageLimitMb);
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to save storage limit: $e');
+      debugError('[OFFLINE_MAP] Failed to save storage limit: $e');
     }
     notifyListeners();
   }
@@ -347,9 +407,24 @@ class OfflineMapService extends ChangeNotifier {
   /// We use 20 KB as a middle estimate.
   static int estimateSizeBytes(int tileCount) => tileCount * 20 * 1024;
 
-  /// Check if downloading a region of [estimatedBytes] would exceed the limit.
-  bool wouldExceedLimit(int estimatedBytes) =>
-      (totalUsedBytes + estimatedBytes) > storageLimitBytes;
+  /// Check if downloading a region of [estimatedBytes] would exceed the
+  /// limit. Accounts for the currently-active download and any queued jobs
+  /// so the UI's pre-check agrees with the service's internal validation.
+  bool wouldExceedLimit(int estimatedBytes) {
+    final pending = (isDownloading ? _activePendingBytes : 0) +
+        _queue.fold<int>(0, (sum, q) => sum + q.estBytes);
+    return (totalUsedBytes + pending + estimatedBytes) > storageLimitBytes;
+  }
+
+  /// Rough bytes remaining in the currently-active download. We don't know
+  /// the real size until completion — use the job's estimate as a proxy by
+  /// subtracting progress.
+  int get _activePendingBytes {
+    final progress = _downloadProgress ?? 0;
+    return ((1 - progress) * _activeEstBytes)
+        .clamp(0, _activeEstBytes)
+        .toInt();
+  }
 
   // ── Download ──
 
@@ -360,7 +435,14 @@ class OfflineMapService extends ChangeNotifier {
   /// receives progress callbacks and forwards them to both [notifyListeners]
   /// and a system notification.
   ///
-  /// Returns the new [OfflineMapRegion] on success, null on failure.
+  /// If another download is already active, the request is appended to a
+  /// FIFO queue and will start automatically when the current one finishes
+  /// or is cancelled.
+  ///
+  /// Returns the new [OfflineMapRegion] on success, null on failure or if
+  /// validation rejects the request (quota, free space, antimeridian, etc.).
+  /// The returned future resolves once the region's native download fully
+  /// completes — not when it's merely queued.
   Future<OfflineMapRegion?> downloadRegion({
     required String name,
     required LatLngBounds bounds,
@@ -370,43 +452,88 @@ class OfflineMapService extends ChangeNotifier {
     double maxZoom = 14,
   }) async {
     if (kIsWeb) return null;
-    if (isDownloading) {
-      _lastError = 'A download is already in progress';
-      notifyListeners();
-      return null;
-    }
 
     final tileCount = estimateTileCount(bounds, minZoom, maxZoom);
     final estBytes = estimateSizeBytes(tileCount);
 
     if (wouldExceedLimit(estBytes)) {
       _lastError =
-          'Download would exceed storage limit (${_formatBytes(estBytes)} needed, '
-          '${_formatBytes(storageLimitBytes - totalUsedBytes)} remaining)';
+          'Download would exceed storage limit (${_formatBytes(estBytes)} '
+          'needed)';
       notifyListeners();
       return null;
     }
 
+    // Device free-space check. The app-level quota above only caps estimated
+    // tile usage across our regions — the device itself may be nearly full
+    // regardless. We require 1.5× the estimate to leave headroom for the
+    // heuristic being low. Failures of the platform call fall through to
+    // the existing quota logic.
+    try {
+      final freeMb = await DiskSpacePlus().getFreeDiskSpace;
+      if (freeMb != null) {
+        final freeBytes = (freeMb * 1024 * 1024).toInt();
+        final required = (estBytes * 1.5).toInt();
+        if (freeBytes < required) {
+          _lastError = 'Not enough free space on device '
+              '(${_formatBytes(required)} needed, '
+              '${_formatBytes(freeBytes)} free)';
+          notifyListeners();
+          return null;
+        }
+      }
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] Free-space check failed: $e');
+    }
+
+    final job = _QueuedDownload(
+      name: name,
+      bounds: bounds,
+      styleUrl: styleUrl,
+      styleName: styleName,
+      minZoom: minZoom,
+      maxZoom: maxZoom,
+      estBytes: estBytes,
+      completer: Completer<OfflineMapRegion?>(),
+    );
+
+    if (isDownloading) {
+      _queue.add(job);
+      debugLog('[OFFLINE_MAP] Queued "$name" '
+          '(position ${_queue.length} in queue)');
+      notifyListeners();
+    } else {
+      unawaited(_startJob(job));
+    }
+
+    return job.completer.future;
+  }
+
+  /// Start a queued job. Also invoked recursively from [_onDownloadEvent]
+  /// after the active download finishes, to drain the queue.
+  Future<void> _startJob(_QueuedDownload job) async {
     _downloadProgress = 0;
-    _downloadingRegionName = name;
+    _downloadingRegionName = job.name;
+    _activeCompleter = job.completer;
+    _activeEstBytes = job.estBytes;
     _lastError = null;
     _lastCompletedName = null;
     notifyListeners();
-    _showProgressNotification(name, 0);
+    _showProgressNotification(job.name, 0);
 
     try {
       final definition = OfflineRegionDefinition(
-        bounds: bounds,
-        mapStyleUrl: styleUrl,
-        minZoom: minZoom,
-        maxZoom: maxZoom,
+        bounds: job.bounds,
+        mapStyleUrl: job.styleUrl,
+        minZoom: job.minZoom,
+        maxZoom: job.maxZoom,
       );
 
       final metadata = {
-        _MetaKeys.name: name,
-        _MetaKeys.styleName: styleName,
+        _MetaKeys.name: job.name,
+        _MetaKeys.styleName: job.styleName,
         _MetaKeys.createdAt: DateTime.now().toIso8601String(),
-        _MetaKeys.estimatedBytes: estBytes,
+        _MetaKeys.estimatedBytes: job.estBytes,
       };
 
       final region = await downloadOfflineRegion(
@@ -414,45 +541,70 @@ class OfflineMapService extends ChangeNotifier {
         metadata: metadata,
         onEvent: _onDownloadEvent,
       );
+      _activeRegionId = region.id;
 
-      // downloadOfflineRegion resolves once the native download is queued,
-      // not necessarily when it finishes. The _onDownloadEvent callback
-      // handles completion. But if progress is already null (Success fired
-      // synchronously), the download completed inline.
-      if (_downloadProgress != null) {
-        // Still in progress — the event callback will finalize.
-        return null;
+      // downloadOfflineRegion resolves once MapLibre has accepted the job;
+      // progress and completion are delivered via _onDownloadEvent.
+      // In the rare case Success already fired synchronously before this
+      // returns, _downloadProgress will be null — resolve the completer now
+      // so the caller doesn't hang waiting for an event that already fired.
+      if (_downloadProgress == null && !job.completer.isCompleted) {
+        final finalized = _regions.firstWhere((r) => r.id == region.id,
+            orElse: () => OfflineMapRegion.fromOfflineRegion(region));
+        job.completer.complete(finalized);
       }
-
-      // Completed synchronously (small region / cached tiles)
-      _downloadProgress = null;
-      _downloadingRegionName = null;
-      _lastCompletedName = name;
-      await refreshRegions();
-      _showCompleteNotification(name);
-      return _regions.firstWhere((r) => r.id == region.id,
-          orElse: () => OfflineMapRegion.fromOfflineRegion(region));
     } catch (e) {
+      debugError('[OFFLINE_MAP] downloadRegion threw: $e');
       _downloadProgress = null;
       _downloadingRegionName = null;
-      _lastError = 'Download failed: $e';
+      _activeRegionId = null;
+      _activeCompleter = null;
+      _activeEstBytes = 0;
+      _lastError = 'Download failed (${e.runtimeType}): $e';
       notifyListeners();
-      _showErrorNotification(name);
-      return null;
+      _showErrorNotification(job.name);
+      if (!job.completer.isCompleted) job.completer.complete(null);
+      _drainQueue();
     }
+  }
+
+  /// Start the next queued download if any, once the current one has
+  /// finished, errored, or been cancelled.
+  void _drainQueue() {
+    if (_queue.isEmpty) return;
+    final next = _queue.removeAt(0);
+    unawaited(_startJob(next));
   }
 
   void _onDownloadEvent(DownloadRegionStatus status) {
     if (status is Success) {
       final name = _downloadingRegionName ?? 'Region';
+      final completer = _activeCompleter;
+      final regionId = _activeRegionId;
       _downloadProgress = null;
       _downloadingRegionName = null;
+      _activeRegionId = null;
+      _activeCompleter = null;
+      _activeEstBytes = 0;
       _lastCompletedName = name;
-      notifyListeners(); // Immediately clear progress state
+      notifyListeners();
       _showCompleteNotification(name);
       // Small delay lets the native DB commit before we query it.
-      Future.delayed(const Duration(milliseconds: 500), () {
-        refreshRegions();
+      Future.delayed(const Duration(milliseconds: 500), () async {
+        await refreshRegions();
+        if (completer != null && !completer.isCompleted) {
+          OfflineMapRegion? finalized;
+          if (regionId != null) {
+            for (final r in _regions) {
+              if (r.id == regionId) {
+                finalized = r;
+                break;
+              }
+            }
+          }
+          completer.complete(finalized);
+        }
+        _drainQueue();
       });
     } else if (status is InProgress) {
       _downloadProgress = status.progress / 100.0;
@@ -463,14 +615,94 @@ class OfflineMapService extends ChangeNotifier {
         _showProgressNotification(_downloadingRegionName ?? 'Region', percent);
       }
     } else {
-      // Error status
+      // DownloadRegionStatus is sealed to Success / InProgress / Error. The
+      // concrete Error class is named `Error` in maplibre_gl, which collides
+      // with dart:core.Error — so rather than `status is Error` we reach the
+      // `cause` field dynamically. `cause` is a PlatformException with
+      // code/message/details we can surface to the user.
       final name = _downloadingRegionName ?? 'Region';
+      final completer = _activeCompleter;
+      String detail = 'unknown error';
+      try {
+        final cause = (status as dynamic).cause;
+        if (cause != null) {
+          final msg = (cause as dynamic).message;
+          final code = (cause as dynamic).code;
+          if (msg is String && msg.isNotEmpty) {
+            detail = msg;
+          } else if (code is String && code.isNotEmpty) {
+            detail = code;
+          } else {
+            detail = cause.toString();
+          }
+        }
+      } catch (_) {
+        // Swallow — keep the generic 'unknown error' fallback.
+      }
+      debugError('[OFFLINE_MAP] Download failed: $detail');
       _downloadProgress = null;
       _downloadingRegionName = null;
-      _lastError = 'Download error occurred';
+      _activeRegionId = null;
+      _activeCompleter = null;
+      _activeEstBytes = 0;
+      _lastError = 'Download failed: $detail';
       _showErrorNotification(name);
       notifyListeners();
+      if (completer != null && !completer.isCompleted) {
+        completer.complete(null);
+      }
+      _drainQueue();
     }
+  }
+
+  /// Cancel the currently-active download, if any. Deletes the partial
+  /// region from MapLibre's cache. Queued downloads are left in place —
+  /// the next one will start automatically. Call [clearQueue] to discard
+  /// queued jobs too.
+  Future<bool> cancelActiveDownload() async {
+    if (kIsWeb) return false;
+    final regionId = _activeRegionId;
+    final completer = _activeCompleter;
+    final name = _downloadingRegionName;
+    if (regionId == null && !isDownloading) return false;
+
+    debugLog('[OFFLINE_MAP] Cancelling active download'
+        '${name != null ? " \"$name\"" : ""}');
+
+    if (regionId != null) {
+      try {
+        await deleteOfflineRegion(regionId);
+      } catch (e) {
+        debugWarn('[OFFLINE_MAP] Cancel delete failed: $e');
+      }
+    }
+
+    _downloadProgress = null;
+    _downloadingRegionName = null;
+    _activeRegionId = null;
+    _activeCompleter = null;
+    _activeEstBytes = 0;
+    await _dismissProgressNotification();
+    notifyListeners();
+
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(null);
+    }
+
+    await refreshRegions();
+    _drainQueue();
+    return true;
+  }
+
+  /// Discard all queued (but not yet active) downloads. Does not affect
+  /// the active download; call [cancelActiveDownload] for that.
+  void clearQueue() {
+    if (_queue.isEmpty) return;
+    for (final job in _queue) {
+      if (!job.completer.isCompleted) job.completer.complete(null);
+    }
+    _queue.clear();
+    notifyListeners();
   }
 
   // ── Deletion ──
@@ -483,7 +715,7 @@ class OfflineMapService extends ChangeNotifier {
       await refreshRegions();
       return true;
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Delete failed: $e');
+      debugError('[OFFLINE_MAP] Delete failed: $e');
       _lastError = 'Failed to delete region: $e';
       notifyListeners();
       return false;
@@ -498,7 +730,7 @@ class OfflineMapService extends ChangeNotifier {
       try {
         await deleteOfflineRegion(id);
       } catch (e) {
-        debugPrint('[OFFLINE_MAP] Failed to delete region $id: $e');
+        debugError('[OFFLINE_MAP] Failed to delete region $id: $e');
       }
     }
     await refreshRegions();
@@ -514,7 +746,7 @@ class OfflineMapService extends ChangeNotifier {
       await _initNotifications();
       await _notifPlugin.cancel(_progressNotifId);
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to cleanup orphaned notification: $e');
+      debugWarn('[OFFLINE_MAP] Failed to cleanup orphaned notification: $e');
     }
   }
 
