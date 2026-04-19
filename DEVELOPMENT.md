@@ -337,7 +337,7 @@ Key packages used in this project:
 - `flutter_blue_plus`: Mobile Bluetooth (Android/iOS)
 - `flutter_web_bluetooth`: Web Bluetooth (Chrome/Edge)
 - `geolocator`: GPS/Location
-- `flutter_map`: Map rendering
+- `maplibre_gl`: Map rendering (MapLibre GL vector tiles via OpenFreeMap)
 - `hive`: Local storage
 - `provider`: State management
 - `http`: API requests
