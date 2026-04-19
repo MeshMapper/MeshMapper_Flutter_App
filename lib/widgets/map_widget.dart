@@ -447,6 +447,12 @@ class _MapWidgetState extends State<MapWidget> {
   static const _repeaterClusterBubbleLayerId = 'repeaters-cluster-bubble';
   static const _repeaterClusterCountLayerId = 'repeaters-cluster-count';
 
+  // Regional boundary (from /border API — always visible)
+  static const _regionBorderSourceId = 'region-border-source';
+  static const _regionBorderLineLayerId = 'region-border-line';
+  static const _regionBorderLabelLayerId = 'region-border-label';
+  int _lastBordersSignature = -1;
+
   // Tracks which marker style preference the coverage images are currently
   // registered for. When the user changes their preference, we re-register.
   String? _registeredCoverageStyle;
@@ -1169,6 +1175,20 @@ class _MapWidgetState extends State<MapWidget> {
       }
     }
 
+    // Watch for region boundary polygon changes. Signature is derived from
+    // the polygon codes AND point counts so zone transfers (same code, new
+    // shape) and refreshes both trigger a rebuild.
+    final borders = appState.regionBorders;
+    final bordersSig = Object.hashAll(borders.map(
+      (p) => Object.hash(p['code'], (p['polygon'] as List?)?.length ?? 0),
+    ));
+    if (bordersSig != _lastBordersSignature && _isMapReady && _styleLoaded) {
+      _lastBordersSignature = bordersSig;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _refreshRegionBorders(appState);
+      });
+    }
+
     // Detect coverage overlay opacity change (user dragged the slider in
     // Settings → General) and push it to the live raster layer without
     // rebuilding the whole overlay. Skipped while ping focus mode is active —
@@ -1345,6 +1365,13 @@ class _MapWidgetState extends State<MapWidget> {
       return;
     }
 
+    // Regional boundary: either the line or the label → info dialog.
+    if (layerId == _regionBorderLineLayerId ||
+        layerId == _regionBorderLabelLayerId) {
+      _showBorderInfoDialog();
+      return;
+    }
+
     // GPS marker tap: the GPS marker is a non-interactive symbol on the
     // annotation manager layer (which sits ON TOP of all custom layers in
     // paint order). Without intervention, taps on the GPS marker hit the
@@ -1501,6 +1528,12 @@ class _MapWidgetState extends State<MapWidget> {
       // both end up with raster at the bottom of the repeater stack, not above it.
       await _refreshCoverageOverlay(appState);
       _lastOverlayZoneCode = appState.zoneCode;
+
+      // Regional boundary layer — style reload wipes custom sources/layers.
+      // Reset the signature so the build()-driven watcher will repaint even
+      // if the polygon list hasn't changed (it almost always hasn't).
+      _lastBordersSignature = -1;
+      await _refreshRegionBorders(appState);
 
       // Start tile-load timeout. If onMapIdle doesn't fire within N seconds,
       // we assume tiles are failing to load (network down, server error, etc.)
@@ -2408,6 +2441,135 @@ class _MapWidgetState extends State<MapWidget> {
     } catch (e) {
       debugError('[MAP] Failed to add focus lines: $e');
     }
+  }
+
+  /// Rebuilds the regional boundary layer from `appState.regionBorders`.
+  /// Always-on: renders whenever polygons are present, independent of BLE
+  /// or auth state. Idempotent — safe to call repeatedly (removes existing
+  /// source/layers first).
+  Future<void> _refreshRegionBorders(AppStateProvider appState) async {
+    if (_mapController == null || !_styleLoaded) return;
+
+    // Remove existing layers (label, line) and source. Order matters: layers
+    // reference the source, so they must go first. Each try/catch tolerates
+    // a missing layer on the first call.
+    try {
+      await _mapController!.removeLayer(_regionBorderLabelLayerId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeLayer(_regionBorderLineLayerId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeSource(_regionBorderSourceId);
+    } catch (_) {}
+
+    final borders = appState.regionBorders;
+    if (borders.isEmpty) return;
+
+    // Build a FeatureCollection. API sends `[lat, lon]` pairs; GeoJSON wants
+    // `[lon, lat]` — flip during conversion. Polygon rings must be closed,
+    // so append the first point if the last doesn't already match.
+    final features = <Map<String, dynamic>>[];
+    for (final entry in borders) {
+      final code = entry['code']?.toString() ?? '';
+      final raw = entry['polygon'];
+      if (raw is! List || raw.length < 3) continue;
+
+      final ring = <List<double>>[];
+      for (final pt in raw) {
+        if (pt is! List || pt.length < 2) continue;
+        final lat = (pt[0] as num).toDouble();
+        final lon = (pt[1] as num).toDouble();
+        ring.add([lon, lat]);
+      }
+      if (ring.length < 3) continue;
+      if (ring.first[0] != ring.last[0] || ring.first[1] != ring.last[1]) {
+        ring.add([ring.first[0], ring.first[1]]);
+      }
+
+      features.add({
+        'type': 'Feature',
+        'properties': {
+          'iata': code,
+          'label': '$code BOUNDARY',
+        },
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [ring],
+        },
+      });
+    }
+
+    if (features.isEmpty) return;
+
+    final geojson = <String, dynamic>{
+      'type': 'FeatureCollection',
+      'features': features,
+    };
+
+    try {
+      await _mapController!.addSource(
+        _regionBorderSourceId,
+        GeojsonSourceProperties(data: geojson),
+      );
+
+      // Render beneath the repeater cluster so repeaters stay tappable on top.
+      // Fallback gracefully if cluster layer isn't ready yet.
+      final belowLayer =
+          _clusterLayersReady ? _repeaterClusterBubbleLayerId : null;
+
+      await _mapController!.addLineLayer(
+        _regionBorderSourceId,
+        _regionBorderLineLayerId,
+        const LineLayerProperties(
+          lineColor: '#FF6A00',
+          lineOpacity: 0.9,
+          lineWidth: 3.0,
+          lineCap: 'round',
+          lineJoin: 'round',
+        ),
+        belowLayerId: belowLayer,
+      );
+
+      await _mapController!.addSymbolLayer(
+        _regionBorderSourceId,
+        _regionBorderLabelLayerId,
+        const SymbolLayerProperties(
+          symbolPlacement: 'line',
+          textField: ['get', 'label'],
+          textSize: 12,
+          textColor: '#FF6A00',
+          textHaloColor: '#FFFFFF',
+          textHaloWidth: 1.5,
+          textKeepUpright: true,
+          textFont: _defaultFontStack,
+        ),
+        minzoom: 13,
+        belowLayerId: belowLayer,
+      );
+    } catch (e) {
+      debugError('[MAP] Failed to add region border layer: $e');
+    }
+  }
+
+  /// Shows the dialog explaining how to expand the regional boundary.
+  void _showBorderInfoDialog() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Region Boundary'),
+        content: const Text(
+          'To expand the boundary, talk to your MeshMapper regional admin.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Diff-syncs the distance label symbols shown in focus mode. Each label is
