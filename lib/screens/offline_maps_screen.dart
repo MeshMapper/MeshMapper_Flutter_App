@@ -1,4 +1,4 @@
-import 'dart:math' show Point;
+import 'dart:math' show Point, max, min;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -689,9 +689,18 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   MapLibreMapController? _mapController;
   LatLng? _boundsNE;
   LatLng? _boundsSW;
-  int _tapCount = 0;
   Line? _boundsLine;
   Fill? _boundsFill;
+
+  // Draggable corner resize handles. Each corner has two stacked circles:
+  // a larger invisible-ish "halo" below and a smaller visible handle on top.
+  // Both are draggable so fingers landing on the halo still start a drag —
+  // maplibre's iOS pan gesture only hit-tests after crossing its activation
+  // threshold (~10pt of movement), so the touch target has to be bigger than
+  // the visual. `_handleIdToCorner` maps each Circle id back to its corner
+  // so onFeatureDrag resolves either shape to the correct bounds update.
+  final Map<String, List<Circle>> _cornerHandles = {};
+  final Map<String, String> _handleIdToCorner = {};
 
   // Existing region overlays
   final List<Fill> _existingFills = [];
@@ -717,7 +726,17 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
 
   LatLngBounds? get _selectedBounds {
     if (_boundsNE == null || _boundsSW == null) return null;
-    return LatLngBounds(southwest: _boundsSW!, northeast: _boundsNE!);
+    // Normalize so tile estimates stay valid mid-drag when a corner has been
+    // pulled past its opposite (stored SW/NE may be inverted).
+    final sw = LatLng(
+      min(_boundsSW!.latitude, _boundsNE!.latitude),
+      min(_boundsSW!.longitude, _boundsNE!.longitude),
+    );
+    final ne = LatLng(
+      max(_boundsSW!.latitude, _boundsNE!.latitude),
+      max(_boundsSW!.longitude, _boundsNE!.longitude),
+    );
+    return LatLngBounds(southwest: sw, northeast: ne);
   }
 
   bool get _canSubmit =>
@@ -777,6 +796,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                   ),
                   onMapCreated: (controller) {
                     _mapController = controller;
+                    controller.onFeatureDrag.add(_onFeatureDrag);
                   },
                   onStyleLoadedCallback: () {
                     if (_showExisting) _drawExistingRegions();
@@ -800,10 +820,8 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                     ),
                     child: Text(
                       _selectedBounds != null
-                          ? 'Region selected · ~$_estimatedTiles tiles · $_estimatedSize'
-                          : _tapCount == 1
-                              ? 'Tap the opposite corner to complete the region'
-                              : 'Tap two corners on the map to select a region',
+                          ? 'Drag corners to resize · ~$_estimatedTiles tiles · $_estimatedSize'
+                          : 'Tap the map to place a region',
                       style: theme.textTheme.bodySmall?.copyWith(
                         fontWeight: FontWeight.w500,
                       ),
@@ -945,13 +963,15 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                   ),
                   RangeSlider(
                     values: RangeValues(_minZoom, _maxZoom),
-                    // OpenFreeMap vector tiles max out at z14; z15+ is pure
-                    // overzoom (duplicate tile data). Slider caps at 15 to
-                    // leave one overzoom step reachable without letting users
-                    // blow out storage at z16+.
-                    min: 0,
+                    // Min matches the app's MapLibreMap minMaxZoomPreference
+                    // floor (3) so users can't cache tiles the app won't
+                    // display. Max stays at 15: OpenFreeMap vector tiles max
+                    // out at z14, z15+ is pure overzoom (duplicate tile data),
+                    // so 15 leaves one overzoom step reachable without
+                    // blowing out storage.
+                    min: 3,
                     max: 15,
-                    divisions: 15,
+                    divisions: 12,
                     labels: RangeLabels(
                       _minZoom.round().toString(),
                       _maxZoom.round().toString(),
@@ -1011,46 +1031,42 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     );
   }
 
-  void _onMapTap(Point<double> point, LatLng coordinates) {
-    if (_tapCount == 0) {
-      setState(() {
-        _boundsSW = coordinates;
-        _boundsNE = null;
-        _tapCount = 1;
-        _error = null;
-        _clearBoundsOverlay();
-      });
+  Future<void> _onMapTap(Point<double> point, LatLng coordinates) async {
+    // Once a region exists, taps on the map do nothing — user resizes via
+    // the corner handles or resets to start over.
+    if (_boundsSW != null && _boundsNE != null) return;
+    if (_mapController == null) return;
+
+    // Size the default box to ~40% of the visible map area centered on the
+    // tap, so the result feels proportional regardless of zoom level.
+    LatLngBounds visible;
+    try {
+      visible = await _mapController!.getVisibleRegion();
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] getVisibleRegion failed: $e');
       return;
     }
-    if (_tapCount != 1) return;
 
-    // Ensure SW is actually southwest and NE is northeast
-    final lat1 = _boundsSW!.latitude;
-    final lng1 = _boundsSW!.longitude;
-    final lat2 = coordinates.latitude;
-    final lng2 = coordinates.longitude;
+    final halfLat = (visible.northeast.latitude - visible.southwest.latitude)
+            .abs() *
+        0.2;
+    final halfLng = (visible.northeast.longitude - visible.southwest.longitude)
+            .abs() *
+        0.2;
 
     final sw = LatLng(
-      lat1 < lat2 ? lat1 : lat2,
-      lng1 < lng2 ? lng1 : lng2,
+      coordinates.latitude - halfLat,
+      coordinates.longitude - halfLng,
     );
     final ne = LatLng(
-      lat1 > lat2 ? lat1 : lat2,
-      lng1 > lng2 ? lng1 : lng2,
+      coordinates.latitude + halfLat,
+      coordinates.longitude + halfLng,
     );
 
-    // Reject selections that cross the antimeridian (lon span > 180°).
-    // The SW/NE min-max normalization above silently inverts such boxes
-    // into a ~357° wide region, which explodes tile count and MapLibre
-    // would refuse anyway.
     if ((ne.longitude - sw.longitude).abs() > 180) {
       setState(() {
-        _error = 'Selected region crosses the antimeridian. '
-            'Split into two regions (one per hemisphere).';
-        _boundsSW = null;
-        _boundsNE = null;
-        _tapCount = 0;
-        _clearBoundsOverlay();
+        _error = 'Visible area spans more than half the globe. '
+            'Zoom in before placing a region.';
       });
       return;
     }
@@ -1058,10 +1074,10 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     setState(() {
       _boundsSW = sw;
       _boundsNE = ne;
-      _tapCount = 2;
       _error = null;
-      _drawBoundsOverlay();
     });
+    await _drawBoundsOverlay();
+    if (mounted) setState(() {});
   }
 
   void _resetBounds() {
@@ -1069,7 +1085,6 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     setState(() {
       _boundsSW = null;
       _boundsNE = null;
-      _tapCount = 0;
     });
   }
 
@@ -1136,11 +1151,14 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
       return;
     }
 
-    final sw = _boundsSW!;
-    final ne = _boundsNE!;
-    final nw = LatLng(ne.latitude, sw.longitude);
-    final se = LatLng(sw.latitude, ne.longitude);
-    final ring = [sw, se, ne, nw, sw];
+    final corners = _cornerPositions();
+    final ring = [
+      corners['SW']!,
+      corners['SE']!,
+      corners['NE']!,
+      corners['NW']!,
+      corners['SW']!,
+    ];
 
     try {
       _boundsFill = await _mapController!.addFill(FillOptions(
@@ -1154,6 +1172,29 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
         lineWidth: 2.0,
         lineOpacity: 0.8,
       ));
+      for (final entry in corners.entries) {
+        // Halo first so it renders below the visible handle. ~44pt diameter
+        // gives the finger a comfortable touch target even after iOS's pan
+        // activation threshold eats ~10pt of travel before hit-testing.
+        final halo = await _mapController!.addCircle(CircleOptions(
+          geometry: entry.value,
+          circleRadius: 22,
+          circleColor: '#4A90D9',
+          circleOpacity: 0.18,
+          draggable: true,
+        ));
+        final handle = await _mapController!.addCircle(CircleOptions(
+          geometry: entry.value,
+          circleRadius: 7,
+          circleColor: '#FFFFFF',
+          circleStrokeColor: '#4A90D9',
+          circleStrokeWidth: 2.5,
+          draggable: true,
+        ));
+        _cornerHandles[entry.key] = [halo, handle];
+        _handleIdToCorner[halo.id] = entry.key;
+        _handleIdToCorner[handle.id] = entry.key;
+      }
     } catch (e) {
       debugWarn('[OFFLINE_MAP] Failed to draw bounds overlay: $e');
     }
@@ -1170,9 +1211,143 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
         await _mapController!.removeLine(_boundsLine!);
         _boundsLine = null;
       }
+      for (final circles in _cornerHandles.values) {
+        for (final circle in circles) {
+          try {
+            await _mapController!.removeCircle(circle);
+          } catch (_) {}
+        }
+      }
+      _cornerHandles.clear();
+      _handleIdToCorner.clear();
     } catch (e) {
       debugWarn('[OFFLINE_MAP] Failed to clear bounds overlay: $e');
     }
+  }
+
+  /// The four visual corner LatLngs derived from the stored SW/NE pair.
+  /// Uses raw (non-normalized) values so handle semantics stay stable
+  /// mid-drag; the polygon wraps correctly either way.
+  Map<String, LatLng> _cornerPositions() {
+    final sw = _boundsSW!;
+    final ne = _boundsNE!;
+    return {
+      'SW': sw,
+      'SE': LatLng(sw.latitude, ne.longitude),
+      'NE': ne,
+      'NW': LatLng(ne.latitude, sw.longitude),
+    };
+  }
+
+  Future<void> _refreshBoundsGeometry() async {
+    if (_mapController == null ||
+        _boundsFill == null ||
+        _boundsLine == null ||
+        _boundsSW == null ||
+        _boundsNE == null) {
+      return;
+    }
+    final corners = _cornerPositions();
+    final ring = [
+      corners['SW']!,
+      corners['SE']!,
+      corners['NE']!,
+      corners['NW']!,
+      corners['SW']!,
+    ];
+    try {
+      await _mapController!
+          .updateFill(_boundsFill!, FillOptions(geometry: [ring]));
+      await _mapController!
+          .updateLine(_boundsLine!, LineOptions(geometry: ring));
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] Failed to refresh bounds geometry: $e');
+    }
+  }
+
+  /// Repositions every handle circle except the one maplibre is already
+  /// dragging. Each corner has a halo + visible pair, and the non-dragged
+  /// circle in the dragged corner still needs to follow its partner.
+  Future<void> _refreshHandles({String? skipId}) async {
+    if (_mapController == null) return;
+    final corners = _cornerPositions();
+    for (final entry in corners.entries) {
+      final circles = _cornerHandles[entry.key];
+      if (circles == null) continue;
+      for (final circle in circles) {
+        if (circle.id == skipId) continue;
+        try {
+          await _mapController!
+              .updateCircle(circle, CircleOptions(geometry: entry.value));
+        } catch (e) {
+          debugWarn('[OFFLINE_MAP] Failed to update ${entry.key} handle: $e');
+        }
+      }
+    }
+  }
+
+  void _onFeatureDrag(
+    Point<double> point,
+    LatLng origin,
+    LatLng current,
+    LatLng delta,
+    String id,
+    Annotation? annotation,
+    DragEventType eventType,
+  ) {
+    final corner = _handleIdToCorner[id];
+    if (corner == null ||
+        _boundsSW == null ||
+        _boundsNE == null) {
+      return;
+    }
+
+    switch (corner) {
+      case 'SW':
+        _boundsSW = current;
+        break;
+      case 'NE':
+        _boundsNE = current;
+        break;
+      case 'NW':
+        _boundsSW = LatLng(_boundsSW!.latitude, current.longitude);
+        _boundsNE = LatLng(current.latitude, _boundsNE!.longitude);
+        break;
+      case 'SE':
+        _boundsSW = LatLng(current.latitude, _boundsSW!.longitude);
+        _boundsNE = LatLng(_boundsNE!.latitude, current.longitude);
+        break;
+    }
+
+    _refreshBoundsGeometry();
+    _refreshHandles(skipId: id);
+
+    if (eventType == DragEventType.end) {
+      // Snap stored SW/NE to normalized orientation and realign every
+      // handle (including the one just released) to its semantic corner.
+      final sw = LatLng(
+        min(_boundsSW!.latitude, _boundsNE!.latitude),
+        min(_boundsSW!.longitude, _boundsNE!.longitude),
+      );
+      final ne = LatLng(
+        max(_boundsSW!.latitude, _boundsNE!.latitude),
+        max(_boundsSW!.longitude, _boundsNE!.longitude),
+      );
+      _boundsSW = sw;
+      _boundsNE = ne;
+
+      if ((ne.longitude - sw.longitude).abs() > 180) {
+        _error = 'Selected region crosses the antimeridian. '
+            'Split into two regions (one per hemisphere).';
+      } else {
+        _error = null;
+      }
+
+      _refreshHandles();
+      _refreshBoundsGeometry();
+    }
+
+    if (mounted) setState(() {});
   }
 
   Future<void> _startDownload() async {

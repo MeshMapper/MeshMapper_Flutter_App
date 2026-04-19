@@ -325,6 +325,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _repeatersLoaded = false;
   String? _repeatersLoadedForIata;
 
+  // Regional boundary polygons (from /border API — always displayed on map)
+  List<Map<String, dynamic>> _regionBorders = [];
+  String? _bordersLoadedForZone;
+  bool _bordersFetchInProgress = false;
+
   // Regional channels from API (for UI display)
   List<String> _regionalChannels = [];
 
@@ -564,6 +569,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
+
+  /// Regional boundary polygons loaded from the /border API.
+  /// Each entry is a `{code: String, polygon: List<List<num>>}` map where
+  /// `polygon` holds `[lat, lon]` pairs in the server's original order.
+  List<Map<String, dynamic>> get regionBorders =>
+      List.unmodifiable(_regionBorders);
 
   // Regional channels getter (for UI)
   List<String> get regionalChannels => List.unmodifiable(_regionalChannels);
@@ -3387,6 +3398,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _currentZone = null;
       _nearestZone = null;
       _lastZoneCheckPosition = null;
+      _regionBorders = [];
+      _bordersLoadedForZone = null;
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
     } else {
       // Stop auto-save timer when leaving offline mode
@@ -3457,6 +3470,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _currentZone = null;
       _nearestZone = null;
       _lastZoneCheckPosition = null;
+      _regionBorders = [];
+      _bordersLoadedForZone = null;
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
 
       debugLog('[APP] Successfully switched to offline mode');
@@ -4790,8 +4805,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (newZoneCode.isNotEmpty) {
           _fetchRepeatersForZone(
               newZoneCode); // fire-and-forget — don't block zone check
+          _fetchBorderPolygons(newZoneCode); // fire-and-forget
         }
       } else {
+        _regionBorders = [];
+        _bordersLoadedForZone = null;
         _currentZone = null;
         _nearestZone = result['nearest_zone'] as Map<String, dynamic>?;
         final nearestName = _nearestZone?['name'] ?? 'Unknown';
@@ -5304,6 +5322,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _repeatersLoadedForIata = null;
       await _fetchRepeatersForZone(newZoneCode);
 
+      // Fetch updated boundary polygons for the new zone
+      _bordersLoadedForZone = null;
+      _regionBorders = [];
+      _fetchBorderPolygons(newZoneCode); // fire-and-forget
+
       // 18. Re-enable heartbeat
       _apiService.enableHeartbeat(
         gpsProvider: () {
@@ -5387,6 +5410,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (e) {
       debugError('[MAP] Failed to fetch repeaters: $e');
+    }
+  }
+
+  /// Fetch regional boundary polygons for the current zone.
+  /// Called after a successful zone check; idempotent per IATA so the
+  /// /border endpoint is only hit once per zone transition.
+  Future<void> _fetchBorderPolygons(String iata) async {
+    if (_bordersLoadedForZone == iata) return;
+    if (_bordersFetchInProgress) return;
+    if (_currentPosition == null) return;
+
+    _bordersFetchInProgress = true;
+    try {
+      final result = await _apiService.fetchBorderPolygons(
+        lat: _currentPosition!.latitude,
+        lon: _currentPosition!.longitude,
+        appVersion: _appVersion,
+      );
+      if (result != null && result.isNotEmpty) {
+        _regionBorders = result;
+        _bordersLoadedForZone = iata;
+        debugLog('[BORDER] Loaded ${result.length} polygon(s) for $iata');
+        notifyListeners();
+      } else {
+        debugWarn(
+            '[BORDER] No polygons returned for zone $iata — will retry on next zone check');
+      }
+    } finally {
+      _bordersFetchInProgress = false;
     }
   }
 

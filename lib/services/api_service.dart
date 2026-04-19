@@ -25,6 +25,7 @@ class ApiService {
   static const String wardriveEndpoint = '$baseUrl/wardrive-api.php/wardrive';
   static const String geoAuthStatusUrl = '$baseUrl/wardrive-api.php/status';
   static const String geoAuthUrl = '$baseUrl/wardrive-api.php/auth';
+  static const String borderUrl = '$baseUrl/wardrive-api.php/border';
 
   /// API key — injected at build time via --dart-define=API_KEY=...
   static const String apiKey = String.fromEnvironment('API_KEY');
@@ -217,6 +218,79 @@ class ApiService {
     } catch (e) {
       stopwatch.stop();
       debugError('[API] POST /wardrive-api.php/status failed: $e');
+      return null;
+    }
+  }
+
+  /// Fetch regional boundary polygons from the MeshMapper API.
+  ///
+  /// Returns a list of `{code, polygon}` maps where `polygon` is a list of
+  /// `[lat, lon]` pairs (as sent by the server). Returns `null` on failure
+  /// or maintenance mode.
+  Future<List<Map<String, dynamic>>?> fetchBorderPolygons({
+    required double lat,
+    required double lon,
+    required String appVersion,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final payload = {
+        'lat': lat,
+        'lng': lon,
+        'ver': appVersion,
+        'timestamp': timestamp,
+        'key': apiKey,
+      };
+
+      final response = await _client
+          .post(
+            Uri.parse(borderUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      stopwatch.stop();
+
+      if (response.statusCode != 200) {
+        debugError(
+            '[BORDER] /wardrive-api.php/border returned HTTP ${response.statusCode}');
+        debugError(
+            '[BORDER]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+
+      Map<String, dynamic>? data;
+      try {
+        data = json.decode(response.body) as Map<String, dynamic>;
+      } on FormatException {
+        debugError(
+            '[BORDER] Non-JSON response from /border (HTTP ${response.statusCode}): '
+            '${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
+      }
+
+      _logApiCall(
+        endpoint: '/wardrive-api.php/border',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: payload,
+        response: data,
+      );
+
+      if (data == null) return null;
+      if (_checkMaintenanceMode(data)) return null;
+
+      final polygons = data['polygons'];
+      if (polygons is! List) return null;
+
+      return polygons
+          .whereType<Map>()
+          .map((p) => Map<String, dynamic>.from(p))
+          .toList();
+    } catch (e) {
+      stopwatch.stop();
+      debugError('[BORDER] POST /wardrive-api.php/border failed: $e');
       return null;
     }
   }
