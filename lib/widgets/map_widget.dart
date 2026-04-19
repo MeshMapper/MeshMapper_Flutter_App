@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
@@ -26,13 +28,6 @@ import 'repeater_id_chip.dart';
 /// doesn't declare a glyphs URL.
 const _satelliteStyleJson =
     '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{"satellite":{"type":"raster","tiles":["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],"tileSize":256,"maxzoom":17}},"layers":[{"id":"satellite-layer","type":"raster","source":"satellite"}]}';
-
-/// Blank style with dark background — used when mapTilesEnabled is false
-/// (saves mobile data while still showing markers and overlays).
-/// Includes a `glyphs` URL so native annotations using textField (repeater
-/// hex IDs, distance labels) can render their text even when tiles are off.
-// const _blankStyleJson =
-//     '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"#0F172A"}}]}';
 
 /// Default font stack used for all native text labels (textField property).
 /// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
@@ -252,6 +247,23 @@ extension MapStyleExtension on MapStyle {
         return _satelliteStyleJson;
     }
   }
+
+  /// Whether this style can be packaged as an offline region. Satellite uses
+  /// inline raster JSON which MapLibre's offline downloader doesn't support.
+  bool get isDownloadable {
+    switch (this) {
+      case MapStyle.dark:
+      case MapStyle.light:
+      case MapStyle.liberty:
+        return true;
+      case MapStyle.satellite:
+        return false;
+    }
+  }
+
+  /// Styles offered in the offline download picker.
+  static List<MapStyle> get downloadable =>
+      MapStyle.values.where((s) => s.isDownloadable).toList();
 }
 
 /// Resolved repeater with SNR and ambiguity info for ping focus mode.
@@ -1085,6 +1097,23 @@ class _MapWidgetState extends State<MapWidget> {
     );
   }
 
+  /// Toggle MapLibre between online (network tiles) and offline (cache-only).
+  ///
+  /// No-op on iOS: maplibre_gl 0.25.0 never implemented the `setOffline`
+  /// method handler on iOS, and MapLibre-iOS itself doesn't expose an
+  /// equivalent of Android's `ConnectivityReceiver` hook. The "Disable Map
+  /// Tiles" Settings switch is marked unavailable on iOS for the same reason.
+  Future<void> _setOfflineIfSupported(bool offline) async {
+    if (kIsWeb || Platform.isIOS) return;
+    try {
+      await setOffline(offline);
+      debugLog('[MAP] setOffline($offline) — '
+          'tiles ${offline ? "cache-only" : "enabled"}');
+    } catch (e) {
+      debugWarn('[MAP] setOffline failed: $e');
+    }
+  }
+
   Widget _buildMap(AppStateProvider appState, LatLng center) {
     final mapStyle =
         MapStyleExtension.fromString(appState.preferences.mapStyle);
@@ -1101,9 +1130,7 @@ class _MapWidgetState extends State<MapWidget> {
       _lastMapTilesEnabled = tilesEnabled;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        setOffline(!tilesEnabled);
-        debugPrint(
-            '[MAP] setOffline(${!tilesEnabled}) — tiles ${tilesEnabled ? "enabled" : "disabled (cache only)"}');
+        _setOfflineIfSupported(!tilesEnabled);
       });
     }
 
@@ -1484,7 +1511,7 @@ class _MapWidgetState extends State<MapWidget> {
       final tilesEnabled = appState.preferences.mapTilesEnabled;
       _lastMapTilesEnabled = tilesEnabled;
       // Ensure MapLibre offline mode matches the user's preference.
-      setOffline(!tilesEnabled);
+      _setOfflineIfSupported(!tilesEnabled);
       if (tilesEnabled) {
         _tileLoadFailed = false;
         _tileLoadTimeoutTimer =

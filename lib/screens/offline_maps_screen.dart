@@ -7,15 +7,15 @@ import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
 import '../services/offline_map_service.dart';
+import '../utils/debug_logger_io.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/map_widget.dart' show MapStyle, MapStyleExtension;
 
-/// Available map styles for offline download.
-/// Satellite uses inline raster JSON which doesn't work well with the offline
-/// region downloader, so we only offer the vector tile styles.
-const _downloadStyles = {
-  'Liberty': 'https://tiles.openfreemap.org/styles/liberty',
-  'Dark': 'https://tiles.openfreemap.org/styles/dark',
-  'Light': 'https://tiles.openfreemap.org/styles/bright',
+/// Label → URL map for styles the user can download, derived from
+/// [MapStyle.downloadable]. Satellite is excluded (inline raster JSON
+/// doesn't work with MapLibre's offline region downloader).
+final Map<String, String> _downloadStyles = {
+  for (final s in MapStyleExtension.downloadable) s.label: s.styleUrl,
 };
 
 /// Screen for managing offline map tile downloads.
@@ -88,6 +88,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
       floatingActionButton:
           (service.initialized && !kIsWeb && !service.isDownloading)
               ? FloatingActionButton.extended(
+                  heroTag: null,
                   onPressed: () => _showDownloadDialog(context),
                   icon: const Icon(Icons.download),
                   label: const Text('Download Region'),
@@ -188,7 +189,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '${service.totalUsedDisplay} used',
+                  '~${service.totalUsedDisplay} used (estimated)',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: barColor,
                     fontWeight: FontWeight.w600,
@@ -201,6 +202,15 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'Based on tile count heuristic; actual disk use may differ.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Colors.grey,
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+              ),
             ),
             const SizedBox(height: 4),
             Text(
@@ -365,10 +375,66 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
               'Download continues in the background if you leave this screen',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
             ),
+            if (service.queueLength > 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                '${service.queueLength} more queued after this',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey.shade500,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () => _confirmCancelDownload(context, service),
+                icon: const Icon(Icons.close, size: 16, color: Colors.red),
+                label: const Text('Cancel',
+                    style: TextStyle(color: Colors.red)),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _confirmCancelDownload(
+      BuildContext context, OfflineMapService service) async {
+    final name = service.downloadingRegionName ?? 'this download';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel download?'),
+        content: Text(
+          'Tiles downloaded so far for "$name" will be discarded. '
+          'Queued downloads (if any) will continue automatically.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep downloading'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Cancel download'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final ok = await service.cancelActiveDownload();
+    if (context.mounted && ok) {
+      AppToast.info(context, 'Download cancelled');
+    }
   }
 
   // ──────────────────────────────────────────────
@@ -424,7 +490,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Currently using ${service.totalUsedDisplay}',
+                    'Currently using ~${service.totalUsedDisplay} (estimated)',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Colors.grey,
                         ),
@@ -511,7 +577,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
           AppToast.success(context, '"${region.name}" deleted');
         } else {
           AppToast.error(
-              context, service.lastError ?? 'Failed to delete region');
+              context, service.consumeLastError() ?? 'Failed to delete region');
         }
       }
     }
@@ -612,7 +678,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   final _nameController = TextEditingController();
   String _selectedStyle = 'Liberty';
   double _minZoom = 6;
-  double _maxZoom = 15;
+  double _maxZoom = 14;
   bool _submitting = false;
   String? _error;
 
@@ -879,9 +945,13 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                   ),
                   RangeSlider(
                     values: RangeValues(_minZoom, _maxZoom),
+                    // OpenFreeMap vector tiles max out at z14; z15+ is pure
+                    // overzoom (duplicate tile data). Slider caps at 15 to
+                    // leave one overzoom step reachable without letting users
+                    // blow out storage at z16+.
                     min: 0,
-                    max: 18,
-                    divisions: 18,
+                    max: 15,
+                    divisions: 15,
                     labels: RangeLabels(
                       _minZoom.round().toString(),
                       _maxZoom.round().toString(),
@@ -942,30 +1012,55 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   }
 
   void _onMapTap(Point<double> point, LatLng coordinates) {
-    setState(() {
-      if (_tapCount == 0) {
+    if (_tapCount == 0) {
+      setState(() {
         _boundsSW = coordinates;
         _boundsNE = null;
         _tapCount = 1;
+        _error = null;
         _clearBoundsOverlay();
-      } else if (_tapCount == 1) {
-        // Ensure SW is actually southwest and NE is northeast
-        final lat1 = _boundsSW!.latitude;
-        final lng1 = _boundsSW!.longitude;
-        final lat2 = coordinates.latitude;
-        final lng2 = coordinates.longitude;
+      });
+      return;
+    }
+    if (_tapCount != 1) return;
 
-        _boundsSW = LatLng(
-          lat1 < lat2 ? lat1 : lat2,
-          lng1 < lng2 ? lng1 : lng2,
-        );
-        _boundsNE = LatLng(
-          lat1 > lat2 ? lat1 : lat2,
-          lng1 > lng2 ? lng1 : lng2,
-        );
-        _tapCount = 2;
-        _drawBoundsOverlay();
-      }
+    // Ensure SW is actually southwest and NE is northeast
+    final lat1 = _boundsSW!.latitude;
+    final lng1 = _boundsSW!.longitude;
+    final lat2 = coordinates.latitude;
+    final lng2 = coordinates.longitude;
+
+    final sw = LatLng(
+      lat1 < lat2 ? lat1 : lat2,
+      lng1 < lng2 ? lng1 : lng2,
+    );
+    final ne = LatLng(
+      lat1 > lat2 ? lat1 : lat2,
+      lng1 > lng2 ? lng1 : lng2,
+    );
+
+    // Reject selections that cross the antimeridian (lon span > 180°).
+    // The SW/NE min-max normalization above silently inverts such boxes
+    // into a ~357° wide region, which explodes tile count and MapLibre
+    // would refuse anyway.
+    if ((ne.longitude - sw.longitude).abs() > 180) {
+      setState(() {
+        _error = 'Selected region crosses the antimeridian. '
+            'Split into two regions (one per hemisphere).';
+        _boundsSW = null;
+        _boundsNE = null;
+        _tapCount = 0;
+        _clearBoundsOverlay();
+      });
+      return;
+    }
+
+    setState(() {
+      _boundsSW = sw;
+      _boundsNE = ne;
+      _tapCount = 2;
+      _error = null;
+      _drawBoundsOverlay();
     });
   }
 
@@ -1005,7 +1100,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
         _existingFills.add(fill);
         _existingLines.add(line);
       } catch (e) {
-        debugPrint(
+        debugWarn(
             '[OFFLINE_MAP] Failed to draw existing region ${region.name}: $e');
       }
     }
@@ -1060,7 +1155,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
         lineOpacity: 0.8,
       ));
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to draw bounds overlay: $e');
+      debugWarn('[OFFLINE_MAP] Failed to draw bounds overlay: $e');
     }
   }
 
@@ -1076,7 +1171,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
         _boundsLine = null;
       }
     } catch (e) {
-      debugPrint('[OFFLINE_MAP] Failed to clear bounds overlay: $e');
+      debugWarn('[OFFLINE_MAP] Failed to clear bounds overlay: $e');
     }
   }
 
@@ -1105,10 +1200,12 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
       _error = null;
     });
 
-    // Fire-and-forget: the service runs the download in the background
-    // and shows a system notification for progress. We just kick it off
-    // and return to the management screen.
-    service.downloadRegion(
+    // Await the service call. downloadRegion returns once the native
+    // downloader has accepted (or rejected) the job — actual tile fetches
+    // continue in the background after this returns. If validation fails
+    // (quota, free-space, style, antimeridian, etc.), lastError is set and
+    // isDownloading is false; otherwise the download is queued.
+    await service.downloadRegion(
       name: name,
       bounds: bounds,
       styleUrl: styleUrl,
@@ -1117,19 +1214,16 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
       maxZoom: _maxZoom,
     );
 
-    // Give the service a tick to validate and start
-    await Future.delayed(const Duration(milliseconds: 100));
-
     if (!mounted) return;
 
-    if (service.lastError != null && !service.isDownloading) {
+    if (!service.isDownloading && service.lastError != null) {
       setState(() {
         _submitting = false;
-        _error = service.lastError;
+        _error = service.consumeLastError();
       });
-    } else {
-      // Download is queued — return to the management screen
-      Navigator.pop(context, true);
+      return;
     }
+    // Download is queued — return to the management screen.
+    Navigator.pop(context, true);
   }
 }

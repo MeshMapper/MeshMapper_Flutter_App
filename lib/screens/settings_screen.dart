@@ -155,19 +155,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             if (!kIsWeb) _BackgroundModeToggle(appState: appState),
-            SwitchListTile(
-              secondary:
-                  Icon(prefs.mapTilesEnabled ? Icons.map : Icons.map_outlined),
-              title: const Text('Disable Map Tiles'),
-              subtitle: Text(prefs.mapTilesEnabled
-                  ? 'Map and coverage tiles load normally'
-                  : 'Network tiles disabled · downloaded regions still visible'),
-              value: !prefs.mapTilesEnabled,
-              onChanged: (value) {
-                appState
-                    .updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
-              },
-            ),
+            Builder(builder: (_) {
+              // iOS plugin (maplibre_gl 0.25.0) doesn't implement setOffline,
+              // and MapLibre-iOS has no public equivalent. Disable the toggle
+              // there so it doesn't lie to the user.
+              final iosUnsupported = !kIsWeb &&
+                  defaultTargetPlatform == TargetPlatform.iOS;
+              return SwitchListTile(
+                secondary: Icon(
+                    prefs.mapTilesEnabled ? Icons.map : Icons.map_outlined),
+                title: const Text('Disable Map Tiles'),
+                subtitle: iosUnsupported
+                    ? const Text('Not available on iOS')
+                    : Text(prefs.mapTilesEnabled
+                        ? 'Map and coverage tiles load normally'
+                        : 'Network tiles disabled · downloaded regions still visible'),
+                value: !prefs.mapTilesEnabled,
+                onChanged: iosUnsupported
+                    ? null
+                    : (value) {
+                        appState.updatePreferences(
+                            prefs.copyWith(mapTilesEnabled: !value));
+                      },
+              );
+            }),
             if (!kIsWeb)
               ListTile(
                 leading: const Icon(Icons.download_for_offline),

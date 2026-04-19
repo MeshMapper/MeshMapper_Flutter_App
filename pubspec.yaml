@@ -38,6 +38,7 @@ dependencies:
   font_awesome_flutter: ^10.7.0
   fl_chart: ^0.69.0
   web: ^1.1.0
+  disk_space_plus: ^0.2.3
 
 dev_dependencies:
   flutter_test:
