@@ -367,9 +367,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       case PingLogType.disc:
         final disc = entry.asDisc;
         for (final node in disc.discoveredNodes) {
-          if (node.repeaterId.toLowerCase().startsWith(query)) {
-            return true;
-          }
+          if (node.repeaterId.toLowerCase().startsWith(query)) return true;
           if (node.pubkeyHex != null &&
               node.pubkeyHex!.toLowerCase().startsWith(query)) {
             return true;

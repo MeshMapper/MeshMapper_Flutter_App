@@ -13,9 +13,7 @@ dependencies:
   flutter_blue_plus: ^1.32.0
   flutter_web_bluetooth: ^0.2.3
   geolocator: ^11.0.0
-  flutter_map: ^6.1.0
-  flutter_map_cancellable_tile_provider: ^2.0.0
-  latlong2: ^0.9.0
+  maplibre_gl: ^0.25.0
   http: ^1.2.0
   shared_preferences: ^2.2.0
   hive: ^2.2.3
