@@ -33,7 +33,6 @@ class OfflineMapsScreen extends StatefulWidget {
 }
 
 class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
-  int? _tileCacheBytes;
   bool _tileCacheBusy = false;
 
   @override
@@ -42,7 +41,10 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
     // Listen for background download completions to show a toast.
     final service = context.read<OfflineMapService>();
     service.addListener(_onServiceUpdate);
-    _refreshTileCacheSize();
+    // Pull fresh per-region + total cache sizes so the storage bar reflects
+    // current on-disk reality (including any ambient-cache growth since the
+    // service last refreshed).
+    service.refreshRegions();
   }
 
   @override
@@ -52,12 +54,6 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
       context.read<OfflineMapService>().removeListener(_onServiceUpdate);
     } catch (_) {}
     super.dispose();
-  }
-
-  Future<void> _refreshTileCacheSize() async {
-    final bytes = await TileCacheService.instance.getCacheSizeBytes();
-    if (!mounted) return;
-    setState(() => _tileCacheBytes = bytes);
   }
 
   void _onServiceUpdate() {
@@ -89,8 +85,6 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   children: [
                     _buildStorageCard(context, service, theme, isDark),
                     const SizedBox(height: 8),
-                    _buildTileCacheCard(theme),
-                    const SizedBox(height: 8),
                     _buildDownloadedRegionsCard(
                         context, service, theme, isDark),
                     const SizedBox(height: 8),
@@ -105,7 +99,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   heroTag: null,
                   onPressed: () => _showDownloadDialog(context),
                   icon: const Icon(Icons.download),
-                  label: const Text('Download Region'),
+                  label: const Text('Download Area'),
                 )
               : null,
     );
@@ -128,7 +122,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Use the mobile app to download map regions for offline use',
+              'Use the mobile app to download map areas for offline use',
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: Colors.grey.shade400),
               textAlign: TextAlign.center,
@@ -145,12 +139,23 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
 
   Widget _buildStorageCard(BuildContext context, OfflineMapService service,
       ThemeData theme, bool isDark) {
+    final downloadsRatio = service.downloadsRatio;
+    final ambientRatio = service.ambientRatio;
     final usageRatio = service.usageRatio;
-    final barColor = usageRatio > 0.9
+
+    // Over-quota colors the total-used text red; the bar itself stays
+    // segmented so the user can still see which bucket is driving the limit.
+    final overQuota = usageRatio >= 1.0;
+    final totalColor = overQuota
         ? Colors.red
-        : usageRatio > 0.7
-            ? Colors.orange
-            : theme.colorScheme.primary;
+        : (usageRatio > 0.9
+            ? Colors.red
+            : (usageRatio > 0.7 ? Colors.orange : theme.colorScheme.primary));
+
+    final downloadsColor = theme.colorScheme.primary;
+    final ambientColor = theme.colorScheme.tertiary;
+    final trackColor =
+        isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.shade200;
 
     return Card(
       margin: EdgeInsets.zero,
@@ -171,6 +176,14 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   ),
                 ),
                 const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 18),
+                  onPressed: _tileCacheBusy
+                      ? null
+                      : () => service.refreshRegions(),
+                  tooltip: 'Refresh sizes',
+                  visualDensity: VisualDensity.compact,
+                ),
                 TextButton.icon(
                   onPressed: () => _showStorageLimitDialog(context, service),
                   icon: const Icon(Icons.tune, size: 16),
@@ -184,28 +197,55 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
             ),
             const SizedBox(height: 12),
 
-            // Usage bar
+            // Segmented usage bar: downloads (primary) + ambient (tertiary)
+            // stacked left-to-right against the storage limit.
             ClipRRect(
               borderRadius: BorderRadius.circular(6),
-              child: LinearProgressIndicator(
-                value: usageRatio,
-                minHeight: 20,
-                backgroundColor: isDark
-                    ? Colors.white.withValues(alpha: 0.08)
-                    : Colors.grey.shade200,
-                color: barColor,
+              child: SizedBox(
+                height: 20,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final total = constraints.maxWidth;
+                    final downloadsWidth =
+                        (downloadsRatio.clamp(0.0, 1.0)) * total;
+                    // Ambient is clamped so the two segments can never exceed
+                    // the track width even if the real total briefly overshoots.
+                    final ambientWidth =
+                        ((ambientRatio.clamp(0.0, 1.0)) * total)
+                            .clamp(0.0, total - downloadsWidth);
+                    return Stack(
+                      children: [
+                        Positioned.fill(child: Container(color: trackColor)),
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: downloadsWidth,
+                          child: Container(color: downloadsColor),
+                        ),
+                        Positioned(
+                          left: downloadsWidth,
+                          top: 0,
+                          bottom: 0,
+                          width: ambientWidth,
+                          child: Container(color: ambientColor),
+                        ),
+                      ],
+                    );
+                  },
+                ),
               ),
             ),
             const SizedBox(height: 8),
 
-            // Usage text
+            // Totals
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '~${service.totalUsedDisplay} used (estimated)',
+                  '${service.totalUsedDisplay} used',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: barColor,
+                    color: totalColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -217,93 +257,36 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 2),
-            Text(
-              'Based on tile count heuristic; actual disk use may differ.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: Colors.grey,
-                fontSize: 11,
-                fontStyle: FontStyle.italic,
-              ),
+            const SizedBox(height: 10),
+
+            // Legend
+            _buildLegendRow(
+              theme,
+              color: downloadsColor,
+              label: 'Downloads',
+              value: service.downloadsDisplay,
+              sublabel: '${service.regions.length} '
+                  'area${service.regions.length == 1 ? '' : 's'}',
             ),
             const SizedBox(height: 4),
-            Text(
-              '${service.regions.length} region${service.regions.length == 1 ? '' : 's'} downloaded',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: Colors.grey.shade500,
-                fontSize: 11,
-              ),
+            _buildLegendRow(
+              theme,
+              color: ambientColor,
+              label: 'Ambient cache',
+              value: service.ambientDisplay,
+              sublabel: 'auto-cached while panning',
             ),
-          ],
-        ),
-      ),
-    );
-  }
 
-  // ──────────────────────────────────────────────
-  // Tile cache card (ambient cache — opportunistically cached tiles)
-  // ──────────────────────────────────────────────
-
-  Widget _buildTileCacheCard(ThemeData theme) {
-    final bytes = _tileCacheBytes;
-    final sizeDisplay = bytes == null
-        ? '—'
-        : bytes < 1024
-            ? '$bytes B'
-            : bytes < 1024 * 1024
-                ? '${(bytes / 1024).toStringAsFixed(1)} KB'
-                : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-
-    return Card(
-      margin: EdgeInsets.zero,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  'Tile Cache',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.refresh, size: 20),
-                  onPressed: _tileCacheBusy ? null : _refreshTileCacheSize,
-                  tooltip: 'Refresh size',
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'On-disk size: $sizeDisplay',
-              style: theme.textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Includes both downloaded regions and opportunistically cached '
-              'tiles from normal map panning.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: Colors.grey,
-                fontSize: 11,
-                fontStyle: FontStyle.italic,
-              ),
-            ),
             const SizedBox(height: 12),
+
+            // Ambient cache actions (downloads are managed below).
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: _tileCacheBusy ? null : _onInvalidateTileCache,
                     icon: const Icon(Icons.refresh_outlined, size: 18),
-                    label: const Text('Invalidate'),
+                    label: const Text('Invalidate cache'),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -311,7 +294,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   child: OutlinedButton.icon(
                     onPressed: _tileCacheBusy ? null : _onClearTileCache,
                     icon: const Icon(Icons.delete_sweep_outlined, size: 18),
-                    label: const Text('Clear'),
+                    label: const Text('Clear cache'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.red,
                     ),
@@ -325,6 +308,51 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
     );
   }
 
+  Widget _buildLegendRow(
+    ThemeData theme, {
+    required Color color,
+    required String label,
+    required String value,
+    required String sublabel,
+  }) {
+    return Row(
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            '· $sublabel',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: Colors.grey.shade500,
+              fontSize: 11,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        Text(
+          value,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+
   Future<void> _onInvalidateTileCache() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -332,7 +360,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
         title: const Text('Invalidate tile cache?'),
         content: const Text(
           'Marks cached tiles as stale so they refresh on next view. '
-          'Downloaded regions are not affected.',
+          'Downloaded areas are not affected.',
         ),
         actions: [
           TextButton(
@@ -357,7 +385,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
       AppToast.error(context, 'Invalidate failed: $e');
     } finally {
       if (mounted) setState(() => _tileCacheBusy = false);
-      await _refreshTileCacheSize();
+      if (mounted) await context.read<OfflineMapService>().refreshCacheSize();
     }
   }
 
@@ -368,7 +396,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
         title: const Text('Clear tile cache?'),
         content: const Text(
           'Removes opportunistically cached tiles from disk. '
-          'Downloaded regions are preserved.',
+          'Downloaded areas are preserved.',
         ),
         actions: [
           TextButton(
@@ -394,7 +422,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
       AppToast.error(context, 'Clear failed: $e');
     } finally {
       if (mounted) setState(() => _tileCacheBusy = false);
-      await _refreshTileCacheSize();
+      if (mounted) await context.read<OfflineMapService>().refreshCacheSize();
     }
   }
 
@@ -416,7 +444,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
             child: Row(
               children: [
                 Text(
-                  'Downloaded Regions',
+                  'Downloaded Areas',
                   style: theme.textTheme.titleSmall?.copyWith(
                     color: theme.colorScheme.primary,
                     fontWeight: FontWeight.bold,
@@ -442,12 +470,12 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                       size: 48, color: Colors.grey.shade400),
                   const SizedBox(height: 8),
                   Text(
-                    'No offline regions downloaded',
+                    'No offline areas downloaded',
                     style: TextStyle(color: Colors.grey.shade500),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Tap "Download Region" to save map tiles for offline use',
+                    'Tap "Download Area" to save map tiles for offline use',
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
                     textAlign: TextAlign.center,
                   ),
@@ -531,7 +559,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        service.downloadingRegionName ?? 'Region',
+                        service.downloadingRegionName ?? 'Area',
                         style: theme.textTheme.bodyMedium,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -709,7 +737,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Currently using ~${service.totalUsedDisplay} (estimated)',
+                    'Currently using ${service.totalUsedDisplay}',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Colors.grey,
                         ),
@@ -769,11 +797,11 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete Region?'),
+        title: const Text('Delete Area?'),
         content: Text(
-          'Delete "${region.name}"? This will free approximately '
+          'Delete "${region.name}"? This will free '
           '${region.sizeDisplay} of storage.\n\n'
-          'Note: shared tiles used by other regions may not be freed immediately.',
+          'Note: shared tiles used by other areas may not be freed immediately.',
         ),
         actions: [
           TextButton(
@@ -796,7 +824,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
           AppToast.success(context, '"${region.name}" deleted');
         } else {
           AppToast.error(
-              context, service.consumeLastError() ?? 'Failed to delete region');
+              context, service.consumeLastError() ?? 'Failed to delete area');
         }
       }
     }
@@ -807,10 +835,11 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete All Regions?'),
+        title: const Text('Delete All Areas?'),
         content: Text(
-          'Delete all ${service.regions.length} downloaded regions? '
-          'This will free approximately ${service.totalUsedDisplay}.',
+          'Delete all ${service.regions.length} downloaded areas? '
+          'This will free ${service.downloadsDisplay} of downloaded tiles '
+          '(ambient cache is preserved).',
         ),
         actions: [
           TextButton(
@@ -829,7 +858,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
     if (confirmed == true) {
       await service.deleteAllRegions();
       if (context.mounted) {
-        AppToast.success(context, 'All regions deleted');
+        AppToast.success(context, 'All areas deleted');
       }
     }
   }
@@ -998,7 +1027,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 40,
-        title: const Text('Download Region', style: TextStyle(fontSize: 18)),
+        title: const Text('Download Area', style: TextStyle(fontSize: 18)),
       ),
       body: Column(
         children: [
@@ -1040,7 +1069,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                     child: Text(
                       _selectedBounds != null
                           ? 'Drag corners to resize · ~$_estimatedTiles tiles · $_estimatedSize'
-                          : 'Tap the map to place a region',
+                          : 'Tap the map to place an area',
                       style: theme.textTheme.bodySmall?.copyWith(
                         fontWeight: FontWeight.w500,
                       ),
@@ -1126,7 +1155,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                   TextField(
                     controller: _nameController,
                     decoration: InputDecoration(
-                      labelText: 'Region Name',
+                      labelText: 'Area Name',
                       hintText: 'e.g. Downtown Vancouver',
                       border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8)),
@@ -1236,7 +1265,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                           )
                         : const Icon(Icons.download),
                     label:
-                        Text(_submitting ? 'Starting...' : 'Download Region'),
+                        Text(_submitting ? 'Starting...' : 'Download Area'),
                     style: FilledButton.styleFrom(
                       minimumSize: const Size.fromHeight(44),
                     ),
@@ -1285,7 +1314,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     if ((ne.longitude - sw.longitude).abs() > 180) {
       setState(() {
         _error = 'Visible area spans more than half the globe. '
-            'Zoom in before placing a region.';
+            'Zoom in before placing an area.';
       });
       return;
     }
@@ -1556,8 +1585,8 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
       _boundsNE = ne;
 
       if ((ne.longitude - sw.longitude).abs() > 180) {
-        _error = 'Selected region crosses the antimeridian. '
-            'Split into two regions (one per hemisphere).';
+        _error = 'Selected area crosses the antimeridian. '
+            'Split into two areas (one per hemisphere).';
       } else {
         _error = null;
       }

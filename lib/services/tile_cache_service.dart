@@ -40,6 +40,28 @@ class TileCacheService {
     }
   }
 
+  /// Per-region downloaded byte counts keyed by the Dart-side region ID that
+  /// maplibre_gl assigns. Regions missing from the result (e.g. because the
+  /// native store hasn't finished loading yet) should be treated as unknown,
+  /// not zero. Returns an empty map on web or unexpected channel errors.
+  Future<Map<int, int>> getRegionSizes() async {
+    if (kIsWeb) return const {};
+    try {
+      final raw = await _channel.invokeMethod<dynamic>('getRegionSizes');
+      if (raw is! Map) return const {};
+      final result = <int, int>{};
+      raw.forEach((k, v) {
+        final id = k is int ? k : (k is num ? k.toInt() : int.tryParse('$k'));
+        final bytes = v is int ? v : (v is num ? v.toInt() : null);
+        if (id != null && bytes != null) result[id] = bytes;
+      });
+      return result;
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] Region sizes read failed: $e');
+      return const {};
+    }
+  }
+
   Future<void> clearAmbientCache() async {
     if (kIsWeb) throw UnsupportedError('Not supported on web');
     await _channel.invokeMethod<void>('clearAmbientCache');
