@@ -155,68 +155,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             if (!kIsWeb) _BackgroundModeToggle(appState: appState),
-            Builder(builder: (_) {
-              // iOS plugin (maplibre_gl 0.25.0) doesn't implement setOffline,
-              // and MapLibre-iOS has no public equivalent. Disable the toggle
-              // there so it doesn't lie to the user.
-              final iosUnsupported = !kIsWeb &&
-                  defaultTargetPlatform == TargetPlatform.iOS;
-              return SwitchListTile(
-                secondary: Icon(
-                    prefs.mapTilesEnabled ? Icons.map : Icons.map_outlined),
-                title: const Text('Disable Map Tiles'),
-                subtitle: iosUnsupported
-                    ? const Text('Not available on iOS')
-                    : Text(prefs.mapTilesEnabled
-                        ? 'Map and coverage tiles load normally'
-                        : 'Network tiles disabled · downloaded regions still visible'),
-                value: !prefs.mapTilesEnabled,
-                onChanged: iosUnsupported
-                    ? null
-                    : (value) {
-                        appState.updatePreferences(
-                            prefs.copyWith(mapTilesEnabled: !value));
-                      },
-              );
-            }),
-            if (!kIsWeb)
-              ListTile(
-                leading: const Icon(Icons.download_for_offline),
-                title: const Text('Offline Maps'),
-                subtitle: const Text('Download map tiles for offline use'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const OfflineMapsScreen(),
-                    ),
-                  );
-                },
-              ),
-            if (prefs.mapTilesEnabled)
-              ListTile(
-                leading: const Icon(Icons.opacity),
-                title: const Text('Coverage Overlay Opacity'),
-                subtitle: Slider(
-                  value: prefs.coverageOverlayOpacity.clamp(0.3, 1.0),
-                  min: 0.3,
-                  max: 1.0,
-                  divisions: 7,
-                  label: '${(prefs.coverageOverlayOpacity * 100).round()}%',
-                  onChanged: (value) =>
-                      appState.setCoverageOverlayOpacity(value),
-                ),
-                trailing:
-                    Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
-              ),
-            ListTile(
-              leading: const Icon(Icons.visibility),
-              title: const Text('Color Vision'),
-              subtitle: Text(_colorVisionLabel(prefs.colorVisionType)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _showColorVisionSelector(context, appState),
-            ),
             SwitchListTile(
               secondary: Icon(
                 prefs.isImperial ? Icons.square_foot : Icons.straighten,
@@ -228,31 +166,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (isImperial) {
                 appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
               },
-            ),
-            SwitchListTile(
-              secondary: const Icon(Icons.cell_tower),
-              title: const Text('Top Repeaters on Map'),
-              subtitle:
-                  const Text('Show top 3 repeaters by SNR from last ping'),
-              value: prefs.showTopRepeaters,
-              onChanged: (value) {
-                appState
-                    .updatePreferences(prefs.copyWith(showTopRepeaters: value));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.place),
-              title: const Text('Map Marker Style'),
-              subtitle: Text(_markerStyleLabel(prefs.markerStyle)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _showMarkerStyleSelector(context, appState),
-            ),
-            ListTile(
-              leading: const Icon(Icons.my_location),
-              title: const Text('GPS Marker'),
-              subtitle: Text(_gpsMarkerLabel(prefs.gpsMarkerStyle)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _showGpsMarkerSelector(context, appState),
             ),
             SwitchListTile(
               secondary: Icon(
@@ -288,6 +201,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (value) => appState.setDisconnectAlertEnabled(value),
               ),
             ],
+          ]),
+
+          // Map Management
+          _buildSection(context, 'Map Management', [
+            if (!kIsWeb)
+              ListTile(
+                leading: const Icon(Icons.download_for_offline),
+                title: const Text('Offline Maps'),
+                subtitle: const Text('Download map regions for offline use'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const OfflineMapsScreen(),
+                    ),
+                  );
+                },
+              ),
+            SwitchListTile(
+              secondary: Icon(
+                  prefs.mapTilesEnabled ? Icons.cloud : Icons.cloud_off),
+              title: const Text('Use Downloaded Tiles Only'),
+              subtitle: Text(prefs.mapTilesEnabled
+                  ? 'Online tiles load normally'
+                  : 'Only downloaded regions are shown · no network tile requests'),
+              value: !prefs.mapTilesEnabled,
+              onChanged: (value) {
+                appState.updatePreferences(
+                    prefs.copyWith(mapTilesEnabled: !value));
+              },
+            ),
+            if (prefs.mapTilesEnabled)
+              ListTile(
+                leading: const Icon(Icons.opacity),
+                title: const Text('Coverage Overlay Opacity'),
+                subtitle: Slider(
+                  value: prefs.coverageOverlayOpacity.clamp(0.3, 1.0),
+                  min: 0.3,
+                  max: 1.0,
+                  divisions: 7,
+                  label: '${(prefs.coverageOverlayOpacity * 100).round()}%',
+                  onChanged: (value) =>
+                      appState.setCoverageOverlayOpacity(value),
+                ),
+                trailing:
+                    Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.visibility),
+              title: const Text('Color Vision'),
+              subtitle: Text(_colorVisionLabel(prefs.colorVisionType)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showColorVisionSelector(context, appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.place),
+              title: const Text('Map Marker Style'),
+              subtitle: Text(_markerStyleLabel(prefs.markerStyle)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showMarkerStyleSelector(context, appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.my_location),
+              title: const Text('GPS Marker'),
+              subtitle: Text(_gpsMarkerLabel(prefs.gpsMarkerStyle)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showGpsMarkerSelector(context, appState),
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.cell_tower),
+              title: const Text('Top Repeaters on Map'),
+              subtitle:
+                  const Text('Show top 3 repeaters by SNR from last ping'),
+              value: prefs.showTopRepeaters,
+              onChanged: (value) {
+                appState
+                    .updatePreferences(prefs.copyWith(showTopRepeaters: value));
+              },
+            ),
           ]),
 
           // Ping Settings
