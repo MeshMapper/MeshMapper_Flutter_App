@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:provider/provider.dart';
@@ -1103,16 +1104,24 @@ class _MapWidgetState extends State<MapWidget> {
     );
   }
 
+  /// Method channel to the iOS native bridge (AppDelegate.swift). iOS
+  /// maplibre_gl 0.25.0 has no `setOffline` implementation, so we ship our
+  /// own: a URLProtocol that fails tile requests fast while offline mode is
+  /// engaged, letting MapLibre-iOS render only its cached tiles.
+  static const _iosOfflineChannel =
+      MethodChannel('meshmapper/ios_map_offline');
+
   /// Toggle MapLibre between online (network tiles) and offline (cache-only).
-  ///
-  /// No-op on iOS: maplibre_gl 0.25.0 never implemented the `setOffline`
-  /// method handler on iOS, and MapLibre-iOS itself doesn't expose an
-  /// equivalent of Android's `ConnectivityReceiver` hook. The "Disable Map
-  /// Tiles" Settings switch is marked unavailable on iOS for the same reason.
+  /// Android uses the plugin's native `setOffline`; iOS uses our bridge.
   Future<void> _setOfflineIfSupported(bool offline) async {
-    if (kIsWeb || Platform.isIOS) return;
+    if (kIsWeb) return;
     try {
-      await setOffline(offline);
+      if (Platform.isIOS) {
+        await _iosOfflineChannel
+            .invokeMethod('setOffline', {'offline': offline});
+      } else {
+        await setOffline(offline);
+      }
       debugLog('[MAP] setOffline($offline) — '
           'tiles ${offline ? "cache-only" : "enabled"}');
     } catch (e) {

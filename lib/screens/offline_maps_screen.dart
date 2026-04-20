@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:math' show Point, max, min;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -7,6 +8,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
 import '../services/offline_map_service.dart';
+import '../services/tile_cache_service.dart';
 import '../utils/debug_logger_io.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/map_widget.dart' show MapStyle, MapStyleExtension;
@@ -31,12 +33,16 @@ class OfflineMapsScreen extends StatefulWidget {
 }
 
 class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
+  int? _tileCacheBytes;
+  bool _tileCacheBusy = false;
+
   @override
   void initState() {
     super.initState();
     // Listen for background download completions to show a toast.
     final service = context.read<OfflineMapService>();
     service.addListener(_onServiceUpdate);
+    _refreshTileCacheSize();
   }
 
   @override
@@ -46,6 +52,12 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
       context.read<OfflineMapService>().removeListener(_onServiceUpdate);
     } catch (_) {}
     super.dispose();
+  }
+
+  Future<void> _refreshTileCacheSize() async {
+    final bytes = await TileCacheService.instance.getCacheSizeBytes();
+    if (!mounted) return;
+    setState(() => _tileCacheBytes = bytes);
   }
 
   void _onServiceUpdate() {
@@ -76,6 +88,8 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
                   children: [
                     _buildStorageCard(context, service, theme, isDark),
+                    const SizedBox(height: 8),
+                    _buildTileCacheCard(theme),
                     const SizedBox(height: 8),
                     _buildDownloadedRegionsCard(
                         context, service, theme, isDark),
@@ -227,6 +241,164 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
   }
 
   // ──────────────────────────────────────────────
+  // Tile cache card (ambient cache — opportunistically cached tiles)
+  // ──────────────────────────────────────────────
+
+  Widget _buildTileCacheCard(ThemeData theme) {
+    final bytes = _tileCacheBytes;
+    final sizeDisplay = bytes == null
+        ? '—'
+        : bytes < 1024
+            ? '$bytes B'
+            : bytes < 1024 * 1024
+                ? '${(bytes / 1024).toStringAsFixed(1)} KB'
+                : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Tile Cache',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 20),
+                  onPressed: _tileCacheBusy ? null : _refreshTileCacheSize,
+                  tooltip: 'Refresh size',
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'On-disk size: $sizeDisplay',
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Includes both downloaded regions and opportunistically cached '
+              'tiles from normal map panning.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Colors.grey,
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _tileCacheBusy ? null : _onInvalidateTileCache,
+                    icon: const Icon(Icons.refresh_outlined, size: 18),
+                    label: const Text('Invalidate'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _tileCacheBusy ? null : _onClearTileCache,
+                    icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                    label: const Text('Clear'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onInvalidateTileCache() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Invalidate tile cache?'),
+        content: const Text(
+          'Marks cached tiles as stale so they refresh on next view. '
+          'Downloaded regions are not affected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Invalidate'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _tileCacheBusy = true);
+    try {
+      await TileCacheService.instance.invalidateAmbientCache();
+      if (!mounted) return;
+      AppToast.success(context, 'Tile cache invalidated');
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.error(context, 'Invalidate failed: $e');
+    } finally {
+      if (mounted) setState(() => _tileCacheBusy = false);
+      await _refreshTileCacheSize();
+    }
+  }
+
+  Future<void> _onClearTileCache() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear tile cache?'),
+        content: const Text(
+          'Removes opportunistically cached tiles from disk. '
+          'Downloaded regions are preserved.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _tileCacheBusy = true);
+    try {
+      await TileCacheService.instance.clearAmbientCache();
+      if (!mounted) return;
+      AppToast.success(context, 'Tile cache cleared');
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.error(context, 'Clear failed: $e');
+    } finally {
+      if (mounted) setState(() => _tileCacheBusy = false);
+      await _refreshTileCacheSize();
+    }
+  }
+
+  // ──────────────────────────────────────────────
   // Downloaded regions list
   // ──────────────────────────────────────────────
 
@@ -316,6 +488,19 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
 
   Widget _buildDownloadProgressCard(BuildContext context,
       OfflineMapService service, ThemeData theme, bool isDark) {
+    final progress = service.downloadProgress ?? 0;
+    final isPreparing = progress == 0;
+    final speed = service.downloadBytesPerSecond;
+    final eta = service.downloadEta;
+
+    String? stats;
+    if (!isPreparing) {
+      final parts = <String>[];
+      if (speed != null) parts.add(_formatSpeed(speed));
+      if (eta != null) parts.add('${_formatDuration(eta)} remaining');
+      if (parts.isNotEmpty) stats = parts.join(' · ');
+    }
+
     return Card(
       margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
@@ -354,7 +539,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                       ClipRRect(
                         borderRadius: BorderRadius.circular(4),
                         child: LinearProgressIndicator(
-                          value: service.downloadProgress ?? 0,
+                          value: isPreparing ? null : progress,
                           minHeight: 8,
                         ),
                       ),
@@ -363,14 +548,24 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  '${((service.downloadProgress ?? 0) * 100).round()}%',
+                  isPreparing ? '—' : '${(progress * 100).round()}%',
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
+            Text(
+              isPreparing
+                  ? 'Preparing download…'
+                  : (stats ?? 'Calculating speed…'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Colors.grey.shade600,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 6),
             Text(
               'Download continues in the background if you leave this screen',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
@@ -404,6 +599,30 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
         ),
       ),
     );
+  }
+
+  /// Formats bytes/sec into a short display string (e.g. "1.2 MB/s").
+  String _formatSpeed(double bytesPerSecond) {
+    if (bytesPerSecond < 1024) {
+      return '${bytesPerSecond.toStringAsFixed(0)} B/s';
+    }
+    if (bytesPerSecond < 1024 * 1024) {
+      return '${(bytesPerSecond / 1024).toStringAsFixed(1)} KB/s';
+    }
+    return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  }
+
+  /// Formats a Duration as a short human-readable string (e.g. "4m 20s").
+  String _formatDuration(Duration d) {
+    if (d.inSeconds < 60) return '${d.inSeconds}s';
+    if (d.inMinutes < 60) {
+      final s = d.inSeconds % 60;
+      return s == 0 ? '${d.inMinutes}m' : '${d.inMinutes}m ${s}s';
+    }
+    final minutes = d.inMinutes % 60;
+    return minutes == 0
+        ? '${d.inHours}h'
+        : '${d.inHours}h ${minutes}m';
   }
 
   Future<void> _confirmCancelDownload(
@@ -1375,30 +1594,42 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
       _error = null;
     });
 
-    // Await the service call. downloadRegion returns once the native
-    // downloader has accepted (or rejected) the job — actual tile fetches
-    // continue in the background after this returns. If validation fails
-    // (quota, free-space, style, antimeridian, etc.), lastError is set and
-    // isDownloading is false; otherwise the download is queued.
-    await service.downloadRegion(
+    // Kick off the download without awaiting the completer — that future
+    // resolves only on full completion (minutes later). We just need the
+    // download to reach the "active" state so we can pop back to the main
+    // screen where the progress card is visible.
+    unawaited(service.downloadRegion(
       name: name,
       bounds: bounds,
       styleUrl: styleUrl,
       styleName: _selectedStyle,
       minZoom: _minZoom,
       maxZoom: _maxZoom,
-    );
+    ));
+
+    // Wait briefly for the service to enter `isDownloading` or surface an
+    // early validation error (free-space, quota). The pre-download async
+    // checks complete in well under a second; cap at 2s to stay responsive.
+    final stopwatch = Stopwatch()..start();
+    while (mounted &&
+        stopwatch.elapsed < const Duration(seconds: 2) &&
+        !service.isDownloading &&
+        service.lastError == null) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
 
     if (!mounted) return;
 
-    if (!service.isDownloading && service.lastError != null) {
+    if (service.lastError != null) {
       setState(() {
         _submitting = false;
         _error = service.consumeLastError();
       });
       return;
     }
-    // Download is queued — return to the management screen.
+
+    // Either actively downloading, still starting, or queued behind another —
+    // in every case the user should see the main screen's progress card.
     Navigator.pop(context, true);
   }
 }
