@@ -1140,12 +1140,25 @@ class _MapWidgetState extends State<MapWidget> {
     // online (network tiles) and offline (cache-only) mode. This avoids
     // a full style reload — the same style stays loaded but MapLibre stops
     // or starts making network requests for tiles.
+    //
+    // When disabling tiles, also drop the coverage overlay source/layer:
+    // MapLibre's ambient cache would still serve previously-fetched tiles,
+    // but the overlay is a live-data layer and shouldn't linger on the map
+    // in an indeterminate half-cached state once the user opted out. When
+    // re-enabling, re-add it so it reappears without waiting for a style
+    // reload or cache-bust.
     final tilesEnabled = appState.preferences.mapTilesEnabled;
     if (_lastMapTilesEnabled != tilesEnabled && _isMapReady) {
+      final wasEnabled = _lastMapTilesEnabled;
       _lastMapTilesEnabled = tilesEnabled;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) return;
-        _setOfflineIfSupported(!tilesEnabled);
+        await _setOfflineIfSupported(!tilesEnabled);
+        if (wasEnabled == true && !tilesEnabled) {
+          await _removeCoverageOverlay();
+        } else if (wasEnabled == false && tilesEnabled && _styleLoaded) {
+          await _addCoverageOverlay(appState);
+        }
       });
     }
 

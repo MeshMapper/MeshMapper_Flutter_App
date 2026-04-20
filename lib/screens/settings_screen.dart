@@ -209,7 +209,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ListTile(
                 leading: const Icon(Icons.download_for_offline),
                 title: const Text('Offline Maps'),
-                subtitle: const Text('Download map regions for offline use'),
+                subtitle: const Text('Download map areas for offline use'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () {
                   Navigator.push(
@@ -226,7 +226,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: const Text('Use Downloaded Tiles Only'),
               subtitle: Text(prefs.mapTilesEnabled
                   ? 'Online tiles load normally'
-                  : 'Only downloaded regions are shown · no network tile requests'),
+                  : 'Only downloaded areas are shown · no network tile requests'),
               value: !prefs.mapTilesEnabled,
               onChanged: (value) {
                 appState.updatePreferences(

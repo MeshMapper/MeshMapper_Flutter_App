@@ -154,7 +154,7 @@ echo ""
 # Build iOS IPA
 echo "[3/3] Building iOS IPA..."
 (cd ios && pod install)
-flutter build ipa --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
+flutter build ipa --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY" --export-options-plist=ios/ExportOptions.plist
 cp build/ios/ipa/mesh_mapper.ipa "$IOS_DIR/MeshMapper-$FILE_TAG.ipa"
 echo "✓ Built: MeshMapper-$FILE_TAG.ipa"
 echo ""
