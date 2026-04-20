@@ -176,6 +176,38 @@ class OfflineMapService extends ChangeNotifier {
   /// quota pre-check so queued jobs can't jointly bust the limit.
   int _activeEstBytes = 0;
 
+  /// Rolling window of recent (timestamp, progress 0-1) samples used to
+  /// compute smoothed download speed and ETA. Oldest-first. Cleared on
+  /// download start/end/cancel.
+  final List<({DateTime at, double progress})> _progressSamples = [];
+  static const int _progressWindowSize = 5;
+
+  /// Instantaneous download speed in bytes/sec, computed over the last few
+  /// progress events. Null until at least two samples are available.
+  double? get downloadBytesPerSecond {
+    if (_progressSamples.length < 2 || _activeEstBytes <= 0) return null;
+    final first = _progressSamples.first;
+    final last = _progressSamples.last;
+    final seconds = last.at.difference(first.at).inMilliseconds / 1000.0;
+    if (seconds <= 0) return null;
+    final deltaBytes = (last.progress - first.progress) * _activeEstBytes;
+    if (deltaBytes <= 0) return null;
+    return deltaBytes / seconds;
+  }
+
+  /// Estimated time remaining based on the current smoothed speed. Null if
+  /// no speed data yet, or if the download is effectively stalled.
+  /// Capped at 99 minutes to keep the display sane during warm-up wobbles.
+  Duration? get downloadEta {
+    final bps = downloadBytesPerSecond;
+    final progress = _downloadProgress;
+    if (bps == null || bps <= 0 || progress == null) return null;
+    final remainingBytes = (1.0 - progress) * _activeEstBytes;
+    if (remainingBytes <= 0) return Duration.zero;
+    final seconds = (remainingBytes / bps).round();
+    return Duration(seconds: seconds.clamp(0, 99 * 60));
+  }
+
   /// FIFO queue of pending downloads. Drained one at a time after the
   /// current download finishes (or is cancelled).
   final List<_QueuedDownload> _queue = [];
@@ -516,6 +548,7 @@ class OfflineMapService extends ChangeNotifier {
     _downloadingRegionName = job.name;
     _activeCompleter = job.completer;
     _activeEstBytes = job.estBytes;
+    _progressSamples.clear();
     _lastError = null;
     _lastCompletedName = null;
     notifyListeners();
@@ -560,6 +593,7 @@ class OfflineMapService extends ChangeNotifier {
       _activeRegionId = null;
       _activeCompleter = null;
       _activeEstBytes = 0;
+      _progressSamples.clear();
       _lastError = 'Download failed (${e.runtimeType}): $e';
       notifyListeners();
       _showErrorNotification(job.name);
@@ -586,6 +620,7 @@ class OfflineMapService extends ChangeNotifier {
       _activeRegionId = null;
       _activeCompleter = null;
       _activeEstBytes = 0;
+      _progressSamples.clear();
       _lastCompletedName = name;
       notifyListeners();
       _showCompleteNotification(name);
@@ -607,7 +642,12 @@ class OfflineMapService extends ChangeNotifier {
         _drainQueue();
       });
     } else if (status is InProgress) {
-      _downloadProgress = status.progress / 100.0;
+      final progress = status.progress / 100.0;
+      _downloadProgress = progress;
+      _progressSamples.add((at: DateTime.now(), progress: progress));
+      if (_progressSamples.length > _progressWindowSize) {
+        _progressSamples.removeAt(0);
+      }
       notifyListeners();
       // Throttle notification updates to every 2% to avoid flooding
       final percent = status.progress.round();
@@ -645,6 +685,7 @@ class OfflineMapService extends ChangeNotifier {
       _activeRegionId = null;
       _activeCompleter = null;
       _activeEstBytes = 0;
+      _progressSamples.clear();
       _lastError = 'Download failed: $detail';
       _showErrorNotification(name);
       notifyListeners();
@@ -682,6 +723,7 @@ class OfflineMapService extends ChangeNotifier {
     _activeRegionId = null;
     _activeCompleter = null;
     _activeEstBytes = 0;
+    _progressSamples.clear();
     await _dismissProgressNotification();
     notifyListeners();
 

@@ -71,4 +71,10 @@ flutter {
 dependencies {
     // Required for flutter_local_notifications core library desugaring
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+
+    // MapLibre Android SDK — already pulled transitively by maplibre_gl, but
+    // declaring it explicitly gives MainActivity.kt compile-time access to
+    // OfflineManager for the tile cache MethodChannel handlers. Version must
+    // match maplibre_gl-0.25.0's transitive dep.
+    implementation("org.maplibre.gl:android-sdk:12.3.1")
 }
