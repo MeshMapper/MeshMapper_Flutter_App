@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:disk_space_plus/disk_space_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/debug_logger_io.dart';
+import 'tile_cache_service.dart';
 
 /// A pending download waiting in the FIFO queue.
 class _QueuedDownload {
@@ -51,7 +53,16 @@ class OfflineMapRegion {
   final double minZoom;
   final double maxZoom;
   final DateTime createdAt;
+
+  /// Heuristic size from tile count × 20 KB, captured at download time.
+  /// Used as a fallback when the native SDK hasn't reported actual bytes yet.
   final int estimatedBytes;
+
+  /// Real bytes consumed by this region as reported by the native MapLibre
+  /// SDK (`MLNOfflinePack.progress.countOfTileBytesCompleted` on iOS,
+  /// `OfflineRegionStatus.completedResourceSize` on Android). `null` when
+  /// the native map hasn't reported a size for this region yet.
+  final int? actualBytes;
 
   const OfflineMapRegion({
     required this.id,
@@ -62,9 +73,13 @@ class OfflineMapRegion {
     required this.maxZoom,
     required this.createdAt,
     required this.estimatedBytes,
+    this.actualBytes,
   });
 
-  factory OfflineMapRegion.fromOfflineRegion(OfflineRegion region) {
+  factory OfflineMapRegion.fromOfflineRegion(
+    OfflineRegion region, {
+    int? actualBytes,
+  }) {
     final meta = region.metadata;
     return OfflineMapRegion(
       id: region.id,
@@ -83,16 +98,20 @@ class OfflineMapRegion {
         final String s => int.tryParse(s) ?? 0,
         _ => 0,
       },
+      actualBytes: actualBytes,
     );
   }
 
+  /// Size to show in the UI — real bytes when the native SDK has reported
+  /// them, falling back to the download-time estimate otherwise.
+  int get sizeBytes => actualBytes ?? estimatedBytes;
+
   /// Human-readable size string.
   String get sizeDisplay {
-    if (estimatedBytes < 1024) return '$estimatedBytes B';
-    if (estimatedBytes < 1024 * 1024) {
-      return '${(estimatedBytes / 1024).toStringAsFixed(1)} KB';
-    }
-    return '${(estimatedBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    final b = sizeBytes;
+    if (b < 1024) return '$b B';
+    if (b < 1024 * 1024) return '${(b / 1024).toStringAsFixed(1)} KB';
+    return '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   /// Short bounds description (e.g. "49.2°N, 123.1°W").
@@ -139,16 +158,49 @@ class OfflineMapService extends ChangeNotifier {
   int get storageLimitMb => _storageLimitMb;
   int get storageLimitBytes => _storageLimitMb * 1024 * 1024;
 
-  /// Total estimated bytes across all downloaded regions.
-  int get totalUsedBytes =>
-      _regions.fold(0, (sum, r) => sum + r.estimatedBytes);
+  /// Actual on-disk cache.db size as reported by the native platform
+  /// (MapLibre stores downloaded regions and ambient tiles in one SQLite
+  /// file). Refreshed alongside [refreshRegions].
+  int _totalCacheBytes = 0;
+
+  /// Actual bytes used by downloaded regions alone (sum of per-region sizes
+  /// from the native SDK). The difference between this and [_totalCacheBytes]
+  /// is the ambient/auto-cached tile portion.
+  int _downloadsBytes = 0;
+
+  /// Total on-disk cache size (downloads + ambient, bytes).
+  int get totalUsedBytes => _totalCacheBytes;
+
+  /// Bytes attributed to explicit offline downloads.
+  int get downloadsBytes => _downloadsBytes;
+
+  /// Bytes attributed to tiles cached opportunistically while panning/zooming
+  /// the map (total minus explicit downloads, clamped ≥ 0 because the two
+  /// numbers come from different native queries and can briefly diverge).
+  int get ambientBytes =>
+      (_totalCacheBytes - _downloadsBytes).clamp(0, _totalCacheBytes);
 
   double get usageRatio {
     if (storageLimitBytes == 0) return 0;
     return (totalUsedBytes / storageLimitBytes).clamp(0.0, 1.0);
   }
 
+  /// Ratio of the storage bar filled by each bucket. Both clamp to [0,1] and
+  /// are computed against the limit so they visually add up against the same
+  /// denominator as [usageRatio].
+  double get downloadsRatio {
+    if (storageLimitBytes == 0) return 0;
+    return (_downloadsBytes / storageLimitBytes).clamp(0.0, 1.0);
+  }
+
+  double get ambientRatio {
+    if (storageLimitBytes == 0) return 0;
+    return (ambientBytes / storageLimitBytes).clamp(0.0, 1.0);
+  }
+
   String get totalUsedDisplay => _formatBytes(totalUsedBytes);
+  String get downloadsDisplay => _formatBytes(_downloadsBytes);
+  String get ambientDisplay => _formatBytes(ambientBytes);
   String get storageLimitDisplay => '$_storageLimitMb MB';
 
   // ── Download state ──
@@ -378,25 +430,49 @@ class OfflineMapService extends ChangeNotifier {
 
   // ── Region queries ──
 
-  /// Refresh the list of downloaded regions from MapLibre native storage.
+  /// Refresh the list of downloaded regions from MapLibre native storage,
+  /// along with per-region byte counts and the overall on-disk cache size.
   Future<void> refreshRegions() async {
     if (kIsWeb) return;
     try {
       final rawRegions = await getListOfRegions();
+      // Pull sizes and the total cache footprint in parallel. Both come from
+      // our platform channel so they share the same round-trip cost.
+      final results = await Future.wait([
+        TileCacheService.instance.getRegionSizes(),
+        TileCacheService.instance.getCacheSizeBytes(),
+      ]);
+      final sizes = results[0] as Map<int, int>;
+      final totalBytes = results[1] as int;
+
       final parsed = <OfflineMapRegion>[];
+      int downloadsSum = 0;
       for (final r in rawRegions) {
         try {
-          parsed.add(OfflineMapRegion.fromOfflineRegion(r));
+          final actual = sizes[r.id];
+          parsed.add(
+              OfflineMapRegion.fromOfflineRegion(r, actualBytes: actual));
+          downloadsSum += actual ?? 0;
         } catch (e) {
           debugWarn('[OFFLINE_MAP] Failed to parse region ${r.id}: $e');
         }
       }
       _regions = parsed;
       _regions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      _totalCacheBytes = totalBytes;
+      _downloadsBytes = downloadsSum;
       notifyListeners();
     } catch (e) {
       debugError('[OFFLINE_MAP] Failed to list regions: $e');
     }
+  }
+
+  /// Refresh only the overall cache size (fast path, no region enumeration).
+  /// Useful after ambient cache operations that don't change region state.
+  Future<void> refreshCacheSize() async {
+    if (kIsWeb) return;
+    _totalCacheBytes = await TileCacheService.instance.getCacheSizeBytes();
+    notifyListeners();
   }
 
   // ── Storage limit ──
@@ -415,29 +491,68 @@ class OfflineMapService extends ChangeNotifier {
 
   // ── Tile estimation ──
 
-  /// Estimate tile count for a region (rough heuristic).
-  /// Uses the standard 2^z tile count formula for each zoom level.
+  /// Native max zoom of the OpenFreeMap vector tileset. z15+ in the slider is
+  /// reachable but it's pure overzoom — MapLibre rasterizes z14 source tiles
+  /// for higher zooms without fetching new data. Capping the estimator loop
+  /// here keeps overzoom from being counted as additional downloads.
+  static const int _vectorTilesetMaxZoom = 14;
+
+  /// Web Mercator clamps latitude to ±~85.0511° (atan(sinh(π))); beyond that
+  /// the projection diverges. Using the literal here keeps the tile-Y math
+  /// stable if a user drags a corner near a pole.
+  static const double _mercatorLatLimit = 85.0511;
+
+  /// Average bytes per OpenFreeMap vector tile (MVT/PBF). Empirically ~2.4 KB
+  /// globally; we round up to 3 KB to leave a small margin without grossly
+  /// overestimating. Raster tiles would need a higher number (20–40 KB) but
+  /// the app only offers vector styles for offline download — if that ever
+  /// changes, this needs to be style-aware.
+  static const int _bytesPerVectorTile = 3 * 1024;
+
+  /// Estimate tile count for a region using proper Web Mercator tile math.
+  /// Iterates over each zoom level the SDK will actually fetch source tiles
+  /// for (capped at the tileset's native max zoom).
   static int estimateTileCount(
       LatLngBounds bounds, double minZoom, double maxZoom) {
+    final zMin = minZoom.floor();
+    final zMax = math.min(maxZoom.ceil(), _vectorTilesetMaxZoom);
+    if (zMax < zMin) return 0;
+
+    final latMin =
+        bounds.southwest.latitude.clamp(-_mercatorLatLimit, _mercatorLatLimit);
+    final latMax =
+        bounds.northeast.latitude.clamp(-_mercatorLatLimit, _mercatorLatLimit);
+    final lngMin = bounds.southwest.longitude;
+    final lngMax = bounds.northeast.longitude;
+
     int total = 0;
-    for (int z = minZoom.floor(); z <= maxZoom.ceil(); z++) {
-      final tilesPerSide = 1 << z; // 2^z
-      final lonFraction =
-          (bounds.northeast.longitude - bounds.southwest.longitude).abs() /
-              360.0;
-      final latFraction =
-          (bounds.northeast.latitude - bounds.southwest.latitude).abs() / 180.0;
-      final xTiles = (lonFraction * tilesPerSide).ceil().clamp(1, tilesPerSide);
-      final yTiles = (latFraction * tilesPerSide).ceil().clamp(1, tilesPerSide);
+    for (int z = zMin; z <= zMax; z++) {
+      final n = 1 << z;
+      final x0 = ((lngMin + 180.0) / 360.0 * n).floor().clamp(0, n - 1);
+      final x1 = ((lngMax + 180.0) / 360.0 * n).floor().clamp(0, n - 1);
+      final xTiles = (x1 - x0 + 1).clamp(1, n);
+      // North latitude → smaller tile Y in Mercator, so yNorth uses latMax.
+      final yNorth = _mercatorTileY(latMax, n);
+      final ySouth = _mercatorTileY(latMin, n);
+      final yTiles = (ySouth - yNorth + 1).clamp(1, n);
       total += xTiles * yTiles;
     }
     return total;
   }
 
-  /// Rough estimate of download size in bytes from tile count.
-  /// Vector tiles average ~15-25 KB each; raster tiles ~20-40 KB.
-  /// We use 20 KB as a middle estimate.
-  static int estimateSizeBytes(int tileCount) => tileCount * 20 * 1024;
+  /// Web Mercator tile-Y index for a given latitude at zoom level `2^z = n`.
+  static int _mercatorTileY(double latDeg, int n) {
+    final latRad = latDeg * math.pi / 180.0;
+    final y = (1 -
+            math.log(math.tan(latRad) + 1 / math.cos(latRad)) / math.pi) /
+        2 *
+        n;
+    return y.floor().clamp(0, n - 1);
+  }
+
+  /// Estimate download size in bytes from tile count.
+  static int estimateSizeBytes(int tileCount) =>
+      tileCount * _bytesPerVectorTile;
 
   /// Check if downloading a region of [estimatedBytes] would exceed the
   /// limit. Accounts for the currently-active download and any queued jobs

@@ -12,18 +12,26 @@ import flutter_background_service_ios
 ///
 /// Hosts are kept in sync with the map style URLs in map_widget.dart's
 /// MapStyleExtension.styleUrl (tiles.openfreemap.org) and the inline satellite
-/// style JSON (server.arcgisonline.com). The meshmapper.net coverage overlay
-/// isn't listed because _addCoverageOverlay already short-circuits when the
-/// preference is off — no network requests are made in that state.
+/// style JSON (server.arcgisonline.com). The coverage overlay uses per-zone
+/// subdomains of meshmapper.net (e.g. `on.meshmapper.net`, `qc.meshmapper.net`)
+/// so it's matched by suffix rather than an exact host entry. The Dart-side
+/// add-time guard in _addCoverageOverlay covers the "toggle on at startup"
+/// case; this suffix match covers the "toggle flipped while overlay is
+/// already on the map" case (the Dart code doesn't remove the layer on flip).
 class TileBlockingURLProtocol: URLProtocol {
   static let blockedHosts: Set<String> = [
     "tiles.openfreemap.org",
     "server.arcgisonline.com",
   ]
 
+  static let blockedHostSuffixes: [String] = [
+    ".meshmapper.net",
+  ]
+
   override class func canInit(with request: URLRequest) -> Bool {
     guard let host = request.url?.host else { return false }
-    return blockedHosts.contains(host)
+    if blockedHosts.contains(host) { return true }
+    return blockedHostSuffixes.contains { host.hasSuffix($0) }
   }
 
   override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -111,6 +119,8 @@ class IOSMapOfflineBridge {
         switch call.method {
         case "getCacheSize":
           result(AppDelegate.mapCacheSizeBytes())
+        case "getRegionSizes":
+          AppDelegate.regionSizes(result: result)
         case "clearAmbientCache":
           MLNOfflineStorage.shared.clearAmbientCache { error in
             if let error = error {
@@ -140,6 +150,35 @@ class IOSMapOfflineBridge {
     }
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  /// Per-region downloaded byte counts, keyed by the Dart-side region ID that
+  /// maplibre_gl embeds in each pack's context JSON (`{"id": Int, "metadata": …}`
+  /// — see OfflineRegion.swift in the maplibre_gl plugin). Reads
+  /// `pack.progress.countOfTileBytesCompleted`, which is the byte size of tile
+  /// resources (style/sprite/glyph resources live outside this number but are
+  /// included in the overall cache.db file total reported by `getCacheSize`).
+  ///
+  /// Returns `{ idInt64 : bytesInt64 }` over the platform channel. Packs whose
+  /// context can't be decoded are skipped.
+  private static func regionSizes(result: @escaping FlutterResult) {
+    // `.packs` is nil until MLNOfflineStorage finishes its initial database
+    // load. In practice the maplibre_gl plugin forces that load early, but we
+    // return an empty map rather than failing if we're called first.
+    guard let packs = MLNOfflineStorage.shared.packs else {
+      result([Int64: Int64]())
+      return
+    }
+    var sizes: [Int64: Int64] = [:]
+    for pack in packs {
+      guard let ctx = try? JSONSerialization.jsonObject(with: pack.context),
+            let dict = ctx as? [String: Any],
+            let id = dict["id"] as? Int else {
+        continue
+      }
+      sizes[Int64(id)] = Int64(pack.progress.countOfTileBytesCompleted)
+    }
+    result(sizes)
   }
 
   /// Mirrors `MapLibreMapsPlugin.getTilesUrl()`: the maplibre_gl iOS plugin
