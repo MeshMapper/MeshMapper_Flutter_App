@@ -88,6 +88,17 @@ class RepeaterIdChip extends StatelessWidget {
     final appState = Provider.of<AppStateProvider>(context, listen: false);
     final repeaters = appState.repeaters;
 
+    final matchKey = fullHexId != null && fullHexId.length >= 8
+        ? fullHexId.substring(0, 8)
+        : repeaterId;
+    final matchCount = repeaters
+        .where((r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
+        .length;
+    debugLog('[UI] Repeater popup tap: id=$repeaterId, '
+        'fullHex=${fullHexId ?? "(none)"}, matchKey=$matchKey, '
+        'repeaters=${repeaters.length}, matches=$matchCount, '
+        'zone=${appState.zoneCode ?? "(none)"}');
+
     final Widget content;
 
     if (repeaters.isEmpty) {
@@ -103,12 +114,6 @@ class RepeaterIdChip extends StatelessWidget {
         ),
       );
     } else {
-      // DISC pings provide the full public key — match first 8 hex chars
-      // (4 bytes) against repeater hexId for exact identification.
-      // TX/RX pings only have 1-byte IDs so fall back to prefix matching.
-      final matchKey = fullHexId != null && fullHexId.length >= 8
-          ? fullHexId.substring(0, 8)
-          : repeaterId;
       final matches = repeaters
           .where(
               (r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
