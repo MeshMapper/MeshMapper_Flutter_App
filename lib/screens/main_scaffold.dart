@@ -27,6 +27,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
   bool _hasShownLocationSettingsPrompt = false;
+  bool _floodDisabledDialogOpen = false;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -133,6 +134,31 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
+  Future<void> _showFloodDisabledDialog() async {
+    final appState = context.read<AppStateProvider>();
+    debugLog('[APP] Showing flood-traffic-disabled-by-region alert');
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Flood Traffic Unavailable'),
+        content: const Text(
+          'Your regional MeshMapper admin has disabled flood traffic in this '
+          'area, so Active and Hybrid modes have been turned off for this '
+          'session. Passive Mode and Trace Mode remain available. Please '
+          'reach out to your regional admin if you have questions.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    appState.clearFloodDisabledAlert();
+    _floodDisabledDialogOpen = false;
+  }
+
   void _showLocationSettingsPrompt() {
     if (!mounted || _hasShownLocationSettingsPrompt) return;
     _hasShownLocationSettingsPrompt = true;
@@ -185,6 +211,16 @@ class _MainScaffoldState extends State<MainScaffold> {
           });
           appState.clearConnectionTabSwitchRequest();
         }
+      });
+    }
+
+    // Listen for flood-traffic-disabled-by-region alert (user had it on,
+    // region forced it off on auth/zone-change)
+    if (appState.floodDisabledAlertPending && !_floodDisabledDialogOpen) {
+      _floodDisabledDialogOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _showFloodDisabledDialog();
       });
     }
 

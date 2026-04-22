@@ -607,6 +607,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get enforceDiscDrop => _apiService.enforceDiscDrop;
   bool get discDropEnabled =>
       _preferences.discDropEnabled || _apiService.enforceDiscDrop;
+
+  /// Whether the current region forbids flood traffic (region override).
+  bool get floodDisabled => _apiService.floodDisabled;
+
+  /// Effective flood-traffic visibility: region veto wins over user pref.
+  bool get floodTrafficEnabled =>
+      !_apiService.floodDisabled && _preferences.floodTrafficEnabled;
+
+  /// One-shot flag: true when the user had flood traffic enabled and the
+  /// region forced it off on auth/zone-change. UI shows a dialog, then calls
+  /// [clearFloodDisabledAlert].
+  bool _floodDisabledAlertPending = false;
+  bool get floodDisabledAlertPending => _floodDisabledAlertPending;
+  void clearFloodDisabledAlert() {
+    if (!_floodDisabledAlertPending) return;
+    _floodDisabledAlertPending = false;
+    notifyListeners();
+  }
   int get minModeInterval => _apiService.minModeInterval;
   bool get enforceHopBytes => _apiService.enforceHopBytes;
   int get hopBytes => _hopBytes;
@@ -1467,6 +1485,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
         _preferences = _preferences.copyWith(discDropEnabled: true);
         debugLog('[CONN] Discovery drop force-enabled by regional admin');
+      }
+
+      // Sync Flood Traffic preference with regional policy:
+      //  - flood_disabled=true  → force OFF (region forbids)
+      //  - flood_disabled=false → force ON  (region permits, user lands ready)
+      // Fire a one-shot alert only on user-on → region-off transition.
+      final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
+      final shouldEnableFlood = !_apiService.floodDisabled;
+      if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
+        _preferences =
+            _preferences.copyWith(floodTrafficEnabled: shouldEnableFlood);
+        debugLog(shouldEnableFlood
+            ? '[CONN] Flood traffic auto-enabled (region permits)'
+            : '[CONN] Flood traffic disabled by regional admin');
+      }
+      if (wasFloodEnabledByUser && _apiService.floodDisabled) {
+        _floodDisabledAlertPending = true;
       }
 
       // Enforce minimum auto-ping interval if required by regional admin
@@ -5302,6 +5337,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
         _preferences = _preferences.copyWith(discDropEnabled: true);
         debugLog('[ZONE] Discovery drop force-enabled by new zone admin');
+      }
+      final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
+      final shouldEnableFlood = !_apiService.floodDisabled;
+      if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
+        _preferences =
+            _preferences.copyWith(floodTrafficEnabled: shouldEnableFlood);
+        debugLog(shouldEnableFlood
+            ? '[ZONE] Flood traffic auto-enabled (new zone permits)'
+            : '[ZONE] Flood traffic disabled by new zone admin');
+      }
+      if (wasFloodEnabledByUser && _apiService.floodDisabled) {
+        _floodDisabledAlertPending = true;
       }
       if (_preferences.autoPingInterval < _apiService.minModeInterval) {
         _preferences = _preferences.copyWith(
