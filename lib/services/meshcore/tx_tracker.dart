@@ -7,9 +7,36 @@ import 'crypto_service.dart';
 import 'packet_metadata.dart';
 import 'packet_validator.dart';
 
+/// Classification result from [TxTracker.handlePacket].
+///
+/// [ownPingNotTracked] is the key signal the unified RX handler needs to
+/// suppress passive RX logging of our own ping's echo when it can't be
+/// credited as a TX echo (multi-hop, RSSI failsafe, user-filtered, or
+/// arrived after the 5s echo window closed).
+enum TxTrackerResult {
+  /// Valid repeater echo — recorded as a TX success for this ping.
+  tracked,
+
+  /// Confirmed echo of our own recently-sent ping, but not trackable as a
+  /// TX success. Caller MUST NOT route this to the passive RX logger —
+  /// doing so produces misleading blue RX markers and polluted API payloads
+  /// where we post our own ping back to MeshMapper as a passive observation.
+  ownPingNotTracked,
+
+  /// Packet is not an echo of our ping (different channel, different
+  /// content, or no recent ping context). Caller may route to the passive
+  /// RX logger as usual.
+  notOurPing,
+}
+
 /// TX echo tracker for repeater detection during 5-second window
 /// Reference: handleTxLogging() in wardrive.js (lines 3561-3710)
 class TxTracker {
+  /// Window during which we still identify our own ping's echoes, even after
+  /// [stopTracking] has fired. Covers echoes that arrive between the 5s echo
+  /// window closing and the RX listening window closing (BLE ack latency +
+  /// multi-hop propagation can easily push echoes past the 5s mark).
+  static const Duration _ownEchoAbsorbWindow = Duration(seconds: 10);
   bool isListening = false;
   DateTime? sentTimestamp;
   String? sentPayload;

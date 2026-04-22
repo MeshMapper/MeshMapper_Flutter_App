@@ -49,6 +49,7 @@ class ApiService {
   List<String> _scopes = [];
   bool _enforceHybrid = false;
   bool _enforceDiscDrop = false;
+  bool _floodDisabled = false;
   int _minModeInterval = 15;
   int _apiHopBytes = 1;
 
@@ -67,6 +68,9 @@ class ApiService {
 
   /// Whether discovery drop is enforced by regional admin
   bool get enforceDiscDrop => _enforceDiscDrop;
+
+  /// Whether flood traffic (Active/Hybrid modes) is disabled by regional admin
+  bool get floodDisabled => _floodDisabled;
 
   /// Minimum auto-ping interval enforced by regional admin (seconds)
   int get minModeInterval => _minModeInterval;
@@ -440,6 +444,18 @@ class ApiService {
           _enforceDiscDrop = data['disc_drop'] == true;
           if (_enforceDiscDrop) {
             debugLog('[API] Regional admin enforces discovery drop');
+          }
+
+          // Parse flood_disabled flag from auth response
+          _floodDisabled = data['flood_disabled'] == true;
+          if (_floodDisabled) {
+            debugLog('[API] Regional admin has disabled flood traffic');
+          }
+
+          // Parse flood_disabled flag from auth response
+          _floodDisabled = data['flood_disabled'] == true;
+          if (_floodDisabled) {
+            debugLog('[API] Regional admin has disabled flood traffic');
           }
 
           // Parse min_mode_interval from auth response
@@ -832,6 +848,7 @@ class ApiService {
     _scopes = [];
     _enforceHybrid = false;
     _enforceDiscDrop = false;
+    _floodDisabled = false;
     _minModeInterval = 15;
     _apiHopBytes = 1;
     _heartbeatTimer?.cancel();

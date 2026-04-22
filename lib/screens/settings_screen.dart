@@ -345,6 +345,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Modes
           _buildSection(context, 'Modes', [
             SwitchListTile(
+              secondary: const Icon(Icons.waves),
+              title: const Text('Flood Traffic'),
+              subtitle: appState.floodDisabled
+                  ? const Text(
+                      'Set by Regional Admin — flood traffic is disabled in this region. Active and Hybrid modes are unavailable here.',
+                      style: TextStyle(color: Colors.amber),
+                    )
+                  : const Text(
+                      'Show Active, Hybrid, and manual Send Ping controls'),
+              value: appState.floodDisabled ? false : prefs.floodTrafficEnabled,
+              onChanged: (isAutoMode || appState.floodDisabled)
+                  ? null
+                  : (value) {
+                      appState.updatePreferences(
+                          prefs.copyWith(floodTrafficEnabled: value));
+                    },
+            ),
+            SwitchListTile(
               secondary: const Icon(Icons.compare_arrows),
               title: Row(
                 children: [
