@@ -97,13 +97,15 @@ class PingControls extends StatelessWidget {
     }
     // Note: cooldown and tooClose are shown on button itself
 
+    final floodTrafficVisible = appState.floodTrafficEnabled;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         // Action buttons row
         Row(
           children: [
-            if (!txNotAllowed) ...[
+            if (!txNotAllowed && floodTrafficVisible) ...[
               // Send Ping button
               // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Cooldown Xs" → "Send Ping"
               // Manual pings use 15-second cooldown, no distance requirement
@@ -1100,13 +1102,15 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       },
     );
 
+    final floodTrafficVisible = appState.floodTrafficEnabled;
+
     // Layout logic:
     // - If button is expanded (including during cooldown): stays big
     // - If no button is expanded: all colored buttons share space equally
     // - Grey non-expanded buttons are icon-only
     return Row(
       children: [
-        if (!txNotAllowed) ...[
+        if (!txNotAllowed && floodTrafficVisible) ...[
           // Send Ping - expanded buttons stay big even when grey (cooldown)
           if (sendPingExpanded)
             Expanded(child: sendPingButton)
@@ -1404,6 +1408,8 @@ class LandscapePingControls extends StatelessWidget {
         prefs.powerLevelSet ||
         appState.deviceModel != null;
 
+    final floodTrafficVisible = appState.floodTrafficEnabled;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1420,7 +1426,7 @@ class LandscapePingControls extends StatelessWidget {
         // Action buttons row (icon-only)
         Row(
           children: [
-            if (!txNotAllowed) ...[
+            if (!txNotAllowed && floodTrafficVisible) ...[
               // TX Ping button
               Expanded(
                 child: _LandscapeIconButton(

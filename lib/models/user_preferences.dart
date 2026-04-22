@@ -73,6 +73,11 @@ class UserPreferences {
   /// Discovery drop: count failed discoveries as failed pings and report to API
   final bool discDropEnabled;
 
+  /// Flood traffic enabled — gates display of Send Ping + Active + Hybrid
+  /// controls. Default off; auto-flipped by the auth response's flood_disabled
+  /// flag when the region allows flooding.
+  final bool floodTrafficEnabled;
+
   /// Delete wardriving channel from radio on disconnect
   final bool deleteChannelOnDisconnect;
 
@@ -145,6 +150,7 @@ class UserPreferences {
     this.disableRssiFilter = false,
     this.anonymousMode = false,
     this.discDropEnabled = false,
+    this.floodTrafficEnabled = false,
     this.deleteChannelOnDisconnect = true,
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
@@ -190,6 +196,7 @@ class UserPreferences {
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
+      floodTrafficEnabled: (json['floodTrafficEnabled'] as bool?) ?? false,
       deleteChannelOnDisconnect:
           (json['deleteChannelOnDisconnect'] as bool?) ?? true,
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
@@ -247,6 +254,7 @@ class UserPreferences {
       'disableRssiFilter': disableRssiFilter,
       'anonymousMode': anonymousMode,
       'discDropEnabled': discDropEnabled,
+      'floodTrafficEnabled': floodTrafficEnabled,
       'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
@@ -291,6 +299,7 @@ class UserPreferences {
     bool? disableRssiFilter,
     bool? anonymousMode,
     bool? discDropEnabled,
+    bool? floodTrafficEnabled,
     bool? deleteChannelOnDisconnect,
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
@@ -334,6 +343,7 @@ class UserPreferences {
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
+      floodTrafficEnabled: floodTrafficEnabled ?? this.floodTrafficEnabled,
       deleteChannelOnDisconnect:
           deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
       minPingDistanceMeters:
@@ -410,6 +420,7 @@ class UserPreferences {
         other.disableRssiFilter == disableRssiFilter &&
         other.anonymousMode == anonymousMode &&
         other.discDropEnabled == discDropEnabled &&
+        other.floodTrafficEnabled == floodTrafficEnabled &&
         other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
@@ -453,6 +464,7 @@ class UserPreferences {
       disableRssiFilter,
       anonymousMode,
       discDropEnabled,
+      floodTrafficEnabled,
       deleteChannelOnDisconnect,
       minPingDistanceMeters,
       autoStopAfterIdle,
