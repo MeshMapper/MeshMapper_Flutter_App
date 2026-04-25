@@ -130,6 +130,7 @@ class AudioService {
 
     try {
       await box.put(_enabledKey, _enabled);
+      await box.flush();
       debugLog('[AUDIO] Saved enabled state: $_enabled');
     } catch (e) {
       debugError('[AUDIO] Failed to save enabled state: $e');
@@ -345,6 +346,7 @@ class AudioService {
     if (box == null) return;
     try {
       await box.put(key, value);
+      await box.flush();
     } catch (e) {
       debugError('[AUDIO] Failed to save $key: $e');
     }

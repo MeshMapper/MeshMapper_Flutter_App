@@ -91,13 +91,10 @@ Future<String> _loadInitialThemeMode() async {
       }
     }
   } catch (e) {
-    debugLog('[HIVE] Failed to load initial theme: $e - deleting corrupt box');
-    // Delete corrupt box so AppStateProvider gets a clean start
-    try {
-      await Hive.deleteBoxFromDisk('user_preferences');
-    } catch (e) {
-      debugLog('[INIT] Failed to delete corrupt preferences box: $e');
-    }
+    debugLog('[HIVE] Initial theme load failed (non-fatal): $e');
+    // Do NOT delete the box here. A transient open timeout would wipe every
+    // saved setting. AppStateProvider's _attemptHiveRecovery handles real
+    // corruption later with a user-visible logError() notification.
   }
   return 'dark'; // Default to dark mode
 }
