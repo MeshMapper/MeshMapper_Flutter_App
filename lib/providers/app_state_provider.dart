@@ -5945,6 +5945,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       await box.put('preferences', _preferences.toJson());
+      await box.flush();
       debugLog('[APP] Saved preferences');
     } catch (e) {
       debugLog('[APP] Failed to save preferences: $e');
@@ -5979,6 +5980,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       await box.put('device_antenna_preferences', _deviceAntennaPreferences);
+      await box.flush();
     } catch (e) {
       debugLog('[APP] Failed to save device antenna preferences: $e');
     }
@@ -6015,6 +6017,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       await box.put('device_power_overrides', _devicePowerOverrides);
+      await box.flush();
     } catch (e) {
       debugLog('[APP] Failed to save device power overrides: $e');
     }
