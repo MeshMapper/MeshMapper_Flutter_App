@@ -459,6 +459,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const _repeaterClusterBubbleLayerId = 'repeaters-cluster-bubble';
   static const _repeaterClusterCountLayerId = 'repeaters-cluster-count';
 
+  // Spiderfy source/layer IDs — non-clustered shadow source rendering spread
+  // markers + leader lines for stacked repeaters that won't separate by zoom.
+  static const _spiderSourceId = 'spider-source';
+  static const _spiderLineLayerId = 'spider-leader-lines';
+  static const _spiderSymbolLayerId = 'spider-symbols';
+  // Matches the main source's clusterRadius (50px). Reused by the spiderfy
+  // group-detection logic: pairs of repeaters within `clusterRadius × m/px
+  // at the user's max zoom` of each other will visually overlap even when
+  // fully zoomed in, so they're the candidates that won't be separated by
+  // additional zoom and need to be spread apart instead.
+  static const double _clusterRadiusPx = 50;
+  static const double _spiderInnerRadiusPx = 44;
+  static const double _spiderOuterRadiusPx = 80;
+  static const double _leaderLineEndShortenPx = 8;
+  // Camera-zoom delta past which an open spider must collapse (positions are
+  // pixel-radius derived and become wrong if the user zooms far enough).
+  static const double _spiderCollapseZoomDelta = 0.25;
+
   // Regional boundary (from /border API — always visible)
   static const _regionBorderSourceId = 'region-border-source';
   static const _regionBorderLineLayerId = 'region-border-line';
@@ -474,6 +492,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   // Last bearing seen by camera listener (for non-rotating GPS counter-rotation)
   double _lastBearing = 0;
+
+  // Spiderfy state — when non-null, a stack of stacked repeaters has been
+  // fanned out around _spiderCenter into the shadow `spider-source`.
+  // Lifecycle: set by _spiderfy(), cleared by _collapseSpider().
+  LatLng? _spiderCenter;
+  List<Repeater> _spiderRepeaters = const [];
+  // Captured on _spiderfy() so _onCameraChanged can detect a zoom delta past
+  // _spiderCollapseZoomDelta and collapse (positions become invalid).
+  double? _spiderOpenedAtZoom;
 
   // Default center (Ottawa)
   static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
@@ -527,6 +554,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (!mounted || _mapController == null) return;
     final pos = _mapController!.cameraPosition;
     if (pos == null) return;
+
+    // If a spider is open and the user has zoomed past the collapse-delta
+    // threshold, drop the spider — pixel-radius spread positions are now wrong
+    // for the new zoom. Pure pan never crosses this threshold (zoom doesn't
+    // change), so the spider follows pan naturally via its geo coordinates.
+    // Once `_spiderCenter` is null after collapse, this branch no-ops.
+    if (_spiderCenter != null && _spiderOpenedAtZoom != null) {
+      if ((pos.zoom - _spiderOpenedAtZoom!).abs() > _spiderCollapseZoomDelta) {
+        _collapseSpider();
+      }
+    }
+
     if ((pos.bearing - _lastBearing).abs() < 0.5) return;
     _lastBearing = pos.bearing;
     _updateGpsSymbolRotation();
@@ -1298,12 +1337,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           onStyleLoadedCallback: () => _onStyleLoaded(appState),
           onMapIdle: _onMapIdle,
           onCameraIdle: _onCameraIdle,
-          // NOTE: we do NOT pass onMapClick here. The iOS plugin's
-          // handleMapTap fires `feature#onTap` when a tap hits any
-          // interactive layer (including our cluster source layers) and
-          // does NOT fire `map#onMapClick` in that case. We register a
-          // listener on `controller.onFeatureTapped` in _onMapCreated
-          // instead — that fires for taps on custom layer features.
+          // onMapClick fires ONLY for taps that DON'T hit an interactive
+          // layer (the iOS/Android plugin routes feature hits to
+          // `feature#onTap` and doesn't dispatch onMapClick in that case).
+          // That's exactly what we need for the empty-area-collapse path —
+          // tapping the map background closes any open spider.
+          // Custom-layer feature taps still flow through
+          // `controller.onFeatureTapped` (registered in _onMapCreated).
+          onMapClick: _onMapEmptyTap,
         ),
         // No widget marker overlay — markers are now native MapLibre
         // annotations rendered by the platform view itself.
@@ -1371,6 +1412,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
+  /// Fires for taps on the map background that don't hit any interactive
+  /// custom-layer feature. Used to close an open spider when the user taps
+  /// somewhere outside the spread / cluster — the standard "click empty
+  /// area to dismiss" interaction. Wired via the MapLibreMap `onMapClick`
+  /// parameter.
+  void _onMapEmptyTap(math.Point<double> point, LatLng coordinates) {
+    if (!mounted) return;
+    if (_spiderCenter != null) {
+      _collapseSpider();
+    }
+  }
+
   /// Handles taps on custom layer features (repeater cluster bubbles and
   /// individual repeaters). Wired in [_onMapCreated] via
   /// `controller.onFeatureTapped.add(_handleFeatureTap)`.
@@ -1398,13 +1451,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   ) {
     if (!mounted) return;
 
-    // Cluster tap: just zoom in. We accept hits on EITHER the bubble circle
-    // layer OR the count-text symbol layer that sits on top of it. The
-    // platform-side hit-test iterates layers top-down and returns the first
-    // feature it finds; for cluster taps, the centered count text usually
-    // gets hit before the underlying bubble, so we have to recognise both
-    // layer IDs as "user tapped a cluster". Either way the action is the
-    // same: animate-zoom in 2 levels around the tap point.
+    // Spider spread marker: open the detail sheet for the tapped repeater.
+    // Spider stays open — users frequently compare stacked repeaters back to
+    // back, so collapsing on every selection would be annoying.
+    if (layerId == _spiderSymbolLayerId) {
+      _showRepeaterDetailsById(id);
+      return;
+    }
+
+    // Cluster tap: zoom in by default, but spiderfy first when the cluster
+    // contains markers stacked tightly enough that no further zoom would
+    // separate them. We accept hits on either the bubble circle layer or
+    // the count-text symbol layer (either may win the platform-side
+    // top-down hit-test depending on tap position).
     //
     // The explicit 200ms duration is important for perceived responsiveness.
     // Without it, iOS uses setCamera(animated: true) which has a slow ease-in
@@ -1413,23 +1472,70 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // finishes in 200ms, making the tap feel "instant" rather than delayed.
     if (layerId == _repeaterClusterBubbleLayerId ||
         layerId == _repeaterClusterCountLayerId) {
-      if (_canAnimateCamera) {
-        final currentZoom =
-            _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-        final newZoom = math.min(currentZoom + 2, 17.0);
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLngZoom(coordinates, newZoom),
-          duration: const Duration(milliseconds: 200),
-        );
+      // Spiderfy is gated to max zoom. Below that, give the user a chance
+      // to separate the stack by zooming further before we resort to the
+      // spread UI. Note that `_spiderCenter` is always null at non-max
+      // zoom (the camera-change collapse fires when the user zooms out
+      // from max), so no collapse-handling is needed in this branch.
+      if (!_isAtMaxZoom()) {
+        if (_canAnimateCamera) {
+          final currentZoom =
+              _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+          final newZoom = math.min(currentZoom + 2, _maxUserZoom);
+          _mapController?.animateCamera(
+            CameraUpdate.newLatLngZoom(coordinates, newZoom),
+            duration: const Duration(milliseconds: 200),
+          );
+        }
+        return;
       }
+
+      final appState = context.read<AppStateProvider>();
+      final group = _findSpiderGroup(coordinates, appState);
+
+      // Re-tap on the open spider's own group → collapse instead of churn.
+      if (_spiderCenter != null) {
+        final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+        if (group.any((r) => spiderIds.contains(r.id))) {
+          _collapseSpider();
+          return;
+        }
+        // Tapped a different cluster — close the existing spider before
+        // evaluating the new tap.
+        _collapseSpider();
+      }
+
+      if (group.length >= 2) {
+        _spiderfy(coordinates, group);
+      }
+      // Already at max zoom with a single-marker group: nothing useful to
+      // zoom into and no stack to spread. Silent no-op.
       return;
     }
 
-    // Individual repeater: look up by id (which is repeater.id) and open the
-    // existing detail sheet. We recompute isDuplicate and hopOverride from
-    // app state rather than carrying them in feature properties — the values
-    // are cheap to derive and always reflect the latest data.
+    // Individual repeater: open the detail sheet. At max zoom we ALSO check
+    // for stacked siblings within the spider stick threshold and spread them
+    // out (covers the rare case where clustering didn't pick them up — e.g.
+    // identical-coordinate markers that just slipped past clusterRadius
+    // due to a recent data update). Below max zoom, spiderfy is disabled —
+    // the user is expected to zoom further first.
     if (layerId == _repeaterIndividualLayerId) {
+      // If a spider is open and the user tapped a non-spider individual
+      // (originals are filtered out via `inSpider`, so this can only be a
+      // marker outside the spider's group), collapse the existing spider.
+      if (_spiderCenter != null) {
+        _collapseSpider();
+      }
+
+      if (_isAtMaxZoom()) {
+        final appState = context.read<AppStateProvider>();
+        final group = _findSpiderGroup(coordinates, appState);
+        if (group.length >= 2) {
+          _spiderfy(coordinates, group);
+          return;
+        }
+      }
+
       _showRepeaterDetailsById(id);
       return;
     }
@@ -1468,9 +1574,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   ) async {
     if (_mapController == null) return;
     try {
+      // Query the spider symbols FIRST so a tap on a spread marker hidden
+      // under the GPS overlay still routes to the spider's detail sheet
+      // (rather than the original repeater layer beneath it).
       final features = await _mapController!.queryRenderedFeatures(
         point,
         const [
+          _spiderSymbolLayerId,
           _repeaterClusterCountLayerId,
           _repeaterClusterBubbleLayerId,
           _repeaterIndividualLayerId,
@@ -1486,28 +1596,65 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final properties = (feature['properties'] as Map?) ?? {};
 
       // Cluster (auto-tagged by MapLibre when cluster: true is set on source).
-      // Same explicit 200ms duration as the direct cluster path in
-      // _handleFeatureTap so both tap routes feel identical.
+      // Mirrors the cluster path in _handleFeatureTap, including the
+      // max-zoom gate on spiderfy.
       if (properties['cluster'] == true) {
-        if (_canAnimateCamera) {
-          final currentZoom =
-              _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-          final newZoom = math.min(currentZoom + 2, 17.0);
-          _mapController?.animateCamera(
-            CameraUpdate.newLatLngZoom(coordinates, newZoom),
-            duration: const Duration(milliseconds: 200),
-          );
+        if (!_isAtMaxZoom()) {
+          if (_canAnimateCamera) {
+            final currentZoom =
+                _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+            final newZoom = math.min(currentZoom + 2, _maxUserZoom);
+            _mapController?.animateCamera(
+              CameraUpdate.newLatLngZoom(coordinates, newZoom),
+              duration: const Duration(milliseconds: 200),
+            );
+          }
+          return;
+        }
+        final appState = context.read<AppStateProvider>();
+        final group = _findSpiderGroup(coordinates, appState);
+        if (_spiderCenter != null) {
+          final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+          if (group.any((r) => spiderIds.contains(r.id))) {
+            _collapseSpider();
+            return;
+          }
+          _collapseSpider();
+        }
+        if (group.length >= 2) {
+          _spiderfy(coordinates, group);
         }
         return;
       }
 
-      // Individual repeater. The feature `id` field is the repeater.id we set
-      // in _buildRepeaterFeatureCollection (or fall back to the property).
+      // Individual repeater (cluster or spider symbol). The feature `id`
+      // field is the repeater.id we set in our feature builders. Spider
+      // symbols never need spiderfy expansion — they ARE the spread; just
+      // open the detail sheet and leave the spider open.
       final repeaterId =
           (feature['id'] ?? properties['repeaterId'])?.toString();
-      if (repeaterId != null) {
-        _showRepeaterDetailsById(repeaterId);
+      if (repeaterId == null) return;
+
+      // For an individual layer hit (not a spider symbol), apply the same
+      // stacked-siblings test as the direct tap path — but ONLY at max zoom.
+      // queryRenderedFeatures doesn't expose layerId per result in 0.25, so
+      // we infer: if a spider is open, the original individuals are filtered
+      // out, so any individual hit must be a non-stacked marker → just open
+      // the detail sheet. If no spider is open AND we're at max zoom, run
+      // the spiderfy test.
+      if (_spiderCenter != null) {
+        // User tapped outside the open spider's group — collapse + show
+        // detail sheet for the tapped marker.
+        _collapseSpider();
+      } else if (_isAtMaxZoom()) {
+        final appState = context.read<AppStateProvider>();
+        final group = _findSpiderGroup(coordinates, appState);
+        if (group.length >= 2) {
+          _spiderfy(coordinates, group);
+          return;
+        }
       }
+      _showRepeaterDetailsById(repeaterId);
     } catch (e) {
       debugError('[MAP] queryRenderedFeatures fall-through failed: $e');
     }
@@ -1973,6 +2120,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final hopOverride =
         appState.enforceHopBytes ? appState.effectiveHopBytes : null;
     final focusActive = _focusedPingLocation != null;
+    // While a spider is open, repeaters in the spread set are tagged with
+    // `inSpider:true`. The individual symbol layer's filter excludes those
+    // features so the spread markers from `_spiderSourceId` render in their
+    // place. Cluster aggregation is not affected — the cluster bubble keeps
+    // its full point_count.
+    final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
 
     final features = <Map<String, dynamic>>[];
     for (final repeater in appState.repeaters) {
@@ -2005,6 +2158,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           'hex': hex,
           'isDuplicate': isDuplicate,
           if (hopOverride != null) 'hopOverride': hopOverride,
+          if (spiderIds.contains(repeater.id)) 'inSpider': true,
         },
         'geometry': {
           'type': 'Point',
@@ -2024,8 +2178,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Future<void> _setupRepeaterClusterLayers() async {
     if (_mapController == null) return;
 
-    // Idempotent: tear down any existing source/layers from a previous style load
+    // Idempotent: tear down any existing source/layers from a previous style load.
+    // Spider layers are torn down first because they reference `_spiderSourceId`.
     for (final layerId in [
+      _spiderSymbolLayerId,
+      _spiderLineLayerId,
       _repeaterClusterCountLayerId,
       _repeaterClusterBubbleLayerId,
       _repeaterIndividualLayerId,
@@ -2036,6 +2193,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     try {
       await _mapController!.removeSource(_repeaterSourceId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeSource(_spiderSourceId);
     } catch (_) {}
 
     // Empty source with cluster enabled. We'll push real data via setGeoJsonSource
@@ -2055,7 +2215,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           },
           cluster: true,
           clusterRadius: 50,
-          clusterMaxZoom: 14,
+          // Cluster at every reachable zoom (max user zoom is 17). Stacked
+          // markers — those within `clusterRadius` pixels at the current
+          // zoom — stay as a cluster bubble + count instead of degenerating
+          // into a pile of overlapping individual symbols when the user is
+          // zoomed all the way in. Tap a cluster → spiderfy. Markers far
+          // enough apart that they exceed `clusterRadius` pixels at higher
+          // zooms still separate into individuals naturally on zoom.
+          clusterMaxZoom: 17,
         ),
       );
 
@@ -2065,6 +2232,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // Layer 1: individual repeater markers (when not part of a cluster).
       // Data-driven properties read from each feature's `properties` map.
+      // Filter excludes both clustered features AND any feature tagged
+      // `inSpider` (spiderfy hides the originals so the spread markers from
+      // _spiderSourceId render in their place).
       await _mapController!.addSymbolLayer(
         _repeaterSourceId,
         _repeaterIndividualLayerId,
@@ -2084,8 +2254,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           textFont: _defaultFontStack,
         ),
         filter: [
-          '!',
-          ['has', 'point_count']
+          'all',
+          [
+            '!',
+            ['has', 'point_count']
+          ],
+          [
+            '!=',
+            ['get', 'inSpider'],
+            true
+          ],
         ],
         belowLayerId: belowLayer,
       );
@@ -2137,9 +2315,82 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         belowLayerId: belowLayer,
       );
 
-      // All 3 layers + source created successfully — mark ready so the
-      // build()-triggered post-frame sync can run, and so _syncRepeaterSymbols
-      // is allowed to push data via setGeoJsonSource.
+      // Spider shadow source + layers — non-clustered. Carries spread Point
+      // features (one per spiderfied repeater) and LineString features for
+      // leader lines from the cluster centre to each spread position.
+      // Cluster on this source MUST stay false; we want every Point to render
+      // verbatim where _computeSpiderRing placed it.
+      await _mapController!.addSource(
+        _spiderSourceId,
+        const GeojsonSourceProperties(
+          data: <String, dynamic>{
+            'type': 'FeatureCollection',
+            'features': <dynamic>[]
+          },
+        ),
+      );
+
+      // Layer 4: spider leader lines (LineString features). Inserted just
+      // below the individual repeater layer so lines render BENEATH every
+      // repeater layer — the cluster bubble (which sits above individuals)
+      // visually contains the lines' inner endpoints, and the spread markers
+      // (added next, above the annotation manager's siblings) hide the outer
+      // endpoints. Static filter selects LineString geometry only so Point
+      // features in the same source don't try to render as zero-length lines.
+      await _mapController!.addLineLayer(
+        _spiderSourceId,
+        _spiderLineLayerId,
+        const LineLayerProperties(
+          lineColor: '#888888',
+          lineWidth: 1.0,
+          lineOpacity: 0.7,
+          lineCap: 'round',
+        ),
+        filter: [
+          '==',
+          ['geometry-type'],
+          'LineString'
+        ],
+        belowLayerId: _repeaterIndividualLayerId,
+      );
+
+      // Layer 5: spider symbols (Point features). Same icon/text styling as
+      // the individual repeater layer so spread markers look identical to the
+      // originals. Inserted just below the symbol annotation manager — that
+      // puts it ABOVE the individual repeater layer (so spread markers win
+      // hit-tests against the now-hidden originals) but BELOW the GPS marker
+      // / coverage symbols on the annotation manager. iconAllowOverlap +
+      // iconIgnorePlacement are critical: without them MapLibre's collision
+      // detector hides adjacent spread markers and defeats the spread.
+      await _mapController!.addSymbolLayer(
+        _spiderSourceId,
+        _spiderSymbolLayerId,
+        const SymbolLayerProperties(
+          iconImage: ['get', 'iconImage'],
+          iconColor: ['get', 'color'],
+          iconSize: 1.4,
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+          textField: ['get', 'hex'],
+          textColor: '#FFFFFF',
+          textHaloColor: '#000000',
+          textHaloWidth: 1.5,
+          textSize: 13,
+          textAllowOverlap: true,
+          textIgnorePlacement: true,
+          textFont: _defaultFontStack,
+        ),
+        filter: [
+          '==',
+          ['geometry-type'],
+          'Point'
+        ],
+        belowLayerId: belowLayer,
+      );
+
+      // All 3 layers + source + spider source/layers created successfully —
+      // mark ready so the build()-triggered post-frame sync can run, and so
+      // _syncRepeaterSymbols is allowed to push data via setGeoJsonSource.
       _clusterLayersReady = true;
     } catch (e) {
       debugError('[MAP] Failed to set up repeater cluster layers: $e');
@@ -2149,6 +2400,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Pushes the current repeater state into the cluster source. MapLibre
   /// re-clusters natively whenever the source data changes. Replaces the
   /// previous per-symbol addSymbol/updateSymbol/removeSymbol diff loop.
+  ///
+  /// When a spider is open, also schedules a post-frame push of the spider
+  /// shadow source. Deferring one frame avoids an iOS race where the main
+  /// source's reclustering and the spider source's symbol render arrive in
+  /// different frames, briefly showing originals + spread together.
   Future<void> _syncRepeaterSymbols(AppStateProvider appState) async {
     if (_mapController == null ||
         !_styleLoaded ||
@@ -2162,6 +2418,316 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     } catch (e) {
       debugError('[MAP] Failed to update repeater source: $e');
     }
+    // Also push the spider source. Empty FeatureCollection if no spider open.
+    final currentZoom =
+        _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _syncSpiderSymbols(appState, currentZoom);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Spiderfy helpers — see plan: stacked repeaters fan out around the centroid
+  // when a tap can't be resolved by zooming further.
+  // ---------------------------------------------------------------------------
+
+  /// Web-Mercator metres-per-pixel at the given latitude and zoom.
+  double _metersPerPxAtZoom(double latDeg, num zoom) {
+    return 156543.03392 *
+        math.cos(latDeg * math.pi / 180) /
+        math.pow(2, zoom);
+  }
+
+  /// Great-circle distance between two LatLngs in metres (haversine).
+  /// Used for the spider candidate / connectivity tests — accurate at any
+  /// latitude, including the poles.
+  double _haversineMeters(LatLng a, LatLng b) {
+    const earthRadiusM = 6378137.0;
+    final lat1 = a.latitude * math.pi / 180;
+    final lat2 = b.latitude * math.pi / 180;
+    final dLat = (b.latitude - a.latitude) * math.pi / 180;
+    final dLon = (b.longitude - a.longitude) * math.pi / 180;
+    final h = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1) *
+            math.cos(lat2) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    return 2 *
+        earthRadiusM *
+        math.asin(math.min(1.0, math.sqrt(h)));
+  }
+
+  /// Maximum zoom the camera can reach (matches `minMaxZoomPreference`).
+  static const double _maxUserZoom = 17.0;
+
+  /// True when the camera is at (or floating-point close to) the user's
+  /// hard zoom cap. Spider expansion is gated on this — at any lower zoom
+  /// taps just zoom in further so the user has a chance to separate the
+  /// stack visually before falling back to the spider UI.
+  bool _isAtMaxZoom() {
+    final z = _mapController?.cameraPosition?.zoom;
+    if (z == null) return false;
+    // Small epsilon: zoom can settle at e.g. 16.997 even when the user has
+    // pinched all the way in; treat that as max.
+    return z >= _maxUserZoom - 0.05;
+  }
+
+  /// Find the connected component of repeaters around [anchor] that would
+  /// still visually overlap at [_maxUserZoom] (the "won't break apart by
+  /// more zoom" group).
+  ///
+  /// Two repeaters are linked when their geographic distance is ≤ the
+  /// "stick threshold" — `_clusterRadiusPx × metres-per-pixel at the max
+  /// zoom`. At lat 45° this is ~42 m. Markers within this distance of
+  /// each other are within the cluster radius even at the user's deepest
+  /// zoom, so zooming will not separate them visually.
+  ///
+  /// BFS seed: repeater closest to [anchor]. Returns at least the seed when
+  /// any repeater is within the broad search disc; caller should treat a
+  /// result of length < 2 as "no spiderfy needed".
+  List<Repeater> _findSpiderGroup(LatLng anchor, AppStateProvider appState) {
+    final mPerPxMaxZoom =
+        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
+
+    // Broad initial radius: 10× the stick threshold so we don't miss an
+    // indirect CC member that's near another member but far from the anchor.
+    // Bounded fixed multiplier — keeps the candidate set small even when a
+    // user taps a continent-scale cluster at low zoom.
+    final broadRadiusM = stickThresholdM * 10;
+    final candidates = <Repeater>[];
+    for (final r in appState.repeaters) {
+      if (_haversineMeters(anchor, LatLng(r.lat, r.lon)) <= broadRadiusM) {
+        candidates.add(r);
+      }
+    }
+    if (candidates.isEmpty) return const [];
+
+    // Pick the closest-to-anchor as the BFS seed.
+    Repeater seed = candidates.first;
+    var bestD = double.infinity;
+    for (final r in candidates) {
+      final d = _haversineMeters(anchor, LatLng(r.lat, r.lon));
+      if (d < bestD) {
+        bestD = d;
+        seed = r;
+      }
+    }
+
+    // Connected component (single-link clustering at stick threshold).
+    final visited = <String>{seed.id};
+    final queue = <Repeater>[seed];
+    final result = <Repeater>[seed];
+    while (queue.isNotEmpty) {
+      final cur = queue.removeAt(0);
+      final curPos = LatLng(cur.lat, cur.lon);
+      for (final r in candidates) {
+        if (visited.contains(r.id)) continue;
+        if (_haversineMeters(curPos, LatLng(r.lat, r.lon)) <=
+            stickThresholdM) {
+          visited.add(r.id);
+          result.add(r);
+          queue.add(r);
+        }
+      }
+    }
+    return result;
+  }
+
+  /// Layout the [n] spread positions around [center]. Uses a single ring up to
+  /// 8 markers, two concentric rings up to 20, and a Fermat / golden-angle
+  /// spiral past 20.
+  List<LatLng> _computeSpiderRing(
+      LatLng center, int n, double currentZoom) {
+    final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
+    final lat0 = center.latitude;
+    final lon0 = center.longitude;
+    final cosLat = math.cos(lat0 * math.pi / 180);
+
+    // Convert (dx_px, dy_px) — screen-space offset from centre — back to a
+    // geographic LatLng. Screen y grows downward; flip dy so positive screen-y
+    // maps to a southward (lower-latitude) offset.
+    LatLng offset(double dxPx, double dyPx) {
+      final dxM = dxPx * mPerPx;
+      final dyM = dyPx * mPerPx;
+      final dLat = -dyM / 111320;
+      final dLon = dxM / (111320 * cosLat);
+      return LatLng(lat0 + dLat, lon0 + dLon);
+    }
+
+    final positions = <LatLng>[];
+    if (n <= 8) {
+      // Single ring at the inner radius, evenly spaced from top (-π/2).
+      for (var i = 0; i < n; i++) {
+        final angle = -math.pi / 2 + 2 * math.pi * i / n;
+        positions.add(offset(
+          _spiderInnerRadiusPx * math.cos(angle),
+          _spiderInnerRadiusPx * math.sin(angle),
+        ));
+      }
+    } else if (n <= 20) {
+      // Two concentric rings: 7 inner + (n−7) outer with a half-angle stagger
+      // so outer markers don't sit directly behind inner ones.
+      const innerCount = 7;
+      final outerCount = n - innerCount;
+      for (var i = 0; i < innerCount; i++) {
+        final angle = -math.pi / 2 + 2 * math.pi * i / innerCount;
+        positions.add(offset(
+          _spiderInnerRadiusPx * math.cos(angle),
+          _spiderInnerRadiusPx * math.sin(angle),
+        ));
+      }
+      for (var i = 0; i < outerCount; i++) {
+        final angle = -math.pi / 2 +
+            math.pi / outerCount +
+            2 * math.pi * i / outerCount;
+        positions.add(offset(
+          _spiderOuterRadiusPx * math.cos(angle),
+          _spiderOuterRadiusPx * math.sin(angle),
+        ));
+      }
+    } else {
+      // Golden-angle spiral — markers self-space without overlap.
+      const goldenAngle = 137.508 * math.pi / 180;
+      for (var i = 0; i < n; i++) {
+        final angle = i * goldenAngle - math.pi / 2;
+        final r = 30 + 9 * math.sqrt(i + 1);
+        positions.add(offset(
+          r * math.cos(angle),
+          r * math.sin(angle),
+        ));
+      }
+    }
+    return positions;
+  }
+
+  /// Build the spider shadow source's FeatureCollection — Point features for
+  /// every spread marker plus LineString features for the leader lines.
+  /// Returns an empty collection when no spider is open.
+  Map<String, dynamic> _buildSpiderFeatureCollection(
+      AppStateProvider appState, double currentZoom) {
+    if (_spiderCenter == null || _spiderRepeaters.isEmpty) {
+      return {
+        'type': 'FeatureCollection',
+        'features': <Map<String, dynamic>>[]
+      };
+    }
+    final center = _spiderCenter!;
+    final positions =
+        _computeSpiderRing(center, _spiderRepeaters.length, currentZoom);
+    final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
+    final cosLat = math.cos(center.latitude * math.pi / 180);
+
+    final duplicates = _getDuplicateRepeaterIds(appState.repeaters);
+    final hopOverride =
+        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+
+    final features = <Map<String, dynamic>>[];
+    for (var i = 0; i < _spiderRepeaters.length; i++) {
+      final repeater = _spiderRepeaters[i];
+      final pos = positions[i];
+
+      final isDuplicate = duplicates.contains(repeater.id);
+      final statusKey = _repeaterStatusKey(repeater, isDuplicate);
+      final effectiveBytes = hopOverride ?? repeater.hopBytes;
+      final shapeBytes = effectiveBytes >= 3
+          ? 3
+          : effectiveBytes == 2
+              ? 2
+              : 1;
+      final iconImage = _MapImages.repeater(statusKey, shapeBytes);
+      final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      final colorHex = _colorToHex(_repeaterStatusColor(statusKey));
+
+      features.add({
+        'type': 'Feature',
+        'id': repeater.id,
+        'properties': {
+          'repeaterId': repeater.id,
+          'iconImage': iconImage,
+          'color': colorHex,
+          'hex': hex,
+          'isDuplicate': isDuplicate,
+          if (hopOverride != null) 'hopOverride': hopOverride,
+        },
+        'geometry': {
+          'type': 'Point',
+          'coordinates': [pos.longitude, pos.latitude],
+        },
+      });
+
+      // Leader line — shortened by `_leaderLineEndShortenPx` at the marker
+      // end so it doesn't punch through the icon / label halo. Compute the
+      // shortening in screen-pixel space, then convert back to lat/lon.
+      final dxM =
+          (pos.longitude - center.longitude) * 111320 * cosLat;
+      final dyM = (pos.latitude - center.latitude) * 111320;
+      final dxPx = dxM / mPerPx;
+      final dyPx = dyM / mPerPx;
+      final lenPx = math.sqrt(dxPx * dxPx + dyPx * dyPx);
+      if (lenPx <= _leaderLineEndShortenPx) continue;
+      final scale = (lenPx - _leaderLineEndShortenPx) / lenPx;
+      final endLon =
+          center.longitude + (pos.longitude - center.longitude) * scale;
+      final endLat =
+          center.latitude + (pos.latitude - center.latitude) * scale;
+      features.add({
+        'type': 'Feature',
+        'properties': {'repeaterId': repeater.id},
+        'geometry': {
+          'type': 'LineString',
+          'coordinates': [
+            [center.longitude, center.latitude],
+            [endLon, endLat],
+          ],
+        },
+      });
+    }
+
+    return {'type': 'FeatureCollection', 'features': features};
+  }
+
+  /// Push the current spider state to the spider GeoJSON source. Called from
+  /// `_syncRepeaterSymbols` (post-frame) and after spider state mutations.
+  Future<void> _syncSpiderSymbols(
+      AppStateProvider appState, double currentZoom) async {
+    if (_mapController == null || !_clusterLayersReady) return;
+    try {
+      final geojson =
+          _buildSpiderFeatureCollection(appState, currentZoom);
+      await _mapController!.setGeoJsonSource(_spiderSourceId, geojson);
+    } catch (e) {
+      debugError('[MAP] Failed to update spider source: $e');
+    }
+  }
+
+  /// Open the spider — fan out [repeaters] around [center]. No-op for groups
+  /// of fewer than 2 (caller should fall through to detail-sheet/zoom paths).
+  void _spiderfy(LatLng center, List<Repeater> repeaters) {
+    if (repeaters.length < 2 || _mapController == null || !mounted) return;
+    setState(() {
+      _spiderCenter = center;
+      _spiderRepeaters = List.unmodifiable(repeaters);
+      _spiderOpenedAtZoom = _mapController!.cameraPosition?.zoom;
+    });
+    debugLog(
+        '[MAP] Spider opened with ${repeaters.length} markers at ${center.latitude.toStringAsFixed(5)},${center.longitude.toStringAsFixed(5)}');
+    // Resync the main source (so the inSpider tag hides originals on the
+    // individual layer) and the spider source (post-frame inside the sync).
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
+  }
+
+  /// Close the spider — clears state and resyncs both sources.
+  void _collapseSpider() {
+    if (_spiderCenter == null || !mounted) return;
+    setState(() {
+      _spiderCenter = null;
+      _spiderRepeaters = const [];
+      _spiderOpenedAtZoom = null;
+    });
+    debugLog('[MAP] Spider collapsed');
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
   }
 
   /// Composite key for a coverage marker symbol — kind + timestamp ms + lat/lon.
