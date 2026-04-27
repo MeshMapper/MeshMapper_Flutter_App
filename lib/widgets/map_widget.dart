@@ -331,6 +331,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       false; // Track if we've done the one-time initial zoom to GPS
   bool _hasZoomedToLastKnown =
       false; // Track if we've zoomed to last known position (before GPS)
+  bool _loggedMpxSanityCheck =
+      false; // One-time log comparing formula vs MapLibre m/px
 
   // Map rotation mode
   bool _alwaysNorth =
@@ -575,8 +577,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   void didUpdateWidget(MapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     // When padding changes (panel opened/closed/minimized/orientation change), re-center if auto-following
-    if ((widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels ||
-            widget.rightPaddingPixels != oldWidget.rightPaddingPixels) &&
+    final paddingChanged =
+        widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels ||
+            widget.rightPaddingPixels != oldWidget.rightPaddingPixels;
+    if (paddingChanged) {
+      debugLog('[MAP CENTER] didUpdateWidget padding change: '
+          'bottom ${oldWidget.bottomPaddingPixels}->${widget.bottomPaddingPixels} '
+          'right ${oldWidget.rightPaddingPixels}->${widget.rightPaddingPixels} '
+          '_autoFollow=$_autoFollow _isMapReady=$_isMapReady '
+          '_lastGpsPosition=${_lastGpsPosition != null}');
+    }
+    if (paddingChanged &&
         _autoFollow &&
         _isMapReady &&
         _lastGpsPosition != null) {
@@ -596,6 +607,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             targetZoom,
             targetBearing,
           );
+          final cam = _mapController?.cameraPosition;
+          debugLog('[MAP CENTER] re-center after padding change: '
+              'gps=(${_lastGpsPosition!.latitude.toStringAsFixed(6)},${_lastGpsPosition!.longitude.toStringAsFixed(6)}) '
+              'target=(${adjustedPosition.latitude.toStringAsFixed(6)},${adjustedPosition.longitude.toStringAsFixed(6)}) '
+              'deltaLat=${(adjustedPosition.latitude - _lastGpsPosition!.latitude).toStringAsFixed(6)} '
+              'deltaLon=${(adjustedPosition.longitude - _lastGpsPosition!.longitude).toStringAsFixed(6)} '
+              'zoom=${targetZoom.toStringAsFixed(2)} bearing=${targetBearing.toStringAsFixed(2)} '
+              'curZoom=${cam?.zoom.toStringAsFixed(2)} curBearing=${cam?.bearing.toStringAsFixed(2)} '
+              'alwaysNorth=$_alwaysNorth');
           _animateAutoFollowCamera(
             target: adjustedPosition,
             zoom: targetZoom,
@@ -790,48 +810,61 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (_mapController == null || !_isMapReady) return position;
     if (bottomPadding <= 0 && rightPadding <= 0) return position;
 
-    // Get meters per pixel at the target zoom (or current camera zoom).
-    // Approx: 40075km / (256 * 2^zoom) at equator, adjusted by cos(lat)
+    // MapLibre's internal projection uses 512-logical-px tile units (see
+    // MapLibre style spec — vector and raster sources are reprojected onto a
+    // 512px grid regardless of source tile size). The previous formula here
+    // assumed 256-px tiles, which made every offset 2× too large and pushed
+    // the GPS marker far above the visible-area centre.
     final zoom = atZoom ?? _mapController!.cameraPosition?.zoom ?? _defaultZoom;
     final metersPerPixel = 40075000 /
-        (256 * math.pow(2, zoom)) *
+        (512 * math.pow(2, zoom)) *
         math.cos(position.latitude * math.pi / 180);
 
-    // Start with the offset expressed as if the map were north-up
-    // (bearing = 0): bottom padding shifts the target geographic-south,
-    // right padding shifts the target geographic-west.
-    double latOffset = 0;
-    double lonOffset = 0;
-    if (bottomPadding > 0) {
-      final meterOffset = (bottomPadding / 2) * metersPerPixel;
-      latOffset = -(meterOffset / 111000); // ~111km per degree latitude
-    }
-    if (rightPadding > 0) {
-      final meterOffset = (rightPadding / 2) * metersPerPixel;
-      lonOffset = -(meterOffset /
-          (111000 * math.cos(position.latitude * math.pi / 180)));
+    // One-time sanity check: log MapLibre's authoritative m/px and compare
+    // to our formula. If they differ, the tile-size assumption is wrong.
+    if (!_loggedMpxSanityCheck) {
+      _loggedMpxSanityCheck = true;
+      _mapController!
+          .getMetersPerPixelAtLatitude(position.latitude)
+          .then((mapLibreMpx) {
+        debugLog('[MAP CENTER] m/px sanity: formula=${metersPerPixel.toStringAsFixed(4)} '
+            'maplibre=${mapLibreMpx.toStringAsFixed(4)} '
+            'ratio=${(metersPerPixel / mapLibreMpx).toStringAsFixed(3)} '
+            '(zoom=${zoom.toStringAsFixed(2)} lat=${position.latitude.toStringAsFixed(4)})');
+      }).catchError((e) {
+        debugLog('[MAP CENTER] m/px sanity check failed: $e');
+      });
     }
 
-    // When the map is rotated, "screen-down" no longer points geographic
-    // south — it points wherever bearing + 180° aims. Rotate the offset
-    // vector so the shift still lands in the correct screen direction.
+    // Compute the desired camera shift in WORLD METERS along the
+    // (north, east) axes. Working in metres up front avoids the previous
+    // unit-mixing bug, where lat-degrees and lon-degrees were rotated as if
+    // they were the same unit (1° lat ≠ 1° lon away from the equator).
     //
-    // MapLibre bearing is clockwise from north (heading east => bearing 90,
-    // screen-down => world-west). To send a south-pointing input vector to
-    // the world direction that corresponds to screen-down at the given
-    // bearing, we rotate it clockwise by `bearing` — i.e. by +bearing, not
-    // -bearing as the previous implementation did.
+    // We want the marker (at `position`) to appear shifted "screen-up" by
+    // `bottomPadding/2` and "screen-left" by `rightPadding/2` relative to
+    // screen centre, so the camera target itself shifts in the opposite
+    // direction (screen-down + screen-right).
     final bearingDeg =
         atBearing ?? _mapController!.cameraPosition?.bearing ?? 0;
-    if (bearingDeg.abs() > 0.1) {
-      final rotationRad = bearingDeg * math.pi / 180;
-      final cosR = math.cos(rotationRad);
-      final sinR = math.sin(rotationRad);
-      final rotatedLat = latOffset * cosR - lonOffset * sinR;
-      final rotatedLon = latOffset * sinR + lonOffset * cosR;
-      latOffset = rotatedLat;
-      lonOffset = rotatedLon;
-    }
+    final bearingRad = bearingDeg * math.pi / 180;
+    final cosB = math.cos(bearingRad);
+    final sinB = math.sin(bearingRad);
+
+    // At bearing β (clockwise from north), world unit-vectors of the
+    // screen axes are:
+    //   screen-down  = (-cosβ, -sinβ)   in (north, east)
+    //   screen-right = (-sinβ,  cosβ)
+    final downMetres = bottomPadding / 2 * metersPerPixel;
+    final rightMetres = rightPadding / 2 * metersPerPixel;
+    final northShift = downMetres * -cosB + rightMetres * -sinB;
+    final eastShift = downMetres * -sinB + rightMetres * cosB;
+
+    // Convert metres → degrees. 1° latitude ≈ 111 km everywhere; 1° longitude
+    // shrinks by cos(latitude).
+    final latOffset = northShift / 111000;
+    final lonOffset =
+        eastShift / (111000 * math.cos(position.latitude * math.pi / 180));
 
     return LatLng(
         position.latitude + latOffset, position.longitude + lonOffset);
