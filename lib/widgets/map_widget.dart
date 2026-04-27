@@ -308,8 +308,19 @@ class MapWidget extends StatefulWidget {
   State<MapWidget> createState() => _MapWidgetState();
 }
 
-class _MapWidgetState extends State<MapWidget> {
+class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   MapLibreMapController? _mapController;
+
+  // Tracks the app lifecycle so we can suppress every animateCamera() call
+  // while the app is not in the foreground. MapLibre's native flyTo throws
+  // an uncaught C++ exception (mbgl::LatLng domain_error → SIGABRT) when
+  // the underlying MLNMapView's GL context is degraded, which is what
+  // happens on iOS while the app is backgrounded. The Flutter frame
+  // pipeline keeps running in our background-mode app (bluetooth-central +
+  // location), so GPS-driven rebuilds would otherwise still fire animateCamera.
+  AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+  bool get _canAnimateCamera =>
+      _appLifecycleState == AppLifecycleState.resumed;
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = false; // Disabled by default - users often zoom out first
@@ -469,7 +480,21 @@ class _MapWidgetState extends State<MapWidget> {
   static const double _defaultZoom = 15.0; // Closer zoom for driving
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _appLifecycleState =
+        WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tileLoadTimeoutTimer?.cancel();
     final controller = _mapController;
     if (controller != null) {
@@ -544,7 +569,12 @@ class _MapWidgetState extends State<MapWidget> {
 
   /// Smoothly animate the map to a new position with zoom
   void _animateToPositionWithZoom(LatLng target, double targetZoom) {
-    if (_mapController == null || !_isMapReady || !mounted) return;
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
     _mapController!.animateCamera(
       CameraUpdate.newLatLngZoom(target, targetZoom),
       duration: const Duration(milliseconds: 500),
@@ -566,7 +596,12 @@ class _MapWidgetState extends State<MapWidget> {
     required double bearing,
     int durationMs = 300,
   }) {
-    if (_mapController == null || !_isMapReady || !mounted) return;
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
     _mapController!.animateCamera(
       CameraUpdate.newCameraPosition(CameraPosition(
         target: target,
@@ -580,7 +615,12 @@ class _MapWidgetState extends State<MapWidget> {
   /// Zoom to fit a focused ping and its connected repeaters on screen
   void _zoomToFocusBounds(
       LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
-    if (_mapController == null || !_isMapReady || !mounted) return;
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
 
     final points = [
       pingLocation,
@@ -613,7 +653,11 @@ class _MapWidgetState extends State<MapWidget> {
   /// Smoothly animate the map rotation to match heading
   /// MapLibre bearing is clockwise from north (same as GPS heading)
   void _animateToRotation(double targetHeading) {
-    if (_mapController == null || !_isMapReady || !mounted || _alwaysNorth) {
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        _alwaysNorth ||
+        !_canAnimateCamera) {
       return;
     }
 
@@ -933,7 +977,7 @@ class _MapWidgetState extends State<MapWidget> {
 
             // Rotate map back to north (0 degrees) first
             final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
-            if (currentBearing.abs() > 2) {
+            if (currentBearing.abs() > 2 && _canAnimateCamera) {
               _mapController!.animateCamera(CameraUpdate.bearingTo(0));
             }
 
@@ -1369,12 +1413,15 @@ class _MapWidgetState extends State<MapWidget> {
     // finishes in 200ms, making the tap feel "instant" rather than delayed.
     if (layerId == _repeaterClusterBubbleLayerId ||
         layerId == _repeaterClusterCountLayerId) {
-      final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-      final newZoom = math.min(currentZoom + 2, 17.0);
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(coordinates, newZoom),
-        duration: const Duration(milliseconds: 200),
-      );
+      if (_canAnimateCamera) {
+        final currentZoom =
+            _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+        final newZoom = math.min(currentZoom + 2, 17.0);
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLngZoom(coordinates, newZoom),
+          duration: const Duration(milliseconds: 200),
+        );
+      }
       return;
     }
 
@@ -1442,13 +1489,15 @@ class _MapWidgetState extends State<MapWidget> {
       // Same explicit 200ms duration as the direct cluster path in
       // _handleFeatureTap so both tap routes feel identical.
       if (properties['cluster'] == true) {
-        final currentZoom =
-            _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-        final newZoom = math.min(currentZoom + 2, 17.0);
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLngZoom(coordinates, newZoom),
-          duration: const Duration(milliseconds: 200),
-        );
+        if (_canAnimateCamera) {
+          final currentZoom =
+              _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+          final newZoom = math.min(currentZoom + 2, 17.0);
+          _mapController?.animateCamera(
+            CameraUpdate.newLatLngZoom(coordinates, newZoom),
+            duration: const Duration(milliseconds: 200),
+          );
+        }
         return;
       }
 
@@ -1588,7 +1637,7 @@ class _MapWidgetState extends State<MapWidget> {
         _hasStyleLoadedOnce = true;
 
         // Center on GPS if available (initial centering)
-        if (appState.currentPosition != null) {
+        if (appState.currentPosition != null && _canAnimateCamera) {
           final center = LatLng(
             appState.currentPosition!.latitude,
             appState.currentPosition!.longitude,
@@ -3235,7 +3284,7 @@ class _MapWidgetState extends State<MapWidget> {
       if (_alwaysNorth && _isMapReady && _mapController != null) {
         _lastHeading = null;
         final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
-        if (currentBearing.abs() > 2) {
+        if (currentBearing.abs() > 2 && _canAnimateCamera) {
           _mapController!.animateCamera(
             CameraUpdate.bearingTo(0),
             duration: const Duration(milliseconds: 500),
@@ -3269,7 +3318,7 @@ class _MapWidgetState extends State<MapWidget> {
           _alwaysNorth &&
           _mapController != null) {
         final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
-        if (currentBearing.abs() > 2) {
+        if (currentBearing.abs() > 2 && _canAnimateCamera) {
           _mapController!.animateCamera(
             CameraUpdate.bearingTo(0),
             duration: const Duration(milliseconds: 500),
@@ -4272,7 +4321,7 @@ class _MapWidgetState extends State<MapWidget> {
     if (!_alwaysNorth) {
       _alwaysNorth = true;
       // Snap rotation to north (instant — avoids wobble before zoom-to-fit animation)
-      if (_isMapReady && _mapController != null) {
+      if (_isMapReady && _mapController != null && _canAnimateCamera) {
         _mapController!.animateCamera(
           CameraUpdate.bearingTo(0),
           duration: const Duration(milliseconds: 1),
@@ -4698,13 +4747,13 @@ class _MapWidgetState extends State<MapWidget> {
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.15),
+                    color: PingColors.rx.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
-                    border:
-                        Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    border: Border.all(
+                        color: PingColors.rx.withValues(alpha: 0.4)),
                   ),
-                  child: const Icon(Icons.arrow_downward,
-                      color: Colors.blue, size: 24),
+                  child: Icon(Icons.arrow_downward,
+                      color: PingColors.rx, size: 24),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
