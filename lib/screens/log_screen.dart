@@ -7,6 +7,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/ping_colors.dart';
 import '../widgets/repeater_id_chip.dart';
+import '../widgets/rx_path_chain.dart';
 
 /// Log screen with two tabs: All Pings (unified TX+RX+DISC+TRC) and Errors
 class LogScreen extends StatefulWidget {
@@ -175,7 +176,7 @@ class _LogScreenState extends State<LogScreen>
     if (rx.isNotEmpty) {
       buffer.writeln('--- RX Log ---');
       buffer.writeln(
-          'timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude');
+          'timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude,path_hops');
       for (final entry in rx) {
         buffer.writeln(entry.toCsv());
       }
@@ -676,6 +677,15 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // TX Card
   // ---------------------------------------------------------------------------
 
+  /// Width of the "Node" column sized from the hex-ID length actually being
+  /// rendered. RX paths can carry longer IDs than the global TX hop-byte
+  /// setting, so we measure per-card instead of per-session.
+  double _nodeColumnWidthForLength(int idLength) {
+    if (idLength <= 2) return 60;
+    if (idLength <= 4) return 70;
+    return 80;
+  }
+
   Widget _buildTxCard(BuildContext context, TxLogEntry entry,
       {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
@@ -716,6 +726,12 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   }
 
   Widget _buildRepeaterTable(BuildContext context, List<RxEvent> events) {
+    var maxIdLen = 0;
+    for (final e in events) {
+      if (e.repeaterId.length > maxIdLen) maxIdLen = e.repeaterId.length;
+    }
+    final nodeWidth = _nodeColumnWidthForLength(maxIdLen);
+
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -730,20 +746,22 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                SizedBox(width: 60, child: _tableHeader(context, 'Node')),
+                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
                 Expanded(child: _tableHeader(context, 'SNR', center: true)),
                 Expanded(child: _tableHeader(context, 'RSSI', center: true)),
               ],
             ),
           ),
           Divider(height: 1, color: Theme.of(context).dividerColor),
-          ...events.map((event) => _buildTxRepeaterRow(context, event)),
+          ...events.map(
+              (event) => _buildTxRepeaterRow(context, event, nodeWidth)),
         ],
       ),
     );
   }
 
-  Widget _buildTxRepeaterRow(BuildContext context, RxEvent event) {
+  Widget _buildTxRepeaterRow(
+      BuildContext context, RxEvent event, double nodeWidth) {
     final snrColor = _snrColor(event.severity);
     final rssiColor = _rssiColor(event.rssi);
     return InkWell(
@@ -753,7 +771,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         child: Row(
           children: [
             RepeaterIdChip(
-                repeaterId: event.repeaterId, fontSize: 14, width: 60),
+                repeaterId: event.repeaterId,
+                fontSize: 14,
+                width: nodeWidth),
             Expanded(
                 child: Center(
                     child: _buildChip(
@@ -778,6 +798,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     final appState = context.read<AppStateProvider>();
     final snrColor = _snrColor(entry.severity);
     final rssiColor = _rssiColor(entry.rssi);
+    final nodeWidth = _nodeColumnWidthForLength(entry.repeaterId.length);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -813,7 +834,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                       child: Row(
                         children: [
                           SizedBox(
-                              width: 60, child: _tableHeader(context, 'Node')),
+                              width: nodeWidth,
+                              child: _tableHeader(context, 'Node')),
                           Expanded(
                               child:
                                   _tableHeader(context, 'SNR', center: true)),
@@ -835,7 +857,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                             RepeaterIdChip(
                                 repeaterId: entry.repeaterId,
                                 fontSize: 14,
-                                width: 60),
+                                width: nodeWidth),
                             Expanded(
                                 child: Center(
                                     child: _buildChip(
@@ -855,6 +877,31 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                   ],
                 ),
               ),
+              if (entry.pathHops.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Icon(
+                        Icons.route,
+                        size: 14,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: RxPathChain(
+                        hops: entry.pathHops,
+                        fromLatLng:
+                            (lat: entry.latitude, lon: entry.longitude),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),

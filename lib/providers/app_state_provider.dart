@@ -2131,6 +2131,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               timestamp: DateTime.now(),
               snr: observation.snr ?? 0.0,
               rssi: observation.rssi ?? 0,
+              pathHops: observation.displayHops,
             );
             _rxPings.add(rxPing);
             if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
@@ -2209,6 +2210,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                 snr: entry.snr ??
                     existingPin.snr, // UPDATE to best SNR from batch
                 rssi: entry.rssi ?? existingPin.rssi,
+                pathHops: existingPin.pathHops,
               );
               debugLog(
                   '[APP] Updated RX pin SNR for repeater=${entry.repeaterId}: '
@@ -2227,6 +2229,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               timestamp: entry.timestamp,
               snr: entry.snr ?? 0.0,
               rssi: entry.rssi ?? 0,
+              pathHops: entry.displayHops,
             );
             _rxPings.add(newRxPing);
             if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
@@ -2251,6 +2254,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             header: entry.header,
             latitude: entry.lat,
             longitude: entry.lon,
+            pathHops: entry.displayHops,
           );
 
           // Add to RX log entries

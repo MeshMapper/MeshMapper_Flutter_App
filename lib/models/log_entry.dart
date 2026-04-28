@@ -81,6 +81,8 @@ class RxLogEntry {
   final int header; // Packet header byte
   final double latitude;
   final double longitude;
+  /// Display path hops, origin → ... → us. Already CARpeater-stripped.
+  final List<String> pathHops;
 
   RxLogEntry({
     required this.timestamp,
@@ -91,6 +93,7 @@ class RxLogEntry {
     required this.header,
     required this.latitude,
     required this.longitude,
+    this.pathHops = const [],
   });
 
   /// Get formatted timestamp (HH:MM:SS)
@@ -120,9 +123,10 @@ class RxLogEntry {
 
   /// Get CSV row
   String toCsv() {
+    final pathStr = pathHops.isEmpty ? '' : pathHops.join('|');
     return '${timestamp.toIso8601String()},$repeaterId,${snr ?? 'null'},${rssi ?? 'null'},'
         '$pathLength,0x${header.toRadixString(16).padLeft(2, '0')},'
-        '$latitude,$longitude';
+        '$latitude,$longitude,$pathStr';
   }
 }
 
