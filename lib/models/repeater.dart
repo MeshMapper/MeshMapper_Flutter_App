@@ -136,6 +136,15 @@ class Repeater {
   /// Check if the repeater has not been heard in the past 24 hours
   bool get isDead => !isActive;
 
+  /// True if the repeater has been heard within the past 30 days. Used by
+  /// the map to hide long-stale repeaters. Returns false when [lastHeard]
+  /// is 0 (never heard).
+  bool get isHeardRecently {
+    if (lastHeard == 0) return false;
+    final heard = DateTime.fromMillisecondsSinceEpoch(lastHeard * 1000);
+    return DateTime.now().difference(heard).inDays < 30;
+  }
+
   /// Get display hex ID based on hop bytes (or override).
   /// [overrideHopBytes] is used when regional admin enforces a byte size.
   String displayHexId({int? overrideHopBytes}) {
