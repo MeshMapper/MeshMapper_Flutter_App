@@ -20,6 +20,7 @@ import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
+import 'rx_path_chain.dart';
 
 /// Satellite style as inline MapLibre style JSON (ArcGIS raster source).
 /// The `glyphs` URL is required because our native symbol layers
@@ -5532,6 +5533,40 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 ],
               ),
             ),
+
+            // Path section (origin → ... → us). Skipped when the path is
+            // unavailable, e.g. RxPings reloaded from Hive (transient field).
+            if (ping.pathHops.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Path',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: RxPathChain(
+                  hops: ping.pathHops,
+                  fromLatLng: (lat: ping.latitude, lon: ping.longitude),
+                  fontSize: 13,
+                ),
+              ),
+            ],
           ],
         ),
       ),

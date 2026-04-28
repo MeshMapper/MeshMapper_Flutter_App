@@ -87,6 +87,10 @@ class RxPing {
   @HiveField(5)
   final int rssi;
 
+  /// Display path hops, origin → ... → us. Already CARpeater-stripped.
+  /// Transient (not persisted to Hive); empty when reloaded from disk.
+  final List<String> pathHops;
+
   const RxPing({
     required this.latitude,
     required this.longitude,
@@ -94,6 +98,7 @@ class RxPing {
     required this.timestamp,
     required this.snr,
     required this.rssi,
+    this.pathHops = const [],
   });
 
   Map<String, dynamic> toApiJson() {
