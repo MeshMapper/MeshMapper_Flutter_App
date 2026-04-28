@@ -1506,44 +1506,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // finishes in 200ms, making the tap feel "instant" rather than delayed.
     if (layerId == _repeaterClusterBubbleLayerId ||
         layerId == _repeaterClusterCountLayerId) {
-      // Spiderfy is gated to max zoom. Below that, give the user a chance
-      // to separate the stack by zooming further before we resort to the
-      // spread UI. Note that `_spiderCenter` is always null at non-max
-      // zoom (the camera-change collapse fires when the user zooms out
-      // from max), so no collapse-handling is needed in this branch.
-      if (!_isAtMaxZoom()) {
-        if (_canAnimateCamera) {
-          final currentZoom =
-              _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-          final newZoom = math.min(currentZoom + 2, _maxUserZoom);
-          _mapController?.animateCamera(
-            CameraUpdate.newLatLngZoom(coordinates, newZoom),
-            duration: const Duration(milliseconds: 200),
-          );
-        }
-        return;
-      }
-
-      final appState = context.read<AppStateProvider>();
-      final group = _findSpiderGroup(coordinates, appState);
-
-      // Re-tap on the open spider's own group → collapse instead of churn.
-      if (_spiderCenter != null) {
-        final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
-        if (group.any((r) => spiderIds.contains(r.id))) {
-          _collapseSpider();
-          return;
-        }
-        // Tapped a different cluster — close the existing spider before
-        // evaluating the new tap.
-        _collapseSpider();
-      }
-
-      if (group.length >= 2) {
-        _spiderfy(coordinates, group);
-      }
-      // Already at max zoom with a single-marker group: nothing useful to
-      // zoom into and no stack to spread. Silent no-op.
+      _handleClusterBubbleTap(point, coordinates);
       return;
     }
 
@@ -1597,6 +1560,92 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
+  /// Handle a tap on a cluster bubble (or its count label). Spiderfy is gated
+  /// to max zoom; below that we just zoom in.
+  ///
+  /// At max zoom, the spider group is computed from the actual MapLibre
+  /// cluster's `point_count` (queried back from the rendered feature) — we
+  /// take the N nearest repeaters to the tapped coordinate. This deliberately
+  /// avoids the transitive single-link clustering used by [_findSpiderGroup],
+  /// which could chain across separate visual clusters when markers form a
+  /// 42m-spaced trail and pull every chained marker into a single spider.
+  Future<void> _handleClusterBubbleTap(
+      math.Point<double> point, LatLng coordinates) async {
+    if (!mounted) return;
+
+    // Below max zoom: zoom in further so the user has a chance to separate
+    // the stack visually before we resort to the spread UI. _spiderCenter is
+    // always null at non-max zoom (the camera-change collapse fires when the
+    // user zooms out), so no collapse-handling is needed here.
+    if (!_isAtMaxZoom()) {
+      if (_canAnimateCamera) {
+        final currentZoom =
+            _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+        final newZoom = math.min(currentZoom + 2, _maxUserZoom);
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLngZoom(coordinates, newZoom),
+          duration: const Duration(milliseconds: 200),
+        );
+      }
+      return;
+    }
+
+    // Read the tapped cluster's point_count from MapLibre. This is the
+    // authoritative count of leaves Supercluster grouped into this bubble —
+    // matching it ensures the spider expands exactly the markers represented
+    // by the tapped bubble, not a chained connected component.
+    int? pointCount;
+    try {
+      final features = await _mapController?.queryRenderedFeatures(
+        point,
+        const [
+          _repeaterClusterBubbleLayerId,
+          _repeaterClusterCountLayerId,
+        ],
+        null,
+      );
+      if (features != null) {
+        for (final f in features) {
+          final props = ((f as Map)['properties'] as Map?) ?? const {};
+          if (props['cluster'] == true) {
+            final pc = props['point_count'];
+            if (pc is num) {
+              pointCount = pc.toInt();
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugError('[MAP] cluster point_count query failed: $e');
+    }
+
+    if (!mounted) return;
+
+    final appState = context.read<AppStateProvider>();
+    // If we couldn't read point_count (race with style reload, etc.), fall
+    // back to the BFS-based group — better to spiderfy something than nothing.
+    final group = pointCount != null
+        ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
+        : _findSpiderGroup(coordinates, appState);
+
+    // Re-tap on the open spider's own group → collapse instead of churn.
+    if (_spiderCenter != null) {
+      final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+      if (group.any((r) => spiderIds.contains(r.id))) {
+        _collapseSpider();
+        return;
+      }
+      _collapseSpider();
+    }
+
+    if (group.length >= 2) {
+      _spiderfy(coordinates, group);
+    }
+    // Already at max zoom with a single-marker group: nothing useful to
+    // zoom into and no stack to spread. Silent no-op.
+  }
+
   /// When a tap hits the GPS marker (which has no detail sheet), try to find
   /// any repeater cluster or individual repeater under the same point and
   /// dispatch THAT instead. We use [queryRenderedFeatures] explicitly scoped
@@ -1631,7 +1680,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // Cluster (auto-tagged by MapLibre when cluster: true is set on source).
       // Mirrors the cluster path in _handleFeatureTap, including the
-      // max-zoom gate on spiderfy.
+      // max-zoom gate on spiderfy. We already have the feature in hand here,
+      // so read `point_count` directly instead of re-querying.
       if (properties['cluster'] == true) {
         if (!_isAtMaxZoom()) {
           if (_canAnimateCamera) {
@@ -1646,7 +1696,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           return;
         }
         final appState = context.read<AppStateProvider>();
-        final group = _findSpiderGroup(coordinates, appState);
+        final pcRaw = properties['point_count'];
+        final pointCount = pcRaw is num ? pcRaw.toInt() : null;
+        final group = pointCount != null
+            ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
+            : _findSpiderGroup(coordinates, appState);
         if (_spiderCenter != null) {
           final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
           if (group.any((r) => spiderIds.contains(r.id))) {
@@ -2567,6 +2621,37 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
     }
     return result;
+  }
+
+  /// Find the [pointCount] repeaters nearest to [anchor], used when expanding
+  /// a tapped MapLibre cluster bubble.
+  ///
+  /// Unlike [_findSpiderGroup] (transitive BFS connected component), this is
+  /// a non-transitive proximity query — it cannot chain across separate
+  /// visual clusters. The count comes from Supercluster's `point_count` on
+  /// the tapped feature, so the result matches the bubble exactly in every
+  /// realistic case (centroid drift in extreme layouts may shuffle a 1–2
+  /// marker boundary, but the spider count is always correct).
+  List<Repeater> _findSpiderGroupForCluster(
+      LatLng anchor, int pointCount, AppStateProvider appState) {
+    if (pointCount <= 0) return const [];
+    // Bound the candidate set with a generous radius. Supercluster's max
+    // cluster diameter at maxZoom is ~2× the cluster radius (centroid
+    // drift); pointCount × stickThreshold is a comfortable upper bound for
+    // any plausible cluster size.
+    final mPerPxMaxZoom =
+        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
+    final broadRadiusM = stickThresholdM * math.max(10, pointCount);
+    final candidates = <MapEntry<Repeater, double>>[];
+    for (final r in appState.repeaters) {
+      final d = _haversineMeters(anchor, LatLng(r.lat, r.lon));
+      if (d <= broadRadiusM) {
+        candidates.add(MapEntry(r, d));
+      }
+    }
+    candidates.sort((a, b) => a.value.compareTo(b.value));
+    return candidates.take(pointCount).map((e) => e.key).toList();
   }
 
   /// Layout the [n] spread positions around [center]. Uses a single ring up to
