@@ -150,6 +150,15 @@ class RxLogger {
 
       debugLog('[RX LOG] ✅ Packet validated and passed filter');
 
+      // Build display path: full hop chain, minus the last hop when it was a
+      // carpeater pass-through (so the user's own carpeater is not shown).
+      final displayHopCount = carpeaterStripped
+          ? metadata.pathHashCount - 1
+          : metadata.pathHashCount;
+      final displayHops = <String>[
+        for (var i = 0; i < displayHopCount; i++) metadata.getHopHex(i)!,
+      ];
+
       // Create observation for this packet
       final observation = RxObservation(
         repeaterId: repeaterId,
@@ -161,6 +170,7 @@ class RxLogger {
         lon: gpsLocation.lon,
         timestamp: DateTime.now(),
         metadata: metadata,
+        displayHops: displayHops,
       );
 
       // Handle tracking for API (best SNR with distance trigger)
@@ -173,6 +183,7 @@ class RxLogger {
         header: metadata.header,
         currentLocation: gpsLocation,
         metadata: metadata,
+        displayHops: displayHops,
       );
 
       // Only fire immediate callback if this observation was actually kept
@@ -211,6 +222,7 @@ class RxLogger {
     required int header,
     required ({double lat, double lon}) currentLocation,
     required PacketMetadata metadata,
+    required List<String> displayHops,
   }) async {
     // Get or create buffer entry for this repeater
     RxBatch? buffer = _batchBuffer[repeaterId];
@@ -230,6 +242,7 @@ class RxLogger {
           lon: currentLocation.lon,
           timestamp: DateTime.now(),
           metadata: metadata,
+          displayHops: displayHops,
         ),
       );
       _batchBuffer[repeaterId] = buffer;
@@ -266,6 +279,7 @@ class RxLogger {
           lon: buffer.firstLocation.lon, // Keep original location
           timestamp: DateTime.now(),
           metadata: metadata,
+          displayHops: displayHops,
         );
         wasKept = true; // Better SNR, observation is kept
       } else {
@@ -371,6 +385,7 @@ class RxLogger {
       header: best.header,
       timestamp: best.timestamp,
       metadata: best.metadata,
+      displayHops: best.displayHops,
     );
 
     debugLog('[RX BATCH] Posting repeater $repeaterId: snr=${best.snr}, '
@@ -477,6 +492,9 @@ class RxObservation {
   final double lon;
   final DateTime timestamp;
   final PacketMetadata metadata;
+  /// Display path hops, origin → ... → us. Already CARpeater-stripped (the
+  /// user's own carpeater, when present, has been removed from the tail).
+  final List<String> displayHops;
 
   RxObservation({
     required this.repeaterId,
@@ -488,6 +506,7 @@ class RxObservation {
     required this.lon,
     required this.timestamp,
     required this.metadata,
+    this.displayHops = const [],
   });
 }
 
@@ -502,6 +521,8 @@ class RxApiEntry {
   final int header;
   final DateTime timestamp;
   final PacketMetadata metadata;
+  /// Display path hops, origin → ... → us. Already CARpeater-stripped.
+  final List<String> displayHops;
 
   RxApiEntry({
     required this.repeaterId,
@@ -513,5 +534,6 @@ class RxApiEntry {
     required this.header,
     required this.timestamp,
     required this.metadata,
+    this.displayHops = const [],
   });
 }
