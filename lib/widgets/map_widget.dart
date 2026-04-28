@@ -1758,7 +1758,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         appState.repeaters.where((r) => r.id == repeaterId).firstOrNull;
     if (repeater == null) return;
 
-    final duplicates = _getDuplicateRepeaterIds(appState.repeaters);
+    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
     final isDuplicate = duplicates.contains(repeater.id);
     final hopOverride =
         appState.enforceHopBytes ? appState.effectiveHopBytes : null;
@@ -2204,7 +2204,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// the marker data version changes — MapLibre handles re-clustering natively.
   Map<String, dynamic> _buildRepeaterFeatureCollection(
       AppStateProvider appState) {
-    final duplicates = _getDuplicateRepeaterIds(appState.repeaters);
+    final visible = _mapVisibleRepeaters(appState);
+    final duplicates = _getDuplicateRepeaterIds(visible);
     final hopOverride =
         appState.enforceHopBytes ? appState.effectiveHopBytes : null;
     final focusActive = _focusedPingLocation != null;
@@ -2216,7 +2217,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
 
     final features = <Map<String, dynamic>>[];
-    for (final repeater in appState.repeaters) {
+    for (final repeater in visible) {
       final isDuplicate = duplicates.contains(repeater.id);
       final statusKey = _repeaterStatusKey(repeater, isDuplicate);
       final isConnected = focusActive &&
@@ -2585,7 +2586,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // user taps a continent-scale cluster at low zoom.
     final broadRadiusM = stickThresholdM * 10;
     final candidates = <Repeater>[];
-    for (final r in appState.repeaters) {
+    for (final r in _mapVisibleRepeaters(appState)) {
       if (_haversineMeters(anchor, LatLng(r.lat, r.lon)) <= broadRadiusM) {
         candidates.add(r);
       }
@@ -2644,7 +2645,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
     final broadRadiusM = stickThresholdM * math.max(10, pointCount);
     final candidates = <MapEntry<Repeater, double>>[];
-    for (final r in appState.repeaters) {
+    for (final r in _mapVisibleRepeaters(appState)) {
       final d = _haversineMeters(anchor, LatLng(r.lat, r.lon));
       if (d <= broadRadiusM) {
         candidates.add(MapEntry(r, d));
@@ -2738,7 +2739,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
     final cosLat = math.cos(center.latitude * math.pi / 180);
 
-    final duplicates = _getDuplicateRepeaterIds(appState.repeaters);
+    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
     final hopOverride =
         appState.enforceHopBytes ? appState.effectiveHopBytes : null;
 
@@ -5095,6 +5096,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     return idCounts.entries.where((e) => e.value > 1).map((e) => e.key).toSet();
   }
+
+  /// Repeaters eligible for map rendering — excludes anything not heard in
+  /// the past 30 days so long-stale entries don't appear, contribute to
+  /// clusters, or get pulled into spider expansions. All map-rendering
+  /// paths route through this; non-map consumers (log, picker) keep using
+  /// `appState.repeaters` directly.
+  List<Repeater> _mapVisibleRepeaters(AppStateProvider appState) =>
+      appState.repeaters.where((r) => r.isHeardRecently).toList();
 
   /// Get marker color for a repeater based on status priority:
   /// 1. Duplicate → Red (always takes priority)
