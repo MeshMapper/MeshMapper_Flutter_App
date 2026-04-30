@@ -112,6 +112,13 @@ class Repeater {
   /// Check if the repeater is enabled (any non-zero value)
   bool get isEnabled => enabled != 0;
 
+  /// True when the repeater has known GPS coordinates. The API uses
+  /// `(0, 0)` as a sentinel for "location not yet published" — those
+  /// repeaters are excluded from map focus geometry (no line, no
+  /// distance label, not part of the bounds-fit) but still appear in
+  /// heard-repeater listings with a `location_off` indicator.
+  bool get hasLocation => lat != 0.0 || lon != 0.0;
+
   /// Check if the repeater was created within the past 7 days
   bool get isNew {
     if (createdAt == null) return false;
