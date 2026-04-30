@@ -5228,16 +5228,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       debugLog('[ZONE] Requesting auth for zone $newZoneCode');
-      final result = await _apiService.requestAuth(
+      final modelString = _meshCoreConnection?.deviceModel?.manufacturer ??
+          _meshCoreConnection?.deviceInfo?.manufacturer ??
+          'Unknown';
+      var result = await _apiService.requestAuth(
         reason: 'connect',
         publicKey: _devicePublicKey!,
         who: deviceName,
         appVersion: _appVersion,
         power: _preferences.powerLevel,
         iataCode: newZoneCode,
-        model: _meshCoreConnection?.deviceModel?.manufacturer ??
-            _meshCoreConnection?.deviceInfo?.manufacturer ??
-            'Unknown',
+        model: modelString,
         lat: _currentPosition!.latitude,
         lon: _currentPosition!.longitude,
         accuracyMeters: _currentPosition!.accuracy,
@@ -5267,10 +5268,67 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         final message = result['message'] as String? ?? 'Auth failed';
         debugError(
             '[ZONE] Auth failed for zone $newZoneCode: $reason - $message');
-        logError('Zone transfer failed: $message',
-            severity: ErrorSeverity.error);
-        await disconnect();
-        return;
+
+        // Stage 2: unknown_device → register via signed contact URI (mirrors initial connect)
+        if (reason == 'unknown_device' && _meshCoreConnection != null) {
+          debugLog(
+              '[ZONE] Stage 2: Attempting registration via contact_uri for zone $newZoneCode');
+
+          String? contactUri;
+          try {
+            contactUri = await _meshCoreConnection!.exportContact();
+            debugLog(
+                '[ZONE] Received contact URI: ${contactUri.substring(0, contactUri.length < 50 ? contactUri.length : 50)}...');
+          } catch (e) {
+            debugError('[ZONE] Stage 2 failed: could not export contact: $e');
+            logError('Zone transfer failed: $message',
+                severity: ErrorSeverity.error);
+            await disconnect();
+            return;
+          }
+
+          final registerResult = await _apiService.requestAuth(
+            reason: 'register',
+            contactUri: contactUri,
+            who: deviceName,
+            appVersion: _appVersion,
+            power: _preferences.powerLevel,
+            iataCode: newZoneCode,
+            model: modelString,
+            lat: _currentPosition!.latitude,
+            lon: _currentPosition!.longitude,
+            accuracyMeters: _currentPosition!.accuracy,
+          );
+
+          if (registerResult == null) {
+            debugError('[ZONE] Stage 2 failed: network error');
+            logError('Zone transfer failed: unable to register with server',
+                severity: ErrorSeverity.error);
+            await disconnect();
+            return;
+          }
+
+          if (registerResult['success'] != true) {
+            final regReason =
+                registerResult['reason'] as String? ?? 'registration_failed';
+            final regMessage = registerResult['message'] as String? ??
+                'Registration rejected by server';
+            debugError('[ZONE] Stage 2 failed: $regReason - $regMessage');
+            logError('Zone transfer failed: $regMessage',
+                severity: ErrorSeverity.error);
+            await disconnect();
+            return;
+          }
+
+          debugLog(
+              '[ZONE] Stage 2 succeeded: registered for zone $newZoneCode');
+          result = registerResult;
+        } else {
+          logError('Zone transfer failed: $message',
+              severity: ErrorSeverity.error);
+          await disconnect();
+          return;
+        }
       }
 
       // 11. Auth succeeded — update session zone code
