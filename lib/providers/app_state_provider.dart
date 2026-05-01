@@ -4839,6 +4839,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         _currentZone = newZone;
         _nearestZone = null;
+
+        final staleHours = result['stale_repeater_hours'];
+        if (staleHours is int && staleHours > 0) {
+          Repeater.staleHoursFallback = staleHours;
+          debugLog('[GEOFENCE] Zone stale repeater threshold: ${staleHours}h');
+        }
+
         debugLog('[GEOFENCE] In zone: $newZoneName ($newZoneCode)');
 
         if (newZoneCode.isNotEmpty) {
