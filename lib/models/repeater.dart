@@ -3,6 +3,11 @@ import 'package:intl/intl.dart';
 /// Represents a repeater from the MeshMapper API.
 /// Used to display repeater markers on the map.
 class Repeater {
+  /// Zone-level fallback for stale threshold, updated from the status API's
+  /// `stale_repeater_hours` field. Used only when a repeater lacks a
+  /// per-repeater [staleTime].
+  static int staleHoursFallback = 24;
+
   /// Unique ID (e.g., "01", "92")
   final String id;
 
@@ -128,16 +133,15 @@ class Repeater {
 
   /// Check if the repeater is active.
   /// Uses server-provided [staleTime] when available, otherwise falls back
-  /// to a 24-hour threshold from [lastHeard].
+  /// to [staleHoursFallback] (set from the zone's `stale_repeater_hours`).
   bool get isActive {
     if (staleTime != null) {
       final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       return nowSeconds < staleTime!;
     }
-    // Fallback: 24-hour threshold from lastHeard
     if (lastHeard == 0) return false;
     final heard = DateTime.fromMillisecondsSinceEpoch(lastHeard * 1000);
-    return DateTime.now().difference(heard).inHours < 24;
+    return DateTime.now().difference(heard).inHours < staleHoursFallback;
   }
 
   /// Check if the repeater has not been heard in the past 24 hours
