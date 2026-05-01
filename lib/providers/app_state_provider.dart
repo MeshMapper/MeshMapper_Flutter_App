@@ -109,6 +109,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final RxWindowTimer _rxWindowTimer;
   late final DiscoveryWindowTimer
       _discoveryWindowTimer; // Discovery listening window (Passive Mode)
+  late final Listenable _timerListenable;
   MeshCoreConnection? _meshCoreConnection;
   PingService? _pingService;
   UnifiedRxHandler? _unifiedRxHandler;
@@ -660,6 +661,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   RxWindowTimer get rxWindowTimer => _rxWindowTimer;
   DiscoveryWindowTimer get discoveryWindowTimer =>
       _discoveryWindowTimer; // Discovery listening window (Passive Mode)
+  Listenable get timerListenable => _timerListenable;
 
   // ============================================
   // Initialization
@@ -705,13 +707,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _offlineSessionService = OfflineSessionService();
     _deviceModelService = DeviceModelService();
 
-    // Initialize countdown timers with notifyListeners callback for smooth UI updates
-    _cooldownTimer = CooldownTimer(onUpdate: notifyListeners);
-    _manualPingCooldownTimer =
-        ManualPingCooldownTimer(onUpdate: notifyListeners);
-    _autoPingTimer = AutoPingTimer(onUpdate: notifyListeners);
-    _rxWindowTimer = RxWindowTimer(onUpdate: notifyListeners);
-    _discoveryWindowTimer = DiscoveryWindowTimer(onUpdate: notifyListeners);
+    // Initialize countdown timers. They self-notify via ChangeNotifier so only
+    // widgets listening to the timers directly rebuild on each 500ms tick.
+    _cooldownTimer = CooldownTimer();
+    _manualPingCooldownTimer = ManualPingCooldownTimer();
+    _autoPingTimer = AutoPingTimer();
+    _rxWindowTimer = RxWindowTimer();
+    _discoveryWindowTimer = DiscoveryWindowTimer();
+    _timerListenable = Listenable.merge([
+      _cooldownTimer,
+      _manualPingCooldownTimer,
+      _autoPingTimer,
+      _rxWindowTimer,
+      _discoveryWindowTimer,
+    ]);
 
     // Initialize debug logging (enabled by default, respects user preference)
     await _initDebugLogs();
@@ -1383,20 +1392,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         notifyListeners();
       });
 
-      // Listen for noise floor updates
+      // Listen for noise floor updates — only rebuild UI when value changes
       _noiseFloorSubscription =
           _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
-        _currentNoiseFloor = noiseFloor;
-        // Record sample to current noise floor session (if active)
         _recordNoiseFloorSample(noiseFloor);
-        notifyListeners();
+        if (noiseFloor != _currentNoiseFloor) {
+          _currentNoiseFloor = noiseFloor;
+          notifyListeners();
+        }
       });
 
-      // Listen for battery updates
+      // Listen for battery updates — only rebuild UI when value changes
       _batterySubscription =
           _meshCoreConnection!.batteryStream.listen((batteryPercent) {
-        _currentBatteryPercent = batteryPercent;
-        notifyListeners();
+        if (batteryPercent != _currentBatteryPercent) {
+          _currentBatteryPercent = batteryPercent;
+          notifyListeners();
+        }
       });
 
       // Execute connection workflow

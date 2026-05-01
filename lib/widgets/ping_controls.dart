@@ -14,6 +14,9 @@ class PingControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final validation = appState.pingValidation;
     final manualValidation = appState
         .manualPingValidation; // Manual ping validation (no distance check)
@@ -315,6 +318,8 @@ class PingControls extends StatelessWidget {
         ),
       ],
     );
+      },
+    );
   }
 
   Future<void> _sendPing(
@@ -594,9 +599,12 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+    final colorScheme = Theme.of(context).colorScheme;
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final isTargetedRunning = appState.isTargetedModeRunning;
     final maxLen = appState.traceHopBytes * 2;
-    final colorScheme = Theme.of(context).colorScheme;
 
     // Sync controller when provider clears target (e.g. trace bytes changed)
     if (appState.targetRepeaterId == null && _controller.text.isNotEmpty) {
@@ -769,6 +777,8 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
         ],
       ),
     );
+      },
+    );
   }
 }
 
@@ -806,6 +816,9 @@ class _CompactPingControlsState extends State<CompactPingControls> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final manualValidation = appState
         .manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
@@ -1150,6 +1163,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         ],
       ],
     );
+      },
+    );
   }
 
   /// Get label for Send Ping button
@@ -1367,6 +1382,9 @@ class LandscapePingControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final manualValidation = appState
         .manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
@@ -1552,6 +1570,8 @@ class LandscapePingControls extends StatelessWidget {
           compact: true,
         ),
       ],
+    );
+      },
     );
   }
 
