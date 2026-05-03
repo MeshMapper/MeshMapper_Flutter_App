@@ -313,15 +313,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   MapLibreMapController? _mapController;
 
   // Tracks the app lifecycle so we can suppress every animateCamera() call
-  // while the app is not in the foreground. MapLibre's native flyTo throws
-  // an uncaught C++ exception (mbgl::LatLng domain_error → SIGABRT) when
-  // the underlying MLNMapView's GL context is degraded, which is what
-  // happens on iOS while the app is backgrounded. The Flutter frame
-  // pipeline keeps running in our background-mode app (bluetooth-central +
-  // location), so GPS-driven rebuilds would otherwise still fire animateCamera.
+  // while the app is not in the foreground OR while the GL surface is
+  // settling after a state transition. MapLibre Native's
+  // constrainCameraAndZoomToBounds (PR #2475) calls Projection::unproject
+  // internally — when the GL surface is degenerate (zero-sized on first
+  // frame, or not yet restored after iOS background suspension), unproject
+  // produces NaN and the LatLng constructor throws std::domain_error →
+  // SIGABRT. Suppressing animations for one frame after style-load and
+  // after resume lets the surface reach a valid state first.
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+  bool _cameraAnimationReady = false;
   bool get _canAnimateCamera =>
-      _appLifecycleState == AppLifecycleState.resumed;
+      _appLifecycleState == AppLifecycleState.resumed &&
+      _cameraAnimationReady;
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = false; // Disabled by default - users often zoom out first
@@ -550,7 +554,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final wasBackground = _appLifecycleState != AppLifecycleState.resumed;
     _appLifecycleState = state;
+
+    if (state != AppLifecycleState.resumed) {
+      // Going to background — block camera animations immediately.
+      _cameraAnimationReady = false;
+    } else if (wasBackground && _isMapReady) {
+      // Resuming from background — GL surface needs a frame to restore
+      // before constrainCameraAndZoomToBounds can project without NaN.
+      _cameraAnimationReady = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _cameraAnimationReady = true;
+        }
+      });
+    }
   }
 
   @override
@@ -938,7 +957,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (appState.currentPosition == null &&
         appState.lastKnownPosition != null &&
         !_hasZoomedToLastKnown &&
-        _isMapReady) {
+        _isMapReady &&
+        _canAnimateCamera) {
       _hasZoomedToLastKnown = true;
       final lastKnownCenter = LatLng(
         appState.lastKnownPosition!.lat,
@@ -961,7 +981,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // One-time initial zoom to GPS when we first get a position
       // This happens even with auto-follow disabled so user sees their location
       // Don't apply panel offset - center directly on GPS so pin is in middle of screen
-      if (!_hasInitialZoomed && _isMapReady) {
+      if (!_hasInitialZoomed && _isMapReady && _canAnimateCamera) {
         _hasInitialZoomed = true;
         final initialPosition = center;
         _lastGpsPosition = initialPosition;
@@ -1854,6 +1874,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     try {
       _styleLoaded = true;
       _isMapReady = true;
+
+      // Let the GL surface render one frame before allowing camera animations.
+      // Without this, constrainCameraAndZoomToBounds can produce NaN on the
+      // very first flyTo/easeTo after style load (the viewport may be
+      // zero-sized or the projection matrix degenerate).
+      _cameraAnimationReady = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _cameraAnimationReady = true;
+        }
+      });
 
       // CRITICAL: clear stale Symbol references from any previous style load.
       // Style reloads cause maplibre_gl to construct a brand-new SymbolManager
