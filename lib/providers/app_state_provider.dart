@@ -2547,6 +2547,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
     if (_autoPingEnabled) {
       if (!_userRequestedDisconnect) {
         _playDisconnectAlert();
@@ -2627,6 +2628,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
     _autoPingEnabled = false;
     _idleAutoStopReference = null;
 
@@ -2910,6 +2912,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Stop all countdown timers
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
     _autoPingTimer.stop();
     _rxWindowTimer.stop();
 
@@ -3771,6 +3774,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer.stop();
     _discoveryWindowTimer.stop();
     _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
 
     // 7. End noise floor session
     await _endNoiseFloorSession();
@@ -6427,6 +6431,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _bluetoothService.dispose();
     _audioService.dispose();
     _cooldownTimer.dispose();
+    _manualPingCooldownTimer.dispose();
     _autoPingTimer.dispose();
     _rxWindowTimer.dispose();
     _discoveryWindowTimer.dispose();
