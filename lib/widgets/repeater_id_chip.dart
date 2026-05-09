@@ -153,7 +153,7 @@ class RepeaterIdChip extends StatelessWidget {
         content = Column(
           mainAxisSize: MainAxisSize.min,
           children: matches
-              .map((r) => _buildRepeaterRow(context, r,
+              .map((r) => buildRepeaterRow(context, r,
                   refLat: refLat,
                   refLon: refLon,
                   regionHopBytesOverride: regionOverride))
@@ -213,7 +213,7 @@ class RepeaterIdChip extends StatelessWidget {
     );
   }
 
-  static Widget _buildRepeaterRow(
+  static Widget buildRepeaterRow(
     BuildContext context,
     Repeater repeater, {
     double? refLat,
@@ -254,7 +254,7 @@ class RepeaterIdChip extends StatelessWidget {
       child: Row(
         children: [
           // Colored badge — circle for short IDs, pill for longer
-          _buildHexBadge(
+          buildHexBadge(
               repeater.displayHexId(overrideHopBytes: regionHopBytesOverride),
               badgeColor),
           const SizedBox(width: 12),
@@ -330,7 +330,7 @@ class RepeaterIdChip extends StatelessWidget {
   }
 
   /// Build a hex ID badge — circle for 2-char, pill for longer IDs
-  static Widget _buildHexBadge(String displayId, Color color) {
+  static Widget buildHexBadge(String displayId, Color color) {
     final isLong = displayId.length > 2;
 
     return Container(

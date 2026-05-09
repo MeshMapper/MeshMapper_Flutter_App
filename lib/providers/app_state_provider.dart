@@ -213,6 +213,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _originalDeviceName; // Real name stored before rename
   bool _isAnonymousRenamed = false; // Device currently renamed to "Anonymous"
 
+  /// Per-device real name persistence: maps device public key → real device name.
+  /// Survives unexpected BLE disconnects where setAdvertName restore can't run.
+  Map<String, String> _deviceRealNames = {};
+
   /// Per-device antenna preferences: maps companion name → external antenna bool
   Map<String, bool> _deviceAntennaPreferences = {};
 
@@ -800,6 +804,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _loadPreferences();
     await _loadDeviceAntennaPreferences();
     await _loadDevicePowerOverrides();
+    await _loadDeviceRealNames();
 
     // Load last known GPS position for map centering
     await _loadLastPosition();
@@ -1161,13 +1166,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (_preferences.anonymousMode && !_isAnonymousRenamed) {
             final realName = _meshCoreConnection!.selfInfo?.name;
             if (realName != null && realName.isNotEmpty) {
-              _originalDeviceName = realName;
+              // Cascade guard: if firmware is stuck as "Anonymous" from a previous
+              // unclean disconnect, recover the real name from Hive
+              if (realName == 'Anonymous') {
+                final persisted = _deviceRealNames[publicKey];
+                _originalDeviceName =
+                    persisted ?? realName; // fall back if nothing saved
+                if (persisted != null) {
+                  debugLog(
+                      '[CONN] Anonymous mode: recovered real name "$persisted" from Hive (firmware was stuck)');
+                }
+              } else {
+                _originalDeviceName = realName;
+              }
               try {
                 await _meshCoreConnection!.setAdvertName('Anonymous');
                 _isAnonymousRenamed = true;
                 _displayDeviceName = 'Anonymous';
+                // Persist real name keyed by public key (only if not "Anonymous")
+                if (_originalDeviceName != 'Anonymous') {
+                  _deviceRealNames[publicKey] = _originalDeviceName!;
+                  _saveDeviceRealNames();
+                }
                 debugLog(
-                    '[CONN] Anonymous mode: renamed from "$realName" to "Anonymous"');
+                    '[CONN] Anonymous mode: renamed from "$_originalDeviceName" to "Anonymous"');
                 // Short delay for firmware to process
                 await Future.delayed(const Duration(milliseconds: 300));
               } catch (e) {
@@ -1178,10 +1200,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
 
           // Resolve device name: use "Anonymous" if renamed, otherwise SelfInfo name
-          final deviceName = _isAnonymousRenamed
-              ? 'Anonymous'
-              : (_meshCoreConnection!.selfInfo?.name ??
-                  connectedDeviceName?.replaceFirst('MeshCore-', ''));
+          String? deviceName;
+          if (_isAnonymousRenamed) {
+            deviceName = 'Anonymous';
+          } else {
+            final selfInfoName = _meshCoreConnection!.selfInfo?.name;
+            // Detect stuck anonymous name: firmware still has "Anonymous" but mode is OFF
+            if (selfInfoName == 'Anonymous') {
+              final persistedName = _deviceRealNames[publicKey];
+              if (persistedName != null) {
+                debugLog(
+                    '[CONN] Detected stuck anonymous name, recovering to "$persistedName"');
+                try {
+                  await _meshCoreConnection!.setAdvertName(persistedName);
+                  debugLog('[CONN] Restored firmware name to "$persistedName"');
+                  _clearPersistedRealName(publicKey);
+                } catch (e) {
+                  debugError('[CONN] Failed to restore firmware name: $e');
+                }
+                deviceName = persistedName;
+              } else {
+                debugWarn(
+                    '[CONN] Firmware name is "Anonymous" but no persisted real name found');
+                deviceName = selfInfoName;
+              }
+            } else {
+              deviceName = selfInfoName ??
+                  connectedDeviceName?.replaceFirst('MeshCore-', '');
+            }
+          }
           if (deviceName == null || deviceName.isEmpty) {
             debugError(
                 '[APP] Cannot request auth: could not retrieve device name');
@@ -1366,17 +1413,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
           // Persist device info for bug reports when disconnected
           // Use original name (not "Anonymous") for bug report identification
-          var deviceName = _isAnonymousRenamed
+          var lastDeviceName = _isAnonymousRenamed
               ? _originalDeviceName
               : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName);
-          if (deviceName != null) {
-            // Always strip MeshCore- prefix if present
-            deviceName = deviceName.replaceFirst('MeshCore-', '');
+          if (lastDeviceName != null) {
+            lastDeviceName = lastDeviceName.replaceFirst('MeshCore-', '');
           }
-          if (deviceName != null &&
-              deviceName.isNotEmpty &&
+          // Cascade guard: never persist "Anonymous" as the last connected device
+          if (lastDeviceName == 'Anonymous' && _devicePublicKey != null) {
+            lastDeviceName =
+                _deviceRealNames[_devicePublicKey!] ?? lastDeviceName;
+          }
+          if (lastDeviceName != null &&
+              lastDeviceName.isNotEmpty &&
               _devicePublicKey != null) {
-            _saveLastConnectedDevice(deviceName, _devicePublicKey!);
+            _saveLastConnectedDevice(lastDeviceName, _devicePublicKey!);
           }
 
           // In offline mode, fetch signed contact URI for later registration during upload
@@ -1945,9 +1996,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Update remembered device with real name (not "Anonymous")
         // BLE advertisement name may be stale after device rename
-        final realName = _isAnonymousRenamed
-            ? (_originalDeviceName ?? selfInfoName)
-            : selfInfoName;
+        String? realName;
+        if (_isAnonymousRenamed) {
+          realName = _originalDeviceName ?? selfInfoName;
+        } else if (selfInfoName == 'Anonymous' && _devicePublicKey != null) {
+          realName = _deviceRealNames[_devicePublicKey!] ?? selfInfoName;
+        } else {
+          realName = selfInfoName;
+        }
         if (_rememberedDevice != null && _rememberedDevice!.id == device.id) {
           final updatedName = 'MeshCore-$realName';
           if (_rememberedDevice!.name != updatedName) {
@@ -2944,6 +3000,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         await _meshCoreConnection?.setAdvertName(_originalDeviceName!);
         debugLog(
             '[CONN] Anonymous mode: restored name to "$_originalDeviceName"');
+        if (_devicePublicKey != null) {
+          _clearPersistedRealName(_devicePublicKey!);
+        }
       } catch (e) {
         debugError('[CONN] Anonymous mode: failed to restore name: $e');
         logError(
@@ -6105,6 +6164,46 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // ============================================
+  // Device Real Name Persistence (Anonymous Mode Recovery)
+  // ============================================
+
+  Future<void> _loadDeviceRealNames() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      final raw = box.get('device_real_names');
+      if (raw != null) {
+        _deviceRealNames = Map<String, String>.from(raw as Map);
+        debugLog(
+            '[APP] Loaded real names for ${_deviceRealNames.length} device(s)');
+      }
+    } catch (e) {
+      debugLog('[APP] Failed to load device real names: $e');
+    }
+  }
+
+  Future<void> _saveDeviceRealNames() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      await box.put('device_real_names', _deviceRealNames);
+      await box.flush();
+    } catch (e) {
+      debugLog('[APP] Failed to save device real names: $e');
+    }
+  }
+
+  Future<void> _clearPersistedRealName(String publicKey) async {
+    if (_deviceRealNames.remove(publicKey) != null) {
+      await _saveDeviceRealNames();
+      debugLog(
+          '[APP] Cleared persisted real name for device ${publicKey.substring(0, 16)}...');
+    }
+  }
+
+  // ============================================
   // Last Connected Device Persistence
   // ============================================
 
@@ -6427,6 +6526,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _bluetoothService.dispose();
     _audioService.dispose();
     _cooldownTimer.dispose();
+    _manualPingCooldownTimer.dispose();
     _autoPingTimer.dispose();
     _rxWindowTimer.dispose();
     _discoveryWindowTimer.dispose();
