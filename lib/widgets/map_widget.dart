@@ -1012,7 +1012,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // zoom the camera is animating toward — using it instead of the
       // (potentially interpolated) current zoom prevents drift during the
       // initial zoom animation after tapping center-on-position.
-      if (_autoFollow && _isMapReady) {
+      if (_autoFollow && _isMapReady && _cameraAnimationReady) {
         final newPosition = center;
         if (_lastGpsPosition == null ||
             _lastGpsPosition!.latitude != newPosition.latitude ||
@@ -1131,7 +1131,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (_isMapReady &&
         _styleLoaded &&
         _imagesRegistered &&
-        _clusterLayersReady) {
+        _clusterLayersReady &&
+        _cameraAnimationReady) {
       final dataVersion = _computeMarkerDataVersion(appState);
       if (dataVersion != _lastMarkerDataVersion) {
         _lastMarkerDataVersion = dataVersion;
@@ -1163,7 +1164,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // re-run its global symbol collision pass and flickered the base-style
     // POI labels at high zoom. The gpsMarkerStyle pref is included so style
     // changes (arrow → walk, etc.) re-render the marker's bitmap.
-    if (_isMapReady && _styleLoaded && _imagesRegistered) {
+    if (_isMapReady && _styleLoaded && _imagesRegistered && _cameraAnimationReady) {
       final gpsVersion = Object.hash(
         appState.currentPosition?.latitude,
         appState.currentPosition?.longitude,
