@@ -323,7 +323,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _mapNavigationTrigger = 0; // Increment to trigger navigation
   bool _requestMapTabSwitch = false; // Request switch to map tab
   bool _requestErrorLogSwitch = false; // Request switch to error log tab
-  bool _requestConnectionTabSwitch = false; // Request switch to connection tab
+  bool _isAnonymousReconnectInProgress = false;
+  bool _anonymousReconnectEnabling = true;
 
   // Repeater markers state
   List<Repeater> _repeaters = [];
@@ -508,7 +509,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int get mapNavigationTrigger => _mapNavigationTrigger;
   bool get requestMapTabSwitch => _requestMapTabSwitch;
   bool get requestErrorLogSwitch => _requestErrorLogSwitch;
-  bool get requestConnectionTabSwitch => _requestConnectionTabSwitch;
+  bool get isAnonymousReconnectInProgress => _isAnonymousReconnectInProgress;
+  bool get anonymousReconnectEnabling => _anonymousReconnectEnabling;
   UserPreferences get preferences => _preferences;
   RememberedDevice? get rememberedDevice => _rememberedDevice;
 
@@ -571,6 +573,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isZoneTransferInProgress => _isZoneTransferInProgress;
   String? get zoneTransferFrom => _zoneTransferFrom;
   String? get zoneTransferTo => _zoneTransferTo;
+
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
@@ -4261,12 +4264,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _meshCoreConnection != null) {
       final deviceToReconnect = _bluetoothService.connectedDevice;
       if (deviceToReconnect != null) {
-        _requestConnectionTabSwitch = true;
+        _isAnonymousReconnectInProgress = true;
+        _anonymousReconnectEnabling = enabled;
+        _connectionStep = ConnectionStep.disconnected;
         notifyListeners();
-        await disconnect(); // Full cleanup (restores name if previously anonymous)
-        // Short delay for BLE cleanup
-        await Future.delayed(const Duration(milliseconds: 500));
-        await connectToDevice(deviceToReconnect);
+        try {
+          await disconnect();
+          await Future.delayed(const Duration(milliseconds: 500));
+          await connectToDevice(deviceToReconnect);
+        } catch (e) {
+          debugError('[APP] Anonymous mode reconnect error: $e');
+        } finally {
+          _isAnonymousReconnectInProgress = false;
+          notifyListeners();
+        }
       }
     }
   }
@@ -4452,10 +4463,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _requestErrorLogSwitch = false;
   }
 
-  /// Clear the connection tab switch request (called by main scaffold after switching)
-  void clearConnectionTabSwitchRequest() {
-    _requestConnectionTabSwitch = false;
-  }
 
   // ============================================
   // API Error Handling
