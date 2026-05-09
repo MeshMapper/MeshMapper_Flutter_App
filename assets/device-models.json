@@ -300,6 +300,14 @@
       "notes": "Nano G2 Ultra"
     },
     {
+      "manufacturer": "pyMC-Repeater-Companion",
+      "shortName": "pyMC Repeater Companion",
+      "power": 1.0,
+      "platform": "PyMC",
+      "txPower": 30,
+      "notes": "pyMC Repeater Companion"
+    },
+    {
       "manufacturer": "Station G2",
       "shortName": "Station G2",
       "power": 1.0,
