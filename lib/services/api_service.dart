@@ -8,7 +8,7 @@ import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 
 /// Result of a batch upload attempt
-enum UploadResult { success, retryable, nonRetryable }
+enum UploadResult { success, retryable, sessionError, nonRetryable }
 
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
@@ -1085,12 +1085,21 @@ class ApiService {
 
       final reason = result['reason'] as String?;
 
-      // For offline uploads, session/auth errors are non-retryable but do NOT cascade
-      const criticalErrors = {
+      // Session timing errors: session not yet propagated or expired.
+      // The pings are fine — retrying with a delay may succeed.
+      const sessionTimingErrors = {
+        'bad_session',
         'session_expired',
         'session_invalid',
         'session_revoked',
-        'bad_session',
+      };
+      if (sessionTimingErrors.contains(reason)) {
+        debugError('[API] Offline upload batch session timing error: $reason');
+        return UploadResult.sessionError;
+      }
+
+      // Permanent auth/zone errors: session will never work, abort upload.
+      const permanentSessionErrors = {
         'invalid_key',
         'unauthorized',
         'bad_key',
@@ -1098,8 +1107,8 @@ class ApiService {
         'zone_full',
         'zone_disabled',
       };
-      if (criticalErrors.contains(reason)) {
-        debugError('[API] Offline upload batch session error: $reason');
+      if (permanentSessionErrors.contains(reason)) {
+        debugError('[API] Offline upload batch permanent error: $reason');
         return UploadResult.nonRetryable;
       }
 
