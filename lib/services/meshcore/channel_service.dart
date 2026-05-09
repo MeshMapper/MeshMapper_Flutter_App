@@ -177,7 +177,6 @@ class ChannelService {
     // Full scan prevents duplicates from orphaned channels after unexpected disconnects
     int? firstEmptySlot;
     var channelIdx = 0;
-
     while (true) {
       try {
         // Retry mechanism for first channel (sometimes gets spurious OK responses)
@@ -222,6 +221,13 @@ class ChannelService {
 
     // #wardriving not found - create it at first empty slot
     if (firstEmptySlot == null) {
+      if (channelIdx == 0) {
+        // Couldn't read any channels — BLE dropped, not a channel issue
+        debugError('[CHANNEL] BLE connection lost during channel scan');
+        throw Exception(
+          'BLE connection lost during channel setup. Please try connecting again.',
+        );
+      }
       debugError(
           '[CHANNEL] No empty channel slots found in first $channelIdx channels');
       throw Exception(
