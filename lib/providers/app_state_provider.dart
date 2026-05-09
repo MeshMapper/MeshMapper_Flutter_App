@@ -1204,7 +1204,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (_isAnonymousRenamed) {
             deviceName = 'Anonymous';
           } else {
-            final selfInfoName = _meshCoreConnection!.selfInfo?.name;
+            var selfInfoName = _meshCoreConnection!.selfInfo?.name;
             // Detect stuck anonymous name: firmware still has "Anonymous" but mode is OFF
             if (selfInfoName == 'Anonymous') {
               final persistedName = _deviceRealNames[publicKey];
@@ -1213,21 +1213,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                     '[CONN] Detected stuck anonymous name, recovering to "$persistedName"');
                 try {
                   await _meshCoreConnection!.setAdvertName(persistedName);
-                  debugLog('[CONN] Restored firmware name to "$persistedName"');
+                  await Future.delayed(const Duration(milliseconds: 300));
+                  final refreshed = await _meshCoreConnection!.getSelfInfo();
+                  selfInfoName = refreshed.name;
+                  debugLog(
+                      '[CONN] Confirmed firmware name restored to "$selfInfoName"');
                   _clearPersistedRealName(publicKey);
                 } catch (e) {
                   debugError('[CONN] Failed to restore firmware name: $e');
+                  selfInfoName = persistedName;
                 }
-                deviceName = persistedName;
               } else {
                 debugWarn(
                     '[CONN] Firmware name is "Anonymous" but no persisted real name found');
-                deviceName = selfInfoName;
               }
-            } else {
-              deviceName = selfInfoName ??
-                  connectedDeviceName?.replaceFirst('MeshCore-', '');
             }
+            deviceName = selfInfoName ??
+                connectedDeviceName?.replaceFirst('MeshCore-', '');
           }
           if (deviceName == null || deviceName.isEmpty) {
             debugError(
