@@ -452,12 +452,6 @@ class ApiService {
             debugLog('[API] Regional admin has disabled flood traffic');
           }
 
-          // Parse flood_disabled flag from auth response
-          _floodDisabled = data['flood_disabled'] == true;
-          if (_floodDisabled) {
-            debugLog('[API] Regional admin has disabled flood traffic');
-          }
-
           // Parse min_mode_interval from auth response
           final minInterval = data['min_mode_interval'];
           if (minInterval is int && minInterval > 0) {

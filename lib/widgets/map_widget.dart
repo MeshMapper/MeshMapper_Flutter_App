@@ -155,7 +155,6 @@ Future<({Uint8List bytes, Size size})> _renderDistanceLabelPng(
   );
 }
 
-/// most modern phones (typical DPR is 2.0–3.5).
 Future<Uint8List> _renderPainterToPng(
   CustomPainter painter,
   Size size, {
@@ -3136,6 +3135,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       required DateTime ts,
       required bool success,
       required int idForMetadata,
+      String? iconImageOverride,
     }) async {
       final key = _coverageKey(type, ts, lat, lon);
       final isFocused = _isFocusedPing(lat, lon, ts);
@@ -3147,7 +3147,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       final options = SymbolOptions(
         geometry: LatLng(lat, lon),
-        iconImage: _MapImages.coverage(type, success),
+        iconImage: iconImageOverride ?? _MapImages.coverage(type, success),
         iconSize: isFocused ? 1.2 : 1.0,
       );
 
@@ -3198,16 +3198,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // DISC entries (success = received node responses; drop = treat as TX fail)
     for (final entry in appState.discLogEntries) {
       final received = entry.nodeCount > 0;
-      // When discDropEnabled, "no response" should look like a TX fail color.
-      // We model that by using the 'tx' image variant for failed DISCs:
-      final type = (!received && appState.discDropEnabled) ? 'tx' : 'disc';
+      final renderAsTxFail = !received && appState.discDropEnabled;
       await syncOne(
-        type: type,
+        type: 'disc',
         lat: entry.latitude,
         lon: entry.longitude,
         ts: entry.timestamp,
         success: received,
         idForMetadata: entry.timestamp.millisecondsSinceEpoch,
+        iconImageOverride:
+            renderAsTxFail ? _MapImages.coverage('tx', false) : null,
       );
     }
 
@@ -3337,6 +3337,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const _focusLinesSourceId = 'focus-lines-source';
   static const _focusLinesLayerId = 'focus-lines-layer';
   static const _focusLinesAmbiguousLayerId = 'focus-lines-ambiguous-border';
+  static const _focusLinesAmbiguousLabelId = 'focus-lines-ambiguous-label';
 
   /// Builds and applies the focus-mode dotted polylines that visually connect
   /// a focused ping to each repeater that heard it. Color-coded by SNR;
@@ -3363,6 +3364,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         await _mapController!.removeLayer(_focusLinesLayerId);
       } catch (_) {}
       try {
+        await _mapController!.removeLayer(_focusLinesAmbiguousLabelId);
+      } catch (_) {}
+      try {
         await _mapController!.removeLayer(_focusLinesAmbiguousLayerId);
       } catch (_) {}
       try {
@@ -3377,6 +3381,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (_focusLinesInstalled) {
       try {
         await _mapController!.removeLayer(_focusLinesLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeLayer(_focusLinesAmbiguousLabelId);
       } catch (_) {}
       try {
         await _mapController!.removeLayer(_focusLinesAmbiguousLayerId);
@@ -3431,17 +3438,43 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // the repeater box.
       const belowLayer = _repeaterIndividualLayerId;
 
-      // Border line (white, wider, only for ambiguous matches) — added FIRST
+      // Border line (amber, wider, only for ambiguous matches) — added FIRST
       // so it renders BENEATH the colored line on top.
       await _mapController!.addLineLayer(
         _focusLinesSourceId,
         _focusLinesAmbiguousLayerId,
         const LineLayerProperties(
-          lineColor: '#FFFFFF',
-          lineOpacity: 0.6,
+          lineColor: '#F59E0B',
+          lineOpacity: 0.8,
           lineWidth: 6.5,
           lineDasharray: [2, 4],
           lineCap: 'round',
+        ),
+        filter: [
+          '==',
+          ['get', 'ambiguous'],
+          true
+        ],
+        belowLayerId: belowLayer,
+      );
+
+      // "DUPLICATE ID" text along ambiguous lines — only renders when the
+      // line is long enough for the label to fit without collision.
+      await _mapController!.addSymbolLayer(
+        _focusLinesSourceId,
+        _focusLinesAmbiguousLabelId,
+        const SymbolLayerProperties(
+          symbolPlacement: 'line',
+          textField: 'DUPLICATE ID',
+          textSize: 11,
+          textColor: '#F59E0B',
+          textHaloColor: '#FFFFFF',
+          textHaloWidth: 1.5,
+          textKeepUpright: true,
+          textFont: _defaultFontStack,
+          symbolSpacing: 200,
+          textAllowOverlap: false,
+          textOptional: true,
         ),
         filter: [
           '==',
@@ -5471,21 +5504,97 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
+  /// Show all ambiguous (duplicate-ID) repeaters in a dialog.
+  void _showDuplicateRepeaterPopup(
+    List<_ResolvedRepeater> resolved, {
+    ({double lat, double lon})? fromLatLng,
+  }) {
+    final ambiguous = resolved.where((r) => r.ambiguous).toList();
+    if (ambiguous.isEmpty) return;
+
+    final appState = context.read<AppStateProvider>();
+    final regionOverride =
+        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+          ),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        size: 18, color: Color(0xFFF59E0B)),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Duplicate Repeater IDs',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Divider(height: 1, color: Theme.of(context).dividerColor),
+                const SizedBox(height: 8),
+                Text(
+                  'Multiple repeaters share the same short ID. '
+                  'We can\'t determine which one heard your ping.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...ambiguous.map((r) => RepeaterIdChip.buildRepeaterRow(
+                      context,
+                      r.repeater,
+                      refLat: fromLatLng?.lat,
+                      refLon: fromLatLng?.lon,
+                      regionHopBytesOverride: regionOverride,
+                    )),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Show TX ping details popup
   void _showTxPingDetails(TxPing ping) {
     // Use the heardRepeaters directly from the TxPing
     final heardRepeaters = ping.heardRepeaters;
 
+    // Resolve repeater matches (hoisted so bottom sheet can check ambiguity)
+    final resolved = heardRepeaters.isNotEmpty
+        ? _resolveRepeatersByHexIds(
+            heardRepeaters.map((r) => r.repeaterId).toList(),
+            snrValues: heardRepeaters.map((r) => r.snr).toList(),
+          )
+        : <_ResolvedRepeater>[];
+    final hasAmbiguous = resolved.any((r) => r.ambiguous);
+
     // Activate focus mode if the ping was heard by known repeaters
-    if (heardRepeaters.isNotEmpty) {
-      final resolved = _resolveRepeatersByHexIds(
-        heardRepeaters.map((r) => r.repeaterId).toList(),
-        snrValues: heardRepeaters.map((r) => r.snr).toList(),
-      );
-      if (resolved.isNotEmpty) {
-        _activatePingFocus(
-            LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
-      }
+    if (resolved.isNotEmpty) {
+      _activatePingFocus(
+          LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
     }
 
     showModalBottomSheet(
@@ -5609,6 +5718,39 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     letterSpacing: 0.5,
                   ),
                 ),
+
+                if (hasAmbiguous)
+                  GestureDetector(
+                    onTap: () => _showDuplicateRepeaterPopup(
+                      resolved,
+                      fromLatLng: (
+                        lat: ping.latitude,
+                        lon: ping.longitude,
+                      ),
+                    ),
+                    child: const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded,
+                              size: 14, color: Color(0xFFF59E0B)),
+                          SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              'Duplicate repeater ID — lines shown to all possible matches',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFFF59E0B),
+                              ),
+                            ),
+                          ),
+                          SizedBox(width: 4),
+                          Icon(Icons.info_outline,
+                              size: 14, color: Color(0xFFF59E0B)),
+                        ],
+                      ),
+                    ),
+                  ),
 
                 if (heardRepeaters.isNotEmpty) ...[
                   const SizedBox(height: 12),
