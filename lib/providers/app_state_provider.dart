@@ -3606,6 +3606,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Hot-switching to online mode while connected');
     _isSwitchingMode = true;
     _modeSwitchError = null;
+    var switchSucceeded = false;
     notifyListeners();
 
     try {
@@ -3642,7 +3643,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (success: false, error: _modeSwitchError);
       }
 
-      // Re-check zone status BEFORE auth (zone data was cleared when entering offline mode)
+      // Clear offline mode before zone check so checkZoneStatus() doesn't skip the API call
+      _preferences = _preferences.copyWith(offlineMode: false);
+      _apiQueueService.offlineMode = false;
+
       debugLog('[APP] Re-checking zone status before auth...');
       await checkZoneStatus();
 
@@ -3777,8 +3781,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       // 5. Auth successful - update state
-      _preferences = _preferences.copyWith(offlineMode: false);
-      _apiQueueService.offlineMode = false;
+      switchSucceeded = true;
 
       // 6. Update regional channels from auth response
       final channels = result['channels'];
@@ -3800,6 +3803,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _modeSwitchError = 'Failed to switch to online mode: $e';
       return (success: false, error: _modeSwitchError);
     } finally {
+      if (!switchSucceeded) {
+        _preferences = _preferences.copyWith(offlineMode: true);
+        _apiQueueService.offlineMode = true;
+      }
       _isSwitchingMode = false;
       notifyListeners();
     }
