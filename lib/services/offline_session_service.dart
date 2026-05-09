@@ -54,13 +54,17 @@ class OfflineSession {
     };
   }
 
-  /// Create a copy with uploaded status changed
-  OfflineSession copyWith({bool? uploaded}) {
+  /// Create a copy with updated fields
+  OfflineSession copyWith({
+    bool? uploaded,
+    Map<String, dynamic>? data,
+    int? pingCount,
+  }) {
     return OfflineSession(
       filename: filename,
       createdAt: createdAt,
-      pingCount: pingCount,
-      data: data,
+      pingCount: pingCount ?? this.pingCount,
+      data: data ?? this.data,
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
       contactUri: contactUri,
@@ -272,6 +276,43 @@ class OfflineSessionService {
     _sessions[index] = _sessions[index].copyWith(uploaded: true);
     await _saveSessions();
     debugLog('[OFFLINE] Marked session as uploaded: $filename');
+  }
+
+  /// Remove the first [processedCount] pings from a session.
+  /// Called after partial upload so retries don't re-send already-processed data.
+  /// Returns the number of remaining pings, or null if session not found.
+  Future<int?> removeProcessedPings(
+      String filename, int processedCount) async {
+    final index = _sessions.indexWhere((s) => s.filename == filename);
+    if (index == -1) {
+      debugWarn('[OFFLINE] Session not found for ping removal: $filename');
+      return null;
+    }
+
+    final session = _sessions[index];
+    final pings = (session.data['pings'] as List<dynamic>?) ?? [];
+
+    if (processedCount >= pings.length) {
+      _sessions[index] = session.copyWith(uploaded: true);
+      await _saveSessions();
+      debugLog(
+          '[OFFLINE] All pings processed, marking session complete: $filename');
+      return 0;
+    }
+
+    final remaining = pings.sublist(processedCount);
+    final updatedData = Map<String, dynamic>.from(session.data);
+    updatedData['pings'] = remaining;
+    updatedData['ping_count'] = remaining.length;
+
+    _sessions[index] = session.copyWith(
+      data: updatedData,
+      pingCount: remaining.length,
+    );
+    await _saveSessions();
+    debugLog(
+        '[OFFLINE] Removed $processedCount processed pings from $filename, ${remaining.length} remain');
+    return remaining.length;
   }
 
   /// Get a session by filename

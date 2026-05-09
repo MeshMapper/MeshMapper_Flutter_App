@@ -2208,7 +2208,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           backgroundColor = Colors.red;
           break;
         case OfflineUploadResult.partialFailure:
-          message = 'Partial upload - some pings failed';
+          message = 'Partial upload - tap again to retry remaining pings';
           backgroundColor = Colors.orange;
           break;
         case OfflineUploadResult.uploadInProgress:

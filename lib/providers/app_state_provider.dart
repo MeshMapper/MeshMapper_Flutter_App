@@ -4134,28 +4134,67 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog(
         '[OFFLINE] Authenticated with isolated session: $offlineSessionId');
 
-    // Delay after auth before posting
-    await Future.delayed(const Duration(seconds: 1));
+    // Server needs ~3-5s to propagate session after auth
+    await Future.delayed(const Duration(seconds: 4));
 
-    // 4. Upload pings in batches of 50 using isolated session
+    // 4. Upload pings in batches of 50 with retry on session timing errors
     const batchSize = 50;
     var uploadedCount = 0;
-    var failedBatches = 0;
+    var discardedCount = 0;
+    var sessionFailed = false;
     final totalBatches = (pings.length + batchSize - 1) ~/ batchSize;
 
     for (var i = 0; i < pings.length; i += batchSize) {
+      if (sessionFailed) break;
+
       final batchNum = (i ~/ batchSize) + 1;
       onProgress?.call('Batch $batchNum/$totalBatches');
 
       final batch = pings.skip(i).take(batchSize).toList();
-      final result =
+      var result =
           await _apiService.uploadBatchWithSessionId(batch, offlineSessionId);
-      if (result == UploadResult.success) {
-        uploadedCount += batch.length;
-        debugLog('[OFFLINE] Uploaded batch $batchNum: ${batch.length} pings');
-      } else {
-        failedBatches++;
-        debugError('[OFFLINE] Failed to upload batch $batchNum');
+
+      // Retry logic for session timing errors (server propagation delay)
+      if (result == UploadResult.sessionError) {
+        const maxRetries = 3;
+        for (var retry = 1; retry <= maxRetries; retry++) {
+          final delay = 2 * retry;
+          debugLog(
+              '[OFFLINE] Batch $batchNum session error, retry $retry/$maxRetries after ${delay}s');
+          onProgress?.call('Batch $batchNum/$totalBatches (retry $retry)');
+          await Future.delayed(Duration(seconds: delay));
+          result = await _apiService.uploadBatchWithSessionId(
+              batch, offlineSessionId);
+          if (result != UploadResult.sessionError) break;
+        }
+      } else if (result == UploadResult.retryable) {
+        debugLog('[OFFLINE] Batch $batchNum retryable error, retrying after 2s');
+        await Future.delayed(const Duration(seconds: 2));
+        result = await _apiService.uploadBatchWithSessionId(
+            batch, offlineSessionId);
+      }
+
+      // Process final result
+      switch (result) {
+        case UploadResult.success:
+          uploadedCount += batch.length;
+          debugLog(
+              '[OFFLINE] Uploaded batch $batchNum: ${batch.length} pings');
+          break;
+        case UploadResult.nonRetryable:
+          discardedCount += batch.length;
+          debugWarn('[OFFLINE] Batch $batchNum discarded (data error)');
+          break;
+        case UploadResult.sessionError:
+          debugError(
+              '[OFFLINE] Batch $batchNum session error persists after retries, aborting');
+          sessionFailed = true;
+          break;
+        case UploadResult.retryable:
+          debugError(
+              '[OFFLINE] Batch $batchNum still failing after retry, aborting');
+          sessionFailed = true;
+          break;
       }
     }
 
@@ -4171,15 +4210,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     debugLog('[OFFLINE] Isolated upload session released');
 
-    // 6. Mark session as uploaded (don't delete) if all batches succeeded
-    if (failedBatches == 0) {
+    // 6. Clean up session based on results
+    final totalProcessed = uploadedCount + discardedCount;
+    final remainingPings = pings.length - totalProcessed;
+
+    if (remainingPings <= 0) {
       await _offlineSessionService.markAsUploaded(filename);
-      debugLog('[OFFLINE] Uploaded ${pings.length} pings from $filename');
+      debugLog(
+          '[OFFLINE] Session complete: $uploadedCount uploaded, $discardedCount discarded from $filename');
       notifyListeners();
       return OfflineUploadResult.success;
     } else {
+      if (totalProcessed > 0) {
+        await _offlineSessionService.removeProcessedPings(
+            filename, totalProcessed);
+        debugLog(
+            '[OFFLINE] Removed $totalProcessed processed pings, $remainingPings remain in $filename');
+      }
       debugWarn(
-          '[OFFLINE] Partial upload: $uploadedCount/${pings.length} pings from $filename');
+          '[OFFLINE] Partial upload: $uploadedCount uploaded, $discardedCount discarded, $remainingPings remaining from $filename');
       notifyListeners();
       return OfflineUploadResult.partialFailure;
     }
