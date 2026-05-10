@@ -2763,6 +2763,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[CONN] Auto-reconnect: calling reconnectToRememberedDevice()');
         await reconnectToRememberedDevice();
 
+        // Timeout or cancel fired while connection was in-flight.
+        // Disconnect the orphaned connection — abandon already cleaned up state.
+        if (!_isAutoReconnecting) {
+          if (_connectionStep == ConnectionStep.connected) {
+            debugLog(
+                '[CONN] Auto-reconnect completed after timeout — disconnecting orphaned connection');
+            disconnect();
+          }
+          return;
+        }
+
         // If we get here and connection step is 'connected', success!
         if (_connectionStep == ConnectionStep.connected) {
           debugLog(
@@ -5324,6 +5335,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_autoPingEnabled) {
         _autoPingEnabled = false;
         _idleAutoStopReference = null;
+        await _pingService?.forceDisableAutoPing();
         debugLog('[ZONE] Auto-ping paused for zone transfer');
       }
 
@@ -5608,6 +5620,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             return;
           }
           if (!_autoPingEnabled) {
+            _cooldownTimer.stop();
             toggleAutoPing(previousMode);
             debugLog('[ZONE] Auto-ping restored (mode=$previousMode)');
           }
