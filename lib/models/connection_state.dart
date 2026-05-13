@@ -1,3 +1,6 @@
+/// Transport type for MeshCore companion connections.
+enum TransportType { ble, tcp, usbSerial }
+
 /// Connection status for Bluetooth devices
 enum ConnectionStatus {
   /// Not connected to any device
@@ -25,8 +28,8 @@ enum ConnectionStep {
   /// Auto-reconnecting after unexpected BLE disconnect
   reconnecting,
 
-  /// Step 1: BLE GATT connect
-  bleConnecting,
+  /// Step 1: Transport-level connect (BLE/TCP/USB)
+  transportConnecting,
 
   /// Step 2: Protocol handshake
   protocolHandshake,
@@ -51,6 +54,9 @@ enum ConnectionStep {
 
   /// Step 9: Fully connected and ready
   connected,
+
+  /// Disconnecting (cleanup in progress)
+  disconnecting,
 
   /// Error state
   error,
@@ -85,7 +91,7 @@ extension ConnectionStepExtension on ConnectionStep {
         return 'Disconnected';
       case ConnectionStep.reconnecting:
         return 'Reconnecting...';
-      case ConnectionStep.bleConnecting:
+      case ConnectionStep.transportConnecting:
         return 'Connecting to device...';
       case ConnectionStep.protocolHandshake:
         return 'Protocol handshake...';
@@ -103,6 +109,8 @@ extension ConnectionStepExtension on ConnectionStep {
         return 'Initializing GPS...';
       case ConnectionStep.connected:
         return 'Connected';
+      case ConnectionStep.disconnecting:
+        return 'Disconnecting...';
       case ConnectionStep.error:
         return 'Connection error';
     }
@@ -115,7 +123,7 @@ extension ConnectionStepExtension on ConnectionStep {
         return 0;
       case ConnectionStep.reconnecting:
         return 0;
-      case ConnectionStep.bleConnecting:
+      case ConnectionStep.transportConnecting:
         return 1;
       case ConnectionStep.protocolHandshake:
         return 2;
@@ -133,6 +141,8 @@ extension ConnectionStepExtension on ConnectionStep {
         return 8;
       case ConnectionStep.connected:
         return 9;
+      case ConnectionStep.disconnecting:
+        return 0;
       case ConnectionStep.error:
         return -1;
     }

@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import '../../models/connection_state.dart';
 import '../../models/device_model.dart';
 import '../../utils/debug_logger_io.dart';
-import '../bluetooth/bluetooth_service.dart';
+import '../transport/companion_transport.dart';
 import 'buffer_utils.dart';
 import 'channel_service.dart';
 import 'crypto_service.dart';
@@ -69,7 +69,7 @@ class SelfInfo {
 /// 8. GPS Init
 /// 9. Connected State
 class MeshCoreConnection {
-  final BluetoothService _bluetooth;
+  final CompanionTransport _transport;
   bool _disposed = false;
   final _stepController = StreamController<ConnectionStep>.broadcast();
   final _channelMessageController =
@@ -116,9 +116,9 @@ class MeshCoreConnection {
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
   Timer? _batteryTimer;
 
-  MeshCoreConnection({required BluetoothService bluetooth})
-      : _bluetooth = bluetooth {
-    _dataSubscription = _bluetooth.dataStream.listen(_onFrameReceived);
+  MeshCoreConnection({required CompanionTransport transport})
+      : _transport = transport {
+    _dataSubscription = _transport.dataStream.listen(_onFrameReceived);
   }
 
   /// Stream of connection step changes
@@ -205,16 +205,15 @@ class MeshCoreConnection {
   /// Returns (deviceModel, deviceModelMatched) for display/reporting purposes
   /// Note: This method does NOT modify radio TX power settings - it only reads device info
   Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(
-      String deviceId, List<DeviceModel> deviceModels) async {
+      List<DeviceModel> deviceModels) async {
     if (_disposed) {
       throw Exception('Connection instance has been disposed');
     }
     bool deviceModelMatched = false;
 
     try {
-      // Step 1: BLE Connect
-      _updateStep(ConnectionStep.bleConnecting);
-      await _bluetooth.connect(deviceId);
+      // Step 1: Transport connect (already connected by caller)
+      _updateStep(ConnectionStep.transportConnecting);
 
       // Step 2: Protocol Handshake (handled automatically by device)
       _updateStep(ConnectionStep.protocolHandshake);
@@ -281,6 +280,13 @@ class MeshCoreConnection {
             '[CONN] No auth callback set, skipping API session acquisition');
       }
 
+      // Guard: transport may have disconnected during the async auth API call
+      if (_disposed ||
+          _transport.connectionStatus != ConnectionStatus.connected) {
+        throw Exception(
+            'Transport disconnected during authentication. Please try connecting again.');
+      }
+
       // Step 7: Channel Setup
       _updateStep(ConnectionStep.channelSetup);
       debugLog('[CONN] Creating #wardriving channel');
@@ -315,7 +321,7 @@ class MeshCoreConnection {
       _updateStep(ConnectionStep.error);
       // Clean up BLE connection on failure
       try {
-        await _bluetooth.disconnect();
+        await _transport.disconnect();
         debugLog('[CONN] Disconnected BLE after connection failure');
       } catch (disconnectError) {
         debugError('[CONN] Failed to disconnect after error: $disconnectError');
@@ -349,7 +355,7 @@ class MeshCoreConnection {
       // See deleteWardrivingChannelEarly() called from app_state_provider
 
       // Disconnect BLE
-      await _bluetooth.disconnect();
+      await _transport.disconnect();
       _deviceInfo = null;
       _deviceModel = null;
       _selfInfo = null;
@@ -775,7 +781,7 @@ class MeshCoreConnection {
 
   /// Write frame to device
   Future<void> _sendToRadio(BufferWriter data) async {
-    await _bluetooth.write(data.toBytes());
+    await _transport.write(data.toBytes());
   }
 
   // ============================================
@@ -823,6 +829,10 @@ class MeshCoreConnection {
     data.writeByte(CommandCodes.deviceQuery);
     data.writeByte(appTargetVer);
     await _sendToRadio(data);
+
+    // Send APP_START so device enters companion mode.
+    // Without this, some devices won't respond to the device query.
+    await sendCommandAppStart();
 
     return future.timeout(
       const Duration(seconds: 5),
@@ -891,7 +901,7 @@ class MeshCoreConnection {
     final bytes = data.toBytes();
     debugLog(
         '[CONN] getChannel bytes: ${bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
-    await _bluetooth.write(bytes);
+    await _transport.write(bytes);
 
     return future.timeout(
       const Duration(seconds: 5),
