@@ -25,6 +25,9 @@ import '../services/background_service.dart';
 import '../services/debug_file_logger.dart';
 import '../services/offline_session_service.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../services/transport/android_serial_service.dart';
+import '../services/transport/companion_transport.dart';
+import '../services/transport/tcp_service.dart';
 import '../services/device_model_service.dart';
 import '../services/gps_service.dart';
 import '../services/gps_simulator_service.dart';
@@ -119,6 +122,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   StreamSubscription? _noiseFloorSubscription;
   StreamSubscription? _batterySubscription;
 
+  // Transport selection
+  TransportType _selectedTransport = TransportType.ble;
+  CompanionTransport? _activeTransport;
+  StreamSubscription? _transportConnectionSubscription;
+
   // Device identity
   String _deviceId = '';
 
@@ -152,8 +160,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _devicePublicKey;
   String? _offlineContactUri;
 
-  /// BLE device name (e.g., "MeshCore-MrAlders0n_Elecrow")
-  String? get connectedDeviceName => _bluetoothService.connectedDevice?.name;
+  /// Connected device name (e.g., "MeshCore-MrAlders0n_Elecrow" for BLE, "TCP 10.0.0.1:5000" for TCP)
+  String? get connectedDeviceName =>
+      (_activeTransport ?? _bluetoothService).connectedDevice?.name;
 
   /// Display name from SelfInfo (reflects user's chosen name in MeshCore)
   /// BLE advertisement name may be cached/stale after device rename
@@ -277,6 +286,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isSwitchingMode = false;
   String? _modeSwitchError; // Error message if mode switch fails
 
+  // Connection guard — prevents concurrent connect attempts and provides instant UI feedback
+  bool _isConnecting = false;
+
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
   bool _isAutoReconnecting = false;
@@ -388,6 +400,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String get deviceId => _deviceId;
   bool get preferencesLoaded => _preferencesLoaded;
+  TransportType get selectedTransport => _selectedTransport;
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;
   String? get connectionError => _connectionError;
@@ -557,6 +570,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Anonymous mode getter
   bool get isAnonymousRenamed => _isAnonymousRenamed;
+
+  // Connection guard getter
+  bool get isConnecting => _isConnecting;
 
   // Auto-reconnect getters
   bool get isAutoReconnecting => _isAutoReconnecting;
@@ -1129,13 +1145,313 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Connection
   // ============================================
 
-  /// Connect to a discovered device
-  Future<void> connectToDevice(DiscoveredDevice device) async {
+  /// Creates the two-stage auth callback for MeshCoreConnection Step 6.
+  /// Shared by all transport types (BLE, TCP, USB Serial).
+  Future<Map<String, dynamic>?> Function() _createAuthCallback() {
+    return () async {
+      final publicKey = _meshCoreConnection!.devicePublicKey;
+      if (publicKey == null) {
+        debugError('[APP] Cannot request auth: no public key');
+        return {
+          'success': false,
+          'reason': 'no_public_key',
+          'message': 'Device public key not available'
+        };
+      }
+
+      // Anonymous mode: rename device before auth so mesh pings broadcast as "Anonymous"
+      if (_preferences.anonymousMode && !_isAnonymousRenamed) {
+        final realName = _meshCoreConnection!.selfInfo?.name;
+        if (realName != null && realName.isNotEmpty) {
+          if (realName == 'Anonymous') {
+            final persisted = _deviceRealNames[publicKey];
+            _originalDeviceName = persisted ?? realName;
+            if (persisted != null) {
+              debugLog(
+                  '[CONN] Anonymous mode: recovered real name "$persisted" from Hive (firmware was stuck)');
+            }
+          } else {
+            _originalDeviceName = realName;
+          }
+          try {
+            await _meshCoreConnection!.setAdvertName('Anonymous');
+            _isAnonymousRenamed = true;
+            _displayDeviceName = 'Anonymous';
+            if (_originalDeviceName != 'Anonymous') {
+              _deviceRealNames[publicKey] = _originalDeviceName!;
+              _saveDeviceRealNames();
+            }
+            debugLog(
+                '[CONN] Anonymous mode: renamed from "$_originalDeviceName" to "Anonymous"');
+            await Future.delayed(const Duration(milliseconds: 300));
+          } catch (e) {
+            debugError('[CONN] Anonymous mode: rename failed: $e');
+          }
+        }
+      }
+
+      // Resolve device name: use "Anonymous" if renamed, otherwise SelfInfo name
+      String? deviceName;
+      if (_isAnonymousRenamed) {
+        deviceName = 'Anonymous';
+      } else {
+        var selfInfoName = _meshCoreConnection!.selfInfo?.name;
+        if (selfInfoName == 'Anonymous') {
+          final persistedName = _deviceRealNames[publicKey];
+          if (persistedName != null) {
+            debugLog(
+                '[CONN] Detected stuck anonymous name, recovering to "$persistedName"');
+            try {
+              await _meshCoreConnection!.setAdvertName(persistedName);
+              await Future.delayed(const Duration(milliseconds: 300));
+              final refreshed = await _meshCoreConnection!.getSelfInfo();
+              selfInfoName = refreshed.name;
+              debugLog(
+                  '[CONN] Confirmed firmware name restored to "$selfInfoName"');
+              _clearPersistedRealName(publicKey);
+            } catch (e) {
+              debugError('[CONN] Failed to restore firmware name: $e');
+              selfInfoName = persistedName;
+            }
+          } else {
+            debugWarn(
+                '[CONN] Firmware name is "Anonymous" but no persisted real name found');
+          }
+        }
+        deviceName = selfInfoName ??
+            connectedDeviceName?.replaceFirst('MeshCore-', '');
+      }
+      if (deviceName == null || deviceName.isEmpty) {
+        debugError(
+            '[APP] Cannot request auth: could not retrieve device name');
+        return {
+          'success': false,
+          'reason': 'no_device_name',
+          'message': 'Could not retrieve device name'
+        };
+      }
+
+      // Stage 1: Try existing public_key authentication
+      debugLog(
+          '[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
+
+      final result = await _apiService.requestAuth(
+        reason: 'connect',
+        publicKey: publicKey,
+        who: deviceName,
+        appVersion: _appVersion,
+        power: _preferences.powerLevel,
+        iataCode: zoneCode ?? _preferences.iataCode,
+        model: _meshCoreConnection!.deviceModel?.manufacturer ??
+            _meshCoreConnection!.deviceInfo?.manufacturer ??
+            'Unknown',
+        lat: _currentPosition?.latitude,
+        lon: _currentPosition?.longitude,
+        accuracyMeters: _currentPosition?.accuracy,
+      );
+
+      if (result != null && result['maintenance'] == true) {
+        _maintenanceMode = true;
+        _maintenanceMessage = result['maintenance_message'] as String?;
+        _maintenanceUrl = result['maintenance_url'] as String?;
+        debugLog(
+            '[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
+        _startMaintenancePolling();
+        notifyListeners();
+        return {
+          'success': false,
+          'reason': 'maintenance',
+          'message': _maintenanceMessage ?? 'Service is under maintenance',
+        };
+      }
+
+      if (result != null && result['success'] == true) {
+        debugLog('[APP] Stage 1 succeeded: authenticated via public_key');
+        if (result['type'] != null) {
+          _authType = result['type'] as String;
+          debugLog('[APP] Auth type: $_authType');
+          notifyListeners();
+        }
+        _syncZoneCapacityFromAuth(result);
+        return result;
+      }
+
+      if (result == null) {
+        debugError('[APP] API unreachable - network error');
+        return {
+          'success': false,
+          'reason': 'network_error',
+          'message': 'Unable to reach the MeshMapper server',
+        };
+      }
+
+      debugLog(
+          '[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
+
+      final stage1Reason = result['reason'] as String?;
+      if (stage1Reason == 'gps_inaccurate' || stage1Reason == 'gps_stale') {
+        debugError(
+            '[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
+        return {
+          'success': false,
+          'reason': stage1Reason,
+          'message': result['message'] as String?,
+        };
+      }
+
+      // Stage 2: Auth failed, attempt registration via signed contact_uri
+      debugLog('[APP] Stage 2: Attempting registration via contact_uri...');
+
+      String? contactUri;
+      try {
+        debugLog('[APP] Requesting signed contact URI from device...');
+        contactUri = await _meshCoreConnection!.exportContact();
+        debugLog(
+            '[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
+      } catch (e) {
+        debugError('[APP] Failed to get contact URI from device: $e');
+        return {
+          'success': false,
+          'reason': 'registration_failed',
+          'message':
+              'Companion not found in backend and failed to register via API'
+        };
+      }
+
+      final registerResult = await _apiService.requestAuth(
+        reason: 'register',
+        contactUri: contactUri,
+        who: deviceName,
+        appVersion: _appVersion,
+        power: _preferences.powerLevel,
+        iataCode: zoneCode ?? _preferences.iataCode,
+        model: _meshCoreConnection!.deviceModel?.manufacturer ??
+            _meshCoreConnection!.deviceInfo?.manufacturer ??
+            'Unknown',
+        lat: _currentPosition?.latitude,
+        lon: _currentPosition?.longitude,
+        accuracyMeters: _currentPosition?.accuracy,
+      );
+
+      if (registerResult == null) {
+        debugError('[APP] Stage 2 failed: network error (API unreachable)');
+        return {
+          'success': false,
+          'reason': 'network_error',
+          'message': 'Unable to reach the MeshMapper server',
+        };
+      }
+
+      if (registerResult['success'] != true) {
+        final serverReason =
+            registerResult['reason'] as String? ?? 'registration_failed';
+        final serverMessage = registerResult['message'] as String?;
+        debugError(
+            '[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
+        return {
+          'success': false,
+          'reason': serverReason,
+          'message': serverMessage ?? 'Registration rejected by server',
+        };
+      }
+
+      debugLog('[APP] Stage 2 succeeded: registered and authenticated');
+      if (registerResult['type'] != null) {
+        _authType = registerResult['type'] as String;
+        debugLog('[APP] Auth type: $_authType');
+        notifyListeners();
+      }
+      _syncZoneCapacityFromAuth(registerResult);
+      return registerResult;
+    };
+  }
+
+  /// Handle connection errors — shared by all transport connection methods.
+  Future<void> _handleConnectionError(Object e) async {
+    debugError('[APP] Connection failed: $e');
+
     try {
-      _connectionError = null;
+      await _meshCoreConnection?.deleteWardrivingChannelEarly();
+    } catch (channelError) {
+      debugError('[APP] Cleanup channel delete failed: $channelError');
+    }
+
+    try {
+      if (_meshCoreConnection != null) {
+        await _meshCoreConnection!.disconnect();
+      }
+    } catch (disconnectError) {
+      debugError('[APP] Cleanup disconnect failed: $disconnectError');
+    }
+
+    final errorStr = e.toString();
+    if (errorStr.contains('AUTH_FAILED:')) {
+      _isAuthError = true;
+      final parts = errorStr.split('AUTH_FAILED:');
+      if (parts.length > 1) {
+        final errorParts = parts[1].split(':');
+        final reason = errorParts.isNotEmpty ? errorParts[0] : 'unknown';
+        final serverMessage =
+            errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
+        _isNetworkError = reason == 'network_error';
+        _connectionError = _getErrorMessage(reason, serverMessage);
+      } else {
+        _connectionError = 'Authentication failed';
+      }
+    } else {
       _isAuthError = false;
       _isNetworkError = false;
+      if (errorStr.contains('timeout') ||
+          errorStr.contains('Timeout') ||
+          errorStr.contains('timed out')) {
+        _connectionError = 'Connection timed out';
+      } else {
+        _connectionError = errorStr.replaceFirst('Exception: ', '');
+      }
+    }
+    _isConnecting = false;
+    _connectionStep = ConnectionStep.error;
+    notifyListeners();
+  }
 
+  /// Set up disconnect listener for non-BLE transports (TCP, USB Serial).
+  void _setupTransportDisconnectListener(CompanionTransport transport) {
+    _transportConnectionSubscription?.cancel();
+    _transportConnectionSubscription =
+        transport.connectionStream.listen((status) async {
+      if (status == ConnectionStatus.disconnected) {
+        final wasConnected = _connectionStep == ConnectionStep.connected;
+        final hasRemembered = _rememberedDevice != null;
+        final isUnexpected =
+            !_userRequestedDisconnect && !_isAutoReconnecting;
+        final canAutoReconnect = hasRemembered &&
+            !kIsWeb &&
+            _rememberedDevice!.transportType != TransportType.usbSerial;
+        if (wasConnected && isUnexpected && canAutoReconnect) {
+          debugLog(
+              '[CONN] Unexpected transport disconnect - starting auto-reconnect');
+          await _startAutoReconnect();
+        } else if (!_isAutoReconnecting) {
+          await _fullDisconnectCleanup();
+        }
+        notifyListeners();
+      }
+    });
+  }
+
+  /// Connect to a discovered device
+  Future<void> connectToDevice(DiscoveredDevice device) async {
+    if (_isConnecting) {
+      debugLog('[APP] Connection already in progress, ignoring duplicate tap');
+      return;
+    }
+    _isConnecting = true;
+    _connectionStep = ConnectionStep.transportConnecting;
+    _connectionError = null;
+    _isAuthError = false;
+    _isNetworkError = false;
+    notifyListeners();
+    try {
       // Clean up any previous connection first
       if (_meshCoreConnection != null) {
         debugLog('[APP] Disposing previous MeshCoreConnection');
@@ -1146,259 +1462,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // ALWAYS START FRESH - clear any stale pings before connecting
       await _apiQueueService.clearBeforeConnect();
 
-      // Create MeshCore connection
+      debugLog('[APP] Connecting BLE transport to ${device.id}');
+      await _bluetoothService.connect(device.id);
+      _activeTransport = _bluetoothService;
       debugLog('[APP] Creating new MeshCoreConnection');
-      _meshCoreConnection = MeshCoreConnection(bluetooth: _bluetoothService);
+      _meshCoreConnection = MeshCoreConnection(transport: _bluetoothService);
 
-      // Set auth callback for Step 6 (called during connect, after public key is acquired)
-      // Implements two-stage auth flow with registration fallback
-      // Skip auth when offline mode is enabled
       if (!_preferences.offlineMode) {
-        _meshCoreConnection!.onRequestAuth = () async {
-          final publicKey = _meshCoreConnection!.devicePublicKey;
-          if (publicKey == null) {
-            debugError('[APP] Cannot request auth: no public key');
-            return {
-              'success': false,
-              'reason': 'no_public_key',
-              'message': 'Device public key not available'
-            };
-          }
-
-          // Anonymous mode: rename device before auth so mesh pings broadcast as "Anonymous"
-          if (_preferences.anonymousMode && !_isAnonymousRenamed) {
-            final realName = _meshCoreConnection!.selfInfo?.name;
-            if (realName != null && realName.isNotEmpty) {
-              // Cascade guard: if firmware is stuck as "Anonymous" from a previous
-              // unclean disconnect, recover the real name from Hive
-              if (realName == 'Anonymous') {
-                final persisted = _deviceRealNames[publicKey];
-                _originalDeviceName =
-                    persisted ?? realName; // fall back if nothing saved
-                if (persisted != null) {
-                  debugLog(
-                      '[CONN] Anonymous mode: recovered real name "$persisted" from Hive (firmware was stuck)');
-                }
-              } else {
-                _originalDeviceName = realName;
-              }
-              try {
-                await _meshCoreConnection!.setAdvertName('Anonymous');
-                _isAnonymousRenamed = true;
-                _displayDeviceName = 'Anonymous';
-                // Persist real name keyed by public key (only if not "Anonymous")
-                if (_originalDeviceName != 'Anonymous') {
-                  _deviceRealNames[publicKey] = _originalDeviceName!;
-                  _saveDeviceRealNames();
-                }
-                debugLog(
-                    '[CONN] Anonymous mode: renamed from "$_originalDeviceName" to "Anonymous"');
-                // Short delay for firmware to process
-                await Future.delayed(const Duration(milliseconds: 300));
-              } catch (e) {
-                debugError('[CONN] Anonymous mode: rename failed: $e');
-                // Continue with real name if rename fails
-              }
-            }
-          }
-
-          // Resolve device name: use "Anonymous" if renamed, otherwise SelfInfo name
-          String? deviceName;
-          if (_isAnonymousRenamed) {
-            deviceName = 'Anonymous';
-          } else {
-            var selfInfoName = _meshCoreConnection!.selfInfo?.name;
-            // Detect stuck anonymous name: firmware still has "Anonymous" but mode is OFF
-            if (selfInfoName == 'Anonymous') {
-              final persistedName = _deviceRealNames[publicKey];
-              if (persistedName != null) {
-                debugLog(
-                    '[CONN] Detected stuck anonymous name, recovering to "$persistedName"');
-                try {
-                  await _meshCoreConnection!.setAdvertName(persistedName);
-                  await Future.delayed(const Duration(milliseconds: 300));
-                  final refreshed = await _meshCoreConnection!.getSelfInfo();
-                  selfInfoName = refreshed.name;
-                  debugLog(
-                      '[CONN] Confirmed firmware name restored to "$selfInfoName"');
-                  _clearPersistedRealName(publicKey);
-                } catch (e) {
-                  debugError('[CONN] Failed to restore firmware name: $e');
-                  selfInfoName = persistedName;
-                }
-              } else {
-                debugWarn(
-                    '[CONN] Firmware name is "Anonymous" but no persisted real name found');
-              }
-            }
-            deviceName = selfInfoName ??
-                connectedDeviceName?.replaceFirst('MeshCore-', '');
-          }
-          if (deviceName == null || deviceName.isEmpty) {
-            debugError(
-                '[APP] Cannot request auth: could not retrieve device name');
-            return {
-              'success': false,
-              'reason': 'no_device_name',
-              'message': 'Could not retrieve device name'
-            };
-          }
-
-          // ============================================================
-          // STAGE 1: Try existing public_key authentication
-          // ============================================================
-          debugLog(
-              '[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
-
-          final result = await _apiService.requestAuth(
-            reason: 'connect',
-            publicKey: publicKey,
-            who: deviceName,
-            appVersion: _appVersion,
-            power: _preferences.powerLevel,
-            iataCode: zoneCode ?? _preferences.iataCode,
-            model: _meshCoreConnection!.deviceModel?.manufacturer ??
-                _meshCoreConnection!.deviceInfo?.manufacturer ??
-                'Unknown',
-            lat: _currentPosition?.latitude,
-            lon: _currentPosition?.longitude,
-            accuracyMeters: _currentPosition?.accuracy,
-          );
-
-          // Check for maintenance mode
-          if (result != null && result['maintenance'] == true) {
-            _maintenanceMode = true;
-            _maintenanceMessage = result['maintenance_message'] as String?;
-            _maintenanceUrl = result['maintenance_url'] as String?;
-            debugLog(
-                '[MAINTENANCE] Auth returned maintenance: $_maintenanceMessage');
-            _startMaintenancePolling();
-            notifyListeners();
-            return {
-              'success': false,
-              'reason': 'maintenance',
-              'message': _maintenanceMessage ?? 'Service is under maintenance',
-            };
-          }
-
-          // Check if Stage 1 succeeded
-          if (result != null && result['success'] == true) {
-            debugLog('[APP] Stage 1 succeeded: authenticated via public_key');
-
-            // Store the auth type from response
-            if (result['type'] != null) {
-              _authType = result['type'] as String;
-              debugLog('[APP] Auth type: $_authType');
-              notifyListeners();
-            }
-
-            // Sync zone capacity display with auth result
-            _syncZoneCapacityFromAuth(result);
-
-            return result;
-          }
-
-          // API unreachable (null = network/timeout error, not an auth rejection)
-          if (result == null) {
-            debugError('[APP] API unreachable - network error');
-            return {
-              'success': false,
-              'reason': 'network_error',
-              'message': 'Unable to reach the MeshMapper server',
-            };
-          }
-
-          debugLog(
-              '[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
-
-          // If Stage 1 failed due to GPS issues, Stage 2 will also fail with same bad data
-          final stage1Reason = result['reason'] as String?;
-          if (stage1Reason == 'gps_inaccurate' || stage1Reason == 'gps_stale') {
-            debugError(
-                '[APP] Stage 1 failed for GPS reason ($stage1Reason), skipping Stage 2');
-            return {
-              'success': false,
-              'reason': stage1Reason,
-              'message': result['message'] as String?,
-            };
-          }
-
-          // ============================================================
-          // STAGE 2: Auth failed, attempt registration via signed contact_uri
-          // ============================================================
-          debugLog('[APP] Stage 2: Attempting registration via contact_uri...');
-
-          String? contactUri;
-          try {
-            debugLog('[APP] Requesting signed contact URI from device...');
-            contactUri = await _meshCoreConnection!.exportContact();
-            debugLog(
-                '[APP] Received contact URI: ${contactUri.substring(0, 50)}...');
-          } catch (e) {
-            debugError('[APP] Failed to get contact URI from device: $e');
-            return {
-              'success': false,
-              'reason': 'registration_failed',
-              'message':
-                  'Companion not found in backend and failed to register via API'
-            };
-          }
-
-          // Call API with contact_uri for registration
-          final registerResult = await _apiService.requestAuth(
-            reason: 'register',
-            contactUri: contactUri,
-            who: deviceName,
-            appVersion: _appVersion,
-            power: _preferences.powerLevel,
-            iataCode: zoneCode ?? _preferences.iataCode,
-            model: _meshCoreConnection!.deviceModel?.manufacturer ??
-                _meshCoreConnection!.deviceInfo?.manufacturer ??
-                'Unknown',
-            lat: _currentPosition?.latitude,
-            lon: _currentPosition?.longitude,
-            accuracyMeters: _currentPosition?.accuracy,
-          );
-
-          if (registerResult == null) {
-            debugError('[APP] Stage 2 failed: network error (API unreachable)');
-            return {
-              'success': false,
-              'reason': 'network_error',
-              'message': 'Unable to reach the MeshMapper server',
-            };
-          }
-
-          if (registerResult['success'] != true) {
-            final serverReason =
-                registerResult['reason'] as String? ?? 'registration_failed';
-            final serverMessage = registerResult['message'] as String?;
-            debugError(
-                '[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
-            return {
-              'success': false,
-              'reason': serverReason,
-              'message': serverMessage ?? 'Registration rejected by server',
-            };
-          }
-
-          // Registration successful - response contains full auth data directly
-          debugLog('[APP] Stage 2 succeeded: registered and authenticated');
-
-          // Store the auth type from response
-          if (registerResult['type'] != null) {
-            _authType = registerResult['type'] as String;
-            debugLog('[APP] Auth type: $_authType');
-            notifyListeners();
-          }
-
-          // Sync zone capacity display with auth result
-          _syncZoneCapacityFromAuth(registerResult);
-
-          return registerResult;
-        };
+        _meshCoreConnection!.onRequestAuth = _createAuthCallback();
       } else {
-        // Offline mode: skip API auth
         _meshCoreConnection!.onRequestAuth = null;
         debugLog('[APP] Offline mode: skipping API auth');
       }
@@ -1467,689 +1539,935 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
 
-      // Execute connection workflow
+      // Execute connection workflow (transport already connected above)
       final connectionResult = await _meshCoreConnection!.connect(
-        device.id,
         _deviceModelService.models,
       );
 
-      // Update preferences if device model was recognized (for display/API reporting)
-      // Note: This does NOT change the radio's TX power - it only sets what power level to REPORT
-      if (connectionResult.deviceModelMatched &&
-          connectionResult.deviceModel != null) {
-        final device = connectionResult.deviceModel!;
-        _preferences = _preferences.copyWith(
-          powerLevel: device.power,
-          txPower: device.txPower,
-          autoPowerSet:
-              true, // Indicates power was auto-detected from device model
-          powerLevelSet: false, // Clear stale manual flag from previous session
-        );
-        notifyListeners();
-        debugLog(
-            '[MODEL] Device recognized: ${device.shortName} - reporting ${device.power}W in API calls');
+      await _postConnectionSetup(connectionResult, device);
+      _isConnecting = false;
+    } catch (e) {
+      await _handleConnectionError(e);
+    }
+  }
+
+  /// Set the selected transport type for the connection screen.
+  void setSelectedTransport(TransportType type) {
+    _selectedTransport = type;
+    notifyListeners();
+  }
+
+  /// Connect to a MeshCore device via TCP.
+  Future<void> connectViaTcp(String host, int port) async {
+    if (_isConnecting) {
+      debugLog('[APP] Connection already in progress, ignoring duplicate tap');
+      return;
+    }
+    _isConnecting = true;
+    _connectionStep = ConnectionStep.transportConnecting;
+    _connectionError = null;
+    _isAuthError = false;
+    _isNetworkError = false;
+    notifyListeners();
+    try {
+      if (_meshCoreConnection != null) {
+        debugLog('[APP] Disposing previous MeshCoreConnection');
+        _meshCoreConnection!.dispose();
+        _meshCoreConnection = null;
       }
 
-      // Note: API session acquisition is now handled by the auth callback
-      // during connection workflow Step 6 (onRequestAuth)
+      await _apiQueueService.clearBeforeConnect();
 
-      // Create unified RX handler
-      await _createUnifiedRxHandler();
+      final tcpService = TcpService(host: host, port: port);
+      debugLog('[APP] Connecting TCP transport to $host:$port');
+      await tcpService.openConnection();
+      _activeTransport = tcpService;
+      _setupTransportDisconnectListener(tcpService);
 
-      // Set regional channels from API response and update validator
-      final apiChannels = _apiService.channels;
-      await ChannelService.setRegionalChannels(apiChannels);
-      _regionalChannels = ChannelService.getRegionalChannelNames();
-      debugLog('[APP] Regional channels configured: $_regionalChannels');
+      debugLog('[APP] Creating new MeshCoreConnection (TCP)');
+      _meshCoreConnection = MeshCoreConnection(transport: tcpService);
 
-      // Update unified RX handler's validator with new channel configuration
-      if (_unifiedRxHandler != null) {
-        final allowedChannelsData =
-            ChannelService.getAllowedChannelsForValidator();
-        final allowedChannels = <int, ChannelInfo>{};
-        for (final entry in allowedChannelsData.entries) {
-          allowedChannels[entry.key] = ChannelInfo(
-            channelName: entry.value.channelName,
-            key: entry.value.key,
-            hash: entry.value.hash,
-          );
-        }
-        final newValidator = PacketValidator(
-          allowedChannels: allowedChannels,
-          disableRssiFilter: _preferences.disableRssiFilter,
-        );
-        _unifiedRxHandler!.updateValidator(newValidator);
-        debugLog(
-            '[APP] PacketValidator updated with ${allowedChannels.length} channels: '
-            '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
-      }
-
-      // Set flood scope from API response (regional TX filtering)
-      // "*" or "#*" = wildcard/global → no scope (unscoped flood, same as before)
-      // Any other value (e.g., "ottawa") → derive TransportKey and set scope
-      final apiScopes = _apiService.scopes;
-      final firstScope = apiScopes.isNotEmpty ? apiScopes.first : null;
-      final isWildcard =
-          firstScope == null || firstScope == '*' || firstScope == '#*';
-      if (!isWildcard) {
-        final scopeName = firstScope;
-        _scope = scopeName.startsWith('#') ? scopeName : '#$scopeName';
-        final scopeKey = CryptoService.deriveScopeKey(scopeName);
-        debugLog('[CONN] Setting flood scope: $scopeName');
-        await _meshCoreConnection!.setFloodScope(scopeKey);
-        debugLog('[CONN] Flood scope set successfully');
+      if (!_preferences.offlineMode) {
+        _meshCoreConnection!.onRequestAuth = _createAuthCallback();
       } else {
-        _scope = null;
-        debugLog('[CONN] No regional scope — using unscoped flood');
+        _meshCoreConnection!.onRequestAuth = null;
+        debugLog('[APP] Offline mode: skipping API auth');
       }
 
-      // Enforce hybrid mode if required by regional admin
-      if (_apiService.enforceHybrid && !_preferences.hybridModeEnabled) {
-        _preferences = _preferences.copyWith(hybridModeEnabled: true);
-        debugLog('[CONN] Hybrid mode force-enabled by regional admin');
-      }
+      _meshCoreConnection!.stepStream.listen((step) {
+        _connectionStep = step;
+        if (step == ConnectionStep.connected) {
+          _manufacturerString =
+              _meshCoreConnection!.deviceInfo?.manufacturer;
+          _firmwareVersionString =
+              _meshCoreConnection!.deviceInfo?.firmwareVersionString;
+          _deviceModel = _meshCoreConnection!.deviceModel;
+          _devicePublicKey = _meshCoreConnection!.devicePublicKey;
+          debugLog(
+              '[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
 
-      // Enforce discovery drop if required by regional admin
-      if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
-        _preferences = _preferences.copyWith(discDropEnabled: true);
-        debugLog('[CONN] Discovery drop force-enabled by regional admin');
-      }
-
-      // Sync Flood Traffic preference with regional policy:
-      //  - flood_disabled=true  → force OFF (region forbids)
-      //  - flood_disabled=false → force ON  (region permits, user lands ready)
-      // Fire a one-shot alert only on user-on → region-off transition.
-      final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
-      final shouldEnableFlood = !_apiService.floodDisabled;
-      if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
-        _preferences =
-            _preferences.copyWith(floodTrafficEnabled: shouldEnableFlood);
-        debugLog(shouldEnableFlood
-            ? '[CONN] Flood traffic auto-enabled (region permits)'
-            : '[CONN] Flood traffic disabled by regional admin');
-      }
-      if (wasFloodEnabledByUser && _apiService.floodDisabled) {
-        _floodDisabledAlertPending = true;
-      }
-
-      // Enforce minimum auto-ping interval if required by regional admin
-      if (_preferences.autoPingInterval < _apiService.minModeInterval) {
-        _preferences = _preferences.copyWith(
-            autoPingInterval: _apiService.minModeInterval);
-        debugLog(
-            '[CONN] Auto-ping interval bumped to ${_apiService.minModeInterval}s by regional admin');
-      }
-
-      // Configure multi-byte path hash mode on radio
-      await _configurePathHashMode();
-
-      // Create ping service with wakelock (create new instance per connection)
-      _pingService = PingService(
-        gpsService: _gpsService,
-        connection: _meshCoreConnection!,
-        apiQueue: _apiQueueService,
-        wakelockService: WakelockService(),
-        cooldownTimer: _cooldownTimer,
-        manualPingCooldownTimer: _manualPingCooldownTimer,
-        rxWindowTimer: _rxWindowTimer,
-        discoveryWindowTimer: _discoveryWindowTimer,
-        deviceId: _deviceId,
-        txTracker: _txTracker,
-        audioService: _audioService,
-        disableRssiFilter: _preferences.disableRssiFilter,
-        hopBytes: effectiveHopBytes,
-        traceHopBytes: _traceHopBytes,
-        shouldIgnoreRepeater: (String repeaterId) {
-          final prefs = _preferences;
-          if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
-            return PacketValidator.isCarpeaterIdMatch(
-                repeaterId, prefs.ignoreRepeaterId!);
+          var lastDeviceName = _isAnonymousRenamed
+              ? _originalDeviceName
+              : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName);
+          if (lastDeviceName != null) {
+            lastDeviceName = lastDeviceName.replaceFirst('MeshCore-', '');
           }
-          return false;
-        },
+          if (lastDeviceName == 'Anonymous' && _devicePublicKey != null) {
+            lastDeviceName =
+                _deviceRealNames[_devicePublicKey!] ?? lastDeviceName;
+          }
+          if (lastDeviceName != null &&
+              lastDeviceName.isNotEmpty &&
+              _devicePublicKey != null) {
+            _saveLastConnectedDevice(lastDeviceName, _devicePublicKey!);
+          }
+
+          if (_preferences.offlineMode && _meshCoreConnection != null) {
+            _meshCoreConnection!.exportContact().then((uri) {
+              _offlineContactUri = uri;
+              debugLog('[OFFLINE] Stored contact URI for offline session');
+            }).catchError((e) {
+              debugWarn('[OFFLINE] Failed to get contact URI: $e');
+            });
+          }
+        }
+        notifyListeners();
+      });
+
+      _noiseFloorSubscription =
+          _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
+        _recordNoiseFloorSample(noiseFloor);
+        if (noiseFloor != _currentNoiseFloor) {
+          _currentNoiseFloor = noiseFloor;
+          notifyListeners();
+        }
+      });
+
+      _batterySubscription =
+          _meshCoreConnection!.batteryStream.listen((batteryPercent) {
+        if (batteryPercent != _currentBatteryPercent) {
+          _currentBatteryPercent = batteryPercent;
+          notifyListeners();
+        }
+      });
+
+      final connectionResult = await _meshCoreConnection!.connect(
+        _deviceModelService.models,
       );
 
-      // Wire UnifiedRxHandler so trace payloads route to TraceTracker
-      _pingService!.unifiedRxHandler = _unifiedRxHandler;
+      final device = DiscoveredDevice(
+        id: '$host:$port',
+        name: 'TCP $host:$port',
+      );
+      await _postConnectionSetup(connectionResult, device,
+          tcpHost: host, tcpPort: port);
 
-      // Set validation callbacks
-      _pingService!.checkExternalAntennaConfigured = () {
-        // External antenna must be explicitly set (yes or no) before pinging
-        return _preferences.externalAntennaSet;
-      };
-
-      _pingService!.checkPowerLevelConfigured = () {
-        // Power is configured if:
-        // - Auto-detected from device model, OR
-        // - Manually selected by user, OR
-        // - Device model is known (has default power)
-        return _preferences.autoPowerSet ||
-            _preferences.powerLevelSet ||
-            _deviceModel != null;
-      };
-
-      // Get external antenna value for API payloads
-      _pingService!.getExternalAntenna = () => _preferences.externalAntenna;
-
-      // Get power level from preferences (includes per-device overrides and manual selection)
-      _pingService!.getPowerLevel = () => _preferences.powerLevel;
-
-      // Check if TX is allowed by API (zone capacity)
-      _pingService!.checkTxAllowed = () => txAllowed;
-
-      // Check if discovery drop is enabled
-      _pingService!.getDiscDropEnabled = () => discDropEnabled;
-
-      _pingService!.onTxPing = (ping) {
-        _txPings.add(ping);
-        if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
-
-        // Add TX log entry (power in watts from preferences)
-        _txLogEntries.add(TxLogEntry(
-          timestamp: ping.timestamp,
-          latitude: ping.latitude,
-          longitude: ping.longitude,
-          power: _preferences.powerLevel, // Watts (0.3, 0.6, 1.0, 2.0)
-          events: [], // Will be updated when RX responses come in
-        ));
-        if (_txLogEntries.length > _maxLogEntries) _txLogEntries.removeAt(0);
-
-        notifyListeners();
-      };
-
-      _pingService!.onRxPing = (ping) {
-        _rxPings.add(ping);
-        if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
-
-        // Add RX log entry
-        _rxLogEntries.add(RxLogEntry(
-          timestamp: ping.timestamp,
-          repeaterId: ping.repeaterId,
-          snr: ping.snr,
-          rssi: ping.rssi,
-          pathLength: 0, // TODO: Extract from packet metadata
-          header: 0, // TODO: Extract from packet metadata
-          latitude: ping.latitude,
-          longitude: ping.longitude,
-        ));
-        if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
-
-        // Update RX overlay slot with this RX observation
-        _updateRxOverlaySlot(ping.repeaterId, ping.snr);
-
-        notifyListeners();
-      };
-
-      _pingService!.onStatsUpdated = (stats) {
-        // Preserve rxCount and successfulUploads while updating TX-related stats from PingService
-        // PingService sends stats with rxCount=0 and successfulUploads=0 (it doesn't track these),
-        // so we must preserve the values that other handlers increment
-        _pingStats = stats.copyWith(
-          rxCount: _pingStats.rxCount,
-          successfulUploads: _pingStats.successfulUploads,
-        );
-        notifyListeners();
-
-        // Update background service notification with current stats
-        if (_autoPingEnabled) {
-          final modeName = _autoMode == AutoMode.passive
-              ? 'Passive Mode'
-              : _autoMode == AutoMode.hybrid
-                  ? 'Hybrid Mode'
-                  : _autoMode == AutoMode.targeted
-                      ? 'Trace Mode'
-                      : 'Active Mode';
-          BackgroundServiceManager.updateNotification(
-            mode: modeName,
-            txCount: _pingStats.txCount,
-            rxCount: _pingStats.rxCount,
-            queueSize: _queueSize,
-          );
-        }
-      };
-
-      // Handle real-time echo updates - update TxLogEntry as echoes are received
-      _pingService!.onEchoReceived = (txPing, repeater, isNew) {
-        debugLog('[APP] ========== ECHO CALLBACK RECEIVED ==========');
-        debugLog(
-            '[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
-        debugLog('[APP] TxLogEntries count: ${_txLogEntries.length}');
-
-        // Find the matching TxLogEntry and update its events
-        if (_txLogEntries.isNotEmpty) {
-          final lastEntry = _txLogEntries.last;
-          // Verify it's the right entry by timestamp (should be within a few seconds)
-          final timeDiff =
-              lastEntry.timestamp.difference(txPing.timestamp).inSeconds.abs();
-          if (timeDiff <= 10) {
-            // Build updated events list
-            final existingEvents = List<RxEvent>.from(lastEntry.events);
-            final newEvent = RxEvent(
-              repeaterId: repeater.repeaterId,
-              snr: repeater.snr,
-              rssi: repeater.rssi,
-            );
-
-            if (isNew) {
-              // Add new event
-              existingEvents.add(newEvent);
-              // Play receive sound for new repeater echo
-              _audioService.playReceiveSound();
-            } else {
-              // Update existing event's SNR
-              final idx = existingEvents
-                  .indexWhere((e) => e.repeaterId == repeater.repeaterId);
-              if (idx >= 0) {
-                existingEvents[idx] = newEvent;
-              }
-            }
-
-            // Replace the entry with updated events
-            final updatedEntry = TxLogEntry(
-              timestamp: lastEntry.timestamp,
-              latitude: lastEntry.latitude,
-              longitude: lastEntry.longitude,
-              power: lastEntry.power,
-              events: existingEvents,
-            );
-            _txLogEntries[_txLogEntries.length - 1] = updatedEntry;
-            debugLog(
-                '[APP] Updated TxLogEntry with ${existingEvents.length} events (real-time)');
-
-            // Update top repeaters overlay with current TX echoes
-            _updateTopRepeaters(
-                existingEvents
-                    .where((e) => e.snr != null)
-                    .map((e) =>
-                        (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
-                    .toList(),
-                OverlayPingType.tx);
-
-            debugLog('[APP] Calling notifyListeners() to update UI');
-            notifyListeners();
-            debugLog('[APP] notifyListeners() completed');
-          } else {
-            debugLog(
-                '[APP] Timestamp mismatch: lastEntry=${lastEntry.timestamp}, txPing=${txPing.timestamp}, diff=${timeDiff}s');
-          }
-        } else {
-          debugLog('[APP] WARNING: _txLogEntries is empty, cannot update');
-        }
-      };
-
-      // Wire up ping progress callback for immediate UI refresh (e.g. "Sending..." on disc)
-      _pingService!.onPingProgressChanged = notifyListeners;
-
-      // Wire up auto ping scheduled callback for countdown display
-      _pingService!.onAutoPingScheduled = (intervalMs, skipReason) {
-        _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
-
-        // Track idle time for auto-stop
-        if (skipReason != null) {
-          // Ping was skipped — check if idle too long
-          if (_preferences.autoStopAfterIdle &&
-              _idleAutoStopReference != null) {
-            final elapsed = DateTime.now().difference(_idleAutoStopReference!);
-            if (elapsed >= _autoStopIdleTimeout) {
-              _triggerIdleAutoStop();
-            }
-          }
-        } else {
-          // Successful ping — reset idle reference
-          _idleAutoStopReference = DateTime.now();
-        }
-      };
-
-      // Wire up discovery ping callback - fires immediately (like onTxPing)
-      _pingService!.onDiscPing = (entry) {
-        _addDiscLogEntry(entry);
-      };
-
-      // Wire up real-time disc node discovery callback (like onEchoReceived)
-      _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
-        debugLog(
-            '[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
-        if (isNew) {
-          _audioService.playReceiveSound();
-        }
-
-        // Update top repeaters overlay with all discovered nodes from this ping
-        _updateTopRepeaters(
-            discPing.discoveredNodes
-                .map((n) =>
-                    (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
-                .toList(),
-            OverlayPingType.disc);
-
-        notifyListeners();
-      };
-
-      // Wire up TX window complete callback for noise floor graph
-      _pingService!.onTxWindowComplete = (success) {
-        // Get location and repeater info from the last TX log entry
-        double? lat;
-        double? lon;
-        List<MarkerRepeaterInfo>? repeaters;
-
-        if (_txLogEntries.isNotEmpty) {
-          final lastTx = _txLogEntries.last;
-          lat = lastTx.latitude;
-          lon = lastTx.longitude;
-          if (lastTx.events.isNotEmpty) {
-            repeaters = lastTx.events
-                .map((e) => MarkerRepeaterInfo(
-                      repeaterId: e.repeaterId,
-                      snr: e.snr ?? 0.0,
-                      rssi: e.rssi ?? 0,
-                    ))
-                .toList();
-          }
-        }
-
-        recordPingEvent(
-          success ? PingEventType.txSuccess : PingEventType.txFail,
-          latitude: lat,
-          longitude: lon,
-          repeaters: repeaters,
-        );
-      };
-
-      // Wire up discovery window complete callback for noise floor graph
-      _pingService!.onDiscoveryWindowComplete = (success) {
-        // Get location and node info from the most recent discovery log entry
-        // Note: _discLogEntries uses insert(0,...) so .first is newest
-        double? lat;
-        double? lon;
-        List<MarkerRepeaterInfo>? repeaters;
-
-        if (_discLogEntries.isNotEmpty) {
-          final lastDisc = _discLogEntries.first;
-          lat = lastDisc.latitude;
-          lon = lastDisc.longitude;
-          if (lastDisc.discoveredNodes.isNotEmpty) {
-            repeaters = lastDisc.discoveredNodes
-                .map((n) => MarkerRepeaterInfo(
-                      repeaterId: n.repeaterId,
-                      snr: n.localSnr,
-                      rssi: n.localRssi,
-                      pubkeyHex: n.pubkeyHex,
-                    ))
-                .toList();
-          }
-        }
-
-        PingEventType eventType;
-        if (success) {
-          eventType = PingEventType.discSuccess;
-        } else if (discDropEnabled) {
-          eventType = PingEventType.txFail;
-        } else {
-          eventType = PingEventType.discFail;
-        }
-
-        recordPingEvent(
-          eventType,
-          latitude: lat,
-          longitude: lon,
-          repeaters: repeaters,
-        );
-      };
-
-      // Wire up trace ping callback (for log entry creation)
-      _pingService!.onTracePing = (entry) {
-        _addTraceLogEntry(entry);
-      };
-
-      // Wire up trace window complete callback for noise floor graph
-      _pingService!.onTraceWindowComplete = (result) {
-        double? lat;
-        double? lon;
-        List<MarkerRepeaterInfo>? repeaters;
-
-        if (_traceLogEntries.isNotEmpty) {
-          final lastTrace = _traceLogEntries.first;
-          lat = lastTrace.latitude;
-          lon = lastTrace.longitude;
-          if (result != null && result.success) {
-            repeaters = [
-              MarkerRepeaterInfo(
-                repeaterId: result.targetRepeaterId,
-                snr: result.localSnr,
-                rssi: result.localRssi,
-              )
-            ];
-            // Update the log entry with success data
-            _traceLogEntries[0] = TraceLogEntry(
-              timestamp: lastTrace.timestamp,
-              latitude: lastTrace.latitude,
-              longitude: lastTrace.longitude,
-              targetRepeaterId: lastTrace.targetRepeaterId,
-              noiseFloor: lastTrace.noiseFloor,
-              localSnr: result.localSnr,
-              remoteSnr: result.remoteSnr,
-              localRssi: result.localRssi,
-              success: true,
-            );
-            notifyListeners();
-          }
-        }
-
-        recordPingEvent(
-          result != null && result.success
-              ? PingEventType.traceSuccess
-              : PingEventType.traceFail,
-          latitude: lat,
-          longitude: lon,
-          repeaters: repeaters,
-        );
-      };
-
-      // Wire up discovery carpeater drop callback (for DiscTracker RSSI failsafe)
-      _pingService!.onDiscCarpeaterDrop = (String repeaterId, String reason) {
-        debugLog(
-            '[APP] Discovery carpeater drop: repeater=$repeaterId, reason=$reason');
-        logError('Discovery Dropped\nPossible carpeater: $repeaterId\n$reason',
-            severity: ErrorSeverity.warning, autoSwitch: false);
-      };
-
-      // Wire up pending disable complete callback
-      // Called when user disables Active Mode during sending/listening and the RX window ends
-      _pingService!.onPendingDisableComplete = () async {
-        debugLog('[APP] Pending disable completed, cleaning up');
-
-        // Stop TX echo tracking
-        _pingService!.stopEchoTracking();
-        // Stop RX wardriving (flushes batches)
-        _rxLogger?.stopWardriving(trigger: 'pending_disable');
-
-        // Stop background service
-        await BackgroundServiceManager.stopService();
-
-        // Stop countdown timers
-        _autoPingTimer.stop();
-        _rxWindowTimer.stop();
-
-        // Save offline session if offline mode is enabled
-        if (_preferences.offlineMode) {
-          await _saveOfflineSession();
-        }
-
-        // End noise floor session
-        await _endNoiseFloorSession();
-
-        // Disable heartbeat
-        _apiService.disableHeartbeat();
-
-        // Update local state
-        _autoPingEnabled = false;
-        _idleAutoStopReference = null;
-
-        debugLog('[APP] Pending disable cleanup complete, cooldown running');
-        notifyListeners();
-      };
-
-      // Save this device for quick reconnection (mobile only)
-      await _saveRememberedDevice(device);
-
-      // Update display name from SelfInfo (reflects user's chosen name)
-      // BLE advertisement name may be cached/stale after device rename
-      final selfInfoName = _meshCoreConnection?.selfInfo?.name;
-      if (selfInfoName != null && selfInfoName.isNotEmpty) {
-        // Keep "Anonymous" display name if anonymous mode is active
-        _displayDeviceName = _isAnonymousRenamed ? 'Anonymous' : selfInfoName;
-        debugLog('[APP] Display name set: "$_displayDeviceName"');
-
-        // Update remembered device with real name (not "Anonymous")
-        // BLE advertisement name may be stale after device rename
-        String? realName;
-        if (_isAnonymousRenamed) {
-          realName = _originalDeviceName ?? selfInfoName;
-        } else if (selfInfoName == 'Anonymous' && _devicePublicKey != null) {
-          realName = _deviceRealNames[_devicePublicKey!] ?? selfInfoName;
-        } else {
-          realName = selfInfoName;
-        }
-        if (_rememberedDevice != null && _rememberedDevice!.id == device.id) {
-          final updatedName = 'MeshCore-$realName';
-          if (_rememberedDevice!.name != updatedName) {
-            await _saveRememberedDevice(
-                DiscoveredDevice(id: device.id, name: updatedName));
-            debugLog(
-                '[APP] Updated remembered device name from SelfInfo: $updatedName');
-          }
-        }
-      }
-
-      // Restore per-device antenna preference if previously saved
-      // Use original name for keying, not "Anonymous"
-      final resolvedName =
-          _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
-      if (resolvedName != null &&
-          _deviceAntennaPreferences.containsKey(resolvedName)) {
-        final savedAntenna = _deviceAntennaPreferences[resolvedName]!;
-        _preferences = _preferences.copyWith(
-          externalAntenna: savedAntenna,
-          externalAntennaSet: true,
-        );
-        _antennaRestoredFromDevice = true;
-        _savePreferences();
-        debugLog(
-            '[APP] Restored antenna preference for "$resolvedName": ${savedAntenna ? "external" : "device"}');
-        notifyListeners();
-      }
-
-      // Restore per-device power override if previously saved
-      if (resolvedName != null &&
-          _devicePowerOverrides.containsKey(resolvedName)) {
-        final saved = _devicePowerOverrides[resolvedName]!;
-        _preferences = _preferences.copyWith(
-          powerLevel: (saved['powerLevel'] as num).toDouble(),
-          txPower: (saved['txPower'] as num).toInt(),
-          autoPowerSet: false,
-          powerLevelSet: true,
-        );
-        _powerRestoredFromDevice = true;
-        _savePreferences();
-        debugLog(
-            '[APP] Restored power override for "$resolvedName": ${saved['powerLevel']}W');
-        notifyListeners();
-      }
-
-      // Log connection status based on TX/RX permissions
-      if (hasApiSession) {
-        if (txAllowed && rxAllowed) {
-          debugLog('[CONN] Connected with full access (TX + RX allowed)');
-        } else if (rxAllowed) {
-          debugLog(
-              '[CONN] Connected with RX-only access (TX not allowed, zone at TX capacity)');
-        } else {
-          debugLog('[CONN] Connected with limited access');
-        }
-
-        // Track session zone for zone-to-zone transfer detection
-        _sessionZoneCode = zoneCode;
-
-        // Start periodic zone refresh to keep slot counts current
-        if (!_preferences.offlineMode) {
-          _startZoneRefreshTimer();
-        }
-
-        // Enable heartbeat immediately on connection to keep server session alive
-        // Previously only enabled on auto-ping start, causing silent session expiry
-        if (!_preferences.offlineMode && _apiService.hasSession) {
-          _apiService.enableHeartbeat(
-            gpsProvider: () {
-              final pos = _gpsService.lastPosition;
-              if (pos == null) return null;
-              return (lat: pos.latitude, lon: pos.longitude);
-            },
-          );
-          debugLog('[HEARTBEAT] Enabled on connection');
-        }
-
-        // Start 15-minute idle disconnect timer (cancelled by manual ping or auto-ping start)
-        _startIdleDisconnectTimer();
-      } else {
-        // No API session - offline mode or auth skipped
-        debugLog('[CONN] Connected without API session (offline mode)');
-      }
-
-      // Log ping validation status after connection
-      final validation = pingValidation;
-      if (validation != PingValidation.valid) {
-        debugLog('[CONN] Ping validation after connect: $validation');
-      }
+      await TcpService.saveConnection(host, port, displayDeviceName ?? '');
+      _isConnecting = false;
     } catch (e) {
-      debugError('[APP] Connection failed: $e');
+      await _handleConnectionError(e);
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
+      _transportConnectionSubscription?.cancel();
+    }
+  }
 
-      // Ensure channel is cleaned up if it was created during connection
-      // Must happen BEFORE BLE disconnect while connection is still alive
-      try {
-        await _meshCoreConnection?.deleteWardrivingChannelEarly();
-      } catch (channelError) {
-        debugError('[APP] Cleanup channel delete failed: $channelError');
+  /// Connect to a MeshCore device via Android USB Serial (OTG).
+  Future<void> connectViaUsb(Map<String, dynamic> usbDevice) async {
+    if (_isConnecting) {
+      debugLog('[APP] Connection already in progress, ignoring duplicate tap');
+      return;
+    }
+    _isConnecting = true;
+    _connectionStep = ConnectionStep.transportConnecting;
+    _connectionError = null;
+    _isAuthError = false;
+    _isNetworkError = false;
+    notifyListeners();
+    try {
+      if (_meshCoreConnection != null) {
+        debugLog('[APP] Disposing previous MeshCoreConnection');
+        _meshCoreConnection!.dispose();
+        _meshCoreConnection = null;
       }
 
-      // Ensure BLE is disconnected on any connection failure
-      // (connection.dart should have done this, but be defensive)
-      try {
-        if (_meshCoreConnection != null) {
-          await _meshCoreConnection!.disconnect();
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
+      _transportConnectionSubscription?.cancel();
+
+      await _apiQueueService.clearBeforeConnect();
+
+      final usbProductName =
+          usbDevice['productName'] as String? ?? 'USB Serial';
+      final usbDeviceName =
+          usbDevice['deviceName'] as String? ?? 'USB Serial';
+      final serialService = AndroidSerialService(
+        deviceName: usbDeviceName,
+        productName: usbProductName,
+      );
+      debugLog('[APP] Connecting USB Serial transport to $usbProductName');
+      await serialService.openConnection();
+      _activeTransport = serialService;
+      _setupTransportDisconnectListener(serialService);
+
+      debugLog('[APP] Creating new MeshCoreConnection (USB Serial)');
+      _meshCoreConnection = MeshCoreConnection(transport: serialService);
+
+      if (!_preferences.offlineMode) {
+        _meshCoreConnection!.onRequestAuth = _createAuthCallback();
+      } else {
+        _meshCoreConnection!.onRequestAuth = null;
+        debugLog('[APP] Offline mode: skipping API auth');
+      }
+
+      _meshCoreConnection!.stepStream.listen((step) {
+        _connectionStep = step;
+        if (step == ConnectionStep.connected) {
+          _manufacturerString =
+              _meshCoreConnection!.deviceInfo?.manufacturer;
+          _firmwareVersionString =
+              _meshCoreConnection!.deviceInfo?.firmwareVersionString;
+          _deviceModel = _meshCoreConnection!.deviceModel;
+          _devicePublicKey = _meshCoreConnection!.devicePublicKey;
+          debugLog(
+              '[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
+
+          var lastDeviceName = _isAnonymousRenamed
+              ? _originalDeviceName
+              : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName);
+          if (lastDeviceName != null) {
+            lastDeviceName = lastDeviceName.replaceFirst('MeshCore-', '');
+          }
+          if (lastDeviceName == 'Anonymous' && _devicePublicKey != null) {
+            lastDeviceName =
+                _deviceRealNames[_devicePublicKey!] ?? lastDeviceName;
+          }
+          if (lastDeviceName != null &&
+              lastDeviceName.isNotEmpty &&
+              _devicePublicKey != null) {
+            _saveLastConnectedDevice(lastDeviceName, _devicePublicKey!);
+          }
+
+          if (_preferences.offlineMode && _meshCoreConnection != null) {
+            _meshCoreConnection!.exportContact().then((uri) {
+              _offlineContactUri = uri;
+              debugLog('[OFFLINE] Stored contact URI for offline session');
+            }).catchError((e) {
+              debugWarn('[OFFLINE] Failed to get contact URI: $e');
+            });
+          }
         }
-      } catch (disconnectError) {
-        debugError('[APP] Cleanup disconnect failed: $disconnectError');
+        notifyListeners();
+      });
+
+      _noiseFloorSubscription =
+          _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
+        _recordNoiseFloorSample(noiseFloor);
+        if (noiseFloor != _currentNoiseFloor) {
+          _currentNoiseFloor = noiseFloor;
+          notifyListeners();
+        }
+      });
+
+      _batterySubscription =
+          _meshCoreConnection!.batteryStream.listen((batteryPercent) {
+        if (batteryPercent != _currentBatteryPercent) {
+          _currentBatteryPercent = batteryPercent;
+          notifyListeners();
+        }
+      });
+
+      final connectionResult = await _meshCoreConnection!.connect(
+        _deviceModelService.models,
+      );
+
+      final vid = usbDevice['vid'] as int? ?? 0;
+      final pid = usbDevice['pid'] as int? ?? 0;
+      final serial = usbDevice['serial'] as String? ?? '';
+      final deviceId = '$vid:$pid:$serial';
+      final device = DiscoveredDevice(
+        id: deviceId,
+        name: usbProductName,
+      );
+      await _postConnectionSetup(connectionResult, device,
+          serialPortPath: deviceId);
+      _isConnecting = false;
+    } catch (e) {
+      await _handleConnectionError(e);
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
+      _transportConnectionSubscription?.cancel();
+    }
+  }
+
+  /// Connect using a pre-opened transport (for platform-specific transports
+  /// like Web Serial that can't be imported cross-platform).
+  Future<void> connectWithTransport(
+    CompanionTransport transport, {
+    required String deviceId,
+    required String deviceName,
+    String? serialPortPath,
+  }) async {
+    if (_isConnecting) {
+      debugLog('[APP] Connection already in progress, ignoring duplicate tap');
+      return;
+    }
+    _isConnecting = true;
+    _connectionStep = ConnectionStep.transportConnecting;
+    _connectionError = null;
+    _isAuthError = false;
+    _isNetworkError = false;
+    notifyListeners();
+    try {
+      if (_meshCoreConnection != null) {
+        debugLog('[APP] Disposing previous MeshCoreConnection');
+        _meshCoreConnection!.dispose();
+        _meshCoreConnection = null;
       }
 
-      // Parse auth failure errors for clean display
-      final errorStr = e.toString();
-      if (errorStr.contains('AUTH_FAILED:')) {
-        // Format: "Exception: AUTH_FAILED:reason:message"
-        _isAuthError = true;
-        final parts = errorStr.split('AUTH_FAILED:');
-        if (parts.length > 1) {
-          final errorParts = parts[1].split(':');
-          final reason = errorParts.isNotEmpty ? errorParts[0] : 'unknown';
-          final serverMessage =
-              errorParts.length > 1 ? errorParts.sublist(1).join(':') : null;
-          _isNetworkError = reason == 'network_error';
-          _connectionError = _getErrorMessage(reason, serverMessage);
+      await _apiQueueService.clearBeforeConnect();
+
+      _activeTransport = transport;
+      _setupTransportDisconnectListener(transport);
+
+      debugLog('[APP] Creating new MeshCoreConnection (generic transport)');
+      _meshCoreConnection = MeshCoreConnection(transport: transport);
+
+      if (!_preferences.offlineMode) {
+        _meshCoreConnection!.onRequestAuth = _createAuthCallback();
+      } else {
+        _meshCoreConnection!.onRequestAuth = null;
+        debugLog('[APP] Offline mode: skipping API auth');
+      }
+
+      _meshCoreConnection!.stepStream.listen((step) {
+        _connectionStep = step;
+        if (step == ConnectionStep.connected) {
+          _manufacturerString =
+              _meshCoreConnection!.deviceInfo?.manufacturer;
+          _firmwareVersionString =
+              _meshCoreConnection!.deviceInfo?.firmwareVersionString;
+          _deviceModel = _meshCoreConnection!.deviceModel;
+          _devicePublicKey = _meshCoreConnection!.devicePublicKey;
+          debugLog(
+              '[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
+
+          var lastDeviceName = _isAnonymousRenamed
+              ? _originalDeviceName
+              : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName);
+          if (lastDeviceName != null) {
+            lastDeviceName = lastDeviceName.replaceFirst('MeshCore-', '');
+          }
+          if (lastDeviceName == 'Anonymous' && _devicePublicKey != null) {
+            lastDeviceName =
+                _deviceRealNames[_devicePublicKey!] ?? lastDeviceName;
+          }
+          if (lastDeviceName != null &&
+              lastDeviceName.isNotEmpty &&
+              _devicePublicKey != null) {
+            _saveLastConnectedDevice(lastDeviceName, _devicePublicKey!);
+          }
+
+          if (_preferences.offlineMode && _meshCoreConnection != null) {
+            _meshCoreConnection!.exportContact().then((uri) {
+              _offlineContactUri = uri;
+              debugLog('[OFFLINE] Stored contact URI for offline session');
+            }).catchError((e) {
+              debugWarn('[OFFLINE] Failed to get contact URI: $e');
+            });
+          }
+        }
+        notifyListeners();
+      });
+
+      _noiseFloorSubscription =
+          _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
+        _recordNoiseFloorSample(noiseFloor);
+        if (noiseFloor != _currentNoiseFloor) {
+          _currentNoiseFloor = noiseFloor;
+          notifyListeners();
+        }
+      });
+
+      _batterySubscription =
+          _meshCoreConnection!.batteryStream.listen((batteryPercent) {
+        if (batteryPercent != _currentBatteryPercent) {
+          _currentBatteryPercent = batteryPercent;
+          notifyListeners();
+        }
+      });
+
+      final connectionResult = await _meshCoreConnection!.connect(
+        _deviceModelService.models,
+      );
+
+      final device = DiscoveredDevice(id: deviceId, name: deviceName);
+      await _postConnectionSetup(connectionResult, device,
+          serialPortPath: serialPortPath);
+      _isConnecting = false;
+    } catch (e) {
+      await _handleConnectionError(e);
+      if (_activeTransport != null && _activeTransport != _bluetoothService) {
+        _activeTransport!.dispose();
+      }
+      _activeTransport = null;
+      _transportConnectionSubscription?.cancel();
+    }
+  }
+
+  /// Post-connection setup shared by all transport types.
+  /// Called after MeshCoreConnection.connect() completes successfully.
+  Future<void> _postConnectionSetup(
+    ({DeviceModel? deviceModel, bool deviceModelMatched}) connectionResult,
+    DiscoveredDevice device, {
+    String? tcpHost,
+    int? tcpPort,
+    String? serialPortPath,
+  }) async {
+    if (connectionResult.deviceModelMatched &&
+        connectionResult.deviceModel != null) {
+      final matchedDevice = connectionResult.deviceModel!;
+      _preferences = _preferences.copyWith(
+        powerLevel: matchedDevice.power,
+        txPower: matchedDevice.txPower,
+        autoPowerSet: true,
+        powerLevelSet: false,
+      );
+      notifyListeners();
+      debugLog(
+          '[MODEL] Device recognized: ${matchedDevice.shortName} - reporting ${matchedDevice.power}W in API calls');
+    }
+
+    await _createUnifiedRxHandler();
+
+    final apiChannels = _apiService.channels;
+    await ChannelService.setRegionalChannels(apiChannels);
+    _regionalChannels = ChannelService.getRegionalChannelNames();
+    debugLog('[APP] Regional channels configured: $_regionalChannels');
+
+    if (_unifiedRxHandler != null) {
+      final allowedChannelsData =
+          ChannelService.getAllowedChannelsForValidator();
+      final allowedChannels = <int, ChannelInfo>{};
+      for (final entry in allowedChannelsData.entries) {
+        allowedChannels[entry.key] = ChannelInfo(
+          channelName: entry.value.channelName,
+          key: entry.value.key,
+          hash: entry.value.hash,
+        );
+      }
+      final newValidator = PacketValidator(
+        allowedChannels: allowedChannels,
+        disableRssiFilter: _preferences.disableRssiFilter,
+      );
+      _unifiedRxHandler!.updateValidator(newValidator);
+      debugLog(
+          '[APP] PacketValidator updated with ${allowedChannels.length} channels: '
+          '${allowedChannelsData.values.map((c) => c.channelName).join(', ')}');
+    }
+
+    final apiScopes = _apiService.scopes;
+    final firstScope = apiScopes.isNotEmpty ? apiScopes.first : null;
+    final isWildcard =
+        firstScope == null || firstScope == '*' || firstScope == '#*';
+    if (!isWildcard) {
+      final scopeName = firstScope;
+      _scope = scopeName.startsWith('#') ? scopeName : '#$scopeName';
+      final scopeKey = CryptoService.deriveScopeKey(scopeName);
+      debugLog('[CONN] Setting flood scope: $scopeName');
+      await _meshCoreConnection!.setFloodScope(scopeKey);
+      debugLog('[CONN] Flood scope set successfully');
+    } else {
+      _scope = null;
+      debugLog('[CONN] No regional scope — using unscoped flood');
+    }
+
+    if (_apiService.enforceHybrid && !_preferences.hybridModeEnabled) {
+      _preferences = _preferences.copyWith(hybridModeEnabled: true);
+      debugLog('[CONN] Hybrid mode force-enabled by regional admin');
+    }
+
+    if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
+      _preferences = _preferences.copyWith(discDropEnabled: true);
+      debugLog('[CONN] Discovery drop force-enabled by regional admin');
+    }
+
+    final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
+    final shouldEnableFlood = !_apiService.floodDisabled;
+    if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
+      _preferences =
+          _preferences.copyWith(floodTrafficEnabled: shouldEnableFlood);
+      debugLog(shouldEnableFlood
+          ? '[CONN] Flood traffic auto-enabled (region permits)'
+          : '[CONN] Flood traffic disabled by regional admin');
+    }
+    if (wasFloodEnabledByUser && _apiService.floodDisabled) {
+      _floodDisabledAlertPending = true;
+    }
+
+    if (_preferences.autoPingInterval < _apiService.minModeInterval) {
+      _preferences = _preferences.copyWith(
+          autoPingInterval: _apiService.minModeInterval);
+      debugLog(
+          '[CONN] Auto-ping interval bumped to ${_apiService.minModeInterval}s by regional admin');
+    }
+
+    await _configurePathHashMode();
+
+    _pingService = PingService(
+      gpsService: _gpsService,
+      connection: _meshCoreConnection!,
+      apiQueue: _apiQueueService,
+      wakelockService: WakelockService(),
+      cooldownTimer: _cooldownTimer,
+      manualPingCooldownTimer: _manualPingCooldownTimer,
+      rxWindowTimer: _rxWindowTimer,
+      discoveryWindowTimer: _discoveryWindowTimer,
+      deviceId: _deviceId,
+      txTracker: _txTracker,
+      audioService: _audioService,
+      disableRssiFilter: _preferences.disableRssiFilter,
+      hopBytes: effectiveHopBytes,
+      traceHopBytes: _traceHopBytes,
+      shouldIgnoreRepeater: (String repeaterId) {
+        final prefs = _preferences;
+        if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
+          return PacketValidator.isCarpeaterIdMatch(
+              repeaterId, prefs.ignoreRepeaterId!);
+        }
+        return false;
+      },
+    );
+
+    _pingService!.unifiedRxHandler = _unifiedRxHandler;
+
+    _pingService!.checkExternalAntennaConfigured = () {
+      return _preferences.externalAntennaSet;
+    };
+
+    _pingService!.checkPowerLevelConfigured = () {
+      return _preferences.autoPowerSet ||
+          _preferences.powerLevelSet ||
+          _deviceModel != null;
+    };
+
+    _pingService!.getExternalAntenna = () => _preferences.externalAntenna;
+    _pingService!.getPowerLevel = () => _preferences.powerLevel;
+    _pingService!.checkTxAllowed = () => txAllowed;
+    _pingService!.getDiscDropEnabled = () => discDropEnabled;
+
+    _pingService!.onTxPing = (ping) {
+      _txPings.add(ping);
+      if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
+
+      _txLogEntries.add(TxLogEntry(
+        timestamp: ping.timestamp,
+        latitude: ping.latitude,
+        longitude: ping.longitude,
+        power: _preferences.powerLevel,
+        events: [],
+      ));
+      if (_txLogEntries.length > _maxLogEntries) _txLogEntries.removeAt(0);
+
+      notifyListeners();
+    };
+
+    _pingService!.onRxPing = (ping) {
+      _rxPings.add(ping);
+      if (_rxPings.length > _maxMapPins) _rxPings.removeAt(0);
+
+      _rxLogEntries.add(RxLogEntry(
+        timestamp: ping.timestamp,
+        repeaterId: ping.repeaterId,
+        snr: ping.snr,
+        rssi: ping.rssi,
+        pathLength: 0,
+        header: 0,
+        latitude: ping.latitude,
+        longitude: ping.longitude,
+      ));
+      if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
+
+      _updateRxOverlaySlot(ping.repeaterId, ping.snr);
+      notifyListeners();
+    };
+
+    _pingService!.onStatsUpdated = (stats) {
+      _pingStats = stats.copyWith(
+        rxCount: _pingStats.rxCount,
+        successfulUploads: _pingStats.successfulUploads,
+      );
+      notifyListeners();
+
+      if (_autoPingEnabled) {
+        final modeName = _autoMode == AutoMode.passive
+            ? 'Passive Mode'
+            : _autoMode == AutoMode.hybrid
+                ? 'Hybrid Mode'
+                : _autoMode == AutoMode.targeted
+                    ? 'Trace Mode'
+                    : 'Active Mode';
+        BackgroundServiceManager.updateNotification(
+          mode: modeName,
+          txCount: _pingStats.txCount,
+          rxCount: _pingStats.rxCount,
+          queueSize: _queueSize,
+        );
+      }
+    };
+
+    _pingService!.onEchoReceived = (txPing, repeater, isNew) {
+      debugLog('[APP] ========== ECHO CALLBACK RECEIVED ==========');
+      debugLog(
+          '[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
+      debugLog('[APP] TxLogEntries count: ${_txLogEntries.length}');
+
+      if (_txLogEntries.isNotEmpty) {
+        final lastEntry = _txLogEntries.last;
+        final timeDiff =
+            lastEntry.timestamp.difference(txPing.timestamp).inSeconds.abs();
+        if (timeDiff <= 10) {
+          final existingEvents = List<RxEvent>.from(lastEntry.events);
+          final newEvent = RxEvent(
+            repeaterId: repeater.repeaterId,
+            snr: repeater.snr,
+            rssi: repeater.rssi,
+          );
+
+          if (isNew) {
+            existingEvents.add(newEvent);
+            _audioService.playReceiveSound();
+          } else {
+            final idx = existingEvents
+                .indexWhere((e) => e.repeaterId == repeater.repeaterId);
+            if (idx >= 0) {
+              existingEvents[idx] = newEvent;
+            }
+          }
+
+          final updatedEntry = TxLogEntry(
+            timestamp: lastEntry.timestamp,
+            latitude: lastEntry.latitude,
+            longitude: lastEntry.longitude,
+            power: lastEntry.power,
+            events: existingEvents,
+          );
+          _txLogEntries[_txLogEntries.length - 1] = updatedEntry;
+          debugLog(
+              '[APP] Updated TxLogEntry with ${existingEvents.length} events (real-time)');
+
+          _updateTopRepeaters(
+              existingEvents
+                  .where((e) => e.snr != null)
+                  .map((e) =>
+                      (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
+                  .toList(),
+              OverlayPingType.tx);
+
+          debugLog('[APP] Calling notifyListeners() to update UI');
+          notifyListeners();
+          debugLog('[APP] notifyListeners() completed');
         } else {
-          _connectionError = 'Authentication failed';
+          debugLog(
+              '[APP] Timestamp mismatch: lastEntry=${lastEntry.timestamp}, txPing=${txPing.timestamp}, diff=${timeDiff}s');
         }
       } else {
-        _isAuthError = false;
-        _isNetworkError = false;
-        // Provide clean user-facing messages for common BLE errors
-        if (errorStr.contains('timeout') ||
-            errorStr.contains('Timeout') ||
-            errorStr.contains('timed out')) {
-          _connectionError = 'Bluetooth connection scan timed out';
-        } else {
-          _connectionError = errorStr.replaceFirst('Exception: ', '');
+        debugLog('[APP] WARNING: _txLogEntries is empty, cannot update');
+      }
+    };
+
+    _pingService!.onPingProgressChanged = notifyListeners;
+
+    _pingService!.onAutoPingScheduled = (intervalMs, skipReason) {
+      _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
+
+      if (skipReason != null) {
+        if (_preferences.autoStopAfterIdle &&
+            _idleAutoStopReference != null) {
+          final elapsed =
+              DateTime.now().difference(_idleAutoStopReference!);
+          if (elapsed >= _autoStopIdleTimeout) {
+            _triggerIdleAutoStop();
+          }
+        }
+      } else {
+        _idleAutoStopReference = DateTime.now();
+      }
+    };
+
+    _pingService!.onDiscPing = (entry) {
+      _addDiscLogEntry(entry);
+    };
+
+    _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
+      debugLog(
+          '[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
+      if (isNew) {
+        _audioService.playReceiveSound();
+      }
+
+      _updateTopRepeaters(
+          discPing.discoveredNodes
+              .map((n) =>
+                  (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
+              .toList(),
+          OverlayPingType.disc);
+
+      notifyListeners();
+    };
+
+    _pingService!.onTxWindowComplete = (success) {
+      double? lat;
+      double? lon;
+      List<MarkerRepeaterInfo>? repeaters;
+
+      if (_txLogEntries.isNotEmpty) {
+        final lastTx = _txLogEntries.last;
+        lat = lastTx.latitude;
+        lon = lastTx.longitude;
+        if (lastTx.events.isNotEmpty) {
+          repeaters = lastTx.events
+              .map((e) => MarkerRepeaterInfo(
+                    repeaterId: e.repeaterId,
+                    snr: e.snr ?? 0.0,
+                    rssi: e.rssi ?? 0,
+                  ))
+              .toList();
         }
       }
-      _connectionStep = ConnectionStep.error;
+
+      recordPingEvent(
+        success ? PingEventType.txSuccess : PingEventType.txFail,
+        latitude: lat,
+        longitude: lon,
+        repeaters: repeaters,
+      );
+    };
+
+    _pingService!.onDiscoveryWindowComplete = (success) {
+      double? lat;
+      double? lon;
+      List<MarkerRepeaterInfo>? repeaters;
+
+      if (_discLogEntries.isNotEmpty) {
+        final lastDisc = _discLogEntries.first;
+        lat = lastDisc.latitude;
+        lon = lastDisc.longitude;
+        if (lastDisc.discoveredNodes.isNotEmpty) {
+          repeaters = lastDisc.discoveredNodes
+              .map((n) => MarkerRepeaterInfo(
+                    repeaterId: n.repeaterId,
+                    snr: n.localSnr,
+                    rssi: n.localRssi,
+                    pubkeyHex: n.pubkeyHex,
+                  ))
+              .toList();
+        }
+      }
+
+      PingEventType eventType;
+      if (success) {
+        eventType = PingEventType.discSuccess;
+      } else if (discDropEnabled) {
+        eventType = PingEventType.txFail;
+      } else {
+        eventType = PingEventType.discFail;
+      }
+
+      recordPingEvent(
+        eventType,
+        latitude: lat,
+        longitude: lon,
+        repeaters: repeaters,
+      );
+    };
+
+    _pingService!.onTracePing = (entry) {
+      _addTraceLogEntry(entry);
+    };
+
+    _pingService!.onTraceWindowComplete = (result) {
+      double? lat;
+      double? lon;
+      List<MarkerRepeaterInfo>? repeaters;
+
+      if (_traceLogEntries.isNotEmpty) {
+        final lastTrace = _traceLogEntries.first;
+        lat = lastTrace.latitude;
+        lon = lastTrace.longitude;
+        if (result != null && result.success) {
+          repeaters = [
+            MarkerRepeaterInfo(
+              repeaterId: result.targetRepeaterId,
+              snr: result.localSnr,
+              rssi: result.localRssi,
+            )
+          ];
+          _traceLogEntries[0] = TraceLogEntry(
+            timestamp: lastTrace.timestamp,
+            latitude: lastTrace.latitude,
+            longitude: lastTrace.longitude,
+            targetRepeaterId: lastTrace.targetRepeaterId,
+            noiseFloor: lastTrace.noiseFloor,
+            localSnr: result.localSnr,
+            remoteSnr: result.remoteSnr,
+            localRssi: result.localRssi,
+            success: true,
+          );
+          notifyListeners();
+        }
+      }
+
+      recordPingEvent(
+        result != null && result.success
+            ? PingEventType.traceSuccess
+            : PingEventType.traceFail,
+        latitude: lat,
+        longitude: lon,
+        repeaters: repeaters,
+      );
+    };
+
+    _pingService!.onDiscCarpeaterDrop = (String repeaterId, String reason) {
+      debugLog(
+          '[APP] Discovery carpeater drop: repeater=$repeaterId, reason=$reason');
+      logError(
+          'Discovery Dropped\nPossible carpeater: $repeaterId\n$reason',
+          severity: ErrorSeverity.warning, autoSwitch: false);
+    };
+
+    _pingService!.onPendingDisableComplete = () async {
+      debugLog('[APP] Pending disable completed, cleaning up');
+
+      _pingService!.stopEchoTracking();
+      _rxLogger?.stopWardriving(trigger: 'pending_disable');
+
+      await BackgroundServiceManager.stopService();
+
+      _autoPingTimer.stop();
+      _rxWindowTimer.stop();
+
+      if (_preferences.offlineMode) {
+        await _saveOfflineSession();
+      }
+
+      await _endNoiseFloorSession();
+      _apiService.disableHeartbeat();
+
+      _autoPingEnabled = false;
+      _idleAutoStopReference = null;
+
+      debugLog('[APP] Pending disable cleanup complete, cooldown running');
       notifyListeners();
+    };
+
+    await _saveRememberedDevice(device,
+        transportType: _selectedTransport,
+        tcpHost: tcpHost,
+        tcpPort: tcpPort,
+        serialPortPath: serialPortPath);
+
+    final selfInfoName = _meshCoreConnection?.selfInfo?.name;
+    if (selfInfoName != null && selfInfoName.isNotEmpty) {
+      _displayDeviceName = _isAnonymousRenamed ? 'Anonymous' : selfInfoName;
+      debugLog('[APP] Display name set: "$_displayDeviceName"');
+
+      String? realName;
+      if (_isAnonymousRenamed) {
+        realName = _originalDeviceName ?? selfInfoName;
+      } else if (selfInfoName == 'Anonymous' && _devicePublicKey != null) {
+        realName = _deviceRealNames[_devicePublicKey!] ?? selfInfoName;
+      } else {
+        realName = selfInfoName;
+      }
+      if (_rememberedDevice != null && _rememberedDevice!.id == device.id) {
+        final updatedName = 'MeshCore-$realName';
+        if (_rememberedDevice!.name != updatedName) {
+          await _saveRememberedDevice(
+              DiscoveredDevice(id: device.id, name: updatedName),
+              transportType: _selectedTransport,
+              tcpHost: tcpHost,
+              tcpPort: tcpPort,
+              serialPortPath: serialPortPath);
+          debugLog(
+              '[APP] Updated remembered device name from SelfInfo: $updatedName');
+        }
+      }
+    }
+
+    final resolvedName =
+        _isAnonymousRenamed ? _originalDeviceName : displayDeviceName;
+    if (resolvedName != null &&
+        _deviceAntennaPreferences.containsKey(resolvedName)) {
+      final savedAntenna = _deviceAntennaPreferences[resolvedName]!;
+      _preferences = _preferences.copyWith(
+        externalAntenna: savedAntenna,
+        externalAntennaSet: true,
+      );
+      _antennaRestoredFromDevice = true;
+      _savePreferences();
+      debugLog(
+          '[APP] Restored antenna preference for "$resolvedName": ${savedAntenna ? "external" : "device"}');
+      notifyListeners();
+    }
+
+    if (resolvedName != null &&
+        _devicePowerOverrides.containsKey(resolvedName)) {
+      final saved = _devicePowerOverrides[resolvedName]!;
+      _preferences = _preferences.copyWith(
+        powerLevel: (saved['powerLevel'] as num).toDouble(),
+        txPower: (saved['txPower'] as num).toInt(),
+        autoPowerSet: false,
+        powerLevelSet: true,
+      );
+      _powerRestoredFromDevice = true;
+      _savePreferences();
+      debugLog(
+          '[APP] Restored power override for "$resolvedName": ${saved['powerLevel']}W');
+      notifyListeners();
+    }
+
+    if (hasApiSession) {
+      if (txAllowed && rxAllowed) {
+        debugLog('[CONN] Connected with full access (TX + RX allowed)');
+      } else if (rxAllowed) {
+        debugLog(
+            '[CONN] Connected with RX-only access (TX not allowed, zone at TX capacity)');
+      } else {
+        debugLog('[CONN] Connected with limited access');
+      }
+
+      _sessionZoneCode = zoneCode;
+
+      if (!_preferences.offlineMode) {
+        _startZoneRefreshTimer();
+      }
+
+      if (!_preferences.offlineMode && _apiService.hasSession) {
+        _apiService.enableHeartbeat(
+          gpsProvider: () {
+            final pos = _gpsService.lastPosition;
+            if (pos == null) return null;
+            return (lat: pos.latitude, lon: pos.longitude);
+          },
+        );
+        debugLog('[HEARTBEAT] Enabled on connection');
+      }
+
+      _startIdleDisconnectTimer();
+    } else {
+      debugLog('[CONN] Connected without API session (offline mode)');
+    }
+
+    final validation = pingValidation;
+    if (validation != PingValidation.valid) {
+      debugLog('[CONN] Ping validation after connect: $validation');
     }
   }
 
@@ -2589,6 +2907,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _cancelPendingAutoPingRestore();
+    _isConnecting = false;
     _connectionStep = ConnectionStep.disconnected;
 
     // Cancel any active zone grace period
@@ -2597,9 +2916,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _zoneGraceSecondsRemaining = 0;
     _autoPingWasEnabledBeforeGrace = false;
 
-    // Stop heartbeat immediately on BLE disconnect
     _apiService.disableHeartbeat();
-    debugLog('[CONN] Heartbeat disabled due to BLE disconnect');
+    debugLog('[CONN] Heartbeat disabled due to disconnect');
 
     // Stop zone refresh timer
     _stopZoneRefreshTimer();
@@ -2614,7 +2932,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
-      debugLog('[AUTO] Auto-ping disabled due to BLE disconnect');
+      debugLog('[AUTO] Auto-ping disabled due to disconnect');
     }
 
     // End noise floor session on BLE disconnect
@@ -2638,7 +2956,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Release API session (best effort - don't block on failure)
     if (_devicePublicKey != null && _apiService.hasSession) {
-      debugLog('[CONN] Releasing API session due to BLE disconnect');
+      debugLog('[CONN] Releasing API session due to disconnect');
       try {
         await _apiService.requestAuth(
           reason: 'disconnect',
@@ -2650,21 +2968,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    // Reset anonymous mode state (BLE already gone, can't restore name)
     _isAnonymousRenamed = false;
     _originalDeviceName = null;
 
-    // Clear top-heard overlay
     _clearOverlayState();
 
-    // Existing cleanup
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
     _pingService?.dispose();
     _pingService = null;
+
+    // Clean up non-BLE transport
+    _transportConnectionSubscription?.cancel();
+    _transportConnectionSubscription = null;
+    if (_activeTransport != null && _activeTransport != _bluetoothService) {
+      _activeTransport!.dispose();
+    }
+    _activeTransport = null;
   }
 
-  /// Start auto-reconnect after unexpected BLE disconnect
+  /// Start auto-reconnect after unexpected transport disconnect
   Future<void> _startAutoReconnect() async {
     // Defensive: cancel zone grace period if active
     if (_isInZoneGracePeriod) {
@@ -2830,8 +3153,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Detect iOS apple-code 14/15 bond errors and clear the stale bond before retry
+  /// Detect iOS apple-code 14/15 bond errors and clear the stale bond before retry.
+  /// Only applies to BLE transports.
   Future<void> _handleBondErrorIfNeeded(Object error) async {
+    if (_selectedTransport != TransportType.ble) return;
     final errorStr = error.toString();
     if (errorStr.contains('apple-code: 14') ||
         errorStr.contains('apple-code: 15') ||
@@ -2941,6 +3266,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> disconnect() async {
     // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
     _userRequestedDisconnect = true;
+
+    // Immediate UI feedback
+    _connectionStep = ConnectionStep.disconnecting;
+    notifyListeners();
 
     // Cancel idle disconnect timer
     _cancelIdleDisconnectTimer();
@@ -3056,7 +3385,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _txTracker = null; // TxTracker is disposed by UnifiedRxHandler
     _rxLogger = null; // RxLogger is disposed by UnifiedRxHandler
 
-    // Disconnect BLE (don't call disconnect() twice - meshCoreConnection.disconnect() already does it)
     await _meshCoreConnection?.disconnect();
 
     // Cancel stream subscriptions
@@ -3064,6 +3392,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _noiseFloorSubscription = null;
     await _batterySubscription?.cancel();
     _batterySubscription = null;
+
+    // Clean up non-BLE transport (TCP/USB instances are owned by us, not shared)
+    _transportConnectionSubscription?.cancel();
+    _transportConnectionSubscription = null;
+    if (_activeTransport != null && _activeTransport != _bluetoothService) {
+      _activeTransport!.dispose();
+    }
+    _activeTransport = null;
 
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
@@ -6054,8 +6390,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Save device for quick reconnection
-  Future<void> _saveRememberedDevice(DiscoveredDevice device) async {
-    // Skip on web - Web Bluetooth requires user interaction for each connection
+  Future<void> _saveRememberedDevice(
+    DiscoveredDevice device, {
+    TransportType transportType = TransportType.ble,
+    String? tcpHost,
+    int? tcpPort,
+    String? serialPortPath,
+  }) async {
     if (kIsWeb) return;
 
     final box = await _openBoxSafely(_rememberedDeviceBoxName);
@@ -6066,34 +6407,51 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         id: device.id,
         name: device.name,
         lastConnected: DateTime.now(),
+        transportType: transportType,
+        tcpHost: tcpHost,
+        tcpPort: tcpPort,
+        serialPortPath: serialPortPath,
       );
 
       await box.put('device', remembered.toJson());
 
       _rememberedDevice = remembered;
-      debugLog('[APP] Saved remembered device: ${device.name}');
+      debugLog(
+          '[APP] Saved remembered device: ${device.name} (${transportType.name})');
       notifyListeners();
     } catch (e) {
       debugLog('[APP] Failed to save remembered device: $e');
     }
   }
 
-  /// Reconnect to remembered device without scanning
+  /// Reconnect to remembered device without scanning.
+  /// Routes to the correct transport based on the remembered device's type.
   Future<void> reconnectToRememberedDevice() async {
     if (_rememberedDevice == null) return;
-    if (kIsWeb) return; // Not supported on web
+    if (kIsWeb) return;
 
-    final device = DiscoveredDevice(
-      id: _rememberedDevice!.id,
-      name: _rememberedDevice!.name,
-    );
-
-    // Pre-populate the BLE scan cache with remembered device info
-    // This ensures the device name is available during connect()
-    // (normally populated by scanning, but we're skipping the scan)
-    _bluetoothService.cacheDeviceInfo(device);
-
-    await connectToDevice(device);
+    switch (_rememberedDevice!.transportType) {
+      case TransportType.ble:
+        final device = DiscoveredDevice(
+          id: _rememberedDevice!.id,
+          name: _rememberedDevice!.name,
+        );
+        _bluetoothService.cacheDeviceInfo(device);
+        await connectToDevice(device);
+        break;
+      case TransportType.tcp:
+        final host = _rememberedDevice!.tcpHost;
+        final port = _rememberedDevice!.tcpPort;
+        if (host != null && port != null) {
+          await connectViaTcp(host, port);
+        } else {
+          debugError('[APP] Cannot reconnect via TCP: missing host/port');
+        }
+        break;
+      case TransportType.usbSerial:
+        debugLog('[APP] USB Serial reconnect requires user to select device');
+        break;
+    }
   }
 
   /// Clear remembered device

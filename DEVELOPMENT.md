@@ -55,10 +55,19 @@ MESHMAPPER_API_KEY=<your-key> ./Build.sh
 The app uses a layered service architecture with clear separation of concerns:
 
 **Bluetooth Abstraction Layer** (`lib/services/bluetooth/`):
-- `BluetoothService`: Abstract interface for BLE operations
+- `BluetoothService`: Abstract interface for BLE operations, implements `CompanionTransport`
 - `MobileBluetoothService`: Android/iOS implementation using `flutter_blue_plus`
 - `WebBluetoothService`: Web implementation using `flutter_web_bluetooth`
 - Platform selection happens at runtime in `main.dart` using `kIsWeb`
+
+**Transport Layer** (`lib/services/transport/`):
+- `CompanionTransport`: Transport-agnostic interface for MeshCore companion connections (BLE, TCP, USB Serial)
+- `StreamFrameCodec`: Framing codec for TCP/USB Serial (`[0x3C][len_lo][len_hi][payload]` out, `[0x3E][len_lo][len_hi][payload]` in)
+- `StreamTransportBase`: Abstract base for TCP and USB Serial transports, owns codec and connection lifecycle
+- `TcpService`: TCP socket transport with saved connections persistence (Android/iOS)
+- `AndroidSerialService`: USB Serial via USB OTG on Android using `usb_serial` package
+- `WebSerialService`: USB Serial via Web Serial API (Chrome/Edge) using `dart:js_interop`
+- Platform matrix: BLE (all platforms), TCP (Android/iOS), USB Serial (Android/Web)
 
 **MeshCore Protocol Layer** (`lib/services/meshcore/`):
 - `MeshCoreConnection`: Implements the 9-step connection workflow and MeshCore companion protocol
@@ -85,7 +94,7 @@ The app uses a layered service architecture with clear separation of concerns:
 
 Critical safety: The connection sequence MUST complete in order.
 
-1. **BLE GATT Connect**: Platform-specific BLE connection
+1. **Transport Connect**: Platform-specific transport connection (BLE GATT, TCP socket, or USB Serial port)
 2. **Protocol Handshake**: `deviceQuery()` with protocol version
 3. **Device Info**: `deviceQuery()` returns manufacturer string, then `getSelfInfo()` acquires device public key (required for geo-auth API authentication). If `getSelfInfo()` fails, the entire connection fails.
 4. **Device Identification**: Parse manufacturer string, match against `device-models.json` (does NOT modify radio settings)
@@ -342,6 +351,7 @@ Key packages used in this project:
 - `provider`: State management
 - `http`: API requests
 - `pointycastle`: Encryption (AES-ECB, SHA-256)
+- `usb_serial`: USB Serial communication on Android (USB OTG)
 
 ## Development Workflow Requirements
 
@@ -506,6 +516,12 @@ All API endpoints may return maintenance mode:
 - `lib/services/meshcore/tx_tracker.dart` - Repeater echo detection (7s window)
 - `lib/services/meshcore/disc_tracker.dart` - Discovery response tracking (7s window)
 - `lib/services/meshcore/rx_logger.dart` - Passive observation logging
+- `lib/services/transport/companion_transport.dart` - Transport-agnostic interface for companion connections
+- `lib/services/transport/stream_frame_codec.dart` - TCP/USB Serial framing codec
+- `lib/services/transport/stream_transport_base.dart` - Shared base for TCP/USB Serial transports
+- `lib/services/transport/tcp_service.dart` - TCP socket transport with saved connections
+- `lib/services/transport/android_serial_service.dart` - USB Serial transport for Android (USB OTG)
+- `lib/services/transport/web_serial_service.dart` - USB Serial transport for Web (Web Serial API)
 - `lib/services/ping_service.dart` - TX/RX/Discovery ping orchestration
 - `lib/services/gps_service.dart` - GPS tracking and geofencing
 - `lib/services/api_queue_service.dart` - Persistent upload queue

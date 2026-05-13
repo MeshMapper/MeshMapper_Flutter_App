@@ -97,4 +97,5 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for de
 
 - Original [MeshMapper WebClient](https://github.com/MeshMapper/MeshMapper_WebClient)
 - [MeshCore](https://github.com/meshcore-dev/MeshCore) firmware project
+- [meshcore-open](https://github.com/zjs81/meshcore-open) by zjs81 — Android USB Serial support is based heavily on its native USB host implementation (MIT License, see [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES))
 - [The Greater Ottawa Mesh Radio Enthusiasts community](https://ottawamesh.ca/)

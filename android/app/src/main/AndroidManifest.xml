@@ -14,6 +14,9 @@
     <!-- BLE hardware feature -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!-- USB host for USB OTG serial connections -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
     <!-- Internet for API uploads -->
     <uses-permission android:name="android.permission.INTERNET" />
 
