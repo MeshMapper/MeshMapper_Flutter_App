@@ -2744,14 +2744,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final deviceInfo = _meshCoreConnection?.deviceInfo;
     if (deviceInfo == null) return;
 
-    // Store the device's current mode (from DeviceInfo response)
+    // Capture what the radio is CURRENTLY doing before resetting to firmware
+    // default — during zone transfer this reflects the previous zone's mode
+    final currentRuntimeHopBytes = _hopBytes;
+
+    // Store the device's original firmware mode (from DeviceInfo response)
     _originalPathHashMode = deviceInfo.pathHashMode;
 
-    // Sync runtime hopBytes from device's current mode
+    // Sync runtime hopBytes from device's firmware mode
+    final deviceMode =
+        _originalPathHashMode ?? 0; // null = old firmware, treat as 0 (1-byte)
+    final deviceHopBytes = deviceMode + 1;
     if (_originalPathHashMode != null) {
-      final deviceHopBytes = _originalPathHashMode! + 1;
       _hopBytes = deviceHopBytes;
-      // Map TX bytes to trace bytes (3-byte traces not possible, use 4)
       _traceHopBytes = deviceHopBytes == 3 ? 4 : deviceHopBytes;
       _pingService?.traceHopBytes = _traceHopBytes;
       debugLog(
@@ -2762,19 +2767,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final effective = effectiveHopBytes;
-    final deviceMode =
-        _originalPathHashMode ?? 0; // null = old firmware, treat as 0 (1-byte)
-    final deviceHopBytes = deviceMode + 1;
 
-    if (effective != deviceHopBytes && _originalPathHashMode != null) {
+    if (effective != currentRuntimeHopBytes && _originalPathHashMode != null) {
       // Need to change the radio's path hash mode
       try {
         await _meshCoreConnection!.setPathHashMode(effective - 1);
-        _hopBytes = effective; // Update runtime state to reflect new mode
+        _hopBytes = effective;
         _traceHopBytes = effective == 3 ? 4 : effective;
         _pingService?.traceHopBytes = _traceHopBytes;
         debugLog(
-            '[PATH] Set path hash mode: device was $deviceHopBytes-byte, now $effective-byte (trace: $_traceHopBytes-byte)');
+            '[PATH] Set path hash mode: radio was $currentRuntimeHopBytes-byte, now $effective-byte (trace: $_traceHopBytes-byte)');
 
         // Show warning popup if changing from 1-byte to multi-byte
         if (deviceMode == 0 && effective > 1) {
@@ -2782,7 +2784,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               ? 'set by your regional admin'
               : 'set in your app preferences';
           _pendingPathHashWarning = (hopBytes: effective, reason: reason);
-          notifyListeners(); // Trigger UI to show warning
+          notifyListeners();
         }
       } catch (e) {
         debugError('[PATH] Failed to set path hash mode: $e');
@@ -2798,7 +2800,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } else {
       debugLog(
-          '[PATH] Path hash mode OK: device=$deviceHopBytes-byte, effective=$effective-byte');
+          '[PATH] Path hash mode OK: radio=$currentRuntimeHopBytes-byte, effective=$effective-byte');
     }
   }
 
@@ -5464,6 +5466,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_autoPingEnabled) {
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
+      await _pingService?.forceDisableAutoPing();
       debugLog('[ZONE GRACE] Auto-ping paused');
     }
 
@@ -5545,9 +5548,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _cancelZoneGraceTimers();
         _isInZoneGracePeriod = false;
         _zoneGraceSecondsRemaining = 0;
+        final savedAutoPing = _autoPingWasEnabledBeforeGrace;
+        final savedMode = _autoModeBeforeGrace;
         _autoPingWasEnabledBeforeGrace = false;
         await _handleZoneTransfer(
-            reEnteredZoneCode, _currentZone?['name'] ?? 'Unknown');
+            reEnteredZoneCode, _currentZone?['name'] ?? 'Unknown',
+            wasAutoPingOverride: savedAutoPing,
+            previousModeOverride: savedMode);
         return;
       }
 
@@ -5646,7 +5653,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Releases old zone session and acquires new session for target zone.
   /// Preserves BLE connection and radio configuration.
   Future<void> _handleZoneTransfer(
-      String newZoneCode, String newZoneName) async {
+      String newZoneCode, String newZoneName,
+      {bool? wasAutoPingOverride, AutoMode? previousModeOverride}) async {
     if (_isZoneTransferInProgress) {
       debugLog('[ZONE] Transfer already in progress, skipping');
       return;
@@ -5661,8 +5669,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       // 1. Save auto-ping state for restoration
-      final wasAutoPing = _autoPingEnabled;
-      final previousMode = _autoMode;
+      // Prefer overrides from grace period (where provider state was already cleared)
+      final wasAutoPing = wasAutoPingOverride ?? _autoPingEnabled;
+      final previousMode = previousModeOverride ?? _autoMode;
 
       // 2. Pause auto-ping and wardriving activity
       _autoPingTimer.stop();
