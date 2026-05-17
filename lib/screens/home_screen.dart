@@ -424,7 +424,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (!isLandscape) const StatusBar() else const SizedBox.shrink(),
             Expanded(
               child: MapWidget(
-                bottomPaddingPixels: isLandscape ? 0 : _getControlPanelHeight(),
+                bottomPaddingPixels: isLandscape || appState.isFocusModeActive ? 0 : _getControlPanelHeight(),
                 mapControlsExpanded: isLandscape ? _mapControlsExpanded : null,
                 onMapControlsToggle: isLandscape ? _toggleMapControls : null,
               ),
@@ -476,8 +476,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-        // Portrait: bottom control panel
-        if (!isLandscape)
+        // Portrait: bottom control panel (hidden during focus mode)
+        if (!isLandscape && !appState.isFocusModeActive)
           Positioned(
             bottom: 0,
             left: 0,
@@ -487,14 +487,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 : _buildControlPanel(),
           ),
 
-        // Landscape: side control panel or FAB
-        if (isLandscape && _showControlPanel)
+        // Landscape: side control panel or FAB (hidden during focus mode)
+        if (isLandscape && _showControlPanel && !appState.isFocusModeActive)
           Positioned(
             bottom: 16,
             left: leftInset,
             child: _buildLandscapeControlPanel(appState),
           ),
-        if (isLandscape && !_showControlPanel)
+        if (isLandscape && !_showControlPanel && !appState.isFocusModeActive)
           Positioned(
             bottom: 16,
             left: leftInset,

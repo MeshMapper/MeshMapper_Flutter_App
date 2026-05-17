@@ -5401,6 +5401,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // restores the correct camera position.
     final alreadyInFocus = _focusedPingLocation != null;
     if (!alreadyInFocus) {
+      context.read<AppStateProvider>().isFocusModeActive = true;
       final pos = _mapController?.cameraPosition;
       _preFocusCenter = pos?.target;
       _preFocusZoom = pos?.zoom;
@@ -5456,6 +5457,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Dismiss ping focus mode — restore map state.
   void _dismissPingFocus() {
     if (_focusedPingLocation == null || !mounted) return;
+
+    context.read<AppStateProvider>().isFocusModeActive = false;
 
     final center = _preFocusCenter;
     final zoom = _preFocusZoom;
