@@ -5592,7 +5592,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Show TX ping details popup
-  void _showTxPingDetails(TxPing ping) {
+  void _showTxPingDetails(TxPing ping, {bool fromMinimized = false}) {
     // Use the heardRepeaters directly from the TxPing
     final heardRepeaters = ping.heardRepeaters;
 
@@ -5605,8 +5605,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         : <_ResolvedRepeater>[];
     final hasAmbiguous = resolved.any((r) => r.ambiguous);
 
+    _focusedPingSource = ping;
+
     // Activate focus mode if the ping was heard by known repeaters
-    if (resolved.isNotEmpty) {
+    if (!fromMinimized && resolved.isNotEmpty) {
       _activatePingFocus(
           LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
     }
@@ -5675,6 +5677,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         ],
                       ),
                     ),
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                      onPressed: () => Navigator.pop(context, 'minimized'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      tooltip: 'Minimize',
+                    ),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: () => Navigator.pop(context),
@@ -5917,7 +5927,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ),
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
   }
 
   /// Show RX ping details popup
