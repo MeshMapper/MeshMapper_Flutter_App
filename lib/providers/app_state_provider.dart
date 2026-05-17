@@ -600,6 +600,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? get zoneTransferFrom => _zoneTransferFrom;
   String? get zoneTransferTo => _zoneTransferTo;
 
+  // Focus mode (map ping detail sheet active)
+  bool _isFocusModeActive = false;
+  bool get isFocusModeActive => _isFocusModeActive;
+  set isFocusModeActive(bool value) {
+    if (_isFocusModeActive != value) {
+      _isFocusModeActive = value;
+      notifyListeners();
+    }
+  }
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
