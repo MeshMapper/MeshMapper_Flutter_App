@@ -87,6 +87,9 @@ enum OfflineUploadResult {
 
   /// GPS position required but not available
   gpsRequired,
+
+  /// Zone is disabled server-side
+  zoneDisabled,
 }
 
 /// Main application state provider
