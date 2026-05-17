@@ -380,6 +380,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   double? _preFocusZoom;
   bool _wasAutoFollowBeforeFocus = false;
   bool _wasRotatingBeforeFocus = false; // true if heading mode was active
+  bool _focusPanelMinimized = false;
+  dynamic _focusedPingSource; // TxPing | RxPing | DiscLogEntry | TraceLogEntry
 
   // MapLibre style and overlay tracking
   int _lastCacheBust = 0;
@@ -5364,27 +5366,36 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         repeaters.where((r) => r.repeater.hasLocation).toList(growable: false);
     if (located.isEmpty) return;
 
-    final pos = _mapController?.cameraPosition;
-    _preFocusCenter = pos?.target;
-    _preFocusZoom = pos?.zoom;
-    _wasAutoFollowBeforeFocus = _autoFollow;
-    _wasRotatingBeforeFocus = !_alwaysNorth;
+    // Only save pre-focus state on first activation. When re-activating
+    // (e.g. user taps a different ping while already in focus, or expanding
+    // from minimized), we keep the original pre-focus snapshot so dismiss
+    // restores the correct camera position.
+    final alreadyInFocus = _focusedPingLocation != null;
+    if (!alreadyInFocus) {
+      final pos = _mapController?.cameraPosition;
+      _preFocusCenter = pos?.target;
+      _preFocusZoom = pos?.zoom;
+      _wasAutoFollowBeforeFocus = _autoFollow;
+      _wasRotatingBeforeFocus = !_alwaysNorth;
 
-    if (_autoFollow) {
-      _autoFollow = false;
-    }
+      if (_autoFollow) {
+        _autoFollow = false;
+      }
 
-    // Lock to north-up during focus so the zoom-to-fit view is stable
-    if (!_alwaysNorth) {
-      _alwaysNorth = true;
-      // Snap rotation to north (instant — avoids wobble before zoom-to-fit animation)
-      if (_isMapReady && _mapController != null && _canAnimateCamera) {
-        _mapController!.animateCamera(
-          CameraUpdate.bearingTo(0),
-          duration: const Duration(milliseconds: 1),
-        );
+      // Lock to north-up during focus so the zoom-to-fit view is stable
+      if (!_alwaysNorth) {
+        _alwaysNorth = true;
+        // Snap rotation to north (instant — avoids wobble before zoom-to-fit animation)
+        if (_isMapReady && _mapController != null && _canAnimateCamera) {
+          _mapController!.animateCamera(
+            CameraUpdate.bearingTo(0),
+            duration: const Duration(milliseconds: 1),
+          );
+        }
       }
     }
+
+    _focusPanelMinimized = false;
 
     setState(() {
       _focusedPingLocation = pingLocation;
@@ -5429,6 +5440,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _focusedPingLocation = null;
       _focusedPingTimestamp = null;
       _focusedRepeaters = [];
+      _focusPanelMinimized = false;
+      _focusedPingSource = null;
     });
 
     // Restore the MeshMapper coverage raster overlay opacity. Safe if the
