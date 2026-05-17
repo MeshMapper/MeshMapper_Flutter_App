@@ -246,6 +246,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Remembered device for quick reconnection (mobile only)
   RememberedDevice? _rememberedDevice;
 
+  // User's original preferences before zone admin overrides (single baseline).
+  // Saved on initial connect; restored before applying each new zone's policies.
+  int? _userOriginalAutoPingInterval;
+  bool? _userOriginalHybridMode;
+  bool? _userOriginalDiscDrop;
+  bool? _userOriginalFloodTraffic;
+
   // Debug logs state (non-persistent, always starts false)
   bool _debugLogsEnabled = false;
   List<File> _debugLogFiles = [];
@@ -1991,6 +1998,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[CONN] No regional scope — using unscoped flood');
     }
 
+    // Snapshot user's preferences before zone admin overrides (single baseline)
+    _userOriginalAutoPingInterval = _preferences.autoPingInterval;
+    _userOriginalHybridMode = _preferences.hybridModeEnabled;
+    _userOriginalDiscDrop = _preferences.discDropEnabled;
+    _userOriginalFloodTraffic = _preferences.floodTrafficEnabled;
+
     if (_apiService.enforceHybrid && !_preferences.hybridModeEnabled) {
       _preferences = _preferences.copyWith(hybridModeEnabled: true);
       debugLog('[CONN] Hybrid mode force-enabled by regional admin');
@@ -3406,6 +3419,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _activeTransport = null;
 
+    // Restore transport tab selection so connection screen shows the right tab
+    if (_rememberedDevice != null) {
+      _selectedTransport = _rememberedDevice!.transportType;
+    }
+
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
     _pingService?.dispose();
@@ -3435,6 +3453,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     ChannelService.clearRegionalChannels();
     _regionalChannels = [];
     _scope = null;
+
+    // Clear user-original preference tracking
+    _userOriginalAutoPingInterval = null;
+    _userOriginalHybridMode = null;
+    _userOriginalDiscDrop = null;
+    _userOriginalFloodTraffic = null;
 
     // Clear zone transfer state
     _sessionZoneCode = null;
@@ -4610,6 +4634,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _preferences = preferences;
 
+    // Update user-original baseline when user changes zone-overridable settings
+    if (_userOriginalAutoPingInterval != null) {
+      _userOriginalAutoPingInterval = preferences.autoPingInterval;
+      _userOriginalHybridMode = preferences.hybridModeEnabled;
+      _userOriginalDiscDrop = preferences.discDropEnabled;
+      _userOriginalFloodTraffic = preferences.floodTrafficEnabled;
+    }
+
     // Clear restored flags — user is making a manual choice now
     _antennaRestoredFromDevice = false;
     _powerRestoredFromDevice = false;
@@ -5612,8 +5644,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return;
         }
         if (!_autoPingEnabled) {
-          toggleAutoPing(previousMode);
-          debugLog('[ZONE GRACE] Auto-ping restored (mode=$previousMode)');
+          final resolvedMode = _resolveAutoModeForZone(previousMode);
+          debugLog(
+              '[ZONE GRACE] Mode resolved: $previousMode → $resolvedMode');
+          toggleAutoPing(resolvedMode);
         }
       });
     } else {
@@ -5646,6 +5680,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> cancelZoneGracePeriod() async {
     debugLog('[ZONE GRACE] Cancelled by user');
     await _abandonZoneGracePeriod();
+  }
+
+  /// Resolve the desired auto-ping mode against the current zone's permissions.
+  /// Maps invalid modes to the best valid alternative for the new zone.
+  AutoMode _resolveAutoModeForZone(AutoMode desired) {
+    final txOk = _apiService.txAllowed;
+    final rxOk = _apiService.rxAllowed;
+    final hybrid = _apiService.enforceHybrid;
+
+    // No TX allowed → passive only
+    if (!txOk && rxOk) return AutoMode.passive;
+
+    // TX allowed but zone enforces hybrid → map active to hybrid
+    if (txOk && hybrid && desired == AutoMode.active) return AutoMode.hybrid;
+
+    // TX allowed, zone doesn't enforce hybrid → map hybrid back to active
+    // (unless user explicitly chose hybrid via _userOriginalHybridMode)
+    if (txOk && !hybrid && desired == AutoMode.hybrid) {
+      if (_userOriginalHybridMode != true) return AutoMode.active;
+    }
+
+    // Targeted/trace mode is transport-level, not channel TX — keep as-is
+    return desired;
   }
 
   // ============================================
@@ -5894,7 +5951,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[ZONE] No regional scope — using unscoped flood');
       }
 
-      // 15. Enforce regional admin policies from new zone
+      // 15. Restore user's original preferences, then apply new zone's policies
+      if (_userOriginalAutoPingInterval != null) {
+        _preferences = _preferences.copyWith(
+            autoPingInterval: _userOriginalAutoPingInterval!);
+      }
+      if (_userOriginalHybridMode != null) {
+        _preferences =
+            _preferences.copyWith(hybridModeEnabled: _userOriginalHybridMode!);
+      }
+      if (_userOriginalDiscDrop != null) {
+        _preferences =
+            _preferences.copyWith(discDropEnabled: _userOriginalDiscDrop!);
+      }
+      if (_userOriginalFloodTraffic != null) {
+        _preferences =
+            _preferences.copyWith(floodTrafficEnabled: _userOriginalFloodTraffic!);
+      }
+      debugLog(
+          '[ZONE] Preferences restored to user baseline before applying new zone policies');
+
       if (_apiService.enforceHybrid && !_preferences.hybridModeEnabled) {
         _preferences = _preferences.copyWith(hybridModeEnabled: true);
         debugLog('[ZONE] Hybrid mode force-enabled by new zone admin');
@@ -5969,8 +6045,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           if (!_autoPingEnabled) {
             _cooldownTimer.stop();
-            toggleAutoPing(previousMode);
-            debugLog('[ZONE] Auto-ping restored (mode=$previousMode)');
+            final resolvedMode = _resolveAutoModeForZone(previousMode);
+            debugLog(
+                '[ZONE] Mode resolved for new zone: $previousMode → $resolvedMode');
+            toggleAutoPing(resolvedMode);
           }
         });
       } else {
@@ -6393,7 +6471,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (json != null) {
         _rememberedDevice =
             RememberedDevice.fromJson(Map<String, dynamic>.from(json));
-        debugLog('[APP] Loaded remembered device: ${_rememberedDevice!.name}');
+        _selectedTransport = _rememberedDevice!.transportType;
+        debugLog('[APP] Loaded remembered device: ${_rememberedDevice!.name} (${_rememberedDevice!.transportType.name})');
         notifyListeners();
       }
     } catch (e) {

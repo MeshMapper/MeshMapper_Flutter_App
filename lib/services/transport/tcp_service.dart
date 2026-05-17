@@ -66,6 +66,7 @@ class TcpService extends StreamTransportBase {
     try {
       _socket = await Socket.connect(host, port,
           timeout: const Duration(seconds: 10));
+      _socket!.setOption(SocketOption.tcpNoDelay, true);
       debugLog('[CONN] TCP connected to $host:$port');
 
       setConnected(DiscoveredDevice(
