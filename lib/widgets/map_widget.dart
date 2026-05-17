@@ -1244,6 +1244,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               child: _buildTileLoadFailedBanner(),
             ),
           ),
+
+        // Minimized focus panel pill — shown when user minimizes a ping
+        // details sheet. Not a modal, so the map underneath stays fully
+        // interactable (zoom, pan, rotation).
+        if (_focusPanelMinimized && _focusedPingLocation != null)
+          Positioned(
+            bottom: 16 + MediaQuery.of(context).padding.bottom,
+            left: 16,
+            right: 16,
+            child: Center(
+              child: _buildMinimizedFocusPanel(),
+            ),
+          ),
       ],
     );
   }
@@ -4970,9 +4983,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _focusedPingLocation!.longitude == lon;
   }
 
-  void _showTraceDetails(TraceLogEntry entry) {
+  void _showTraceDetails(TraceLogEntry entry, {bool fromMinimized = false}) {
     // Activate focus mode for successful traces with a known repeater
-    if (entry.success) {
+    _focusedPingSource = entry;
+
+    if (!fromMinimized && entry.success) {
       final resolved = _resolveRepeatersByHexIds(
         [entry.targetRepeaterId],
         snrValues: [entry.localSnr],
@@ -5046,6 +5061,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         ],
                       ),
                     ),
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                      onPressed: () => Navigator.pop(context, 'minimized'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      tooltip: 'Minimize',
+                    ),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: () => Navigator.pop(context),
@@ -5274,7 +5297,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ),
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
   }
 
   /// DISC marker color (delegates to active palette)
@@ -5471,6 +5500,122 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         if (shouldRestoreRotation) _alwaysNorth = false;
       });
     }
+  }
+
+  void _reshowFocusPanel() {
+    setState(() => _focusPanelMinimized = false);
+    final source = _focusedPingSource;
+    if (source is TxPing) {
+      _showTxPingDetails(source, fromMinimized: true);
+    } else if (source is RxPing) {
+      _showRxPingDetails(source, fromMinimized: true);
+    } else if (source is DiscLogEntry) {
+      _showDiscPingDetails(source, fromMinimized: true);
+    } else if (source is TraceLogEntry) {
+      _showTraceDetails(source, fromMinimized: true);
+    }
+  }
+
+  Widget _buildMinimizedFocusPanel() {
+    final source = _focusedPingSource;
+    String title;
+    IconData icon;
+    Color color;
+    if (source is TxPing) {
+      title = 'TX Ping';
+      icon = Icons.arrow_upward;
+      color = PingColors.txSuccess;
+    } else if (source is RxPing) {
+      title = 'RX Ping';
+      icon = Icons.arrow_downward;
+      color = PingColors.rx;
+    } else if (source is DiscLogEntry) {
+      title = 'Disc Request';
+      icon = Icons.radar;
+      color = PingColors.discSuccess;
+    } else if (source is TraceLogEntry) {
+      title = 'Trace';
+      icon = Icons.gps_fixed;
+      color = Colors.cyan;
+    } else {
+      return const SizedBox.shrink();
+    }
+
+    final repeaterCount = _focusedRepeaters.length;
+    final timeStr =
+        _focusedPingTimestamp != null ? _formatTime(_focusedPingTimestamp!) : '';
+
+    return GestureDetector(
+      onTap: _reshowFocusPanel,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: color, size: 18),
+            const SizedBox(width: 8),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              timeStr,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (repeaterCount > 0) ...[
+              const SizedBox(width: 8),
+              Text(
+                '$repeaterCount repeater${repeaterCount != 1 ? 's' : ''}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _reshowFocusPanel,
+              child: Icon(
+                Icons.keyboard_arrow_up,
+                size: 20,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 4),
+            GestureDetector(
+              onTap: _dismissPingFocus,
+              child: Icon(
+                Icons.close,
+                size: 18,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Set<String> _getDuplicateRepeaterIds(List<Repeater> repeaters) {
@@ -5937,7 +6082,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Show RX ping details popup
-  void _showRxPingDetails(RxPing ping) {
+  void _showRxPingDetails(RxPing ping, {bool fromMinimized = false}) {
     final snrColor = PingColors.snrColor(ping.snr);
     final rssiColor = PingColors.rssiColor(ping.rssi);
 
@@ -5946,7 +6091,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       [ping.repeaterId],
       snrValues: [ping.snr],
     );
-    if (resolved.isNotEmpty) {
+
+    _focusedPingSource = ping;
+
+    if (!fromMinimized && resolved.isNotEmpty) {
       _activatePingFocus(
           LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
     }
@@ -6004,6 +6152,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     ],
                   ),
                 ),
+                IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                  onPressed: () => Navigator.pop(context, 'minimized'),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Minimize',
+                ),
+                const SizedBox(width: 4),
                 IconButton(
                   icon: const Icon(Icons.close, size: 20),
                   onPressed: () => Navigator.pop(context),
@@ -6219,13 +6375,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ],
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
   }
 
   /// Show DISC ping details popup
-  void _showDiscPingDetails(DiscLogEntry entry) {
+  void _showDiscPingDetails(DiscLogEntry entry, {bool fromMinimized = false}) {
     // Activate focus mode for discovered nodes with known repeater positions
-    if (entry.discoveredNodes.isNotEmpty) {
+    _focusedPingSource = entry;
+
+    if (!fromMinimized && entry.discoveredNodes.isNotEmpty) {
       final resolved = _resolveRepeatersByHexIds(
         entry.discoveredNodes.map((n) => n.repeaterId).toList(),
         fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
@@ -6302,6 +6466,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         ],
                       ),
                     ),
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                      onPressed: () => Navigator.pop(context, 'minimized'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      tooltip: 'Minimize',
+                    ),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: () => Navigator.pop(context),
@@ -6538,7 +6710,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ),
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
   }
 
   /// Build a status chip for the repeater popup
