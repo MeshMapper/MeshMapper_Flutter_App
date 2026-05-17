@@ -27,6 +27,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -64,7 +65,7 @@
         <!-- Background service for continuous wardriving -->
         <service
             android:name="id.flutter.flutter_background_service.BackgroundService"
-            android:foregroundServiceType="location|connectedDevice"
+            android:foregroundServiceType="location|connectedDevice|dataSync"
             android:exported="true"
             tools:replace="android:exported,android:foregroundServiceType" />
     </application>
