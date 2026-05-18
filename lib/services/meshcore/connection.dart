@@ -97,6 +97,7 @@ class MeshCoreConnection {
   Completer<ChannelInfo>? _channelInfoCompleter;
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
+  Completer<int>? _getTimeCompleter;
 
   // Device self info (contains public key)
   SelfInfo? _selfInfo;
@@ -440,6 +441,8 @@ class MeshCoreConnection {
           _deviceQueryCompleter = null;
           _exportContactCompleter?.completeError(errException);
           _exportContactCompleter = null;
+          _getTimeCompleter?.completeError(errException);
+          _getTimeCompleter = null;
           break;
         case ResponseCodes.deviceInfo:
           _onDeviceInfoResponse(reader);
@@ -473,6 +476,12 @@ class MeshCoreConnection {
           break;
         case ResponseCodes.batteryVoltage:
           _onBatteryVoltageResponse(reader);
+          break;
+        case ResponseCodes.currTime:
+          if (_getTimeCompleter != null && reader.remainingBytesCount >= 4) {
+            _getTimeCompleter?.complete(reader.readUInt32LE());
+            _getTimeCompleter = null;
+          }
           break;
         case ResponseCodes.exportContact:
           _onExportContactResponse(reader);
@@ -855,6 +864,24 @@ class MeshCoreConnection {
       onTimeout: () {
         _setTimeCompleter = null;
         debugWarn('[CONN] Time sync timed out - continuing anyway');
+      },
+    );
+  }
+
+  /// Query the device's current RTC clock (epoch seconds)
+  Future<int> getDeviceTime() async {
+    _getTimeCompleter = Completer<int>();
+    final future = _getTimeCompleter!.future;
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.getDeviceTime);
+    await _sendToRadio(data);
+
+    return future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        _getTimeCompleter = null;
+        throw TimeoutException('getDeviceTime timed out');
       },
     );
   }

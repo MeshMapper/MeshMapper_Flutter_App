@@ -405,18 +405,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // errors in the native log.
   bool _coverageRefreshScheduled = false;
 
-  // Double-buffered coverage overlay: each refresh allocates fresh suffixed
-  // IDs so the new raster source/layer can be added on top of the previous
-  // one and rendered before the old layer is removed. This prevents the
-  // brief blank frame the user previously saw every cache-bust cycle.
+  // Coverage overlay IDs: each refresh allocates fresh suffixed IDs so
+  // a remove+add sequence never collides with a stale native source.
   String? _activeCoverageSourceId;
   String? _activeCoverageLayerId;
   int _coverageBufferCounter = 0;
-  // One-shot completer released by _onMapIdle (or the timeout fallback) to
-  // signal the swap that new tiles have rendered and the old layer is safe
-  // to remove. Null when no swap is in flight.
-  Completer<void>? _coverageSwapIdleCompleter;
-  Timer? _coverageSwapTimeoutTimer;
   bool _styleLoaded = false;
   bool _hasStyleLoadedOnce =
       false; // True after first onStyleLoadedCallback (prevents re-centering on style switch)
@@ -572,20 +565,28 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _cameraAnimationReady = true;
+          _recoverCoverageOverlayIfNeeded();
         }
       });
     }
+  }
+
+  /// Re-add the coverage overlay if it should be visible but was lost during
+  /// a background/foreground transition.
+  void _recoverCoverageOverlayIfNeeded() {
+    if (_activeCoverageSourceId != null) return;
+    if (!_showMeshMapperOverlay) return;
+    final appState = context.read<AppStateProvider>();
+    if (!appState.preferences.mapTilesEnabled) return;
+    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) return;
+    debugLog('[MAP] Recovering coverage overlay after app resume');
+    _addCoverageOverlay(appState);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _tileLoadTimeoutTimer?.cancel();
-    _coverageSwapTimeoutTimer?.cancel();
-    final swapWaiter = _coverageSwapIdleCompleter;
-    if (swapWaiter != null && !swapWaiter.isCompleted) {
-      swapWaiter.complete();
-    }
     final controller = _mapController;
     if (controller != null) {
       controller.removeListener(_onCameraChanged);
@@ -2028,8 +2029,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // Style reload wipes the native layer stack, so any tracked coverage
       // overlay IDs now reference layers that no longer exist. Reset them so
-      // the next _swapCoverageOverlay treats this as a fresh add (no old
-      // buffer to retire) instead of attempting a doomed removal.
+      // the next refresh treats this as a fresh add.
       _activeCoverageSourceId = null;
       _activeCoverageLayerId = null;
       // Same reasoning for the focus-lines source/layers — gone with the
@@ -2153,10 +2153,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       debugLog('[MAP] Tiles recovered after earlier load failure');
       setState(() => _tileLoadFailed = false);
     }
-    final waiter = _coverageSwapIdleCompleter;
-    if (waiter != null && !waiter.isCompleted) {
-      waiter.complete();
-    }
   }
 
   /// Fires when the camera stops moving — after both gestures and
@@ -2172,13 +2168,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Add MeshMapper coverage raster overlay as a MapLibre source+layer.
-  /// Allocates fresh suffixed IDs each call so a previous layer can remain
-  /// in place (and continue rendering its tiles) while the new one's tiles
-  /// load on top — see [_swapCoverageOverlay] for the double-buffer flow.
+  /// Allocates fresh suffixed IDs each call to avoid native collisions.
   Future<void> _addCoverageOverlay(AppStateProvider appState) async {
-    if (_mapController == null || !_showMeshMapperOverlay) return;
-    if (!appState.preferences.mapTilesEnabled) return;
-    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) return;
+    if (_mapController == null || !_showMeshMapperOverlay) {
+      debugLog(
+          '[MAP] Coverage overlay add skipped: controller=${_mapController != null}, showOverlay=$_showMeshMapperOverlay');
+      return;
+    }
+    if (!appState.preferences.mapTilesEnabled) {
+      debugLog('[MAP] Coverage overlay add skipped: mapTilesEnabled=false');
+      return;
+    }
+    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) {
+      debugLog(
+          '[MAP] Coverage overlay add skipped: zoneCode=${appState.zoneCode}');
+      return;
+    }
 
     final cvdParam = appState.preferences.colorVisionType != 'none'
         ? '&cvd=${appState.preferences.colorVisionType}'
@@ -2196,20 +2201,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       );
       // Target the bottom of the repeater cluster stack when it exists, so the
       // raster lands beneath ALL marker layers (repeater clusters + symbol
-      // annotations). During the initial style load, _setupRepeaterClusterLayers
-      // runs before this — so _clusterLayersReady is true and we use the
-      // individual repeater layer as the reference. The zoneCode watcher also
-      // fires after cluster setup, so both paths converge to the same stack.
-      // Fallback to the symbol annotation layer only if cluster layers haven't
-      // been created yet (shouldn't happen in practice, but keeps the raster
-      // underneath markers either way).
-      //
-      // Using the same belowLayerId for the new layer as the previous overlay
-      // intentionally places this insertion directly under the marker stack
-      // and ABOVE the previous raster layer — so as the new tiles render
-      // they paint over the old ones rather than the old being torn down
-      // first. _swapCoverageOverlay removes the old layer once the new tiles
-      // have settled.
+      // annotations). Fallback to the symbol annotation layer if cluster layers
+      // haven't been created yet.
       final belowLayer = _clusterLayersReady
           ? _repeaterIndividualLayerId
           : _symbolAnnotationLayerId();
@@ -2306,8 +2299,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Remove a specific coverage source+layer pair without touching the
-  /// active-ID tracking. Used by [_swapCoverageOverlay] to retire the
-  /// previous buffer once new tiles have rendered.
+  /// active-ID tracking.
   Future<void> _removeCoverageLayerById(
       String layerId, String sourceId) async {
     if (_mapController == null) return;
@@ -2319,78 +2311,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  /// Refresh coverage overlay using a double-buffered swap so the current
-  /// tiles stay visible until the new ones have rendered on top.
-  Future<void> _refreshCoverageOverlay(AppStateProvider appState) =>
-      _swapCoverageOverlay(appState);
-
-  /// Double-buffered overlay refresh:
-  ///   1. Capture the currently-active source/layer IDs (the "old" buffer).
-  ///   2. Add the new source+layer — [_addCoverageOverlay] uses the same
-  ///      belowLayerId so the new layer lands directly above the old one,
-  ///      and updates the active-ID fields to point at the new buffer.
-  ///   3. Wait for [_onMapIdle] (or a short timeout) so the new tiles have
-  ///      a chance to paint over the old.
-  ///   4. Remove the old source+layer.
-  ///
-  /// If the add was skipped (overlay disabled, no zone, etc.) the old
-  /// buffer is dropped immediately — there's nothing to buffer against.
-  Future<void> _swapCoverageOverlay(AppStateProvider appState) async {
-    final oldSourceId = _activeCoverageSourceId;
-    final oldLayerId = _activeCoverageLayerId;
-
+  /// Refresh coverage overlay by removing the current layer and adding a fresh
+  /// one with updated cache-bust URL. Accepts a brief visual gap between
+  /// remove and add — imperceptible during driving and quick when stationary
+  /// (tiles load from cache for same viewport).
+  Future<void> _refreshCoverageOverlay(AppStateProvider appState) async {
+    await _removeCoverageOverlay();
     await _addCoverageOverlay(appState);
-
-    final addedNewBuffer = _activeCoverageSourceId != oldSourceId &&
-        _activeCoverageSourceId != null;
-
-    if (!addedNewBuffer) {
-      // Add was a no-op (preconditions failed). Drop the previous buffer if
-      // the overlay should no longer be visible. _addCoverageOverlay's
-      // preconditions match the conditions under which we want the overlay
-      // gone, so this is the correct place to retire it.
-      if (oldSourceId != null && oldLayerId != null) {
-        _activeCoverageSourceId = null;
-        _activeCoverageLayerId = null;
-        await _removeCoverageLayerById(oldLayerId, oldSourceId);
-      }
-      return;
-    }
-
-    if (oldSourceId == null || oldLayerId == null) {
-      // No previous buffer to retire (first add since style load or after a
-      // teardown). Nothing more to do.
-      return;
-    }
-
-    await _waitForCoverageSwapIdle(timeout: const Duration(seconds: 3));
-    if (!mounted) return;
-    await _removeCoverageLayerById(oldLayerId, oldSourceId);
-  }
-
-  /// Block until [_onMapIdle] completes the swap completer, or [timeout]
-  /// elapses (whichever happens first). Replaces any prior in-flight waiter
-  /// so a new swap starting mid-flight doesn't strand the old waiter.
-  Future<void> _waitForCoverageSwapIdle({required Duration timeout}) async {
-    final prior = _coverageSwapIdleCompleter;
-    if (prior != null && !prior.isCompleted) {
-      prior.complete();
-    }
-    final completer = Completer<void>();
-    _coverageSwapIdleCompleter = completer;
-    _coverageSwapTimeoutTimer?.cancel();
-    _coverageSwapTimeoutTimer = Timer(timeout, () {
-      if (!completer.isCompleted) completer.complete();
-    });
-    try {
-      await completer.future;
-    } finally {
-      if (identical(_coverageSwapIdleCompleter, completer)) {
-        _coverageSwapIdleCompleter = null;
-      }
-      _coverageSwapTimeoutTimer?.cancel();
-      _coverageSwapTimeoutTimer = null;
-    }
   }
 
   /// Returns the fill color for a repeater status keyword.
