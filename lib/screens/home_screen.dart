@@ -424,7 +424,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (!isLandscape) const StatusBar() else const SizedBox.shrink(),
             Expanded(
               child: MapWidget(
-                bottomPaddingPixels: isLandscape || appState.isFocusModeActive ? 0 : _getControlPanelHeight(),
+                bottomPaddingPixels: isLandscape || appState.isFocusModeActive || appState.viewingHistorySession ? 0 : _getControlPanelHeight(),
                 mapControlsExpanded: isLandscape ? _mapControlsExpanded : null,
                 onMapControlsToggle: isLandscape ? _toggleMapControls : null,
               ),
@@ -432,8 +432,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
 
-        // Landscape: floating status bar overlay
-        if (isLandscape)
+        // Landscape: floating status bar overlay (hidden during history view)
+        if (isLandscape && !appState.viewingHistorySession)
           Positioned(
             top: 16,
             left: leftInset + 72,
@@ -476,8 +476,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-        // Portrait: bottom control panel (hidden during focus mode)
-        if (!isLandscape && !appState.isFocusModeActive)
+        // Portrait: bottom control panel (hidden during focus mode and history view)
+        if (!isLandscape && !appState.isFocusModeActive && !appState.viewingHistorySession)
           Positioned(
             bottom: 0,
             left: 0,
@@ -487,14 +487,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 : _buildControlPanel(),
           ),
 
-        // Landscape: side control panel or FAB (hidden during focus mode)
-        if (isLandscape && _showControlPanel && !appState.isFocusModeActive)
+        // Landscape: side control panel or FAB (hidden during focus mode and history view)
+        if (isLandscape && _showControlPanel && !appState.isFocusModeActive && !appState.viewingHistorySession)
           Positioned(
             bottom: 16,
             left: leftInset,
             child: _buildLandscapeControlPanel(appState),
           ),
-        if (isLandscape && !_showControlPanel && !appState.isFocusModeActive)
+        if (isLandscape && !_showControlPanel && !appState.isFocusModeActive && !appState.viewingHistorySession)
           Positioned(
             bottom: 16,
             left: leftInset,

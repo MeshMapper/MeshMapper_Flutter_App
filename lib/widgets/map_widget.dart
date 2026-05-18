@@ -12,6 +12,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/log_entry.dart';
+import '../models/noise_floor_session.dart';
 import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
@@ -371,6 +372,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   // Map navigation trigger tracking (from log screen)
   int _lastNavigationTrigger = 0;
+
+  // History session map view tracking
+  bool _wasViewingHistory = false;
 
   // Ping focus mode — highlight connected repeaters when a marker is tapped
   LatLng? _focusedPingLocation;
@@ -1119,6 +1123,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
     }
 
+    // Handle history session view — fit camera to session bounds on transition
+    if (_isMapReady && appState.viewingHistorySession && !_wasViewingHistory) {
+      _wasViewingHistory = true;
+      final markers = appState.historySessionMarkers;
+      if (markers != null && markers.isNotEmpty) {
+        _autoFollow = false;
+        _alwaysNorth = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _mapController == null) return;
+          _fitCameraToHistoryMarkers(markers);
+        });
+      }
+    } else if (!appState.viewingHistorySession && _wasViewingHistory) {
+      _wasViewingHistory = false;
+    }
+
     // Sync native annotations whenever marker data changes (provider triggers
     // a rebuild). The version hash detects changes to ping/repeater counts,
     // GPS position, focus state, prefs, etc. Native annotations stay in sync
@@ -1210,28 +1230,30 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             child: SizedBox.expand(),
           ),
 
-        // GPS Info + Top Repeaters overlay (top-left, respects dynamic island in landscape)
-        Positioned(
-          top: topPadding,
-          left: leftPadding,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildGpsInfoOverlay(appState),
-              if (appState.preferences.showTopRepeaters) ...[
-                const SizedBox(height: 6),
-                _buildTopRepeatersOverlay(appState),
+        // GPS Info + Top Repeaters overlay (hidden during history view)
+        if (!appState.viewingHistorySession)
+          Positioned(
+            top: topPadding,
+            left: leftPadding,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildGpsInfoOverlay(appState),
+                if (appState.preferences.showTopRepeaters) ...[
+                  const SizedBox(height: 6),
+                  _buildTopRepeatersOverlay(appState),
+                ],
               ],
-            ],
+            ),
           ),
-        ),
 
-        // Map controls - top-right in both orientations, collapsible
-        Positioned(
-          top: topPadding,
-          right: 8,
-          child: _buildCollapsibleMapControls(appState),
-        ),
+        // Map controls (hidden during history view)
+        if (!appState.viewingHistorySession)
+          Positioned(
+            top: topPadding,
+            right: 8,
+            child: _buildCollapsibleMapControls(appState),
+          ),
 
         // Tile load failure banner — appears if base tiles haven't finished
         // loading within ${_tileLoadTimeoutSeconds}s after style load.
@@ -1255,6 +1277,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             right: 16,
             child: Center(
               child: _buildMinimizedFocusPanel(),
+            ),
+          ),
+
+        // History session pill (bottom, styled like minimized focus panel)
+        if (appState.viewingHistorySession)
+          Positioned(
+            bottom: 16 + MediaQuery.of(context).padding.bottom,
+            left: 16,
+            right: 16,
+            child: Center(
+              child: _buildHistoryBanner(appState),
             ),
           ),
       ],
@@ -1287,6 +1320,67 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Pill shown at the bottom of the map when viewing a history session
+  Widget _buildHistoryBanner(AppStateProvider appState) {
+    final count = appState.historySessionMarkers?.length ?? 0;
+    return GestureDetector(
+      onTap: () => appState.clearHistorySession(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.history,
+              color: Theme.of(context).colorScheme.primary,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Session History',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '$count events',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () => appState.clearHistorySession(),
+              child: Icon(
+                Icons.close,
+                size: 18,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1546,7 +1640,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             .firstOrNull;
         if (entry != null) _showTraceDetails(entry);
         break;
-      // gps, distance-label: not tappable in original — no action
+      case 'history_tx':
+      case 'history_rx':
+      case 'history_disc':
+      case 'history_trace':
+        final marker = appState.historySessionMarkers
+            ?.where((m) => m.timestamp.millisecondsSinceEpoch == id)
+            .firstOrNull;
+        if (marker != null) _showHistoryMarkerAsLive(marker);
+        break;
     }
   }
 
@@ -3187,56 +3289,74 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
     }
 
-    // TX pings
-    for (final ping in appState.txPings) {
-      await syncOne(
-        type: 'tx',
-        lat: ping.latitude,
-        lon: ping.longitude,
-        ts: ping.timestamp,
-        success: ping.heardRepeaters.isNotEmpty,
-        idForMetadata: ping.timestamp.millisecondsSinceEpoch,
-      );
-    }
+    // When viewing a history session, show only those markers
+    if (appState.viewingHistorySession &&
+        appState.historySessionMarkers != null) {
+      for (final marker in appState.historySessionMarkers!) {
+        if (marker.latitude == null || marker.longitude == null) continue;
+        final mapping = _historyMarkerType(marker.type);
+        await syncOne(
+          type: 'history_${mapping.type}',
+          lat: marker.latitude!,
+          lon: marker.longitude!,
+          ts: marker.timestamp,
+          success: mapping.success,
+          idForMetadata: marker.timestamp.millisecondsSinceEpoch,
+          iconImageOverride: _MapImages.coverage(mapping.type, mapping.success),
+        );
+      }
+    } else {
+      // TX pings
+      for (final ping in appState.txPings) {
+        await syncOne(
+          type: 'tx',
+          lat: ping.latitude,
+          lon: ping.longitude,
+          ts: ping.timestamp,
+          success: ping.heardRepeaters.isNotEmpty,
+          idForMetadata: ping.timestamp.millisecondsSinceEpoch,
+        );
+      }
 
-    // RX pings
-    for (final ping in appState.rxPings) {
-      await syncOne(
-        type: 'rx',
-        lat: ping.latitude,
-        lon: ping.longitude,
-        ts: ping.timestamp,
-        success: true, // RX has no fail state — always uses the rx color
-        idForMetadata: ping.timestamp.millisecondsSinceEpoch,
-      );
-    }
+      // RX pings
+      for (final ping in appState.rxPings) {
+        await syncOne(
+          type: 'rx',
+          lat: ping.latitude,
+          lon: ping.longitude,
+          ts: ping.timestamp,
+          success: true,
+          idForMetadata: ping.timestamp.millisecondsSinceEpoch,
+        );
+      }
 
-    // DISC entries (success = received node responses; drop = treat as TX fail)
-    for (final entry in appState.discLogEntries) {
-      final received = entry.nodeCount > 0;
-      final renderAsTxFail = !received && appState.discDropEnabled;
-      await syncOne(
-        type: 'disc',
-        lat: entry.latitude,
-        lon: entry.longitude,
-        ts: entry.timestamp,
-        success: received,
-        idForMetadata: entry.timestamp.millisecondsSinceEpoch,
-        iconImageOverride:
-            renderAsTxFail ? _MapImages.coverage('tx', false) : null,
-      );
-    }
+      // DISC entries (success = received node responses; drop = treat as TX fail)
+      for (final entry in appState.discLogEntries) {
+        final received = entry.nodeCount > 0;
+        final renderAsTxFail = !received && appState.discDropEnabled;
+        await syncOne(
+          type: 'disc',
+          lat: entry.latitude,
+          lon: entry.longitude,
+          ts: entry.timestamp,
+          success: received,
+          idForMetadata: entry.timestamp.millisecondsSinceEpoch,
+          iconImageOverride:
+              renderAsTxFail ? _MapImages.coverage('tx', false) : null,
+        );
+      }
 
-    // Trace entries
-    for (final entry in appState.traceLogEntries) {
-      await syncOne(
-        type: 'trace',
-        lat: entry.latitude,
-        lon: entry.longitude,
-        ts: entry.timestamp,
-        success: entry.success,
-        idForMetadata: entry.timestamp.millisecondsSinceEpoch,
-      );
+      // Trace entries
+      for (final entry in appState.traceLogEntries) {
+        await syncOne(
+          type: 'trace',
+          lat: entry.latitude,
+          lon: entry.longitude,
+          ts: entry.timestamp,
+          success: entry.success,
+          idForMetadata: entry.timestamp.millisecondsSinceEpoch,
+        );
+      }
     }
 
     // Remove symbols for pings that no longer exist (e.g., user cleared markers)
@@ -3886,6 +4006,59 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     await _syncDistanceLabels(appState);
   }
 
+  /// Fit camera to show all history session markers
+  void _fitCameraToHistoryMarkers(List<PingEventMarker> markers) {
+    final pts = markers
+        .where((m) => m.latitude != null && m.longitude != null)
+        .toList();
+    if (pts.isEmpty) return;
+
+    if (pts.length == 1) {
+      _animateToPositionWithZoom(
+        LatLng(pts.first.latitude!, pts.first.longitude!),
+        16.0 - _zoomEpsilon,
+      );
+      return;
+    }
+
+    double minLat = pts.first.latitude!;
+    double maxLat = pts.first.latitude!;
+    double minLon = pts.first.longitude!;
+    double maxLon = pts.first.longitude!;
+    for (final p in pts) {
+      if (p.latitude! < minLat) minLat = p.latitude!;
+      if (p.latitude! > maxLat) maxLat = p.latitude!;
+      if (p.longitude! < minLon) minLon = p.longitude!;
+      if (p.longitude! > maxLon) maxLon = p.longitude!;
+    }
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLon),
+          northeast: LatLng(maxLat, maxLon),
+        ),
+        left: 60,
+        top: 60,
+        right: 60,
+        bottom: 60,
+      ),
+      duration: const Duration(milliseconds: 500),
+    );
+  }
+
+  /// Map PingEventType to coverage marker type and success state
+  static ({String type, bool success}) _historyMarkerType(PingEventType t) =>
+      switch (t) {
+        PingEventType.txSuccess => (type: 'tx', success: true),
+        PingEventType.txFail => (type: 'tx', success: false),
+        PingEventType.rx => (type: 'rx', success: true),
+        PingEventType.discSuccess => (type: 'disc', success: true),
+        PingEventType.discFail => (type: 'disc', success: false),
+        PingEventType.traceSuccess => (type: 'trace', success: true),
+        PingEventType.traceFail => (type: 'trace', success: false),
+      };
+
   /// Compute a version hash of all data that affects the marker list.
   /// When this changes, the cached marker list is rebuilt; otherwise it's reused
   /// across camera-change rebuilds (which happen at ~60Hz during pan/zoom).
@@ -3920,6 +4093,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       appState.preferences.markerStyle,
       txEchoTotal,
       discNodeTotal,
+      appState.viewingHistorySession,
+      appState.historySessionMarkers?.length ?? 0,
     );
   }
 
@@ -5619,6 +5794,73 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  void _showHistoryMarkerAsLive(PingEventMarker marker) {
+    if (marker.latitude == null || marker.longitude == null) return;
+    final lat = marker.latitude!;
+    final lon = marker.longitude!;
+    final repeaters = marker.repeaters ?? [];
+
+    switch (marker.type) {
+      case PingEventType.txSuccess:
+      case PingEventType.txFail:
+        _showTxPingDetails(TxPing(
+          latitude: lat,
+          longitude: lon,
+          timestamp: marker.timestamp,
+          power: 0,
+          deviceId: '',
+          heardRepeaters: repeaters
+              .map((r) => HeardRepeater(
+                    repeaterId: r.repeaterId,
+                    snr: r.snr,
+                    rssi: r.rssi,
+                  ))
+              .toList(),
+        ));
+      case PingEventType.rx:
+        final r = repeaters.isNotEmpty ? repeaters.first : null;
+        _showRxPingDetails(RxPing(
+          latitude: lat,
+          longitude: lon,
+          timestamp: marker.timestamp,
+          repeaterId: r?.repeaterId ?? '',
+          snr: r?.snr ?? 0,
+          rssi: r?.rssi ?? 0,
+        ));
+      case PingEventType.discSuccess:
+      case PingEventType.discFail:
+        _showDiscPingDetails(DiscLogEntry(
+          timestamp: marker.timestamp,
+          latitude: lat,
+          longitude: lon,
+          noiseFloor: marker.noiseFloor,
+          discoveredNodes: repeaters
+              .map((r) => DiscoveredNodeEntry(
+                    repeaterId: r.repeaterId,
+                    nodeType: 'REPEATER',
+                    localSnr: r.snr,
+                    localRssi: r.rssi,
+                    remoteSnr: 0,
+                    pubkeyHex: r.pubkeyHex,
+                  ))
+              .toList(),
+        ));
+      case PingEventType.traceSuccess:
+      case PingEventType.traceFail:
+        final r = repeaters.isNotEmpty ? repeaters.first : null;
+        _showTraceDetails(TraceLogEntry(
+          timestamp: marker.timestamp,
+          latitude: lat,
+          longitude: lon,
+          targetRepeaterId: r?.repeaterId ?? '',
+          noiseFloor: marker.noiseFloor,
+          localSnr: r?.snr,
+          localRssi: r?.rssi,
+          success: marker.type == PingEventType.traceSuccess,
+        ));
+    }
   }
 
   Set<String> _getDuplicateRepeaterIds(List<Repeater> repeaters) {

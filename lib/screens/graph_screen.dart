@@ -7,7 +7,7 @@ import '../models/noise_floor_session.dart';
 import '../providers/app_state_provider.dart';
 import '../widgets/noise_floor_chart.dart';
 
-/// Screen showing noise floor session history and graph popup
+/// Screen showing session history with options to view on map or noise floor graph
 class GraphScreen extends StatelessWidget {
   const GraphScreen({super.key});
 
@@ -20,8 +20,7 @@ class GraphScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 40,
-        title:
-            const Text('Noise Floor History', style: TextStyle(fontSize: 18)),
+        title: const Text('Session History', style: TextStyle(fontSize: 18)),
         automaticallyImplyLeading: false,
         actions: [
           if (sessions.isNotEmpty)
@@ -32,16 +31,16 @@ class GraphScreen extends StatelessWidget {
             ),
         ],
       ),
-      body: _buildBody(context, currentSession, sessions),
+      body: _buildBody(context, appState, currentSession, sessions),
     );
   }
 
   Widget _buildBody(
     BuildContext context,
+    AppStateProvider appState,
     NoiseFloorSession? currentSession,
     List<NoiseFloorSession> sessions,
   ) {
-    // Show empty state if no sessions
     if (currentSession == null && sessions.isEmpty) {
       return Center(
         child: Padding(
@@ -50,7 +49,7 @@ class GraphScreen extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
-                Icons.show_chart,
+                Icons.history,
                 size: 64,
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
@@ -61,7 +60,7 @@ class GraphScreen extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Enable Active or Passive Mode to start recording noise floor data.',
+                'Enable Active or Passive Mode to start recording session data.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -75,25 +74,31 @@ class GraphScreen extends StatelessWidget {
 
     return ListView(
       children: [
-        // Current active session (if recording)
         if (currentSession != null) ...[
-          _SessionListTile(
+          _SessionCard(
             session: currentSession,
             isActive: true,
-            onTap: () =>
+            onViewGraph: () =>
                 _openFullScreenGraph(context, currentSession, isLive: true),
+            onViewMap: null,
           ),
-          if (sessions.isNotEmpty) const Divider(),
+          if (sessions.isNotEmpty) const SizedBox(height: 4),
         ],
-
-        // Stored sessions (last 10)
-        ...sessions.map((session) => _SessionListTile(
+        ...sessions.map((session) => _SessionCard(
               session: session,
               isActive: false,
-              onTap: () => _openFullScreenGraph(context, session),
+              onViewGraph: () => _openFullScreenGraph(context, session),
+              onViewMap: _sessionHasGpsMarkers(session)
+                  ? () => appState.viewHistorySessionOnMap(session)
+                  : null,
             )),
       ],
     );
+  }
+
+  bool _sessionHasGpsMarkers(NoiseFloorSession session) {
+    return session.markers
+        .any((m) => m.latitude != null && m.longitude != null);
   }
 
   void _openFullScreenGraph(BuildContext context, NoiseFloorSession session,
@@ -112,7 +117,7 @@ class GraphScreen extends StatelessWidget {
       builder: (context) => AlertDialog(
         title: const Text('Clear All Sessions?'),
         content: const Text(
-            'This will delete all saved noise floor session graphs. The current active session will not be affected.'),
+            'This will delete all saved session history. The current active session will not be affected.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -126,6 +131,162 @@ class GraphScreen extends StatelessWidget {
             child: const Text('Clear'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Card showing a session with action buttons
+class _SessionCard extends StatelessWidget {
+  final NoiseFloorSession session;
+  final bool isActive;
+  final VoidCallback onViewGraph;
+  final VoidCallback? onViewMap;
+
+  const _SessionCard({
+    required this.session,
+    required this.isActive,
+    required this.onViewGraph,
+    required this.onViewMap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header row: mode icon, mode name, live badge, time
+            Row(
+              children: [
+                Icon(
+                  _modeIcon,
+                  size: 20,
+                  color: isActive ? Colors.green : colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  session.modeDisplay,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (isActive) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.green),
+                    ),
+                    child: const Text(
+                      'LIVE',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
+                      ),
+                    ),
+                  ),
+                ],
+                const Spacer(),
+                Text(
+                  _formatDateTime(session.startTime),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // Stats row
+            Text(
+              '${session.durationDisplay} duration | '
+              '${session.samples.length} samples | '
+              '${session.markers.length} events',
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 10),
+            // Action buttons row
+            Row(
+              children: [
+                Expanded(
+                  child: _ActionButton(
+                    icon: Icons.map_outlined,
+                    label: 'View on Map',
+                    onPressed: onViewMap,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _ActionButton(
+                    icon: Icons.show_chart,
+                    label: 'Noise Floor',
+                    onPressed: onViewGraph,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData get _modeIcon => switch (session.mode) {
+        'active' => Icons.send,
+        'hybrid' => Icons.swap_horiz,
+        'targeted' => Icons.track_changes,
+        _ => Icons.hearing,
+      };
+
+  String _formatDateTime(DateTime dt) {
+    return '${dt.month}/${dt.day} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+/// Styled action button for session cards
+class _ActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+
+  const _ActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        minimumSize: const Size(0, 34),
+        foregroundColor:
+            onPressed != null ? colorScheme.primary : colorScheme.outline,
+        side: BorderSide(
+          color: onPressed != null
+              ? colorScheme.outline
+              : colorScheme.outline.withValues(alpha: 0.4),
+        ),
       ),
     );
   }
@@ -161,7 +322,6 @@ class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
             _session = current;
           });
         } else {
-          // Session ended while viewing
           _liveTimer?.cancel();
           _liveTimer = null;
           setState(() {
@@ -214,7 +374,6 @@ class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
-          // Reset zoom button
           IconButton(
             icon: const Icon(Icons.zoom_out_map),
             tooltip: 'Reset zoom',
@@ -227,7 +386,6 @@ class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
       body: SafeArea(
         child: Column(
           children: [
-            // Session info header
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
@@ -254,7 +412,6 @@ class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
               ),
             ),
             const Divider(height: 1),
-            // Hint text
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Text(
@@ -266,7 +423,6 @@ class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
                 ),
               ),
             ),
-            // Chart
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(8, 0, 16, 8),
@@ -280,61 +436,6 @@ class _FullScreenGraphPageState extends State<_FullScreenGraphPage> {
           ],
         ),
       ),
-    );
-  }
-
-  String _formatDateTime(DateTime dt) {
-    return '${dt.month}/${dt.day} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}';
-  }
-}
-
-/// List tile showing a session summary
-class _SessionListTile extends StatelessWidget {
-  final NoiseFloorSession session;
-  final bool isActive;
-  final VoidCallback onTap;
-
-  const _SessionListTile({
-    required this.session,
-    required this.isActive,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: Icon(
-        session.mode == 'active' ? Icons.send : Icons.hearing,
-        color: isActive ? Colors.green : null,
-      ),
-      title: Text(session.modeDisplay),
-      subtitle: Text(
-        '${_formatDateTime(session.startTime)} | ${session.durationDisplay} | '
-        '${session.samples.length} samples, ${session.markers.length} events',
-        style: TextStyle(
-          fontSize: 12,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ),
-      trailing: isActive
-          ? Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.green.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.green),
-              ),
-              child: const Text(
-                'LIVE',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.green,
-                ),
-              ),
-            )
-          : const Icon(Icons.chevron_right),
-      onTap: onTap,
     );
   }
 
