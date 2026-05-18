@@ -822,8 +822,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Schedule overlay tile refresh after server has time to regenerate tiles.
       // The MapWidget watches _overlayCacheBust and calls _refreshCoverageOverlay()
       // (remove + re-add raster source with new URL) when it changes.
+      // Use 30s debounce to avoid excessive tile refreshes during rapid auto-ping
+      // (especially on flaky networks where tiles may fail to load).
       _tileRefreshTimer?.cancel();
-      _tileRefreshTimer = Timer(const Duration(seconds: 5), () {
+      _tileRefreshTimer = Timer(const Duration(seconds: 30), () {
         _overlayCacheBust = DateTime.now().millisecondsSinceEpoch;
         debugLog('[MAP] Refreshing overlay tiles');
         notifyListeners();
