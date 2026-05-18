@@ -399,11 +399,40 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
+      _checkTcpHealthAfterResume();
     } else if (state == AppLifecycleState.paused) {
       debugLog('[APP] App paused (backgrounded)');
       // Save offline pings immediately on pause to prevent data loss if OS kills app
       if (_preferences.offlineMode && _apiQueueService.offlinePingCount > 0) {
         _autoSaveOfflinePings();
+      }
+    }
+  }
+
+  /// Probe TCP connection after iOS resume — socket may have died while suspended.
+  Future<void> _checkTcpHealthAfterResume() async {
+    if (_selectedTransport != TransportType.tcp) return;
+    if (_connectionStep != ConnectionStep.connected) return;
+    if (_isAutoReconnecting || _userRequestedDisconnect) return;
+
+    // Let pending socket error/done events propagate first
+    await Future.delayed(const Duration(milliseconds: 1500));
+
+    // If socket events already triggered auto-reconnect, nothing to do
+    if (_connectionStep != ConnectionStep.connected) return;
+    if (_isAutoReconnecting) return;
+
+    debugLog('[CONN] Probing TCP connection after resume');
+    try {
+      await _meshCoreConnection!.getNoiseFloor();
+      debugLog('[CONN] TCP connection healthy after resume');
+    } catch (e) {
+      debugLog('[CONN] TCP probe failed after resume: $e');
+      if (_connectionStep == ConnectionStep.connected &&
+          !_isAutoReconnecting &&
+          _rememberedDevice != null &&
+          !_userRequestedDisconnect) {
+        await _startAutoReconnect();
       }
     }
   }
