@@ -379,6 +379,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<NoiseFloorSession> _storedNoiseFloorSessions = [];
   Box<NoiseFloorSession>? _noiseFloorSessionBox;
 
+  // History session map view
+  List<PingEventMarker>? _historySessionMarkers;
+  bool _viewingHistorySession = false;
+
   // Flag to track if preferences have been loaded from storage
   bool _preferencesLoaded = false;
 
@@ -629,6 +633,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   NoiseFloorSession? get currentNoiseFloorSession => _currentNoiseFloorSession;
   List<NoiseFloorSession> get storedNoiseFloorSessions =>
       List.unmodifiable(_storedNoiseFloorSessions);
+
+  // History session map view getters
+  List<PingEventMarker>? get historySessionMarkers => _historySessionMarkers;
+  bool get viewingHistorySession => _viewingHistorySession;
 
   // Audio service getters
   bool get isSoundEnabled => _audioService.isEnabled;
@@ -7011,6 +7019,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       debugError('[GRAPH] Failed to clear noise floor sessions: $e');
     }
+  }
+
+  /// Show a historical session's ping markers on the map
+  void viewHistorySessionOnMap(NoiseFloorSession session) {
+    final markers = session.markers
+        .where((m) => m.latitude != null && m.longitude != null)
+        .toList();
+    if (markers.isEmpty) return;
+
+    _historySessionMarkers = markers;
+    _viewingHistorySession = true;
+    _requestMapTabSwitch = true;
+    debugLog('[GRAPH] Viewing session on map: ${markers.length} markers');
+    notifyListeners();
+  }
+
+  /// Dismiss the history session map view
+  void clearHistorySession() {
+    if (!_viewingHistorySession) return;
+    _historySessionMarkers = null;
+    _viewingHistorySession = false;
+    debugLog('[GRAPH] Cleared history session map view');
+    notifyListeners();
   }
 
   // ============================================
