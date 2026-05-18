@@ -23,11 +23,15 @@ class RepeaterIdChip extends StatelessWidget {
   /// Optional SizedBox width constraint (e.g., 50 or 60)
   final double? width;
 
+  /// When true, the info icon is rendered in amber to flag an ambiguous ID.
+  final bool isAmbiguous;
+
   const RepeaterIdChip({
     super.key,
     required this.repeaterId,
     this.fontSize = 11,
     this.width,
+    this.isAmbiguous = false,
   });
 
   @override
@@ -57,10 +61,12 @@ class RepeaterIdChip extends StatelessWidget {
         Icon(
           Icons.info_outline,
           size: fontSize - 1,
-          color: Theme.of(context)
-              .colorScheme
-              .onSurfaceVariant
-              .withValues(alpha: 0.5),
+          color: isAmbiguous
+              ? const Color(0xFFF59E0B)
+              : Theme.of(context)
+                  .colorScheme
+                  .onSurfaceVariant
+                  .withValues(alpha: 0.5),
         ),
       ],
     );

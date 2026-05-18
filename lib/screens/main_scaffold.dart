@@ -342,8 +342,8 @@ class _MainScaffoldState extends State<MainScaffold> {
             showBadge: appState.errorLogEntries.isNotEmpty,
           ),
           _buildCompactNavItem(
-            icon: Icons.show_chart_outlined,
-            activeIcon: Icons.show_chart,
+            icon: Icons.history_outlined,
+            activeIcon: Icons.history,
             index: 2,
           ),
           _buildCompactNavItem(
@@ -433,9 +433,9 @@ class _MainScaffoldState extends State<MainScaffold> {
           label: 'Log',
         ),
         const BottomNavigationBarItem(
-          icon: Icon(Icons.show_chart_outlined),
-          activeIcon: Icon(Icons.show_chart),
-          label: 'Graph',
+          icon: Icon(Icons.history_outlined),
+          activeIcon: Icon(Icons.history),
+          label: 'History',
         ),
         BottomNavigationBarItem(
           icon: Icon(

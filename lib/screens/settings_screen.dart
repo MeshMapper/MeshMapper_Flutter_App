@@ -2215,6 +2215,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           message = 'Another upload is already in progress';
           backgroundColor = Colors.orange;
           break;
+        case OfflineUploadResult.zoneDisabled:
+          message = 'Upload failed - wardriving is disabled in this zone';
+          backgroundColor = Colors.red;
+          break;
       }
 
       ScaffoldMessenger.of(context).showSnackBar(

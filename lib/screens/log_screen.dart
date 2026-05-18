@@ -340,10 +340,6 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   }
 
   /// True if the query looks like a hex string (only 0-9, a-f).
-  static bool _isHexQuery(String query) {
-    return RegExp(r'^[0-9a-fA-F]+$').hasMatch(query);
-  }
-
   /// Whether an entry matches the current search query.
   bool _matchesSearch(UnifiedPingLogEntry entry, List<Repeater> repeaters) {
     if (_searchQuery.isEmpty) return true;
@@ -392,8 +388,6 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   /// Only shown when searching by name (non-hex query) and a repeater ID is ambiguous.
   bool _shouldShowAmbiguity(
       UnifiedPingLogEntry entry, List<Repeater> repeaters) {
-    if (_searchQuery.isEmpty || _isHexQuery(_searchQuery)) return false;
-
     switch (entry.type) {
       case PingLogType.tx:
         return entry.asTx.events
@@ -706,7 +700,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
               // Repeaters table
               if (entry.events.isNotEmpty) ...[
                 const SizedBox(height: 10),
-                _buildRepeaterTable(context, entry.events),
+                _buildRepeaterTable(context, entry.events, widget.repeaters),
               ] else ...[
                 const SizedBox(height: 8),
                 Text(
@@ -725,7 +719,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildRepeaterTable(BuildContext context, List<RxEvent> events) {
+  Widget _buildRepeaterTable(
+      BuildContext context, List<RxEvent> events, List<Repeater> repeaters) {
     var maxIdLen = 0;
     for (final e in events) {
       if (e.repeaterId.length > maxIdLen) maxIdLen = e.repeaterId.length;
@@ -753,17 +748,18 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             ),
           ),
           Divider(height: 1, color: Theme.of(context).dividerColor),
-          ...events.map(
-              (event) => _buildTxRepeaterRow(context, event, nodeWidth)),
+          ...events.map((event) =>
+              _buildTxRepeaterRow(context, event, nodeWidth, repeaters)),
         ],
       ),
     );
   }
 
-  Widget _buildTxRepeaterRow(
-      BuildContext context, RxEvent event, double nodeWidth) {
+  Widget _buildTxRepeaterRow(BuildContext context, RxEvent event,
+      double nodeWidth, List<Repeater> repeaters) {
     final snrColor = _snrColor(event.severity);
     final rssiColor = _rssiColor(event.rssi);
+    final isAmbiguous = _isAmbiguousId(event.repeaterId, repeaters);
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, event.repeaterId),
       child: Padding(
@@ -773,7 +769,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             RepeaterIdChip(
                 repeaterId: event.repeaterId,
                 fontSize: 14,
-                width: nodeWidth),
+                width: nodeWidth,
+                isAmbiguous: isAmbiguous),
             Expanded(
                 child: Center(
                     child: _buildChip(
@@ -799,6 +796,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     final snrColor = _snrColor(entry.severity);
     final rssiColor = _rssiColor(entry.rssi);
     final nodeWidth = _nodeColumnWidthForLength(entry.repeaterId.length);
+    final isAmbiguous = _isAmbiguousId(entry.repeaterId, widget.repeaters);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -857,7 +855,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                             RepeaterIdChip(
                                 repeaterId: entry.repeaterId,
                                 fontSize: 14,
-                                width: nodeWidth),
+                                width: nodeWidth,
+                                isAmbiguous: isAmbiguous),
                             Expanded(
                                 child: Center(
                                     child: _buildChip(
@@ -968,8 +967,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         ),
                       ),
                       Divider(height: 1, color: Theme.of(context).dividerColor),
-                      ...entry.discoveredNodes
-                          .map((node) => _buildDiscNodeRow(context, node)),
+                      ...entry.discoveredNodes.map((node) =>
+                          _buildDiscNodeRow(context, node, widget.repeaters)),
                     ],
                   ),
                 ),
@@ -991,10 +990,12 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildDiscNodeRow(BuildContext context, DiscoveredNodeEntry node) {
+  Widget _buildDiscNodeRow(
+      BuildContext context, DiscoveredNodeEntry node, List<Repeater> repeaters) {
     final rxSnrColor = _snrColorFromValue(node.localSnr);
     final rssiColor = _rssiColor(node.localRssi);
     final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
+    final isAmbiguous = _isAmbiguousId(node.repeaterId, repeaters);
 
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId,
@@ -1009,7 +1010,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 children: [
                   Flexible(
                       child: RepeaterIdChip(
-                          repeaterId: node.repeaterId, fontSize: 14)),
+                          repeaterId: node.repeaterId,
+                          fontSize: 14,
+                          isAmbiguous: isAmbiguous)),
                   Text(
                     node.nodeTypeLabel,
                     style: TextStyle(
@@ -1094,7 +1097,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         ),
                       ),
                       Divider(height: 1, color: Theme.of(context).dividerColor),
-                      _buildTraceNodeRow(context, entry),
+                      _buildTraceNodeRow(context, entry, widget.repeaters),
                     ],
                   ),
                 ),
@@ -1116,10 +1119,12 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildTraceNodeRow(BuildContext context, TraceLogEntry entry) {
+  Widget _buildTraceNodeRow(
+      BuildContext context, TraceLogEntry entry, List<Repeater> repeaters) {
     final rxSnrColor = _snrColorFromNullableValue(entry.localSnr);
     final rssiColor = _rssiColor(entry.localRssi);
     final txSnrColor = _snrColorFromNullableValue(entry.remoteSnr);
+    final isAmbiguous = _isAmbiguousId(entry.targetRepeaterId, repeaters);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1128,7 +1133,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           SizedBox(
               width: 70,
               child: RepeaterIdChip(
-                  repeaterId: entry.targetRepeaterId, fontSize: 14)),
+                  repeaterId: entry.targetRepeaterId,
+                  fontSize: 14,
+                  isAmbiguous: isAmbiguous)),
           Expanded(
               child: Center(
                   child: _buildChip(
