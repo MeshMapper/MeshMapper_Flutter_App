@@ -1377,6 +1377,38 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         final serverMessage = registerResult['message'] as String?;
         debugError(
             '[APP] Stage 2 failed: $serverReason - ${serverMessage ?? 'no message'}');
+
+        // Diagnose stale ADVERT timestamp: the firmware refuses to set the
+        // clock backwards (ERR code 6), so if the device's RTC is stuck in
+        // the future the signed ADVERT will always be rejected by the server.
+        // Query the device clock and surface an actionable error.
+        if (serverMessage != null &&
+            serverMessage.contains('Timestamp') &&
+            _meshCoreConnection != null) {
+          try {
+            final deviceTime = await _meshCoreConnection!.getDeviceTime();
+            final appTime =
+                DateTime.now().millisecondsSinceEpoch ~/ 1000;
+            final drift = deviceTime - appTime;
+            debugError(
+                '[APP] Device clock: $deviceTime, app clock: $appTime, drift: ${drift}s');
+            if (drift > 3600) {
+              final deviceDate = DateTime.fromMillisecondsSinceEpoch(
+                  deviceTime * 1000,
+                  isUtc: true);
+              return {
+                'success': false,
+                'reason': 'clock_error',
+                'message':
+                    'Device clock is set to ${deviceDate.toIso8601String().substring(0, 10)}. '
+                        'Power-cycle your device to reset it.',
+              };
+            }
+          } catch (e) {
+            debugWarn('[APP] Could not query device time: $e');
+          }
+        }
+
         return {
           'success': false,
           'reason': serverReason,
@@ -4433,17 +4465,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return OfflineUploadResult.invalidSession;
     }
 
-    // 2. Get device credentials from session
-    final publicKey = session.devicePublicKey;
-    if (publicKey == null) {
-      debugLog('[OFFLINE] Session missing device public key: $filename');
-      return OfflineUploadResult.invalidSession;
-    }
+    // 2. Get device credentials from session, falling back to connected device
+    var publicKey = session.devicePublicKey;
+    var deviceName = session.deviceName;
 
-    final deviceName = session.deviceName;
-    if (deviceName == null || deviceName.isEmpty) {
-      debugLog('[OFFLINE] Session missing device name: $filename');
-      return OfflineUploadResult.invalidSession;
+    if (publicKey == null || deviceName == null || deviceName.isEmpty) {
+      if (_devicePublicKey != null && displayDeviceName != null) {
+        publicKey ??= _devicePublicKey;
+        if (deviceName == null || deviceName.isEmpty) {
+          deviceName = displayDeviceName;
+        }
+        debugLog(
+            '[OFFLINE] Legacy session $filename: using connected device credentials');
+      } else {
+        debugLog(
+            '[OFFLINE] Session missing credentials and no device connected: $filename');
+        return OfflineUploadResult.invalidSession;
+      }
     }
 
     onProgress?.call('Authenticating...');
@@ -4967,6 +5005,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return 'Service is under maintenance. Try again later.';
       case 'network_error':
         return 'Unable to connect to the MeshMapper server. Please check your internet connection and try again.';
+      case 'clock_error':
+        return serverMessage ?? 'Device clock error. Power-cycle your device to reset it.';
       default:
         return serverMessage ?? 'Unknown error occurred.';
     }
