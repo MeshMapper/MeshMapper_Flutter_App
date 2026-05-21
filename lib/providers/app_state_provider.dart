@@ -3843,6 +3843,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void clearPings() {
     _txPings.clear();
     _rxPings.clear();
+    _discLogEntries.clear();
+    _traceLogEntries.clear();
     _clearOverlayState();
     _pingService?.resetStats();
     notifyListeners();

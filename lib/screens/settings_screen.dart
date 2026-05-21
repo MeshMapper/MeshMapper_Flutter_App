@@ -1454,7 +1454,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Clear Map Markers?'),
         content: const Text(
-          'This will remove all TX/RX markers from the map. This won\'t affect uploaded data.',
+          'This will remove all markers from the map. This won\'t affect uploaded data.',
         ),
         actions: [
           TextButton(
