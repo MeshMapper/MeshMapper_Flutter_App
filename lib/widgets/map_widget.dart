@@ -364,6 +364,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // MeshMapper overlay toggle (on by default)
   bool _showMeshMapperOverlay = true;
 
+  // Region boundary overlay toggle (on by default)
+  bool _showRegionBorders = true;
+
   // Collapsible map controls in landscape
   bool _mapControlsExpanded = true;
 
@@ -1522,9 +1525,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     ));
     if (bordersSig != _lastBordersSignature && _isMapReady && _styleLoaded) {
       _lastBordersSignature = bordersSig;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _refreshRegionBorders(appState);
-      });
+      if (_showRegionBorders) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _refreshRegionBorders(appState);
+        });
+      }
     }
 
     // Detect coverage overlay opacity change (user dragged the slider in
@@ -4239,6 +4244,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               isActive: _showMeshMapperOverlay,
             ),
           ],
+          // Region boundary toggle (only show when borders available)
+          if (appState.regionBorders.isNotEmpty) ...[
+            _buildControlDivider(),
+            _buildControlButton(
+              icon: Icons.fence,
+              tooltip: _showRegionBorders
+                  ? 'Hide Region Boundary'
+                  : 'Show Region Boundary',
+              onPressed: () => _toggleRegionBorders(appState),
+              isActive: _showRegionBorders,
+            ),
+          ],
           _buildControlDivider(),
           // Center on position / toggle auto-follow
           _buildControlButton(
@@ -4378,6 +4395,30 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     } else {
       _removeCoverageOverlay();
     }
+  }
+
+  void _toggleRegionBorders(AppStateProvider appState) {
+    setState(() {
+      _showRegionBorders = !_showRegionBorders;
+    });
+    if (_showRegionBorders) {
+      _refreshRegionBorders(appState);
+    } else {
+      _removeRegionBorders();
+    }
+  }
+
+  void _removeRegionBorders() {
+    if (_mapController == null) return;
+    try {
+      _mapController!.removeLayer(_regionBorderLabelLayerId);
+    } catch (_) {}
+    try {
+      _mapController!.removeLayer(_regionBorderLineLayerId);
+    } catch (_) {}
+    try {
+      _mapController!.removeSource(_regionBorderSourceId);
+    } catch (_) {}
   }
 
   void _toggleNorthMode() {
