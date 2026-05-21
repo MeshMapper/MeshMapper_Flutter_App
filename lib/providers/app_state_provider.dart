@@ -2253,10 +2253,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             longitude: lastEntry.longitude,
             power: lastEntry.power,
             events: existingEvents,
+            multiHopEvents: lastEntry.multiHopEvents,
           );
           _txLogEntries[_txLogEntries.length - 1] = updatedEntry;
           debugLog(
-              '[APP] Updated TxLogEntry with ${existingEvents.length} events (real-time)');
+              '[APP] Updated TxLogEntry with ${existingEvents.length} direct, '
+              '${lastEntry.multiHopEvents.length} multi-hop events (real-time)');
 
           _updateTopRepeaters(
               existingEvents
@@ -2275,6 +2277,52 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       } else {
         debugLog('[APP] WARNING: _txLogEntries is empty, cannot update');
+      }
+    };
+
+    _pingService!.onMultiHopEchoReceived =
+        (txPing, repeaterId, snr, rssi, pathHops, isNew) {
+      debugLog(
+          '[APP] Multi-hop echo: $repeaterId, hops=${pathHops.length}, isNew=$isNew');
+
+      if (_txLogEntries.isNotEmpty) {
+        final lastEntry = _txLogEntries.last;
+        final timeDiff =
+            lastEntry.timestamp.difference(txPing.timestamp).inSeconds.abs();
+        if (timeDiff <= 10) {
+          final multiHopEvents =
+              List<MultiHopEchoEvent>.from(lastEntry.multiHopEvents);
+          final newEvent = MultiHopEchoEvent(
+            repeaterId: repeaterId,
+            snr: snr,
+            rssi: rssi,
+            pathHops: pathHops,
+          );
+
+          if (isNew) {
+            multiHopEvents.add(newEvent);
+            _audioService.playReceiveSound();
+            _pingStats =
+                _pingStats.copyWith(rxCount: _pingStats.rxCount + 1);
+          } else {
+            final idx = multiHopEvents
+                .indexWhere((e) => e.repeaterId == repeaterId);
+            if (idx >= 0) {
+              multiHopEvents[idx] = newEvent;
+            }
+          }
+
+          _txLogEntries[_txLogEntries.length - 1] = TxLogEntry(
+            timestamp: lastEntry.timestamp,
+            latitude: lastEntry.latitude,
+            longitude: lastEntry.longitude,
+            power: lastEntry.power,
+            events: lastEntry.events,
+            multiHopEvents: multiHopEvents,
+          );
+
+          notifyListeners();
+        }
       }
     };
 
@@ -2318,31 +2366,52 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     };
 
-    _pingService!.onTxWindowComplete = (success) {
+    _pingService!.onTxWindowComplete = (directSuccess, multiHopEchoes) {
       double? lat;
       double? lon;
-      List<MarkerRepeaterInfo>? repeaters;
+      List<MarkerRepeaterInfo>? allRepeaters;
 
       if (_txLogEntries.isNotEmpty) {
         final lastTx = _txLogEntries.last;
         lat = lastTx.latitude;
         lon = lastTx.longitude;
-        if (lastTx.events.isNotEmpty) {
-          repeaters = lastTx.events
-              .map((e) => MarkerRepeaterInfo(
-                    repeaterId: e.repeaterId,
-                    snr: e.snr ?? 0.0,
-                    rssi: e.rssi ?? 0,
-                  ))
-              .toList();
+
+        final directRepeaters = lastTx.events
+            .map((e) => MarkerRepeaterInfo(
+                  repeaterId: e.repeaterId,
+                  snr: e.snr ?? 0.0,
+                  rssi: e.rssi ?? 0,
+                ))
+            .toList();
+
+        final multiHopRepeaters = multiHopEchoes
+            .map((e) => MarkerRepeaterInfo(
+                  repeaterId: e.repeaterId,
+                  snr: e.snr ?? 0.0,
+                  rssi: e.rssi ?? 0,
+                  pathHops: e.pathHops,
+                ))
+            .toList();
+
+        if (directRepeaters.isNotEmpty || multiHopRepeaters.isNotEmpty) {
+          allRepeaters = [...directRepeaters, ...multiHopRepeaters];
         }
       }
 
+      final PingEventType eventType;
+      if (directSuccess) {
+        eventType = PingEventType.txSuccess;
+      } else if (multiHopEchoes.isNotEmpty) {
+        eventType = PingEventType.txMultiHopOnly;
+      } else {
+        eventType = PingEventType.txFail;
+      }
+
       recordPingEvent(
-        success ? PingEventType.txSuccess : PingEventType.txFail,
+        eventType,
         latitude: lat,
         longitude: lon,
-        repeaters: repeaters,
+        repeaters: allRepeaters,
       );
     };
 

@@ -355,6 +355,13 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             return true;
           }
         }
+        for (final event in tx.multiHopEvents) {
+          if (event.repeaterId.toLowerCase().startsWith(query)) return true;
+          final resolved = _resolveRepeaterNames(event.repeaterId, repeaters);
+          if (resolved.names.any((n) => n.toLowerCase().contains(query))) {
+            return true;
+          }
+        }
         return false;
       case PingLogType.rx:
         final rx = entry.asRx;
@@ -391,7 +398,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     switch (entry.type) {
       case PingLogType.tx:
         return entry.asTx.events
-            .any((e) => _isAmbiguousId(e.repeaterId, repeaters));
+                .any((e) => _isAmbiguousId(e.repeaterId, repeaters)) ||
+            entry.asTx.multiHopEvents
+                .any((e) => _isAmbiguousId(e.repeaterId, repeaters));
       case PingLogType.rx:
         return _isAmbiguousId(entry.asRx.repeaterId, repeaters);
       case PingLogType.disc:
@@ -697,11 +706,29 @@ class _AllPingsTabState extends State<_AllPingsTab> {
               _buildCardHeader(context, PingLogType.tx, entry.timeString,
                   entry.locationString,
                   showAmbiguity: showAmbiguity),
-              // Repeaters table
+              // Direct echoes table
               if (entry.events.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 _buildRepeaterTable(context, entry.events, widget.repeaters),
-              ] else ...[
+              ] else if (entry.multiHopEvents.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'No direct repeats heard',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+              // Multi-hop echoes section
+              if (entry.multiHopEvents.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _buildMultiHopSection(
+                    context, entry.multiHopEvents, widget.repeaters),
+              ],
+              // No echoes at all
+              if (entry.events.isEmpty && entry.multiHopEvents.isEmpty) ...[
                 const SizedBox(height: 8),
                 Text(
                   'No repeaters heard',
@@ -782,6 +809,130 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         rssiColor))),
           ],
         ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-hop Echo Section (inside TX Card)
+  // ---------------------------------------------------------------------------
+
+  Widget _buildMultiHopSection(BuildContext context,
+      List<MultiHopEchoEvent> events, List<Repeater> repeaters) {
+    var maxIdLen = 0;
+    for (final e in events) {
+      if (e.repeaterId.length > maxIdLen) maxIdLen = e.repeaterId.length;
+    }
+    final nodeWidth = _nodeColumnWidthForLength(maxIdLen);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                Icon(Icons.route, size: 14, color: PingColors.rx),
+                const SizedBox(width: 6),
+                Text(
+                  'Multi-hop Repeats',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          // Table header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
+                Expanded(child: _tableHeader(context, 'SNR', center: true)),
+                Expanded(child: _tableHeader(context, 'RSSI', center: true)),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          ...events.map((event) {
+            final snrColor = _snrColor(event.severity);
+            final rssiColor = _rssiColor(event.rssi);
+            final isAmbiguous = _isAmbiguousId(event.repeaterId, repeaters);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                InkWell(
+                  onTap: () => RepeaterIdChip.showRepeaterPopup(
+                      context, event.repeaterId),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Row(
+                      children: [
+                        RepeaterIdChip(
+                            repeaterId: event.repeaterId,
+                            fontSize: 14,
+                            width: nodeWidth,
+                            isAmbiguous: isAmbiguous),
+                        Expanded(
+                            child: Center(
+                                child: _buildChip(
+                                    event.snr?.toStringAsFixed(1) ?? '-',
+                                    snrColor))),
+                        Expanded(
+                            child: Center(
+                                child: _buildChip(
+                                    event.rssi != null
+                                        ? '${event.rssi}'
+                                        : '-',
+                                    rssiColor))),
+                      ],
+                    ),
+                  ),
+                ),
+                if (event.pathHops.isNotEmpty)
+                  Padding(
+                    padding:
+                        const EdgeInsets.only(left: 10, right: 10, bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(
+                            Icons.route,
+                            size: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: RxPathChain(
+                            hops: event.pathHops,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          }),
+        ],
       ),
     );
   }

@@ -3989,6 +3989,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         PingEventType.discFail => (type: 'disc', success: false),
         PingEventType.traceSuccess => (type: 'trace', success: true),
         PingEventType.traceFail => (type: 'trace', success: false),
+        PingEventType.txMultiHopOnly => (type: 'tx', success: true),
       };
 
   /// Compute a version hash of all data that affects the marker list.
@@ -5773,6 +5774,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     switch (marker.type) {
       case PingEventType.txSuccess:
       case PingEventType.txFail:
+      case PingEventType.txMultiHopOnly:
         _showTxPingDetails(TxPing(
           latitude: lat,
           longitude: lon,
@@ -5954,7 +5956,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Use the heardRepeaters directly from the TxPing
     final heardRepeaters = ping.heardRepeaters;
 
-    // Resolve repeater matches (hoisted so bottom sheet can check ambiguity)
+    // Resolve all repeaters (direct + multi-hop) for focus-mode lines
     final resolved = heardRepeaters.isNotEmpty
         ? _resolveRepeatersByHexIds(
             heardRepeaters.map((r) => r.repeaterId).toList(),
@@ -6088,198 +6090,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 16),
 
-                // Repeaters section header
-                Text(
-                  heardRepeaters.isEmpty
-                      ? 'No repeaters heard'
-                      : 'Heard Repeaters (${heardRepeaters.length})',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-
-                if (hasAmbiguous)
-                  GestureDetector(
-                    onTap: () => _showDuplicateRepeaterPopup(
-                      resolved,
-                      fromLatLng: (
-                        lat: ping.latitude,
-                        lon: ping.longitude,
-                      ),
-                    ),
-                    child: const Padding(
-                      padding: EdgeInsets.only(top: 6),
-                      child: Row(
-                        children: [
-                          Icon(Icons.warning_amber_rounded,
-                              size: 14, color: Color(0xFFF59E0B)),
-                          SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              'Duplicate repeater ID — lines shown to all possible matches',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Color(0xFFF59E0B),
-                              ),
-                            ),
-                          ),
-                          SizedBox(width: 4),
-                          Icon(Icons.info_outline,
-                              size: 14, color: Color(0xFFF59E0B)),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                if (heardRepeaters.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  // If any heard repeater is missing GPS, reserve a sliver of
-                  // node-column width for the inline `location_off` indicator
-                  // so SNR/RSSI columns stay aligned row-to-row.
-                  Builder(builder: (context) {
-                    final chipWidth = _nodeColumnWidth();
-                    final anyLacksLocation = heardRepeaters
-                        .any((hr) => _hexIdLacksLocation(hr.repeaterId));
-                    final iconReserve = anyLacksLocation ? 18.0 : 0.0;
-                    final nodeColWidth = chipWidth + iconReserve;
-                    return Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: nodeColWidth,
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(
-                            height: 1, color: Theme.of(context).dividerColor),
-                        // Data rows
-                        ...heardRepeaters.map((repeater) {
-                          final snrColor = repeater.snr != null
-                              ? PingColors.snrColor(repeater.snr!)
-                              : Colors.grey;
-                          final rssiColor = repeater.rssi != null
-                              ? PingColors.rssiColor(repeater.rssi!)
-                              : Colors.grey;
-                          final lacksLocation =
-                              _hexIdLacksLocation(repeater.repeaterId);
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(
-                                context, repeater.repeaterId, fromLatLng: (
-                              lat: ping.latitude,
-                              lon: ping.longitude
-                            )),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Repeater ID + optional no-location icon,
-                                  // pinned to the node column width.
-                                  SizedBox(
-                                    width: nodeColWidth,
-                                    child: Row(
-                                      children: [
-                                        RepeaterIdChip(
-                                            repeaterId: repeater.repeaterId,
-                                            fontSize: 13,
-                                            width: chipWidth),
-                                        if (lacksLocation)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                                left: 4),
-                                            child: _noLocationIndicator(),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                  // SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value:
-                                            repeater.snr?.toStringAsFixed(1) ??
-                                                '-',
-                                        color: snrColor,
-                                      ),
-                                    ),
-                                  ),
-                                  // RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: repeater.rssi != null
-                                            ? '${repeater.rssi}'
-                                            : '-',
-                                        color: rssiColor,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  );
-                  }),
-                ],
+                // Split repeaters into direct and multi-hop
+                ..._buildTxRepeaterSections(context, ping, heardRepeaters,
+                    resolved, hasAmbiguous),
               ],
             ),
           ),
@@ -6292,6 +6105,375 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _dismissPingFocus();
       }
     });
+  }
+
+  List<Widget> _buildTxRepeaterSections(
+    BuildContext context,
+    TxPing ping,
+    List<HeardRepeater> allRepeaters,
+    List<_ResolvedRepeater> resolved,
+    bool hasAmbiguous,
+  ) {
+    final directRepeaters =
+        allRepeaters.where((r) => r.pathHops == null).toList();
+    final multiHopRepeaters =
+        allRepeaters.where((r) => r.pathHops != null).toList();
+
+    if (directRepeaters.isEmpty && multiHopRepeaters.isEmpty) {
+      return [
+        Text(
+          'No repeaters heard',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ];
+    }
+
+    final widgets = <Widget>[];
+
+    // --- Direct echoes section ---
+    widgets.add(Text(
+      directRepeaters.isEmpty
+          ? 'No direct repeats heard'
+          : 'Direct Repeats (${directRepeaters.length})',
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        letterSpacing: 0.5,
+        fontStyle:
+            directRepeaters.isEmpty ? FontStyle.italic : FontStyle.normal,
+      ),
+    ));
+
+    if (hasAmbiguous) {
+      widgets.add(GestureDetector(
+        onTap: () => _showDuplicateRepeaterPopup(
+          resolved,
+          fromLatLng: (lat: ping.latitude, lon: ping.longitude),
+        ),
+        child: const Padding(
+          padding: EdgeInsets.only(top: 6),
+          child: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded,
+                  size: 14, color: Color(0xFFF59E0B)),
+              SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  'Duplicate repeater ID — lines shown to all possible matches',
+                  style: TextStyle(fontSize: 11, color: Color(0xFFF59E0B)),
+                ),
+              ),
+              SizedBox(width: 4),
+              Icon(Icons.info_outline, size: 14, color: Color(0xFFF59E0B)),
+            ],
+          ),
+        ),
+      ));
+    }
+
+    if (directRepeaters.isNotEmpty) {
+      widgets.add(const SizedBox(height: 12));
+      widgets.add(_buildRepeaterTable(context, ping, directRepeaters));
+    }
+
+    // --- Multi-hop echoes section ---
+    if (multiHopRepeaters.isNotEmpty) {
+      widgets.add(const SizedBox(height: 16));
+      widgets.add(Row(
+        children: [
+          Icon(Icons.route, size: 14, color: PingColors.rx),
+          const SizedBox(width: 6),
+          Text(
+            'Multi-hop Repeats (${multiHopRepeaters.length})',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ],
+      ));
+      widgets.add(const SizedBox(height: 12));
+      widgets.add(_buildMultiHopRepeaterTable(
+          context, ping, multiHopRepeaters));
+    }
+
+    return widgets;
+  }
+
+  Widget _buildRepeaterTable(
+      BuildContext context, TxPing ping, List<HeardRepeater> repeaters) {
+    final chipWidth = _nodeColumnWidth();
+    final anyLacksLocation =
+        repeaters.any((hr) => _hexIdLacksLocation(hr.repeaterId));
+    final iconReserve = anyLacksLocation ? 18.0 : 0.0;
+    final nodeColWidth = chipWidth + iconReserve;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color: Theme.of(context)
+                .colorScheme
+                .outline
+                .withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: nodeColWidth,
+                  child: Text('Node',
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant)),
+                ),
+                Expanded(
+                    child: Text('SNR',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+                Expanded(
+                    child: Text('RSSI',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          ...repeaters.map((repeater) {
+            final snrColor = repeater.snr != null
+                ? PingColors.snrColor(repeater.snr!)
+                : Colors.grey;
+            final rssiColor = repeater.rssi != null
+                ? PingColors.rssiColor(repeater.rssi!)
+                : Colors.grey;
+            final lacksLocation = _hexIdLacksLocation(repeater.repeaterId);
+
+            return InkWell(
+              onTap: () => RepeaterIdChip.showRepeaterPopup(
+                  context, repeater.repeaterId,
+                  fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: nodeColWidth,
+                      child: Row(
+                        children: [
+                          RepeaterIdChip(
+                              repeaterId: repeater.repeaterId,
+                              fontSize: 13,
+                              width: chipWidth),
+                          if (lacksLocation)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 4),
+                              child: _noLocationIndicator(),
+                            ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Center(
+                        child: _buildStatChip(
+                          value: repeater.snr?.toStringAsFixed(1) ?? '-',
+                          color: snrColor,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Center(
+                        child: _buildStatChip(
+                          value: repeater.rssi != null
+                              ? '${repeater.rssi}'
+                              : '-',
+                          color: rssiColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMultiHopRepeaterTable(
+      BuildContext context, TxPing ping, List<HeardRepeater> repeaters) {
+    final chipWidth = _nodeColumnWidth();
+    final anyLacksLocation =
+        repeaters.any((hr) => _hexIdLacksLocation(hr.repeaterId));
+    final iconReserve = anyLacksLocation ? 18.0 : 0.0;
+    final nodeColWidth = chipWidth + iconReserve;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color: Theme.of(context)
+                .colorScheme
+                .outline
+                .withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: nodeColWidth,
+                  child: Text('Node',
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant)),
+                ),
+                Expanded(
+                    child: Text('SNR',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+                Expanded(
+                    child: Text('RSSI',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          ...repeaters.map((repeater) {
+            final snrColor = repeater.snr != null
+                ? PingColors.snrColor(repeater.snr!)
+                : Colors.grey;
+            final rssiColor = repeater.rssi != null
+                ? PingColors.rssiColor(repeater.rssi!)
+                : Colors.grey;
+            final lacksLocation = _hexIdLacksLocation(repeater.repeaterId);
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                InkWell(
+                  onTap: () => RepeaterIdChip.showRepeaterPopup(
+                      context, repeater.repeaterId,
+                      fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: nodeColWidth,
+                          child: Row(
+                            children: [
+                              RepeaterIdChip(
+                                  repeaterId: repeater.repeaterId,
+                                  fontSize: 13,
+                                  width: chipWidth),
+                              if (lacksLocation)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 4),
+                                  child: _noLocationIndicator(),
+                                ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: Center(
+                            child: _buildStatChip(
+                              value:
+                                  repeater.snr?.toStringAsFixed(1) ?? '-',
+                              color: snrColor,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Center(
+                            child: _buildStatChip(
+                              value: repeater.rssi != null
+                                  ? '${repeater.rssi}'
+                                  : '-',
+                              color: rssiColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (repeater.pathHops != null && repeater.pathHops!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(
+                        left: 12, right: 12, bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.route,
+                              size: 12,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: RxPathChain(
+                              hops: repeater.pathHops!, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          }),
+        ],
+      ),
+    );
   }
 
   /// Show RX ping details popup

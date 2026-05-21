@@ -95,9 +95,13 @@ class UnifiedRxHandler {
       // Route to TX tracking if active (during 5s echo window)
       if (txTracker.isListening) {
         debugLog('[UNIFIED RX] TX tracking active - checking for echo');
-        final wasEcho = await txTracker.handlePacket(metadata);
-        if (wasEcho) {
-          debugLog('[UNIFIED RX] Packet was TX echo, done');
+        final result = await txTracker.handlePacket(metadata);
+        if (result.type == TxEchoResultType.directEcho) {
+          debugLog('[UNIFIED RX] Packet was direct TX echo, done');
+          return;
+        }
+        if (result.type == TxEchoResultType.multiHopEcho) {
+          debugLog('[UNIFIED RX] Packet was multi-hop TX echo, grouped with TX');
           return;
         }
       }

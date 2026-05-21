@@ -120,12 +120,14 @@ class HeardRepeater {
   final double? snr; // Best SNR observed (null for CARpeater pass-through)
   final int? rssi; // RSSI in dBm (null for CARpeater pass-through)
   final int seenCount; // How many times this repeater was heard
+  final List<String>? pathHops; // null = direct echo, non-null = multi-hop
 
   const HeardRepeater({
     required this.repeaterId,
     this.snr,
     this.rssi,
     this.seenCount = 1,
+    this.pathHops,
   });
 }
 
