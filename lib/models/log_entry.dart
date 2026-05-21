@@ -5,7 +5,8 @@ class TxLogEntry {
   final double latitude;
   final double longitude;
   final double power; // Power in watts (0.3, 0.6, 1.0, 2.0)
-  final List<RxEvent> events; // Repeaters that heard this ping
+  final List<RxEvent> events; // Direct 1-hop repeaters that heard this ping
+  final List<MultiHopEchoEvent> multiHopEvents; // Multi-hop echoes (2+ hops)
 
   TxLogEntry({
     required this.timestamp,
@@ -13,6 +14,7 @@ class TxLogEntry {
     required this.longitude,
     required this.power,
     required this.events,
+    this.multiHopEvents = const [],
   });
 
   /// Get formatted timestamp (HH:MM:SS)
@@ -36,7 +38,32 @@ class TxLogEntry {
                 ? '${e.repeaterId}(${e.snr!.toStringAsFixed(2)})'
                 : '${e.repeaterId}(null)')
             .join(',');
-    return '${timestamp.toIso8601String()},$latitude,$longitude,$power,$eventsStr';
+    final multiHopStr = multiHopEvents.isEmpty
+        ? ''
+        : ',MH:${multiHopEvents.map((e) => e.snr != null ? '${e.repeaterId}(${e.snr!.toStringAsFixed(2)})' : '${e.repeaterId}(null)').join(',')}';
+    return '${timestamp.toIso8601String()},$latitude,$longitude,$power,$eventsStr$multiHopStr';
+  }
+}
+
+/// Multi-hop echo event (repeater that relayed a TX ping via 2+ hops)
+class MultiHopEchoEvent {
+  final String repeaterId;
+  final double? snr;
+  final int? rssi;
+  final List<String> pathHops;
+
+  MultiHopEchoEvent({
+    required this.repeaterId,
+    this.snr,
+    this.rssi,
+    this.pathHops = const [],
+  });
+
+  SnrSeverity? get severity {
+    if (snr == null) return null;
+    if (snr! <= -1) return SnrSeverity.poor;
+    if (snr! <= 5) return SnrSeverity.fair;
+    return SnrSeverity.good;
   }
 }
 

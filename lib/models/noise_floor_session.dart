@@ -42,6 +42,9 @@ enum PingEventType {
 
   @HiveField(6)
   traceFail, // Grey: Trace no response
+
+  @HiveField(7)
+  txMultiHopOnly, // RX color: TX got multi-hop echoes but no direct
 }
 
 /// Repeater info for graph markers
@@ -61,11 +64,16 @@ class MarkerRepeaterInfo extends HiveObject {
   @HiveField(3)
   final String? pubkeyHex;
 
+  /// Hop path for multi-hop echoes. Null = direct 1-hop echo, non-null = multi-hop.
+  @HiveField(4)
+  final List<String>? pathHops;
+
   MarkerRepeaterInfo({
     required this.repeaterId,
     required this.snr,
     required this.rssi,
     this.pubkeyHex,
+    this.pathHops,
   });
 }
 
@@ -108,6 +116,7 @@ class PingEventMarker extends HiveObject {
         PingEventType.discFail => PingColors.discFail,
         PingEventType.traceSuccess => PingColors.traceSuccess,
         PingEventType.traceFail => PingColors.noResponse,
+        PingEventType.txMultiHopOnly => PingColors.rx,
       };
 
   /// Get a display label for this event type
@@ -119,6 +128,7 @@ class PingEventMarker extends HiveObject {
         PingEventType.discFail => 'DISC Fail',
         PingEventType.traceSuccess => 'Trace Success',
         PingEventType.traceFail => 'Trace Fail',
+        PingEventType.txMultiHopOnly => 'TX Multi-hop',
       };
 }
 

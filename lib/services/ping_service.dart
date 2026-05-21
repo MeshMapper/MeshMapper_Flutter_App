@@ -156,9 +156,13 @@ class PingService {
   void Function(RxPing)? onRxPing;
   void Function(PingStats)? onStatsUpdated;
 
-  /// Called in real-time when each echo is received during tracking window
+  /// Called in real-time when each direct echo is received during tracking window
   /// Parameters: (TxPing txPing, HeardRepeater repeater, bool isNew)
   void Function(TxPing, HeardRepeater, bool isNew)? onEchoReceived;
+
+  /// Called in real-time when each multi-hop echo is received during tracking window
+  void Function(TxPing txPing, String repeaterId, double? snr, int? rssi,
+      List<String> pathHops, bool isNew)? onMultiHopEchoReceived;
 
   /// Callback for discovery events (Passive Mode)
   /// Fires immediately when disc ping is created (like onTxPing)
@@ -170,8 +174,11 @@ class PingService {
       onDiscNodeDiscovered;
 
   /// Callback when TX window ends (for noise floor graph)
-  /// Parameters: (bool success) - true if any repeaters heard, false if none
-  void Function(bool success)? onTxWindowComplete;
+  /// Parameters: (bool directSuccess, List multiHopEchoes)
+  void Function(
+      bool directSuccess,
+      List<({String repeaterId, double? snr, int? rssi, List<String> pathHops})>
+          multiHopEchoes)? onTxWindowComplete;
 
   /// Callback when discovery window ends (for noise floor graph)
   /// Parameters: (bool success) - true if any nodes discovered, false if none
@@ -650,6 +657,37 @@ class PingService {
           }
         };
 
+        txTracker.onMultiHopEchoReceived =
+            (repeaterId, snr, rssi, pathHops, isNew) {
+          debugLog(
+              '[PING] Multi-hop echo: $repeaterId, SNR=$snr, hops=${pathHops.length}, isNew=$isNew');
+          final txPing = _lastTxPing;
+          if (txPing != null) {
+            final repeater = HeardRepeater(
+              repeaterId: repeaterId,
+              snr: snr,
+              rssi: rssi,
+              seenCount:
+                  txTracker.multiHopRepeaters[repeaterId]?.seenCount ?? 1,
+              pathHops: pathHops,
+            );
+
+            if (isNew) {
+              txPing.heardRepeaters.add(repeater);
+            } else {
+              final idx = txPing.heardRepeaters
+                  .indexWhere((r) => r.repeaterId == repeaterId &&
+                      r.pathHops != null);
+              if (idx >= 0) {
+                txPing.heardRepeaters[idx] = repeater;
+              }
+            }
+
+            onMultiHopEchoReceived?.call(
+                txPing, repeaterId, snr, rssi, pathHops, isNew);
+          }
+        };
+
         txTracker.startTracking(
           payload: pingMessage,
           channelIdx: channelIndex,
@@ -758,11 +796,25 @@ class PingService {
       debugLog('[PING] No repeater echoes detected during listening window');
     }
 
+    // Collect multi-hop echo data for the onTxWindowComplete callback
+    final multiHopEchoes =
+        <({String repeaterId, double? snr, int? rssi, List<String> pathHops})>[];
+    if (txTracker != null && txTracker.multiHopRepeaters.isNotEmpty) {
+      for (final entry in txTracker.multiHopRepeaters.entries) {
+        final echo = entry.value;
+        multiHopEchoes.add((
+          repeaterId: echo.repeaterId,
+          snr: echo.snr,
+          rssi: echo.rssi,
+          pathHops: echo.pathHops,
+        ));
+      }
+    }
+
     // Notify about TX window completion for noise floor graph
-    onTxWindowComplete?.call(txSuccess);
+    onTxWindowComplete?.call(txSuccess, multiHopEchoes);
 
     // Queue TX entry with heard_repeats AFTER RX window ends
-    // Reference: enqueueTX() called after RX window in wardrive.js
     final txTimestamp = _pendingTxTimestamp;
     if (txTimestamp != null) {
       _apiQueue.enqueueTx(
@@ -775,6 +827,27 @@ class PingService {
         power: getPowerLevel?.call(),
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
+
+      // Queue multi-hop echoes as individual RX API entries
+      if (multiHopEchoes.isNotEmpty) {
+        for (final echo in multiHopEchoes) {
+          final rxHeardRepeats = echo.snr != null
+              ? '${echo.repeaterId}(${echo.snr!.toStringAsFixed(2)})'
+              : '${echo.repeaterId}(null)';
+          _apiQueue.enqueueRx(
+            latitude: txPosition.latitude,
+            longitude: txPosition.longitude,
+            heardRepeats: rxHeardRepeats,
+            timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            repeaterId: echo.repeaterId,
+            externalAntenna: getExternalAntenna?.call() ?? false,
+            noiseFloor: _pendingTxNoiseFloor,
+            power: getPowerLevel?.call(),
+          );
+        }
+        debugLog(
+            '[PING] Queued ${multiHopEchoes.length} multi-hop echoes as RX');
+      }
 
       // Clear pending TX context
       _pendingTxTimestamp = null;
