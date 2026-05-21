@@ -3533,7 +3533,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _focusLinesAmbiguousLabelId,
         const SymbolLayerProperties(
           symbolPlacement: 'line',
-          textField: 'DUPLICATE ID',
+          textField: 'DUP',
           textSize: 11,
           textColor: '#F59E0B',
           textHaloColor: '#FFFFFF',
