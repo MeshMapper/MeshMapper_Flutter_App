@@ -3306,6 +3306,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         if (!_autoPingEnabled) {
+          _cooldownTimer.stop();
+          _pingService!.clearCooldown();
           toggleAutoPing(previousMode);
           debugLog(
               '[CONN] Auto-ping restored after reconnect (mode=$previousMode)');
@@ -5732,6 +5734,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return;
         }
         if (!_autoPingEnabled) {
+          _cooldownTimer.stop();
+          _pingService!.clearCooldown();
           final resolvedMode = _resolveAutoModeForZone(previousMode);
           debugLog(
               '[ZONE GRACE] Mode resolved: $previousMode → $resolvedMode');
@@ -6133,6 +6137,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           if (!_autoPingEnabled) {
             _cooldownTimer.stop();
+            _pingService!.clearCooldown();
             final resolvedMode = _resolveAutoModeForZone(previousMode);
             debugLog(
                 '[ZONE] Mode resolved for new zone: $previousMode → $resolvedMode');

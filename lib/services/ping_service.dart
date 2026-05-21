@@ -465,6 +465,11 @@ class PingService {
     return remaining.inSeconds.clamp(0, _autoPingCooldown.inSeconds);
   }
 
+  /// Clear the auto-ping cooldown (used during zone transfer to avoid blocking restart).
+  void clearCooldown() {
+    _lastTxTime = null;
+  }
+
   /// Check if currently in manual ping cooldown period
   bool isInManualCooldown() {
     return _manualPingCooldownTimer.remainingMs > 0;
