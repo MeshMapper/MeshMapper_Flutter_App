@@ -3240,6 +3240,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     } else {
       // TX pings
       for (final ping in appState.txPings) {
+        final hasDirectEcho =
+            ping.heardRepeaters.any((r) => r.pathHops == null);
+        final hasMultiHopOnly =
+            !hasDirectEcho && ping.heardRepeaters.isNotEmpty;
         await syncOne(
           type: 'tx',
           lat: ping.latitude,
@@ -3247,6 +3251,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ts: ping.timestamp,
           success: ping.heardRepeaters.isNotEmpty,
           idForMetadata: ping.timestamp.millisecondsSinceEpoch,
+          iconImageOverride:
+              hasMultiHopOnly ? _MapImages.coverage('rx', true) : null,
         );
       }
 
@@ -3989,7 +3995,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         PingEventType.discFail => (type: 'disc', success: false),
         PingEventType.traceSuccess => (type: 'trace', success: true),
         PingEventType.traceFail => (type: 'trace', success: false),
-        PingEventType.txMultiHopOnly => (type: 'tx', success: true),
+        PingEventType.txMultiHopOnly => (type: 'rx', success: true),
       };
 
   /// Compute a version hash of all data that affects the marker list.
@@ -4884,6 +4890,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                 label: 'Lock Rotation',
                                 description:
                                     'Prevent accidental rotation of the map',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildHelpItem(
+                                context: context,
+                                icon: Icons.fence,
+                                label: 'Region Boundary',
+                                description:
+                                    'Toggle the regional boundary outline and labels on the map',
                               ),
                               Divider(
                                   height: 1,
