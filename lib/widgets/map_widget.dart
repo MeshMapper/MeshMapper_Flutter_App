@@ -443,7 +443,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   // Tile load failure detection — shows a banner if map tiles haven't loaded
   // within a timeout after style load. Cleared when onMapIdle fires.
-  bool _tileLoadFailed = false;
+  // Only surfaces the banner after 3 consecutive timeouts to avoid confusing
+  // users with transient failures.
+  int _consecutiveTileLoadFailures = 0;
+  static const _tileLoadFailureThreshold = 3;
 
   /// Tracks the last-applied mapTilesEnabled value so we can detect changes
   /// in _buildMap and call setOffline() without a full style reload.
@@ -490,7 +493,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // style-reload path can drop stale names from the map's image cache if ever
   // needed. Right now we just re-addImage on each sync (idempotent).
   final Set<String> _registeredDistanceLabelImages = {};
+  final Map<String, Size> _registeredDistanceLabelImageSizes = {};
   Symbol? _gpsSymbol; // single GPS marker
+
+  // When true, _syncAllAnnotations skips _updateFocusLines and
+  // _syncDistanceLabels so the 500ms zoom-to-fit animation runs without
+  // contention from heavy native platform calls. The deferred work runs
+  // after the animation settles via _activatePingFocus's delayed callback.
+  bool _focusSyncDeferred = false;
 
   // Repeater cluster source/layer IDs (custom GeoJSON layer with cluster: true)
   static const _repeaterSourceId = 'repeaters-source';
@@ -1177,6 +1187,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             debugError('[MAP] _syncAllAnnotations failed: $e');
           } finally {
             _syncInFlight = false;
+            if (mounted) {
+              final freshVersion = _computeMarkerDataVersion(appState);
+              if (freshVersion != _lastMarkerDataVersion) {
+                setState(() {});
+              }
+            }
           }
         });
       }
@@ -1259,9 +1275,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             child: _buildCollapsibleMapControls(appState),
           ),
 
-        // Tile load failure banner — appears if base tiles haven't finished
-        // loading within ${_tileLoadTimeoutSeconds}s after style load.
-        if (_tileLoadFailed)
+        if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold)
           Positioned(
             top: topPadding,
             left: 0,
@@ -2027,6 +2041,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _distanceLabelImageSize.clear();
       _distanceLabelRepeaterPos.clear();
       _registeredDistanceLabelImages.clear();
+      _registeredDistanceLabelImageSizes.clear();
       // Mark cluster layers as not-ready until _setupRepeaterClusterLayers
       // creates them on the new style. This gates build()-driven post-frame
       // syncs from racing ahead of source creation.
@@ -2085,18 +2100,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // Ensure MapLibre offline mode matches the user's preference.
       _setOfflineIfSupported(!tilesEnabled);
       if (tilesEnabled) {
-        _tileLoadFailed = false;
         _tileLoadTimeoutTimer =
             Timer(const Duration(seconds: _tileLoadTimeoutSeconds), () {
-          if (mounted && !_tileLoadFailed) {
-            debugWarn(
-                '[MAP] Tile load timeout — tiles did not finish loading within ${_tileLoadTimeoutSeconds}s');
-            setState(() => _tileLoadFailed = true);
+          if (!mounted) return;
+          _consecutiveTileLoadFailures++;
+          debugWarn(
+              '[MAP] Tile load timeout — tiles did not finish loading within ${_tileLoadTimeoutSeconds}s ($_consecutiveTileLoadFailures/$_tileLoadFailureThreshold)');
+          if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold) {
+            appState.logError(
+              'Map tiles unavailable — check connection',
+              severity: ErrorSeverity.warning,
+              autoSwitch: false,
+            );
+            setState(() {});
           }
         });
       } else {
-        // Cache-only mode — never show the tile-load warning
-        _tileLoadFailed = false;
+        _consecutiveTileLoadFailures = 0;
       }
 
       // First-load-only setup: center on GPS and register camera listener.
@@ -2154,9 +2174,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// that the new tiles have rendered.
   void _onMapIdle() {
     _tileLoadTimeoutTimer?.cancel();
-    if (_tileLoadFailed && mounted) {
-      debugLog('[MAP] Tiles recovered after earlier load failure');
-      setState(() => _tileLoadFailed = false);
+    if (_consecutiveTileLoadFailures > 0 && mounted) {
+      if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold) {
+        debugLog('[MAP] Tiles recovered after $_consecutiveTileLoadFailures consecutive load failures');
+      }
+      _consecutiveTileLoadFailures = 0;
+      setState(() {});
     }
   }
 
@@ -3771,21 +3794,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           final rendered = await _renderDistanceLabelPng(labelText);
           await _mapController!.addImage(imageName, rendered.bytes);
           _registeredDistanceLabelImages.add(imageName);
+          _registeredDistanceLabelImageSizes[imageName] = rendered.size;
           imageSize = rendered.size;
         } catch (e) {
           debugError('[MAP] render/addImage(distance label) failed: $e');
         }
       }
-      // If we didn't just render (reuse case) we still need the size for
-      // collision tests. Re-render for measurement; this is cheap and rare.
-      if (imageSize == null) {
-        try {
-          final rendered = await _renderDistanceLabelPng(labelText);
-          imageSize = rendered.size;
-        } catch (_) {
-          imageSize = const Size(60, 18);
-        }
-      }
+      imageSize ??= _registeredDistanceLabelImageSizes[imageName] ??
+          const Size(60, 18);
       _distanceLabelImageSize[key] = imageSize;
       _distanceLabelRepeaterPos[key] = LatLng(r.repeater.lat, r.repeater.lon);
 
@@ -3940,8 +3956,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     await _syncRepeaterSymbols(appState);
     await _syncCoverageSymbols(appState);
     await _syncGpsSymbol(appState);
-    await _updateFocusLines();
-    await _syncDistanceLabels(appState);
+    if (!_focusSyncDeferred) {
+      await _updateFocusLines();
+      await _syncDistanceLabels(appState);
+    }
   }
 
   /// Fit camera to show all history session markers
@@ -4015,6 +4033,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final e in appState.discLogEntries) {
       discNodeTotal += e.discoveredNodes.length;
     }
+    int traceSuccessTotal = 0;
+    for (final t in appState.traceLogEntries) {
+      if (t.success) traceSuccessTotal++;
+    }
 
     return Object.hash(
       appState.txPings.length,
@@ -4032,6 +4054,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       appState.preferences.markerStyle,
       txEchoTotal,
       discNodeTotal,
+      traceSuccessTotal,
       appState.viewingHistorySession,
       appState.historySessionMarkers?.length ?? 0,
     );
@@ -5590,6 +5613,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     _focusPanelMinimized = false;
 
+    // Defer focus lines and distance labels so the 500ms zoom-to-fit
+    // animation runs without contention from heavy native platform calls.
+    _focusSyncDeferred = true;
+
     setState(() {
       _focusedPingLocation = pingLocation;
       _focusedPingTimestamp = timestamp;
@@ -5607,12 +5634,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
     });
 
-    // Once the 500ms zoom-to-fit animation settles, re-flow the distance
-    // labels so any that collide on screen slide along their lines to a
-    // non-overlapping slot. 600ms gives the camera a bit of buffer beyond
-    // the animation duration.
-    Future.delayed(const Duration(milliseconds: 600), () {
+    // Once the 500ms zoom-to-fit animation settles, run the deferred focus
+    // line and distance label sync, then reflow labels for collisions.
+    final appState = context.read<AppStateProvider>();
+    Future.delayed(const Duration(milliseconds: 600), () async {
       if (!mounted || _focusedPingLocation == null) return;
+      _focusSyncDeferred = false;
+      await _updateFocusLines();
+      await _syncDistanceLabels(appState);
       _reflowDistanceLabelsForCollisions();
     });
   }
