@@ -237,6 +237,8 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    int? pingCounter,
+    String? wireTag,
   }) async {
     final item = ApiQueueItem.fromTx(
       latitude: latitude,
@@ -246,6 +248,8 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      pingCounter: pingCounter,
+      wireTag: wireTag,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue

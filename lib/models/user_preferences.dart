@@ -70,6 +70,10 @@ class UserPreferences {
   /// Anonymous mode: rename companion to "Anonymous" during wardriving
   final bool anonymousMode;
 
+  /// Broadcast coordinates: when true, TX pings put real GPS on the air (legacy
+  /// behavior). Default false = privacy-preserving wire tag; coords go via API only.
+  final bool broadcastCoords;
+
   /// Discovery drop: count failed discoveries as failed pings and report to API
   final bool discDropEnabled;
 
@@ -149,6 +153,7 @@ class UserPreferences {
     this.mapRotationLocked = false,
     this.disableRssiFilter = false,
     this.anonymousMode = false,
+    this.broadcastCoords = false,
     this.discDropEnabled = false,
     this.floodTrafficEnabled = false,
     this.deleteChannelOnDisconnect = true,
@@ -195,6 +200,7 @@ class UserPreferences {
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
+      broadcastCoords: (json['broadcastCoords'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
       floodTrafficEnabled: (json['floodTrafficEnabled'] as bool?) ?? false,
       deleteChannelOnDisconnect:
@@ -253,6 +259,7 @@ class UserPreferences {
       'mapRotationLocked': mapRotationLocked,
       'disableRssiFilter': disableRssiFilter,
       'anonymousMode': anonymousMode,
+      'broadcastCoords': broadcastCoords,
       'discDropEnabled': discDropEnabled,
       'floodTrafficEnabled': floodTrafficEnabled,
       'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
@@ -298,6 +305,7 @@ class UserPreferences {
     bool? mapRotationLocked,
     bool? disableRssiFilter,
     bool? anonymousMode,
+    bool? broadcastCoords,
     bool? discDropEnabled,
     bool? floodTrafficEnabled,
     bool? deleteChannelOnDisconnect,
@@ -342,6 +350,7 @@ class UserPreferences {
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
+      broadcastCoords: broadcastCoords ?? this.broadcastCoords,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
       floodTrafficEnabled: floodTrafficEnabled ?? this.floodTrafficEnabled,
       deleteChannelOnDisconnect:
@@ -419,6 +428,7 @@ class UserPreferences {
         other.mapRotationLocked == mapRotationLocked &&
         other.disableRssiFilter == disableRssiFilter &&
         other.anonymousMode == anonymousMode &&
+        other.broadcastCoords == broadcastCoords &&
         other.discDropEnabled == discDropEnabled &&
         other.floodTrafficEnabled == floodTrafficEnabled &&
         other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
@@ -463,6 +473,7 @@ class UserPreferences {
       mapRotationLocked,
       disableRssiFilter,
       anonymousMode,
+      broadcastCoords,
       discDropEnabled,
       floodTrafficEnabled,
       deleteChannelOnDisconnect,

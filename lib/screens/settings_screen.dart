@@ -307,6 +307,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       }
                     },
             ),
+            SwitchListTile(
+              secondary: const Icon(Icons.my_location),
+              title: const Text('Broadcast My Coordinates'),
+              subtitle: Text(prefs.broadcastCoords
+                  ? 'Real GPS is sent on the air'
+                  : 'Coordinates stay private (sent only to the server)'),
+              value: prefs.broadcastCoords,
+              onChanged: (value) => appState.setBroadcastCoords(value),
+            ),
             ListTile(
               leading: const Icon(Icons.timer),
               title: const Text('Auto-Ping Interval'),

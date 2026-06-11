@@ -56,6 +56,14 @@ class ApiQueueItem extends HiveObject {
   @HiveField(15)
   final double? power;
 
+  /// TX wire-tag ping counter (token mode only; null otherwise).
+  @HiveField(16)
+  final int? pingCounter;
+
+  /// TX wire-tag body sent on the air, e.g. "MM:FlmLG4I" (token mode only; null otherwise).
+  @HiveField(17)
+  final String? wireTag;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -68,6 +76,8 @@ class ApiQueueItem extends HiveObject {
     this.lastRetryAt,
     this.noiseFloor,
     this.power,
+    this.pingCounter,
+    this.wireTag,
   });
 
   /// Create from TX ping
@@ -80,6 +90,8 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    int? pingCounter,
+    String? wireTag,
   }) {
     return ApiQueueItem(
       type: 'TX',
@@ -92,6 +104,8 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      pingCounter: pingCounter,
+      wireTag: wireTag,
     );
   }
 
@@ -269,6 +283,10 @@ class ApiQueueItem extends HiveObject {
           timestamp.millisecondsSinceEpoch ~/ 1000, // Unix timestamp in seconds
       'external_antenna': externalAntenna,
       'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+      // Token-mode TX only. Their presence selects the server's validated path;
+      // absence (coords mode / RX) is the unchanged-from-today coords path.
+      if (pingCounter != null) 'ping_counter': pingCounter,
+      if (wireTag != null) 'wire_tag': wireTag,
     };
   }
 

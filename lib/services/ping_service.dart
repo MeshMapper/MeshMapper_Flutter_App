@@ -15,6 +15,7 @@ import 'meshcore/connection.dart';
 import 'meshcore/disc_tracker.dart';
 import 'meshcore/trace_tracker.dart';
 import 'meshcore/tx_tracker.dart';
+import 'meshcore/wire_tag_codec.dart';
 import 'meshcore/unified_rx_handler.dart';
 import 'wakelock_service.dart';
 
@@ -96,6 +97,8 @@ class PingService {
   // TX ping context for queueing after RX window ends
   int? _pendingTxTimestamp;
   int? _pendingTxNoiseFloor;
+  int? _pendingTxPingCounter; // wire-tag ping counter (null in coords mode)
+  String? _pendingTxWireTag; // wire-tag body sent on air (null in coords mode)
 
   // Ping in progress guard (prevents concurrent BLE GATT errors)
   // Reference: state.pingInProgress in wardrive.js
@@ -150,6 +153,19 @@ class PingService {
 
   /// Callback to check if TX is allowed by API (zone capacity check)
   bool Function()? checkTxAllowed;
+
+  /// Wire-tag composition (default privacy mode). Return the active session_id,
+  /// the wire-tag key from /auth, the next per-session ping counter, and whether
+  /// the user opted into broadcasting real coords on the air.
+  String? Function()? getSessionId;
+  String? Function()? getWireKey;
+  int Function()? getNextPingCounter;
+  bool Function()? getBroadcastCoords;
+
+  /// Peek the current per-session ping counter, and react when it is exhausted
+  /// (wire tag's 11-bit cap) — AppStateProvider disconnects with a session-limit message.
+  int Function()? getPingCounter;
+  Future<void> Function()? onSessionLimitReached;
 
   /// Callback for ping events
   void Function(TxPing)? onTxPing;
@@ -578,11 +594,34 @@ class PingService {
       }
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
-      // Build ping message (same format used for TxTracker correlation)
-      // Power is no longer included in the mesh message — sent per-ping in API payload
+      // Build the on-air body ONCE (same string is used for TxTracker echo
+      // correlation AND the actual transmission). Power is sent per-ping in the API.
+      //
+      // Default (privacy): a keyed wire tag "MM:..." — coords go only via the API.
+      // Opt-in (Broadcast My Coordinates) OR no session yet: plaintext "MM:lat,lon".
       final coordsStr =
-          '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
-      final pingMessage = '@[MapperBot] $coordsStr';
+          '${position.latitude.toStringAsFixed(5)},${position.longitude.toStringAsFixed(5)}';
+      final broadcastCoords = getBroadcastCoords?.call() ?? false;
+      final sessionId = getSessionId?.call();
+      String pingMessage;
+      int? txPingCounter;
+      String? txWireTag;
+      if (!broadcastCoords && sessionId != null && sessionId.isNotEmpty) {
+        // Session-limit guard: the wire tag's counter is 11 bits (max 2047). When it
+        // is exhausted, end the session cleanly rather than repeating/corrupting tags.
+        if ((getPingCounter?.call() ?? 0) >= 2047) {
+          debugError('[SESSION] Reached session ping limit (2047) — disconnecting');
+          _pingInProgress = false;
+          onSessionLimitReached?.call();
+          return false;
+        }
+        txPingCounter = getNextPingCounter?.call() ?? 1;
+        txWireTag =
+            WireTagCodec.encode(sessionId, txPingCounter, getWireKey?.call());
+        pingMessage = txWireTag;
+      } else {
+        pingMessage = 'MM:$coordsStr';
+      }
 
       // Capture noise floor at ping time
       final noiseFloor = _connection.lastNoiseFloor;
@@ -703,8 +742,8 @@ class PingService {
       // Play transmit sound immediately before sending
       _audioService?.playTransmitSound();
 
-      // Send ping via BLE (coordinates only — power is in API payload)
-      await _connection.sendPing(position.latitude, position.longitude);
+      // Send ping via BLE (pre-composed body — wire tag or legacy coords)
+      await _connection.sendPing(pingMessage);
 
       // Mark ping time and position
       _lastTxTime = DateTime.now();
@@ -723,6 +762,8 @@ class PingService {
       // TX entry is queued AFTER RX window so heard_repeats can be populated
       _pendingTxTimestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       _pendingTxNoiseFloor = noiseFloor;
+      _pendingTxPingCounter = txPingCounter; // null in coords mode
+      _pendingTxWireTag = txWireTag; // null in coords mode
 
       // Start RX listening window (TX will be queued when window ends)
       _startRxListeningWindow(position);
@@ -825,6 +866,8 @@ class PingService {
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
         power: getPowerLevel?.call(),
+        pingCounter: _pendingTxPingCounter, // null in coords mode → server coords path
+        wireTag: _pendingTxWireTag, // null in coords mode → server coords path
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
 

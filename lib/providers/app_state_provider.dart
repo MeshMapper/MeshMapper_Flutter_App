@@ -2165,6 +2165,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService!.checkTxAllowed = () => txAllowed;
     _pingService!.getDiscDropEnabled = () => discDropEnabled;
 
+    // Wire-tag composition (privacy-preserving TX body by default).
+    _pingService!.getSessionId = () => _apiService.sessionId;
+    _pingService!.getWireKey = () => _apiService.wireKey;
+    _pingService!.getNextPingCounter = () => _apiService.nextPingCounter();
+    _pingService!.getBroadcastCoords = () => _preferences.broadcastCoords;
+    _pingService!.getPingCounter = () => _apiService.pingCounter;
+    _pingService!.onSessionLimitReached =
+        () => handleSessionError('session_limit', null);
+
     _pingService!.onTxPing = (ping) {
       _txPings.add(ping);
       if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
@@ -5048,6 +5057,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Broadcast my coordinates: when true, TX pings put real GPS on the air
+  /// (legacy). When false (default), pings broadcast the privacy-preserving wire
+  /// tag and coords travel only via the API.
+  Future<void> setBroadcastCoords(bool enabled) async {
+    _preferences = _preferences.copyWith(broadcastCoords: enabled);
+    await _savePreferences();
+    debugLog('[PING] Broadcast coordinates ${enabled ? 'enabled' : 'disabled'}');
+    notifyListeners();
+  }
+
   /// Play disconnect alert if enabled (triple beep for unexpected ping stop)
   void _playDisconnectAlert() {
     if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) {
@@ -5102,6 +5121,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return serverMessage ?? 'Invalid request to API.';
       case 'session_expired':
         return 'Session has expired. Please reconnect.';
+      case 'session_limit':
+        return 'Reached session limit. Please reconnect to continue.';
       case 'bad_session':
         return 'Invalid session. Please reconnect.';
       case 'outofdate':
@@ -5131,6 +5152,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// This may trigger auto-disconnect
   Future<void> handleSessionError(String? reason, String? message) async {
     final userMessage = _getErrorMessage(reason, message);
+
+    // Session ping-counter exhausted (wire tag's 11-bit cap). The session is still
+    // valid here, so flush the queue under it BEFORE disconnecting: clearOnDisconnect()
+    // drops pending pings, and token-ping wire tags would fail validation if re-uploaded
+    // later under a new session.
+    if (reason == 'session_limit') {
+      debugError('[SESSION] $userMessage');
+      logError(userMessage, severity: ErrorSeverity.warning);
+      try {
+        await _apiQueueService.flushQueue();
+      } catch (e) {
+        debugError('[SESSION] Queue flush before session-limit disconnect failed: $e');
+      }
+      await disconnect();
+      return;
+    }
 
     // Rate limiting should warn but not disconnect (per PORTED_APP behavior)
     if (reason == 'rate_limited') {
