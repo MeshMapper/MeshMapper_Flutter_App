@@ -41,9 +41,10 @@ class SelfInfo {
   final String name;
 
   /// Radio configuration reported in the SelfInfo response (newer firmware only;
-  /// null on older firmware that omits the radio block). Units are as sent by the
-  /// MeshCore companion protocol: frequency and bandwidth in Hz, SF/CR raw.
-  final int? radioFreqHz;
+  /// null on older firmware that omits the radio block). Encoding as sent by the device:
+  /// frequency in kHz, bandwidth in Hz, SF/CR raw. (The companion-protocol wiki documents
+  /// freq as Hz, but real hardware reports kHz — a 910.525 MHz radio sends 910525.)
+  final int? radioFreqKHz;
   final int? radioBwHz;
   final int? radioSf;
   final int? radioCr;
@@ -54,7 +55,7 @@ class SelfInfo {
     required this.maxTxPower,
     required this.publicKey,
     required this.name,
-    this.radioFreqHz,
+    this.radioFreqKHz,
     this.radioBwHz,
     this.radioSf,
     this.radioCr,
@@ -67,13 +68,13 @@ class SelfInfo {
       .toUpperCase();
 
   /// Whether the device reported a usable radio configuration.
-  bool get hasRadioConfig => radioFreqHz != null && radioFreqHz! > 0;
+  bool get hasRadioConfig => radioFreqKHz != null && radioFreqKHz! > 0;
 
   /// Compact radio config for the API: "freqMHz,bwKHz,SF,CR" (e.g. "910.525,62.5,7,5").
-  /// Frequency Hz→MHz, bandwidth Hz→kHz. Null when the device didn't report radio params.
+  /// Frequency kHz→MHz (÷1000), bandwidth Hz→kHz (÷1000). Null when no radio params.
   String? get radioConfigApi {
     if (!hasRadioConfig) return null;
-    final freq = _trimNum(radioFreqHz! / 1e6);
+    final freq = _trimNum(radioFreqKHz! / 1e3);
     final bw = _trimNum((radioBwHz ?? 0) / 1e3);
     return '$freq,$bw,${radioSf ?? 0},${radioCr ?? 0}';
   }
@@ -82,7 +83,7 @@ class SelfInfo {
   /// Null when unavailable.
   String? get radioConfigDisplay {
     if (!hasRadioConfig) return null;
-    final freq = _trimNum(radioFreqHz! / 1e6);
+    final freq = _trimNum(radioFreqKHz! / 1e3);
     final bw = _trimNum((radioBwHz ?? 0) / 1e3);
     return '$freq MHz · $bw kHz · SF${radioSf ?? 0} · CR${radioCr ?? 0}';
   }
@@ -629,10 +630,11 @@ class MeshCoreConnection {
       final maxTxPower = reader.readByte();
       final publicKey = reader.readBytes(32);
 
-      // Additional fields added in newer firmware versions, between publicKey and name.
-      // radioFreq/radioBw are uint32 Hz; radioSf/radioCr are single bytes (MeshCore
-      // companion protocol RESP_CODE_SELF_INFO). Older firmware omits this block.
-      int? radioFreqHz;
+      // Additional fields added in newer firmware versions, between publicKey and name
+      // (MeshCore companion protocol RESP_CODE_SELF_INFO). Older firmware omits this block.
+      // Encoding note: the wiki documents radioFreq as uint32 Hz, but real hardware reports
+      // it in kHz (a 910.525 MHz radio sends 910525); radioBw is uint32 Hz; SF/CR are bytes.
+      int? radioFreqKHz;
       int? radioBwHz;
       int? radioSf;
       int? radioCr;
@@ -641,7 +643,7 @@ class MeshCoreConnection {
         reader.readInt32LE(); // advLon
         reader.readBytes(3); // reserved
         reader.readByte(); // manualAddContacts
-        radioFreqHz = reader.readUInt32LE(); // radioFreq (Hz)
+        radioFreqKHz = reader.readUInt32LE(); // radioFreq (kHz on real hardware)
         radioBwHz = reader.readUInt32LE(); // radioBw (Hz)
         radioSf = reader.readByte(); // radioSf
         radioCr = reader.readByte(); // radioCr
@@ -656,7 +658,7 @@ class MeshCoreConnection {
         maxTxPower: maxTxPower,
         publicKey: publicKey,
         name: name,
-        radioFreqHz: radioFreqHz,
+        radioFreqKHz: radioFreqKHz,
         radioBwHz: radioBwHz,
         radioSf: radioSf,
         radioCr: radioCr,
@@ -665,6 +667,10 @@ class MeshCoreConnection {
       _selfInfo = selfInfo;
       debugLog(
           '[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}..., radio=${selfInfo.radioConfigApi ?? "n/a"}');
+      // Raw radio values straight off the device — surfaces the actual encoding in the
+      // downloadable debug log (diagnoses any future unit questions).
+      debugLog(
+          '[CONN] Radio raw: freqKHz=$radioFreqKHz bwHz=$radioBwHz sf=$radioSf cr=$radioCr → ${selfInfo.radioConfigApi ?? "n/a"}');
 
       _selfInfoCompleter?.complete(selfInfo);
       _selfInfoCompleter = null;

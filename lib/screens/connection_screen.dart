@@ -813,12 +813,19 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   /// Radio configuration row (frequency/bandwidth/SF/CR), shown under Power Level.
   /// Read-only — the app only reports the device's radio settings, never changes them.
+  /// The value ("910.525 MHz · 62.5 kHz · SF7 · CR5") is split onto two tidy lines —
+  /// freq + bandwidth, then SF + CR — so it never wraps mid-value in the narrow card.
   Widget _buildRadioRow(BuildContext context, String value) {
+    final parts = value.split(' · ');
+    final line1 = parts.length >= 2 ? parts.take(2).join(' · ') : value;
+    final line2 = parts.length > 2 ? parts.skip(2).join(' · ') : '';
+    const valueStyle = TextStyle(fontWeight: FontWeight.w500);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(
               width: 120,
@@ -827,18 +834,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                 style: TextStyle(fontWeight: FontWeight.w500),
               ),
             ),
+            Icon(Icons.radio, size: 16, color: Colors.blue.shade400),
+            const SizedBox(width: 4),
             Expanded(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.radio, size: 16, color: Colors.blue.shade400),
-                  const SizedBox(width: 4),
-                  Flexible(
-                    child: Text(
-                      value,
-                      style: const TextStyle(fontWeight: FontWeight.w500),
-                    ),
-                  ),
+                  Text(line1, style: valueStyle),
+                  if (line2.isNotEmpty) Text(line2, style: valueStyle),
                 ],
               ),
             ),
