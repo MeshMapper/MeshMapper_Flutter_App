@@ -1105,19 +1105,17 @@ class MeshCoreConnection {
     );
   }
 
-  /// Send ping to #wardriving channel
-  /// Format: @[MapperBot] LAT, LON
-  /// Power is no longer included in the mesh message — it is sent per-ping in the API payload instead
-  /// Reference: buildPayload() in wardrive.js
-  Future<void> sendPing(double lat, double lon) async {
+  /// Send a pre-composed TX body to the #wardriving channel.
+  /// The caller composes the body (privacy wire tag "MM:..." by default, or the
+  /// legacy "@[MapperBot] LAT, LON" when the user opts into broadcasting coords)
+  /// so the exact same string is used for both TxTracker echo matching and the
+  /// actual transmission.
+  /// Power is not included in the mesh message — it is sent per-ping in the API payload.
+  Future<void> sendPing(String message) async {
     final channel = _wardrivingChannel;
     if (channel == null) {
       throw Exception('Wardriving channel not initialized');
     }
-
-    // Format coordinates to 5 decimal places with comma separator
-    final coordsStr = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
-    final message = '@[MapperBot] $coordsStr';
 
     debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;

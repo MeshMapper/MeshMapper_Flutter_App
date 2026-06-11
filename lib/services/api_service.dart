@@ -39,6 +39,8 @@ class ApiService {
   bool _txAllowed = false;
   bool _rxAllowed = false;
   int? _sessionExpiresAt;
+  String? _wireKey; // TX wire-tag secret from /auth (null = un-keyed fallback)
+  int _pingCounter = 0; // per-session TX counter; resets on fresh /auth, not on heartbeat
   Timer? _heartbeatTimer;
   Timer? _heartbeatRetryTimer;
 
@@ -152,6 +154,18 @@ class ApiService {
 
   /// Get session ID
   String? get sessionId => _sessionId;
+
+  /// TX wire-tag secret delivered by /auth (null when the server didn't send one).
+  String? get wireKey => _wireKey;
+
+  /// Current per-session TX ping counter (peek without incrementing).
+  int get pingCounter => _pingCounter;
+
+  /// Increment and return the next per-session TX ping counter (1-based).
+  /// Hard-capped at 2047 (the wire tag's 11-bit counter field) so the packed
+  /// token can never overflow into the session#/region bits. Reaching the cap
+  /// needs an ~8.5h continuous session at 15s; a fresh /auth resets it.
+  int nextPingCounter() => _pingCounter >= 2047 ? 2047 : ++_pingCounter;
 
   /// Get session expiry timestamp
   int? get sessionExpiresAt => _sessionExpiresAt;
@@ -417,6 +431,16 @@ class ApiService {
           _txAllowed = data['tx_allowed'] == true;
           _rxAllowed = data['rx_allowed'] == true;
           _sessionExpiresAt = data['expires_at'] as int?;
+
+          // TX wire-tag key + per-session ping counter (counter resets on a fresh /auth).
+          // Log only receipt + length — NEVER the raw key (debug logs are uploadable).
+          _wireKey = data['wire_key'] as String?;
+          _pingCounter = 0;
+          if (_wireKey != null) {
+            debugLog('[AUTH] wire-tag key received (len=${_wireKey!.length})');
+          } else {
+            debugLog('[AUTH] no wire-tag key in auth response (un-keyed tag)');
+          }
 
           // Parse channels array from auth response
           final channelsData = data['channels'];
@@ -837,6 +861,8 @@ class ApiService {
   /// Clear session data and cancel all timers
   void _clearSession() {
     _sessionId = null;
+    _wireKey = null;
+    _pingCounter = 0;
     _txAllowed = false;
     _rxAllowed = false;
     _sessionExpiresAt = null;
