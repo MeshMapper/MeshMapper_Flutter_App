@@ -13,6 +13,7 @@ class OfflineSession {
   final String? devicePublicKey; // Device public key for auth during upload
   final String? deviceName; // Device name for display
   final String? contactUri; // Signed contact URI for registration during upload
+  final String? radioConfig; // Radio config captured at record time ("910.525,62.5,7,5")
   final bool uploaded; // Track upload status
 
   OfflineSession({
@@ -23,6 +24,7 @@ class OfflineSession {
     this.devicePublicKey,
     this.deviceName,
     this.contactUri,
+    this.radioConfig,
     this.uploaded = false,
   });
 
@@ -36,6 +38,7 @@ class OfflineSession {
       devicePublicKey: json['devicePublicKey'] as String?,
       deviceName: json['deviceName'] as String?,
       contactUri: json['contactUri'] as String?,
+      radioConfig: json['radioConfig'] as String?,
       uploaded: json['uploaded'] as bool? ?? false,
     );
   }
@@ -50,6 +53,7 @@ class OfflineSession {
       'devicePublicKey': devicePublicKey,
       'deviceName': deviceName,
       'contactUri': contactUri,
+      'radioConfig': radioConfig,
       'uploaded': uploaded,
     };
   }
@@ -68,6 +72,7 @@ class OfflineSession {
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
       contactUri: contactUri,
+      radioConfig: radioConfig,
       uploaded: uploaded ?? this.uploaded,
     );
   }
@@ -161,6 +166,7 @@ class OfflineSessionService {
     String? devicePublicKey,
     String? deviceName,
     String? contactUri,
+    String? radioConfig,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to save, skipping session creation');
@@ -178,6 +184,7 @@ class OfflineSessionService {
       'pings': pings,
       if (devicePublicKey != null) 'device_public_key': devicePublicKey,
       if (deviceName != null) 'device_name': deviceName,
+      if (radioConfig != null) 'radio_config': radioConfig,
     };
 
     final session = OfflineSession(
@@ -188,6 +195,7 @@ class OfflineSessionService {
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
       contactUri: contactUri,
+      radioConfig: radioConfig,
     );
 
     _sessions.insert(0, session); // Add at beginning (newest first)
@@ -205,6 +213,7 @@ class OfflineSessionService {
     String? devicePublicKey,
     String? deviceName,
     String? contactUri,
+    String? radioConfig,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to auto-save, skipping');
@@ -220,6 +229,10 @@ class OfflineSessionService {
         final updatedData = Map<String, dynamic>.from(existing.data);
         updatedData['pings'] = pings;
         updatedData['ping_count'] = pings.length;
+        final effectiveRadioConfig = radioConfig ?? existing.radioConfig;
+        if (effectiveRadioConfig != null) {
+          updatedData['radio_config'] = effectiveRadioConfig;
+        }
 
         _sessions[index] = OfflineSession(
           filename: existing.filename,
@@ -229,6 +242,7 @@ class OfflineSessionService {
           devicePublicKey: devicePublicKey ?? existing.devicePublicKey,
           deviceName: deviceName ?? existing.deviceName,
           contactUri: contactUri ?? existing.contactUri,
+          radioConfig: effectiveRadioConfig,
         );
         await _saveSessions();
         debugLog(
@@ -247,6 +261,7 @@ class OfflineSessionService {
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
       contactUri: contactUri,
+      radioConfig: radioConfig,
     );
     // saveSession inserts at index 0 (newest first)
     if (_sessions.isNotEmpty) {

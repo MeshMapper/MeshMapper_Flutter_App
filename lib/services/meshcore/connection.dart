@@ -40,12 +40,24 @@ class SelfInfo {
   final Uint8List publicKey;
   final String name;
 
+  /// Radio configuration reported in the SelfInfo response (newer firmware only;
+  /// null on older firmware that omits the radio block). Units are as sent by the
+  /// MeshCore companion protocol: frequency and bandwidth in Hz, SF/CR raw.
+  final int? radioFreqHz;
+  final int? radioBwHz;
+  final int? radioSf;
+  final int? radioCr;
+
   const SelfInfo({
     required this.type,
     required this.txPower,
     required this.maxTxPower,
     required this.publicKey,
     required this.name,
+    this.radioFreqHz,
+    this.radioBwHz,
+    this.radioSf,
+    this.radioCr,
   });
 
   /// Get public key as hex string
@@ -53,6 +65,37 @@ class SelfInfo {
       .map((b) => b.toRadixString(16).padLeft(2, '0'))
       .join('')
       .toUpperCase();
+
+  /// Whether the device reported a usable radio configuration.
+  bool get hasRadioConfig => radioFreqHz != null && radioFreqHz! > 0;
+
+  /// Compact radio config for the API: "freqMHz,bwKHz,SF,CR" (e.g. "910.525,62.5,7,5").
+  /// Frequency Hz→MHz, bandwidth Hz→kHz. Null when the device didn't report radio params.
+  String? get radioConfigApi {
+    if (!hasRadioConfig) return null;
+    final freq = _trimNum(radioFreqHz! / 1e6);
+    final bw = _trimNum((radioBwHz ?? 0) / 1e3);
+    return '$freq,$bw,${radioSf ?? 0},${radioCr ?? 0}';
+  }
+
+  /// Human-readable radio config for the UI: "910.525 MHz · 62.5 kHz · SF7 · CR5".
+  /// Null when unavailable.
+  String? get radioConfigDisplay {
+    if (!hasRadioConfig) return null;
+    final freq = _trimNum(radioFreqHz! / 1e6);
+    final bw = _trimNum((radioBwHz ?? 0) / 1e3);
+    return '$freq MHz · $bw kHz · SF${radioSf ?? 0} · CR${radioCr ?? 0}';
+  }
+
+  /// Format a number with up to 3 decimals, trimming trailing zeros and a trailing dot
+  /// (910.525 → "910.525", 62.5 → "62.5", 915.0 → "915").
+  static String _trimNum(double v) {
+    var s = v.toStringAsFixed(3);
+    if (s.contains('.')) {
+      s = s.replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
+    }
+    return s;
+  }
 }
 
 /// MeshCore connection manager
@@ -586,17 +629,22 @@ class MeshCoreConnection {
       final maxTxPower = reader.readByte();
       final publicKey = reader.readBytes(32);
 
-      // Skip additional fields added in newer firmware versions
-      // These fields exist between publicKey and name
+      // Additional fields added in newer firmware versions, between publicKey and name.
+      // radioFreq/radioBw are uint32 Hz; radioSf/radioCr are single bytes (MeshCore
+      // companion protocol RESP_CODE_SELF_INFO). Older firmware omits this block.
+      int? radioFreqHz;
+      int? radioBwHz;
+      int? radioSf;
+      int? radioCr;
       if (reader.remainingBytesCount >= 22) {
         reader.readInt32LE(); // advLat
         reader.readInt32LE(); // advLon
         reader.readBytes(3); // reserved
         reader.readByte(); // manualAddContacts
-        reader.readUInt32LE(); // radioFreq
-        reader.readUInt32LE(); // radioBw
-        reader.readByte(); // radioSf
-        reader.readByte(); // radioCr
+        radioFreqHz = reader.readUInt32LE(); // radioFreq (Hz)
+        radioBwHz = reader.readUInt32LE(); // radioBw (Hz)
+        radioSf = reader.readByte(); // radioSf
+        radioCr = reader.readByte(); // radioCr
       }
 
       // Read name from remaining bytes
@@ -608,11 +656,15 @@ class MeshCoreConnection {
         maxTxPower: maxTxPower,
         publicKey: publicKey,
         name: name,
+        radioFreqHz: radioFreqHz,
+        radioBwHz: radioBwHz,
+        radioSf: radioSf,
+        radioCr: radioCr,
       );
 
       _selfInfo = selfInfo;
       debugLog(
-          '[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}...');
+          '[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}..., radio=${selfInfo.radioConfigApi ?? "n/a"}');
 
       _selfInfoCompleter?.complete(selfInfo);
       _selfInfoCompleter = null;

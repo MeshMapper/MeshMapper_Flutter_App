@@ -318,6 +318,7 @@ class ApiService {
     double? power,
     String? iataCode,
     String? model,
+    String? radioFreq,
     double? lat,
     double? lon,
     double? accuracyMeters,
@@ -359,6 +360,7 @@ class ApiService {
         }
         if (iataCode != null) payload['iata'] = iataCode;
         if (model != null) payload['model'] = model;
+        if (radioFreq != null) payload['radio_freq'] = radioFreq;
         payload['coords'] = {
           'lat': lat,
           'lng': lon, // Convert lon → lng for API

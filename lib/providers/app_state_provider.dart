@@ -459,6 +459,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   DeviceModel? get deviceModel => _deviceModel;
   String? get manufacturerString => _manufacturerString;
   String? get firmwareVersionString => _firmwareVersionString;
+
+  /// Human-readable radio config from the connected device's SelfInfo
+  /// (e.g. "910.525 MHz · 62.5 kHz · SF7 · CR5"); null on older firmware/no device.
+  String? get radioConfigDisplay =>
+      _meshCoreConnection?.selfInfo?.radioConfigDisplay;
   String? get devicePublicKey => _devicePublicKey;
   PingStats get pingStats => _pingStats;
   bool get autoPingEnabled => _autoPingEnabled;
@@ -1303,6 +1308,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         model: _meshCoreConnection!.deviceModel?.manufacturer ??
             _meshCoreConnection!.deviceInfo?.manufacturer ??
             'Unknown',
+        radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
         lat: _currentPosition?.latitude,
         lon: _currentPosition?.longitude,
         accuracyMeters: _currentPosition?.accuracy,
@@ -1386,6 +1392,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         model: _meshCoreConnection!.deviceModel?.manufacturer ??
             _meshCoreConnection!.deviceInfo?.manufacturer ??
             'Unknown',
+        radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
         lat: _currentPosition?.latitude,
         lon: _currentPosition?.longitude,
         accuracyMeters: _currentPosition?.accuracy,
@@ -4204,6 +4211,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         power: _preferences.powerLevel,
         iataCode: zoneCode ?? _preferences.iataCode,
         model: modelString,
+        radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
         lat: _currentPosition!.latitude,
         lon: _currentPosition!.longitude,
         accuracyMeters: _currentPosition!.accuracy,
@@ -4276,6 +4284,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           power: _preferences.powerLevel,
           iataCode: zoneCode ?? _preferences.iataCode,
           model: modelString,
+          radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
           lat: _currentPosition!.latitude,
           lon: _currentPosition!.longitude,
           accuracyMeters: _currentPosition!.accuracy,
@@ -4431,6 +4440,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       devicePublicKey: _devicePublicKey,
       deviceName: offlineDeviceName,
       contactUri: _offlineContactUri,
+      radioConfig: _meshCoreConnection?.selfInfo?.radioConfigApi,
     );
     _offlineSessionService.finalizeCurrentSession();
     debugLog('[APP] Saved offline session with ${pings.length} pings');
@@ -4458,6 +4468,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       devicePublicKey: _devicePublicKey,
       deviceName: offlineDeviceName,
       contactUri: _offlineContactUri,
+      radioConfig: _meshCoreConnection?.selfInfo?.radioConfigApi,
     );
   }
 
@@ -4607,6 +4618,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       power: _preferences.powerLevel,
       iataCode: zoneCode ?? _preferences.iataCode,
       model: 'Offline Upload',
+      radioFreq: session.radioConfig,
       lat: _currentPosition?.latitude,
       lon: _currentPosition?.longitude,
       accuracyMeters: _currentPosition?.accuracy,
@@ -4637,6 +4649,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           power: _preferences.powerLevel,
           iataCode: zoneCode ?? _preferences.iataCode,
           model: 'Offline Upload',
+          radioFreq: session.radioConfig,
           lat: _currentPosition?.latitude,
           lon: _currentPosition?.longitude,
           accuracyMeters: _currentPosition?.accuracy,
@@ -5184,6 +5197,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               devicePublicKey: _devicePublicKey,
               deviceName: offlineDeviceName,
               contactUri: _offlineContactUri,
+              radioConfig: _meshCoreConnection?.selfInfo?.radioConfigApi,
             );
             debugLog(
                 '[APP] Preserved ${queuedPings.length} queued pings to offline storage on session expiry');
@@ -5962,6 +5976,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         power: _preferences.powerLevel,
         iataCode: newZoneCode,
         model: modelString,
+        radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
         lat: _currentPosition!.latitude,
         lon: _currentPosition!.longitude,
         accuracyMeters: _currentPosition!.accuracy,
@@ -6018,6 +6033,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             power: _preferences.powerLevel,
             iataCode: newZoneCode,
             model: modelString,
+            radioFreq: _meshCoreConnection?.selfInfo?.radioConfigApi,
             lat: _currentPosition!.latitude,
             lon: _currentPosition!.longitude,
             accuracyMeters: _currentPosition!.accuracy,

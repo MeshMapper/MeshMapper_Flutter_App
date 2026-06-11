@@ -660,6 +660,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             const SizedBox(height: 4),
             _buildPowerRow(context, appState, isPowerSet, isAutoMode, prefs),
 
+            // Radio config row (freq/bandwidth/SF/CR), under Power Level
+            if (appState.radioConfigDisplay != null) ...[
+              const SizedBox(height: 4),
+              _buildRadioRow(context, appState.radioConfigDisplay!),
+            ],
+
             // Public key row
             if (appState.devicePublicKey != null) ...[
               const SizedBox(height: 8),
@@ -800,6 +806,43 @@ class _ConnectionScreenState extends State<ConnectionScreen>
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// Radio configuration row (frequency/bandwidth/SF/CR), shown under Power Level.
+  /// Read-only — the app only reports the device's radio settings, never changes them.
+  Widget _buildRadioRow(BuildContext context, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 120,
+              child: Text(
+                'Radio',
+                style: TextStyle(fontWeight: FontWeight.w500),
+              ),
+            ),
+            Expanded(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.radio, size: 16, color: Colors.blue.shade400),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      value,
+                      style: const TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
