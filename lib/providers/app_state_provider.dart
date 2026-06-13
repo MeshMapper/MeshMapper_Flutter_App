@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
@@ -19,6 +20,7 @@ import '../models/remembered_device.dart';
 import '../models/repeater.dart';
 import '../models/user_preferences.dart';
 import '../services/api_queue_service.dart';
+import '../utils/mvt_cells.dart';
 import '../services/api_service.dart';
 import '../services/audio_service.dart';
 import '../services/background_service.dart';
@@ -285,9 +287,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _maintenanceUrl;
   Timer? _maintenanceCheckTimer;
 
-  // Tile refresh after upload
-  int _overlayCacheBust = 0;
-  Timer? _tileRefreshTimer;
+  // Post-wardrive tile refresh: coords of recently uploaded pings (with the
+  // zone they belong to) and the +7s fresh-fetch timer (one retry at +10s).
+  // See VECTOR_TILES.md "Flutter post-wardrive live refresh".
+  Timer? _vectorFreshTimer;
+  final List<List<double>> _pendingFreshCoords = []; // [lat, lon]
+  String? _pendingFreshZone;
+  bool _vectorOverlayActive = false;
+
+  // Session coverage patch: the user's own freshly-pinged cells, drawn by the
+  // MapWidget as a small GeoJSON layer ON TOP of the base overlay (whose
+  // copies of these ids are filtered out, so translucent fills never stack).
+  // The base source is never swapped/cache-busted during a session — nothing
+  // may visibly change except the cells that actually changed. Keyed by
+  // feature id, insertion-ordered, capped.
+  final Map<int, CoverageCell> _coveragePatchCells = {};
+  int _coveragePatchVersion = 0;
 
   // Auth type from API response (API, Mesh, Manual)
   String? _authType;
@@ -591,7 +606,197 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isCheckingZone => _isCheckingZone;
   String? get zoneName => _currentZone?['name'] as String?;
   String? get zoneCode => _currentZone?['code'] as String?;
-  int get overlayCacheBust => _overlayCacheBust;
+
+  /// MapWidget handshake: whether the coverage overlay is currently on the
+  /// map. Gates the post-wardrive fresh-tile flow — no overlay, no fetches.
+  void reportVectorOverlayActive(bool active) {
+    _vectorOverlayActive = active;
+  }
+
+  /// Bumped whenever the session coverage patch changes; the MapWidget
+  /// watches it and re-applies the patch GeoJSON + base-layer filter.
+  int get coveragePatchVersion => _coveragePatchVersion;
+
+  /// The user's own freshly-pinged cells (feature id -> cell), authoritative
+  /// server state decoded from the fresh z14 tiles.
+  Map<int, CoverageCell> get coveragePatchCells => _coveragePatchCells;
+
+  /// Drop the session patch — the cells belong to one region + grid preset
+  /// (called on zone change and when the Coverage Grid preference changes).
+  void clearCoveragePatch() {
+    _coveragePatchCells.clear();
+    _coveragePatchVersion++;
+  }
+
+  /// Post-wardrive live refresh: have the server re-render (`fresh=1`) the
+  /// tiles around the uploaded ping coords at z11-14, then patch the user's
+  /// own cells onto the map from the fresh z14 bodies (the base overlay is
+  /// never swapped — see _coveragePatchCells). z8-10 are skipped: a single
+  /// ping is sub-pixel there and those whole-region renders are the expensive
+  /// ones; they ride the server's longer TTL. Zooms above 14 overzoom from
+  /// the z14 tile. attempt 1 fires +7s after upload; attempt 2 (+10s) runs
+  /// only when attempt 1 saw no changed tiles (ingestion can lag the post).
+  Future<void> _freshenAffectedVectorTiles({required int attempt}) async {
+    final zone = zoneCode;
+    if (zone == null ||
+        zone != _pendingFreshZone ||
+        _pendingFreshCoords.isEmpty) {
+      // Zone changed since the coords were queued: they belong to the OLD
+      // region's grid — freshening them against the new region's server
+      // would be pure wasted renders.
+      _pendingFreshCoords.clear();
+      return;
+    }
+    // Snapshot: a new upload can append (and re-schedule the timer) while the
+    // fetches below are in flight; only this snapshot is processed and only
+    // it gets removed afterwards, so late arrivals keep their refresh.
+    final coords = List<List<double>>.from(_pendingFreshCoords);
+
+    // A ping's influence is wider than its own cell: blob dilation and cells
+    // straddling a tile border are emitted in the NEIGHBOURING tile too (the
+    // server pads its tile queries by ~0.005°). Freshen every tile within
+    // that margin of the ping, or the spilled part of a cell stays stale in
+    // the next tile over.
+    const pad = 0.005;
+    final tiles = <String, List<int>>{}; // 'z/x/y' -> [z, x, y]
+    var capped = false;
+    for (final c in coords) {
+      for (var z = 11; z <= 14 && !capped; z++) {
+        final n = 1 << z;
+        int lonToX(double lon) {
+          final x = (((lon + 180.0) / 360.0) * n).floor();
+          return x < 0 ? 0 : (x >= n ? n - 1 : x);
+        }
+        int latToY(double lat) {
+          final latRad = lat * math.pi / 180.0;
+          final sinhArg = math.tan(latRad);
+          final asinh = math.log(sinhArg + math.sqrt(sinhArg * sinhArg + 1));
+          final y = ((1.0 - asinh / math.pi) / 2.0 * n).floor();
+          return y < 0 ? 0 : (y >= n ? n - 1 : y);
+        }
+
+        // Containing tile plus any neighbour the pad reaches into (≤4 per z).
+        for (final xt in {lonToX(c[1] - pad), lonToX(c[1] + pad)}) {
+          for (final yt in {latToY(c[0] + pad), latToY(c[0] - pad)}) {
+            if (tiles.length >= 56) {
+              capped = true;
+              break;
+            }
+            tiles['$z/$xt/$yt'] = [z, xt, yt];
+          }
+        }
+      }
+      if (capped) break;
+    }
+    if (capped) {
+      debugLog('[COVERAGE] Fresh-tile fan-out capped at 56 tiles this batch');
+    }
+
+    debugLog(
+        '[COVERAGE] Fresh-tile check (attempt $attempt): ${tiles.length} tiles for ${coords.length} ping(s), z11-14 incl. spill neighbours');
+    // Throttled to 4 concurrent renders: a full-burst Future.wait can pile up
+    // PHP workers and SQLite lock contention on the shared region host (each
+    // fresh=1 is a live render racing the wardrive INSERT). The whole batch
+    // still completes in a second or two.
+    final entries = tiles.entries.toList();
+    final z14Bodies = <Uint8List>[];
+    var anyChanged = false;
+    for (var i = 0; i < entries.length; i += 4) {
+      final chunk = entries.sublist(i, math.min(i + 4, entries.length));
+      await Future.wait(chunk.map((e) async {
+        final result = await _apiService.freshenVectorTile(
+            zone: zone,
+            z: e.value[0],
+            x: e.value[1],
+            y: e.value[2],
+            gsize: _preferences.coverageGridSize);
+        if (result.changed == true) {
+          anyChanged = true;
+          debugLog('[COVERAGE] Retrieved new tile ${e.key}');
+        } else if (result.changed == false) {
+          debugLog('[COVERAGE] No new tile ${e.key} (unchanged)');
+        } else {
+          debugLog('[COVERAGE] Tile ${e.key} fresh check failed');
+        }
+        if (e.value[0] == 14 && result.body != null) {
+          z14Bodies.add(result.body!);
+        }
+      }));
+      if (_isDisposed) return;
+    }
+
+    // Patch ONLY the user's own cells onto the map. The base overlay is never
+    // swapped — the fresh renders above keep the SERVER cache hot (other
+    // viewers + MapLibre's own tile revalidation pick them up); the cells the
+    // user is watching update instantly through the patch layer.
+    final patched = _extractOwnCells(coords, z14Bodies);
+    if (patched.isNotEmpty) {
+      for (final cell in patched) {
+        _coveragePatchCells.remove(cell.id); // re-insert: newest-last ordering
+        _coveragePatchCells[cell.id] = cell;
+      }
+      while (_coveragePatchCells.length > 5000) {
+        _coveragePatchCells.remove(_coveragePatchCells.keys.first);
+      }
+      _coveragePatchVersion++;
+      debugLog(
+          '[COVERAGE] Patched ${patched.length} cell(s) at your position onto the overlay (attempt $attempt)');
+      notifyListeners();
+    } else {
+      debugLog(
+          '[COVERAGE] No cells for your position in the fresh tiles yet (attempt $attempt)');
+    }
+
+    if (attempt < 2 && !anyChanged) {
+      // Re-check at +10s only when the first sweep came back unchanged —
+      // ingestion can lag a few seconds behind the post. An ACTIVE timer here
+      // belongs to a newer upload (it re-armed the +7s timer while this run's
+      // fetches were in flight); let it own the next sweep — overwriting it
+      // would sweep the new batch seconds too early.
+      if (!(_vectorFreshTimer?.isActive ?? false)) {
+        debugLog('[COVERAGE] No changes yet — second fresh-tile check at +10s');
+        _vectorFreshTimer = Timer(const Duration(seconds: 3), () {
+          _freshenAffectedVectorTiles(attempt: 2);
+        });
+      }
+    } else {
+      _pendingFreshCoords.removeRange(
+          0, math.min(coords.length, _pendingFreshCoords.length));
+    }
+  }
+
+  /// The cells this batch of pings actually touches — the ping's own cell
+  /// plus its blob reach (Detailed dilates 3×3) — looked up by grid index in
+  /// the freshly rendered z14 tiles so the patch carries the SERVER-resolved
+  /// status (priority merge with whatever was already in the cell).
+  List<CoverageCell> _extractOwnCells(
+      List<List<double>> coords, List<Uint8List> bodies) {
+    if (bodies.isEmpty) return const [];
+    final steps = kCoverageGridSteps[_preferences.coverageGridSize];
+    if (steps == null) return const [];
+    final reach = _preferences.coverageGridSize == 100 ? 1 : 0;
+    final wanted = <String>{};
+    for (final c in coords) {
+      final ci = (c[0] / steps[0]).floor();
+      final cj = (c[1] / steps[1]).floor();
+      for (var di = -reach; di <= reach; di++) {
+        for (var dj = -reach; dj <= reach; dj++) {
+          wanted.add('${ci + di}_${cj + dj}');
+        }
+      }
+    }
+    final out = <CoverageCell>[];
+    final seen = <int>{};
+    for (final body in bodies) {
+      for (final cell in decodeCoverageCells(body)) {
+        if (wanted.contains('${cell.i}_${cell.j}') && seen.add(cell.id)) {
+          out.add(cell);
+        }
+      }
+    }
+    return out;
+  }
+
   int? get zoneSlotsAvailable => _currentZone?['slots_available'] as int?;
   int? get zoneSlotsMax => _currentZone?['slots_max'] as int?;
   String? get nearestZoneName => _nearestZone?['name'] as String?;
@@ -845,7 +1050,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     };
 
-    _apiQueueService.onUploadSuccess = (uploadedCount) {
+    _apiQueueService.onUploadSuccess = (uploadedCount, uploadedItems) {
       _pingStats = _pingStats.copyWith(
         successfulUploads: _pingStats.successfulUploads + uploadedCount,
       );
@@ -853,17 +1058,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           '[APP] Upload success: +$uploadedCount items (total: ${_pingStats.successfulUploads})');
       notifyListeners();
 
-      // Schedule overlay tile refresh after server has time to regenerate tiles.
-      // The MapWidget watches _overlayCacheBust and calls _refreshCoverageOverlay()
-      // (remove + re-add raster source with new URL) when it changes.
-      // Use 30s debounce to avoid excessive tile refreshes during rapid auto-ping
-      // (especially on flaky networks where tiles may fail to load).
-      _tileRefreshTimer?.cancel();
-      _tileRefreshTimer = Timer(const Duration(seconds: 30), () {
-        _overlayCacheBust = DateTime.now().millisecondsSinceEpoch;
-        debugLog('[MAP] Refreshing overlay tiles');
-        notifyListeners();
-      });
+      if (_vectorOverlayActive) {
+        // Queue the batch's coords for the +7s fresh-tile check; the user's
+        // own cells land on the map via the session patch (see
+        // _freshenAffectedVectorTiles).
+        _pendingFreshZone = zoneCode;
+        for (final item in uploadedItems) {
+          if (_pendingFreshCoords.length >= 16) break;
+          _pendingFreshCoords.add([item.latitude, item.longitude]);
+        }
+        _vectorFreshTimer?.cancel();
+        _vectorFreshTimer = Timer(const Duration(seconds: 7), () {
+          _freshenAffectedVectorTiles(attempt: 1);
+        });
+      }
     };
 
     // Initialize offline session service
@@ -7281,7 +7489,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _offlineAutoSaveTimer?.cancel();
     _zoneRefreshTimer?.cancel();
     _cancelZoneGraceTimers();
-    _tileRefreshTimer?.cancel();
+    _vectorFreshTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
     _pingService?.dispose();

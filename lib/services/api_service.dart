@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -890,6 +891,51 @@ class ApiService {
 
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
+
+  /// Force-rebuild one vector coverage tile on the region server
+  /// (`vector_tile.php?...&fresh=1`, see VECTOR_TILES.md). Used by the
+  /// post-wardrive live refresh: it keeps the server cache hot AND hands the
+  /// fresh tile bytes back so the caller can patch the user's own cells onto
+  /// the map without touching the rest of the overlay.
+  ///
+  /// `changed`: true/false from the X-Tile-Changed header; null on network
+  /// failure, non-2xx, or a server that doesn't implement fresh=1 yet.
+  /// `body`: the uncompressed MVT bytes on a 200, null otherwise (204 = tile
+  /// is empty; package:http has already gunzipped the response).
+  Future<({bool? changed, Uint8List? body})> freshenVectorTile({
+    required String zone,
+    required int z,
+    required int x,
+    required int y,
+    int gsize = 300,
+  }) async {
+    final url = Uri.parse(
+        'https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
+        '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1');
+    final sw = Stopwatch()..start();
+    debugLog(
+        '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1 (zone ${zone.toLowerCase()})');
+    try {
+      final response =
+          await _client.get(url).timeout(const Duration(seconds: 8));
+      final changed = response.headers['x-tile-changed'];
+      debugLog(
+          '[API]   Tile $z/$x/$y response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
+          '${response.bodyBytes.length}B, X-Tile-Changed=${changed ?? 'absent'}');
+      if (response.statusCode != 200 && response.statusCode != 204) {
+        return (changed: null, body: null);
+      }
+      final body = response.statusCode == 200 ? response.bodyBytes : null;
+      return (
+        changed: changed == null ? null : changed == '1',
+        body: body,
+      );
+    } catch (e) {
+      debugWarn(
+          '[API]   Tile $z/$x/$y fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+      return (changed: null, body: null);
+    }
+  }
 
   /// Upload batch of wardrive data
   /// Returns UploadResult indicating success, retryable failure, or non-retryable failure

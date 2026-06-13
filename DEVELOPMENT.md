@@ -290,7 +290,41 @@ Keeps the screen on during auto-ping to prevent device sleep during wardriving s
 - **Platform**: Android and iOS only (Web N/A — always requires active tab)
 - **File**: `lib/services/wakelock_service.dart`
 
-## Critical Protocol Details
+### Coverage Overlay (vector tiles)
+
+The MeshMapper coverage layer is rendered from the region server's vector tiles
+(`vector_tile.php`, z7–14, overzoom beyond) as a MapLibre source+layer pair. The app is
+vector-only — every region server must serve `vector_tile.php` (the legacy raster
+`tiles.php` overlay was removed from the app 2026-06). Contract reference:
+`MeshMapper_Server/docs/VECTOR_TILES.md`.
+
+- **Styling is client-side**: each cell carries an integer status category `st`; colours
+  come from `match` expressions built by `lib/utils/coverage_tile_palette.dart` (kept in
+  sync with the server's `dev/cvd_palettes.php`, including all colour-vision palettes).
+- **Coverage Grid preference (`prefs.coverageGridSize`)**: Simplified (300 m, default) or
+  Detailed (100 m + blob), mirroring the web's Grid Mode; baked into the tile URL. The
+  grid is locked to the chosen preset at every zoom — cells never resize.
+- **Post-wardrive live refresh**: on upload success the queue hands the uploaded items to
+  `AppStateProvider`; +7 s later the server re-renders the affected tiles at z11–14
+  (`fresh=1`, incl. neighbouring tiles within ~0.005° — blob/border spill lands in the
+  next tile over), and the user's own cells are decoded from the fresh z14 bodies
+  (`lib/utils/mvt_cells.dart`) into a session **patch layer**: a GeoJSON source updated
+  in place above the base layer, with the base layer's copies hidden via `setFilter`.
+  The base source is never swapped — nothing visibly changes except the changed cells.
+  A second check runs at +10 s only when the first found no changes. Logged under
+  `[COVERAGE]`.
+- **GOTCHA — never partial-update a fill layer**: `setLayerProperties` serializes with
+  `skipNulls: false`; any `FillLayerProperties` field left null is RESET to its
+  style-spec default on iOS/web (`fill-color` → black). Always resend the full colour
+  expressions with an opacity change (see `_applyCoverageOverlayOpacity`).
+- **GOTCHA — feature ids don't survive Android's filter bridge**: the platform converter
+  parses filter JSON numbers as float32, which rounds the 42-bit cell ids. Filter on the
+  small-int `i`/`j` properties (as an `"i_j"` string) instead — see
+  `_applyBasePatchFilter`.
+- **Files**: `lib/widgets/map_widget.dart` (`_addCoverageOverlay`, `_applyCoveragePatch`),
+  `lib/providers/app_state_provider.dart` (`_freshenAffectedVectorTiles`),
+  `lib/services/api_service.dart` (`freshenVectorTile`),
+  `lib/utils/coverage_tile_palette.dart`, `lib/utils/mvt_cells.dart`.
 
 ### BLE Service UUIDs (MeshCore Companion Protocol)
 - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`

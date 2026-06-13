@@ -43,8 +43,11 @@ class ApiQueueService {
   /// Callback for queue updates
   void Function(int queueSize)? onQueueUpdated;
 
-  /// Callback for successful uploads (passes count of items uploaded)
-  void Function(int uploadedCount)? onUploadSuccess;
+  /// Callback for successful uploads. Passes the count AND the uploaded items
+  /// so the listener can compute which coverage tiles the batch touched (the
+  /// post-wardrive vector tile refresh needs the ping coordinates).
+  void Function(int uploadedCount, List<ApiQueueItem> uploadedItems)?
+      onUploadSuccess;
 
   /// Callback when persistence fails (for user-visible error logging)
   void Function(String errorMessage)? onPersistenceError;
@@ -607,7 +610,7 @@ class ApiQueueService {
           _memoryQueue.remove(item);
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
-        onUploadSuccess?.call(uploadedCount);
+        onUploadSuccess?.call(uploadedCount, items);
         // Fire-and-forget: forward to custom API endpoint
         customApiService?.forwardPings(pings);
       } else if (result == UploadResult.nonRetryable) {
