@@ -249,6 +249,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing:
                     Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
               ),
+            if (prefs.mapTilesEnabled)
+              ListTile(
+                leading: const Icon(Icons.grid_on),
+                title: const Text('Coverage Grid'),
+                subtitle: Text(prefs.coverageGridSize == 100
+                    ? 'Detailed (100 m cells)'
+                    : 'Simplified (300 m cells)'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _showCoverageGridSelector(context, appState),
+              ),
             ListTile(
               leading: const Icon(Icons.visibility),
               title: const Text('Color Vision'),
@@ -1293,6 +1303,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'achromatopsia' => 'Achromatopsia (monochrome)',
       _ => 'Default',
     };
+  }
+
+  /// Coverage grid preset selector — mirrors the web UI's Grid Mode
+  /// (Simplified = 300 m, Detailed = 100 m + blob, applied server-side).
+  void _showCoverageGridSelector(
+      BuildContext context, AppStateProvider appState) {
+    final options = [
+      (300, 'Simplified', '300 m cells — the default, matches the web map'),
+      (100, 'Detailed', '100 m cells with blob smoothing — finer detail'),
+    ];
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text('Coverage Grid',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+            RadioGroup<int>(
+              groupValue: appState.preferences.coverageGridSize,
+              onChanged: (v) {
+                if (v != null) {
+                  appState.updatePreferences(
+                      appState.preferences.copyWith(coverageGridSize: v));
+                }
+                Navigator.pop(context);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final (value, label, subtitle) in options)
+                    RadioListTile<int>(
+                      secondary: const Icon(Icons.grid_on),
+                      title: Text(label),
+                      subtitle:
+                          Text(subtitle, style: const TextStyle(fontSize: 12)),
+                      value: value,
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showColorVisionSelector(

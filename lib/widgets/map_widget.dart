@@ -17,7 +17,9 @@ import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
+import '../utils/coverage_tile_palette.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
@@ -390,19 +392,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   bool _focusPanelMinimized = false;
   dynamic _focusedPingSource; // TxPing | RxPing | DiscLogEntry | TraceLogEntry
 
-  // MapLibre style and overlay tracking
-  int _lastCacheBust = 0;
+  // MapLibre style and overlay tracking.
   // Tracks the zone code we last rendered the coverage overlay for. When the
   // zone check succeeds after the style has already loaded (e.g. first check
   // failed with gps_inaccurate and a later retry succeeded), _addCoverageOverlay
-  // would otherwise never re-run and the raster layer would stay missing.
+  // would otherwise never re-run and the coverage layer would stay missing.
   String? _lastOverlayZoneCode;
   // Last coverage overlay opacity we pushed into MapLibre. Compared against
   // the current preference in _buildMap to detect slider changes and apply
   // them live via _applyCoverageOverlayOpacity (no layer rebuild needed).
   double? _lastAppliedCoverageOpacity;
-  // Guard flag that coalesces multiple overlay-refresh triggers (cache bust
-  // and zone change) in the same frame into a single post-frame callback.
+  // Guard flag that coalesces multiple overlay-refresh triggers (zone and
+  // pref changes) in the same frame into a single post-frame callback.
   // Without this, two watchers can schedule concurrent _refreshCoverageOverlay
   // runs whose remove/add calls interleave and produce "Source already exists"
   // errors in the native log.
@@ -413,6 +414,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   String? _activeCoverageSourceId;
   String? _activeCoverageLayerId;
   int _coverageBufferCounter = 0;
+  // Grid size is baked into the tile URL and the CVD palette into the layer
+  // paint; a change to either rebuilds the overlay via the build watcher.
+  int? _lastAppliedGridSize;
+  String? _lastAppliedCvd;
+  // Session coverage patch: a GeoJSON layer carrying the user's own
+  // freshly-pinged cells ON TOP of the base overlay; the base layer's copies
+  // of those cells are hidden via setFilter so translucent fills never stack.
+  // The base source is never swapped during a session — only the patch
+  // updates, so nothing visibly changes except the changed cells.
+  static const String _patchSourceId = 'meshmapper-coverage-patch';
+  static const String _patchLayerId = 'meshmapper-coverage-patch-layer';
+  bool _patchLayerReady = false;
+  int _lastAppliedPatchVersion = -1;
   bool _styleLoaded = false;
   bool _hasStyleLoadedOnce =
       false; // True after first onStyleLoadedCallback (prevents re-centering on style switch)
@@ -561,6 +575,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _appLifecycleState =
         WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+    // Coverage-patch updates are driven by a DIRECT provider listener, not the
+    // build() watchers: when the device sits still nothing else rebuilds this
+    // widget, and a patch that waits for the next rebuild only appears after
+    // the user happens to touch the map.
+    _patchProviderRef = context.read<AppStateProvider>();
+    _patchProviderRef!.addListener(_onCoveragePatchNotify);
+  }
+
+  AppStateProvider? _patchProviderRef;
+
+  void _onCoveragePatchNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    if (appState.coveragePatchVersion == _lastAppliedPatchVersion) return;
+    if (!_isMapReady || !_styleLoaded) return;
+    _lastAppliedPatchVersion = appState.coveragePatchVersion;
+    _applyCoveragePatch(appState);
   }
 
   @override
@@ -599,6 +630,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _tileLoadTimeoutTimer?.cancel();
     final controller = _mapController;
     if (controller != null) {
@@ -1489,6 +1521,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         await _setOfflineIfSupported(!tilesEnabled);
         if (wasEnabled == true && !tilesEnabled) {
           await _removeCoverageOverlay();
+          // No overlay on the map -> the post-wardrive fresh-tile flow must
+          // not keep rendering server tiles for it.
+          appState.reportVectorOverlayActive(false);
         } else if (wasEnabled == false && tilesEnabled && _styleLoaded) {
           await _addCoverageOverlay(appState);
         }
@@ -1500,26 +1535,43 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // onStyleLoadedCallback → _onStyleLoaded re-registers images, rebuilds
     // cluster layers, re-adds the coverage overlay, and re-syncs annotations.
 
-    // Detect cache bust or zoneCode change → schedule a SINGLE coalesced
-    // refresh. Previously each watcher scheduled its own post-frame callback,
-    // which could race when both changed in the same frame (e.g. a zone
-    // transition that also rotates cache bust). The _coverageRefreshScheduled
-    // flag ensures at most one refresh is queued per frame.
+    // Detect zoneCode or overlay-pref changes → schedule a SINGLE coalesced
+    // refresh; the _coverageRefreshScheduled flag ensures at most one refresh
+    // is queued per frame even when both change together.
     //
     // The zoneCode watcher is needed because _addCoverageOverlay only runs
     // during _onStyleLoaded — if the first zone check failed with
     // gps_inaccurate, the style loads with zoneCode=null and the overlay is
     // skipped. When a later retry sets the zone, nothing else would trigger
-    // the raster layer.
-    final cacheBustChanged = appState.overlayCacheBust != _lastCacheBust &&
-        _isMapReady &&
-        _styleLoaded;
+    // the coverage layer.
     final zoneChanged = appState.zoneCode != _lastOverlayZoneCode &&
         _isMapReady &&
         _styleLoaded;
-    if (cacheBustChanged || zoneChanged) {
-      if (cacheBustChanged) _lastCacheBust = appState.overlayCacheBust;
-      if (zoneChanged) _lastOverlayZoneCode = appState.zoneCode;
+    // Grid size is baked into the tile URL and the CVD palette into the layer
+    // paint, so either change rebuilds the overlay.
+    final prefsForOverlay = appState.preferences;
+    final overlayPrefChanged = _isMapReady &&
+        _styleLoaded &&
+        ((_lastAppliedGridSize != null &&
+                _lastAppliedGridSize != prefsForOverlay.coverageGridSize) ||
+            (_lastAppliedCvd != null &&
+                _lastAppliedCvd != prefsForOverlay.colorVisionType));
+
+    if (zoneChanged || overlayPrefChanged) {
+      if (zoneChanged) {
+        _lastOverlayZoneCode = appState.zoneCode;
+        // The session patch belongs to the old region's grid.
+        appState.clearCoveragePatch();
+      }
+      if (overlayPrefChanged) {
+        // Patched cell ids/geometry are per grid preset; a palette-only
+        // change keeps them (the rebuild restyles the patch layer too).
+        if (_lastAppliedGridSize != prefsForOverlay.coverageGridSize) {
+          appState.clearCoveragePatch();
+        }
+        _lastAppliedGridSize = prefsForOverlay.coverageGridSize;
+        _lastAppliedCvd = prefsForOverlay.colorVisionType;
+      }
       if (!_coverageRefreshScheduled) {
         _coverageRefreshScheduled = true;
         WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -1545,6 +1597,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         });
       }
     }
+
+    // (Session-patch application: direct provider listener
+    // _onCoveragePatchNotify — see initState for why it's not a build watcher.)
 
     // Detect coverage overlay opacity change (user dragged the slider in
     // Settings → General) and push it to the live raster layer without
@@ -2213,48 +2268,77 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
 
-    final cvdParam = appState.preferences.colorVisionType != 'none'
-        ? '&cvd=${appState.preferences.colorVisionType}'
-        : '';
-    final url =
-        'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}$cvdParam';
+    final prefs = appState.preferences;
+    final zone = appState.zoneCode!.toLowerCase();
+    final gridSize = prefs.coverageGridSize;
 
     final sourceId = _nextCoverageSourceId();
     final layerId = _coverageLayerIdFor(sourceId);
 
     try {
-      await _mapController!.addSource(
-        sourceId,
-        RasterSourceProperties(tiles: [url], tileSize: 256, maxzoom: 17),
-      );
       // Target the bottom of the repeater cluster stack when it exists, so the
-      // raster lands beneath ALL marker layers (repeater clusters + symbol
+      // overlay lands beneath ALL marker layers (repeater clusters + symbol
       // annotations). Fallback to the symbol annotation layer if cluster layers
       // haven't been created yet.
       final belowLayer = _clusterLayersReady
           ? _repeaterIndividualLayerId
           : _symbolAnnotationLayerId();
-      // While ping focus mode is active, force the newly added raster layer
-      // to opacity 0 so a cache-bust tile refresh (fires 5s after every API
-      // upload success — see AppStateProvider._tileRefreshTimer) doesn't
+      // While ping focus mode is active, force the newly added layer to
+      // opacity 0 so an overlay rebuild (zone/grid/palette change) doesn't
       // make the overlay pop back into view in the middle of focus mode.
       // Dismissing focus restores the preference value via
       // _applyCoverageOverlayOpacity in _dismissPingFocus.
-      final opacity = _focusedPingLocation != null
-          ? 0.0
-          : appState.preferences.coverageOverlayOpacity;
-      await _mapController!.addRasterLayer(
+      final opacity =
+          _focusedPingLocation != null ? 0.0 : prefs.coverageOverlayOpacity;
+
+      // The server emits an integer status category per cell (st); colour
+      // happens HERE via match expressions, so colour-vision palettes apply
+      // without any server param and a tile carries data, not pixels.
+      final url =
+          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize';
+      // minzoom 7 = the raster's old on-screen range (512px-convention vector
+      // tiles sit one display-zoom lower than 256px raster tiles).
+      await _mapController!.addSource(
+        sourceId,
+        VectorSourceProperties(tiles: [url], minzoom: 7, maxzoom: 14),
+      );
+      await _mapController!.addFillLayer(
         sourceId,
         layerId,
-        RasterLayerProperties(rasterOpacity: opacity),
+        FillLayerProperties(
+          fillColor:
+              CoverageTilePalette.fillColorExpression(prefs.colorVisionType),
+          fillOutlineColor:
+              CoverageTilePalette.borderColorExpression(prefs.colorVisionType),
+          fillOpacity: opacity,
+        ),
+        sourceLayer: 'coverage',
         belowLayerId: belowLayer,
       );
       _activeCoverageSourceId = sourceId;
       _activeCoverageLayerId = layerId;
+
+      // The session patch rides directly above the base layer (same anchor,
+      // added later = higher) with identical styling. Creation is
+      // self-healing: if it fails here, the next patch update retries it.
+      // The base-layer filter is only applied once the patch layer exists —
+      // hiding cells the patch can't draw would punch holes in the overlay.
+      _patchLayerReady = false;
+      if (await _ensureCoveragePatchLayer(appState)) {
+        _lastAppliedPatchVersion = appState.coveragePatchVersion;
+        await _applyBasePatchFilter(appState, layerId);
+      }
+
       _lastAppliedCoverageOpacity = opacity;
+      _lastAppliedGridSize = gridSize;
+      _lastAppliedCvd = prefs.colorVisionType;
+      appState.reportVectorOverlayActive(true);
       debugLog(
-          '[MAP] Coverage overlay added as $layerId (below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
+          '[MAP] Coverage overlay added as $layerId (grid $gridSize, below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
     } catch (e) {
+      // No overlay on the map — the post-wardrive fresh-tile flow must not
+      // keep fetching for it.
+      appState.reportVectorOverlayActive(false);
       debugLog('[MAP] Failed to add coverage overlay: $e');
     }
   }
@@ -2264,17 +2348,28 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   String _coverageLayerIdFor(String sourceId) => '$sourceId-layer';
 
-  /// Apply a new coverage overlay opacity to the live raster layer without
-  /// removing/re-adding it. No-op if the layer doesn't exist yet.
+  /// Apply a new coverage overlay opacity to the live fill layers without
+  /// removing/re-adding them. No-op if the layer doesn't exist yet.
+  ///
+  /// setLayerProperties serializes with skipNulls:false — every property left
+  /// null is RESET to its style-spec default on iOS/web (fill-color → black),
+  /// so the full colour expressions must be resent alongside the new opacity,
+  /// never a partial FillLayerProperties.
   Future<void> _applyCoverageOverlayOpacity(double opacity) async {
-    if (_mapController == null) return;
+    if (_mapController == null || !mounted) return;
     final layerId = _activeCoverageLayerId;
     if (layerId == null) return;
     try {
-      await _mapController!.setLayerProperties(
-        layerId,
-        RasterLayerProperties(rasterOpacity: opacity),
+      final cvd = context.read<AppStateProvider>().preferences.colorVisionType;
+      final props = FillLayerProperties(
+        fillColor: CoverageTilePalette.fillColorExpression(cvd),
+        fillOutlineColor: CoverageTilePalette.borderColorExpression(cvd),
+        fillOpacity: opacity,
       );
+      if (_patchLayerReady) {
+        await _mapController!.setLayerProperties(_patchLayerId, props);
+      }
+      await _mapController!.setLayerProperties(layerId, props);
       _lastAppliedCoverageOpacity = opacity;
       debugLog(
           '[MAP] Coverage overlay opacity updated to ${opacity.toStringAsFixed(2)}');
@@ -2324,6 +2419,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (layerId != null && sourceId != null) {
       await _removeCoverageLayerById(layerId, sourceId);
     }
+    await _removeCoveragePatchLayer();
   }
 
   /// Remove a specific coverage source+layer pair without touching the
@@ -2339,10 +2435,148 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  /// Refresh coverage overlay by removing the current layer and adding a fresh
-  /// one with updated cache-bust URL. Accepts a brief visual gap between
-  /// remove and add — imperceptible during driving and quick when stationary
-  /// (tiles load from cache for same viewport).
+  /// Remove the session-patch source+layer (vector overlay companion).
+  Future<void> _removeCoveragePatchLayer() async {
+    _patchLayerReady = false;
+    if (_mapController == null) return;
+    try {
+      await _mapController!.removeLayer(_patchLayerId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeSource(_patchSourceId);
+    } catch (_) {}
+  }
+
+  /// GeoJSON FeatureCollection of the session patch: one rectangle per cell,
+  /// corners computed from grid indices exactly like the server's tiles.
+  Map<String, dynamic> _buildPatchGeoJson(AppStateProvider appState) {
+    final steps =
+        kCoverageGridSteps[appState.preferences.coverageGridSize] ??
+            kCoverageGridSteps[300]!;
+    final features = <Map<String, dynamic>>[];
+    for (final cell in appState.coveragePatchCells.values) {
+      final lat0 = cell.i * steps[0];
+      final lon0 = cell.j * steps[1];
+      // No feature id: nothing reads it on the patch layer, and 42-bit ids
+      // don't survive Android's float32 JSON bridge anyway (see
+      // _applyBasePatchFilter).
+      features.add({
+        'type': 'Feature',
+        'properties': {'st': cell.st},
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [
+            [
+              [lon0, lat0],
+              [lon0 + steps[1], lat0],
+              [lon0 + steps[1], lat0 + steps[0]],
+              [lon0, lat0 + steps[0]],
+              [lon0, lat0],
+            ]
+          ],
+        },
+      });
+    }
+    return {'type': 'FeatureCollection', 'features': features};
+  }
+
+  /// Hide the BASE layer's copies of patched cells — the patch layer owns
+  /// them now; without the filter the translucent fills would stack and the
+  /// patched cells would render darker than their neighbours.
+  ///
+  /// Matched on an "i_j" string built from the small-int grid properties, NOT
+  /// on the feature id: Android's filter converter parses every JSON number
+  /// as float32, which silently rounds the 42-bit ids so an id-based `in`
+  /// never matches. Strings cross the bridge untouched on every platform.
+  Future<void> _applyBasePatchFilter(
+      AppStateProvider appState, String baseLayerId) async {
+    if (_mapController == null || appState.coveragePatchCells.isEmpty) return;
+    final keys = [
+      for (final cell in appState.coveragePatchCells.values)
+        '${cell.i}_${cell.j}'
+    ];
+    try {
+      await _mapController!.setFilter(baseLayerId, [
+        '!',
+        [
+          'in',
+          [
+            'concat',
+            ['to-string', ['get', 'i']],
+            '_',
+            ['to-string', ['get', 'j']],
+          ],
+          ['literal', keys],
+        ],
+      ]);
+    } catch (e) {
+      debugLog('[MAP] Coverage base filter failed: $e');
+    }
+  }
+
+  /// Idempotently (re)create the patch source+layer. Self-healing: if the
+  /// creation during overlay add failed, or a style change replaced the
+  /// native layers, the next patch application rebuilds it here.
+  Future<bool> _ensureCoveragePatchLayer(AppStateProvider appState) async {
+    if (_patchLayerReady) return true;
+    if (_mapController == null || _activeCoverageLayerId == null) return false;
+    try {
+      final prefs = appState.preferences;
+      final belowLayer = _clusterLayersReady
+          ? _repeaterIndividualLayerId
+          : _symbolAnnotationLayerId();
+      final opacity =
+          _focusedPingLocation != null ? 0.0 : prefs.coverageOverlayOpacity;
+      await _removeCoveragePatchLayer();
+      await _mapController!
+          .addGeoJsonSource(_patchSourceId, _buildPatchGeoJson(appState));
+      await _mapController!.addFillLayer(
+        _patchSourceId,
+        _patchLayerId,
+        FillLayerProperties(
+          fillColor:
+              CoverageTilePalette.fillColorExpression(prefs.colorVisionType),
+          fillOutlineColor:
+              CoverageTilePalette.borderColorExpression(prefs.colorVisionType),
+          fillOpacity: opacity,
+        ),
+        belowLayerId: belowLayer,
+      );
+      _patchLayerReady = true;
+      debugLog('[MAP] Coverage patch layer created');
+      return true;
+    } catch (e) {
+      debugLog('[MAP] Coverage patch layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Push the latest session patch into the map: update the GeoJSON source
+  /// (flash-free, in-place) and extend the base-layer filter. Nothing else on
+  /// the map changes — this is the live-update path for the user's own pings.
+  Future<void> _applyCoveragePatch(AppStateProvider appState) async {
+    if (_mapController == null) return;
+    final baseLayerId = _activeCoverageLayerId;
+    if (baseLayerId == null) {
+      debugLog('[MAP] Coverage patch skipped: no active coverage layer');
+      return;
+    }
+    if (!await _ensureCoveragePatchLayer(appState)) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_patchSourceId, _buildPatchGeoJson(appState));
+      await _applyBasePatchFilter(appState, baseLayerId);
+      debugLog(
+          '[MAP] Coverage patch applied: ${appState.coveragePatchCells.length} cell(s)');
+    } catch (e) {
+      debugLog('[MAP] Coverage patch apply failed: $e');
+    }
+  }
+
+  /// Rebuild the coverage overlay (remove + re-add). Only runs on real
+  /// transitions — zone change, grid/palette pref change, style reload —
+  /// never as a live-refresh path (that's the session patch's job), so the
+  /// brief remove/add gap is acceptable.
   Future<void> _refreshCoverageOverlay(AppStateProvider appState) async {
     await _removeCoverageOverlay();
     await _addCoverageOverlay(appState);
@@ -4424,6 +4658,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _addCoverageOverlay(context.read<AppStateProvider>());
     } else {
       _removeCoverageOverlay();
+      context.read<AppStateProvider>().reportVectorOverlayActive(false);
     }
   }
 
