@@ -90,6 +90,30 @@ The app uses a layered service architecture with clear separation of concerns:
 - `AppStateProvider`: Single ChangeNotifier for all app state using Provider pattern
 - All UI updates happen via `notifyListeners()` after state mutations
 
+### Map Rebuild Isolation
+
+The MapLibre `MapWidget` is by far the most expensive subtree. It is therefore
+**not** subscribed to the whole provider — that previously made it rebuild on
+every `notifyListeners()` (including noise-floor/battery/stats every few seconds
+and the dense-mesh passive-RX pin storm at 10–20×/sec), which pinned the CPU/GPU
+and overheated the device during wardriving.
+
+Instead the map is isolated:
+- `AppStateProvider` exposes `mapRevision`, an integer bumped only when
+  **map-rendered** state changes (TX/RX/disc/trace markers, echoes, GPS
+  position, zone repeater load, history view, marker/log clears, marker-style
+  prefs).
+- Two helpers drive it: `_notifyMapNow()` (bump + immediate notify, for
+  low-frequency changes) and `_notifyMapThrottled()` (bump + ~250 ms
+  leading+trailing coalescing, for the high-frequency RX/echo storm — caps map
+  rebuilds at ~4/sec while pin data updates immediately).
+- `MapWidget` is wrapped in a `Selector` (`home_screen.dart` `_buildLayout`)
+  keyed on `(mapRevision, focus, history, padding, controls)` and uses
+  `context.read` internally, so it is cached across all UI-only notifies.
+- UI-only state (noise floor, battery, live stats) calls plain
+  `notifyListeners()` and leaves `mapRevision` untouched, so the status bar
+  updates without rebuilding the map.
+
 ### 9-Step Connection Workflow
 
 Critical safety: The connection sequence MUST complete in order.
