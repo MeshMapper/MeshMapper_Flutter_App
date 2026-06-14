@@ -1191,9 +1191,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _gpsPositionSubscription =
         _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
-      notifyListeners();
+      // Position change is map-relevant (auto-follow camera) — bump the map.
+      _notifyMapNow();
 
-      // Save last position for next app launch
+      // Save last position for next app launch (already throttled to 30s)
       _saveLastPosition(position.latitude, position.longitude);
 
       // Check zone on first GPS lock (when _inZone is null)
@@ -2395,7 +2396,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ));
       if (_txLogEntries.length > _maxLogEntries) _txLogEntries.removeAt(0);
 
-      notifyListeners();
+      _notifyMapNow();
     };
 
     _pingService!.onRxPing = (ping) {
@@ -2415,7 +2416,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
 
       _updateRxOverlaySlot(ping.repeaterId, ping.snr);
-      notifyListeners();
+      _notifyMapThrottled();
     };
 
     _pingService!.onStatsUpdated = (stats) {
@@ -2493,7 +2494,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               OverlayPingType.tx);
 
           debugLog('[APP] Calling notifyListeners() to update UI');
-          notifyListeners();
+          _notifyMapThrottled();
           debugLog('[APP] notifyListeners() completed');
         } else {
           debugLog(
@@ -2545,7 +2546,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             multiHopEvents: multiHopEvents,
           );
 
-          notifyListeners();
+          _notifyMapThrottled();
         }
       }
     };
@@ -2587,7 +2588,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               .toList(),
           OverlayPingType.disc);
 
-      notifyListeners();
+      _notifyMapThrottled();
     };
 
     _pingService!.onTxWindowComplete = (directSuccess, multiHopEchoes) {
@@ -2709,7 +2710,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             localRssi: result.localRssi,
             success: true,
           );
-          notifyListeners();
+          _notifyMapNow();
         }
       }
 
@@ -2943,7 +2944,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                 ),
               ],
             );
-            notifyListeners();
+            _notifyMapThrottled();
           } else {
             debugLog(
                 '[APP] Repeater ${observation.repeaterId} already has pin in current batch, SNR will update on flush if better');
@@ -3066,8 +3067,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             power: _preferences.powerLevel,
           );
 
-          // Update UI
-          notifyListeners();
+          // Update UI (throttled — dense mesh RX must not churn the map)
+          _notifyMapThrottled();
         } catch (e, stackTrace) {
           debugError('[APP] Error in finalized RX entry callback: $e');
           debugError('[APP] Stack trace: $stackTrace');
@@ -4140,7 +4141,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _traceLogEntries.clear();
     _clearOverlayState();
     _pingService?.resetStats();
-    notifyListeners();
+    _notifyMapNow();
   }
 
   /// Clear log entries
@@ -4151,7 +4152,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _traceLogEntries.clear();
     _errorLogEntries.clear();
     _clearOverlayState();
-    notifyListeners();
+    _notifyMapNow();
   }
 
   /// Add a discovery log entry (from Passive Mode)
@@ -4162,7 +4163,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     debugLog(
         '[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
-    notifyListeners();
+    _notifyMapNow();
   }
 
   /// Add a trace log entry (from Trace Mode)
@@ -4183,7 +4184,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           OverlayPingType.trace);
     }
 
-    notifyListeners();
+    _notifyMapNow();
   }
 
   /// Log a user-facing error message
@@ -5076,7 +5077,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .setMinPingDistance(preferences.minPingDistanceMeters.toDouble());
     PingService.currentMinDistance = preferences.minPingDistanceMeters;
 
-    notifyListeners();
+    // Marker-style / GPS-marker prefs can change here — bump the map.
+    _notifyMapNow();
     _savePreferences();
   }
 
@@ -6519,7 +6521,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _repeatersLoaded = true;
         _repeatersLoadedForIata = iata;
         debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
-        notifyListeners();
+        _notifyMapNow();
       } else {
         debugWarn(
             '[MAP] No repeaters returned for zone $iata — will retry on next zone check');
@@ -7462,6 +7464,57 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectRestoreGeneration++;
   }
 
+  // ============================================
+  // Map rebuild isolation (overheating fix)
+  // ============================================
+  //
+  // The MapWidget (MapLibre GL) is by far the most expensive subtree. It used
+  // to rebuild on EVERY notifyListeners() — including high-frequency UI-only
+  // notifies (noise floor every 5s, battery, live stats) and the dense-mesh
+  // RX-pin storm (10-20x/sec) — which kept the GPU/CPU pinned and overheated
+  // the phone. Now the map is wrapped in a Selector keyed on [mapRevision]
+  // (see home_screen.dart `_buildLayout`), so it only rebuilds when a
+  // map-relevant change bumps the revision. UI-only notifies leave
+  // [mapRevision] untouched, so the map stays cached.
+  int _mapRevision = 0;
+
+  /// Monotonic counter bumped whenever map-rendered data changes (markers,
+  /// position, history view). The map's Selector watches this; UI-only
+  /// notifies (noise floor, battery, stats) intentionally do not bump it.
+  int get mapRevision => _mapRevision;
+
+  Timer? _mapThrottleTimer;
+  bool _mapThrottlePending = false;
+  static const Duration _mapThrottleWindow = Duration(milliseconds: 250);
+
+  /// Bump the map revision and notify immediately. Use for low-frequency
+  /// map-relevant changes (TX ping added, ping window finalized, GPS position,
+  /// history view, marker/log clears, marker-style preference changes).
+  void _notifyMapNow() {
+    _mapRevision++;
+    notifyListeners();
+  }
+
+  /// Bump the map revision but coalesce notifications to ~4/sec. Use for
+  /// high-frequency map-relevant changes (passive RX pins, echo bursts) so a
+  /// dense mesh cannot force the map to rebuild 10-20x/sec. The pin data is
+  /// updated immediately; only the rebuild signal is throttled.
+  void _notifyMapThrottled() {
+    _mapRevision++;
+    if (_mapThrottleTimer != null) {
+      _mapThrottlePending = true;
+      return;
+    }
+    notifyListeners();
+    _mapThrottleTimer = Timer(_mapThrottleWindow, () {
+      _mapThrottleTimer = null;
+      if (_mapThrottlePending) {
+        _mapThrottlePending = false;
+        notifyListeners();
+      }
+    });
+  }
+
   @override
   @override
   void notifyListeners() {
@@ -7490,6 +7543,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _zoneRefreshTimer?.cancel();
     _cancelZoneGraceTimers();
     _vectorFreshTimer?.cancel();
+    _mapThrottleTimer?.cancel();
     _unifiedRxHandler?.dispose();
     _meshCoreConnection?.dispose();
     _pingService?.dispose();

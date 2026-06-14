@@ -423,10 +423,32 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             if (!isLandscape) const StatusBar() else const SizedBox.shrink(),
             Expanded(
-              child: MapWidget(
-                bottomPaddingPixels: isLandscape || appState.isFocusModeActive || appState.viewingHistorySession ? 0 : _getControlPanelHeight(),
-                mapControlsExpanded: isLandscape ? _mapControlsExpanded : null,
-                onMapControlsToggle: isLandscape ? _toggleMapControls : null,
+              // The MapLibre map is the most expensive subtree in the app.
+              // Isolate it from the provider's high-frequency UI-only notifies
+              // (noise floor, battery, live stats) and the dense-mesh RX-pin
+              // storm by rebuilding it ONLY when a map-relevant value changes:
+              // AppStateProvider.mapRevision (markers/position/history) or the
+              // map's own layout inputs (focus/history/padding/controls). This
+              // Selector caches the map subtree across all other notifies and is
+              // the core of the overheating fix.
+              child: Selector<AppStateProvider,
+                  ({int rev, bool focus, bool history, double padH, bool? ctrl})>(
+                selector: (_, p) => (
+                  rev: p.mapRevision,
+                  focus: p.isFocusModeActive,
+                  history: p.viewingHistorySession,
+                  padH: isLandscape ||
+                          p.isFocusModeActive ||
+                          p.viewingHistorySession
+                      ? 0.0
+                      : _getControlPanelHeight(),
+                  ctrl: isLandscape ? _mapControlsExpanded : null,
+                ),
+                builder: (_, s, __) => MapWidget(
+                  bottomPaddingPixels: s.padH,
+                  mapControlsExpanded: s.ctrl,
+                  onMapControlsToggle: isLandscape ? _toggleMapControls : null,
+                ),
               ),
             ),
           ],

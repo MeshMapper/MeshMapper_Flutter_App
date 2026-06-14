@@ -979,7 +979,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // NOTE: read (not watch). This widget is rebuilt by a Selector in
+    // home_screen.dart keyed on AppStateProvider.mapRevision (+ layout inputs),
+    // so it must NOT subscribe to the whole provider — that was the overheating
+    // root cause (the map rebuilt on every notifyListeners). build() runs
+    // whenever the Selector rebuilds it, at which point read gives fresh state.
+    final appState = context.read<AppStateProvider>();
 
     // Load saved map toggle preferences once, after Hive has finished loading
     if (!_prefsApplied && appState.preferencesLoaded) {
