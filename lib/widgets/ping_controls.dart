@@ -380,45 +380,7 @@ class _ActionButton extends StatefulWidget {
   State<_ActionButton> createState() => _ActionButtonState();
 }
 
-class _ActionButtonState extends State<_ActionButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      duration: const Duration(milliseconds: 1200),
-      vsync: this,
-    );
-    // Pulse opacity from 0.3 to 0.6 for a subtle glow effect
-    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-
-    if (widget.isActive) {
-      _pulseController.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(_ActionButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isActive && !oldWidget.isActive) {
-      _pulseController.repeat(reverse: true);
-    } else if (!widget.isActive && oldWidget.isActive) {
-      _pulseController.stop();
-      _pulseController.reset();
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
+class _ActionButtonState extends State<_ActionButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -428,14 +390,13 @@ class _ActionButtonState extends State<_ActionButton>
     final effectiveColor =
         showColor ? widget.color : colorScheme.onSurfaceVariant;
     final borderOpacity = widget.isActive ? 0.6 : 0.3;
+    // Static active-state background opacity. This was a repeating pulse
+    // animation, removed because a .repeat() AnimationController kept the GPU
+    // rendering at the display refresh rate for the entire wardriving session.
+    // The button still reads as "active" via color, the dot, and the text.
+    final bgOpacity = widget.isActive ? 0.25 : 0.12;
 
-    return AnimatedBuilder(
-      animation: _pulseAnimation,
-      builder: (context, child) {
-        // Use animated opacity for active state background
-        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.12;
-
-        return Material(
+    return Material(
           color: Colors.transparent,
           child: InkWell(
             onTap: widget.enabled ? widget.onPressed : null,
@@ -534,8 +495,6 @@ class _ActionButtonState extends State<_ActionButton>
             ),
           ),
         );
-      },
-    );
   }
 }
 
@@ -1769,57 +1728,18 @@ class _LandscapeIconButton extends StatefulWidget {
   State<_LandscapeIconButton> createState() => _LandscapeIconButtonState();
 }
 
-class _LandscapeIconButtonState extends State<_LandscapeIconButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      duration: const Duration(milliseconds: 1200),
-      vsync: this,
-    );
-    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-
-    if (widget.isActive) {
-      _pulseController.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(_LandscapeIconButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isActive && !oldWidget.isActive) {
-      _pulseController.repeat(reverse: true);
-    } else if (!widget.isActive && oldWidget.isActive) {
-      _pulseController.stop();
-      _pulseController.reset();
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
+class _LandscapeIconButtonState extends State<_LandscapeIconButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final showColor = widget.enabled || widget.isActive;
     final effectiveColor =
         showColor ? widget.color : colorScheme.onSurfaceVariant;
+    // Static active-state opacity (continuous pulse animation removed — see
+    // _ActionButton; it kept the GPU rendering all session).
+    final bgOpacity = widget.isActive ? 0.25 : 0.10;
 
-    return AnimatedBuilder(
-      animation: _pulseAnimation,
-      builder: (context, child) {
-        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.10;
-
-        return Tooltip(
+    return Tooltip(
           message: widget.tooltip,
           child: Material(
             color: Colors.transparent,
@@ -1892,8 +1812,6 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
             ),
           ),
         );
-      },
-    );
   }
 }
 
@@ -1926,44 +1844,7 @@ class _CompactActionButton extends StatefulWidget {
   State<_CompactActionButton> createState() => _CompactActionButtonState();
 }
 
-class _CompactActionButtonState extends State<_CompactActionButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      duration: const Duration(milliseconds: 1200),
-      vsync: this,
-    );
-    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-
-    if (widget.isActive) {
-      _pulseController.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(_CompactActionButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isActive && !oldWidget.isActive) {
-      _pulseController.repeat(reverse: true);
-    } else if (!widget.isActive && oldWidget.isActive) {
-      _pulseController.stop();
-      _pulseController.reset();
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
+class _CompactActionButtonState extends State<_CompactActionButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -1972,13 +1853,11 @@ class _CompactActionButtonState extends State<_CompactActionButton>
         showColor ? widget.color : colorScheme.onSurfaceVariant;
     // Show label if colored OR if expanded (shows countdown on grey button during cooldown)
     final hasLabel = widget.label != null && (showColor || widget.isExpanded);
+    // Static active-state opacity (continuous pulse animation removed — see
+    // _ActionButton; it kept the GPU rendering all session).
+    final bgOpacity = widget.isActive ? 0.25 : 0.12;
 
-    return AnimatedBuilder(
-      animation: _pulseAnimation,
-      builder: (context, child) {
-        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.12;
-
-        return Material(
+    return Material(
           color: Colors.transparent,
           child: InkWell(
             onTap: widget.enabled ? widget.onPressed : null,
@@ -2069,7 +1948,5 @@ class _CompactActionButtonState extends State<_CompactActionButton>
             ),
           ),
         );
-      },
-    );
   }
 }
