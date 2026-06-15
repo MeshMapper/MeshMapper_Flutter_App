@@ -29,6 +29,51 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Landscape side panel width (220px gives more room for controls)
   static const double _landscapePanelWidth = 220.0;
 
+  // ── Map Selector memoization (overheating fix) ────────────────────────────
+  // HomeScreen.build() runs context.watch, so it rebuilds on EVERY provider
+  // notify (incl. the 2Hz GPS notify). An inline `Selector(...)` is a NEW widget
+  // instance each build, and provider's Selector invalidates its cache whenever
+  // `oldWidget != widget` (selector.dart:77) — so a fresh instance forces the
+  // cached MapWidget to rebuild BEFORE the value comparison runs, relayouting the
+  // iOS platform view (~24ms) every GPS tick. Returning the SAME Selector instance
+  // (identity stable) makes Flutter short-circuit the child and lets the value
+  // comparison actually gate the map. The instance is keyed only on the State
+  // fields its closures capture (isLandscape / _isControlsMinimized /
+  // _mapControlsExpanded); provider values (mapRevision/focus/history) are read
+  // live inside the closures and handled by the Selector's value comparison.
+  Widget? _cachedMapSelector;
+  ({bool landscape, bool minimized, bool ctrlExpanded})? _cachedMapSelectorKey;
+
+  Widget _buildMapSelector(bool isLandscape) {
+    final key = (
+      landscape: isLandscape,
+      minimized: _isControlsMinimized,
+      ctrlExpanded: _mapControlsExpanded,
+    );
+    if (_cachedMapSelector != null && _cachedMapSelectorKey == key) {
+      return _cachedMapSelector!;
+    }
+    _cachedMapSelectorKey = key;
+    _cachedMapSelector = Selector<AppStateProvider,
+        ({int rev, bool focus, bool history, double padH, bool? ctrl})>(
+      selector: (_, p) => (
+        rev: p.mapRevision,
+        focus: p.isFocusModeActive,
+        history: p.viewingHistorySession,
+        padH: isLandscape || p.isFocusModeActive || p.viewingHistorySession
+            ? 0.0
+            : _getControlPanelHeight(),
+        ctrl: isLandscape ? _mapControlsExpanded : null,
+      ),
+      builder: (_, s, __) => MapWidget(
+        bottomPaddingPixels: s.padH,
+        mapControlsExpanded: s.ctrl,
+        onMapControlsToggle: isLandscape ? _toggleMapControls : null,
+      ),
+    );
+    return _cachedMapSelector!;
+  }
+
   /// Toggle control panel in landscape mode (closes map controls if open)
   void _toggleControlPanel() {
     setState(() {
@@ -428,28 +473,13 @@ class _HomeScreenState extends State<HomeScreen> {
               // (noise floor, battery, live stats) and the dense-mesh RX-pin
               // storm by rebuilding it ONLY when a map-relevant value changes:
               // AppStateProvider.mapRevision (markers/position/history) or the
-              // map's own layout inputs (focus/history/padding/controls). This
-              // Selector caches the map subtree across all other notifies and is
-              // the core of the overheating fix.
-              child: Selector<AppStateProvider,
-                  ({int rev, bool focus, bool history, double padH, bool? ctrl})>(
-                selector: (_, p) => (
-                  rev: p.mapRevision,
-                  focus: p.isFocusModeActive,
-                  history: p.viewingHistorySession,
-                  padH: isLandscape ||
-                          p.isFocusModeActive ||
-                          p.viewingHistorySession
-                      ? 0.0
-                      : _getControlPanelHeight(),
-                  ctrl: isLandscape ? _mapControlsExpanded : null,
-                ),
-                builder: (_, s, __) => MapWidget(
-                  bottomPaddingPixels: s.padH,
-                  mapControlsExpanded: s.ctrl,
-                  onMapControlsToggle: isLandscape ? _toggleMapControls : null,
-                ),
-              ),
+              // map's own layout inputs (focus/history/padding/controls). The
+              // Selector is MEMOIZED (_buildMapSelector) so its widget identity
+              // is stable across HomeScreen's per-notify rebuilds — otherwise a
+              // fresh Selector instance defeats its own cache (selector.dart:77,
+              // `oldWidget != widget`) and the map rebuilds every GPS tick. This
+              // is the core of the overheating fix.
+              child: _buildMapSelector(isLandscape),
             ),
           ],
         ),

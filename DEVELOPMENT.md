@@ -100,19 +100,38 @@ and overheated the device during wardriving.
 
 Instead the map is isolated:
 - `AppStateProvider` exposes `mapRevision`, an integer bumped only when
-  **map-rendered** state changes (TX/RX/disc/trace markers, echoes, GPS
-  position, zone repeater load, history view, marker/log clears, marker-style
-  prefs).
+  **map-rendered** state changes (TX/RX/disc/trace markers, echoes, zone
+  repeater load, history view, marker/log clears, marker-style prefs).
 - Two helpers drive it: `_notifyMapNow()` (bump + immediate notify, for
   low-frequency changes) and `_notifyMapThrottled()` (bump + ~250 ms
   leading+trailing coalescing, for the high-frequency RX/echo storm — caps map
   rebuilds at ~4/sec while pin data updates immediately).
-- `MapWidget` is wrapped in a `Selector` (`home_screen.dart` `_buildLayout`)
+- `MapWidget` is wrapped in a `Selector` (`home_screen.dart` `_buildMapSelector`)
   keyed on `(mapRevision, focus, history, padding, controls)` and uses
   `context.read` internally, so it is cached across all UI-only notifies.
 - UI-only state (noise floor, battery, live stats) calls plain
   `notifyListeners()` and leaves `mapRevision` untouched, so the status bar
   updates without rebuilding the map.
+
+**GPS position does NOT bump `mapRevision`.** Position updates ~1–2×/sec while
+driving; rebuilding the map that often relayouts the iOS platform view (~24 ms
+each) — a dominant heat source. Instead, the GPS listener calls plain
+`notifyListeners()`, and `MapWidget` drives camera-follow, derived heading, and
+the GPS puck from a **direct provider listener** (`_onPositionNotify` →
+`_handleGpsPosition`) that calls the native controller (`animateCamera` /
+`updateSymbol`) every tick — real-time nav, no widget rebuild. The GPS-info
+overlay rebuilds only when the map itself does.
+
+**The Selector MUST be memoized (identity-stable).** `HomeScreen.build()` uses
+`context.watch`, so it rebuilds on every notify (incl. the 2 Hz GPS one).
+provider's `Selector` invalidates its cache whenever `oldWidget != widget`
+(`selector.dart:77`), so a fresh inline `Selector(...)` instance each build
+forces `MapWidget` to rebuild **before** the value comparison ever runs —
+silently defeating the isolation. `_buildMapSelector` therefore caches the
+`Selector` instance, keyed only on the State fields its closures capture
+(`isLandscape` / `_isControlsMinimized` / `_mapControlsExpanded`), so its
+identity survives parent rebuilds and the value comparison actually gates the
+map.
 
 ### 9-Step Connection Workflow
 

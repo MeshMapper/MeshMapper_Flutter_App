@@ -1191,8 +1191,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _gpsPositionSubscription =
         _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
-      // Position change is map-relevant (auto-follow camera) — bump the map.
-      _notifyMapNow();
+      // Do NOT bump mapRevision here. Position drives the camera/puck/coords
+      // directly (MapWidget._onPositionNotify listener + a Selector on the
+      // GPS-info overlay) — all real-time — WITHOUT rebuilding the map, which
+      // would relayout the iOS platform view (~28ms) every GPS tick. A plain
+      // notifyListeners() reaches those position watchers; the map's Selector
+      // (keyed on mapRevision) stays cached.
+      notifyListeners();
 
       // Save last position for next app launch (already throttled to 30s)
       _saveLastPosition(position.latitude, position.longitude);
@@ -5291,7 +5296,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _mapNavigationTarget = (lat: latitude, lon: longitude);
     _mapNavigationTrigger++; // Increment to trigger listeners
     _requestMapTabSwitch = true; // Request tab switch
-    notifyListeners();
+    // Map-relevant: the build()-side nav block reads mapNavigationTrigger, so
+    // the map must rebuild for the camera jump to fire (GPS no longer forces
+    // frequent rebuilds after the position/map-rebuild decouple).
+    _notifyMapNow();
   }
 
   /// Clear the map tab switch request (called by main scaffold after switching)

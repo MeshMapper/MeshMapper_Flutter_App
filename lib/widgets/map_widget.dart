@@ -581,6 +581,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // the user happens to touch the map.
     _patchProviderRef = context.read<AppStateProvider>();
     _patchProviderRef!.addListener(_onCoveragePatchNotify);
+    // GPS position drives camera-follow / heading / puck via a DIRECT listener
+    // (not build()): the camera follows every tick WITHOUT rebuilding the map,
+    // which would relayout the iOS platform view (~28 ms/tick). See
+    // _handleGpsPosition. GPS notifies no longer bump mapRevision, so the map's
+    // Selector doesn't rebuild on position.
+    _patchProviderRef!.addListener(_onPositionNotify);
   }
 
   AppStateProvider? _patchProviderRef;
@@ -592,6 +598,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (!_isMapReady || !_styleLoaded) return;
     _lastAppliedPatchVersion = appState.coveragePatchVersion;
     _applyCoveragePatch(appState);
+  }
+
+  /// Fires on every provider notify; drives real-time camera-follow + GPS puck
+  /// from the current position without rebuilding the map. Heavy work inside is
+  /// version-gated, so non-position notifies are a cheap no-op.
+  void _onPositionNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    _handleGpsPosition(appState);
   }
 
   @override
@@ -631,6 +646,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
+    _patchProviderRef?.removeListener(_onPositionNotify);
     _tileLoadTimeoutTimer?.cancel();
     final controller = _mapController;
     if (controller != null) {
@@ -977,6 +993,170 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         position.latitude + latOffset, position.longitude + lonOffset);
   }
 
+  /// Drives camera-follow, derived heading, one-time zooms, and the GPS-marker
+  /// puck from the current GPS position. Invoked on EVERY GPS tick by a direct
+  /// provider listener (`_onPositionNotify`) so the camera follows in real time
+  /// WITHOUT rebuilding `MapWidget` — a rebuild relayouts the iOS platform view
+  /// (~28 ms) every tick, which was the dominant wardriving CPU/heat cost. The
+  /// camera move itself is the same native controller call (`animateCamera`) as
+  /// before; only its trigger moved out of `build()`. Also called from `build()`
+  /// as an idempotent safety net (all heavy work is version-gated).
+  void _handleGpsPosition(AppStateProvider appState) {
+    // Map center — prefer current GPS, fallback to last known.
+    LatLng center = _defaultCenter;
+    if (appState.currentPosition != null) {
+      center = LatLng(
+        appState.currentPosition!.latitude,
+        appState.currentPosition!.longitude,
+      );
+    } else if (appState.lastKnownPosition != null) {
+      center = LatLng(
+        appState.lastKnownPosition!.lat,
+        appState.lastKnownPosition!.lon,
+      );
+    }
+
+    // One-time zoom to last known position when GPS is not yet available.
+    if (appState.currentPosition == null &&
+        appState.lastKnownPosition != null &&
+        !_hasZoomedToLastKnown &&
+        _isMapReady &&
+        _canAnimateCamera) {
+      _hasZoomedToLastKnown = true;
+      final lastKnownCenter = LatLng(
+        appState.lastKnownPosition!.lat,
+        appState.lastKnownPosition!.lon,
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _animateToPositionWithZoom(lastKnownCenter, 15.0 - _zoomEpsilon);
+          debugLog('[MAP] Initial zoom to last known position');
+        }
+      });
+    }
+
+    if (appState.currentPosition != null) {
+      // Recompute derived heading (more reliable than position.heading at low
+      // speeds); _computedHeading is updated as a side effect.
+      _computeHeading(appState.currentPosition!);
+
+      // One-time initial zoom to GPS (even with auto-follow off, centered on GPS).
+      if (!_hasInitialZoomed && _isMapReady && _canAnimateCamera) {
+        _hasInitialZoomed = true;
+        final initialPosition = center;
+        _lastGpsPosition = initialPosition;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            if (_autoFollow) {
+              final adjustedPosition = _offsetPositionForPadding(
+                  initialPosition,
+                  widget.bottomPaddingPixels,
+                  widget.rightPaddingPixels,
+                  16.0 - _zoomEpsilon);
+              _animateToPositionWithZoom(
+                  adjustedPosition, 16.0 - _zoomEpsilon);
+              debugLog(
+                  '[MAP] Initial zoom to GPS position (with panel offset)');
+            } else {
+              _animateToPositionWithZoom(initialPosition, 16.0 - _zoomEpsilon);
+              debugLog('[MAP] Initial zoom to GPS position');
+            }
+          }
+        });
+      }
+
+      // Auto-follow: bundle pan, zoom, and bearing into one animateCamera call.
+      if (_autoFollow && _isMapReady && _cameraAnimationReady) {
+        final newPosition = center;
+        if (_lastGpsPosition == null ||
+            _lastGpsPosition!.latitude != newPosition.latitude ||
+            _lastGpsPosition!.longitude != newPosition.longitude) {
+          _lastGpsPosition = newPosition;
+          final double targetBearing =
+              (!_alwaysNorth && _computedHeading != null)
+                  ? _computedHeading!
+                  : 0.0;
+          final double targetZoom = _autoFollowDesiredZoom ??
+              _mapController?.cameraPosition?.zoom ??
+              _defaultZoom;
+          if (!_alwaysNorth && _computedHeading != null) {
+            _lastHeading = _computedHeading;
+          }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _autoFollow) {
+              final adjustedPosition = _offsetPositionForPadding(
+                newPosition,
+                widget.bottomPaddingPixels,
+                widget.rightPaddingPixels,
+                targetZoom,
+                targetBearing,
+              );
+              _animateAutoFollowCamera(
+                target: adjustedPosition,
+                zoom: targetZoom,
+                bearing: targetBearing,
+              );
+            }
+          });
+        }
+      }
+
+      // Heading-based rotation when NOT auto-following.
+      if (!_autoFollow &&
+          !_alwaysNorth &&
+          _isMapReady &&
+          _computedHeading != null) {
+        final heading = _computedHeading!;
+        if (_lastHeading == null) {
+          _lastHeading = heading;
+          debugLog(
+              '[MAP] First heading after startup (${heading.toStringAsFixed(1)}°) — stored without rotating');
+        } else if ((heading - _lastHeading!).abs() > 2) {
+          _lastHeading = heading;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && !_alwaysNorth && !_autoFollow) {
+              _animateToRotation(heading);
+            }
+          });
+        }
+      }
+    } else {
+      // GPS lock lost — clear bearing state so reacquisition starts fresh.
+      _bearingAnchor = null;
+      _computedHeading = null;
+    }
+
+    // GPS marker puck — cheap updateSymbol, gated by gpsVersion (position +
+    // heading + style). Real-time every tick; does NOT go through the heavy
+    // _syncAllAnnotations pipeline.
+    if (_isMapReady &&
+        _styleLoaded &&
+        _imagesRegistered &&
+        _cameraAnimationReady) {
+      final gpsVersion = Object.hash(
+        appState.currentPosition?.latitude,
+        appState.currentPosition?.longitude,
+        _computedHeading,
+        appState.preferences.gpsMarkerStyle,
+      );
+      if (gpsVersion != _lastGpsSyncVersion) {
+        _lastGpsSyncVersion = gpsVersion;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (!mounted) return;
+          if (_gpsSyncInFlight) return;
+          _gpsSyncInFlight = true;
+          try {
+            await _syncGpsSymbol(appState);
+          } catch (e) {
+            debugError('[MAP] _syncGpsSymbol failed: $e');
+          } finally {
+            _gpsSyncInFlight = false;
+          }
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // NOTE: read (not watch). This widget is rebuilt by a Selector in
@@ -1008,136 +1188,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       );
     }
 
-    // One-time zoom to last known position when GPS is not yet available
-    // This runs before GPS locks, so user sees their previous location instead of Ottawa
-    if (appState.currentPosition == null &&
-        appState.lastKnownPosition != null &&
-        !_hasZoomedToLastKnown &&
-        _isMapReady &&
-        _canAnimateCamera) {
-      _hasZoomedToLastKnown = true;
-      final lastKnownCenter = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
-      );
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _animateToPositionWithZoom(lastKnownCenter, 15.0 - _zoomEpsilon);
-          debugLog('[MAP] Initial zoom to last known position');
-        }
-      });
-    }
-
-    if (appState.currentPosition != null) {
-      // Recompute our derived heading for this frame. _computedHeading is
-      // updated as a side effect; use it below instead of reading
-      // currentPosition.heading directly (which is unreliable at low speeds).
-      _computeHeading(appState.currentPosition!);
-
-      // One-time initial zoom to GPS when we first get a position
-      // This happens even with auto-follow disabled so user sees their location
-      // Don't apply panel offset - center directly on GPS so pin is in middle of screen
-      if (!_hasInitialZoomed && _isMapReady && _canAnimateCamera) {
-        _hasInitialZoomed = true;
-        final initialPosition = center;
-        _lastGpsPosition = initialPosition;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            if (_autoFollow) {
-              // Auto-follow is on and panel may be open — apply panel offset so
-              // the marker appears centered in the visible map area.
-              final adjustedPosition = _offsetPositionForPadding(
-                  initialPosition,
-                  widget.bottomPaddingPixels,
-                  widget.rightPaddingPixels,
-                  16.0 - _zoomEpsilon);
-              _animateToPositionWithZoom(
-                  adjustedPosition, 16.0 - _zoomEpsilon);
-              debugLog(
-                  '[MAP] Initial zoom to GPS position (with panel offset)');
-            } else {
-              _animateToPositionWithZoom(initialPosition, 16.0 - _zoomEpsilon);
-              debugLog('[MAP] Initial zoom to GPS position');
-            }
-          }
-        });
-      }
-
-      // Auto-follow GPS position when enabled. When auto-follow is on we
-      // bundle pan, zoom, and bearing into a single animateCamera call so
-      // the three don't race each other. _autoFollowDesiredZoom is the
-      // zoom the camera is animating toward — using it instead of the
-      // (potentially interpolated) current zoom prevents drift during the
-      // initial zoom animation after tapping center-on-position.
-      if (_autoFollow && _isMapReady && _cameraAnimationReady) {
-        final newPosition = center;
-        if (_lastGpsPosition == null ||
-            _lastGpsPosition!.latitude != newPosition.latitude ||
-            _lastGpsPosition!.longitude != newPosition.longitude) {
-          _lastGpsPosition = newPosition;
-          final double targetBearing =
-              (!_alwaysNorth && _computedHeading != null)
-                  ? _computedHeading!
-                  : 0.0;
-          final double targetZoom = _autoFollowDesiredZoom ??
-              _mapController?.cameraPosition?.zoom ??
-              _defaultZoom;
-          // Track _lastHeading here too so the separate rotation block
-          // below (which runs when auto-follow is off) doesn't fire a
-          // redundant rotation animation on the next frame.
-          if (!_alwaysNorth && _computedHeading != null) {
-            _lastHeading = _computedHeading;
-          }
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _autoFollow) {
-              final adjustedPosition = _offsetPositionForPadding(
-                newPosition,
-                widget.bottomPaddingPixels,
-                widget.rightPaddingPixels,
-                targetZoom,
-                targetBearing,
-              );
-              _animateAutoFollowCamera(
-                target: adjustedPosition,
-                zoom: targetZoom,
-                bearing: targetBearing,
-              );
-            }
-          });
-        }
-      }
-
-      // Handle map rotation based on heading when NOT auto-following.
-      // When auto-follow is on, rotation is bundled into the combined
-      // camera update above so we don't race two animateCamera calls.
-      if (!_autoFollow &&
-          !_alwaysNorth &&
-          _isMapReady &&
-          _computedHeading != null) {
-        final heading = _computedHeading!;
-        if (_lastHeading == null) {
-          // First heading after startup — store without rotating so the
-          // initial zoom animation can settle at rotation 0 (where the
-          // panel offset was computed). Heading mode will begin rotating
-          // on the next GPS update when heading changes.
-          _lastHeading = heading;
-          debugLog(
-              '[MAP] First heading after startup (${heading.toStringAsFixed(1)}°) — stored without rotating');
-        } else if ((heading - _lastHeading!).abs() > 2) {
-          _lastHeading = heading;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && !_alwaysNorth && !_autoFollow) {
-              _animateToRotation(heading);
-            }
-          });
-        }
-      }
-    } else {
-      // GPS lock lost — clear bearing state so reacquisition starts fresh
-      // instead of snapping the marker/map to a stale direction.
-      _bearingAnchor = null;
-      _computedHeading = null;
-    }
+    // Camera-follow / derived heading / one-time zooms / GPS-marker puck now
+    // run in _handleGpsPosition, invoked every GPS tick by _onPositionNotify
+    // (real-time follow WITHOUT rebuilding the map / relayouting the platform
+    // view). Called here too as an idempotent safety net — version-gated.
+    _handleGpsPosition(appState);
 
     // Handle navigation trigger from log screen or graph
     // Reset map state and navigate to the target location
@@ -1235,37 +1290,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
     }
 
-    // GPS marker has its own lightweight gate. Position/heading change every
-    // GPS tick during auto-follow, but updating the GPS symbol is one cheap
-    // updateSymbol call — it does not need the heavy _syncAllAnnotations
-    // pipeline, and routing it through there caused setGeoJsonSource on the
-    // repeater cluster source to fire every tick, which made MapLibre
-    // re-run its global symbol collision pass and flickered the base-style
-    // POI labels at high zoom. The gpsMarkerStyle pref is included so style
-    // changes (arrow → walk, etc.) re-render the marker's bitmap.
-    if (_isMapReady && _styleLoaded && _imagesRegistered && _cameraAnimationReady) {
-      final gpsVersion = Object.hash(
-        appState.currentPosition?.latitude,
-        appState.currentPosition?.longitude,
-        _computedHeading,
-        appState.preferences.gpsMarkerStyle,
-      );
-      if (gpsVersion != _lastGpsSyncVersion) {
-        _lastGpsSyncVersion = gpsVersion;
-        WidgetsBinding.instance.addPostFrameCallback((_) async {
-          if (!mounted) return;
-          if (_gpsSyncInFlight) return;
-          _gpsSyncInFlight = true;
-          try {
-            await _syncGpsSymbol(appState);
-          } catch (e) {
-            debugError('[MAP] _syncGpsSymbol failed: $e');
-          } finally {
-            _gpsSyncInFlight = false;
-          }
-        });
-      }
-    }
+    // (GPS marker puck sync moved into _handleGpsPosition — runs every tick.)
 
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
