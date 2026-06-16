@@ -622,7 +622,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Map<int, CoverageCell> get coveragePatchCells => _coveragePatchCells;
 
   /// Drop the session patch — the cells belong to one region + grid preset
-  /// (called on zone change and when the Coverage Grid preference changes).
+  /// (called on zone change and when the Grid Mode preference changes).
   void clearCoveragePatch() {
     _coveragePatchCells.clear();
     _coveragePatchVersion++;
