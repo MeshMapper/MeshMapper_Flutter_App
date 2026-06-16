@@ -53,6 +53,15 @@ class _MapImages {
   static String repeater(String status, int hopBytes) =>
       'rep_${status}_$hopBytes';
 
+  // Detailed-mode baked repeater CHIP bitmaps: status × hop_bytes × hex label.
+  // The hex is baked into the icon (no text-field) so overlapping un-clustered
+  // chips can't have a label detach onto a neighbour's box. One image per
+  // distinct (status, hop, hex); registered lazily + deduped. See
+  // _renderRepeaterChipPng / _ensureRepeaterChipImages.
+  // Names: repchip_active_2_A1B2, etc.
+  static String repeaterChip(String status, int hopBytes, String hex) =>
+      'repchip_${status}_${hopBytes}_$hex';
+
   static const repeaterStatuses = ['active', 'dead', 'new', 'dup'];
   static const repeaterHopBytes = [1, 2, 3];
 
@@ -156,6 +165,102 @@ Future<({Uint8List bytes, Size size})> _renderDistanceLabelPng(
     bytes: byteData.buffer.asUint8List(),
     size: Size(logicalWidth, logicalHeight),
   );
+}
+
+/// Bakes a complete repeater "chip" — the status-colored rounded box plus its
+/// centered hex label — into a single PNG, so the label is part of the icon and
+/// can never detach onto a neighbouring chip's box (the MapLibre symbol two-pass
+/// "all icons, then all glyphs" overlap bug). Used ONLY in Detailed grid mode,
+/// where repeaters are un-clustered and can overlap. Simplified mode keeps the
+/// cheap shared-glyph text-field path (clustering guarantees ≥50px spacing).
+///
+/// Variable width — sized to the measured hex like [_renderDistanceLabelPng].
+/// Baked at devicePixelRatio 3.0 to stay crisp on hi-DPI; rendered with
+/// iconSize 1.0 + center anchor. Box visuals mirror [_RepeaterShapePainter]
+/// (drop shadow, filled box, 2px white border) so chips match the Simplified
+/// shape markers.
+Future<Uint8List> _renderRepeaterChipPng(
+  String hex,
+  Color fill,
+  double borderRadius, {
+  double devicePixelRatio = 3.0,
+}) async {
+  const fontSize = 13.0;
+  const horizontalPad = 8.0; // inside the box, each side
+  const boxHeight = 26.0;
+  const shadowBlur = 4.0;
+  const margin = 5.0; // room around the box for the (blurred, +2px) shadow
+
+  final textPainter = TextPainter(
+    text: TextSpan(
+      text: hex,
+      style: const TextStyle(
+        fontSize: fontSize,
+        color: Colors.white,
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+
+  final boxWidth = textPainter.width + horizontalPad * 2;
+  final logicalWidth = boxWidth + margin * 2;
+  const logicalHeight = boxHeight + margin * 2;
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+
+  final boxRect = Rect.fromLTWH(margin, margin, boxWidth, boxHeight);
+  final radius = Radius.circular(borderRadius);
+
+  // Drop shadow (positioned 2px below the box).
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(boxRect.shift(const Offset(0, 2)), radius),
+    Paint()
+      ..color = Colors.black26
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, shadowBlur),
+  );
+
+  // Filled colored box.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(boxRect, radius),
+    Paint()..color = fill,
+  );
+
+  // White border (2px, drawn just inside the box edge).
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      boxRect.deflate(1),
+      Radius.circular(borderRadius - 1),
+    ),
+    Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0,
+  );
+
+  // Centered hex label.
+  textPainter.paint(
+    canvas,
+    Offset(
+      margin + (boxWidth - textPainter.width) / 2,
+      margin + (boxHeight - textPainter.height) / 2,
+    ),
+  );
+
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(
+    (logicalWidth * devicePixelRatio).round(),
+    (logicalHeight * devicePixelRatio).round(),
+  );
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  picture.dispose();
+  image.dispose();
+  if (byteData == null) {
+    throw StateError('Failed to encode repeater chip to PNG bytes');
+  }
+  return byteData.buffer.asUint8List();
 }
 
 Future<Uint8List> _renderPainterToPng(
@@ -508,6 +613,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // needed. Right now we just re-addImage on each sync (idempotent).
   final Set<String> _registeredDistanceLabelImages = {};
   final Map<String, Size> _registeredDistanceLabelImageSizes = {};
+  // Detailed-mode baked repeater chip image names already registered via
+  // addImage (deduped by "repchip_{status}_{hop}_{hex}"). Lazily grown by
+  // _ensureRepeaterChipImages; cleared on style reload (native drops images).
+  final Set<String> _registeredChipImages = {};
   Symbol? _gpsSymbol; // single GPS marker
 
   // When true, _syncAllAnnotations skips _updateFocusLines and
@@ -1586,6 +1695,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 _lastAppliedGridSize != prefsForOverlay.coverageGridSize) ||
             (_lastAppliedCvd != null &&
                 _lastAppliedCvd != prefsForOverlay.colorVisionType));
+    // A Grid Mode change ALSO toggles repeater clustering (Detailed = 100 is
+    // un-clustered). `cluster` is fixed at source creation, so the repeater
+    // source/layers must be rebuilt — not just the coverage overlay.
+    final gridChanged = _isMapReady &&
+        _styleLoaded &&
+        _lastAppliedGridSize != null &&
+        _lastAppliedGridSize != prefsForOverlay.coverageGridSize;
 
     if (zoneChanged || overlayPrefChanged) {
       if (zoneChanged) {
@@ -1596,7 +1712,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (overlayPrefChanged) {
         // Patched cell ids/geometry are per grid preset; a palette-only
         // change keeps them (the rebuild restyles the patch layer too).
-        if (_lastAppliedGridSize != prefsForOverlay.coverageGridSize) {
+        if (gridChanged) {
           appState.clearCoveragePatch();
         }
         _lastAppliedGridSize = prefsForOverlay.coverageGridSize;
@@ -1607,7 +1723,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           _coverageRefreshScheduled = false;
           if (!mounted) return;
+          // Rebuild the repeater source/layers with the new cluster flag BEFORE
+          // the coverage overlay refresh — coverage targets the bottom repeater
+          // layer as its belowLayerId, so those layers must exist first. Collapse
+          // any open spider so its (cluster-only) state doesn't leak across the
+          // rebuild.
+          if (gridChanged && _clusterLayersReady) {
+            _collapseSpider();
+            _clusterLayersReady = false;
+            await _setupRepeaterClusterLayers(
+                clustered: appState.preferences.coverageGridSize != 100);
+            await _syncRepeaterSymbols(appState);
+          }
           await _refreshCoverageOverlay(appState);
+          // Region borders sit below the repeater stack; re-add them so they
+          // stay beneath the freshly-rebuilt repeater layers.
+          if (gridChanged && _showRegionBorders) {
+            await _refreshRegionBorders(appState);
+          }
         });
       }
     }
@@ -2127,6 +2260,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _distanceLabelRepeaterPos.clear();
       _registeredDistanceLabelImages.clear();
       _registeredDistanceLabelImageSizes.clear();
+      // Detailed-mode baked repeater chips are dropped by the native side on
+      // style reload too — clear the cache so the next sync re-registers them.
+      _registeredChipImages.clear();
       // Mark cluster layers as not-ready until _setupRepeaterClusterLayers
       // creates them on the new style. This gates build()-driven post-frame
       // syncs from racing ahead of source creation.
@@ -2156,10 +2292,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _imagesRegistered = false;
       await _registerMapImages(appState);
 
-      // Set up the repeater cluster source + 3 layers. Must run AFTER images
-      // are registered, since the individual symbol layer's iconImage expression
-      // looks up names registered by _registerMapImages.
-      await _setupRepeaterClusterLayers();
+      // Set up the repeater source + layers. Must run AFTER images are
+      // registered, since the individual symbol layer's iconImage expression
+      // looks up names registered by _registerMapImages. Clustering follows the
+      // Grid Mode pref: Detailed (gsize 100) renders every repeater individually.
+      await _setupRepeaterClusterLayers(
+          clustered: appState.preferences.coverageGridSize != 100);
 
       // Re-add coverage overlay AFTER cluster layers exist so _addCoverageOverlay
       // can target the bottom repeater layer as its belowLayerId reference. This
@@ -2752,6 +2890,52 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return 'active';
   }
 
+  /// Ensures every baked repeater-chip image referenced by [featureCollection]
+  /// (Detailed grid mode) is registered via addImage. Deduped by image name —
+  /// each distinct `repchip_{status}_{hop}_{hex}` chip is baked at most once and
+  /// cached in [_registeredChipImages] (cleared on style reload). Driven off the
+  /// FeatureCollection itself so the registered set can't drift from what the
+  /// layer actually references. The status/hop/hex are parsed back out of the
+  /// (controlled, underscore-free) image name to re-derive colour + radius.
+  Future<void> _ensureRepeaterChipImages(
+      Map<String, dynamic> featureCollection) async {
+    if (_mapController == null) return;
+    final features =
+        (featureCollection['features'] as List?) ?? const <dynamic>[];
+    var baked = 0;
+    for (final f in features) {
+      final props = (f as Map)['properties'] as Map?;
+      final name = props?['iconImage'] as String?;
+      if (name == null ||
+          !name.startsWith('repchip_') ||
+          _registeredChipImages.contains(name)) {
+        continue;
+      }
+      // repchip_{status}_{hop}_{hex} — status/hex are underscore-free.
+      final parts = name.split('_');
+      if (parts.length != 4) continue;
+      final status = parts[1];
+      final hop = int.tryParse(parts[2]) ?? 1;
+      final hex = parts[3];
+      try {
+        final bytes = await _renderRepeaterChipPng(
+          hex,
+          _repeaterStatusColor(status),
+          _repeaterBorderRadius(hop),
+        );
+        await _mapController!.addImage(name, bytes);
+        _registeredChipImages.add(name);
+        baked++;
+      } catch (e) {
+        debugError('[MAP] render/addImage(repeater chip $name) failed: $e');
+      }
+    }
+    if (baked > 0) {
+      debugLog('[MAP] Baked $baked new repeater chip image(s); '
+          '${_registeredChipImages.length} total registered');
+    }
+  }
+
   /// Converts a Flutter [Color] to a `#RRGGBB` (or `#RRGGBBAA`) hex string
   /// for MapLibre symbol/line properties (which take CSS-style color strings).
   String _colorToHex(Color color, {bool includeAlpha = false}) {
@@ -2776,6 +2960,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final duplicates = _getDuplicateRepeaterIds(visible);
     final hopOverride =
         appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    // Detailed (gsize 100) is un-clustered, so each feature references a baked
+    // chip image (hex baked in). Simplified reuses the 12 shared shape images
+    // + a text-field hex label. See _setupRepeaterClusterLayers.
+    final detailed = appState.preferences.coverageGridSize == 100;
     final focusActive = _focusedPingLocation != null;
     // While a spider is open, repeaters in the spread set are tagged with
     // `inSpider:true`. The individual symbol layer's filter excludes those
@@ -2801,8 +2989,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           : effectiveBytes == 2
               ? 2
               : 1;
-      final iconImage = _MapImages.repeater(statusKey, shapeBytes);
       final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      // Detailed: per-(status,hop,hex) baked chip (hex baked in); Simplified:
+      // shared shape image + a text-field hex label. _ensureRepeaterChipImages
+      // registers the chip lazily before the source is pushed.
+      final iconImage = detailed
+          ? _MapImages.repeaterChip(statusKey, shapeBytes, hex)
+          : _MapImages.repeater(statusKey, shapeBytes);
       final colorHex = _colorToHex(_repeaterStatusColor(statusKey));
 
       features.add({
@@ -2828,11 +3021,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return {'type': 'FeatureCollection', 'features': features};
   }
 
-  /// Creates the cluster-enabled GeoJSON source and three rendering layers
-  /// (individual symbols, cluster bubble circles, cluster count text). Called
-  /// once per style load AFTER images are registered (the individual symbol
-  /// layer references the registered icon names via a data-driven expression).
-  Future<void> _setupRepeaterClusterLayers() async {
+  /// Creates the repeater GeoJSON source and its rendering layers (individual
+  /// symbols, cluster bubble circles, cluster count text, spider line/symbols).
+  /// Called once per style load AFTER images are registered, and again whenever
+  /// Grid Mode changes (the `cluster` flag is fixed at source creation, so the
+  /// source must be rebuilt to toggle it).
+  ///
+  /// [clustered] follows Grid Mode: Simplified (gsize 300) clusters; Detailed
+  /// (gsize 100) does NOT — every repeater renders individually. The bubble /
+  /// count / spider layers are still created when un-clustered, but stay inert
+  /// (no `point_count` features ever exist, the spider source stays empty) so
+  /// the layer ids that other code paths reference — `queryRenderedFeatures`,
+  /// the region-border `belowLayerId` — remain valid in both modes.
+  ///
+  /// Styling differs by mode: clustered uses the cheap shared-glyph `textField`
+  /// hex label (clustering guarantees ≥50px spacing, so labels never overlap);
+  /// un-clustered uses the baked-in-icon chip (no `textField`) so an overlapping
+  /// chip's label can't detach onto a neighbour's box.
+  Future<void> _setupRepeaterClusterLayers({required bool clustered}) async {
     if (_mapController == null) return;
 
     // Idempotent: tear down any existing source/layers from a previous style load.
@@ -2855,8 +3061,39 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       await _mapController!.removeSource(_spiderSourceId);
     } catch (_) {}
 
-    // Empty source with cluster enabled. We'll push real data via setGeoJsonSource
-    // from _syncRepeaterSymbols whenever the marker data version changes.
+    // Shared symbol styling for the individual layer AND the spider symbol
+    // layer (the spider comment requires they look identical). Selected once by
+    // mode: Simplified keeps the shared-glyph text-field hex; Detailed bakes the
+    // hex into the chip image (no text-field, no iconColor — colour is baked in)
+    // so overlapping un-clustered chips can't have a label detach. iconSize 1.0
+    // matches the distance-label baked-icon convention (DPR-3 PNG, centre
+    // anchor); the Simplified 48×28 shape keeps its existing 1.4 scale.
+    final SymbolLayerProperties repeaterSymbolProps = clustered
+        ? const SymbolLayerProperties(
+            iconImage: ['get', 'iconImage'],
+            iconColor: ['get', 'color'],
+            iconSize: 1.4,
+            iconAllowOverlap: true,
+            iconIgnorePlacement: true,
+            textField: ['get', 'hex'],
+            textColor: '#FFFFFF',
+            textHaloColor: '#000000',
+            textHaloWidth: 1.5,
+            textSize: 13,
+            textAllowOverlap: true,
+            textIgnorePlacement: true,
+            textFont: _defaultFontStack,
+          )
+        : const SymbolLayerProperties(
+            iconImage: ['get', 'iconImage'],
+            iconSize: 1.0,
+            iconAllowOverlap: true,
+            iconIgnorePlacement: true,
+          );
+
+    // Empty source. We'll push real data via setGeoJsonSource from
+    // _syncRepeaterSymbols whenever the marker data version changes. `cluster`
+    // is fixed at creation, so a Grid Mode change rebuilds this whole source.
     //
     // IMPORTANT: pass `data` as a Dart Map (NOT jsonEncode-d string). The iOS
     // plugin's `buildShapeSource` assumes that if `data` is a String, it must be
@@ -2865,12 +3102,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     try {
       await _mapController!.addSource(
         _repeaterSourceId,
-        const GeojsonSourceProperties(
-          data: <String, dynamic>{
+        GeojsonSourceProperties(
+          data: const <String, dynamic>{
             'type': 'FeatureCollection',
             'features': <dynamic>[]
           },
-          cluster: true,
+          // Simplified clusters; Detailed shows every repeater individually.
+          cluster: clustered,
           clusterRadius: 50,
           // Cluster at every reachable zoom (max user zoom is 17). Stacked
           // markers — those within `clusterRadius` pixels at the current
@@ -2878,7 +3116,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // into a pile of overlapping individual symbols when the user is
           // zoomed all the way in. Tap a cluster → spiderfy. Markers far
           // enough apart that they exceed `clusterRadius` pixels at higher
-          // zooms still separate into individuals naturally on zoom.
+          // zooms still separate into individuals naturally on zoom. Inert
+          // when cluster is false.
           clusterMaxZoom: 17,
         ),
       );
@@ -2895,21 +3134,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       await _mapController!.addSymbolLayer(
         _repeaterSourceId,
         _repeaterIndividualLayerId,
-        const SymbolLayerProperties(
-          iconImage: ['get', 'iconImage'],
-          iconColor: ['get', 'color'],
-          iconSize: 1.4,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          textField: ['get', 'hex'],
-          textColor: '#FFFFFF',
-          textHaloColor: '#000000',
-          textHaloWidth: 1.5,
-          textSize: 13,
-          textAllowOverlap: true,
-          textIgnorePlacement: true,
-          textFont: _defaultFontStack,
-        ),
+        repeaterSymbolProps,
         filter: [
           'all',
           [
@@ -3022,21 +3247,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       await _mapController!.addSymbolLayer(
         _spiderSourceId,
         _spiderSymbolLayerId,
-        const SymbolLayerProperties(
-          iconImage: ['get', 'iconImage'],
-          iconColor: ['get', 'color'],
-          iconSize: 1.4,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          textField: ['get', 'hex'],
-          textColor: '#FFFFFF',
-          textHaloColor: '#000000',
-          textHaloWidth: 1.5,
-          textSize: 13,
-          textAllowOverlap: true,
-          textIgnorePlacement: true,
-          textFont: _defaultFontStack,
-        ),
+        repeaterSymbolProps,
         filter: [
           '==',
           ['geometry-type'],
@@ -3071,6 +3282,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     try {
       final geojson = _buildRepeaterFeatureCollection(appState);
+      // Detailed mode references baked per-chip images — make sure every one is
+      // registered before pushing, or the symbol layer would reference a
+      // missing icon. No-op in Simplified (features use the pre-registered
+      // shape images). Driven off the FeatureCollection, so it can't drift.
+      if (appState.preferences.coverageGridSize == 100) {
+        await _ensureRepeaterChipImages(geojson);
+      }
       await _mapController!.setGeoJsonSource(_repeaterSourceId, geojson);
     } catch (e) {
       debugError('[MAP] Failed to update repeater source: $e');

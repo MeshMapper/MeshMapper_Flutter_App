@@ -252,7 +252,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             if (prefs.mapTilesEnabled)
               ListTile(
                 leading: const Icon(Icons.grid_on),
-                title: const Text('Coverage Grid'),
+                title: const Text('Grid Mode'),
                 subtitle: Text(prefs.coverageGridSize == 100
                     ? 'Detailed (100 m cells)'
                     : 'Simplified (300 m cells)'),
@@ -1305,7 +1305,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     };
   }
 
-  /// Coverage grid preset selector — mirrors the web UI's Grid Mode
+  /// Grid Mode preset selector — mirrors the web UI's Grid Mode
   /// (Simplified = 300 m, Detailed = 100 m + blob, applied server-side).
   void _showCoverageGridSelector(
       BuildContext context, AppStateProvider appState) {
@@ -1324,7 +1324,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Coverage Grid',
+              child: Text('Grid Mode',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
             RadioGroup<int>(
