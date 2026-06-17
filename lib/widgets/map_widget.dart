@@ -734,6 +734,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         if (mounted) {
           _cameraAnimationReady = true;
           _recoverCoverageOverlayIfNeeded();
+          // Markers that arrived while backgrounded were skipped because the
+          // build() marker-sync is gated on _cameraAnimationReady (and left
+          // _lastMarkerDataVersion stale). Now that the gate is open, force a
+          // rebuild so build() detects the version diff and syncs the
+          // accumulated pins — otherwise they don't render until the next
+          // mapRevision bump (the next ping).
+          setState(() {});
         }
       });
     }

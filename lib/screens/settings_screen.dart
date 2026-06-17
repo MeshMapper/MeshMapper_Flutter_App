@@ -254,8 +254,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 leading: const Icon(Icons.grid_on),
                 title: const Text('Grid Mode'),
                 subtitle: Text(prefs.coverageGridSize == 100
-                    ? 'Detailed (100 m cells)'
-                    : 'Simplified (300 m cells)'),
+                    ? 'Detailed (More detailed cells, non grouped repeaters)'
+                    : 'Simplified (Merged cells, grouped repeaters)'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showCoverageGridSelector(context, appState),
               ),
@@ -1310,8 +1310,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _showCoverageGridSelector(
       BuildContext context, AppStateProvider appState) {
     final options = [
-      (300, 'Simplified', '300 m cells — the default, matches the web map'),
-      (100, 'Detailed', '100 m cells with blob smoothing — finer detail'),
+      (300, 'Simplified', 'Merged cells, grouped repeaters'),
+      (100, 'Detailed', 'More detailed cells, non grouped repeaters'),
     ];
     showModalBottomSheet(
       context: context,
