@@ -81,6 +81,57 @@ class GridCell {
       return la != null && lo != null && contains(la, lo);
     }).toList();
   }
+
+  // The coverage tile smears each ping over a (2·blob+1)² block of cells
+  // (server `$blob`: Detailed 100 m = 1 → 3×3, Simplified 300 m = 0 → 1×1). So a
+  // green cell can be coloured by a ping up to [blob] cells away. These two
+  // helpers mirror the web's `lazyShowPingsAt` (dev/index.php) so the app fetches
+  // and keeps exactly the pings that coloured the tapped cell — otherwise a
+  // blob-painted neighbour cell falsely reads "no coverage data here". blob=0
+  // collapses both back to the own-cell behaviour, unchanged.
+
+  /// Metres from the cell centre to the far corner of the ±[blob] cell block —
+  /// the fetch radius that reaches every ping whose blob can colour this cell.
+  /// Floored at [minMeters] (the active gridSize) so blob=0 keeps the old radius.
+  double blobFetchRadiusMeters(int blob, double minMeters) {
+    final latM = (blob + 0.5) * latStep * 111000;
+    final lonM =
+        (blob + 0.5) * lonStep * 111000 * math.cos(centerLat * math.pi / 180);
+    final corner = math.sqrt(latM * latM + lonM * lonM).ceilToDouble() + 5;
+    return math.max(corner, minMeters);
+  }
+
+  /// Keep the points whose blob covers this cell: own cell ±[blob] in each axis
+  /// (blob=0 reduces to own-cell-only, i.e. [filter]).
+  List<Map<String, dynamic>> filterWithinBlob(
+      List<Map<String, dynamic>> points, int blob) {
+    return points.where((p) {
+      final la = _toDouble(p['lat']);
+      final lo = _toDouble(p['lon']);
+      if (la == null || lo == null) return false;
+      return ((la / latStep).floor() - i).abs() <= blob &&
+          ((lo / lonStep).floor() - j).abs() <= blob;
+    }).toList();
+  }
+
+  /// The closed outer ring (`[lon, lat]` pairs, GeoJSON order) of the
+  /// (2·[blob]+1)² block of cells centred on this cell — the 3×3 highlight
+  /// block in Detailed (blob = 1), the single cell in Simplified (blob = 0).
+  /// The cell itself is always the middle, so a tap highlights a block centred
+  /// on the tapped tile (parity with the web's clicked-tile-centred highlight).
+  List<List<double>> blockRing(int blob) {
+    final minLat = (i - blob) * latStep;
+    final maxLat = (i + blob + 1) * latStep;
+    final minLon = (j - blob) * lonStep;
+    final maxLon = (j + blob + 1) * lonStep;
+    return [
+      [minLon, minLat],
+      [maxLon, minLat],
+      [maxLon, maxLat],
+      [minLon, maxLat],
+      [minLon, minLat],
+    ];
+  }
 }
 
 // --- repeater lookup (ports repObj / repeaterByHex / repeaterByFullHex) ------

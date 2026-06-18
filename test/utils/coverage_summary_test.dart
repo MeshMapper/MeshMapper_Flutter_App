@@ -250,5 +250,91 @@ void main() {
       ];
       expect(cell.filter(pts).length, 2);
     });
+
+    test('Detailed (blob=1) keeps a ping one cell away; own-cell-only drops it',
+        () {
+      // The Detailed (100 m) coverage tile paints a 3×3 block per ping, so a
+      // green cell can be coloured by a ping up to 1 cell away. Mirrors the web's
+      // lazyShowPingsAt: own-cell-only would falsely show "no coverage data here".
+      final cell = GridCell.containing(45.0, -75.0, latStep, lonStep);
+      final pts = <Map<String, dynamic>>[
+        {
+          'lat': (cell.i + 1) * latStep + latStep * 0.5,
+          'lon': (cell.j - 1) * lonStep + lonStep * 0.5,
+        }, // diagonal neighbour — own cell is (i+1, j-1)
+        {
+          'lat': (cell.i + 2) * latStep + latStep * 0.5,
+          'lon': cell.centerLon,
+        }, // two cells away — outside the ±1 blob
+        {'lat': null, 'lon': cell.centerLon}, // unparseable
+      ];
+      // blob=1: the diagonal neighbour is within ±1; the two-away ping is not.
+      expect(cell.filterWithinBlob(pts, 1).length, 1);
+      // own-cell-only (the pre-fix behaviour) drops both → empty summary.
+      expect(cell.filter(pts).length, 0);
+    });
+
+    test('Simplified (blob=0) reduces to own-cell-only filtering', () {
+      const sLat = 0.0027, sLon = 0.00384; // kCoverageGridSteps[300]
+      final cell = GridCell.containing(45.0, -75.0, sLat, sLon);
+      final pts = <Map<String, dynamic>>[
+        {'lat': cell.centerLat, 'lon': cell.centerLon}, // in cell
+        {
+          'lat': (cell.i + 1) * sLat + sLat * 0.5,
+          'lon': cell.centerLon
+        }, // a neighbour cell
+      ];
+      expect(cell.filterWithinBlob(pts, 0).length, cell.filter(pts).length);
+      expect(cell.filterWithinBlob(pts, 0).length, 1);
+    });
+
+    test('blob fetch radius reaches the ±blob block corner, floored at gridSize',
+        () {
+      // Detailed: blob=1, 100 m floor → must exceed 100 m and reach the block's
+      // far corner (~212 m here) so blob-neighbour pings get fetched.
+      final detailed = GridCell.containing(45.0, -75.0, latStep, lonStep);
+      final rDetailed = detailed.blobFetchRadiusMeters(1, 100);
+      expect(rDetailed, greaterThan(100));
+      expect(rDetailed, greaterThanOrEqualTo(212));
+
+      // Simplified: blob=0, the own-cell corner (~212 m) is below the 300 m floor
+      // → returns exactly 300, byte-unchanged from the old gridSize radius.
+      const sLat = 0.0027, sLon = 0.00384;
+      final simplified = GridCell.containing(45.0, -75.0, sLat, sLon);
+      expect(simplified.blobFetchRadiusMeters(0, 300), 300);
+    });
+  });
+
+  group('GridCell.blockRing', () {
+    const latStep = 0.0009;
+    const lonStep = 0.00128;
+    const cell = GridCell(10, 20, latStep, lonStep);
+
+    test('blob=1 makes a 3x3 block centred on the tapped cell', () {
+      final ring = cell.blockRing(1);
+      expect(ring.length, 5);
+      expect(ring.first, ring.last); // closed ring
+      final sw = ring[0]; // [minLon, minLat]
+      final ne = ring[2]; // [maxLon, maxLat]
+      // 3 cells wide/tall: i-1..i+2 and j-1..j+2
+      expect(sw[1], closeTo(9 * latStep, 1e-12));
+      expect(ne[1], closeTo(12 * latStep, 1e-12));
+      expect(sw[0], closeTo(19 * lonStep, 1e-12));
+      expect(ne[0], closeTo(22 * lonStep, 1e-12));
+      // The block's centre is the tapped cell's centre — the clicked tile is
+      // always the middle.
+      expect((sw[1] + ne[1]) / 2, closeTo(cell.centerLat, 1e-12));
+      expect((sw[0] + ne[0]) / 2, closeTo(cell.centerLon, 1e-12));
+    });
+
+    test('blob=0 is just the tapped cell', () {
+      final ring = cell.blockRing(0);
+      final sw = ring[0];
+      final ne = ring[2];
+      expect(sw[1], closeTo(10 * latStep, 1e-12));
+      expect(ne[1], closeTo(11 * latStep, 1e-12));
+      expect(sw[0], closeTo(20 * lonStep, 1e-12));
+      expect(ne[0], closeTo(21 * lonStep, 1e-12));
+    });
   });
 }

@@ -537,6 +537,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const String _patchSourceId = 'meshmapper-coverage-patch';
   static const String _patchLayerId = 'meshmapper-coverage-patch-layer';
   bool _patchLayerReady = false;
+
+  // Tap-to-highlight overlay: an outline-only line layer tracing the clicked
+  // cell's (2·blob+1)² block (3×3 Detailed / 1 cell Simplified), centred on the
+  // tapped tile. Installed once (empty); populated on a cell tap and cleared to
+  // empty when the summary sheet closes — no per-tap layer churn.
+  static const String _cellHighlightSourceId = 'meshmapper-cell-highlight';
+  static const String _cellHighlightLayerId = 'meshmapper-cell-highlight-layer';
+  bool _cellHighlightReady = false;
   int _lastAppliedPatchVersion = -1;
   bool _styleLoaded = false;
   bool _hasStyleLoadedOnce =
@@ -1945,13 +1953,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (zone == null || zone.isEmpty) return;
 
     final gridSize = appState.preferences.coverageGridSize;
-    final radius = gridSize.toDouble();
     // Snap to the clicked CELL (same grid as the server/web) so the summary is
-    // identical anywhere in the cell and matches the web: fetch the cell centre,
-    // then filter the returned pings to that cell.
+    // identical anywhere in the cell and matches the web's lazyShowPingsAt.
     final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
     final cell = GridCell.containing(
         coordinates.latitude, coordinates.longitude, steps[0], steps[1]);
+    // The Detailed (100 m) coverage tile smears each ping over a 3×3 cell block
+    // (server $blob=1); Simplified (300 m) doesn't (blob=0). So a green cell can
+    // be coloured by a ping up to blob cells away — fetch out to the block's far
+    // corner and keep the pings whose blob covers this cell, else a blob-painted
+    // neighbour cell falsely reads "no coverage data here" (matches the web's
+    // ($gsize === 100 ? 1 : 0) blob rule for both presets).
+    final blob = gridSize == 100 ? 1 : 0;
+    final radius = cell.blobFetchRadiusMeters(blob, gridSize.toDouble());
     final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
         hopBytes: appState.effectiveHopBytes);
     final isImperial = appState.preferences.isImperial;
@@ -1959,7 +1973,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     debugLog('[COVERAGE] cell tap @ '
         '${coordinates.latitude.toStringAsFixed(5)},'
         '${coordinates.longitude.toStringAsFixed(5)} '
-        'cell=${cell.i}/${cell.j} r=${radius.toStringAsFixed(0)}m');
+        'cell=${cell.i}/${cell.j} blob=$blob r=${radius.toStringAsFixed(0)}m');
+
+    // Highlight the tapped cell's block (3×3 in Detailed, 1 cell in Simplified),
+    // always centred on the tapped tile. Fire-and-forget; cleared on sheet close.
+    _setCellHighlight(cell, blob);
 
     final Future<GridSummary?> summaryFuture = appState
         .fetchCellCoverage(
@@ -1967,8 +1985,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           lon: cell.centerLon,
           radiusMeters: radius,
         )
-        .then<GridSummary?>(
-            (points) => GridSummary.fromPoints(cell.filter(points), lookup))
+        .then<GridSummary?>((points) =>
+            GridSummary.fromPoints(cell.filterWithinBlob(points, blob), lookup))
         .catchError((Object e) {
       debugWarn('[COVERAGE] cell summary failed: $e');
       return null;
@@ -1986,7 +2004,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         summaryFuture: summaryFuture,
         isImperial: isImperial,
       ),
-    ).whenComplete(() => _cellSummaryShowing = false);
+    ).whenComplete(() {
+      _cellSummaryShowing = false;
+      _clearCellHighlight();
+    });
   }
 
   /// Handles taps on custom layer features (repeater cluster bubbles and
@@ -2373,6 +2394,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // style. Clear the flag so _updateFocusLines won't try to remove
       // already-gone layers next time it's called.
       _focusLinesInstalled = false;
+      // The tap cell-highlight overlay is likewise gone; _addCoverageOverlay
+      // re-installs it below.
+      _cellHighlightReady = false;
 
       // Disable symbol decluttering on the annotation manager. By default,
       // MapLibre symbol layers hide overlapping icons/labels at lower zoom to
@@ -2593,6 +2617,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         await _applyBasePatchFilter(appState, layerId);
       }
 
+      // Tap-to-highlight overlay: installed empty here (renders nothing until a
+      // cell tap pushes a block into it). Self-heals on first tap if this fails.
+      _cellHighlightReady = false;
+      await _ensureCellHighlightLayer();
+
       _lastAppliedCoverageOpacity = opacity;
       _lastAppliedGridSize = gridSize;
       _lastAppliedCvd = prefs.colorVisionType;
@@ -2642,6 +2671,91 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // overlay is hidden). Safe to ignore — next _addCoverageOverlay call
       // will pick up the current preference value.
       debugLog('[MAP] Coverage overlay opacity update skipped: $e');
+    }
+  }
+
+  /// Empty FeatureCollection — used to clear a GeoJSON source without removing
+  /// its layer (an empty source renders nothing, costs nothing).
+  Map<String, dynamic> _emptyFeatureCollection() =>
+      <String, dynamic>{'type': 'FeatureCollection', 'features': <dynamic>[]};
+
+  /// Outline-only FeatureCollection for the tapped cell's (2·blob+1)² block: a
+  /// single LineString tracing the block border, centred on the tapped tile.
+  Map<String, dynamic> _buildCellHighlightGeoJson(GridCell cell, int blob) =>
+      <String, dynamic>{
+        'type': 'FeatureCollection',
+        'features': [
+          {
+            'type': 'Feature',
+            'properties': <String, dynamic>{},
+            'geometry': {
+              'type': 'LineString',
+              'coordinates': cell.blockRing(blob),
+            },
+          },
+        ],
+      };
+
+  /// Idempotently (re)create the tap cell-highlight source + line layer. A line
+  /// layer over a tiny LineString ring — no fill, and nothing renders while the
+  /// source is empty (the idle state). Self-healing like the patch layer.
+  Future<bool> _ensureCellHighlightLayer() async {
+    if (_cellHighlightReady) return true;
+    if (_mapController == null) return false;
+    try {
+      final belowLayer = _clusterLayersReady
+          ? _repeaterIndividualLayerId
+          : _symbolAnnotationLayerId();
+      try {
+        await _mapController!.removeLayer(_cellHighlightLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_cellHighlightSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_cellHighlightSourceId, _emptyFeatureCollection());
+      await _mapController!.addLineLayer(
+        _cellHighlightSourceId,
+        _cellHighlightLayerId,
+        const LineLayerProperties(
+          lineColor: '#00d2ff',
+          lineWidth: 2.5,
+          lineOpacity: 0.95,
+          lineCap: 'round',
+          lineJoin: 'round',
+        ),
+        belowLayerId: belowLayer,
+      );
+      _cellHighlightReady = true;
+      return true;
+    } catch (e) {
+      debugLog('[COVERAGE] cell-highlight layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Draw the highlight block for the tapped [cell] (centred on it). [blob] = 1
+  /// in Detailed (3×3), 0 in Simplified (single cell).
+  Future<void> _setCellHighlight(GridCell cell, int blob) async {
+    if (_mapController == null) return;
+    if (!await _ensureCellHighlightLayer()) return;
+    try {
+      await _mapController!.setGeoJsonSource(
+          _cellHighlightSourceId, _buildCellHighlightGeoJson(cell, blob));
+    } catch (e) {
+      debugLog('[COVERAGE] cell-highlight set failed: $e');
+    }
+  }
+
+  /// Clear the tap highlight (summary sheet closed): set the source to empty so
+  /// the layer renders nothing. The layer stays installed (cheap, no churn).
+  Future<void> _clearCellHighlight() async {
+    if (_mapController == null || !_cellHighlightReady) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_cellHighlightSourceId, _emptyFeatureCollection());
+    } catch (e) {
+      debugLog('[COVERAGE] cell-highlight clear failed: $e');
     }
   }
 
