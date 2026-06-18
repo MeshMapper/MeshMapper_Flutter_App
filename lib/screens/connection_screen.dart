@@ -2476,7 +2476,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
               ),
               const SizedBox(height: 12),
               const Text(
-                'Your radio will remain in multi-byte mode until you change it.',
+                'On a normal disconnect, the app restores your radio to its '
+                'original path setting. If the connection drops unexpectedly, '
+                'you may need to switch it back yourself in Settings.',
                 style: TextStyle(fontSize: 13, color: Colors.amber),
               ),
             ],
