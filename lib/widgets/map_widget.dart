@@ -17,11 +17,14 @@ import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
+import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
+import '../utils/repeater_format.dart';
+import 'cell_summary_sheet.dart';
 import 'repeater_id_chip.dart';
 import 'rx_path_chain.dart';
 
@@ -519,6 +522,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   String? _activeCoverageSourceId;
   String? _activeCoverageLayerId;
   int _coverageBufferCounter = 0;
+  // Guards against opening two GRID SUMMARY sheets when both the feature-tap and
+  // the onMapClick hit-test fire for the same coverage cell tap.
+  bool _cellSummaryShowing = false;
   // Grid size is baked into the tile URL and the CVD palette into the layer
   // paint; a change to either rebuilds the overlay via the build watcher.
   int? _lastAppliedGridSize;
@@ -1906,7 +1912,81 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (!mounted) return;
     if (_spiderCenter != null) {
       _collapseSpider();
+      return; // dismissing the spider shouldn't also open a cell summary
     }
+    // Fallback cell hit-test: some platforms don't dispatch coverage fill-layer
+    // taps through onFeatureTapped, so query the coverage layer at the tap point.
+    _maybeShowCellSummaryAt(point, coordinates);
+  }
+
+  /// Hit-test the active coverage fill layer at [point]; if a cell is there,
+  /// open its GRID SUMMARY. The onMapClick fallback to _handleFeatureTap.
+  Future<void> _maybeShowCellSummaryAt(
+      math.Point<double> point, LatLng coordinates) async {
+    final layerId = _activeCoverageLayerId;
+    if (layerId == null || _mapController == null) return;
+    try {
+      final features =
+          await _mapController!.queryRenderedFeatures(point, [layerId], null);
+      if (!mounted || features.isEmpty) return;
+      _showCellSummary(coordinates);
+    } catch (e) {
+      debugWarn('[COVERAGE] cell hit-test failed: $e');
+    }
+  }
+
+  /// Open the GRID SUMMARY bottom sheet for the coverage cell at [coordinates].
+  /// Lazily fetches the cell's coverage points and aggregates them client-side,
+  /// mirroring the web cell-click popup (minus PING HISTORY).
+  void _showCellSummary(LatLng coordinates) {
+    if (!mounted || _cellSummaryShowing) return;
+    final appState = context.read<AppStateProvider>();
+    final zone = appState.zoneCode;
+    if (zone == null || zone.isEmpty) return;
+
+    final gridSize = appState.preferences.coverageGridSize;
+    final radius = gridSize.toDouble();
+    // Snap to the clicked CELL (same grid as the server/web) so the summary is
+    // identical anywhere in the cell and matches the web: fetch the cell centre,
+    // then filter the returned pings to that cell.
+    final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
+    final cell = GridCell.containing(
+        coordinates.latitude, coordinates.longitude, steps[0], steps[1]);
+    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
+        hopBytes: appState.effectiveHopBytes);
+    final isImperial = appState.preferences.isImperial;
+
+    debugLog('[COVERAGE] cell tap @ '
+        '${coordinates.latitude.toStringAsFixed(5)},'
+        '${coordinates.longitude.toStringAsFixed(5)} '
+        'cell=${cell.i}/${cell.j} r=${radius.toStringAsFixed(0)}m');
+
+    final Future<GridSummary?> summaryFuture = appState
+        .fetchCellCoverage(
+          lat: cell.centerLat,
+          lon: cell.centerLon,
+          radiusMeters: radius,
+        )
+        .then<GridSummary?>(
+            (points) => GridSummary.fromPoints(cell.filter(points), lookup))
+        .catchError((Object e) {
+      debugWarn('[COVERAGE] cell summary failed: $e');
+      return null;
+    });
+
+    _cellSummaryShowing = true;
+    showModalBottomSheet(
+      context: context,
+      useSafeArea: true,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => CellSummarySheet(
+        summaryFuture: summaryFuture,
+        isImperial: isImperial,
+      ),
+    ).whenComplete(() => _cellSummaryShowing = false);
   }
 
   /// Handles taps on custom layer features (repeater cluster bubbles and
@@ -1992,6 +2072,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (layerId == _regionBorderLineLayerId ||
         layerId == _regionBorderLabelLayerId) {
       _showBorderInfoDialog();
+      return;
+    }
+
+    // Coverage cell: open the GRID SUMMARY. Coverage is a fill layer below the
+    // repeaters, so reaching it means no repeater/cluster was hit. Platforms that
+    // don't dispatch fill-layer taps here fall back to the queryRenderedFeatures
+    // hit-test in _onMapEmptyTap.
+    if (layerId == _activeCoverageLayerId) {
+      _showCellSummary(coordinates);
       return;
     }
 
@@ -7678,19 +7767,47 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Determine icon badge color based on primary status
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
-    // Determine status label and color
+    // Determine status label and color (web labels, generateRepeaterPopup).
     String statusLabel;
     Color statusColor;
-    if (repeater.isNew) {
-      statusLabel = 'New';
+    if (repeater.enabled == 2) {
+      statusLabel = 'Ambiguous';
+      statusColor = _repeaterDuplicateColor;
+    } else if (repeater.enabled == 0) {
+      statusLabel = 'Disabled';
+      statusColor = _repeaterDeadColor;
+    } else if (repeater.isNew) {
+      statusLabel = 'New Repeater';
       statusColor = _repeaterNewColor;
     } else if (repeater.isActive) {
-      statusLabel = 'Active';
+      statusLabel = 'Repeater Online';
       statusColor = _repeaterMarkerColor;
     } else {
-      statusLabel = 'Stale';
+      statusLabel = 'Stale Repeater';
       statusColor = _repeaterDeadColor;
     }
+
+    // Lazily fetch this repeater's coverage points for the BIDIR/TX/RX/DISC/DEAD
+    // totals + max range, then aggregate client-side (renderRepeaterChart parity).
+    final appState = context.read<AppStateProvider>();
+    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
+        hopBytes: appState.effectiveHopBytes);
+    final isImperial = appState.preferences.isImperial;
+    final Future<RepeaterStats?> statsFuture = appState
+        .fetchRepeaterCoveragePoints(prefix: repeater.id)
+        .then<RepeaterStats?>(
+            (pts) => RepeaterStats.fromCoverage(pts, repeater, lookup))
+        .catchError((Object e) {
+      debugWarn('[COVERAGE] repeater stats failed: $e');
+      return null;
+    });
+
+    final fingerprintShort =
+        repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
+    final fingerprintFull = repeater.hexId.length >= 8
+        ? repeater.hexId.substring(0, 8).toUpperCase()
+        : repeater.hexId.toUpperCase();
+    final clockSkew = humanizeClockSkew(repeater.timeOffset);
 
     showModalBottomSheet(
       context: context,
@@ -7786,51 +7903,177 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               ),
               child: Column(
                 children: [
-                  // Location row
-                  Row(
-                    children: [
-                      Icon(Icons.location_on,
-                          size: 16,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
-                          style: TextStyle(
+                  // Location
+                  _repRow(
+                    context,
+                    Icons.location_on,
+                    Text(
+                      '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
+                      style: const TextStyle(
+                          fontSize: 13, fontFamily: 'monospace'),
+                    ),
+                  ),
+                  // Fingerprint (id / hex)
+                  _repRow(
+                    context,
+                    Icons.fingerprint,
+                    Text.rich(TextSpan(children: [
+                      TextSpan(
+                        text: fingerprintShort,
+                        style: const TextStyle(
                             fontSize: 13,
                             fontFamily: 'monospace',
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
-                        ),
+                            fontWeight: FontWeight.w600),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  // Last heard row
-                  Row(
-                    children: [
-                      Icon(Icons.access_time,
-                          size: 16,
+                      TextSpan(
+                        text: '  ($fingerprintFull)',
+                        style: TextStyle(
+                          fontSize: 12,
                           color:
-                              Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          repeater.lastHeardFormatted,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
+                              Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
-                    ],
+                    ])),
+                  ),
+                  // Hop bytes
+                  _repRow(
+                    context,
+                    Icons.swap_horiz,
+                    Text(
+                      'Hop Bytes: ${repeater.hopBytes} byte${repeater.hopBytes == 1 ? '' : 's'}',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  // Last heard (schedule)
+                  if (repeater.lastHeard > 0)
+                    _repRow(
+                      context,
+                      Icons.schedule,
+                      Text(formatDateWithAgo(repeater.lastHeard),
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  // Clock-skew warning
+                  if (clockSkew != null) ...[
+                    _repRow(
+                      context,
+                      Icons.warning_amber_rounded,
+                      const Text('Repeater time is not set correctly',
+                          style: TextStyle(fontSize: 13)),
+                      color: Colors.red.shade400,
+                    ),
+                    _repRow(
+                      context,
+                      null,
+                      Text(clockSkew, style: const TextStyle(fontSize: 13)),
+                      color: Colors.red.shade400,
+                    ),
+                  ],
+                  // First heard
+                  if (repeater.createdAt != null)
+                    _repRow(
+                      context,
+                      Icons.event,
+                      Text(
+                          'First Heard: ${formatDateWithAgo(repeater.createdAt)}',
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  // Max range (lazy)
+                  FutureBuilder<RepeaterStats?>(
+                    future: statsFuture,
+                    builder: (context, snap) {
+                      final loading =
+                          snap.connectionState != ConnectionState.done;
+                      final stats = snap.data;
+                      final range = loading
+                          ? '…'
+                          : (stats?.maxRangeMeters != null
+                              ? formatCoverageDistance(stats!.maxRangeMeters!,
+                                  isImperial: isImperial)
+                              : 'N/A');
+                      return _repRow(
+                        context,
+                        Icons.open_in_full,
+                        Text('Max Range: $range',
+                            style: const TextStyle(fontSize: 13)),
+                      );
+                    },
                   ),
                 ],
               ),
             ),
+            const SizedBox(height: 14),
+            // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
+            FutureBuilder<RepeaterStats?>(
+              future: statsFuture,
+              builder: (context, snap) {
+                final loading = snap.connectionState != ConnectionState.done;
+                final stats = snap.data;
+                String v(int? n) => loading ? '…' : '${n ?? 0}';
+                return Row(
+                  children: [
+                    _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
+                        const Color(0xFF1E7E34)),
+                    _repeaterStatCell(
+                        context, 'TX', v(stats?.tx), const Color(0xFFFD7E14)),
+                    _repeaterStatCell(
+                        context, 'RX', v(stats?.rx), const Color(0xFF6F42C1)),
+                    _repeaterStatCell(context, 'DISC', v(stats?.disc),
+                        const Color(0xFF17A2B8)),
+                    _repeaterStatCell(context, 'DEAD', v(stats?.dead),
+                        const Color(0xFF6C757D)),
+                  ],
+                );
+              },
+            ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// One labelled icon row in the repeater detail card. A null [icon] leaves the
+  /// icon gutter blank (used to indent the clock-skew magnitude under its warning).
+  Widget _repRow(BuildContext context, IconData? icon, Widget child,
+      {Color? color}) {
+    final iconColor = color ?? Theme.of(context).colorScheme.onSurfaceVariant;
+    final textColor = color ?? Theme.of(context).colorScheme.onSurface;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 20,
+            child: icon == null ? null : Icon(icon, size: 16, color: iconColor),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DefaultTextStyle.merge(
+              style: TextStyle(fontSize: 13, color: textColor),
+              child: child,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One cell of the repeater's BIDIR/TX/RX/DISC/DEAD totals row.
+  Widget _repeaterStatCell(
+      BuildContext context, String label, String value, Color color) {
+    return Expanded(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(value,
+              style: TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 2),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 10,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        ],
       ),
     );
   }
