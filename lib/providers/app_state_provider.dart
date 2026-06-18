@@ -856,6 +856,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
 
+  /// Lazy tap-to-inspect: fetch raw coverage points for a clicked map cell from
+  /// the current zone's app endpoint. Returns `[]` when there is no zone or on
+  /// failure. The caller aggregates these into a GRID SUMMARY (read-only — no
+  /// state mutation, so no `notifyListeners`).
+  Future<List<Map<String, dynamic>>> fetchCellCoverage({
+    required double lat,
+    required double lon,
+    required double radiusMeters,
+  }) {
+    final zone = zoneCode;
+    if (zone == null || zone.isEmpty) {
+      return Future.value(const <Map<String, dynamic>>[]);
+    }
+    return _apiService.fetchMapData(
+      zone: zone,
+      lat: lat,
+      lon: lon,
+      radiusMeters: radiusMeters,
+    );
+  }
+
+  /// Lazy tap-to-inspect: fetch the coverage points referencing a repeater
+  /// (hex-prefix superset) from the current zone's app endpoint. Returns `[]`
+  /// when there is no zone or on failure. The caller aggregates these into the
+  /// repeater's BIDIR/TX/RX/DISC/DEAD totals + max range.
+  Future<List<Map<String, dynamic>>> fetchRepeaterCoveragePoints({
+    required String prefix,
+  }) {
+    final zone = zoneCode;
+    if (zone == null || zone.isEmpty) {
+      return Future.value(const <Map<String, dynamic>>[]);
+    }
+    return _apiService.fetchRepeaterCoverage(zone: zone, prefix: prefix);
+  }
+
   /// Regional boundary polygons loaded from the /border API.
   /// Each entry is a `{code: String, polygon: List<List<num>>}` map where
   /// `polygon` holds `[lat, lon]` pairs in the server's original order.

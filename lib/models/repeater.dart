@@ -42,6 +42,11 @@ class Repeater {
   /// Number of bytes per hop hash for this repeater's path (1, 2, or 3)
   final int hopBytes;
 
+  /// Repeater clock skew in seconds reported by the server (+ve = repeater
+  /// clock behind real time, -ve = ahead), or null when unknown. Drives the
+  /// "time is not set correctly" warning in the detail sheet.
+  final int? timeOffset;
+
   const Repeater({
     required this.id,
     required this.hexId,
@@ -54,6 +59,7 @@ class Repeater {
     this.createdAt,
     this.staleTime,
     this.hopBytes = 1,
+    this.timeOffset,
   });
 
   /// Parse from JSON object in repeaters.json
@@ -76,6 +82,17 @@ class Repeater {
       staleTime = int.tryParse(rawStaleTime);
     }
 
+    // Parse time_offset (repeater clock skew, seconds) which may be int or String
+    int? timeOffset;
+    final rawTimeOffset = json['time_offset'];
+    if (rawTimeOffset is int) {
+      timeOffset = rawTimeOffset;
+    } else if (rawTimeOffset is num) {
+      timeOffset = rawTimeOffset.toInt();
+    } else if (rawTimeOffset is String) {
+      timeOffset = int.tryParse(rawTimeOffset);
+    }
+
     return Repeater(
       id: json['id'] as String,
       hexId: json['hex_id'] as String? ?? '',
@@ -88,6 +105,7 @@ class Repeater {
       createdAt: createdAt,
       staleTime: staleTime,
       hopBytes: (json['hop_bytes'] as int?) ?? 1,
+      timeOffset: timeOffset,
     );
   }
 
@@ -104,6 +122,7 @@ class Repeater {
       'created_at': createdAt,
       'stale_time': staleTime,
       'hop_bytes': hopBytes,
+      'time_offset': timeOffset,
     };
   }
 

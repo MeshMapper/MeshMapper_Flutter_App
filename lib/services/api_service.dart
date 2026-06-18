@@ -1074,6 +1074,96 @@ class ApiService {
     }
   }
 
+  /// Fetch raw coverage points for a clicked map cell, for the tap-to-inspect
+  /// GRID SUMMARY. Posts to the region's app-facing endpoint
+  /// (`app_coverage.php` → `api.php` `map_data`); the app aggregates the points
+  /// client-side (see `coverage_summary.dart`). Returns `[]` on any failure.
+  Future<List<Map<String, dynamic>>> fetchMapData({
+    required String zone,
+    required double lat,
+    required double lon,
+    required double radiusMeters,
+  }) {
+    return _fetchCoveragePoints(
+      zone: zone,
+      label: 'map_data',
+      body: {
+        'request': 'map_data',
+        'lat': lat,
+        'lon': lon,
+        'radius': radiusMeters,
+      },
+    );
+  }
+
+  /// Fetch the coverage points referencing a repeater (a hex-prefix superset),
+  /// for the repeater detail sheet's BIDIR/TX/RX/DISC/DEAD totals + max range.
+  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`. Returns `[]`
+  /// on any failure.
+  Future<List<Map<String, dynamic>>> fetchRepeaterCoverage({
+    required String zone,
+    required String prefix,
+  }) {
+    return _fetchCoveragePoints(
+      zone: zone,
+      label: 'repeater_coverage',
+      body: {
+        'request': 'repeater_coverage',
+        'prefix': prefix,
+      },
+    );
+  }
+
+  /// Shared POST to `https://<zone>.meshmapper.net/app_coverage.php` with the app
+  /// key in the JSON body. Returns a list of point maps, or `[]` on any failure.
+  Future<List<Map<String, dynamic>>> _fetchCoveragePoints({
+    required String zone,
+    required String label,
+    required Map<String, dynamic> body,
+  }) async {
+    final z = zone.toLowerCase();
+    final url = Uri.parse('https://$z.meshmapper.net/app_coverage.php');
+    final sw = Stopwatch()..start();
+    debugLog('[COVERAGE] POST /app_coverage.php ($label, zone $z)');
+    try {
+      final response = await _client
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'key': apiKey, ...body}),
+          )
+          .timeout(const Duration(seconds: 15));
+      final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
+
+      if (response.statusCode != 200) {
+        final snippet = response.body.isEmpty
+            ? '(empty)'
+            : (response.body.length > 200
+                ? response.body.substring(0, 200)
+                : response.body);
+        debugWarn(
+            '[COVERAGE]   $label HTTP ${response.statusCode} in ${secs}s: $snippet');
+        return [];
+      }
+
+      final decoded = json.decode(response.body);
+      if (decoded is! List) {
+        debugWarn('[COVERAGE]   $label: unexpected response (not a JSON list)');
+        return [];
+      }
+      final points = decoded
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+      debugLog('[COVERAGE]   $label OK in ${secs}s: ${points.length} points');
+      return points;
+    } catch (e) {
+      debugWarn(
+          '[COVERAGE]   $label POST failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+      return [];
+    }
+  }
+
   /// Submit wardrive data using an explicit session ID (for offline uploads)
   /// Does NOT read/write shared _sessionId, _sessionExpiresAt, or heartbeat state
   Future<Map<String, dynamic>?> submitWardriveDataWithSessionId(
