@@ -2329,8 +2329,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _downloadOfflineSession(
-      BuildContext context, AppStateProvider appState, String filename) {
+  Future<void> _downloadOfflineSession(
+      BuildContext context, AppStateProvider appState, String filename) async {
     try {
       final sessionData =
           appState.offlineSessionService.getSessionData(filename);
@@ -2366,13 +2366,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         }
       } else {
-        // Mobile: Not yet implemented
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Mobile download coming soon - use web version'),
-            duration: Duration(seconds: 3),
-          ),
-        );
+        // Mobile: write the JSON to a temp file and open the native share
+        // sheet (Save to Files, Drive, email, …) — mirrors the debug-log share.
+        await appState.shareOfflineSession(filename);
       }
     } catch (e) {
       if (context.mounted) {

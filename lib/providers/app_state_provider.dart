@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -9,6 +10,7 @@ import 'package:flutter/widgets.dart'
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 
 import '../models/connection_state.dart';
@@ -6755,6 +6757,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       debugError('[DEBUG] Failed to share log: $e');
     }
+  }
+
+  /// Export an offline session to a file and open the native share sheet (Save
+  /// to Files, Drive, email, …) — the mobile equivalent of the web JSON
+  /// download. Mirrors [shareDebugLog]; writes the same pretty JSON the web
+  /// path produces. Throws on failure so the caller can surface an error.
+  Future<void> shareOfflineSession(String filename) async {
+    final data = _offlineSessionService.getSessionData(filename);
+    if (data == null) {
+      throw Exception('Session "$filename" not found');
+    }
+    final jsonString = const JsonEncoder.withIndent('  ').convert(data);
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/$filename');
+    await file.writeAsString(jsonString);
+    final result = await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path)],
+        subject: 'MeshMapper Offline Session',
+      ),
+    );
+    debugLog('[OFFLINE] Shared session: $filename, status: ${result.status}');
   }
 
   /// View a debug log file in-app
