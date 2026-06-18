@@ -5195,11 +5195,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _savePreferences();
   }
 
-  /// Set map style (dark, light, satellite) and persist
+  /// Set map style (dark, light, satellite) and persist.
+  /// The base map style is map-rendered state: `MapWidget._buildMap` reads
+  /// `preferences.mapStyle` and feeds it to `MapLibreMap.styleString`, but the
+  /// map is isolated behind the `mapRevision` Selector (see Critical Rule 9) and
+  /// uses `context.read`. Plain `notifyListeners()` leaves `mapRevision`
+  /// untouched, so the map never rebuilds and the new style never reaches the
+  /// native `setStyle` — the log fires but the map stays on the old style. Bump
+  /// the revision via `_notifyMapNow()` so the rebuild applies the style.
   void setMapStyle(String style) {
     _preferences = _preferences.copyWith(mapStyle: style);
     debugLog('[MAP] Map style set to $style');
-    notifyListeners();
+    _notifyMapNow();
     _savePreferences();
   }
 
@@ -5233,7 +5240,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           orElse: () => ColorVisionType.none),
     );
     debugLog('[A11Y] Color vision type set to $type');
-    notifyListeners();
+    // Map-rendered state: the CVD palette recolours both the coverage overlay
+    // (detected via `overlayPrefChanged` in `MapWidget._buildMap`) and the ping
+    // markers (`PingColors`). Both only re-apply on a map rebuild, which is
+    // gated by `mapRevision` (Critical Rule 9) — plain `notifyListeners()` would
+    // update the preference but leave the map on the old colours. Bump the
+    // revision via `_notifyMapNow()` so the rebuild applies the new palette.
+    _notifyMapNow();
     _savePreferences();
   }
 
