@@ -62,6 +62,12 @@ class CoverageTilePalette {
   static List<List<String>> _paletteFor(String cvdMode) =>
       _palettes[cvdMode] ?? _palettes['none']!;
 
+  /// `[fill, border]` hex for coverage status [st] (1..6, clamped) under
+  /// [cvdMode] — the literal colours used to paint a tapped cell's footprint
+  /// in one uniform colour (the web's `highlightSpotCoverage` block fill).
+  static List<String> colorsForStatus(String cvdMode, int st) =>
+      _paletteFor(cvdMode)[st.clamp(1, 6) - 1];
+
   /// Builds `['match', ['get','st'], 1, c1, ..., 5, c5, c6]` — st 6 doubles
   /// as the match default so unknown future codes render as red, the same
   /// fallthrough the server-side mapping uses.

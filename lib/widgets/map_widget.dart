@@ -539,13 +539,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const String _patchLayerId = 'meshmapper-coverage-patch-layer';
   bool _patchLayerReady = false;
 
-  // Tap-to-highlight overlay: an outline-only line layer tracing the clicked
-  // cell's (2·blob+1)² block (3×3 Detailed / 1 cell Simplified), centred on the
-  // tapped tile. Installed once (empty); populated on a cell tap and cleared to
-  // empty when the summary sheet closes — no per-tap layer churn.
+  // Tap-to-highlight overlay: a fill layer painting the clicked cell's
+  // (2·blob+1)² block (3×3 Detailed / 1 cell Simplified), centred on the tapped
+  // tile, in one uniform dominant colour while the coverage backdrop dims
+  // (web highlightSpotCoverage parity). Installed once (empty); populated on a
+  // cell tap and cleared to empty when the summary sheet closes — no per-tap
+  // layer churn.
   static const String _cellHighlightSourceId = 'meshmapper-cell-highlight';
   static const String _cellHighlightLayerId = 'meshmapper-cell-highlight-layer';
   bool _cellHighlightReady = false;
+  // While a tapped cell's footprint is shown, the coverage backdrop is dimmed so
+  // the bright footprint pops (parity with the web's spot-click). True between
+  // _showCellFootprint and _clearCellHighlight; gates the opacity restore and
+  // suppresses the build-method opacity-sync (which would otherwise un-dim).
+  bool _coverageDimmedForCell = false;
+  static const double _kCellHighlightFadeOpacity = 0.15;
   int _lastAppliedPatchVersion = -1;
   bool _styleLoaded = false;
   bool _hasStyleLoadedOnce =
@@ -1809,11 +1817,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Settings → General) and push it to the live raster layer without
     // rebuilding the whole overlay. Skipped while ping focus mode is active —
     // focus forces opacity to 0 and _dismissPingFocus restores the preference
-    // value directly.
+    // value directly — and while a tapped cell dims the backdrop (_clearCellHighlight
+    // restores it on sheet close), or this would un-dim it mid-sheet.
     final wantedOpacity = appState.preferences.coverageOverlayOpacity;
     if (_isMapReady &&
         _styleLoaded &&
         _focusedPingLocation == null &&
+        !_coverageDimmedForCell &&
         _lastAppliedCoverageOpacity != null &&
         _lastAppliedCoverageOpacity != wantedOpacity) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1995,24 +2005,36 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         '${coordinates.longitude.toStringAsFixed(5)} '
         'cell=${cell.i}/${cell.j} blob=$blob r=${radius.toStringAsFixed(0)}m');
 
-    // Highlight the tapped cell's block (3×3 in Detailed, 1 cell in Simplified),
-    // always centred on the tapped tile. Fire-and-forget; cleared on sheet close.
-    _setCellHighlight(cell, blob);
+    _cellSummaryShowing = true;
 
-    final Future<GridSummary?> summaryFuture = appState
+    // Fetch the pings once, keep the ones whose blob covers the tapped cell, and
+    // drive BOTH the summary sheet and the footprint highlight off that list.
+    final Future<List<Map<String, dynamic>>> blobPointsFuture = appState
         .fetchCellCoverage(
           lat: cell.centerLat,
           lon: cell.centerLon,
           radiusMeters: radius,
         )
-        .then<GridSummary?>((points) =>
-            GridSummary.fromPoints(cell.filterWithinBlob(points, blob), lookup))
+        .then((points) => cell.filterWithinBlob(points, blob));
+
+    // Footprint highlight + backdrop dim appear with the data (web parity with
+    // highlightSpotCoverage(points)): the block fills in the dominant colour of
+    // the in-blob pings. No pings → no footprint, no dim (web early-return).
+    blobPointsFuture.then((pts) {
+      if (!mounted || !_cellSummaryShowing) return;
+      final st = dominantCoverageStatus(pts);
+      if (st != null) _showCellFootprint(cell, blob, st);
+    }).catchError((Object e) {
+      debugWarn('[COVERAGE] cell highlight failed: $e');
+    });
+
+    final Future<GridSummary?> summaryFuture = blobPointsFuture
+        .then<GridSummary?>((pts) => GridSummary.fromPoints(pts, lookup))
         .catchError((Object e) {
       debugWarn('[COVERAGE] cell summary failed: $e');
       return null;
     });
 
-    _cellSummaryShowing = true;
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
@@ -2703,26 +2725,29 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Map<String, dynamic> _emptyFeatureCollection() =>
       <String, dynamic>{'type': 'FeatureCollection', 'features': <dynamic>[]};
 
-  /// Outline-only FeatureCollection for the tapped cell's (2·blob+1)² block: a
-  /// single LineString tracing the block border, centred on the tapped tile.
-  Map<String, dynamic> _buildCellHighlightGeoJson(GridCell cell, int blob) =>
+  /// Filled FeatureCollection for the tapped cell's (2·blob+1)² block — one
+  /// Polygon per cell (nine in Detailed, one in Simplified), centred on the
+  /// tapped tile. Drawn in a single uniform colour to mirror the web's nine
+  /// `L.rectangle`s.
+  Map<String, dynamic> _buildCellFootprintGeoJson(GridCell cell, int blob) =>
       <String, dynamic>{
         'type': 'FeatureCollection',
         'features': [
-          {
-            'type': 'Feature',
-            'properties': <String, dynamic>{},
-            'geometry': {
-              'type': 'LineString',
-              'coordinates': cell.blockRing(blob),
+          for (final ring in cell.blockCellPolygons(blob))
+            {
+              'type': 'Feature',
+              'properties': <String, dynamic>{},
+              'geometry': {
+                'type': 'Polygon',
+                'coordinates': [ring],
+              },
             },
-          },
         ],
       };
 
-  /// Idempotently (re)create the tap cell-highlight source + line layer. A line
-  /// layer over a tiny LineString ring — no fill, and nothing renders while the
-  /// source is empty (the idle state). Self-healing like the patch layer.
+  /// Idempotently (re)create the tap cell-highlight source + fill layer. Nothing
+  /// renders while the source is empty (the idle state); colours are set per tap
+  /// in [_showCellFootprint]. Self-healing like the patch layer.
   Future<bool> _ensureCellHighlightLayer() async {
     if (_cellHighlightReady) return true;
     if (_mapController == null) return false;
@@ -2738,15 +2763,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       } catch (_) {}
       await _mapController!
           .addGeoJsonSource(_cellHighlightSourceId, _emptyFeatureCollection());
-      await _mapController!.addLineLayer(
+      await _mapController!.addFillLayer(
         _cellHighlightSourceId,
         _cellHighlightLayerId,
-        const LineLayerProperties(
-          lineColor: '#00d2ff',
-          lineWidth: 2.5,
-          lineOpacity: 0.95,
-          lineCap: 'round',
-          lineJoin: 'round',
+        // Placeholder colours; the per-tap dominant colour is pushed in
+        // _showCellFootprint. Full opacity so the footprint pops over the
+        // dimmed coverage backdrop.
+        const FillLayerProperties(
+          fillColor: '#bd2130',
+          fillOutlineColor: '#8b101b',
+          fillOpacity: 1.0,
         ),
         belowLayerId: belowLayer,
       );
@@ -2758,22 +2784,53 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
-  /// Draw the highlight block for the tapped [cell] (centred on it). [blob] = 1
-  /// in Detailed (3×3), 0 in Simplified (single cell).
-  Future<void> _setCellHighlight(GridCell cell, int blob) async {
-    if (_mapController == null) return;
+  /// Fill the tapped [cell]'s block in the [st] dominant colour and dim the
+  /// coverage backdrop so the footprint stands out (web `highlightSpotCoverage`
+  /// parity). [blob] = 1 in Detailed (3×3), 0 in Simplified (single cell).
+  Future<void> _showCellFootprint(GridCell cell, int blob, int st) async {
+    if (_mapController == null || !mounted) return;
+    // Read the palette before any await so context isn't used across an async gap.
+    final cvd = context.read<AppStateProvider>().preferences.colorVisionType;
+    final colors = CoverageTilePalette.colorsForStatus(cvd, st);
     if (!await _ensureCellHighlightLayer()) return;
     try {
+      // setLayerProperties serializes with skipNulls:false (resets omitted
+      // fields to spec defaults), so resend all three fill props together.
+      await _mapController!.setLayerProperties(
+        _cellHighlightLayerId,
+        FillLayerProperties(
+          fillColor: colors[0],
+          fillOutlineColor: colors[1],
+          fillOpacity: 1.0,
+        ),
+      );
       await _mapController!.setGeoJsonSource(
-          _cellHighlightSourceId, _buildCellHighlightGeoJson(cell, blob));
+          _cellHighlightSourceId, _buildCellFootprintGeoJson(cell, blob));
+      // Dim the coverage backdrop (base + patch) beneath the bright footprint.
+      _coverageDimmedForCell = true;
+      await _applyCoverageOverlayOpacity(_kCellHighlightFadeOpacity);
     } catch (e) {
       debugLog('[COVERAGE] cell-highlight set failed: $e');
     }
   }
 
-  /// Clear the tap highlight (summary sheet closed): set the source to empty so
-  /// the layer renders nothing. The layer stays installed (cheap, no churn).
+  /// Clear the tap highlight (summary sheet closed): empty the source so the
+  /// layer renders nothing, and restore the dimmed coverage backdrop. The layer
+  /// stays installed (cheap, no churn).
   Future<void> _clearCellHighlight() async {
+    if (_coverageDimmedForCell) {
+      _coverageDimmedForCell = false;
+      // Restore the backdrop, honouring ping-focus mode (which keeps it hidden).
+      if (mounted) {
+        final restore = _focusedPingLocation != null
+            ? 0.0
+            : context
+                .read<AppStateProvider>()
+                .preferences
+                .coverageOverlayOpacity;
+        await _applyCoverageOverlayOpacity(restore);
+      }
+    }
     if (_mapController == null || !_cellHighlightReady) return;
     try {
       await _mapController!
