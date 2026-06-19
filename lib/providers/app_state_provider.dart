@@ -4701,6 +4701,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       deviceName: offlineDeviceName,
       contactUri: _offlineContactUri,
       radioConfig: _meshCoreConnection?.selfInfo?.radioConfigApi,
+      deviceModel: _meshCoreConnection?.deviceModel?.manufacturer ??
+          _meshCoreConnection?.deviceInfo?.manufacturer ??
+          _manufacturerString,
+      powerLevel: _preferences.powerLevel,
+      appVersion: _appVersion,
     );
     _offlineSessionService.finalizeCurrentSession();
     debugLog('[APP] Saved offline session with ${pings.length} pings');
@@ -4729,6 +4734,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       deviceName: offlineDeviceName,
       contactUri: _offlineContactUri,
       radioConfig: _meshCoreConnection?.selfInfo?.radioConfigApi,
+      deviceModel: _meshCoreConnection?.deviceModel?.manufacturer ??
+          _meshCoreConnection?.deviceInfo?.manufacturer ??
+          _manufacturerString,
+      powerLevel: _preferences.powerLevel,
+      appVersion: _appVersion,
     );
   }
 
@@ -4868,16 +4878,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // 4. Authenticate with offline_mode: true, skipSessionStore: true
     //    This prevents writing to shared _sessionId/_txAllowed/etc.
+    // Use the device/radio metadata snapshotted when the session was recorded so the upload
+    // matches a live session (feature parity); fall back to current values for legacy
+    // sessions saved before these fields were captured.
+    final uploadModel = session.deviceModel ?? 'Offline Upload';
+    final uploadPower = session.powerLevel ?? _preferences.powerLevel;
+    final uploadVersion = session.appVersion ?? _appVersion;
     debugLog(
-        '[OFFLINE] Authenticating for offline upload with device: $deviceName');
+        '[OFFLINE] Authenticating for offline upload with device: $deviceName '
+        '(model: $uploadModel, power: ${uploadPower}w, ver: $uploadVersion)');
     final authResult = await _apiService.requestAuth(
       reason: 'connect',
       publicKey: publicKey,
       who: deviceName,
-      appVersion: _appVersion,
-      power: _preferences.powerLevel,
+      appVersion: uploadVersion,
+      power: uploadPower,
       iataCode: zoneCode ?? _preferences.iataCode,
-      model: 'Offline Upload',
+      model: uploadModel,
       radioFreq: session.radioConfig,
       lat: _currentPosition?.latitude,
       lon: _currentPosition?.longitude,
@@ -4905,10 +4922,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           reason: 'register',
           contactUri: session.contactUri,
           who: deviceName,
-          appVersion: _appVersion,
-          power: _preferences.powerLevel,
+          appVersion: uploadVersion,
+          power: uploadPower,
           iataCode: zoneCode ?? _preferences.iataCode,
-          model: 'Offline Upload',
+          model: uploadModel,
           radioFreq: session.radioConfig,
           lat: _currentPosition?.latitude,
           lon: _currentPosition?.longitude,
