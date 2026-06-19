@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../models/connection_state.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/geo_validation.dart';
 import 'gps_simulator_service.dart';
 
 /// GPS service for location tracking
@@ -246,6 +247,14 @@ class GpsService {
         debugLog(
             '[GPS SERVICE] Position stream fired: lat=${position.latitude.toStringAsFixed(5)}, '
             'lon=${position.longitude.toStringAsFixed(5)}, accuracy=${position.accuracy.toStringAsFixed(1)}m');
+        // Drop invalid fixes (NaN/infinite/out-of-range). iOS can briefly
+        // report an invalid CLLocation after resume; passing it downstream
+        // aborts the app in MapLibre and poisons the upload payload.
+        if (!isValidLatLng(position.latitude, position.longitude)) {
+          debugWarn(
+              '[GPS] Dropping invalid position: lat=${position.latitude}, lon=${position.longitude}');
+          return;
+        }
         _lastPosition = position;
         _positionController.add(position);
 
@@ -390,6 +399,11 @@ class GpsService {
       debugLog(
           '[GPS] Fresh position acquired: ${position.latitude.toStringAsFixed(5)}, '
           '${position.longitude.toStringAsFixed(5)} (accuracy: ${position.accuracy.toStringAsFixed(1)}m)');
+      if (!isValidLatLng(position.latitude, position.longitude)) {
+        debugWarn(
+            '[GPS] Fresh position has invalid coords, using cached: lat=${position.latitude}, lon=${position.longitude}');
+        return _lastPosition;
+      }
       _lastPosition = position;
       return position;
     } catch (e) {
@@ -411,10 +425,16 @@ class GpsService {
     }
 
     try {
-      return await Geolocator.getCurrentPosition(
+      final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
         timeLimit: const Duration(seconds: 15),
       );
+      if (!isValidLatLng(position.latitude, position.longitude)) {
+        debugWarn(
+            '[GPS] getCurrentPosition returned invalid coords: lat=${position.latitude}, lon=${position.longitude}');
+        return null;
+      }
+      return position;
     } catch (e) {
       debugLog('[GPS] getCurrentPosition failed: $e');
       return null;
@@ -456,6 +476,11 @@ class GpsService {
 
     // Subscribe to simulator positions
     _simulatorSubscription = simulator.positionStream.listen((position) {
+      if (!isValidLatLng(position.latitude, position.longitude)) {
+        debugWarn(
+            '[GPS] Dropping invalid simulator position: lat=${position.latitude}, lon=${position.longitude}');
+        return;
+      }
       _lastPosition = position;
       _positionController.add(position);
 
@@ -467,9 +492,10 @@ class GpsService {
     _simulatorEnabled = true;
 
     // Set initial position immediately from simulator
-    if (simulator.currentPosition != null) {
-      _lastPosition = simulator.currentPosition;
-      _positionController.add(simulator.currentPosition!);
+    final seed = simulator.currentPosition;
+    if (seed != null && isValidLatLng(seed.latitude, seed.longitude)) {
+      _lastPosition = seed;
+      _positionController.add(seed);
     }
 
     _updateStatus(GpsStatus.locked); // Simulator always has "lock"

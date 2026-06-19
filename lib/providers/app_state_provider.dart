@@ -47,6 +47,7 @@ import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
 import '../services/custom_api_service.dart';
 import '../utils/constants.dart';
+import '../utils/geo_validation.dart';
 import '../utils/ping_colors.dart';
 import '../services/wakelock_service.dart';
 import '../utils/debug_logger_io.dart';
@@ -7304,10 +7305,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final lat = box.get('last_position_lat') as double?;
       final lon = box.get('last_position_lon') as double?;
-      if (lat != null && lon != null) {
+      if (lat != null && lon != null && isValidLatLng(lat, lon)) {
         _lastKnownPosition = (lat: lat, lon: lon);
         debugLog('[GPS] Loaded last position: $lat, $lon');
         notifyListeners(); // Trigger UI rebuild so map can center on last position
+      } else if (lat != null && lon != null) {
+        debugWarn('[GPS] Ignoring invalid stored last position: $lat, $lon');
       }
     } catch (e) {
       debugLog('[GPS] Failed to load last position: $e');
@@ -7316,6 +7319,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Save last known GPS position to Hive storage (throttled to every 30 seconds)
   Future<void> _saveLastPosition(double lat, double lon) async {
+    // Never persist invalid coords — a corrupted last-known position would be
+    // loaded as the initial map center on next launch and abort the app.
+    if (!isValidLatLng(lat, lon)) {
+      debugWarn('[GPS] Skipping save of invalid last position: $lat, $lon');
+      return;
+    }
+
     // Throttle saves to every 30 seconds to avoid excessive Hive operations
     final now = DateTime.now();
     if (_lastPositionSaveTime != null &&
