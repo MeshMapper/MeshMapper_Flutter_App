@@ -1285,7 +1285,7 @@ class ApiService {
       };
       if (nonRetryableErrors.contains(reason)) {
         debugWarn(
-            '[API] Offline upload batch non-retryable error: $reason - discarding batch');
+            '[API] Offline upload batch non-retryable error: $reason - stopping upload, pings preserved');
         return UploadResult.nonRetryable;
       }
 
