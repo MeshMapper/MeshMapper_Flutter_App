@@ -615,6 +615,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // cluster-enabled GeoJSON source so MapLibre can group nearby markers into
   // count bubbles at low zoom. See _setupRepeaterClusterLayers().
   final Map<String, Symbol> _coverageSymbols = {}; // key: "{type}_{ts.ms}"
+  // Last-applied visual signature (iconImage|iconSize) per coverage symbol.
+  // A symbol's geometry is baked into its key, so only icon image/size can
+  // change after creation (TX red→green on echo, focus enlarge). We skip the
+  // native updateSymbol round-trip when the signature is unchanged — without
+  // this, every sync re-pushed ALL accumulated symbols (O(n)/event), which
+  // made marker/ping display lag grow with session length. See _syncCoverageSymbols.
+  final Map<String, String> _coverageSymbolSig = {};
   final Map<String, Symbol> _distanceLabelSymbols =
       {}; // key: focused repeater id
   // Per focused-repeater metadata used by the collision-avoidance reflow:
@@ -2368,6 +2375,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // creates fresh symbols in the new manager) instead of updateSymbol.
       _gpsSymbol = null;
       _coverageSymbols.clear();
+      _coverageSymbolSig.clear();
       _distanceLabelSymbols.clear();
       // Distance-label companions: the native side wipes registered images on
       // style reload, so the "already registered" cache must be cleared too or
@@ -3892,6 +3900,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     final wantedKeys = <String>{};
     final focusActive = _focusedPingLocation != null;
+    // Diagnostics so the O(n)-per-event regression stays measurable on-device:
+    // a healthy steady-state sync should be mostly "unchanged".
+    int added = 0, updated = 0, skipped = 0;
 
     Future<void> syncOne({
       required String type,
@@ -3910,29 +3921,46 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (focusActive && !isFocused) return;
       wantedKeys.add(key);
 
-      final options = SymbolOptions(
-        geometry: LatLng(lat, lon),
-        iconImage: iconImageOverride ?? _MapImages.coverage(type, success),
-        iconSize: isFocused ? 1.2 : 1.0,
-      );
+      final iconImage = iconImageOverride ?? _MapImages.coverage(type, success);
+      final iconSize = isFocused ? 1.2 : 1.0;
+      // Everything that can change for an existing symbol (geometry is fixed by
+      // the key). If unchanged, skip the native round-trip entirely.
+      final sig = '$iconImage|$iconSize';
 
       final existing = _coverageSymbols[key];
       if (existing == null) {
         try {
           final symbol = await _mapController!.addSymbol(
-            options,
+            SymbolOptions(
+              geometry: LatLng(lat, lon),
+              iconImage: iconImage,
+              iconSize: iconSize,
+            ),
             {'kind': type, 'id': idForMetadata},
           );
           _coverageSymbols[key] = symbol;
+          _coverageSymbolSig[key] = sig;
+          added++;
         } catch (e) {
           debugError('[MAP] addSymbol($type) failed at $ts: $e');
         }
-      } else {
+      } else if (_coverageSymbolSig[key] != sig) {
         try {
-          await _mapController!.updateSymbol(existing, options);
+          await _mapController!.updateSymbol(
+            existing,
+            SymbolOptions(
+              geometry: LatLng(lat, lon),
+              iconImage: iconImage,
+              iconSize: iconSize,
+            ),
+          );
+          _coverageSymbolSig[key] = sig;
+          updated++;
         } catch (e) {
           debugError('[MAP] updateSymbol($type) failed at $ts: $e');
         }
+      } else {
+        skipped++;
       }
     }
 
@@ -4017,11 +4045,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _coverageSymbols.keys.where((k) => !wantedKeys.contains(k)).toList();
     for (final key in toRemove) {
       final sym = _coverageSymbols.remove(key);
+      _coverageSymbolSig.remove(key);
       if (sym != null) {
         try {
           await _mapController!.removeSymbol(sym);
         } catch (_) {}
       }
+    }
+
+    // Only log when work actually happened — a healthy sync over a large
+    // session should read "+0 added, 0 updated, N unchanged" (no native churn).
+    if (added > 0 || updated > 0 || toRemove.isNotEmpty) {
+      debugLog('[MAP] Coverage sync: +$added added, $updated updated, '
+          '$skipped unchanged, ${toRemove.length} removed');
     }
   }
 
