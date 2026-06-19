@@ -337,4 +337,84 @@ void main() {
       expect(ne[0], closeTo(21 * lonStep, 1e-12));
     });
   });
+
+  group('GridCell.blockCellPolygons', () {
+    const latStep = 0.0009;
+    const lonStep = 0.00128;
+    const cell = GridCell(10, 20, latStep, lonStep);
+
+    test('blob=0 yields the single tapped cell', () {
+      final polys = cell.blockCellPolygons(0);
+      expect(polys.length, 1);
+      final ring = polys.first;
+      expect(ring.length, 5);
+      expect(ring.first, ring.last); // closed ring, [lon, lat] order
+      expect(ring[0][0], closeTo(20 * lonStep, 1e-12)); // minLon
+      expect(ring[0][1], closeTo(10 * latStep, 1e-12)); // minLat
+      expect(ring[2][0], closeTo(21 * lonStep, 1e-12)); // maxLon
+      expect(ring[2][1], closeTo(11 * latStep, 1e-12)); // maxLat
+    });
+
+    test('blob=1 yields nine unit cells covering the 3x3 block', () {
+      final polys = cell.blockCellPolygons(1);
+      expect(polys.length, 9);
+      final iSet = <int>{};
+      final jSet = <int>{};
+      for (final ring in polys) {
+        expect(ring.length, 5);
+        expect(ring.first, ring.last);
+        // Each polygon is exactly one grid cell (1 lonStep x 1 latStep).
+        expect(ring[2][0] - ring[0][0], closeTo(lonStep, 1e-12));
+        expect(ring[2][1] - ring[0][1], closeTo(latStep, 1e-12));
+        jSet.add((ring[0][0] / lonStep).round());
+        iSet.add((ring[0][1] / latStep).round());
+      }
+      // The 3x3 covers exactly i in 9..11 and j in 19..21, centred on (10, 20).
+      expect(iSet, {9, 10, 11});
+      expect(jSet, {19, 20, 21});
+    });
+  });
+
+  group('dominantCoverageStatus', () {
+    Map<String, dynamic> p(int status,
+            {String? heardRepeats, String? directHeard}) =>
+        {
+          'lat': 45.0,
+          'lon': -75.0,
+          'status': status,
+          if (heardRepeats != null) 'heard_repeats': heardRepeats,
+          if (directHeard != null) 'direct_heard': directHeard,
+        };
+
+    test('returns null for no points', () {
+      expect(dominantCoverageStatus(const []), isNull);
+    });
+
+    test('maps each status to its st category (web parity)', () {
+      expect(dominantCoverageStatus([p(1, heardRepeats: 'ab(5)')]), 1); // green
+      expect(dominantCoverageStatus([p(1)]), 1); // BIDIR is green either way
+      expect(dominantCoverageStatus([p(2)]), 3); // TX -> orange
+      expect(dominantCoverageStatus([p(5)]), 4); // RX -> purple
+      expect(dominantCoverageStatus([p(6)]), 2); // DISC -> cyan
+      expect(dominantCoverageStatus([p(7)]), 2); // TRACE -> cyan
+      expect(dominantCoverageStatus([p(3)]), 5); // DEAD -> grey
+      expect(dominantCoverageStatus([p(0)]), 6); // DROP -> red
+      expect(dominantCoverageStatus([p(99)]), 6); // unknown -> red
+    });
+
+    test('green wins over red when both are in the blob', () {
+      expect(dominantCoverageStatus([p(0), p(1)]), 1); // red + green -> green
+      expect(dominantCoverageStatus([p(1), p(0)]), 1); // order independent
+    });
+
+    test('an all-red blob stays red (the intentional smear)', () {
+      // The green a neighbour cell shows came from a ping OUTSIDE this blob, so
+      // the in-blob pings are all red -> the whole block resolves to red.
+      expect(dominantCoverageStatus([p(0), p(0)]), 6);
+    });
+
+    test('picks the highest-priority (lowest st) across a mix', () {
+      expect(dominantCoverageStatus([p(2), p(6), p(3)]), 2); // orange/cyan/grey -> cyan
+    });
+  });
 }

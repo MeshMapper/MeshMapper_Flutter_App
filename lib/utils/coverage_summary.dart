@@ -132,6 +132,65 @@ class GridCell {
       [minLon, minLat],
     ];
   }
+
+  /// One closed ring (`[lon, lat]` pairs) per individual cell in the
+  /// (2·[blob]+1)² block centred on this cell — nine cells in Detailed
+  /// (blob = 1), one in Simplified (blob = 0). Used to fill the tapped footprint
+  /// as a grid of bordered cells, matching the web's nine `L.rectangle`s.
+  List<List<List<double>>> blockCellPolygons(int blob) {
+    final rings = <List<List<double>>>[];
+    for (var di = -blob; di <= blob; di++) {
+      for (var dj = -blob; dj <= blob; dj++) {
+        final minLat = (i + di) * latStep;
+        final maxLat = (i + di + 1) * latStep;
+        final minLon = (j + dj) * lonStep;
+        final maxLon = (j + dj + 1) * lonStep;
+        rings.add([
+          [minLon, minLat],
+          [maxLon, minLat],
+          [maxLon, maxLat],
+          [minLon, maxLat],
+          [minLon, minLat],
+        ]);
+      }
+    }
+    return rings;
+  }
+}
+
+/// The single dominant coverage `st` category (1..6) across [points], or null
+/// when empty. Port of the web's `highlightSpotCoverage` colour pick: each ping
+/// maps to a status bucket, and the highest-priority one present wins
+/// (green < cyan < orange < purple < grey < red, i.e. the lowest st). Because
+/// the caller passes only the pings whose blob covers the tapped cell, this is
+/// the "intentional smear" — a green-looking neighbour repaints to the local
+/// dominant when its green came from a ping outside the blob.
+int? dominantCoverageStatus(List<Map<String, dynamic>> points) {
+  int? best;
+  for (final p in points) {
+    final st = _pointStatusCategory(p);
+    if (best == null || st < best) best = st;
+  }
+  return best;
+}
+
+/// A single ping's coverage `st` category (1=green, 2=cyan, 3=orange,
+/// 4=purple, 5=grey, 6=red). Mirrors `highlightSpotCoverage` /
+/// `coverageStatusColor`: status 1 (BIDIR) is green either way, so the
+/// repeats check only documents the web's branch.
+int _pointStatusCategory(Map<String, dynamic> p) {
+  final status = _toInt(p['status']);
+  final hr = p['heard_repeats'];
+  final dh = p['direct_heard'];
+  final hasRepeats = (hr is String && hr.isNotEmpty && hr != 'None') ||
+      (dh is String && dh.isNotEmpty && dh != 'None');
+  if (status == 1 && hasRepeats) return 1; // green
+  if (status == 2) return 3; // orange (TX)
+  if (status == 5) return 4; // purple (RX)
+  if (status == 6 || status == 7) return 2; // cyan (DISC/TRACE)
+  if (status == 1) return 1; // green (BIDIR)
+  if (status == 3) return 5; // grey (dead)
+  return 6; // red (drop / unknown)
 }
 
 // --- repeater lookup (ports repObj / repeaterByHex / repeaterByFullHex) ------
