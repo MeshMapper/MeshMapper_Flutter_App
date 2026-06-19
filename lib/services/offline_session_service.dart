@@ -14,6 +14,9 @@ class OfflineSession {
   final String? deviceName; // Device name for display
   final String? contactUri; // Signed contact URI for registration during upload
   final String? radioConfig; // Radio config captured at record time ("910.525,62.5,7,5")
+  final String? deviceModel; // Device model/manufacturer captured at record time
+  final double? powerLevel; // TX power level (watts) captured at record time
+  final String? appVersion; // App version captured at record time
   final bool uploaded; // Track upload status
 
   OfflineSession({
@@ -25,6 +28,9 @@ class OfflineSession {
     this.deviceName,
     this.contactUri,
     this.radioConfig,
+    this.deviceModel,
+    this.powerLevel,
+    this.appVersion,
     this.uploaded = false,
   });
 
@@ -39,6 +45,9 @@ class OfflineSession {
       deviceName: json['deviceName'] as String?,
       contactUri: json['contactUri'] as String?,
       radioConfig: json['radioConfig'] as String?,
+      deviceModel: json['deviceModel'] as String?,
+      powerLevel: (json['powerLevel'] as num?)?.toDouble(),
+      appVersion: json['appVersion'] as String?,
       uploaded: json['uploaded'] as bool? ?? false,
     );
   }
@@ -54,6 +63,9 @@ class OfflineSession {
       'deviceName': deviceName,
       'contactUri': contactUri,
       'radioConfig': radioConfig,
+      'deviceModel': deviceModel,
+      'powerLevel': powerLevel,
+      'appVersion': appVersion,
       'uploaded': uploaded,
     };
   }
@@ -73,6 +85,9 @@ class OfflineSession {
       deviceName: deviceName,
       contactUri: contactUri,
       radioConfig: radioConfig,
+      deviceModel: deviceModel,
+      powerLevel: powerLevel,
+      appVersion: appVersion,
       uploaded: uploaded ?? this.uploaded,
     );
   }
@@ -167,6 +182,9 @@ class OfflineSessionService {
     String? deviceName,
     String? contactUri,
     String? radioConfig,
+    String? deviceModel,
+    double? powerLevel,
+    String? appVersion,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to save, skipping session creation');
@@ -185,6 +203,9 @@ class OfflineSessionService {
       if (devicePublicKey != null) 'device_public_key': devicePublicKey,
       if (deviceName != null) 'device_name': deviceName,
       if (radioConfig != null) 'radio_config': radioConfig,
+      if (deviceModel != null) 'device_model': deviceModel,
+      if (powerLevel != null) 'power_level': powerLevel,
+      if (appVersion != null) 'app_version': appVersion,
     };
 
     final session = OfflineSession(
@@ -196,6 +217,9 @@ class OfflineSessionService {
       deviceName: deviceName,
       contactUri: contactUri,
       radioConfig: radioConfig,
+      deviceModel: deviceModel,
+      powerLevel: powerLevel,
+      appVersion: appVersion,
     );
 
     _sessions.insert(0, session); // Add at beginning (newest first)
@@ -214,6 +238,9 @@ class OfflineSessionService {
     String? deviceName,
     String? contactUri,
     String? radioConfig,
+    String? deviceModel,
+    double? powerLevel,
+    String? appVersion,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to auto-save, skipping');
@@ -233,6 +260,18 @@ class OfflineSessionService {
         if (effectiveRadioConfig != null) {
           updatedData['radio_config'] = effectiveRadioConfig;
         }
+        final effectiveDeviceModel = deviceModel ?? existing.deviceModel;
+        if (effectiveDeviceModel != null) {
+          updatedData['device_model'] = effectiveDeviceModel;
+        }
+        final effectivePowerLevel = powerLevel ?? existing.powerLevel;
+        if (effectivePowerLevel != null) {
+          updatedData['power_level'] = effectivePowerLevel;
+        }
+        final effectiveAppVersion = appVersion ?? existing.appVersion;
+        if (effectiveAppVersion != null) {
+          updatedData['app_version'] = effectiveAppVersion;
+        }
 
         _sessions[index] = OfflineSession(
           filename: existing.filename,
@@ -243,6 +282,9 @@ class OfflineSessionService {
           deviceName: deviceName ?? existing.deviceName,
           contactUri: contactUri ?? existing.contactUri,
           radioConfig: effectiveRadioConfig,
+          deviceModel: effectiveDeviceModel,
+          powerLevel: effectivePowerLevel,
+          appVersion: effectiveAppVersion,
         );
         await _saveSessions();
         debugLog(
@@ -262,6 +304,9 @@ class OfflineSessionService {
       deviceName: deviceName,
       contactUri: contactUri,
       radioConfig: radioConfig,
+      deviceModel: deviceModel,
+      powerLevel: powerLevel,
+      appVersion: appVersion,
     );
     // saveSession inserts at index 0 (newest first)
     if (_sessions.isNotEmpty) {
