@@ -20,6 +20,7 @@ import '../services/gps_service.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/geo_validation.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
@@ -894,6 +895,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         !_canAnimateCamera) {
       return;
     }
+    // Guard against NaN/infinite/out-of-range coords — MapLibre's native LatLng
+    // ctor throws (uncaught → SIGABRT) on invalid input. See isValidLatLng.
+    if (!isValidLatLng(target.latitude, target.longitude)) {
+      debugWarn('[MAP] Skipping camera move to invalid target '
+          '(${target.latitude}, ${target.longitude})');
+      return;
+    }
     _mapController!.animateCamera(
       CameraUpdate.newLatLngZoom(target, targetZoom),
       duration: const Duration(milliseconds: 500),
@@ -921,6 +929,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         !_canAnimateCamera) {
       return;
     }
+    // Guard against NaN/infinite/out-of-range coords — MapLibre's native LatLng
+    // ctor throws (uncaught → SIGABRT) on invalid input. See isValidLatLng.
+    if (!isValidLatLng(target.latitude, target.longitude)) {
+      debugWarn('[MAP] Skipping auto-follow camera move to invalid target '
+          '(${target.latitude}, ${target.longitude})');
+      return;
+    }
     _mapController!.animateCamera(
       CameraUpdate.newCameraPosition(CameraPosition(
         target: target,
@@ -944,7 +959,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final points = [
       pingLocation,
       ...repeaters.map((r) => LatLng(r.repeater.lat, r.repeater.lon))
-    ];
+    ].where((p) => isValidLatLng(p.latitude, p.longitude)).toList();
     if (points.length < 2) return;
 
     // Build bounding box from all points
@@ -1139,31 +1154,28 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// before; only its trigger moved out of `build()`. Also called from `build()`
   /// as an idempotent safety net (all heavy work is version-gated).
   void _handleGpsPosition(AppStateProvider appState) {
-    // Map center — prefer current GPS, fallback to last known.
+    // Map center — prefer current GPS, fallback to last known. Only adopt a
+    // source position when its coords are valid; otherwise stay on the safe
+    // default center (invalid coords abort the app in MapLibre's LatLng ctor).
     LatLng center = _defaultCenter;
-    if (appState.currentPosition != null) {
-      center = LatLng(
-        appState.currentPosition!.latitude,
-        appState.currentPosition!.longitude,
-      );
-    } else if (appState.lastKnownPosition != null) {
-      center = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
-      );
+    final pos = appState.currentPosition;
+    final lastKnown = appState.lastKnownPosition;
+    if (pos != null && isValidLatLng(pos.latitude, pos.longitude)) {
+      center = LatLng(pos.latitude, pos.longitude);
+    } else if (lastKnown != null &&
+        isValidLatLng(lastKnown.lat, lastKnown.lon)) {
+      center = LatLng(lastKnown.lat, lastKnown.lon);
     }
 
     // One-time zoom to last known position when GPS is not yet available.
     if (appState.currentPosition == null &&
-        appState.lastKnownPosition != null &&
+        lastKnown != null &&
+        isValidLatLng(lastKnown.lat, lastKnown.lon) &&
         !_hasZoomedToLastKnown &&
         _isMapReady &&
         _canAnimateCamera) {
       _hasZoomedToLastKnown = true;
-      final lastKnownCenter = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
-      );
+      final lastKnownCenter = LatLng(lastKnown.lat, lastKnown.lon);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _animateToPositionWithZoom(lastKnownCenter, 15.0 - _zoomEpsilon);
@@ -1311,18 +1323,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _rotationLocked = appState.preferences.mapRotationLocked;
     }
 
-    // Determine map center - prefer current GPS, fallback to last known, then Ottawa
+    // Determine map center - prefer current GPS, fallback to last known, then
+    // Ottawa. Only adopt a source position when its coords are valid — this
+    // feeds initialCameraPosition, and an invalid LatLng aborts the app in
+    // MapLibre's native ctor (the launch/resume crash).
     LatLng center = _defaultCenter;
-    if (appState.currentPosition != null) {
-      center = LatLng(
-        appState.currentPosition!.latitude,
-        appState.currentPosition!.longitude,
-      );
-    } else if (appState.lastKnownPosition != null) {
-      center = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
-      );
+    final centerPos = appState.currentPosition;
+    final centerLastKnown = appState.lastKnownPosition;
+    if (centerPos != null &&
+        isValidLatLng(centerPos.latitude, centerPos.longitude)) {
+      center = LatLng(centerPos.latitude, centerPos.longitude);
+    } else if (centerLastKnown != null &&
+        isValidLatLng(centerLastKnown.lat, centerLastKnown.lon)) {
+      center = LatLng(centerLastKnown.lat, centerLastKnown.lon);
     }
 
     // Camera-follow / derived heading / one-time zooms / GPS-marker puck now
@@ -2146,7 +2159,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // always null at non-max zoom (the camera-change collapse fires when the
     // user zooms out), so no collapse-handling is needed here.
     if (!_isAtMaxZoom()) {
-      if (_canAnimateCamera) {
+      if (_canAnimateCamera &&
+          isValidLatLng(coordinates.latitude, coordinates.longitude)) {
         final currentZoom =
             _mapController?.cameraPosition?.zoom ?? _defaultZoom;
         final newZoom = math.min(currentZoom + 2, _maxUserZoom);
@@ -2252,7 +2266,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // so read `point_count` directly instead of re-querying.
       if (properties['cluster'] == true) {
         if (!_isAtMaxZoom()) {
-          if (_canAnimateCamera) {
+          if (_canAnimateCamera &&
+              isValidLatLng(coordinates.latitude, coordinates.longitude)) {
             final currentZoom =
                 _mapController?.cameraPosition?.zoom ?? _defaultZoom;
             final newZoom = math.min(currentZoom + 2, _maxUserZoom);
@@ -2475,12 +2490,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (!_hasStyleLoadedOnce) {
         _hasStyleLoadedOnce = true;
 
-        // Center on GPS if available (initial centering)
-        if (appState.currentPosition != null && _canAnimateCamera) {
-          final center = LatLng(
-            appState.currentPosition!.latitude,
-            appState.currentPosition!.longitude,
-          );
+        // Center on GPS if available (initial centering). Skip on invalid
+        // coords — an out-of-range/NaN LatLng aborts the app in MapLibre.
+        final stylePos = appState.currentPosition;
+        if (stylePos != null &&
+            isValidLatLng(stylePos.latitude, stylePos.longitude) &&
+            _canAnimateCamera) {
+          final center = LatLng(stylePos.latitude, stylePos.longitude);
           _mapController!.animateCamera(
             CameraUpdate.newLatLngZoom(center, _defaultZoom),
           );
@@ -4693,7 +4709,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Fit camera to show all history session markers
   void _fitCameraToHistoryMarkers(List<PingEventMarker> markers) {
     final pts = markers
-        .where((m) => m.latitude != null && m.longitude != null)
+        .where((m) =>
+            m.latitude != null &&
+            m.longitude != null &&
+            isValidLatLng(m.latitude!, m.longitude!))
         .toList();
     if (pts.isEmpty) return;
 

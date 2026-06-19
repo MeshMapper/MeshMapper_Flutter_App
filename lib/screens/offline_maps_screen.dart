@@ -10,6 +10,7 @@ import '../providers/app_state_provider.dart';
 import '../services/offline_map_service.dart';
 import '../services/tile_cache_service.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/geo_validation.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/map_widget.dart' show MapStyle, MapStyleExtension;
 
@@ -1010,18 +1011,18 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
-    // Determine map center - prefer current GPS, fallback to last known, then Ottawa
+    // Determine map center - prefer current GPS, fallback to last known, then
+    // Ottawa. Only adopt a source position when its coords are valid — this
+    // feeds initialCameraPosition, and an invalid LatLng aborts the app in
+    // MapLibre's native ctor.
     LatLng center = _defaultCenter;
-    if (appState.currentPosition != null) {
-      center = LatLng(
-        appState.currentPosition!.latitude,
-        appState.currentPosition!.longitude,
-      );
-    } else if (appState.lastKnownPosition != null) {
-      center = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
-      );
+    final pos = appState.currentPosition;
+    final lastKnown = appState.lastKnownPosition;
+    if (pos != null && isValidLatLng(pos.latitude, pos.longitude)) {
+      center = LatLng(pos.latitude, pos.longitude);
+    } else if (lastKnown != null &&
+        isValidLatLng(lastKnown.lat, lastKnown.lon)) {
+      center = LatLng(lastKnown.lat, lastKnown.lon);
     }
 
     return Scaffold(
