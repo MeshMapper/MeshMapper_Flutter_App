@@ -597,15 +597,9 @@ class PingService {
       // Build the on-air body ONCE (same string is used for TxTracker echo
       // correlation AND the actual transmission). Power is sent per-ping in the API.
       //
-      // Two mutually-exclusive paths (they cannot be combined — the server's observer
-      // truncates the on-air body to 16 chars and exact-matches it as the wire tag, so
-      // appending coords to a tag breaks the observer→app join and the TX is stranded
-      // at DEAD/never shown in coverage):
-      //   • Privacy (default, session present): keyed wire tag "MM:<tag>" on air, bare
-      //     tag + counter posted to the API → server's validated wire-tag path.
-      //   • Broadcast My Coordinates ON, or no session yet: plaintext "MM:lat,lon" on
-      //     air and NO wire_tag/ping_counter to the API → server's coords path (coords
-      //     also always travel via the API lat/lon either way).
+      // With a session: a keyed wire tag "MM:<tag>" (privacy default), or
+      // "MM:<tag>:lat,lon" when Broadcast My Coordinates is on (tag + plaintext coords).
+      // No session yet: plaintext "MM:lat,lon" (no tag can be computed).
       final coordsStr =
           '${position.latitude.toStringAsFixed(5)},${position.longitude.toStringAsFixed(5)}';
       final broadcastCoords = getBroadcastCoords?.call() ?? false;
@@ -614,10 +608,11 @@ class PingService {
       int? txPingCounter;
       String? txWireTag;
       final hasSession = sessionId != null && sessionId.isNotEmpty;
-      if (hasSession && !broadcastCoords) {
+      if (hasSession) {
         // Session-limit guard: the wire tag's counter is 11 bits (max 2047). When it
         // is exhausted, end the session cleanly rather than repeating/corrupting tags.
-        // Only the privacy/wire-tag path consumes a counter.
+        // Applies to BOTH privacy and broadcast-coords modes — a combined ping consumes
+        // a counter exactly like a privacy ping, so the session ends identically.
         if ((getPingCounter?.call() ?? 0) >= 2047) {
           debugError('[SESSION] Reached session ping limit (2047) — disconnecting');
           _pingInProgress = false;
@@ -627,11 +622,12 @@ class PingService {
         txPingCounter = getNextPingCounter?.call() ?? 1;
         txWireTag =
             WireTagCodec.encode(sessionId, txPingCounter, getWireKey?.call());
-        pingMessage = txWireTag;
+        // Identical to privacy mode in every way EXCEPT broadcast-coords appends the
+        // plaintext coords to the on-air body. The bare tag still goes to the API
+        // (txWireTag → _pendingTxWireTag), so /wardrive validation + tx_pings are unchanged.
+        pingMessage = broadcastCoords ? '$txWireTag:$coordsStr' : txWireTag;
       } else {
-        // Broadcast-coords mode (or no session yet): plaintext coords, NO wire tag.
-        // txPingCounter / txWireTag stay null → _pendingTx* null → the queued TX entry
-        // omits ping_counter/wire_tag → server uses its coords path.
+        // No session yet → no tag can be computed; plaintext coords only (unchanged).
         pingMessage = 'MM:$coordsStr';
       }
 
