@@ -546,10 +546,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 : _buildControlPanel(),
           ),
 
-        // Landscape: side control panel or FAB (hidden during focus mode, history
-        // view, and while a cell/repeater popup is minimized to a pill)
+        // Landscape: full side control panel, bottom-left (hidden during focus
+        // mode, history view, and while a cell/repeater popup is minimized)
         if (isLandscape &&
             _showControlPanel &&
+            !_isControlsMinimized &&
             !appState.isFocusModeActive &&
             !appState.viewingHistorySession &&
             !appState.infoPopupMinimized)
@@ -557,6 +558,20 @@ class _HomeScreenState extends State<HomeScreen> {
             bottom: 16,
             left: leftInset,
             child: _buildLandscapeControlPanel(appState),
+          ),
+        // Landscape: minimized control bar, centered along the bottom of the map
+        // (see #329)
+        if (isLandscape &&
+            _showControlPanel &&
+            _isControlsMinimized &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
+          Positioned(
+            bottom: 16,
+            left: 0,
+            right: 0,
+            child: Center(child: _buildLandscapeCompactControlPanel()),
           ),
         if (isLandscape &&
             !_showControlPanel &&
@@ -708,6 +723,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
+                // Minimize button - collapse to compact strip (see #329)
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => setState(() => _isControlsMinimized = true),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(Icons.close_fullscreen,
+                          size: 22, color: Colors.grey.shade400),
+                    ),
+                  ),
+                ),
                 // Close button - larger touch target
                 Material(
                   color: Colors.transparent,
@@ -734,6 +762,59 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Build minimized landscape control panel — a compact strip mirroring the
+  /// portrait compact panel (CompactPingControls + expand button), sized for the
+  /// landscape side overlay. Reuses the shared `_isControlsMinimized` flag (see
+  /// #329). Status/zone stays visible via the floating status bar, so this only
+  /// needs the ping controls + an expand affordance.
+  Widget _buildLandscapeCompactControlPanel() {
+    return Container(
+      width: _landscapePanelWidth,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.25),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          children: [
+            // Compact controls (expands to fill available space)
+            const Expanded(
+              child: CompactPingControls(),
+            ),
+            // Vertical divider
+            Container(
+              height: 24,
+              width: 1,
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              color: Colors.grey.withValues(alpha: 0.3),
+            ),
+            // Expand button - restores the full landscape panel
+            GestureDetector(
+              onTap: () => setState(() => _isControlsMinimized = false),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(
+                  Icons.open_in_full,
+                  size: 20,
+                  color: Colors.grey.shade500,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
