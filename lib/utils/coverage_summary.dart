@@ -509,8 +509,26 @@ class RepeaterStats {
   int get totalMatched => bidir + tx + rx + disc + dead;
 
   factory RepeaterStats.fromCoverage(
-      List<Map<String, dynamic>> points, Repeater target, RepeaterLookup lookup,
-      {bool disableDupLogic = false}) {
+          List<Map<String, dynamic>> points,
+          Repeater target,
+          RepeaterLookup lookup,
+          {bool disableDupLogic = false}) =>
+      fromCoverageWithPoints(points, target, lookup,
+              disableDupLogic: disableDupLogic)
+          .stats;
+
+  /// Like [fromCoverage] but ALSO returns the raw points that matched this
+  /// repeater (parity with the web client's `buildChartFromPoints`
+  /// `_matchedPoints`), so callers can draw the repeater's coverage cells +
+  /// connection lines. [fromCoverage] delegates here, so there is ONE source of
+  /// matching truth.
+  static ({RepeaterStats stats, List<Map<String, dynamic>> matched})
+      fromCoverageWithPoints(
+          List<Map<String, dynamic>> points,
+          Repeater target,
+          RepeaterLookup lookup,
+          {bool disableDupLogic = false}) {
+    final matchedPoints = <Map<String, dynamic>>[];
     final repId = target.id.toLowerCase();
     final repLat = target.lat;
     final repLon = target.lon;
@@ -599,6 +617,7 @@ class RepeaterStats {
       }
 
       if (matched) {
+        matchedPoints.add(p);
         switch (type) {
           case 'BIDIR':
             bidir++;
@@ -621,7 +640,7 @@ class RepeaterStats {
       }
     }
 
-    return RepeaterStats(
+    final stats = RepeaterStats(
       bidir: bidir,
       tx: tx,
       rx: rx,
@@ -629,5 +648,252 @@ class RepeaterStats {
       dead: dead,
       maxRangeMeters: maxRange > 0 ? maxRange : null,
     );
+    return (stats: stats, matched: matchedPoints);
   }
+}
+
+// --- repeater coverage cells (Feature B) -------------------------------------
+
+/// One coverage grid cell that a selected repeater heard, ready to render as a
+/// status-coloured footprint cell plus a connection line to the repeater. Port
+/// of the cell-dedup loop in the web client's `drawRepeaterCoverageFromCache`
+/// (`dev/index.php:12208-12228`).
+class RepeaterCoverageCell {
+  final int li; // latitude grid index
+  final int lj; // longitude grid index
+  final int st; // coverage status category 1..6 (lower = higher priority)
+  final double centerLat;
+  final double centerLon;
+  final double distanceMeters; // repeater -> cell centre (for the volume cap)
+
+  const RepeaterCoverageCell({
+    required this.li,
+    required this.lj,
+    required this.st,
+    required this.centerLat,
+    required this.centerLon,
+    required this.distanceMeters,
+  });
+}
+
+/// Dedups [matchedPoints] (from [RepeaterStats.fromCoverageWithPoints]) into the
+/// grid cells the repeater heard, dilating each ping over a (2·[blob]+1)² block
+/// (3×3 Detailed, 1×1 Simplified) and keeping the highest-priority status per
+/// cell. Mirrors `drawRepeaterCoverageFromCache`: our `st` runs 1=green..6=red
+/// (lower wins, INVERTED vs the web's `prio` map), so the keep test is
+/// `newSt < existingSt`. Drops st==6 (red/DROP) cells — the app's vector overlay
+/// is always the tiles/"advanced" equivalent, where the web hides drops
+/// (`useAdv && st==='red'`). [latStep]/[lonStep] come from `kCoverageGridSteps`.
+List<RepeaterCoverageCell> repeaterCoverageCells(
+    List<Map<String, dynamic>> matchedPoints, Repeater target,
+    {required double latStep, required double lonStep, required int blob}) {
+  final cells = <String, RepeaterCoverageCell>{};
+  for (final p in matchedPoints) {
+    final la = _toDouble(p['lat']);
+    final lo = _toDouble(p['lon']);
+    if (la == null || lo == null) continue;
+    final st = _pointStatusCategory(p);
+    if (st == 6) continue; // hide red/DROP cells (tiles/advanced parity)
+    final li0 = (la / latStep).floor();
+    final lj0 = (lo / lonStep).floor();
+    for (var dx = -blob; dx <= blob; dx++) {
+      for (var dy = -blob; dy <= blob; dy++) {
+        final li = li0 + dx;
+        final lj = lj0 + dy;
+        final key = '${li}_$lj';
+        final existing = cells[key];
+        if (existing != null && st >= existing.st) continue; // lower st wins
+        final centerLat = (li + 0.5) * latStep;
+        final centerLon = (lj + 0.5) * lonStep;
+        cells[key] = RepeaterCoverageCell(
+          li: li,
+          lj: lj,
+          st: st,
+          centerLat: centerLat,
+          centerLon: centerLon,
+          distanceMeters:
+              _haversineMeters(target.lat, target.lon, centerLat, centerLon),
+        );
+      }
+    }
+  }
+  return cells.values.toList();
+}
+
+// --- cell fan-out endpoints (Feature A) --------------------------------------
+
+/// One repeater endpoint that heard a ping in a tapped cell, ready to render as
+/// a fan-out connection line from the cell centre.
+class HeardEndpoint {
+  final double lat; // repeater location (the dedup key, 6dp)
+  final double lon;
+  final double? snr; // best SNR seen (parity / optional labelling)
+  final String repeaterId; // resolved repeater id (drives the fade set)
+  final double distanceMeters; // cell centre -> repeater (for the volume cap)
+
+  const HeardEndpoint({
+    required this.lat,
+    required this.lon,
+    required this.snr,
+    required this.repeaterId,
+    required this.distanceMeters,
+  });
+}
+
+final RegExp _hexRunRe = RegExp(r'[a-f0-9]+', caseSensitive: false);
+
+/// Resolves the UNIQUE repeater endpoints that heard any of [blobPoints] (the
+/// pings whose blob covers a tapped cell), for the tile fan-out lines. Exact
+/// port of the web client's `updateActiveLinesInternal` (`dev/index.php:13830`)
+/// with the `drawLine`-intercept endpoint collection from `updateAllActiveLines`
+/// (`:13740`): dedup by endpoint lat/lon (6dp, first-wins), skip duplicate-styled
+/// and hidden candidates, skip VIA tokens already heard, honour the DISC
+/// public_key pre-branch and the DISC/TRACE coord requirement. The
+/// ambiguous-`?`-no-candidate fallback is omitted because it only ever yields
+/// duplicate-marked endpoints (which the intercept skips).
+List<HeardEndpoint> heardEndpointsForCell(
+    List<Map<String, dynamic>> blobPoints, RepeaterLookup lookup,
+    {required double startLat, required double startLon}) {
+  final seen = <String, HeardEndpoint>{};
+
+  void addEndpoint(_RepInfo rep, double? snr) {
+    if (rep.hidden) return;
+    // Self-line guard (web drawLine skips start==end within 1e-6).
+    if ((startLat - rep.lat).abs() < 1e-6 && (startLon - rep.lon).abs() < 1e-6) {
+      return;
+    }
+    final key = '${rep.lat.toStringAsFixed(6)},${rep.lon.toStringAsFixed(6)}';
+    if (seen.containsKey(key)) return; // first-wins (mirror web seenEndpoints)
+    seen[key] = HeardEndpoint(
+      lat: rep.lat,
+      lon: rep.lon,
+      snr: snr,
+      repeaterId: rep.id,
+      distanceMeters: _haversineMeters(startLat, startLon, rep.lat, rep.lon),
+    );
+  }
+
+  for (final p in blobPoints) {
+    final status = _toInt(p['status']);
+    if (status == 0) continue;
+
+    // 0. DISC public_key pre-branch (web :13841): resolve the responding
+    // repeater by full hex and add it (coord-validated), then skip this ping.
+    if (status == 6 && p['public_key'] is String) {
+      final pkClean =
+          (p['public_key'] as String).replaceAll(_hexOnlyRe, '').toLowerCase();
+      final targetRep = lookup._byFullHex[pkClean];
+      if (targetRep != null) {
+        final hr =
+            p['heard_repeats'] is String ? p['heard_repeats'] as String : '';
+        final cm = _coordBracketRe.firstMatch(hr);
+        if (cm != null) {
+          final tLat = double.tryParse(cm.group(1)!);
+          final tLon = double.tryParse(cm.group(2)!);
+          if (tLat != null &&
+              tLon != null &&
+              _within100m(targetRep.lat, targetRep.lon, tLat, tLon)) {
+            addEndpoint(targetRep,
+                _toDouble(p['remote_snr']) ?? _toDouble(p['local_snr']));
+          }
+        }
+        continue; // web returns the whole ping here
+      }
+    }
+
+    // Combined heard list + the heardIDs set used to skip already-heard VIAs.
+    final rawRepeats = <String>[];
+    final hrRaw = p['heard_repeats'];
+    if (hrRaw is String && hrRaw.isNotEmpty && hrRaw != 'None') {
+      rawRepeats.add(hrRaw);
+    }
+    final dhRaw = p['direct_heard'];
+    if (dhRaw is String && dhRaw.isNotEmpty && dhRaw != 'None') {
+      rawRepeats.add(dhRaw);
+    }
+    final combinedRepeats = rawRepeats.join(' ');
+    final heardIDs = <String>{};
+    for (final m in _hexRunRe.allMatches(combinedRepeats)) {
+      heardIDs.add(m.group(0)!.toLowerCase());
+    }
+
+    // 1. VIA lines (web :13883): path tokens, skipping any also in heardIDs.
+    final via = p['via'];
+    if (via is String && via.isNotEmpty && via != 'Direct' && via != 'N/A') {
+      final cleanVia = via
+          .replaceAll(RegExp(r'\bDirect\b', caseSensitive: false), '')
+          .replaceAll(RegExp(r'\bNone\b', caseSensitive: false), '')
+          .replaceAll(RegExp(r'\bN/A\b', caseSensitive: false), '');
+      for (final m in _tokenRe.allMatches(cleanVia)) {
+        final normId = m.group(1)!.toLowerCase();
+        if (normId == 'd' || normId == 'direct') continue;
+        if (heardIDs.contains(normId)) continue;
+        var candidates = lookup._candidatesFor(normId);
+        final coordStr = m.group(4);
+        if (coordStr != null) {
+          final hasDup = candidates.any((rep) => rep.status == 2);
+          if (!hasDup) {
+            final c = coordStr.split(',');
+            final pLat = c.length >= 2 ? double.tryParse(c[0]) : null;
+            final pLon = c.length >= 2 ? double.tryParse(c[1]) : null;
+            candidates = (pLat == null || pLon == null)
+                ? const <_RepInfo>[]
+                : candidates
+                    .where((rep) => _within100m(rep.lat, rep.lon, pLat, pLon))
+                    .toList();
+          }
+        } else {
+          candidates = const <_RepInfo>[];
+        }
+        for (final rep in candidates) {
+          if (rep.status == 2 && status != 6) continue; // dup -> skip endpoint
+          addEndpoint(rep, null);
+        }
+      }
+    }
+
+    // 2. HEARD lines (web :13934): signal tokens, SNR-carried.
+    for (final m in _tokenRe.allMatches(combinedRepeats)) {
+      final rID = m.group(1)!.toLowerCase();
+      var dbm = m.group(3);
+      final coordStr = m.group(4);
+      var candidates = lookup._candidatesFor(rID);
+      if (coordStr != null) {
+        final hasDup = candidates.any((rep) => rep.status == 2);
+        final c = coordStr.split(',');
+        final pLat = c.length >= 2 ? double.tryParse(c[0]) : null;
+        final pLon = c.length >= 2 ? double.tryParse(c[1]) : null;
+        if (!hasDup) {
+          candidates = (pLat == null || pLon == null)
+              ? const <_RepInfo>[]
+              : candidates
+                  .where((rep) => _within100m(rep.lat, rep.lon, pLat, pLon))
+                  .toList();
+        }
+        if (status == 6 || status == 7) {
+          candidates = (pLat == null || pLon == null)
+              ? const <_RepInfo>[]
+              : candidates
+                  .where((rep) => _within100m(rep.lat, rep.lon, pLat, pLon))
+                  .toList();
+        }
+      } else {
+        candidates = const <_RepInfo>[]; // no coords -> drop (default dup logic)
+      }
+      if ((dbm == null || dbm.isEmpty) && (status == 6 || status == 7)) {
+        dbm = (_toDouble(p['remote_snr']) ?? _toDouble(p['local_snr']))
+            ?.toString();
+      }
+      final snr = dbm != null ? double.tryParse(dbm) : null;
+      final fullHexMatch = lookup._byFullHex[rID] != null;
+      for (final rep in candidates) {
+        final isDup =
+            rep.status == 2 && !fullHexMatch && status != 6 && status != 7;
+        if (isDup) continue; // dup -> skip endpoint
+        addEndpoint(rep, snr);
+      }
+    }
+  }
+
+  return seen.values.toList();
 }

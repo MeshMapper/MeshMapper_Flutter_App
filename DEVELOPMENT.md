@@ -369,6 +369,40 @@ vector-only — every region server must serve `vector_tile.php` (the legacy ras
   `lib/services/api_service.dart` (`freshenVectorTile`),
   `lib/utils/coverage_tile_palette.dart`, `lib/utils/mvt_cells.dart`.
 
+### Coverage Connection Lines (tap-to-inspect)
+
+Tapping coverage data draws connection lines from points the tap flow ALREADY
+fetches (no extra network calls), matching the web client's exact matching +
+fan-out logic (`MeshMapper_Server/dev/index.php`):
+
+- **Tap a coverage tile (Feature A)**: fans out a theme-aware blue dashed line
+  from the cell centre to every UNIQUE repeater that heard the cell's pings (with
+  a distance pill per line) and hides the repeaters that didn't. Hooks the
+  blob-filtered points already computed in `_showCellSummary`. Port of
+  `updateAllActiveLines`/`updateActiveLinesInternal` via `heardEndpointsForCell`.
+- **Tap a repeater (Feature B)**: draws the repeater's matched coverage cells
+  (status/tile-coloured fills, deduped per grid cell with highest-priority status
+  winning, red/DROP hidden) plus a status-coloured dashed line from the repeater
+  to each cell centre. The base coverage tiles DIM and every OTHER repeater is
+  hidden so the focused repeater's cells/lines pop (web `setSoloCircle` +
+  tile-dim parity); both restored on close.
+  Reuses the points fetched in `_showRepeaterDetails`. Port of
+  `buildChartFromPoints` (`RepeaterStats.fromCoverageWithPoints`) +
+  `drawRepeaterCoverageFromCache` (`repeaterCoverageCells`).
+- **Volume cap**: both cap at the farthest 250 lines/cells (longest reach kept),
+  logged under `[COVERAGE]` when truncated.
+- **Layers** (`map_widget.dart`): `coverage-lines-layer` (shared A/B, per-feature
+  `color`) and `coverage-cells-layer` (per-feature fill) — install-once empty,
+  updated via `setGeoJsonSource`, kept separate from the focus-mode lines so the
+  two features never wipe each other. Imperative draws (no `mapRevision` bump).
+  Teardown funnels through `_clearCellHighlight` (A) and `_clearRepeaterIsolation`
+  (B), which also restore the dimmed backdrop and the hidden/all repeaters.
+- **Files**: `lib/widgets/map_widget.dart` (`_updateCoverageLines`,
+  `_updateCoverageCells`, `_drawRepeaterCoverage`, `_syncCoverageDistanceLabels`),
+  `lib/utils/coverage_summary.dart` (`heardEndpointsForCell`,
+  `repeaterCoverageCells`, `RepeaterStats.fromCoverageWithPoints`),
+  `lib/utils/coverage_tile_palette.dart` (`colorsForStatus`).
+
 ### BLE Service UUIDs (MeshCore Companion Protocol)
 - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
 - RX Characteristic: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` (write to device)
