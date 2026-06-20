@@ -390,6 +390,25 @@ class _ResolvedRepeater {
   const _ResolvedRepeater(this.repeater, this.snr, this.ambiguous);
 }
 
+/// A minimized info popup (cell summary or repeater detail) rendered as a
+/// bottom pill the user can tap to re-open. [onReshow] re-presents the sheet;
+/// [onClose] dismisses it and runs any cleanup (e.g. clearing the cell
+/// footprint). Mirrors the ping-focus minimize, but for the tap popups.
+class _MinimizedInfoPopup {
+  final String title;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onReshow;
+  final VoidCallback onClose;
+  const _MinimizedInfoPopup({
+    required this.title,
+    required this.icon,
+    required this.color,
+    required this.onReshow,
+    required this.onClose,
+  });
+}
+
 /// Map widget with TX/RX markers
 /// Uses MapLibre GL with OpenFreeMap vector tiles
 class MapWidget extends StatefulWidget {
@@ -500,6 +519,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   bool _wasRotatingBeforeFocus = false; // true if heading mode was active
   bool _focusPanelMinimized = false;
   dynamic _focusedPingSource; // TxPing | RxPing | DiscLogEntry | TraceLogEntry
+
+  // A minimized cell-summary / repeater-detail popup, shown as a tappable pill
+  // (parity with the ping-focus minimize). Separate from focus state so it can't
+  // entangle focus mode; null when nothing is minimized.
+  _MinimizedInfoPopup? _minimizedInfoPopup;
 
   // MapLibre style and overlay tracking.
   // Tracks the zone code we last rendered the coverage overlay for. When the
@@ -1518,6 +1542,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             ),
           ),
 
+        // Minimized cell-summary / repeater-detail pill — same idea as the focus
+        // pill, for the tap popups. Map stays interactive while it's shown.
+        if (_minimizedInfoPopup != null)
+          Positioned(
+            bottom: 16 + MediaQuery.of(context).padding.bottom,
+            left: 16,
+            right: 16,
+            child: Center(
+              child: _buildMinimizedInfoPill(_minimizedInfoPopup!),
+            ),
+          ),
+
         // History session pill (bottom, styled like minimized focus panel)
         if (appState.viewingHistorySession)
           Positioned(
@@ -2005,7 +2041,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         '${coordinates.longitude.toStringAsFixed(5)} '
         'cell=${cell.i}/${cell.j} blob=$blob r=${radius.toStringAsFixed(0)}m');
 
-    _cellSummaryShowing = true;
+    // Supersede a currently-minimized popup. If it was a cell, its footprint
+    // stays until this tap's own footprint replaces it (no bright flash); if it
+    // was a repeater, just drop the pill.
+    if (_minimizedInfoPopup != null) {
+      setState(() => _minimizedInfoPopup = null);
+    }
 
     // Fetch the pings once, keep the ones whose blob covers the tapped cell, and
     // drive BOTH the summary sheet and the footprint highlight off that list.
@@ -2035,20 +2076,68 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return null;
     });
 
-    showModalBottomSheet(
+    _presentCellSummarySheet(
+      cell: cell,
+      blob: blob,
+      summaryFuture: summaryFuture,
+      isImperial: isImperial,
+    );
+  }
+
+  /// Present (or re-present) the cell GRID SUMMARY sheet for [cell]. Bright map
+  /// (transparent barrier so the footprint dim still pops) + a minimize button
+  /// that collapses to a tappable pill, mirroring the ping-focus sheets. The
+  /// footprint highlight + dim stay while minimized and are cleared on a real
+  /// close. Reused by both the initial tap and the pill's reshow.
+  void _presentCellSummarySheet({
+    required GridCell cell,
+    required int blob,
+    required Future<GridSummary?> summaryFuture,
+    required bool isImperial,
+  }) {
+    _cellSummaryShowing = true;
+    final pillColor = Theme.of(context).colorScheme.primary;
+    showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
+      // Transparent barrier so the map stays bright (footprint dim still pops).
+      barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => CellSummarySheet(
+      builder: (ctx) => CellSummarySheet(
         summaryFuture: summaryFuture,
         isImperial: isImperial,
+        onMinimize: () => Navigator.pop(ctx, 'minimized'),
       ),
-    ).whenComplete(() {
+    ).then((result) {
       _cellSummaryShowing = false;
-      _clearCellHighlight();
+      if (!mounted) return;
+      if (result == 'minimized') {
+        setState(() {
+          _minimizedInfoPopup = _MinimizedInfoPopup(
+            title: 'Grid Summary',
+            icon: Icons.grid_on,
+            color: pillColor,
+            onReshow: () {
+              setState(() => _minimizedInfoPopup = null);
+              _presentCellSummarySheet(
+                cell: cell,
+                blob: blob,
+                summaryFuture: summaryFuture,
+                isImperial: isImperial,
+              );
+            },
+            onClose: () {
+              setState(() => _minimizedInfoPopup = null);
+              _clearCellHighlight();
+            },
+          );
+        });
+      } else {
+        _clearCellHighlight();
+      }
     });
   }
 
@@ -6516,6 +6605,69 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
+  /// Pill for a minimized cell-summary / repeater-detail popup (parity with
+  /// [_buildMinimizedFocusPanel]). Tap (or the up-arrow) re-opens it; the X
+  /// closes it and runs its cleanup.
+  Widget _buildMinimizedInfoPill(_MinimizedInfoPopup popup) {
+    return GestureDetector(
+      onTap: popup.onReshow,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(popup.icon, color: popup.color, size: 18),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                popup.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: popup.onReshow,
+              child: Icon(
+                Icons.keyboard_arrow_up,
+                size: 20,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 4),
+            GestureDetector(
+              onTap: popup.onClose,
+              child: Icon(
+                Icons.close,
+                size: 18,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildMinimizedFocusPanel() {
     final source = _focusedPingSource;
     String title;
@@ -7990,6 +8142,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Show repeater details popup
   void _showRepeaterDetails(Repeater repeater,
       {bool isDuplicate = false, int? regionHopBytesOverride}) {
+    // Supersede any currently-minimized popup (clears a prior cell footprint/dim).
+    _minimizedInfoPopup?.onClose();
+
     // Determine icon badge color based on primary status
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
@@ -8035,9 +8190,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         : repeater.hexId.toUpperCase();
     final clockSkew = humanizeClockSkew(repeater.timeOffset);
 
-    showModalBottomSheet(
+    showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
+      // Transparent barrier so the map stays bright (like focus mode).
+      barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -8090,6 +8247,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                  onPressed: () => Navigator.pop(context, 'minimized'),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Minimize',
                 ),
                 const SizedBox(width: 8),
                 IconButton(
@@ -8254,7 +8419,25 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ],
         ),
       ),
-    );
+    ).then((result) {
+      if (!mounted) return;
+      if (result == 'minimized') {
+        setState(() {
+          _minimizedInfoPopup = _MinimizedInfoPopup(
+            title: repeater.name,
+            icon: Icons.cell_tower,
+            color: iconColor,
+            onReshow: () {
+              setState(() => _minimizedInfoPopup = null);
+              _showRepeaterDetails(repeater,
+                  isDuplicate: isDuplicate,
+                  regionHopBytesOverride: regionHopBytesOverride);
+            },
+            onClose: () => setState(() => _minimizedInfoPopup = null),
+          );
+        });
+      }
+    });
   }
 
   /// One labelled icon row in the repeater detail card. A null [icon] leaves the

@@ -13,10 +13,15 @@ class CellSummarySheet extends StatelessWidget {
   final Future<GridSummary?> summaryFuture;
   final bool isImperial;
 
+  /// When non-null, a minimize button is shown in the header (collapses the
+  /// sheet to a pill, like the ping-focus sheets). Null = close-only.
+  final VoidCallback? onMinimize;
+
   const CellSummarySheet({
     super.key,
     required this.summaryFuture,
     required this.isImperial,
+    this.onMinimize,
   });
 
   // Web GRID SUMMARY palette (dev/index.php getPalette 'none').
@@ -52,6 +57,16 @@ class CellSummarySheet extends StatelessWidget {
                       letterSpacing: 0.5),
                 ),
               ),
+              if (onMinimize != null)
+                IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                  onPressed: onMinimize,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  color: theme.colorScheme.onSurfaceVariant,
+                  tooltip: 'Minimize',
+                ),
+              if (onMinimize != null) const SizedBox(width: 8),
               IconButton(
                 icon: const Icon(Icons.close, size: 20),
                 onPressed: () => Navigator.pop(context),
