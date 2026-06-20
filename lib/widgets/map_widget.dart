@@ -586,6 +586,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // _showCellFootprint and _clearCellHighlight; gates the opacity restore and
   // suppresses the build-method opacity-sync (which would otherwise un-dim).
   bool _coverageDimmedForCell = false;
+  // Below this zoom, coverage cells are only a pixel or two wide, so a tile tap
+  // is almost always accidental — ignore cell taps when zoomed further out (a
+  // 300 m cell is ~8 px at z11, ~16 px at z12). Tune if needed.
+  static const double _kMinCellTapZoom = 12.0;
   // Same backdrop dim while a selected repeater's coverage cells/lines are shown
   // (Feature B, web `drawRepeaterCoverageFromCache` parity). True between
   // _drawRepeaterCoverage and _clearRepeaterIsolation; gates the opacity restore
@@ -2047,15 +2051,26 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _maybeShowCellSummaryAt(point, coordinates);
   }
 
-  /// Hit-test the active coverage fill layer at [point]; if a cell is there,
+  /// Hit-test the active coverage fill layer around [point]; if a cell is there,
   /// open its GRID SUMMARY. The onMapClick fallback to _handleFeatureTap.
   Future<void> _maybeShowCellSummaryAt(
       math.Point<double> point, LatLng coordinates) async {
     final layerId = _activeCoverageLayerId;
     if (layerId == null || _mapController == null) return;
     try {
+      // Hit-test a small BOX around the tap, not the exact pixel: at low zoom a
+      // coverage cell is only a pixel or two wide (a 300 m cell ≈ 2 px at z9), so
+      // an exact-point query nearly always lands in a gap and the tap "doesn't
+      // register". A ~30 px box makes tiles tappable at any zoom.
+      const pad = 15.0;
+      final rect =
+          Rect.fromLTWH(point.x - pad, point.y - pad, pad * 2, pad * 2);
+      // Include the session patch layer (the user's own freshly-pinged cells,
+      // drawn on top of the base) so tapping a patched cell still hit-tests.
+      final layers = <String>[layerId];
+      if (_patchLayerReady) layers.add(_patchLayerId);
       final features =
-          await _mapController!.queryRenderedFeatures(point, [layerId], null);
+          await _mapController!.queryRenderedFeaturesInRect(rect, layers, null);
       if (!mounted || features.isEmpty) return;
       _showCellSummary(coordinates);
     } catch (e) {
@@ -2068,6 +2083,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// mirroring the web cell-click popup (minus PING HISTORY).
   void _showCellSummary(LatLng coordinates) {
     if (!mounted || _cellSummaryShowing) return;
+    // Don't open a cell summary when zoomed too far out — cells are barely
+    // visible there, so taps are almost always accidental. Both tap paths
+    // (_handleFeatureTap + _maybeShowCellSummaryAt) funnel here, so this one
+    // guard covers them and also skips the network fetch below.
+    final zoom = _mapController?.cameraPosition?.zoom ?? 0;
+    if (zoom < _kMinCellTapZoom) {
+      debugLog('[COVERAGE] cell tap ignored — zoom '
+          '${zoom.toStringAsFixed(2)} < $_kMinCellTapZoom');
+      return;
+    }
     final appState = context.read<AppStateProvider>();
     final zone = appState.zoneCode;
     if (zone == null || zone.isEmpty) return;
@@ -2302,11 +2327,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
 
-    // Coverage cell: open the GRID SUMMARY. Coverage is a fill layer below the
-    // repeaters, so reaching it means no repeater/cluster was hit. Platforms that
-    // don't dispatch fill-layer taps here fall back to the queryRenderedFeatures
-    // hit-test in _onMapEmptyTap.
-    if (layerId == _activeCoverageLayerId) {
+    // Coverage cell: open the GRID SUMMARY. Coverage fills sit below the
+    // repeaters, so reaching one means no repeater/cluster was hit. Accept ALL
+    // coverage fill layers, not just the base overlay: the session patch layer
+    // (the user's own freshly-pinged cells) renders ON TOP of the base, so a tap
+    // on a patched cell — common when zoomed in near where you've wardriven —
+    // returns the patch layer id and would otherwise be a dead tap. The tapped
+    // footprint highlight and the repeater coverage cells are likewise tappable.
+    // Platforms that don't dispatch fill-layer taps fall back to the
+    // queryRenderedFeatures hit-test in _onMapEmptyTap.
+    if (layerId == _activeCoverageLayerId ||
+        layerId == _patchLayerId ||
+        layerId == _cellHighlightLayerId ||
+        layerId == _coverageCellsLayerId) {
       _showCellSummary(coordinates);
       return;
     }
