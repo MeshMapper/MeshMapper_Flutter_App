@@ -2044,9 +2044,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Supersede a currently-minimized popup. If it was a cell, its footprint
     // stays until this tap's own footprint replaces it (no bright flash); if it
     // was a repeater, just drop the pill.
-    if (_minimizedInfoPopup != null) {
-      setState(() => _minimizedInfoPopup = null);
-    }
+    _clearMinimizedInfoPopup();
 
     // Fetch the pings once, keep the ones whose blob covers the tapped cell, and
     // drive BOTH the summary sheet and the footprint highlight off that list.
@@ -2115,26 +2113,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _cellSummaryShowing = false;
       if (!mounted) return;
       if (result == 'minimized') {
-        setState(() {
-          _minimizedInfoPopup = _MinimizedInfoPopup(
-            title: 'Grid Summary',
-            icon: Icons.grid_on,
-            color: pillColor,
-            onReshow: () {
-              setState(() => _minimizedInfoPopup = null);
-              _presentCellSummarySheet(
-                cell: cell,
-                blob: blob,
-                summaryFuture: summaryFuture,
-                isImperial: isImperial,
-              );
-            },
-            onClose: () {
-              setState(() => _minimizedInfoPopup = null);
-              _clearCellHighlight();
-            },
-          );
-        });
+        _setMinimizedInfoPopup(_MinimizedInfoPopup(
+          title: 'Grid Summary',
+          icon: Icons.grid_on,
+          color: pillColor,
+          onReshow: () {
+            _clearMinimizedInfoPopup();
+            _presentCellSummarySheet(
+              cell: cell,
+              blob: blob,
+              summaryFuture: summaryFuture,
+              isImperial: isImperial,
+            );
+          },
+          onClose: () {
+            _clearMinimizedInfoPopup();
+            _clearCellHighlight();
+          },
+        ));
       } else {
         _clearCellHighlight();
       }
@@ -4040,6 +4036,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       '${type}_${ts.millisecondsSinceEpoch}_'
       '${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
 
+  /// Fixed base epoch for coverage-marker z-ordering. Keeps [_recencyZIndex]
+  /// small enough to stay exact in the native float32 symbol sort-key (integers
+  /// are exact up to 16,777,216).
+  static final DateTime _kZBaseEpoch = DateTime.utc(2025, 1, 1);
+
+  /// Render/tap z-order for a coverage marker: seconds since [_kZBaseEpoch], so a
+  /// more-recent ping always sorts above (renders on top of, and is tapped in
+  /// preference to) an older one — globally, across TX/RX/DISC/Trace.
+  ///
+  /// The annotation manager's symbol layer uses `symbol-sort-key: ["get",
+  /// "zIndex"]`; with `icon-allow-overlap = true` a higher sort key overlaps a
+  /// lower one. Setting this also flips `symbol-z-order: auto` off its default
+  /// `viewport-y` (southernmost-on-top) fallback. It's a pure function of the
+  /// ping's own timestamp, so existing symbols never need re-pushing — the
+  /// incremental-sync skip path (gated on the icon/size signature) is untouched.
+  int _recencyZIndex(DateTime ts) => ts.difference(_kZBaseEpoch).inSeconds;
+
   /// Diff-syncs native coverage symbols (TX/RX/DISC/Trace) against app state.
   /// One symbol per ping, image varies by type/success state, opacity reflects
   /// focus mode (faded if focus active and this isn't the focused ping).
@@ -4097,6 +4110,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               geometry: LatLng(lat, lon),
               iconImage: iconImage,
               iconSize: iconSize,
+              // Recency-ordered sort key: the most recent ping renders on top
+              // and wins the native topmost-first tap hit-test, so an older
+              // overlapping marker is never selected in its place.
+              zIndex: _recencyZIndex(ts),
             ),
             {'kind': type, 'id': idForMetadata},
           );
@@ -6605,6 +6622,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
+  /// Show the minimized info pill and hide the control panel (the focus/history
+  /// pills do the same — they share the bottom area). [infoPopupMinimized] zeroes
+  /// the map's bottom padding and removes the control panel in home_screen.
+  void _setMinimizedInfoPopup(_MinimizedInfoPopup popup) {
+    setState(() => _minimizedInfoPopup = popup);
+    context.read<AppStateProvider>().infoPopupMinimized = true;
+  }
+
+  /// Hide the minimized info pill and restore the control panel.
+  void _clearMinimizedInfoPopup() {
+    if (_minimizedInfoPopup == null) return;
+    setState(() => _minimizedInfoPopup = null);
+    context.read<AppStateProvider>().infoPopupMinimized = false;
+  }
+
   /// Pill for a minimized cell-summary / repeater-detail popup (parity with
   /// [_buildMinimizedFocusPanel]). Tap (or the up-arrow) re-opens it; the X
   /// closes it and runs its cleanup.
@@ -8422,20 +8454,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     ).then((result) {
       if (!mounted) return;
       if (result == 'minimized') {
-        setState(() {
-          _minimizedInfoPopup = _MinimizedInfoPopup(
-            title: repeater.name,
-            icon: Icons.cell_tower,
-            color: iconColor,
-            onReshow: () {
-              setState(() => _minimizedInfoPopup = null);
-              _showRepeaterDetails(repeater,
-                  isDuplicate: isDuplicate,
-                  regionHopBytesOverride: regionHopBytesOverride);
-            },
-            onClose: () => setState(() => _minimizedInfoPopup = null),
-          );
-        });
+        _setMinimizedInfoPopup(_MinimizedInfoPopup(
+          title: repeater.name,
+          icon: Icons.cell_tower,
+          color: iconColor,
+          onReshow: () {
+            _clearMinimizedInfoPopup();
+            _showRepeaterDetails(repeater,
+                isDuplicate: isDuplicate,
+                regionHopBytesOverride: regionHopBytesOverride);
+          },
+          onClose: _clearMinimizedInfoPopup,
+        ));
       }
     });
   }

@@ -856,6 +856,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  // A cell-summary / repeater-detail popup is minimized to a bottom pill — hide
+  // the control panel and zero the map's bottom padding for it, like focus mode.
+  bool _infoPopupMinimized = false;
+  bool get infoPopupMinimized => _infoPopupMinimized;
+  set infoPopupMinimized(bool value) {
+    if (_infoPopupMinimized != value) {
+      _infoPopupMinimized = value;
+      notifyListeners();
+    }
+  }
+
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
 

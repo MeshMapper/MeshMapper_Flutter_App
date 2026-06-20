@@ -60,7 +60,10 @@ class _HomeScreenState extends State<HomeScreen> {
         rev: p.mapRevision,
         focus: p.isFocusModeActive,
         history: p.viewingHistorySession,
-        padH: isLandscape || p.isFocusModeActive || p.viewingHistorySession
+        padH: isLandscape ||
+                p.isFocusModeActive ||
+                p.viewingHistorySession ||
+                p.infoPopupMinimized
             ? 0.0
             : _getControlPanelHeight(),
         ctrl: isLandscape ? _mapControlsExpanded : null,
@@ -528,8 +531,12 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-        // Portrait: bottom control panel (hidden during focus mode and history view)
-        if (!isLandscape && !appState.isFocusModeActive && !appState.viewingHistorySession)
+        // Portrait: bottom control panel (hidden during focus mode, history view,
+        // and while a cell/repeater popup is minimized to a pill)
+        if (!isLandscape &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
           Positioned(
             bottom: 0,
             left: 0,
@@ -539,14 +546,23 @@ class _HomeScreenState extends State<HomeScreen> {
                 : _buildControlPanel(),
           ),
 
-        // Landscape: side control panel or FAB (hidden during focus mode and history view)
-        if (isLandscape && _showControlPanel && !appState.isFocusModeActive && !appState.viewingHistorySession)
+        // Landscape: side control panel or FAB (hidden during focus mode, history
+        // view, and while a cell/repeater popup is minimized to a pill)
+        if (isLandscape &&
+            _showControlPanel &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
           Positioned(
             bottom: 16,
             left: leftInset,
             child: _buildLandscapeControlPanel(appState),
           ),
-        if (isLandscape && !_showControlPanel && !appState.isFocusModeActive && !appState.viewingHistorySession)
+        if (isLandscape &&
+            !_showControlPanel &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
           Positioned(
             bottom: 16,
             left: leftInset,
