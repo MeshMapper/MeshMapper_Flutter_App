@@ -522,6 +522,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   double? _preFocusZoom;
   bool _wasAutoFollowBeforeFocus = false;
   bool _wasRotatingBeforeFocus = false; // true if heading mode was active
+  // True while ANY focus-style camera is engaged (ping focus OR a community
+  // tile/repeater coverage view). The pre-focus snapshot above is saved ONCE on
+  // the first entry and restored ONCE when the last view closes, so switching
+  // directly between views animates only once and restores to the original view.
+  bool _cameraFocusActive = false;
   bool _focusPanelMinimized = false;
   dynamic _focusedPingSource; // TxPing | RxPing | DiscLogEntry | TraceLogEntry
 
@@ -1020,26 +1025,27 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     );
   }
 
-  /// Zoom to fit a focused ping and its connected repeaters on screen
-  void _zoomToFocusBounds(
-      LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
+  // ===========================================================================
+  // Shared focus-camera lifecycle (ping focus + tile/repeater coverage views)
+  // ===========================================================================
+
+  /// Animate the camera to fit [points] on screen (north-up, with room for the
+  /// bottom sheet/pill). No-op with fewer than 2 valid points (nothing to frame).
+  void _fitCameraToPoints(List<LatLng> points) {
     if (_mapController == null ||
         !_isMapReady ||
         !mounted ||
         !_canAnimateCamera) {
       return;
     }
+    final valid = points
+        .where((p) => isValidLatLng(p.latitude, p.longitude))
+        .toList();
+    if (valid.length < 2) return;
 
-    final points = [
-      pingLocation,
-      ...repeaters.map((r) => LatLng(r.repeater.lat, r.repeater.lon))
-    ].where((p) => isValidLatLng(p.latitude, p.longitude)).toList();
-    if (points.length < 2) return;
-
-    // Build bounding box from all points
-    double minLat = points[0].latitude, maxLat = points[0].latitude;
-    double minLon = points[0].longitude, maxLon = points[0].longitude;
-    for (final p in points) {
+    double minLat = valid[0].latitude, maxLat = valid[0].latitude;
+    double minLon = valid[0].longitude, maxLon = valid[0].longitude;
+    for (final p in valid) {
       if (p.latitude < minLat) minLat = p.latitude;
       if (p.latitude > maxLat) maxLat = p.latitude;
       if (p.longitude < minLon) minLon = p.longitude;
@@ -1056,6 +1062,76 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           left: 60, top: 60, right: 60, bottom: bottomPad),
       duration: const Duration(milliseconds: 500),
     );
+  }
+
+  /// Engage the shared focus camera: save the user's current camera / auto-follow
+  /// / rotation ONCE (so a switch between focus views keeps the original
+  /// snapshot), then lock north-up and stop following. Idempotent — a no-op when
+  /// a focus camera is already active. Camera/follow/rotation ONLY: it does NOT
+  /// touch the coverage overlay opacity or [isFocusModeActive] (each mode owns
+  /// those).
+  void _enterFocusCamera() {
+    if (_cameraFocusActive) return;
+    _cameraFocusActive = true;
+    final pos = _mapController?.cameraPosition;
+    _preFocusCenter = pos?.target;
+    _preFocusZoom = pos?.zoom;
+    _wasAutoFollowBeforeFocus = _autoFollow;
+    _wasRotatingBeforeFocus = !_alwaysNorth;
+    if (_autoFollow) _autoFollow = false;
+    if (!_alwaysNorth) {
+      _alwaysNorth = true;
+      // Snap rotation to north instantly so the zoom-to-fit view is stable.
+      if (_isMapReady && _mapController != null && _canAnimateCamera) {
+        _mapController!.animateCamera(
+          CameraUpdate.bearingTo(0),
+          duration: const Duration(milliseconds: 1),
+        );
+      }
+    }
+  }
+
+  /// Disengage the shared focus camera: animate back to the saved center/zoom and
+  /// restore auto-follow / rotation (after the zoom-back settles). Idempotent.
+  void _exitFocusCamera() {
+    if (!_cameraFocusActive) return;
+    _cameraFocusActive = false;
+    final center = _preFocusCenter;
+    final zoom = _preFocusZoom;
+    final restoreFollow = _wasAutoFollowBeforeFocus && !_autoFollow;
+    final restoreRot = _wasRotatingBeforeFocus && _alwaysNorth;
+    if (center != null && zoom != null) {
+      _animateToPositionWithZoom(center, zoom);
+      // Defer follow/rotation restore so they don't clobber the zoom-back
+      // animation mid-flight (both share the animation controller).
+      if (restoreFollow || restoreRot) {
+        Future.delayed(const Duration(milliseconds: 550), () {
+          if (!mounted) return;
+          setState(() {
+            if (restoreFollow) _autoFollow = true;
+            if (restoreRot) _alwaysNorth = false;
+          });
+        });
+      }
+    } else {
+      setState(() {
+        if (restoreFollow) _autoFollow = true;
+        if (restoreRot) _alwaysNorth = false;
+      });
+    }
+  }
+
+  /// True while any focus view (ping focus, tile coverage, repeater coverage) is
+  /// open. Drives [_exitFocusCameraIfDone] so a view switch (which clears the old
+  /// view AFTER the new one is claimed) keeps the camera engaged.
+  bool get _anyFocusViewActive =>
+      _focusedPingLocation != null ||
+      _cellPopupActive ||
+      _isolatedRepeaterId != null;
+
+  /// Restore the shared focus camera only when no focus view remains open.
+  void _exitFocusCameraIfDone() {
+    if (!_anyFocusViewActive) _exitFocusCamera();
   }
 
   /// Smoothly animate the map rotation to match heading
@@ -1571,17 +1647,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             ),
           ),
 
-        // Minimized focus panel pill — shown when user minimizes a ping
-        // details sheet. Not a modal, so the map underneath stays fully
-        // interactable (zoom, pan, rotation).
-        if (_focusPanelMinimized && _focusedPingLocation != null)
+        // Minimized focus panel pill — the DEFAULT view for a ping tap (and what
+        // the full sheet collapses to). Gated on _focusedPingSource (not
+        // _focusedPingLocation) so a "missed" ping — heard by nobody, so no focus
+        // location/camera — still shows its pill. Full-width like the info pill so
+        // its 2-row layout has room. Not a modal: the map stays interactable.
+        if (_focusPanelMinimized && _focusedPingSource != null)
           Positioned(
             bottom: 16 + MediaQuery.of(context).padding.bottom,
             left: 16,
             right: 16,
-            child: Center(
-              child: _buildMinimizedFocusPanel(),
-            ),
+            child: _buildMinimizedFocusPanel(),
           ),
 
         // Minimized cell-summary / repeater-detail pill — same idea as the focus
@@ -1594,8 +1670,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             child: _buildMinimizedInfoPill(_minimizedInfoPopup!),
           ),
 
-        // History session pill (bottom, styled like minimized focus panel)
-        if (appState.viewingHistorySession)
+        // History session pill (bottom, styled like minimized focus panel).
+        // Hidden while a minimized focus/info pill occupies the same bottom
+        // slot, so the pill takes over the bottom area instead of stacking on
+        // top of (or under) this banner — parity with how the live-session
+        // control panel hides on infoPopupMinimized / isFocusModeActive.
+        if (appState.viewingHistorySession &&
+            _minimizedInfoPopup == null &&
+            !(_focusPanelMinimized && _focusedPingSource != null))
           Positioned(
             bottom: 16 + MediaQuery.of(context).padding.bottom,
             left: 16,
@@ -2041,9 +2123,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
     // Safety net for a stranded Feature A fan-out (faded repeaters + lines but
-    // no pill keeping the cell summary alive) — restore on empty tap.
+    // no pill keeping the cell summary alive) — full teardown (clears the
+    // footprint/dim/fade and restores the shared focus camera) on empty tap.
     if (_coverageHeardRepeaterIds != null && _minimizedInfoPopup == null) {
-      _clearCoverageConnections();
+      _clearCellHighlight();
       return;
     }
     // Fallback cell hit-test: some platforms don't dispatch coverage fill-layer
@@ -2123,9 +2206,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Supersede a currently-minimized popup. If it was a cell, its footprint
     // stays until this tap's own footprint replaces it (no bright flash); if it
     // was a repeater, drop the pill AND restore the hidden repeaters.
+    // Mark the cell view active BEFORE the teardowns so the shared focus camera
+    // isn't restored mid-switch (it stays engaged and re-fits below).
+    _cellPopupActive = true;
     _clearMinimizedInfoPopup();
     _clearRepeaterIsolation();
-    _cellPopupActive = true;
+    // Switching from a minimized ping focus: tear it down so its pill doesn't
+    // linger and overlap this cell view's pill at the shared bottom slot
+    // (symmetric to _enterPingFocus, which tears down the coverage views). The
+    // cell view is already claimed (_cellPopupActive = true), so this dismiss's
+    // _exitFocusCameraIfDone no-ops and the shared focus camera stays engaged.
+    _dismissPingFocus();
+    _enterFocusCamera();
 
     // Fetch the pings once, keep the ones whose blob covers the tapped cell, and
     // drive BOTH the summary sheet and the footprint highlight off that list.
@@ -2175,6 +2267,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _coverageHeardRepeaterIds =
           eps.isEmpty ? null : {for (final e in eps) e.repeaterId};
       _syncRepeaterSymbols(appState);
+      // Match ping focus: frame the cell + the repeaters that heard it (no-op
+      // when nothing was heard — single point — leaving the north-up view).
+      _fitCameraToPoints([
+        LatLng(cell.centerLat, cell.centerLon),
+        for (final e in eps) LatLng(e.lat, e.lon),
+      ]);
     }).catchError((Object e) {
       debugWarn('[COVERAGE] cell fan-out failed: $e');
     });
@@ -2266,13 +2364,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   ) {
     if (!mounted) return;
 
-    // Spider spread marker: open the detail sheet for the tapped repeater.
-    // Spider stays open — users frequently compare stacked repeaters back to
-    // back, so collapsing on every selection would be annoying.
+    // Spider spread marker: the user has picked one of the fanned-out repeaters
+    // to inspect → collapse the spider and focus that repeater (focus mode + its
+    // coverage cells), mirroring the GPS fall-through path in
+    // _fallThroughToRepeaterAt.
     if (layerId == _spiderSymbolLayerId) {
-      // Don't isolate from inside a spider — users compare stacked repeaters
-      // back-to-back, so keep the spread open and all markers visible.
-      _showRepeaterDetailsById(id, isolate: false);
+      _collapseSpider();
+      _showRepeaterDetailsById(id); // isolate: true (default)
       return;
     }
 
@@ -2293,12 +2391,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
 
-    // Individual repeater: open the detail sheet. At max zoom we ALSO check
-    // for stacked siblings within the spider stick threshold and spread them
-    // out (covers the rare case where clustering didn't pick them up — e.g.
-    // identical-coordinate markers that just slipped past clusterRadius
-    // due to a recent data update). Below max zoom, spiderfy is disabled —
-    // the user is expected to zoom further first.
+    // Individual repeater: open the detail sheet. We ALSO check for stacked
+    // siblings within the spider stick threshold and spread them out. In
+    // Simplified Mode this is gated to max zoom (clustered, so the bubble-tap
+    // path zooms in first; an individual hit below max zoom is a real lone
+    // marker). In Detailed Mode there is no cluster bubble / "zoom in first"
+    // path and stacked markers overlap at every zoom, so spiderfy fires at any
+    // zoom — otherwise a stacked pile can only ever show one repeater's coverage
+    // and the rest stay buried.
     if (layerId == _repeaterIndividualLayerId) {
       // If a spider is open and the user tapped a non-spider individual
       // (originals are filtered out via `inSpider`, so this can only be a
@@ -2307,8 +2407,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _collapseSpider();
       }
 
-      if (_isAtMaxZoom()) {
-        final appState = context.read<AppStateProvider>();
+      final appState = context.read<AppStateProvider>();
+      final detailed = appState.preferences.coverageGridSize == 100;
+      if (_isAtMaxZoom() || detailed) {
         final group = _findSpiderGroup(coordinates, appState);
         if (group.length >= 2) {
           _spiderfy(coordinates, group);
@@ -2526,22 +2627,27 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (repeaterId == null) return;
 
       // For an individual layer hit (not a spider symbol), apply the same
-      // stacked-siblings test as the direct tap path — but ONLY at max zoom.
-      // queryRenderedFeatures doesn't expose layerId per result in 0.25, so
-      // we infer: if a spider is open, the original individuals are filtered
-      // out, so any individual hit must be a non-stacked marker → just open
-      // the detail sheet. If no spider is open AND we're at max zoom, run
-      // the spiderfy test.
+      // stacked-siblings test as the direct tap path. queryRenderedFeatures
+      // doesn't expose layerId per result in 0.25, so we infer: if a spider is
+      // open, the original individuals are filtered out, so any individual hit
+      // must be a non-stacked marker → just open the detail sheet. Otherwise run
+      // the spiderfy test — gated to max zoom in Simplified Mode, but at any
+      // zoom in Detailed Mode (un-clustered, so stacked markers overlap at every
+      // zoom and have no cluster-bubble "zoom in first" path). Mirrors the
+      // direct tap path.
       if (_spiderCenter != null) {
         // User tapped outside the open spider's group — collapse + show
         // detail sheet for the tapped marker.
         _collapseSpider();
-      } else if (_isAtMaxZoom()) {
+      } else {
         final appState = context.read<AppStateProvider>();
-        final group = _findSpiderGroup(coordinates, appState);
-        if (group.length >= 2) {
-          _spiderfy(coordinates, group);
-          return;
+        final detailed = appState.preferences.coverageGridSize == 100;
+        if (_isAtMaxZoom() || detailed) {
+          final group = _findSpiderGroup(coordinates, appState);
+          if (group.length >= 2) {
+            _spiderfy(coordinates, group);
+            return;
+          }
         }
       }
       _showRepeaterDetailsById(repeaterId);
@@ -2587,6 +2693,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _restoreCoverageBackdropForRepeater();
     if (!mounted) return;
     _syncRepeaterSymbols(context.read<AppStateProvider>());
+    // Restore the shared focus camera if no focus view remains (no-op during a
+    // switch, where the incoming view is already marked active).
+    _exitFocusCameraIfDone();
   }
 
   /// Restore the base coverage overlay opacity dimmed by a Feature B repeater
@@ -3074,6 +3183,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         await _applyCoverageOverlayOpacity(restore);
       }
     }
+    // Restore the shared focus camera if no focus view remains (a no-op during a
+    // switch, where the incoming view is already marked active). Runs before the
+    // early-return below so it always fires.
+    _exitFocusCameraIfDone();
     if (_mapController == null || !_cellHighlightReady) return;
     try {
       await _mapController!
@@ -4098,6 +4211,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
     final hopOverride =
         appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    // Match the individual layer: Detailed (gsize 100) bakes the hex into the
+    // chip image (the spider layer reuses the same no-text-field props, so a
+    // generic shape would render as an empty box); Simplified uses the shared
+    // shape + text-field hex. See _buildRepeaterFeatureCollection.
+    final detailed = appState.preferences.coverageGridSize == 100;
 
     final features = <Map<String, dynamic>>[];
     for (var i = 0; i < _spiderRepeaters.length; i++) {
@@ -4112,8 +4230,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           : effectiveBytes == 2
               ? 2
               : 1;
-      final iconImage = _MapImages.repeater(statusKey, shapeBytes);
       final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      final iconImage = detailed
+          ? _MapImages.repeaterChip(statusKey, shapeBytes, hex)
+          : _MapImages.repeater(statusKey, shapeBytes);
       final colorHex = _colorToHex(_repeaterStatusColor(statusKey));
 
       features.add({
@@ -4172,6 +4292,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     try {
       final geojson =
           _buildSpiderFeatureCollection(appState, currentZoom);
+      // Detailed mode references baked per-chip images. The main collection
+      // usually registers them first, but a spidered repeater that the main
+      // builder filtered out (focus / isolation / heard-repeater fade) would
+      // reference an unregistered chip — bake any missing ones here too.
+      if (appState.preferences.coverageGridSize == 100) {
+        await _ensureRepeaterChipImages(geojson);
+      }
       await _mapController!.setGeoJsonSource(_spiderSourceId, geojson);
     } catch (e) {
       debugError('[MAP] Failed to update spider source: $e');
@@ -4734,7 +4861,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         const LineLayerProperties(
           lineColor: ['get', 'color'],
           lineOpacity: 0.9,
-          lineWidth: 2.5,
+          // Per-feature width: the tile fan-out (Feature A) and the repeater
+          // coverage (Feature B) share this layer but use different widths.
+          lineWidth: ['get', 'width'],
           lineDasharray: [2, 4],
           lineCap: 'round',
         ),
@@ -4792,7 +4921,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Future<void> _updateCoverageLines(
       List<({double lat, double lon, String color})> segments,
       double startLat,
-      double startLon) async {
+      double startLon,
+      {double width = 2.5}) async {
     if (_mapController == null || !_styleLoaded) return;
     if (segments.isEmpty) {
       await _clearCoverageLines();
@@ -4803,7 +4933,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       for (final s in segments)
         {
           'type': 'Feature',
-          'properties': {'color': s.color},
+          'properties': {'color': s.color, 'width': width},
           'geometry': {
             'type': 'LineString',
             'coordinates': [
@@ -4877,6 +5007,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Place a distance-pill label at the midpoint of each coverage fan-out line
   /// (Feature A). Mirrors [_syncDistanceLabels] but with its own tracking keyed
   /// by endpoint lat/lon (6dp). Empty list removes all coverage labels.
+  /// Screen-space rotation (degrees, clockwise) so a horizontal distance label
+  /// runs ALONG the line from ([startLat],[startLon]) to ([endLat],[endLon])
+  /// instead of staying flat. Annotation symbols rotate in viewport space, so
+  /// this is the line's on-screen angle — the geographic bearing minus the
+  /// camera bearing, minus 90° (a horizontal label already lies along an
+  /// east-west line) — flipped 180° when it would otherwise read upside-down.
+  double _lineLabelRotation(
+      double startLat, double startLon, double endLat, double endLon) {
+    final bearing =
+        Geolocator.bearingBetween(startLat, startLon, endLat, endLon);
+    final cam = _mapController?.cameraPosition?.bearing ?? 0;
+    var angle = bearing - cam - 90;
+    angle = (angle + 180) % 360 - 180; // normalize to [-180, 180)
+    if (angle > 90) angle -= 180; // keep upright (text never reads inverted)
+    if (angle < -90) angle += 180;
+    return angle;
+  }
+
   Future<void> _syncCoverageDistanceLabels(
       List<({double lat, double lon, String color})> segments,
       double startLat,
@@ -4914,6 +5062,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         iconImage: imageName,
         iconSize: 1.0,
         iconAnchor: 'center',
+        // Rotate the pill to follow its line (kept upright) instead of staying
+        // flat across the fan-out.
+        iconRotate: _lineLabelRotation(startLat, startLon, s.lat, s.lon),
       );
       final existing = _coverageDistanceLabelSymbols[key];
       if (existing == null) {
@@ -4978,9 +5129,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Feature B draw: render [matched] (the points that heard [repeater]) as
   /// deduped status-coloured coverage cells plus a status-coloured dashed line
-  /// from the repeater to each cell centre. Caps at the farthest 250. The lines
-  /// layer is ensured BEFORE the cells layer so the lines read on top.
-  Future<void> _drawRepeaterCoverage(Repeater repeater,
+  /// from the repeater to each cell centre. The lines layer is ensured BEFORE
+  /// the cells layer so the lines read on top. Returns the (capped) cells so the
+  /// caller can frame them with the repeater.
+  Future<List<RepeaterCoverageCell>> _drawRepeaterCoverage(Repeater repeater,
       List<Map<String, dynamic>> matched, String cvd, int gridSize) async {
     final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
     final blob = gridSize == 100 ? 1 : 0;
@@ -4996,7 +5148,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (cells.isEmpty) {
       await _clearCoverageCells();
       await _clearCoverageLines();
-      return;
+      return cells;
     }
     await _ensureCoverageLinesLayer();
     await _updateCoverageCells(cells, cvd, steps[0], steps[1]);
@@ -5008,7 +5160,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           color: CoverageTilePalette.colorsForStatus(cvd, c.st)[0],
         ),
     ];
-    await _updateCoverageLines(segments, repeater.lat, repeater.lon);
+    // Skinnier than the tile fan-out — a repeater draws many lines at once.
+    await _updateCoverageLines(segments, repeater.lat, repeater.lon, width: 1.5);
     // Dim the base coverage tiles so the repeater's coloured cells + lines pop
     // (web `drawRepeaterCoverageFromCache` tile-dim parity). Restored in
     // _clearRepeaterIsolation. Skip while ping focus already hid the overlay.
@@ -5016,6 +5169,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _coverageDimmedForRepeater = true;
       await _applyCoverageOverlayOpacity(_kCellHighlightFadeOpacity);
     }
+    return cells;
   }
 
   /// Rebuilds the regional boundary layer from `appState.regionBorders`.
@@ -5228,6 +5382,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         iconImage: imageName,
         iconSize: 1.0,
         iconAnchor: 'center',
+        // Rotate the pill to follow its ping→repeater line (kept upright), so
+        // ping focus matches the tile/repeater coverage labels.
+        iconRotate: _lineLabelRotation(
+            ping.latitude, ping.longitude, r.repeater.lat, r.repeater.lon),
       );
 
       final existing = _distanceLabelSymbols[key];
@@ -5356,7 +5514,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         try {
           await _mapController!.updateSymbol(
             symbol,
-            SymbolOptions(geometry: targetLatLng),
+            // Re-assert the line rotation (unchanged — sliding along the same
+            // line) alongside the new position.
+            SymbolOptions(
+              geometry: targetLatLng,
+              iconRotate: _lineLabelRotation(ping.latitude, ping.longitude,
+                  repeaterPos.latitude, repeaterPos.longitude),
+            ),
           );
         } catch (e) {
           debugError('[MAP] updateSymbol(distance reflow) failed: $e');
@@ -6637,18 +6801,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   void _showTraceDetails(TraceLogEntry entry, {bool fromMinimized = false}) {
-    // Activate focus mode for successful traces with a known repeater
-    _focusedPingSource = entry;
-
-    if (!fromMinimized && entry.success) {
-      final resolved = _resolveRepeatersByHexIds(
-        [entry.targetRepeaterId],
-        snrValues: [entry.localSnr],
-      );
-      if (resolved.isNotEmpty) {
-        _activatePingFocus(
-            LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
-      }
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true). _activatePingFocus engages focus for a
+    // successful trace's target or clears any prior focus / community view (empty
+    // list for a failed trace); set _focusedPingSource AFTER it (its missed branch
+    // dismisses a prior ping, which would otherwise clear the source).
+    if (!fromMinimized) {
+      final resolved = entry.success
+          ? _resolveRepeatersByHexIds(
+              [entry.targetRepeaterId],
+              snrValues: [entry.localSnr],
+            )
+          : const <_ResolvedRepeater>[];
+      _activatePingFocus(
+          LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+      _focusedPingSource = entry;
+      _minimizePingFocus(entry.timestamp);
+      return;
     }
 
     showModalBottomSheet(
@@ -7040,49 +7209,47 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Activate ping focus mode — draw lines, fade markers, zoom to fit.
   void _activatePingFocus(LatLng pingLocation, DateTime timestamp,
       List<_ResolvedRepeater> repeaters) {
-    // Drop repeaters lacking GPS — they would draw lines off to (0, 0).
-    // The bottom-sheet row builder still surfaces them with a no-location
-    // icon. If nothing is left to focus on, skip activation entirely so
-    // the user's current map view (zoom, autofollow, rotation) is kept.
+    // Repeaters lacking GPS would draw lines off to (0, 0); the bottom-sheet row
+    // builder still surfaces them with a no-location icon.
     final located =
         repeaters.where((r) => r.repeater.hasLocation).toList(growable: false);
-    if (located.isEmpty) return;
 
-    // Session ping-focus and the community coverage views are distinct gestures;
-    // clear any open community fan-out / repeater cells (and their pill/isolation)
-    // so the two don't stack on the map.
+    // "Dead" ping (nothing to focus): don't enter focus (north-up + hiding every
+    // marker over an empty map is jarring). Tear down any PRIOR ping focus first
+    // (its lines / hidden markers / overlay-dim — else they'd linger under this
+    // ping's pill); _dismissPingFocus no-ops when no ping is active. It also
+    // clears _focusedPingSource, so the caller re-sets it for THIS ping AFTER
+    // _activatePingFocus returns. Then close any open community view so the pill
+    // isn't shown over a stale fan-out (req: tapping a ping closes coverage).
+    if (located.isEmpty) {
+      _dismissPingFocus();
+      _clearMinimizedInfoPopup();
+      _clearCellHighlight();
+      _clearRepeaterIsolation();
+      _clearCoverageConnections();
+      return;
+    }
+
+    final alreadyInFocus = _focusedPingLocation != null;
+    // Claim ping focus as the active view FIRST, so the community teardowns below
+    // see a focus view active and don't restore the shared camera mid-switch
+    // (then ping re-fits) — switching from a coverage view to a ping animates once.
+    _focusedPingLocation = pingLocation;
+
+    // Close any open community coverage view (pill + footprint + dim + isolation +
+    // lines/cells/fade). Each teardown's _exitFocusCameraIfDone no-ops because
+    // ping focus is now the active view.
     _clearMinimizedInfoPopup();
+    _clearCellHighlight();
     _clearRepeaterIsolation();
     _clearCoverageConnections();
 
-    // Only save pre-focus state on first activation. When re-activating
-    // (e.g. user taps a different ping while already in focus, or expanding
-    // from minimized), we keep the original pre-focus snapshot so dismiss
-    // restores the correct camera position.
-    final alreadyInFocus = _focusedPingLocation != null;
+    // Engage the shared focus camera (saves the pre-focus snapshot once,
+    // north-up, stop follow). isFocusModeActive is a PING-only flag (it gates the
+    // home-screen map Selector); set it only for ping focus, only on first entry.
+    _enterFocusCamera();
     if (!alreadyInFocus) {
       context.read<AppStateProvider>().isFocusModeActive = true;
-      final pos = _mapController?.cameraPosition;
-      _preFocusCenter = pos?.target;
-      _preFocusZoom = pos?.zoom;
-      _wasAutoFollowBeforeFocus = _autoFollow;
-      _wasRotatingBeforeFocus = !_alwaysNorth;
-
-      if (_autoFollow) {
-        _autoFollow = false;
-      }
-
-      // Lock to north-up during focus so the zoom-to-fit view is stable
-      if (!_alwaysNorth) {
-        _alwaysNorth = true;
-        // Snap rotation to north (instant — avoids wobble before zoom-to-fit animation)
-        if (_isMapReady && _mapController != null && _canAnimateCamera) {
-          _mapController!.animateCamera(
-            CameraUpdate.bearingTo(0),
-            duration: const Duration(milliseconds: 1),
-          );
-        }
-      }
     }
 
     _focusPanelMinimized = false;
@@ -7092,7 +7259,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _focusSyncDeferred = true;
 
     setState(() {
-      _focusedPingLocation = pingLocation;
       _focusedPingTimestamp = timestamp;
       _focusedRepeaters = located;
     });
@@ -7104,7 +7270,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _focusedPingLocation != null) {
-        _zoomToFocusBounds(pingLocation, located);
+        _fitCameraToPoints([
+          pingLocation,
+          ...located.map((r) => LatLng(r.repeater.lat, r.repeater.lon)),
+        ]);
       }
     });
 
@@ -7122,18 +7291,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Dismiss ping focus mode — restore map state.
   void _dismissPingFocus() {
-    if (_focusedPingLocation == null || !mounted) return;
+    // Key off the SOURCE, not the location: a "missed" ping has a source but no
+    // focus location, and must still be torn down (clear isFocusModeActive so the
+    // control bar returns, clear the pill state, etc.).
+    if (_focusedPingSource == null || !mounted) return;
 
     context.read<AppStateProvider>().isFocusModeActive = false;
 
-    final center = _preFocusCenter;
-    final zoom = _preFocusZoom;
-    final shouldRestoreAutoFollow = _wasAutoFollowBeforeFocus && !_autoFollow;
-    final shouldRestoreRotation = _wasRotatingBeforeFocus && _alwaysNorth;
-
-    // Clear focus state but do NOT restore auto-follow or rotation yet —
-    // they would immediately trigger animations in the build method that
-    // override our zoom-back animation (both share _animationController).
+    // Clear focus state first so _anyFocusViewActive sees ping focus gone.
     setState(() {
       _focusedPingLocation = null;
       _focusedPingTimestamp = null;
@@ -7148,27 +7313,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final appState = context.read<AppStateProvider>();
     _applyCoverageOverlayOpacity(appState.preferences.coverageOverlayOpacity);
 
-    if (center != null && zoom != null) {
-      _animateToPositionWithZoom(center, zoom);
+    // Restore the shared focus camera (center/zoom + follow/rotation) now that no
+    // focus view remains. A no-op if a community view is somehow still open
+    // (can't happen — ping focus tears them down on entry).
+    _exitFocusCameraIfDone();
+  }
 
-      // Restore auto-follow and heading rotation after the zoom-back
-      // animation completes (500ms) so they don't clobber it mid-flight.
-      if (shouldRestoreAutoFollow || shouldRestoreRotation) {
-        Future.delayed(const Duration(milliseconds: 550), () {
-          if (mounted) {
-            setState(() {
-              if (shouldRestoreAutoFollow) _autoFollow = true;
-              if (shouldRestoreRotation) _alwaysNorth = false;
-            });
-          }
-        });
-      }
-    } else {
-      setState(() {
-        if (shouldRestoreAutoFollow) _autoFollow = true;
-        if (shouldRestoreRotation) _alwaysNorth = false;
-      });
-    }
+  /// Collapse a just-tapped ping to the minimized 2-row pill — the DEFAULT for a
+  /// ping tap (parity with the cell/repeater tap flow). Run right after
+  /// [_activatePingFocus]: for a HEARD ping that engaged focus this just flips the
+  /// panel to minimized; for a MISSED ping (no focus location) it also sets
+  /// isFocusModeActive so the control bar hides under the pill — without any of
+  /// the focus VISUALS (those key off _focusedPingLocation, which stays null).
+  void _minimizePingFocus(DateTime timestamp) {
+    context.read<AppStateProvider>().isFocusModeActive = true;
+    setState(() {
+      _focusedPingTimestamp = timestamp;
+      _focusPanelMinimized = true;
+    });
   }
 
   void _reshowFocusPanel() {
@@ -7203,12 +7365,32 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Pill for a minimized cell-summary / repeater-detail popup (parity with
   /// [_buildMinimizedFocusPanel]). Tap (or the up-arrow) re-opens it; the X
   /// closes it and runs its cleanup.
+  /// A minimized-pill control (↑ expand / ✕ close) with a generous ~44px hit
+  /// target so it's hard to mis-tap. Opaque so the tap never falls through to the
+  /// map (or the pill body's tap-swallow).
+  Widget _pillIconButton(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Icon(icon,
+            size: 22, color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
+    );
+  }
+
   Widget _buildMinimizedInfoPill(_MinimizedInfoPopup popup) {
     final theme = Theme.of(context);
     return GestureDetector(
-      onTap: popup.onReshow,
+      // Swallow body taps: tapping the pill body must NOT expand (too easy to hit
+      // when reaching for close) and must NOT fall through to the map. Expand is
+      // only via the ↑ button; close only via the ✕ button.
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.fromLTRB(12, 2, 4, 8),
         decoration: BoxDecoration(
           color: theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(12),
@@ -7227,25 +7409,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Row 1: identity + expand/close controls.
+            // Row 1: identity + expand/close controls (each ~44px hit target).
             Row(
               children: [
                 Expanded(child: popup.title),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: popup.onReshow,
-                  child: Icon(Icons.keyboard_arrow_up,
-                      size: 20, color: theme.colorScheme.onSurfaceVariant),
-                ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: popup.onClose,
-                  child: Icon(Icons.close,
-                      size: 18, color: theme.colorScheme.onSurfaceVariant),
-                ),
+                const SizedBox(width: 4),
+                _pillIconButton(Icons.keyboard_arrow_up, popup.onReshow),
+                _pillIconButton(Icons.close, popup.onClose),
               ],
             ),
-            const SizedBox(height: 8),
             // Row 2: stat chips (wraps if the row is too narrow).
             popup.statsBuilder(context),
           ],
@@ -7471,19 +7643,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return const SizedBox.shrink();
     }
 
-    final repeaterCount = _focusedRepeaters.length;
+    final theme = Theme.of(context);
     final timeStr =
         _focusedPingTimestamp != null ? _formatTime(_focusedPingTimestamp!) : '';
 
     return GestureDetector(
-      onTap: _reshowFocusPanel,
+      // Swallow body taps (no accidental expand / no fall-through to the map).
+      // Expand only via ↑, close only via ✕ — parity with _buildMinimizedInfoPill.
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.fromLTRB(12, 2, 4, 8),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          color: theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+            color: theme.colorScheme.outline.withValues(alpha: 0.5),
           ),
           boxShadow: [
             BoxShadow(
@@ -7493,59 +7668,118 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             ),
           ],
         ),
-        child: Row(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(width: 8),
-            Text(
-              title,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: Theme.of(context).colorScheme.onSurface,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              timeStr,
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-            if (repeaterCount > 0) ...[
-              const SizedBox(width: 8),
-              Text(
-                '$repeaterCount repeater${repeaterCount != 1 ? 's' : ''}',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+            // Row 1: type icon + title + timestamp + expand/close (each ~44px hit).
+            Row(
+              children: [
+                Icon(icon, color: color, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface,
+                  ),
                 ),
-              ),
-            ],
-            const SizedBox(width: 8),
-            GestureDetector(
-              onTap: _reshowFocusPanel,
-              child: Icon(
-                Icons.keyboard_arrow_up,
-                size: 20,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    timeStr,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                _pillIconButton(Icons.keyboard_arrow_up, _reshowFocusPanel),
+                _pillIconButton(Icons.close, _dismissPingFocus),
+              ],
             ),
-            const SizedBox(width: 4),
-            GestureDetector(
-              onTap: _dismissPingFocus,
-              child: Icon(
-                Icons.close,
-                size: 18,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
+            // Row 2: summary stat chips computed synchronously from the source.
+            _buildFocusPingStats(source),
           ],
         ),
       ),
     );
+  }
+
+  /// Row-2 summary chips for the minimized ping pill, computed synchronously from
+  /// the focused ping [source] (parity with the cell/repeater pill's stats row).
+  /// Best-of (max) SNR/RSSI across all heard repeaters for multi-repeater TX/DISC;
+  /// the single value for RX/TRACE. "Missed" pings show a short miss label.
+  Widget _buildFocusPingStats(Object source) {
+    final missColor = Theme.of(context).colorScheme.onSurfaceVariant;
+    final chips = <Widget>[];
+
+    Widget snrChip(double snr) => _pillStat(
+          Icons.signal_cellular_alt,
+          '${snr.toStringAsFixed(1)} SNR',
+          iconColor: PingColors.snrColor(snr),
+          valueColor: PingColors.snrColor(snr),
+        );
+    Widget rssiChip(int rssi) => _pillStat(
+          Icons.cell_tower,
+          '$rssi dBm',
+          iconColor: PingColors.rssiColor(rssi),
+          valueColor: PingColors.rssiColor(rssi),
+        );
+
+    if (source is TxPing) {
+      final reps = source.heardRepeaters;
+      if (reps.isEmpty) {
+        chips.add(_pillStat(Icons.close, 'Not heard', iconColor: missColor));
+      } else {
+        final direct = reps.where((r) => r.pathHops == null).length;
+        final multi = reps.length - direct;
+        if (direct > 0) {
+          chips.add(_pillStat(Icons.arrow_upward, '$direct direct'));
+        }
+        if (multi > 0) {
+          chips.add(_pillStat(Icons.alt_route, '$multi multi'));
+        }
+        final snrs = reps.map((r) => r.snr).whereType<double>();
+        if (snrs.isNotEmpty) chips.add(snrChip(snrs.reduce(math.max)));
+        final rssis = reps.map((r) => r.rssi).whereType<int>();
+        if (rssis.isNotEmpty) chips.add(rssiChip(rssis.reduce(math.max)));
+      }
+    } else if (source is RxPing) {
+      chips.add(snrChip(source.snr));
+      chips.add(rssiChip(source.rssi));
+      if (source.pathHops.isNotEmpty) {
+        chips.add(_pillStat(Icons.alt_route, '${source.pathHops.length} hops'));
+      }
+    } else if (source is DiscLogEntry) {
+      final nodes = source.discoveredNodes;
+      if (nodes.isEmpty) {
+        chips.add(_pillStat(Icons.close, 'No response', iconColor: missColor));
+      } else {
+        chips.add(_pillStat(Icons.radar,
+            '${nodes.length} node${nodes.length != 1 ? 's' : ''}'));
+        chips.add(snrChip(nodes.map((n) => n.localSnr).reduce(math.max)));
+        chips.add(rssiChip(nodes.map((n) => n.localRssi).reduce(math.max)));
+      }
+    } else if (source is TraceLogEntry) {
+      if (!source.success) {
+        chips.add(_pillStat(Icons.close, 'No response', iconColor: missColor));
+      } else {
+        chips.add(_pillStat(Icons.check_circle, 'Success',
+            iconColor: PingColors.txSuccess));
+        if (source.localSnr != null) chips.add(snrChip(source.localSnr!));
+        if (source.remoteSnr != null) {
+          chips.add(_pillStat(
+              Icons.arrow_upward, 'TX ${source.remoteSnr!.toStringAsFixed(1)}'));
+        }
+        if (source.localRssi != null) chips.add(rssiChip(source.localRssi!));
+      }
+    }
+
+    if (chips.isEmpty) return const SizedBox.shrink();
+    return Wrap(spacing: 14, runSpacing: 6, children: chips);
   }
 
   void _showHistoryMarkerAsLive(PingEventMarker marker) {
@@ -7748,12 +7982,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         : <_ResolvedRepeater>[];
     final hasAmbiguous = resolved.any((r) => r.ambiguous);
 
-    _focusedPingSource = ping;
-
-    // Activate focus mode if the ping was heard by known repeaters
-    if (!fromMinimized && resolved.isNotEmpty) {
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true, via _reshowFocusPanel). _activatePingFocus
+    // engages focus when the ping was heard, or clears any prior focus / open
+    // community view when it wasn't; set _focusedPingSource AFTER it (its missed
+    // branch dismisses a prior ping, which would otherwise clear a source set
+    // earlier).
+    if (!fromMinimized) {
       _activatePingFocus(
           LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+      _focusedPingSource = ping;
+      _minimizePingFocus(ping.timestamp);
+      return;
     }
 
     showModalBottomSheet(
@@ -8270,11 +8510,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       snrValues: [ping.snr],
     );
 
-    _focusedPingSource = ping;
-
-    if (!fromMinimized && resolved.isNotEmpty) {
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true). Set _focusedPingSource AFTER
+    // _activatePingFocus (its missed branch dismisses a prior ping, clearing the
+    // source). RX is always a reception, so it always has located repeater data.
+    if (!fromMinimized) {
       _activatePingFocus(
           LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+      _focusedPingSource = ping;
+      _minimizePingFocus(ping.timestamp);
+      return;
     }
 
     showModalBottomSheet(
@@ -8564,20 +8809,25 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Show DISC ping details popup
   void _showDiscPingDetails(DiscLogEntry entry, {bool fromMinimized = false}) {
-    // Activate focus mode for discovered nodes with known repeater positions
-    _focusedPingSource = entry;
-
-    if (!fromMinimized && entry.discoveredNodes.isNotEmpty) {
-      final resolved = _resolveRepeatersByHexIds(
-        entry.discoveredNodes.map((n) => n.repeaterId).toList(),
-        fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
-        snrValues:
-            entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
-      );
-      if (resolved.isNotEmpty) {
-        _activatePingFocus(
-            LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
-      }
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true). _activatePingFocus engages focus for
+    // located nodes or clears any prior focus / community view (empty list when
+    // nothing was discovered); set _focusedPingSource AFTER it (its missed branch
+    // dismisses a prior ping, which would otherwise clear the source).
+    if (!fromMinimized) {
+      final resolved = entry.discoveredNodes.isNotEmpty
+          ? _resolveRepeatersByHexIds(
+              entry.discoveredNodes.map((n) => n.repeaterId).toList(),
+              fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
+              snrValues:
+                  entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
+            )
+          : const <_ResolvedRepeater>[];
+      _activatePingFocus(
+          LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+      _focusedPingSource = entry;
+      _minimizePingFocus(entry.timestamp);
+      return;
     }
 
     showModalBottomSheet(
@@ -8927,20 +9177,37 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       bool isolate = true,
       bool expand = false,
       Future<RepeaterStats?>? cachedStats}) {
-    // Supersede any currently-minimized popup (clears a prior cell footprint/dim).
-    // No-op on the internal pill<->sheet re-entries (nothing is minimized then).
-    _minimizedInfoPopup?.onClose();
-    // Drop any lingering Feature A cell fan-out fade so it doesn't reappear when
-    // this repeater's isolation is later cleared (the fade is suppressed while a
-    // repeater is isolated, but the set would otherwise linger).
-    _restoreFadedRepeaters();
-
     // Focus this repeater: hide every OTHER repeater while its detail sheet/pill
     // is open (web setSoloCircle parity) and track it as the active selection
-    // (Feature B draw guard + teardown). Restored by _clearRepeaterIsolation on
-    // sheet/pill close or empty-map tap.
-    if (isolate && _isolatedRepeaterId != repeater.id) {
-      _isolatedRepeaterId = repeater.id;
+    // (Feature B draw guard + teardown). Claim it as the active view BEFORE
+    // tearing down any prior view, so the shared focus camera isn't restored
+    // mid-switch (it stays engaged and re-fits to this repeater below). Restored
+    // by _clearRepeaterIsolation on sheet/pill close or empty-map tap.
+    final wasCell = _cellPopupActive;
+    final prevRepeater = _isolatedRepeaterId;
+    if (isolate) _isolatedRepeaterId = repeater.id;
+    _clearMinimizedInfoPopup(); // drop the prior pill widget only
+    if (wasCell) {
+      // Switching from a tile view: tear down its footprint/dim/fade/lines.
+      _clearCellHighlight();
+    } else if (prevRepeater != null && prevRepeater != repeater.id) {
+      // Switching repeater->repeater: tear down the old cells/lines/dim WITHOUT
+      // clearing the (now new) _isolatedRepeaterId via _clearRepeaterIsolation.
+      _clearCoverageLines();
+      _clearCoverageCells();
+      _restoreCoverageBackdropForRepeater();
+    }
+    // Drop any lingering Feature A fade so it doesn't reappear when this
+    // repeater's isolation is later cleared.
+    _restoreFadedRepeaters();
+    // Switching from a minimized ping focus: tear it down so its pill doesn't
+    // linger and overlap this repeater view's pill at the shared bottom slot
+    // (symmetric to _enterPingFocus). When isolating, the repeater view is
+    // already claimed (_isolatedRepeaterId set above), so this dismiss's
+    // _exitFocusCameraIfDone no-ops and the shared focus camera stays engaged.
+    _dismissPingFocus();
+    if (isolate) {
+      _enterFocusCamera(); // save the pre-focus snapshot once; north-up, stop follow
       _syncRepeaterSymbols(context.read<AppStateProvider>());
     }
 
@@ -8989,7 +9256,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           if (mounted &&
               _isolatedRepeaterId == repeater.id &&
               repeater.hasLocation) {
-            _drawRepeaterCoverage(repeater, res.matched, cvd, gridSize);
+            _drawRepeaterCoverage(repeater, res.matched, cvd, gridSize)
+                .then((cells) {
+              if (!mounted || _isolatedRepeaterId != repeater.id) return;
+              // Match ping focus: frame the repeater + its whole coverage
+              // footprint (no-op when it heard nothing — single point).
+              _fitCameraToPoints([
+                LatLng(repeater.lat, repeater.lon),
+                for (final c in cells) LatLng(c.centerLat, c.centerLon),
+              ]);
+            });
           }
           return res.stats;
         }).catchError((Object e) {
