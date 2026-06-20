@@ -390,20 +390,20 @@ class _ResolvedRepeater {
   const _ResolvedRepeater(this.repeater, this.snr, this.ambiguous);
 }
 
-/// A minimized info popup (cell summary or repeater detail) rendered as a
-/// bottom pill the user can tap to re-open. [onReshow] re-presents the sheet;
-/// [onClose] dismisses it and runs any cleanup (e.g. clearing the cell
-/// footprint). Mirrors the ping-focus minimize, but for the tap popups.
+/// A minimized info popup (cell summary or repeater detail) rendered as a 2-row
+/// bottom pill — and the DEFAULT state a tap opens in. [title] is the row-1
+/// identity (icon + name); [statsBuilder] builds the row-2 stat chips (it may
+/// use a FutureBuilder for lazily-fetched values). [onReshow] expands to the
+/// full detail sheet; [onClose] dismisses it and runs any cleanup (e.g. clearing
+/// the cell footprint). Mirrors the ping-focus minimize, but for the tap popups.
 class _MinimizedInfoPopup {
-  final String title;
-  final IconData icon;
-  final Color color;
+  final Widget title;
+  final WidgetBuilder statsBuilder;
   final VoidCallback onReshow;
   final VoidCallback onClose;
   const _MinimizedInfoPopup({
     required this.title,
-    required this.icon,
-    required this.color,
+    required this.statsBuilder,
     required this.onReshow,
     required this.onClose,
   });
@@ -497,6 +497,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // Region boundary overlay toggle (on by default)
   bool _showRegionBorders = true;
 
+  // Repeater pins toggle (on by default). When false, _syncRepeaterSymbols
+  // pushes an empty FeatureCollection so the pins clear without touching the
+  // layer styling (see #347).
+  bool _showRepeaters = true;
+
   // Collapsible map controls in landscape
   bool _mapControlsExpanded = true;
 
@@ -550,6 +555,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // Guards against opening two GRID SUMMARY sheets when both the feature-tap and
   // the onMapClick hit-test fire for the same coverage cell tap.
   bool _cellSummaryShowing = false;
+  // True from a tile tap until the cell popup (pill OR sheet) is closed — gates
+  // drawing the footprint highlight so it isn't drawn after a dismiss. Cleared
+  // in _clearCellHighlight (the teardown for both the pill and the sheet).
+  bool _cellPopupActive = false;
   // Grid size is baked into the tile URL and the CVD palette into the layer
   // paint; a change to either rebuilds the overlay via the build watcher.
   int? _lastAppliedGridSize;
@@ -577,6 +586,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // _showCellFootprint and _clearCellHighlight; gates the opacity restore and
   // suppresses the build-method opacity-sync (which would otherwise un-dim).
   bool _coverageDimmedForCell = false;
+  // Same backdrop dim while a selected repeater's coverage cells/lines are shown
+  // (Feature B, web `drawRepeaterCoverageFromCache` parity). True between
+  // _drawRepeaterCoverage and _clearRepeaterIsolation; gates the opacity restore
+  // and suppresses the build-method opacity-sync.
+  bool _coverageDimmedForRepeater = false;
   static const double _kCellHighlightFadeOpacity = 0.15;
   int _lastAppliedPatchVersion = -1;
   bool _styleLoaded = false;
@@ -640,6 +654,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // no-op removes that hit try/catch) crosses the platform channel and can
   // nudge the symbol-collision pass.
   bool _focusLinesInstalled = false;
+
+  // Community coverage connection lines/cells (tap a tile -> fan out to heard
+  // repeaters; tap a repeater -> its coverage cells + lines). Install-once empty
+  // layers, updated in place via setGeoJsonSource. Separate from the focus-mode
+  // lines (which key off _focusedPingLocation and are rebuilt by
+  // _syncAllAnnotations) so the two features never wipe each other.
+  bool _coverageLinesInstalled = false;
+  bool _coverageCellsInstalled = false;
+  // Set while a tapped cell's fan-out is shown: the repeater ids that heard the
+  // cell's pings. Non-null -> _buildRepeaterFeatureCollection hides every
+  // repeater NOT in the set (web fades-but-keeps; the app hides for consistency
+  // with focus/isolation). Built from the capped endpoints. Null = inactive.
+  Set<String>? _coverageHeardRepeaterIds;
+  // Distance-label pills for the cell fan-out lines (own tracking, mirrors the
+  // focus-mode distance labels but keyed by endpoint lat/lon at 6dp).
+  final Map<String, Symbol> _coverageDistanceLabelSymbols = {};
+  final Set<String> _registeredCoverageLabelImages = {};
+  final Map<String, Size> _registeredCoverageLabelImageSizes = {};
 
   // Native annotation tracking — populated by sync methods.
   // Maps from app-state IDs to MapLibre Symbol/Line objects so we can diff
@@ -727,6 +759,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // Captured on _spiderfy() so _onCameraChanged can detect a zoom delta past
   // _spiderCollapseZoomDelta and collapse (positions become invalid).
   double? _spiderOpenedAtZoom;
+
+  // Repeater isolation — when non-null, ONLY this repeater is shown on the map;
+  // every other repeater is skipped in _buildRepeaterFeatureCollection (web
+  // parity: clicking a repeater hides the rest). Set when a single repeater's
+  // detail sheet opens, cleared when it closes/minimizes or on empty-map tap.
+  String? _isolatedRepeaterId;
 
   // Default center (Ottawa)
   static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
@@ -1549,9 +1587,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             bottom: 16 + MediaQuery.of(context).padding.bottom,
             left: 16,
             right: 16,
-            child: Center(
-              child: _buildMinimizedInfoPill(_minimizedInfoPopup!),
-            ),
+            child: _buildMinimizedInfoPill(_minimizedInfoPopup!),
           ),
 
         // History session pill (bottom, styled like minimized focus panel)
@@ -1800,6 +1836,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         if (gridChanged) {
           appState.clearCoveragePatch();
         }
+        // An open community coverage view (cell fan-out / repeater cells) is
+        // tied to the old grid steps/blob and palette — clear it so it doesn't
+        // render stale geometry/colours over the rebuilt overlay.
+        _clearCoverageConnections();
         _lastAppliedGridSize = prefsForOverlay.coverageGridSize;
         _lastAppliedCvd = prefsForOverlay.colorVisionType;
       }
@@ -1860,6 +1900,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _styleLoaded &&
         _focusedPingLocation == null &&
         !_coverageDimmedForCell &&
+        !_coverageDimmedForRepeater &&
         _lastAppliedCoverageOpacity != null &&
         _lastAppliedCoverageOpacity != wantedOpacity) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1988,6 +2029,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _collapseSpider();
       return; // dismissing the spider shouldn't also open a cell summary
     }
+    // Safety net for a stranded isolation (active but no sheet and no pill
+    // keeping the selection alive). While minimized to a pill, the repeater
+    // stays the active selection, so leave the others hidden — don't restore.
+    if (_isolatedRepeaterId != null && _minimizedInfoPopup == null) {
+      _clearRepeaterIsolation(); // restore hidden repeaters, don't open a cell
+      return;
+    }
+    // Safety net for a stranded Feature A fan-out (faded repeaters + lines but
+    // no pill keeping the cell summary alive) — restore on empty tap.
+    if (_coverageHeardRepeaterIds != null && _minimizedInfoPopup == null) {
+      _clearCoverageConnections();
+      return;
+    }
     // Fallback cell hit-test: some platforms don't dispatch coverage fill-layer
     // taps through onFeatureTapped, so query the coverage layer at the tap point.
     _maybeShowCellSummaryAt(point, coordinates);
@@ -2043,8 +2097,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     // Supersede a currently-minimized popup. If it was a cell, its footprint
     // stays until this tap's own footprint replaces it (no bright flash); if it
-    // was a repeater, just drop the pill.
+    // was a repeater, drop the pill AND restore the hidden repeaters.
     _clearMinimizedInfoPopup();
+    _clearRepeaterIsolation();
+    _cellPopupActive = true;
 
     // Fetch the pings once, keep the ones whose blob covers the tapped cell, and
     // drive BOTH the summary sheet and the footprint highlight off that list.
@@ -2060,11 +2116,42 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // highlightSpotCoverage(points)): the block fills in the dominant colour of
     // the in-blob pings. No pings → no footprint, no dim (web early-return).
     blobPointsFuture.then((pts) {
-      if (!mounted || !_cellSummaryShowing) return;
+      if (!mounted || !_cellPopupActive) return;
       final st = dominantCoverageStatus(pts);
       if (st != null) _showCellFootprint(cell, blob, st);
     }).catchError((Object e) {
       debugWarn('[COVERAGE] cell highlight failed: $e');
+    });
+
+    // Feature A: fan out a dashed line from the cell centre to every UNIQUE
+    // repeater that heard the cell's pings (web `updateAllActiveLines` parity),
+    // hide the repeaters that didn't, and label each line with its distance.
+    // Lines are theme-aware blue (web keys off the basemap; we key off the
+    // Flutter theme). Read brightness before the async gap.
+    final fanColor = Theme.of(context).brightness == Brightness.dark
+        ? '#4da6ff'
+        : '#00008b';
+    blobPointsFuture.then((pts) {
+      if (!mounted || !_cellPopupActive) return;
+      final eps = _capByFarthest(
+        heardEndpointsForCell(pts, lookup,
+            startLat: cell.centerLat, startLon: cell.centerLon),
+        (e) => e.distanceMeters,
+        250,
+        '[COVERAGE] cell fan-out',
+      );
+      final segments = [
+        for (final e in eps) (lat: e.lat, lon: e.lon, color: fanColor)
+      ];
+      _updateCoverageLines(segments, cell.centerLat, cell.centerLon);
+      _syncCoverageDistanceLabels(
+          segments, cell.centerLat, cell.centerLon, isImperial);
+      // Empty -> null restores all repeaters (never hide-all on an empty set).
+      _coverageHeardRepeaterIds =
+          eps.isEmpty ? null : {for (final e in eps) e.repeaterId};
+      _syncRepeaterSymbols(appState);
+    }).catchError((Object e) {
+      debugWarn('[COVERAGE] cell fan-out failed: $e');
     });
 
     final Future<GridSummary?> summaryFuture = blobPointsFuture
@@ -2074,7 +2161,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return null;
     });
 
-    _presentCellSummarySheet(
+    // Open minimized by default — a compact stats pill; tap it to expand to the
+    // full GRID SUMMARY sheet.
+    _minimizeCellSummary(
       cell: cell,
       blob: blob,
       summaryFuture: summaryFuture,
@@ -2094,7 +2183,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     required bool isImperial,
   }) {
     _cellSummaryShowing = true;
-    final pillColor = Theme.of(context).colorScheme.primary;
     showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
@@ -2113,24 +2201,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _cellSummaryShowing = false;
       if (!mounted) return;
       if (result == 'minimized') {
-        _setMinimizedInfoPopup(_MinimizedInfoPopup(
-          title: 'Grid Summary',
-          icon: Icons.grid_on,
-          color: pillColor,
-          onReshow: () {
-            _clearMinimizedInfoPopup();
-            _presentCellSummarySheet(
-              cell: cell,
-              blob: blob,
-              summaryFuture: summaryFuture,
-              isImperial: isImperial,
-            );
-          },
-          onClose: () {
-            _clearMinimizedInfoPopup();
-            _clearCellHighlight();
-          },
-        ));
+        // Collapse back to the stats pill (keep the footprint).
+        _minimizeCellSummary(
+          cell: cell,
+          blob: blob,
+          summaryFuture: summaryFuture,
+          isImperial: isImperial,
+        );
       } else {
         _clearCellHighlight();
       }
@@ -2168,7 +2245,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Spider stays open — users frequently compare stacked repeaters back to
     // back, so collapsing on every selection would be annoying.
     if (layerId == _spiderSymbolLayerId) {
-      _showRepeaterDetailsById(id);
+      // Don't isolate from inside a spider — users compare stacked repeaters
+      // back-to-back, so keep the spread open and all markers visible.
+      _showRepeaterDetailsById(id, isolate: false);
       return;
     }
 
@@ -2441,7 +2520,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Open the repeater detail sheet for a given [repeaterId]. Looks up the
   /// Repeater object from app state and recomputes the duplicate/hopOverride
   /// flags. Used by both direct tap dispatch and the GPS fall-through path.
-  void _showRepeaterDetailsById(String repeaterId) {
+  void _showRepeaterDetailsById(String repeaterId, {bool isolate = true}) {
     if (!mounted) return;
     final appState = context.read<AppStateProvider>();
     final repeater =
@@ -2457,7 +2536,37 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       repeater,
       isDuplicate: isDuplicate,
       regionHopBytesOverride: hopOverride,
+      isolate: isolate,
     );
+  }
+
+  /// Restore all repeaters after a repeater isolation (web-parity "click a
+  /// repeater hides the rest"). No-op if nothing is isolated. No setState —
+  /// nothing in build() reads [_isolatedRepeaterId]; the source is pushed
+  /// imperatively, matching the focus/spider resyncs.
+  void _clearRepeaterIsolation() {
+    if (_isolatedRepeaterId == null) return;
+    _isolatedRepeaterId = null;
+    // Tear down any Feature B coverage cells/lines drawn for the selection and
+    // restore the base coverage tiles it dimmed.
+    _clearCoverageLines();
+    _clearCoverageCells();
+    _restoreCoverageBackdropForRepeater();
+    if (!mounted) return;
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
+  }
+
+  /// Restore the base coverage overlay opacity dimmed by a Feature B repeater
+  /// coverage draw (honours ping focus, which keeps the overlay hidden at 0).
+  /// No-op when not dimmed.
+  void _restoreCoverageBackdropForRepeater() {
+    if (!_coverageDimmedForRepeater) return;
+    _coverageDimmedForRepeater = false;
+    if (!mounted) return;
+    final restore = _focusedPingLocation != null
+        ? 0.0
+        : context.read<AppStateProvider>().preferences.coverageOverlayOpacity;
+    _applyCoverageOverlayOpacity(restore);
   }
 
   Future<void> _onStyleLoaded(AppStateProvider appState) async {
@@ -2527,6 +2636,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // The tap cell-highlight overlay is likewise gone; _addCoverageOverlay
       // re-installs it below.
       _cellHighlightReady = false;
+      // Community coverage line/cell layers + their tracked symbols/images are
+      // also gone with the style; reset so the next draw treats it as fresh.
+      _coverageLinesInstalled = false;
+      _coverageCellsInstalled = false;
+      _coverageHeardRepeaterIds = null;
+      _coverageDistanceLabelSymbols.clear();
+      _registeredCoverageLabelImages.clear();
+      _registeredCoverageLabelImageSizes.clear();
 
       // Disable symbol decluttering on the annotation manager. By default,
       // MapLibre symbol layers hide overlapping icons/labels at lower zoom to
@@ -2903,6 +3020,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// layer renders nothing, and restore the dimmed coverage backdrop. The layer
   /// stays installed (cheap, no churn).
   Future<void> _clearCellHighlight() async {
+    _cellPopupActive = false;
+    // Tear down the Feature A fan-out (lines + distance labels) and restore any
+    // repeaters faded to the heard set whenever the cell summary closes. Also
+    // drop any Feature B cells defensively (cheap no-op when none).
+    _restoreFadedRepeaters();
+    _clearCoverageLines();
+    _clearCoverageCells();
+    _clearCoverageDistanceLabels();
     if (_coverageDimmedForCell) {
       _coverageDimmedForCell = false;
       // Restore the backdrop, honouring ping-focus mode (which keeps it hidden).
@@ -3350,6 +3475,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     final features = <Map<String, dynamic>>[];
     for (final repeater in visible) {
+      // Repeater isolation: while a repeater is focused/selected, hide every
+      // other repeater entirely (skip the feature, so they also drop out of
+      // cluster counts) — same approach as focus mode below. Restored on close
+      // by _clearRepeaterIsolation.
+      if (_isolatedRepeaterId != null && repeater.id != _isolatedRepeaterId) {
+        continue;
+      }
+      // Feature A (tile fan-out): when a tapped cell's heard-repeater set is
+      // active and no single repeater is isolated, hide every repeater that did
+      // NOT hear the cell's pings (the web fades-but-keeps; we hide, matching
+      // focus/isolation). Cleared by _restoreFadedRepeaters. The set holds
+      // lowercased ids (from RepeaterLookup), so compare lowercased.
+      if (_coverageHeardRepeaterIds != null &&
+          _isolatedRepeaterId == null &&
+          !_coverageHeardRepeaterIds!.contains(repeater.id.toLowerCase())) {
+        continue;
+      }
       final isDuplicate = duplicates.contains(repeater.id);
       final statusKey = _repeaterStatusKey(repeater, isDuplicate);
       final isConnected = focusActive &&
@@ -3657,7 +3799,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
     try {
-      final geojson = _buildRepeaterFeatureCollection(appState);
+      // When repeaters are toggled off, push an empty collection so the pins
+      // clear without removing/recreating the styled layers (see #347).
+      final geojson = _showRepeaters
+          ? _buildRepeaterFeatureCollection(appState)
+          : _emptyFeatureCollection();
       // Detailed mode references baked per-chip images — make sure every one is
       // registered before pushing, or the symbol layer would reference a
       // missing icon. No-op in Simplified (features use the pre-registered
@@ -4343,6 +4489,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const _focusLinesAmbiguousLayerId = 'focus-lines-ambiguous-border';
   static const _focusLinesAmbiguousLabelId = 'focus-lines-ambiguous-label';
 
+  // Source/layer IDs for the community coverage connection lines (shared by the
+  // tile fan-out and the repeater coverage view — mutually exclusive in time,
+  // per-feature `color`) and the repeater coverage cells (per-feature fill).
+  static const _coverageLinesSourceId = 'coverage-lines-source';
+  static const _coverageLinesLayerId = 'coverage-lines-layer';
+  static const _coverageCellsSourceId = 'coverage-cells-source';
+  static const _coverageCellsLayerId = 'coverage-cells-layer';
+
   /// Builds and applies the focus-mode dotted polylines that visually connect
   /// a focused ping to each repeater that heard it. Color-coded by SNR;
   /// ambiguous matches get a wider white outline drawn underneath.
@@ -4504,6 +4658,330 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _focusLinesInstalled = true;
     } catch (e) {
       debugError('[MAP] Failed to add focus lines: $e');
+    }
+  }
+
+  // ===========================================================================
+  // Community coverage connection lines + cells (Features A & B)
+  // ===========================================================================
+
+  /// Volume cap shared by both coverage features (user choice: keep the
+  /// FARTHEST). When [items] exceeds [cap], sorts by [dist] DESCENDING and keeps
+  /// the first [cap] (so the longest-reach lines/cells always survive); logs the
+  /// truncation. Returns [items] unchanged when within the cap.
+  List<T> _capByFarthest<T>(
+      List<T> items, double Function(T) dist, int cap, String logTag) {
+    if (items.length <= cap) return items;
+    final sorted = [...items]..sort((a, b) => dist(b).compareTo(dist(a)));
+    debugLog('$logTag truncated ${items.length}->$cap (kept farthest)');
+    return sorted.take(cap).toList();
+  }
+
+  /// Idempotently (re)create the empty coverage connection-line layer
+  /// (data-driven dashed lines, below the repeater chips). Modeled on
+  /// [_ensureCellHighlightLayer].
+  Future<bool> _ensureCoverageLinesLayer() async {
+    if (_coverageLinesInstalled) return true;
+    if (_mapController == null) return false;
+    try {
+      final belowLayer = _clusterLayersReady
+          ? _repeaterIndividualLayerId
+          : _symbolAnnotationLayerId();
+      try {
+        await _mapController!.removeLayer(_coverageLinesLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_coverageLinesSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_coverageLinesSourceId, _emptyFeatureCollection());
+      await _mapController!.addLineLayer(
+        _coverageLinesSourceId,
+        _coverageLinesLayerId,
+        const LineLayerProperties(
+          lineColor: ['get', 'color'],
+          lineOpacity: 0.9,
+          lineWidth: 2.5,
+          lineDasharray: [2, 4],
+          lineCap: 'round',
+        ),
+        belowLayerId: belowLayer,
+      );
+      _coverageLinesInstalled = true;
+      return true;
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-lines layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Idempotently (re)create the empty coverage cells fill layer (Feature B),
+  /// anchored BELOW the lines layer so the lines read on top of the cells.
+  Future<bool> _ensureCoverageCellsLayer() async {
+    if (_coverageCellsInstalled) return true;
+    if (_mapController == null) return false;
+    try {
+      final belowLayer = _coverageLinesInstalled
+          ? _coverageLinesLayerId
+          : (_clusterLayersReady
+              ? _repeaterIndividualLayerId
+              : _symbolAnnotationLayerId());
+      try {
+        await _mapController!.removeLayer(_coverageCellsLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_coverageCellsSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_coverageCellsSourceId, _emptyFeatureCollection());
+      await _mapController!.addFillLayer(
+        _coverageCellsSourceId,
+        _coverageCellsLayerId,
+        const FillLayerProperties(
+          fillColor: ['get', 'fill'],
+          fillOutlineColor: ['get', 'border'],
+          fillOpacity: 0.8,
+        ),
+        belowLayerId: belowLayer,
+      );
+      _coverageCellsInstalled = true;
+      return true;
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-cells layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Draw one dashed connection line per [segments] entry from
+  /// ([startLat],[startLon]) out to each segment's endpoint, coloured by the
+  /// segment's `color` (blue for the tile fan-out, status colour for a repeater).
+  /// Empty list clears the layer.
+  Future<void> _updateCoverageLines(
+      List<({double lat, double lon, String color})> segments,
+      double startLat,
+      double startLon) async {
+    if (_mapController == null || !_styleLoaded) return;
+    if (segments.isEmpty) {
+      await _clearCoverageLines();
+      return;
+    }
+    if (!await _ensureCoverageLinesLayer()) return;
+    final features = <Map<String, dynamic>>[
+      for (final s in segments)
+        {
+          'type': 'Feature',
+          'properties': {'color': s.color},
+          'geometry': {
+            'type': 'LineString',
+            'coordinates': [
+              [startLon, startLat],
+              [s.lon, s.lat],
+            ],
+          },
+        },
+    ];
+    try {
+      await _mapController!.setGeoJsonSource(_coverageLinesSourceId,
+          {'type': 'FeatureCollection', 'features': features});
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-lines set failed: $e');
+    }
+  }
+
+  /// Empty the coverage-lines source so it renders nothing (layer stays).
+  Future<void> _clearCoverageLines() async {
+    if (_mapController == null || !_coverageLinesInstalled) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_coverageLinesSourceId, _emptyFeatureCollection());
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-lines clear failed: $e');
+    }
+  }
+
+  /// Draw the selected repeater's coverage [cells] as status-coloured fills
+  /// (Feature B). [latStep]/[lonStep] size each cell's ring. Empty list clears.
+  Future<void> _updateCoverageCells(List<RepeaterCoverageCell> cells, String cvd,
+      double latStep, double lonStep) async {
+    if (_mapController == null || !_styleLoaded) return;
+    if (cells.isEmpty) {
+      await _clearCoverageCells();
+      return;
+    }
+    if (!await _ensureCoverageCellsLayer()) return;
+    final features = <Map<String, dynamic>>[];
+    for (final c in cells) {
+      final colors = CoverageTilePalette.colorsForStatus(cvd, c.st);
+      final ring = GridCell(c.li, c.lj, latStep, lonStep).blockRing(0);
+      features.add({
+        'type': 'Feature',
+        'properties': {'fill': colors[0], 'border': colors[1]},
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [ring],
+        },
+      });
+    }
+    try {
+      await _mapController!.setGeoJsonSource(_coverageCellsSourceId,
+          {'type': 'FeatureCollection', 'features': features});
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-cells set failed: $e');
+    }
+  }
+
+  /// Empty the coverage-cells source so it renders nothing (layer stays).
+  Future<void> _clearCoverageCells() async {
+    if (_mapController == null || !_coverageCellsInstalled) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_coverageCellsSourceId, _emptyFeatureCollection());
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-cells clear failed: $e');
+    }
+  }
+
+  /// Place a distance-pill label at the midpoint of each coverage fan-out line
+  /// (Feature A). Mirrors [_syncDistanceLabels] but with its own tracking keyed
+  /// by endpoint lat/lon (6dp). Empty list removes all coverage labels.
+  Future<void> _syncCoverageDistanceLabels(
+      List<({double lat, double lon, String color})> segments,
+      double startLat,
+      double startLon,
+      bool isImperial) async {
+    if (_mapController == null || !_styleLoaded) return;
+    if (segments.isEmpty) {
+      await _clearCoverageDistanceLabels();
+      return;
+    }
+    final wanted = <String>{};
+    for (final s in segments) {
+      final key = '${s.lat.toStringAsFixed(6)},${s.lon.toStringAsFixed(6)}';
+      wanted.add(key);
+      final midLat = (startLat + s.lat) / 2;
+      final midLon = (startLon + s.lon) / 2;
+      final meters =
+          GpsService.distanceBetween(startLat, startLon, s.lat, s.lon);
+      final labelText = meters < 1000
+          ? formatMeters(meters, isImperial: isImperial)
+          : formatKilometers(meters / 1000, isImperial: isImperial);
+      final imageName = 'cov-dist-${labelText.hashCode}';
+      if (!_registeredCoverageLabelImages.contains(imageName)) {
+        try {
+          final rendered = await _renderDistanceLabelPng(labelText);
+          await _mapController!.addImage(imageName, rendered.bytes);
+          _registeredCoverageLabelImages.add(imageName);
+          _registeredCoverageLabelImageSizes[imageName] = rendered.size;
+        } catch (e) {
+          debugError('[MAP] render/addImage(coverage label) failed: $e');
+        }
+      }
+      final options = SymbolOptions(
+        geometry: LatLng(midLat, midLon),
+        iconImage: imageName,
+        iconSize: 1.0,
+        iconAnchor: 'center',
+      );
+      final existing = _coverageDistanceLabelSymbols[key];
+      if (existing == null) {
+        try {
+          _coverageDistanceLabelSymbols[key] = await _mapController!
+              .addSymbol(options, {'kind': 'cov-distance'});
+        } catch (e) {
+          debugError('[MAP] addSymbol(coverage distance) failed: $e');
+        }
+      } else {
+        try {
+          await _mapController!.updateSymbol(existing, options);
+        } catch (e) {
+          debugError('[MAP] updateSymbol(coverage distance) failed: $e');
+        }
+      }
+    }
+    final toRemove = _coverageDistanceLabelSymbols.keys
+        .where((k) => !wanted.contains(k))
+        .toList();
+    for (final k in toRemove) {
+      final sym = _coverageDistanceLabelSymbols.remove(k);
+      if (sym != null) {
+        try {
+          await _mapController!.removeSymbol(sym);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Remove all coverage distance-label pills.
+  Future<void> _clearCoverageDistanceLabels() async {
+    if (_mapController == null) return;
+    final toRemove = List.of(_coverageDistanceLabelSymbols.values);
+    _coverageDistanceLabelSymbols.clear();
+    for (final sym in toRemove) {
+      try {
+        await _mapController!.removeSymbol(sym);
+      } catch (_) {}
+    }
+  }
+
+  /// Restore all repeaters hidden by a Feature A fan-out (clears the heard set
+  /// and re-pushes the repeater source). No-op when no fade is active. No
+  /// setState — the source is pushed imperatively, like [_clearRepeaterIsolation].
+  void _restoreFadedRepeaters() {
+    if (_coverageHeardRepeaterIds == null) return;
+    _coverageHeardRepeaterIds = null;
+    if (!mounted) return;
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
+  }
+
+  /// Tear down ALL community coverage visuals (lines, cells, labels, fade).
+  /// The single funnel used by every entry/exit path.
+  Future<void> _clearCoverageConnections() async {
+    _restoreFadedRepeaters();
+    _restoreCoverageBackdropForRepeater();
+    await _clearCoverageLines();
+    await _clearCoverageCells();
+    await _clearCoverageDistanceLabels();
+  }
+
+  /// Feature B draw: render [matched] (the points that heard [repeater]) as
+  /// deduped status-coloured coverage cells plus a status-coloured dashed line
+  /// from the repeater to each cell centre. Caps at the farthest 250. The lines
+  /// layer is ensured BEFORE the cells layer so the lines read on top.
+  Future<void> _drawRepeaterCoverage(Repeater repeater,
+      List<Map<String, dynamic>> matched, String cvd, int gridSize) async {
+    final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
+    final blob = gridSize == 100 ? 1 : 0;
+    // High cap so a repeater's full footprint draws (web parity — it draws all).
+    // Still bounded (farthest-first) to protect against pathological volumes.
+    final cells = _capByFarthest(
+      repeaterCoverageCells(matched, repeater,
+          latStep: steps[0], lonStep: steps[1], blob: blob),
+      (c) => c.distanceMeters,
+      5000,
+      '[COVERAGE] repeater coverage',
+    );
+    if (cells.isEmpty) {
+      await _clearCoverageCells();
+      await _clearCoverageLines();
+      return;
+    }
+    await _ensureCoverageLinesLayer();
+    await _updateCoverageCells(cells, cvd, steps[0], steps[1]);
+    final segments = [
+      for (final c in cells)
+        (
+          lat: c.centerLat,
+          lon: c.centerLon,
+          color: CoverageTilePalette.colorsForStatus(cvd, c.st)[0],
+        ),
+    ];
+    await _updateCoverageLines(segments, repeater.lat, repeater.lon);
+    // Dim the base coverage tiles so the repeater's coloured cells + lines pop
+    // (web `drawRepeaterCoverageFromCache` tile-dim parity). Restored in
+    // _clearRepeaterIsolation. Skip while ping focus already hid the overlay.
+    if (_focusedPingLocation == null) {
+      _coverageDimmedForRepeater = true;
+      await _applyCoverageOverlayOpacity(_kCellHighlightFadeOpacity);
     }
   }
 
@@ -5152,10 +5630,101 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return PingColors.signalBad;
   }
 
-  /// Map controls (always vertical, used inside collapsible wrapper)
+  /// Map controls. Single vertical column in portrait; in landscape the taller
+  /// set is split into two columns so the lower icons don't run off the short
+  /// viewport (hidden under the bottom edge) — see issue #329 follow-up.
   Widget _buildMapControls(AppStateProvider appState) {
     final mapStyle =
         MapStyleExtension.fromString(appState.preferences.mapStyle);
+
+    // Collect the active control buttons (conditionals preserved); dividers are
+    // interleaved later by _stackControlButtons so the two-column split is clean.
+    final buttons = <Widget>[
+      // Map style toggle
+      _buildControlButton(
+        icon: mapStyle.icon,
+        tooltip: 'Map Style: ${mapStyle.label}',
+        onPressed: () => _cycleMapStyle(appState),
+      ),
+      // MeshMapper overlay toggle (only show when zone code available)
+      if (appState.zoneCode != null)
+        _buildControlButton(
+          icon: Icons.layers,
+          tooltip: _showMeshMapperOverlay
+              ? 'Hide Coverage Overlay'
+              : 'Show Coverage Overlay',
+          onPressed: _toggleMeshMapperOverlay,
+          isActive: _showMeshMapperOverlay,
+        ),
+      // Repeater pins toggle (only show when repeaters are present)
+      if (appState.repeaters.isNotEmpty)
+        _buildControlButton(
+          icon: Icons.cell_tower,
+          tooltip: _showRepeaters ? 'Hide Repeaters' : 'Show Repeaters',
+          onPressed: () => _toggleRepeaters(appState),
+          isActive: _showRepeaters,
+        ),
+      // Region boundary toggle (only show when borders available)
+      if (appState.regionBorders.isNotEmpty)
+        _buildControlButton(
+          icon: Icons.fence,
+          tooltip: _showRegionBorders
+              ? 'Hide Region Boundary'
+              : 'Show Region Boundary',
+          onPressed: () => _toggleRegionBorders(appState),
+          isActive: _showRegionBorders,
+        ),
+      // Center on position / toggle auto-follow
+      _buildControlButton(
+        icon: _autoFollow ? Icons.my_location : Icons.location_searching,
+        tooltip: _autoFollow ? 'Following GPS' : 'Center on Position',
+        onPressed:
+            appState.currentPosition != null ? _centerOnPosition : null,
+        isActive: _autoFollow,
+      ),
+      // Always North toggle
+      _buildControlButton(
+        icon: _alwaysNorth ? Icons.navigation : Icons.explore,
+        tooltip: _alwaysNorth
+            ? 'Always North (Click to Rotate with Heading)'
+            : 'Rotating with Heading (Click for Always North)',
+        onPressed: _toggleNorthMode,
+        isActive: !_alwaysNorth,
+      ),
+      // Rotation lock toggle
+      _buildControlButton(
+        icon: _rotationLocked ? Icons.sync_disabled : Icons.rotate_right,
+        tooltip: _rotationLocked ? 'Unlock Rotation' : 'Lock Rotation',
+        onPressed: _toggleRotationLock,
+        isActive: _rotationLocked,
+      ),
+      // Legend button
+      _buildControlButton(
+        icon: Icons.info_outline,
+        tooltip: 'Legend & Info',
+        onPressed: _showLegendPopup,
+      ),
+    ];
+
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+
+    final Widget body;
+    if (isLandscape && buttons.length > 4) {
+      // Split into two side-by-side columns so the set fits vertically.
+      final half = (buttons.length / 2).ceil();
+      body = Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _stackControlButtons(buttons.sublist(0, half)),
+          Container(width: 1, color: Colors.white24),
+          _stackControlButtons(buttons.sublist(half)),
+        ],
+      );
+    } else {
+      body = _stackControlButtons(buttons);
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -5163,75 +5732,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // Controls are below the toggle button, so rounded bottom only
         borderRadius: const BorderRadius.vertical(bottom: Radius.circular(8)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Map style toggle
-          _buildControlButton(
-            icon: mapStyle.icon,
-            tooltip: 'Map Style: ${mapStyle.label}',
-            onPressed: () => _cycleMapStyle(appState),
-          ),
-          // MeshMapper overlay toggle (only show when zone code available)
-          if (appState.zoneCode != null) ...[
-            _buildControlDivider(),
-            _buildControlButton(
-              icon: Icons.layers,
-              tooltip: _showMeshMapperOverlay
-                  ? 'Hide Coverage Overlay'
-                  : 'Show Coverage Overlay',
-              onPressed: _toggleMeshMapperOverlay,
-              isActive: _showMeshMapperOverlay,
-            ),
-          ],
-          // Region boundary toggle (only show when borders available)
-          if (appState.regionBorders.isNotEmpty) ...[
-            _buildControlDivider(),
-            _buildControlButton(
-              icon: Icons.fence,
-              tooltip: _showRegionBorders
-                  ? 'Hide Region Boundary'
-                  : 'Show Region Boundary',
-              onPressed: () => _toggleRegionBorders(appState),
-              isActive: _showRegionBorders,
-            ),
-          ],
-          _buildControlDivider(),
-          // Center on position / toggle auto-follow
-          _buildControlButton(
-            icon: _autoFollow ? Icons.my_location : Icons.location_searching,
-            tooltip: _autoFollow ? 'Following GPS' : 'Center on Position',
-            onPressed:
-                appState.currentPosition != null ? _centerOnPosition : null,
-            isActive: _autoFollow,
-          ),
-          _buildControlDivider(),
-          // Always North toggle
-          _buildControlButton(
-            icon: _alwaysNorth ? Icons.navigation : Icons.explore,
-            tooltip: _alwaysNorth
-                ? 'Always North (Click to Rotate with Heading)'
-                : 'Rotating with Heading (Click for Always North)',
-            onPressed: _toggleNorthMode,
-            isActive: !_alwaysNorth,
-          ),
-          _buildControlDivider(),
-          // Rotation lock toggle
-          _buildControlButton(
-            icon: _rotationLocked ? Icons.sync_disabled : Icons.rotate_right,
-            tooltip: _rotationLocked ? 'Unlock Rotation' : 'Lock Rotation',
-            onPressed: _toggleRotationLock,
-            isActive: _rotationLocked,
-          ),
-          _buildControlDivider(),
-          // Legend button
-          _buildControlButton(
-            icon: Icons.info_outline,
-            tooltip: 'Legend & Info',
-            onPressed: _showLegendPopup,
-          ),
-        ],
-      ),
+      child: body,
+    );
+  }
+
+  /// Stack control buttons vertically with a divider between each (no leading or
+  /// trailing divider), matching the original single-column look.
+  Widget _stackControlButtons(List<Widget> buttons) {
+    final children = <Widget>[];
+    for (var i = 0; i < buttons.length; i++) {
+      if (i > 0) children.add(_buildControlDivider());
+      children.add(buttons[i]);
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: children,
     );
   }
 
@@ -5347,6 +5862,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     } else {
       _removeRegionBorders();
     }
+  }
+
+  void _toggleRepeaters(AppStateProvider appState) {
+    setState(() {
+      _showRepeaters = !_showRepeaters;
+    });
+    // Re-push the repeater source: real features when shown, empty when hidden.
+    _syncRepeaterSymbols(appState);
   }
 
   void _removeRegionBorders() {
@@ -6492,6 +7015,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         repeaters.where((r) => r.repeater.hasLocation).toList(growable: false);
     if (located.isEmpty) return;
 
+    // Session ping-focus and the community coverage views are distinct gestures;
+    // clear any open community fan-out / repeater cells (and their pill/isolation)
+    // so the two don't stack on the map.
+    _clearMinimizedInfoPopup();
+    _clearRepeaterIsolation();
+    _clearCoverageConnections();
+
     // Only save pre-focus state on first activation. When re-activating
     // (e.g. user taps a different ping while already in focus, or expanding
     // from minimized), we keep the original pre-focus snapshot so dismiss
@@ -6641,15 +7171,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// [_buildMinimizedFocusPanel]). Tap (or the up-arrow) re-opens it; the X
   /// closes it and runs its cleanup.
   Widget _buildMinimizedInfoPill(_MinimizedInfoPopup popup) {
+    final theme = Theme.of(context);
     return GestureDetector(
       onTap: popup.onReshow,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          color: theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+            color: theme.colorScheme.outline.withValues(alpha: 0.5),
           ),
           boxShadow: [
             BoxShadow(
@@ -6659,45 +7190,227 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             ),
           ],
         ),
-        child: Row(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(popup.icon, color: popup.color, size: 18),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                popup.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurface,
+            // Row 1: identity + expand/close controls.
+            Row(
+              children: [
+                Expanded(child: popup.title),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: popup.onReshow,
+                  child: Icon(Icons.keyboard_arrow_up,
+                      size: 20, color: theme.colorScheme.onSurfaceVariant),
                 ),
-              ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: popup.onClose,
+                  child: Icon(Icons.close,
+                      size: 18, color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ],
             ),
-            const SizedBox(width: 8),
-            GestureDetector(
-              onTap: popup.onReshow,
-              child: Icon(
-                Icons.keyboard_arrow_up,
-                size: 20,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(width: 4),
-            GestureDetector(
-              onTap: popup.onClose,
-              child: Icon(
-                Icons.close,
-                size: 18,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
+            const SizedBox(height: 8),
+            // Row 2: stat chips (wraps if the row is too narrow).
+            popup.statsBuilder(context),
           ],
         ),
       ),
     );
+  }
+
+  /// One icon+value stat chip for the minimized pill's row 2. [iconColor] tints
+  /// the icon; [valueColor] tints the value (defaults to onSurface).
+  Widget _pillStat(IconData icon, String value,
+      {Color? iconColor, Color? valueColor}) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon,
+            size: 14, color: iconColor ?? theme.colorScheme.onSurfaceVariant),
+        const SizedBox(width: 3),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: valueColor ?? theme.colorScheme.onSurface,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Web GRID SUMMARY / repeater palette colours reused for the pill chips.
+  static const Color _pillGood = Color(0xFF1E7E34);
+  static const Color _pillBad = Color(0xFFBD2130);
+  static const Color _pillDistBlue = Color(0xFF007BFF);
+
+  /// Row-1 identity for the cell pill: grid icon + "Grid Summary".
+  Widget _cellPillTitle() {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.grid_on, size: 16, color: theme.colorScheme.primary),
+        const SizedBox(width: 8),
+        Text('Grid Summary',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface)),
+      ],
+    );
+  }
+
+  /// Row-2 stats for the cell pill: Max Dist · Avg SNR · Avg Noise · Total Pings.
+  Widget _cellPillStats(
+      BuildContext context, Future<GridSummary?> summaryFuture, bool isImperial) {
+    return FutureBuilder<GridSummary?>(
+      future: summaryFuture,
+      builder: (context, snap) {
+        final loading = snap.connectionState != ConnectionState.done;
+        final s = snap.data;
+        final dist = loading
+            ? '…'
+            : (s?.maxDistMeters != null
+                ? formatCoverageDistance(s!.maxDistMeters!, isImperial: isImperial)
+                : 'N/A');
+        final noise =
+            loading ? '…' : (s?.avgNoise != null ? '${s!.avgNoise} dBm' : 'N/A');
+        final total = loading ? '…' : '${s?.total ?? 0}';
+        return Wrap(
+          spacing: 14,
+          runSpacing: 6,
+          children: [
+            _pillStat(Icons.straighten, dist, iconColor: _pillDistBlue),
+            _snrPillStat(loading ? null : s),
+            _pillStat(Icons.graphic_eq, noise),
+            _pillStat(Icons.tag, total),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Avg-SNR pill chip — a signal-bar icon coloured by quality bucket + the
+  /// averaged value (mirrors CellSummarySheet._snrCell). [s] null = still loading.
+  Widget _snrPillStat(GridSummary? s) {
+    final bucket = s?.snrBucket;
+    if (s == null || bucket == null || s.avgSnr == null) {
+      return _pillStat(Icons.signal_cellular_alt, s == null ? '…' : 'N/A');
+    }
+    final IconData icon;
+    final Color color;
+    switch (bucket) {
+      case 'good':
+        icon = Icons.signal_cellular_4_bar;
+        color = _pillGood;
+        break;
+      case 'medium':
+        icon = Icons.signal_cellular_alt;
+        color = const Color(0xFF856404);
+        break;
+      default:
+        icon = Icons.signal_cellular_alt_1_bar;
+        color = _pillBad;
+    }
+    return _pillStat(icon, s.avgSnr!.toStringAsFixed(1),
+        iconColor: color, valueColor: color);
+  }
+
+  /// Row-1 identity for the repeater pill: a status-coloured dot + the name.
+  Widget _repeaterPillTitle(Repeater repeater, Color statusColor) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        // Status as a coloured tower (green = online, grey = stale/offline, plus
+        // the new/ambiguous palette colours). Carries the status that used to be
+        // a word in the stats row, so that row now fits on a single line.
+        Icon(Icons.cell_tower, size: 16, color: statusColor),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            repeater.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Row-2 stats for the repeater pill: Max Range · Hop Bytes · Clock Sync ·
+  /// Last Heard. (Online/offline status is the coloured tower in the title.)
+  /// Max Range comes from the lazy [statsFuture].
+  Widget _repeaterPillStats(
+      BuildContext context,
+      Repeater repeater,
+      Future<RepeaterStats?> statsFuture,
+      String? clockSkew,
+      bool isImperial) {
+    final clockOk = clockSkew == null;
+    final lastHeard = repeater.lastHeard > 0 ? daysAgo(repeater.lastHeard) : 'N/A';
+    return FutureBuilder<RepeaterStats?>(
+      future: statsFuture,
+      builder: (context, snap) {
+        final loading = snap.connectionState != ConnectionState.done;
+        final stats = snap.data;
+        final range = loading
+            ? '…'
+            : (stats?.maxRangeMeters != null
+                ? formatCoverageDistance(stats!.maxRangeMeters!,
+                    isImperial: isImperial)
+                : 'N/A');
+        return Wrap(
+          spacing: 14,
+          runSpacing: 6,
+          children: [
+            _pillStat(Icons.open_in_full, range, iconColor: _pillDistBlue),
+            _pillStat(Icons.swap_horiz, '${repeater.hopBytes}B'),
+            _pillStat(Icons.schedule, clockOk ? 'Synced' : 'Off',
+                iconColor: clockOk ? _pillGood : _pillBad,
+                valueColor: clockOk ? _pillGood : _pillBad),
+            _pillStat(Icons.history, lastHeard),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Show the cell GRID SUMMARY as a minimized pill (the default a tile tap
+  /// opens in). Tapping it expands to the full sheet; closing clears the
+  /// footprint. Reused on the initial tap and when the sheet is minimized.
+  void _minimizeCellSummary({
+    required GridCell cell,
+    required int blob,
+    required Future<GridSummary?> summaryFuture,
+    required bool isImperial,
+  }) {
+    _setMinimizedInfoPopup(_MinimizedInfoPopup(
+      title: _cellPillTitle(),
+      statsBuilder: (ctx) => _cellPillStats(ctx, summaryFuture, isImperial),
+      onReshow: () {
+        _clearMinimizedInfoPopup();
+        _presentCellSummarySheet(
+          cell: cell,
+          blob: blob,
+          summaryFuture: summaryFuture,
+          isImperial: isImperial,
+        );
+      },
+      onClose: () {
+        _clearMinimizedInfoPopup();
+        _clearCellHighlight();
+      },
+    ));
   }
 
   Widget _buildMinimizedFocusPanel() {
@@ -8171,11 +8884,32 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     );
   }
 
-  /// Show repeater details popup
+  /// Show repeater details. Opens minimized as a stats pill by default; tapping
+  /// the pill re-enters with [expand] true to show the full detail sheet, and
+  /// the sheet's minimize re-enters with [expand] false. [cachedStats] carries
+  /// the lazily-fetched stats across those toggles so they aren't re-fetched.
   void _showRepeaterDetails(Repeater repeater,
-      {bool isDuplicate = false, int? regionHopBytesOverride}) {
+      {bool isDuplicate = false,
+      int? regionHopBytesOverride,
+      bool isolate = true,
+      bool expand = false,
+      Future<RepeaterStats?>? cachedStats}) {
     // Supersede any currently-minimized popup (clears a prior cell footprint/dim).
+    // No-op on the internal pill<->sheet re-entries (nothing is minimized then).
     _minimizedInfoPopup?.onClose();
+    // Drop any lingering Feature A cell fan-out fade so it doesn't reappear when
+    // this repeater's isolation is later cleared (the fade is suppressed while a
+    // repeater is isolated, but the set would otherwise linger).
+    _restoreFadedRepeaters();
+
+    // Focus this repeater: hide every OTHER repeater while its detail sheet/pill
+    // is open (web setSoloCircle parity) and track it as the active selection
+    // (Feature B draw guard + teardown). Restored by _clearRepeaterIsolation on
+    // sheet/pill close or empty-map tap.
+    if (isolate && _isolatedRepeaterId != repeater.id) {
+      _isolatedRepeaterId = repeater.id;
+      _syncRepeaterSymbols(context.read<AppStateProvider>());
+    }
 
     // Determine icon badge color based on primary status
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
@@ -8206,14 +8940,29 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
         hopBytes: appState.effectiveHopBytes);
     final isImperial = appState.preferences.isImperial;
-    final Future<RepeaterStats?> statsFuture = appState
-        .fetchRepeaterCoveragePoints(prefix: repeater.id)
-        .then<RepeaterStats?>(
-            (pts) => RepeaterStats.fromCoverage(pts, repeater, lookup))
-        .catchError((Object e) {
-      debugWarn('[COVERAGE] repeater stats failed: $e');
-      return null;
-    });
+    final cvd = appState.preferences.colorVisionType;
+    final gridSize = appState.preferences.coverageGridSize;
+    final Future<RepeaterStats?> statsFuture = cachedStats ??
+        appState
+            .fetchRepeaterCoveragePoints(prefix: repeater.id)
+            .then<RepeaterStats?>((pts) {
+          final res =
+              RepeaterStats.fromCoverageWithPoints(pts, repeater, lookup);
+          // Feature B: draw this repeater's coverage cells + status-coloured
+          // connection lines (web `drawRepeaterCoverageFromCache` parity). Only
+          // on the first fetch (cachedStats == null reaches here), and only if
+          // this repeater is still the isolated selection — guards a fast
+          // repeater switch during the network fetch — and has a known location.
+          if (mounted &&
+              _isolatedRepeaterId == repeater.id &&
+              repeater.hasLocation) {
+            _drawRepeaterCoverage(repeater, res.matched, cvd, gridSize);
+          }
+          return res.stats;
+        }).catchError((Object e) {
+          debugWarn('[COVERAGE] repeater stats failed: $e');
+          return null;
+        });
 
     final fingerprintShort =
         repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
@@ -8221,6 +8970,30 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ? repeater.hexId.substring(0, 8).toUpperCase()
         : repeater.hexId.toUpperCase();
     final clockSkew = humanizeClockSkew(repeater.timeOffset);
+
+    // Open minimized by default — a compact stats pill; tap it to expand to the
+    // full detail sheet. Isolation (others hidden) persists across pill<->sheet.
+    if (!expand) {
+      _setMinimizedInfoPopup(_MinimizedInfoPopup(
+        title: _repeaterPillTitle(repeater, statusColor),
+        statsBuilder: (ctx) => _repeaterPillStats(
+            ctx, repeater, statsFuture, clockSkew, isImperial),
+        onReshow: () {
+          _clearMinimizedInfoPopup();
+          _showRepeaterDetails(repeater,
+              isDuplicate: isDuplicate,
+              regionHopBytesOverride: regionHopBytesOverride,
+              isolate: false,
+              expand: true,
+              cachedStats: statsFuture);
+        },
+        onClose: () {
+          _clearMinimizedInfoPopup();
+          _clearRepeaterIsolation();
+        },
+      ));
+      return;
+    }
 
     showModalBottomSheet<String>(
       context: context,
@@ -8234,12 +9007,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       builder: (context) => Container(
         padding: EdgeInsets.fromLTRB(
             20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Header with icon badge (containing ID) and name
-            Row(
+        // Scrollable so the content can't overflow on shorter screens — this
+        // (non-scroll-controlled) bottom sheet caps height to ~9/16 of the
+        // screen, and the detail card is occasionally taller than that.
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Header with icon badge (containing ID) and name
+              Row(
               children: [
                 // Icon badge with hex ID (mirrors map marker)
                 Builder(builder: (context) {
@@ -8375,22 +9152,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       Text(formatDateWithAgo(repeater.lastHeard),
                           style: const TextStyle(fontSize: 13)),
                     ),
-                  // Clock-skew warning
-                  if (clockSkew != null) ...[
+                  // Clock-skew warning — single compact row, e.g. "Clock is
+                  // 1.2 days ahead" (was two rows / a long sentence).
+                  if (clockSkew != null)
                     _repRow(
                       context,
                       Icons.warning_amber_rounded,
-                      const Text('Repeater time is not set correctly',
-                          style: TextStyle(fontSize: 13)),
+                      Text('Clock is $clockSkew',
+                          style: const TextStyle(fontSize: 13)),
                       color: Colors.red.shade400,
                     ),
-                    _repRow(
-                      context,
-                      null,
-                      Text(clockSkew, style: const TextStyle(fontSize: 13)),
-                      color: Colors.red.shade400,
-                    ),
-                  ],
                   // First heard
                   if (repeater.createdAt != null)
                     _repRow(
@@ -8450,22 +9221,25 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             ),
           ],
         ),
+        ),
       ),
     ).then((result) {
       if (!mounted) return;
       if (result == 'minimized') {
-        _setMinimizedInfoPopup(_MinimizedInfoPopup(
-          title: repeater.name,
-          icon: Icons.cell_tower,
-          color: iconColor,
-          onReshow: () {
-            _clearMinimizedInfoPopup();
-            _showRepeaterDetails(repeater,
-                isDuplicate: isDuplicate,
-                regionHopBytesOverride: regionHopBytesOverride);
-          },
-          onClose: _clearMinimizedInfoPopup,
-        ));
+        // Collapse back to the stats pill. The selection (and its coverage
+        // cells/lines + tile dim) persists throughout pill<->sheet; it's torn
+        // down only on a real close. Reuse the already-fetched stats so the pill
+        // doesn't re-fetch (and doesn't redraw the coverage).
+        _showRepeaterDetails(repeater,
+            isDuplicate: isDuplicate,
+            regionHopBytesOverride: regionHopBytesOverride,
+            isolate: false,
+            expand: false,
+            cachedStats: statsFuture);
+      } else {
+        // Dismissed for real (X / swipe / barrier tap): clear the coverage
+        // cells/lines and restore the dimmed coverage tiles.
+        _clearRepeaterIsolation();
       }
     });
   }
