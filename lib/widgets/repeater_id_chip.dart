@@ -43,38 +43,65 @@ class RepeaterIdChip extends StatelessWidget {
             ? fontSize - 1.0 // 4-char IDs (2-byte)
             : fontSize; // 2-char IDs (1-byte)
 
-    final child = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          repeaterId,
-          softWrap: false,
-          overflow: TextOverflow.clip,
-          style: TextStyle(
-            fontSize: effectiveFontSize,
-            fontWeight: FontWeight.w600,
-            fontFamily: 'monospace',
-            color: Theme.of(context).colorScheme.onSurface,
-          ),
-        ),
-        const SizedBox(width: 2),
-        Icon(
-          Icons.info_outline,
-          size: fontSize - 1,
-          color: isAmbiguous
-              ? const Color(0xFFF59E0B)
-              : Theme.of(context)
-                  .colorScheme
-                  .onSurfaceVariant
-                  .withValues(alpha: 0.5),
-        ),
-      ],
+    final text = Text(
+      repeaterId,
+      softWrap: false,
+      overflow: TextOverflow.clip,
+      style: TextStyle(
+        fontSize: effectiveFontSize,
+        fontWeight: FontWeight.w600,
+        fontFamily: 'monospace',
+        color: Theme.of(context).colorScheme.onSurface,
+      ),
+    );
+    final icon = Icon(
+      Icons.info_outline,
+      size: fontSize - 1,
+      color: isAmbiguous
+          ? const Color(0xFFF59E0B)
+          : Theme.of(context)
+              .colorScheme
+              .onSurfaceVariant
+              .withValues(alpha: 0.5),
     );
 
+    // Fixed-width form: the box can be narrower than the ID's intrinsic width
+    // (long 3-byte IDs), so wrap the text in Flexible to let it shrink/clip and
+    // avoid a sub-pixel RenderFlex overflow. Safe here because the SizedBox
+    // bounds the Row's width.
     if (width != null) {
-      return SizedBox(width: width, child: child);
+      return SizedBox(
+        width: width,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(child: text),
+            const SizedBox(width: 2),
+            icon,
+          ],
+        ),
+      );
     }
-    return child;
+
+    // Intrinsic-width form: usually laid out under unbounded width (e.g. as a
+    // non-flex child of another Row), where a Flexible child would throw — but
+    // it can also land inside a Flexible/bounded Row (the DISC node column),
+    // where a non-flex text overflows on long 3-byte IDs. Probe the incoming
+    // constraint: shrink/clip the text only when the parent bounds our width,
+    // otherwise keep it non-flex so it sizes to its content.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final bounded = constraints.maxWidth.isFinite;
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            bounded ? Flexible(child: text) : text,
+            const SizedBox(width: 2),
+            icon,
+          ],
+        );
+      },
+    );
   }
 
   /// Show a dialog with matching repeater names for the given [repeaterId].
