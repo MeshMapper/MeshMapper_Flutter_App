@@ -1051,15 +1051,77 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (p.longitude < minLon) minLon = p.longitude;
       if (p.longitude > maxLon) maxLon = p.longitude;
     }
-    final bounds = LatLngBounds(
-      southwest: LatLng(minLat, minLon),
-      northeast: LatLng(maxLat, maxLon),
-    );
 
+    // Leave room for the bottom sheet/pill that accompanies focus views.
     final bottomPad = MediaQuery.of(context).size.height * 0.4;
+    _animateFitBounds(
+      minLat: minLat,
+      maxLat: maxLat,
+      minLon: minLon,
+      maxLon: maxLon,
+      leftPad: 60,
+      topPad: 60,
+      rightPad: 60,
+      bottomPad: bottomPad,
+    );
+  }
+
+  /// Fit the camera to a lat/lon box, guarding the two inputs MapLibre will
+  /// choke on: a degenerate (zero-area) box and edge padding that exceeds the
+  /// map's rendered size. Either yields a non-finite zoom that propagates into
+  /// MapLibre's native `unproject` and aborts the app with an uncaught C++
+  /// `LatLng` throw (SIGABRT) — the same failure mode as an invalid coordinate,
+  /// which a plain lat/lon validity check does not catch. A degenerate box falls
+  /// back to a plain center+zoom move; padding is clamped to the live map size.
+  void _animateFitBounds({
+    required double minLat,
+    required double maxLat,
+    required double minLon,
+    required double maxLon,
+    double leftPad = 60,
+    double topPad = 60,
+    double rightPad = 60,
+    double bottomPad = 60,
+  }) {
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
+    final centerLat = (minLat + maxLat) / 2;
+    final centerLon = (minLon + maxLon) / 2;
+
+    // A single point (or coincident cluster) has no span to frame — center on it
+    // instead of asking MapLibre to fit a zero-area box.
+    if (isDegenerateBounds(minLat, maxLat, minLon, maxLon)) {
+      _animateToPositionWithZoom(
+          LatLng(centerLat, centerLon), 16.0 - _zoomEpsilon);
+      return;
+    }
+
+    // Belt-and-suspenders: never hand MapLibre a non-finite corner.
+    if (!isValidLatLng(minLat, minLon) || !isValidLatLng(maxLat, maxLon)) {
+      debugWarn('[MAP] Skipping fit-bounds with invalid corners '
+          '($minLat,$minLon)-($maxLat,$maxLon)');
+      return;
+    }
+
+    final size = context.size ?? MediaQuery.of(context).size;
+    final pad = clampFitPadding(
+        leftPad, topPad, rightPad, bottomPad, size.width, size.height);
+
     _mapController!.animateCamera(
-      CameraUpdate.newLatLngBounds(bounds,
-          left: 60, top: 60, right: 60, bottom: bottomPad),
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLon),
+          northeast: LatLng(maxLat, maxLon),
+        ),
+        left: pad.left,
+        top: pad.top,
+        right: pad.right,
+        bottom: pad.bottom,
+      ),
       duration: const Duration(milliseconds: 500),
     );
   }
@@ -5573,18 +5635,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (p.longitude! > maxLon) maxLon = p.longitude!;
     }
 
-    _mapController!.animateCamera(
-      CameraUpdate.newLatLngBounds(
-        LatLngBounds(
-          southwest: LatLng(minLat, minLon),
-          northeast: LatLng(maxLat, maxLon),
-        ),
-        left: 60,
-        top: 60,
-        right: 60,
-        bottom: 60,
-      ),
-      duration: const Duration(milliseconds: 500),
+    _animateFitBounds(
+      minLat: minLat,
+      maxLat: maxLat,
+      minLon: minLon,
+      maxLon: maxLon,
     );
   }
 
