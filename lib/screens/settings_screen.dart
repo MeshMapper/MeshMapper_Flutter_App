@@ -2869,11 +2869,83 @@ class _OfflineSessionTile extends StatelessWidget {
     required this.onDownload,
   });
 
+  bool get _hasSummary =>
+      (session.placementCounts?.isNotEmpty ?? false) ||
+      ((session.tooFarRegion ?? 0) > 0);
+
+  /// e.g. "DSA 88 · EMA 157 · too far 3"
+  String _placementSummary() {
+    final parts = <String>[];
+    final pc = session.placementCounts;
+    if (pc != null && pc.isNotEmpty) {
+      final entries = pc.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      parts.addAll(entries.map((e) => '${e.key} ${e.value}'));
+    }
+    final tf = session.tooFarRegion ?? 0;
+    if (tf > 0) parts.add('too far $tf');
+    return parts.join(' · ');
+  }
+
+  void _showSummaryDialog(BuildContext context) {
+    final pc = session.placementCounts ?? <String, int>{};
+    final tf = session.tooFarRegion ?? 0;
+    final entries = pc.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Upload Summary'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(session.filename,
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            if (entries.isEmpty)
+              const Text('No regional placement recorded.')
+            else
+              ...entries.map((e) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(e.key,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600)),
+                        Text('${e.value} pings'),
+                      ],
+                    ),
+                  )),
+            if (tf > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '$tf ping(s) dropped — more than 50 km outside every region',
+                  style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isUploaded = session.uploaded;
 
     return ListTile(
+      onTap: (isUploaded && _hasSummary)
+          ? () => _showSummaryDialog(context)
+          : null,
       leading: Icon(
         isUploaded ? Icons.cloud_done : Icons.cloud_off,
         color: isUploaded ? Colors.green : Colors.orange,
@@ -2884,9 +2956,9 @@ class _OfflineSessionTile extends StatelessWidget {
         children: [
           Text('${session.pingCount} pings • ${session.displayDate}'),
           if (isUploaded)
-            const Text(
-              'Uploaded',
-              style: TextStyle(
+            Text(
+              _hasSummary ? 'Uploaded · ${_placementSummary()}' : 'Uploaded',
+              style: const TextStyle(
                   color: Colors.green,
                   fontSize: 12,
                   fontWeight: FontWeight.w500),

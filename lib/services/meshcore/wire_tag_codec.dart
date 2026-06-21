@@ -106,6 +106,14 @@ class WireTagCodec {
   /// fallback (still coord-free, just not key-protected).
   static String encode(String sessionId, int counter, String? key) {
     final parts = sessionId.split('-');
+    // Defensive guard: offline-upload ids ("offline-YYYYMMDD-NNNN") are passive-only and must
+    // never be wire-tag encoded — parts[0] would be the literal "offline", not a region code.
+    // The offline flow never calls encode() (only the live TX path does); this protects against
+    // an accidental future caller and a malformed id (which would otherwise RangeError on parts[2]).
+    if (parts.length < 3 || parts[0].toLowerCase() == 'offline') {
+      throw ArgumentError(
+          'Cannot wire-tag encode an offline / non-region session id: $sessionId');
+    }
     final v = _regionPack(parts[0]) * _pow25 +
         int.parse(parts[2]) * _pow11 +
         counter;
