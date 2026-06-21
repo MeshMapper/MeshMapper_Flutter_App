@@ -18,6 +18,9 @@ class OfflineSession {
   final double? powerLevel; // TX power level (watts) captured at record time
   final String? appVersion; // App version captured at record time
   final bool uploaded; // Track upload status
+  final Map<String, int>?
+      placementCounts; // Per-IATA counts the server routed this upload into
+  final int? tooFarRegion; // Pings dropped for being >50km outside every region
 
   OfflineSession({
     required this.filename,
@@ -32,6 +35,8 @@ class OfflineSession {
     this.powerLevel,
     this.appVersion,
     this.uploaded = false,
+    this.placementCounts,
+    this.tooFarRegion,
   });
 
   /// Create from stored JSON
@@ -49,6 +54,9 @@ class OfflineSession {
       powerLevel: (json['powerLevel'] as num?)?.toDouble(),
       appVersion: json['appVersion'] as String?,
       uploaded: json['uploaded'] as bool? ?? false,
+      placementCounts: (json['placementCounts'] as Map?)
+          ?.map((k, v) => MapEntry(k.toString(), (v as num).toInt())),
+      tooFarRegion: json['tooFarRegion'] as int?,
     );
   }
 
@@ -67,6 +75,8 @@ class OfflineSession {
       'powerLevel': powerLevel,
       'appVersion': appVersion,
       'uploaded': uploaded,
+      'placementCounts': placementCounts,
+      'tooFarRegion': tooFarRegion,
     };
   }
 
@@ -75,6 +85,8 @@ class OfflineSession {
     bool? uploaded,
     Map<String, dynamic>? data,
     int? pingCount,
+    Map<String, int>? placementCounts,
+    int? tooFarRegion,
   }) {
     return OfflineSession(
       filename: filename,
@@ -89,6 +101,8 @@ class OfflineSession {
       powerLevel: powerLevel,
       appVersion: appVersion,
       uploaded: uploaded ?? this.uploaded,
+      placementCounts: placementCounts ?? this.placementCounts,
+      tooFarRegion: tooFarRegion ?? this.tooFarRegion,
     );
   }
 
@@ -325,15 +339,24 @@ class OfflineSessionService {
     }
   }
 
-  /// Mark a session as uploaded without deleting it
-  Future<void> markAsUploaded(String filename) async {
+  /// Mark a session as uploaded without deleting it. Optionally records the
+  /// per-region placement summary + too-far count returned by the server.
+  Future<void> markAsUploaded(
+    String filename, {
+    Map<String, int>? placementCounts,
+    int? tooFarRegion,
+  }) async {
     final index = _sessions.indexWhere((s) => s.filename == filename);
     if (index == -1) {
       debugLog('[OFFLINE] Session not found for marking uploaded: $filename');
       return;
     }
 
-    _sessions[index] = _sessions[index].copyWith(uploaded: true);
+    _sessions[index] = _sessions[index].copyWith(
+      uploaded: true,
+      placementCounts: placementCounts,
+      tooFarRegion: tooFarRegion,
+    );
     await _saveSessions();
     debugLog('[OFFLINE] Marked session as uploaded: $filename');
   }

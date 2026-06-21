@@ -4982,6 +4982,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     var uploadedCount = 0;
     final totalBatches = (pings.length + batchSize - 1) ~/ batchSize;
 
+    // Accumulate the server's per-region placement summary across all batches so the uploaded
+    // session can show where its pings landed (e.g. "DSA 88 · EMA 157 · too far 3"). Offline
+    // uploads route each ping to its own region server-side; these come back per batch.
+    final Map<String, int> placementTotals = {};
+    var tooFarTotal = 0;
+    void accumulatePlacement(Map<String, dynamic> resp) {
+      final pc = resp['placement_counts'];
+      if (pc is Map) {
+        pc.forEach((k, v) {
+          final n = (v is int) ? v : (int.tryParse('$v') ?? 0);
+          placementTotals[k.toString()] = (placementTotals[k.toString()] ?? 0) + n;
+        });
+      }
+      final tf = resp['too_far_region'];
+      if (tf is int) {
+        tooFarTotal += tf;
+      } else if (tf != null) {
+        tooFarTotal += int.tryParse('$tf') ?? 0;
+      }
+    }
+
     // Backoff (seconds) for session-propagation / transient errors. The first batch
     // absorbs the session-propagation delay, so it gets a much longer budget than
     // later batches (which only see a session error if it genuinely expired/revoked).
@@ -4996,7 +5017,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final backoff = i == 0 ? firstBatchBackoff : laterBatchBackoff;
 
       var result =
-          await _apiService.uploadBatchWithSessionId(batch, offlineSessionId);
+          await _apiService.uploadBatchWithSessionId(batch, offlineSessionId,
+              onResponse: accumulatePlacement);
 
       // Retry only session-propagation / transient errors. nonRetryable
       // (data/zone/key) errors are NOT retried — we stop and preserve instead.
@@ -5013,7 +5035,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         onProgress?.call('Batch $batchNum/$totalBatches (retry ${retry + 1})');
         await Future.delayed(Duration(seconds: delay));
         result =
-            await _apiService.uploadBatchWithSessionId(batch, offlineSessionId);
+            await _apiService.uploadBatchWithSessionId(batch, offlineSessionId,
+              onResponse: accumulatePlacement);
       }
 
       if (result == UploadResult.success) {
@@ -5051,7 +5074,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final remainingPings = pings.length - uploadedCount;
 
     if (remainingPings <= 0) {
-      await _offlineSessionService.markAsUploaded(filename);
+      await _offlineSessionService.markAsUploaded(
+        filename,
+        placementCounts: placementTotals.isNotEmpty ? placementTotals : null,
+        tooFarRegion: tooFarTotal,
+      );
       debugLog(
           '[OFFLINE] Session complete: $uploadedCount uploaded from $filename');
       notifyListeners();

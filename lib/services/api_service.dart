@@ -1230,8 +1230,9 @@ class ApiService {
   /// Returns UploadResult only — does NOT call _clearSession(), onSessionError, or onMaintenanceMode
   Future<UploadResult> uploadBatchWithSessionId(
     List<Map<String, dynamic>> pings,
-    String sessionId,
-  ) async {
+    String sessionId, {
+    void Function(Map<String, dynamic> response)? onResponse,
+  }) async {
     if (pings.isEmpty) return UploadResult.success;
 
     try {
@@ -1243,6 +1244,9 @@ class ApiService {
       }
 
       if (result['success'] == true) {
+        // Surface the server's per-batch placement_counts / too_far_region
+        // (offline routing) so the caller can accumulate an upload summary.
+        onResponse?.call(result);
         debugLog('[API] Offline upload batch SUCCESS: ${pings.length} items');
         return UploadResult.success;
       }
