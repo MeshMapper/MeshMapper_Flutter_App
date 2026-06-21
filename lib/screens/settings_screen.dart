@@ -2259,7 +2259,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       switch (result) {
         case OfflineUploadResult.success:
-          message = 'Uploaded: $filename';
+          message = 'Upload Success';
           backgroundColor = Colors.green;
           break;
         case OfflineUploadResult.notFound:
@@ -2273,6 +2273,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         case OfflineUploadResult.authFailed:
           message = 'Authentication failed - Advert your device on the mesh';
           backgroundColor = Colors.red;
+          break;
+        case OfflineUploadResult.networkError:
+          message = 'Network error - tap again to retry';
+          backgroundColor = Colors.orange;
           break;
         case OfflineUploadResult.gpsRequired:
           message = 'GPS required - enable location services to upload';
