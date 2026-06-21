@@ -39,5 +39,13 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      # Clang module verifier builds each pod's module in isolation, where the
+      # `Flutter` module isn't on the search path. Swift plugins (e.g.
+      # disk_space_plus) import Flutter in their generated -Swift.h, so the
+      # verifier fails with "module 'Flutter' not found". Disable it for pods.
+      # (Xcode's "Update to recommended settings" silently turns this on.)
+      config.build_settings['ENABLE_MODULE_VERIFIER'] = 'NO'
+    end
   end
 end
