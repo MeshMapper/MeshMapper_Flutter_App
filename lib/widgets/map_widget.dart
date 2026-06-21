@@ -710,6 +710,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // this, every sync re-pushed ALL accumulated symbols (O(n)/event), which
   // made marker/ping display lag grow with session length. See _syncCoverageSymbols.
   final Map<String, String> _coverageSymbolSig = {};
+  // Per-key render order: a monotonic counter assigned on first sight, so a
+  // newer symbol always sorts above an older one. Replaces a timestamp-derived
+  // sort key that overflowed float32 (the native symbol-sort-key) and quantized
+  // recent pings into ~4s buckets, stacking simultaneous RX unpredictably.
+  final Map<String, int> _coverageZIndex = {};
+  int _coverageZCounter = 0;
   final Map<String, Symbol> _distanceLabelSymbols =
       {}; // key: focused repeater id
   // Per focused-repeater metadata used by the collision-avoidance reflow:
@@ -2828,6 +2834,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _gpsSymbol = null;
       _coverageSymbols.clear();
       _coverageSymbolSig.clear();
+      // The native SymbolManager is rebuilt empty here, so the next sync re-adds
+      // every symbol via addSymbol. Drop the stale z-order map so re-added keys
+      // get fresh (higher) counter values and stay monotonic with re-creation
+      // order — but keep _coverageZCounter climbing (never reset it).
+      _coverageZIndex.clear();
       _distanceLabelSymbols.clear();
       // Distance-label companions: the native side wipes registered images on
       // style reload, so the "already registered" cache must be cleared too or
@@ -4432,22 +4443,26 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       '${type}_${ts.millisecondsSinceEpoch}_'
       '${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
 
-  /// Fixed base epoch for coverage-marker z-ordering. Keeps [_recencyZIndex]
-  /// small enough to stay exact in the native float32 symbol sort-key (integers
-  /// are exact up to 16,777,216).
-  static final DateTime _kZBaseEpoch = DateTime.utc(2025, 1, 1);
-
-  /// Render/tap z-order for a coverage marker: seconds since [_kZBaseEpoch], so a
-  /// more-recent ping always sorts above (renders on top of, and is tapped in
-  /// preference to) an older one — globally, across TX/RX/DISC/Trace.
+  /// Render/tap z-order for a coverage marker: a monotonic counter assigned
+  /// once per [_coverageKey], so a newer symbol always renders on top of (and
+  /// wins the topmost-first tap hit-test over) an older overlapping one.
   ///
   /// The annotation manager's symbol layer uses `symbol-sort-key: ["get",
   /// "zIndex"]`; with `icon-allow-overlap = true` a higher sort key overlaps a
-  /// lower one. Setting this also flips `symbol-z-order: auto` off its default
-  /// `viewport-y` (southernmost-on-top) fallback. It's a pure function of the
-  /// ping's own timestamp, so existing symbols never need re-pushing — the
-  /// incremental-sync skip path (gated on the icon/size signature) is untouched.
-  int _recencyZIndex(DateTime ts) => ts.difference(_kZBaseEpoch).inSeconds;
+  /// lower one (and flips `symbol-z-order: auto` off its `viewport-y` default).
+  ///
+  /// Assign-once → an existing symbol's key never changes value, so the
+  /// incremental-sync skip path never needs to re-push it. The counter stays
+  /// well under 2^24, the exact-integer limit of the native float32 sort-key —
+  /// the previous timestamp-in-seconds key had grown to ~46M, where float32
+  /// quantizes to multiples of 4, so pings within ~4s collided on one sort key
+  /// and stacked in undefined order (the RX burst bug this replaces).
+  ///
+  /// NOTE: within a single sync, brand-new keys are numbered in iteration order
+  /// (TX→RX→DISC→Trace, each oldest→newest); cross-type ties in the same ~250ms
+  /// window are cosmetic (different icons) and intentionally not pre-sorted.
+  int _zIndexFor(String key) =>
+      _coverageZIndex.putIfAbsent(key, () => ++_coverageZCounter);
 
   /// Diff-syncs native coverage symbols (TX/RX/DISC/Trace) against app state.
   /// One symbol per ping, image varies by type/success state, opacity reflects
@@ -4509,7 +4524,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               // Recency-ordered sort key: the most recent ping renders on top
               // and wins the native topmost-first tap hit-test, so an older
               // overlapping marker is never selected in its place.
-              zIndex: _recencyZIndex(ts),
+              zIndex: _zIndexFor(key),
             ),
             {'kind': type, 'id': idForMetadata},
           );
@@ -4621,6 +4636,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final key in toRemove) {
       final sym = _coverageSymbols.remove(key);
       _coverageSymbolSig.remove(key);
+      _coverageZIndex.remove(key);
       if (sym != null) {
         try {
           await _mapController!.removeSymbol(sym);
