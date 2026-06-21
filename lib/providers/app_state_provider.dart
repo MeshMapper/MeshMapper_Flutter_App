@@ -81,8 +81,11 @@ enum OfflineUploadResult {
   /// Session data is invalid or empty
   invalidSession,
 
-  /// API authentication failed
+  /// API authentication failed (device not registered / genuine rejection)
   authFailed,
+
+  /// Network/timeout error reaching the API (not an auth rejection) — retryable
+  networkError,
 
   /// Some pings failed to upload
   partialFailure,
@@ -4698,6 +4701,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final pings = _apiQueueService.getAndClearOfflinePings();
     if (pings.isEmpty) {
       debugLog('[APP] No offline pings to save');
+      // Still break the auto-save tracker so the next offline session starts a
+      // fresh file instead of appending to the previously tracked session.
+      // No-op when nothing is tracked.
+      _offlineSessionService.finalizeCurrentSession();
       return;
     }
 
@@ -4707,7 +4714,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         ? _originalDeviceName
         : (_meshCoreConnection?.selfInfo?.name ??
             connectedDeviceName?.replaceFirst('MeshCore-', ''));
-    await _offlineSessionService.saveSession(
+    // Finalize the in-progress session (created by periodic auto-save) in place
+    // rather than creating a new one — otherwise the auto-saved session and this
+    // final save become two identical sessions at the same time. updateCurrentSession
+    // creates a fresh session only when no auto-save has run yet.
+    await _offlineSessionService.updateCurrentSession(
       pings,
       devicePublicKey: _devicePublicKey,
       deviceName: offlineDeviceName,
@@ -4899,27 +4910,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog(
         '[OFFLINE] Authenticating for offline upload with device: $deviceName '
         '(model: $uploadModel, power: ${uploadPower}w, ver: $uploadVersion)');
-    final authResult = await _apiService.requestAuth(
-      reason: 'connect',
-      publicKey: publicKey,
-      who: deviceName,
-      appVersion: uploadVersion,
-      power: uploadPower,
-      iataCode: zoneCode ?? _preferences.iataCode,
-      model: uploadModel,
-      radioFreq: session.radioConfig,
-      lat: _currentPosition?.latitude,
-      lon: _currentPosition?.longitude,
-      accuracyMeters: _currentPosition?.accuracy,
-      offlineMode: true,
-      skipSessionStore: true,
-    );
+    // Retry the auth on transient network/timeout errors — requestAuth returns null
+    // on a TimeoutException. A single slow first request shouldn't abort the upload
+    // and surface a misleading "auth failed" (mirrors the batch-upload retry below).
+    const authRetryBackoff = [2, 4]; // seconds, after the initial attempt
+    Map<String, dynamic>? authResult;
+    for (var attempt = 0;; attempt++) {
+      authResult = await _apiService.requestAuth(
+        reason: 'connect',
+        publicKey: publicKey,
+        who: deviceName,
+        appVersion: uploadVersion,
+        power: uploadPower,
+        iataCode: zoneCode ?? _preferences.iataCode,
+        model: uploadModel,
+        radioFreq: session.radioConfig,
+        lat: _currentPosition?.latitude,
+        lon: _currentPosition?.longitude,
+        accuracyMeters: _currentPosition?.accuracy,
+        offlineMode: true,
+        skipSessionStore: true,
+      );
+      if (authResult != null) break; // got a response (success OR a real rejection)
+      if (attempt >= authRetryBackoff.length) break; // retries exhausted
+      final delay = authRetryBackoff[attempt];
+      debugWarn(
+          '[OFFLINE] Auth network error, retry ${attempt + 1}/${authRetryBackoff.length} after ${delay}s');
+      onProgress?.call('Authenticating (retry ${attempt + 1})...');
+      await Future.delayed(Duration(seconds: delay));
+    }
 
     Map<String, dynamic>? effectiveAuth = authResult;
 
     if (authResult == null) {
-      debugError('[OFFLINE] Auth failed: network error');
-      return OfflineUploadResult.authFailed;
+      debugError('[OFFLINE] Auth failed: network error after retries');
+      return OfflineUploadResult.networkError;
     }
 
     if (authResult['success'] != true) {
@@ -4946,8 +4971,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           skipSessionStore: true,
         );
 
-        if (registerResult == null || registerResult['success'] != true) {
-          final regReason = registerResult?['reason'] as String? ?? 'unknown';
+        if (registerResult == null) {
+          debugError('[OFFLINE] Stage 2 registration network error');
+          return OfflineUploadResult.networkError;
+        }
+        if (registerResult['success'] != true) {
+          final regReason = registerResult['reason'] as String? ?? 'unknown';
           debugError('[OFFLINE] Stage 2 registration failed: $regReason');
           return OfflineUploadResult.authFailed;
         }
