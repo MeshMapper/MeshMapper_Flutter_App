@@ -433,10 +433,17 @@ class ApiService {
           _rxAllowed = data['rx_allowed'] == true;
           _sessionExpiresAt = data['expires_at'] as int?;
 
-          // TX wire-tag key + per-session ping counter (counter resets on a fresh /auth).
-          // Log only receipt + length — NEVER the raw key (debug logs are uploadable).
+          // TX wire-tag key + per-session ping counter. The counter RESUMES from the server's
+          // resume_counter when our session was reused (force-close + reconnect): resetting to 0
+          // here would re-mint wire-tags identical to the pre-restart pings, which the subscriber
+          // + coverage dedup then silently drop. Absent (new session / old server) -> 0, the
+          // original behaviour. Log only receipt + length — NEVER the raw key (uploadable logs).
           _wireKey = data['wire_key'] as String?;
-          _pingCounter = 0;
+          final resumeCounter = (data['resume_counter'] as num?)?.toInt() ?? 0;
+          _pingCounter = resumeCounter;
+          if (resumeCounter > 0) {
+            debugLog('[AUTH] resumed ping counter at $resumeCounter (reused session)');
+          }
           if (_wireKey != null) {
             debugLog('[AUTH] wire-tag key received (len=${_wireKey!.length})');
           } else {
