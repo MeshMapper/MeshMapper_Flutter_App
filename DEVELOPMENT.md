@@ -457,12 +457,39 @@ Key packages used in this project:
 - `flutter_blue_plus`: Mobile Bluetooth (Android/iOS)
 - `flutter_web_bluetooth`: Web Bluetooth (Chrome/Edge)
 - `geolocator`: GPS/Location
-- `maplibre_gl`: Map rendering (MapLibre GL vector tiles via OpenFreeMap)
+- `maplibre_gl`: Map rendering (MapLibre GL vector tiles via OpenFreeMap) — **vendored & patched**, see below
 - `hive`: Local storage
 - `provider`: State management
 - `http`: API requests
 - `pointycastle`: Encryption (AES-ECB, SHA-256)
 - `usb_serial`: USB Serial communication on Android (USB OTG)
+
+### Vendored `maplibre_gl` (`third_party/maplibre_gl`)
+
+`maplibre_gl` is consumed from an in-repo copy of the pub.dev `0.25.0` release via
+`dependency_overrides` in `pubspec.yaml`, **not** from pub. The ONLY delta from upstream is a
+native camera-viewport guard.
+
+**Why:** MapLibre's transform unprojects against the live viewport. When the GL surface is
+degenerate/zero-sized (e.g. a launch where tiles never finish loading, so the surface never renders
+a real frame), the very first animated `flyTo`/`setCamera` makes `unproject` produce NaN, and
+`mbgl::LatLng`'s constructor throws an **uncaught C++ `std::domain_error` → SIGABRT**. That throw
+crosses the Obj-C++→Swift/JNI boundary and **cannot be caught from Dart**, so the only place it can
+be reliably stopped is inside the plugin's camera handlers.
+
+**The patch:** the `camera#animate` / `camera#move` / `camera#ease` cases in
+`MapLibreMapController.swift` (iOS) and `MapLibreMapController.java` (Android) bail (completing the
+method-channel result so the Dart `await` returns) when the map view has no usable size
+(`bounds.width/height < 1` / `getWidth()/getHeight() < 1`). Search the patch with the tag
+`MESHMAPPER GUARD`.
+
+The Dart side (`map_widget.dart`) is defense-in-depth: `_mapHasRenderedOnce` (set on the first
+`onMapIdle`) is folded into `_canAnimateCamera`, so no programmatic camera move is even attempted
+until the map has rendered once; the one-shot initial GPS zoom re-attempts on later ticks instead of
+burning. See the `_canAnimateCamera` getter and `_onMapIdle`.
+
+**On upgrade:** re-apply the `MESHMAPPER GUARD` blocks to the new plugin version (or drop the
+override if upstream gains an equivalent guard).
 
 ## Development Workflow Requirements
 

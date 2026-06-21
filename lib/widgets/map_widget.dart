@@ -453,9 +453,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // after resume lets the surface reach a valid state first.
   AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
   bool _cameraAnimationReady = false;
+
+  // Set true the first time the map reports idle (`_onMapIdle`). The map only
+  // goes idle AFTER it has actually rendered a frame / loaded tiles, so this is
+  // the throw-safe Dart signal that the native viewport is non-degenerate. The
+  // one-frame `_cameraAnimationReady` latch above proved insufficient: a bad
+  // launch (tiles never load → viewport stays degenerate for the whole session)
+  // kept _cameraAnimationReady=true yet still aborted the very first flyTo. Until
+  // the map renders, every programmatic camera move is held (and the one-shot
+  // initial zoom re-attempts on later ticks instead of burning). The native
+  // viewport guard in the vendored maplibre_gl plugin is the final backstop for
+  // the case where the map reports idle on a still-degenerate surface.
+  bool _mapHasRenderedOnce = false;
+
   bool get _canAnimateCamera =>
       _appLifecycleState == AppLifecycleState.resumed &&
-      _cameraAnimationReady;
+      _cameraAnimationReady &&
+      _mapHasRenderedOnce;
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = false; // Disabled by default - users often zoom out first
@@ -1427,7 +1441,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
 
       // Auto-follow: bundle pan, zoom, and bearing into one animateCamera call.
-      if (_autoFollow && _isMapReady && _cameraAnimationReady) {
+      // Gate on _canAnimateCamera (not just _cameraAnimationReady) so the first
+      // follow tick is also held until the map has rendered once — same backstop
+      // as the initial zoom against the degenerate-viewport flyTo abort.
+      if (_autoFollow && _isMapReady && _canAnimateCamera) {
         final newPosition = center;
         if (_lastGpsPosition == null ||
             _lastGpsPosition!.latitude != newPosition.latitude ||
@@ -2969,6 +2986,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// that the new tiles have rendered.
   void _onMapIdle() {
     _tileLoadTimeoutTimer?.cancel();
+
+    // First idle = the GL surface has rendered → the native viewport is now
+    // valid and camera animations are safe (see _mapHasRenderedOnce). Nudge a
+    // rebuild so the deferred one-shot initial zoom (held while the map was not
+    // yet rendered) re-attempts via build()'s _handleGpsPosition safety-net.
+    if (!_mapHasRenderedOnce && mounted) {
+      _mapHasRenderedOnce = true;
+      debugLog('[MAP] First map idle — camera animations enabled');
+      setState(() {});
+    }
+
     if (_consecutiveTileLoadFailures > 0 && mounted) {
       if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold) {
         debugLog('[MAP] Tiles recovered after $_consecutiveTileLoadFailures consecutive load failures');

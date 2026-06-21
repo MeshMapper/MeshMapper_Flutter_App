@@ -18,3 +18,7 @@ linter:
 analyzer:
   errors:
     invalid_annotation_target: ignore
+  exclude:
+    # Vendored, patched copy of maplibre_gl (see pubspec.yaml dependency_overrides).
+    # Analyze it under its own options, not ours.
+    - third_party/**
