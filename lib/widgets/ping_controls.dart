@@ -7,13 +7,90 @@ import '../services/ping_service.dart';
 import '../utils/debug_logger_io.dart';
 import 'repeater_picker_sheet.dart';
 
+/// Fields the ping-control widgets depend on for their enabled/label state.
+/// Used with `context.select` so the controls rebuild ONLY when one of these
+/// changes — not on every GPS / noise-floor / battery `notifyListeners()`
+/// (~1–2 Hz during wardriving). Timer (countdown) values are deliberately
+/// excluded; they update via the inner `ListenableBuilder(timerListenable)`
+/// in each widget. Keep this in sync with the `appState.*` reads in the build
+/// bodies below — a missing field means a button can go stale while idle.
+typedef _ControlsDeps = ({
+  PingValidation pingValidation,
+  PingValidation manualValidation,
+  PingValidation autoValidation,
+  bool autoPingEnabled,
+  AutoMode autoMode,
+  bool isTargetedModeRunning,
+  bool hybridModeEnabled,
+  bool isPendingDisable,
+  bool isPingSending,
+  bool isAutoPingStarting,
+  bool isPingInProgress,
+  bool isConnected,
+  bool offlineMode,
+  bool txAllowed,
+  bool externalAntenna,
+  bool externalAntennaSet,
+  bool isPowerSet,
+  bool floodTrafficEnabled,
+  bool hasTargetRepeaterId,
+});
+
+_ControlsDeps _controlsDepsOf(AppStateProvider s) {
+  final prefs = s.preferences;
+  final targetId = s.targetRepeaterId;
+  return (
+    pingValidation: s.pingValidation,
+    manualValidation: s.manualPingValidation,
+    autoValidation: s.autoModeValidation,
+    autoPingEnabled: s.autoPingEnabled,
+    autoMode: s.autoMode,
+    isTargetedModeRunning: s.isTargetedModeRunning,
+    hybridModeEnabled: prefs.hybridModeEnabled,
+    isPendingDisable: s.isPendingDisable,
+    isPingSending: s.isPingSending,
+    isAutoPingStarting: s.isAutoPingStarting,
+    isPingInProgress: s.isPingInProgress,
+    isConnected: s.isConnected,
+    offlineMode: s.offlineMode,
+    txAllowed: s.txAllowed,
+    externalAntenna: prefs.externalAntenna,
+    externalAntennaSet: prefs.externalAntennaSet,
+    isPowerSet:
+        prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
+    floodTrafficEnabled: s.floodTrafficEnabled,
+    hasTargetRepeaterId: targetId != null && targetId.isNotEmpty,
+  );
+}
+
+/// Subset of provider state the Trace Mode section depends on.
+typedef _TargetedDeps = ({
+  bool isTargetedModeRunning,
+  int traceHopBytes,
+  String? targetRepeaterId,
+  bool isConnected,
+  bool hasRepeaters,
+});
+
+_TargetedDeps _targetedDepsOf(AppStateProvider s) => (
+      isTargetedModeRunning: s.isTargetedModeRunning,
+      traceHopBytes: s.traceHopBytes,
+      targetRepeaterId: s.targetRepeaterId,
+      isConnected: s.isConnected,
+      hasRepeaters: s.repeaters.isNotEmpty,
+    );
+
 /// Modern ping control panel with icon-based buttons and animated status
 class PingControls extends StatelessWidget {
   const PingControls({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when control-relevant state changes — NOT on every GPS /
+    // noise-floor / battery notify. Countdown values update via the inner
+    // ListenableBuilder(timerListenable) below, so they're excluded here.
+    context.select<AppStateProvider, _ControlsDeps>(_controlsDepsOf);
+    final appState = context.read<AppStateProvider>();
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
@@ -35,6 +112,8 @@ class PingControls extends StatelessWidget {
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState
         .isPendingDisable; // Disable pending, waiting for RX window to complete
+    final isAutoStarting = appState
+        .isAutoPingStarting; // True while an auto mode is starting (pre-first-notify)
     final cooldownActive = appState
         .cooldownTimer.isRunning; // Shared cooldown after disabling Active Mode
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
@@ -212,6 +291,7 @@ class PingControls extends StatelessWidget {
                           : const Color(0xFF6366F1), // indigo-500
                   enabled: !isPendingDisable &&
                       !isTargetedRunning &&
+                      !isAutoStarting &&
                       ((isTxModeRunning ||
                               (canStartAuto &&
                                   !isPassiveModeRunning &&
@@ -271,6 +351,7 @@ class PingControls extends StatelessWidget {
                         !isTxModeRunning &&
                         !isTargetedRunning &&
                         !isPendingDisable &&
+                        !isAutoStarting &&
                         !isPingSending &&
                         !rxWindowActive &&
                         !cooldownActive &&
@@ -557,7 +638,9 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when Trace-relevant state changes (not on GPS/noise/battery).
+    context.select<AppStateProvider, _TargetedDeps>(_targetedDepsOf);
+    final appState = context.read<AppStateProvider>();
     final colorScheme = Theme.of(context).colorScheme;
     return ListenableBuilder(
       listenable: appState.timerListenable,
@@ -774,7 +857,9 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when control-relevant state changes (not on GPS/noise/battery).
+    context.select<AppStateProvider, _ControlsDeps>(_controlsDepsOf);
+    final appState = context.read<AppStateProvider>();
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
@@ -794,6 +879,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     final isTargetedRunning = appState.isTargetedModeRunning;
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState.isPendingDisable;
+    final isAutoStarting = appState.isAutoPingStarting;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
     final manualCooldownActive = appState
@@ -880,6 +966,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
     final activeModeEnabled = !isPendingDisable &&
         !isTargetedRunning &&
+        !isAutoStarting &&
         ((isTxModeRunning ||
                 (canStartAuto &&
                     !isPassiveModeRunning &&
@@ -896,6 +983,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             !isTxModeRunning &&
             !isTargetedRunning &&
             !isPendingDisable &&
+            !isAutoStarting &&
             !isPingSending &&
             !rxWindowActive &&
             !cooldownActive &&
@@ -1340,7 +1428,9 @@ class LandscapePingControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when control-relevant state changes (not on GPS/noise/battery).
+    context.select<AppStateProvider, _ControlsDeps>(_controlsDepsOf);
+    final appState = context.read<AppStateProvider>();
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
@@ -1360,6 +1450,7 @@ class LandscapePingControls extends StatelessWidget {
     final isTargetedRunning = appState.isTargetedModeRunning;
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState.isPendingDisable;
+    final isAutoStarting = appState.isAutoPingStarting;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
     final manualCooldownActive = appState
@@ -1454,6 +1545,7 @@ class LandscapePingControls extends StatelessWidget {
                           : const Color(0xFF6366F1), // indigo-500
                   enabled: !isPendingDisable &&
                       !isTargetedRunning &&
+                      !isAutoStarting &&
                       ((isTxModeRunning ||
                               (canStartAuto &&
                                   !isPassiveModeRunning &&
@@ -1498,6 +1590,7 @@ class LandscapePingControls extends StatelessWidget {
                         !isTxModeRunning &&
                         !isTargetedRunning &&
                         !isPendingDisable &&
+                        !isAutoStarting &&
                         !isPingSending &&
                         !rxWindowActive &&
                         !cooldownActive &&
