@@ -748,8 +748,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _coveragePatchCells.remove(_coveragePatchCells.keys.first);
       }
       _coveragePatchVersion++;
+      // Status histogram of the patched cells (st = server-rendered status category),
+      // so a debug log carries hard proof of what the server actually rendered for the
+      // user's own pings (e.g. st={1:3,2:5}) — see the "tiles not green is server-side" note.
+      final stHist = <int, int>{};
+      for (final cell in patched) {
+        stHist[cell.st] = (stHist[cell.st] ?? 0) + 1;
+      }
+      final stSummary = (stHist.entries.toList()
+            ..sort((a, b) => a.key.compareTo(b.key)))
+          .map((e) => '${e.key}:${e.value}')
+          .join(',');
       debugLog(
-          '[COVERAGE] Patched ${patched.length} cell(s) at your position onto the overlay (attempt $attempt)');
+          '[COVERAGE] Patched ${patched.length} cell(s) at your position onto the overlay (attempt $attempt) st={$stSummary}');
       notifyListeners();
     } else {
       debugLog(
