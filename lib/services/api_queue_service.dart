@@ -579,11 +579,15 @@ class ApiQueueService {
       // Convert to API format
       final pings = items.map((item) => item.toApiJson()).toList();
 
-      // Log each item with external_antenna value
+      // Log each item with external_antenna value. Token-mode TX entries also log their
+      // wire_tag + ping_counter so a debug log self-documents any tag collision/drop.
       for (int i = 0; i < items.length; i++) {
         final item = items[i];
+        final tagInfo = item.wireTag != null
+            ? ', wire_tag=${item.wireTag}, ping_counter=${item.pingCounter}'
+            : '';
         debugLog(
-            '[API QUEUE] Item ${i + 1}/${items.length}: type=${item.type}, external_antenna=${item.externalAntenna}');
+            '[API QUEUE] Item ${i + 1}/${items.length}: type=${item.type}, external_antenna=${item.externalAntenna}$tagInfo');
       }
 
       final memoryCount = memoryItems.length;
