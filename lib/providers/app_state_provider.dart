@@ -191,6 +191,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? _idleAutoStopReference;
   static const Duration _autoStopIdleTimeout = Duration(minutes: 30);
   bool _isPingSending = false; // True immediately when ping button clicked
+  bool _autoPingStarting =
+      false; // True while an auto mode is starting (before the first notify)
   int _queueSize = 0;
   int? _currentNoiseFloor;
   int? _currentBatteryPercent;
@@ -490,6 +492,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get autoPingEnabled => _autoPingEnabled;
   AutoMode get autoMode => _autoMode;
   bool get isPingSending => _isPingSending;
+  bool get isAutoPingStarting => _autoPingStarting;
   bool get isPingInProgress =>
       _pingService?.pingInProgress ??
       false; // True during entire ping + RX window (for auto pings)
@@ -3945,24 +3948,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     }
 
-    // Check session validity before starting (skip in offline mode)
-    if (!_preferences.offlineMode) {
-      final sessionCheck = await _checkSessionBeforeAction();
-      if (!sessionCheck) return false;
+    // Ignore re-taps while a ping is already being sent (prevents the
+    // double-tap / concurrent-heartbeat storm during the session check)
+    if (_isPingSending) {
+      debugLog('[PING] Ignoring tap — ping already sending');
+      return false;
     }
 
-    // Reset idle disconnect timer (user is actively pinging)
-    _startIdleDisconnectTimer();
-
-    // Set sending state immediately for instant UI feedback
+    // Set sending state immediately for instant UI feedback, BEFORE the
+    // (awaited, network) session check so the button locks the moment it's tapped
     _isPingSending = true;
     notifyListeners();
 
-    debugLog('[PING] Sending manual TX ping');
     try {
+      // Check session validity before starting (skip in offline mode)
+      if (!_preferences.offlineMode) {
+        final sessionCheck = await _checkSessionBeforeAction();
+        if (!sessionCheck) return false;
+      }
+
+      // Reset idle disconnect timer (user is actively pinging)
+      _startIdleDisconnectTimer();
+
+      debugLog('[PING] Sending manual TX ping');
       return await _pingService!.sendTxPing(manual: true);
     } finally {
-      // Clear sending state when done (RX window timer will show listening state)
+      // Clear sending state on every path: session-check failure, exception,
+      // or success (RX window timer takes over showing the listening state)
       _isPingSending = false;
       notifyListeners();
     }
@@ -4075,115 +4087,131 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
       }
     } else {
-      // Cancel idle disconnect timer — auto-ping keeps the session active
-      _cancelIdleDisconnectTimer();
+      // Ignore re-taps while a start is already in flight (prevents the
+      // double-tap / concurrent-heartbeat storm during the session check)
+      if (_autoPingStarting) return false;
 
-      // Check session validity before starting (skip in offline mode)
-      if (!_preferences.offlineMode) {
-        final sessionCheck = await _checkSessionBeforeAction();
-        if (!sessionCheck) return false;
-      }
+      // Set starting state immediately for instant UI feedback, BEFORE the
+      // (awaited, network) session check so the buttons lock the moment it's tapped
+      _autoPingStarting = true;
+      notifyListeners();
 
-      // Block starting if shared cooldown is active (TX modes only)
-      // Passive Mode is listening only and can start during cooldown
-      if (isTxMode && _cooldownTimer.isRunning) {
-        debugLog(
-            '[${mode.name.toUpperCase()} MODE] Start blocked by shared cooldown');
-        return false;
-      }
+      try {
+        // Cancel idle disconnect timer — auto-ping keeps the session active
+        _cancelIdleDisconnectTimer();
 
-      // Stop any existing mode first
-      if (_autoPingEnabled) {
-        await _pingService!.forceDisableAutoPing();
-        // Stop TX echo tracking to prevent late timer callbacks
-        _pingService!.stopEchoTracking();
-        _rxLogger?.stopWardriving(trigger: 'mode_switch');
-        await BackgroundServiceManager.stopService();
-        // Stop countdown timers when switching modes
-        _autoPingTimer.stop();
-        _rxWindowTimer.stop();
-        // Clear top-heard overlay on mode switch
-        _clearOverlayState();
-        // Save offline session if offline mode is enabled
-        if (_preferences.offlineMode) {
-          await _saveOfflineSession();
+        // Check session validity before starting (skip in offline mode)
+        if (!_preferences.offlineMode) {
+          final sessionCheck = await _checkSessionBeforeAction();
+          if (!sessionCheck) return false;
         }
-        // End existing noise floor session before starting new mode
-        await _endNoiseFloorSession();
-      }
 
-      // Start new mode
-      debugLog('[PING] Starting auto mode: ${mode.name}');
-      _autoMode = mode;
-
-      // Set interval from user preferences before starting
-      final intervalMs = _preferences.autoPingInterval * 1000;
-      _pingService!.setAutoPingInterval(intervalMs);
-      debugLog(
-          '[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
-
-      final started = await _pingService!.enableAutoPing(
-        passiveMode: isPassive,
-        hybridMode: isHybrid,
-        targetedMode: isTargeted,
-        targetRepeaterId: isTargeted ? _targetRepeaterId : null,
-      );
-      if (!started) {
-        // Blocked by cooldown or already enabled
-        if (_pingService!.isInCooldown()) {
+        // Block starting if shared cooldown is active (TX modes only)
+        // Passive Mode is listening only and can start during cooldown
+        if (isTxMode && _cooldownTimer.isRunning) {
           debugLog(
-              '[PING] Auto mode start blocked by cooldown (${_pingService!.getRemainingCooldownSeconds()}s remaining)');
-        } else {
-          debugLog('[PING] Auto mode start blocked');
+              '[${mode.name.toUpperCase()} MODE] Start blocked by shared cooldown');
+          return false;
         }
-        return false;
-      }
-      // Start RX wardriving for all modes
-      // Reference: state.rxTracking.isWardriving = true in wardrive.js
-      _rxLogger?.startWardriving();
-      _autoPingEnabled = true;
-      _idleAutoStopReference = DateTime.now();
 
-      // Start noise floor session for graph tracking
-      final sessionLabel = isPassive
-          ? 'passive'
-          : isHybrid
-              ? 'hybrid'
-              : isTargeted
-                  ? 'targeted'
-                  : 'active';
-      _startNoiseFloorSession(sessionLabel);
+        // Stop any existing mode first
+        if (_autoPingEnabled) {
+          await _pingService!.forceDisableAutoPing();
+          // Stop TX echo tracking to prevent late timer callbacks
+          _pingService!.stopEchoTracking();
+          _rxLogger?.stopWardriving(trigger: 'mode_switch');
+          await BackgroundServiceManager.stopService();
+          // Stop countdown timers when switching modes
+          _autoPingTimer.stop();
+          _rxWindowTimer.stop();
+          // Clear top-heard overlay on mode switch
+          _clearOverlayState();
+          // Save offline session if offline mode is enabled
+          if (_preferences.offlineMode) {
+            await _saveOfflineSession();
+          }
+          // End existing noise floor session before starting new mode
+          await _endNoiseFloorSession();
+        }
 
-      // Enable heartbeat for all auto-ping modes (not offline mode)
-      // Heartbeat sends keepalive ~1 min before session expiry (4 min timer)
-      // Active/Hybrid pings renew session when moving, but heartbeat is the
-      // safety net when stationary (25m distance filter skips TX pings)
-      if (!_preferences.offlineMode) {
-        _apiService.enableHeartbeat(
-          gpsProvider: () {
-            // Provide current GPS coordinates for heartbeat (matching wardrive.js)
-            final pos = _gpsService.lastPosition;
-            if (pos == null) return null;
-            return (lat: pos.latitude, lon: pos.longitude);
-          },
+        // Start new mode
+        debugLog('[PING] Starting auto mode: ${mode.name}');
+        _autoMode = mode;
+
+        // Set interval from user preferences before starting
+        final intervalMs = _preferences.autoPingInterval * 1000;
+        _pingService!.setAutoPingInterval(intervalMs);
+        debugLog(
+            '[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
+
+        final started = await _pingService!.enableAutoPing(
+          passiveMode: isPassive,
+          hybridMode: isHybrid,
+          targetedMode: isTargeted,
+          targetRepeaterId: isTargeted ? _targetRepeaterId : null,
         );
-        debugLog('[HEARTBEAT] Enabled for ${mode.name} Mode');
-      }
+        if (!started) {
+          // Blocked by cooldown or already enabled
+          if (_pingService!.isInCooldown()) {
+            debugLog(
+                '[PING] Auto mode start blocked by cooldown (${_pingService!.getRemainingCooldownSeconds()}s remaining)');
+          } else {
+            debugLog('[PING] Auto mode start blocked');
+          }
+          return false;
+        }
+        // Start RX wardriving for all modes
+        // Reference: state.rxTracking.isWardriving = true in wardrive.js
+        _rxLogger?.startWardriving();
+        _autoPingEnabled = true;
+        _idleAutoStopReference = DateTime.now();
 
-      // Start background service for continuous operation
-      final modeName = isPassive
-          ? 'Passive Mode'
-          : isHybrid
-              ? 'Hybrid Mode'
-              : isTargeted
-                  ? 'Trace Mode'
-                  : 'Active Mode';
-      await BackgroundServiceManager.startService(
-        mode: modeName,
-        txCount: _pingStats.txCount,
-        rxCount: _pingStats.rxCount,
-        queueSize: _queueSize,
-      );
+        // Start noise floor session for graph tracking
+        final sessionLabel = isPassive
+            ? 'passive'
+            : isHybrid
+                ? 'hybrid'
+                : isTargeted
+                    ? 'targeted'
+                    : 'active';
+        _startNoiseFloorSession(sessionLabel);
+
+        // Enable heartbeat for all auto-ping modes (not offline mode)
+        // Heartbeat sends keepalive ~1 min before session expiry (4 min timer)
+        // Active/Hybrid pings renew session when moving, but heartbeat is the
+        // safety net when stationary (25m distance filter skips TX pings)
+        if (!_preferences.offlineMode) {
+          _apiService.enableHeartbeat(
+            gpsProvider: () {
+              // Provide current GPS coordinates for heartbeat (matching wardrive.js)
+              final pos = _gpsService.lastPosition;
+              if (pos == null) return null;
+              return (lat: pos.latitude, lon: pos.longitude);
+            },
+          );
+          debugLog('[HEARTBEAT] Enabled for ${mode.name} Mode');
+        }
+
+        // Start background service for continuous operation
+        final modeName = isPassive
+            ? 'Passive Mode'
+            : isHybrid
+                ? 'Hybrid Mode'
+                : isTargeted
+                    ? 'Trace Mode'
+                    : 'Active Mode';
+        await BackgroundServiceManager.startService(
+          mode: modeName,
+          txCount: _pingStats.txCount,
+          rxCount: _pingStats.rxCount,
+          queueSize: _queueSize,
+        );
+      } finally {
+        // Clear starting state on every path (session/cooldown/blocked early
+        // returns, exceptions, and success) so the buttons never stay disabled
+        _autoPingStarting = false;
+        notifyListeners();
+      }
     }
 
     notifyListeners();

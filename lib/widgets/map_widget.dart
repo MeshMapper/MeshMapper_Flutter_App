@@ -716,6 +716,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // recent pings into ~4s buckets, stacking simultaneous RX unpredictably.
   final Map<String, int> _coverageZIndex = {};
   int _coverageZCounter = 0;
+  /// GPS puck z-order: a fixed sort key far above the coverage counter
+  /// (_coverageZCounter, which climbs from 1 per unique ping) so the GPS
+  /// marker always renders on top of every TX/RX/DISC/Trace pin. Stays exact
+  /// in the native float32 symbol-sort-key (< 2^24). See _syncCoverageSymbols.
+  static const int _gpsZIndex = 1 << 23;
   final Map<String, Symbol> _distanceLabelSymbols =
       {}; // key: focused repeater id
   // Per focused-repeater metadata used by the collision-avoidance reflow:
@@ -4711,6 +4716,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       geometry: LatLng(pos.latitude, pos.longitude),
       iconImage: _MapImages.gps(style),
       iconRotate: iconRotate,
+      // Keep the GPS puck above all coverage pings in the shared annotation
+      // layer (Critical Rule 9 / _zIndexFor). See _gpsZIndex.
+      zIndex: _gpsZIndex,
     );
 
     if (_gpsSymbol == null) {
@@ -7902,6 +7910,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     repeaterId: r.repeaterId,
                     snr: r.snr,
                     rssi: r.rssi,
+                    pathHops: r.pathHops,
                   ))
               .toList(),
         ));

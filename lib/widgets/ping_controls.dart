@@ -1732,7 +1732,11 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final showColor = widget.enabled || widget.isActive;
+    // Keep the button's color (not grey) whenever the countdown badge is shown,
+    // mirroring portrait's `_ActionButton` showCooldown handling. Otherwise the
+    // badge renders white text on grey (onSurfaceVariant) during cooldown.
+    final showColor =
+        widget.enabled || widget.isActive || widget.countdown != null;
     final effectiveColor =
         showColor ? widget.color : colorScheme.onSurfaceVariant;
     // Static active-state opacity (continuous pulse animation removed — see
