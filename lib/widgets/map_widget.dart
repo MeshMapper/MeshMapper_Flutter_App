@@ -716,11 +716,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // recent pings into ~4s buckets, stacking simultaneous RX unpredictably.
   final Map<String, int> _coverageZIndex = {};
   int _coverageZCounter = 0;
-  /// GPS puck z-order: a fixed sort key far above the coverage counter
-  /// (_coverageZCounter, which climbs from 1 per unique ping) so the GPS
-  /// marker always renders on top of every TX/RX/DISC/Trace pin. Stays exact
-  /// in the native float32 symbol-sort-key (< 2^24). See _syncCoverageSymbols.
-  static const int _gpsZIndex = 1 << 23;
+  // GPS puck lives in its OWN dedicated GeoJSON source + symbol layer rendered
+  // ABOVE every other layer (coverage fills/pins, repeaters), so it is always on
+  // top by LAYER ORDER — not by competing for a symbol-sort-key inside the shared
+  // annotation source. Keeping it out of that shared source also removes the
+  // one-frame blink where a freshly-added coverage pin painted over the puck
+  // during the source's full re-layout (the old `_gpsZIndex` sort-key approach).
+  // Installed via _ensureGpsPuckLayer (re-installed on style reload, see
+  // _onStyleLoaded) and updated in place via setGeoJsonSource.
+  static const String _gpsPuckSourceId = 'gps-puck-source';
+  static const String _gpsPuckLayerId = 'gps-puck-layer';
+  bool _gpsPuckLayerInstalled = false;
   final Map<String, Symbol> _distanceLabelSymbols =
       {}; // key: focused repeater id
   // Per focused-repeater metadata used by the collision-avoidance reflow:
@@ -737,7 +743,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // addImage (deduped by "repchip_{status}_{hop}_{hex}"). Lazily grown by
   // _ensureRepeaterChipImages; cleared on style reload (native drops images).
   final Set<String> _registeredChipImages = {};
-  Symbol? _gpsSymbol; // single GPS marker
 
   // When true, _syncAllAnnotations skips _updateFocusLines and
   // _syncDistanceLabels so the 500ms zoom-to-fit animation runs without
@@ -2830,13 +2835,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       // CRITICAL: clear stale Symbol references from any previous style load.
       // Style reloads cause maplibre_gl to construct a brand-new SymbolManager
-      // with empty internal _idToAnnotation maps. Our _gpsSymbol /
-      // _coverageSymbols / _distanceLabelSymbols still reference the OLD
+      // with empty internal _idToAnnotation maps. Our _coverageSymbols /
+      // _distanceLabelSymbols still reference the OLD
       // Symbol objects whose IDs are not in the new manager — calling
       // updateSymbol on them throws "you can only set existing annotations".
       // Clearing them now means the next sync will call addSymbol (which
       // creates fresh symbols in the new manager) instead of updateSymbol.
-      _gpsSymbol = null;
+      // The dedicated GPS-puck source/layer is wiped by the style reload too;
+      // reset the guard so _ensureGpsPuckLayer recreates it (topmost) below.
+      _gpsPuckLayerInstalled = false;
       _coverageSymbols.clear();
       _coverageSymbolSig.clear();
       // The native SymbolManager is rebuilt empty here, so the next sync re-adds
@@ -2915,6 +2922,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // if the polygon list hasn't changed (it almost always hasn't).
       _lastBordersSignature = -1;
       await _refreshRegionBorders(appState);
+
+      // GPS puck: dedicated top-most source+layer. Install AFTER coverage +
+      // repeaters + borders so it sits above them all (always-on-top by layer
+      // order). Idempotent; _syncGpsSymbol also ensures it before its first push.
+      await _ensureGpsPuckLayer();
 
       // Start tile-load timeout. If onMapIdle doesn't fire within N seconds,
       // we assume tiles are failing to load (network down, server error, etc.)
@@ -4689,19 +4701,27 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return 0;
   }
 
-  /// Adds, updates, or removes the single GPS position symbol to match
-  /// [appState.currentPosition]. Called from the post-frame sync trigger.
+  /// Pushes the single GPS position feature into the dedicated puck source to
+  /// match [appState.currentPosition]. Called from the post-frame sync trigger.
+  /// The puck lives in its own top-most layer (see [_ensureGpsPuckLayer]), so
+  /// this only ever rewrites a one-feature source — it never touches the shared
+  /// coverage-pin source, which is what eliminated the blink.
   Future<void> _syncGpsSymbol(AppStateProvider appState) async {
     if (_mapController == null || !_styleLoaded || !_imagesRegistered) return;
 
+    // Ensure the dedicated puck source+layer exists (idempotent). On style
+    // reload _gpsPuckLayerInstalled is reset so this recreates it topmost.
+    if (!await _ensureGpsPuckLayer()) return;
+
     final pos = appState.currentPosition;
     if (pos == null) {
-      // No GPS lock — remove existing GPS symbol if present
-      if (_gpsSymbol != null) {
-        try {
-          await _mapController!.removeSymbol(_gpsSymbol!);
-        } catch (_) {}
-        _gpsSymbol = null;
+      // No GPS lock — clear the puck by pushing an empty collection. Keeps the
+      // styled layer in place (no remove/recreate).
+      try {
+        await _mapController!
+            .setGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+      } catch (e) {
+        debugError('[MAP] clear gps puck failed: $e');
       }
       return;
     }
@@ -4712,27 +4732,75 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // even when pos.heading is stale or unset.
     final iconRotate = _gpsIconRotate(style, _computedHeading ?? 0);
 
-    final options = SymbolOptions(
-      geometry: LatLng(pos.latitude, pos.longitude),
-      iconImage: _MapImages.gps(style),
-      iconRotate: iconRotate,
-      // Keep the GPS puck above all coverage pings in the shared annotation
-      // layer (Critical Rule 9 / _zIndexFor). See _gpsZIndex.
-      zIndex: _gpsZIndex,
-    );
+    try {
+      await _mapController!.setGeoJsonSource(
+        _gpsPuckSourceId,
+        _buildGpsPuckFeatureCollection(
+            pos.latitude, pos.longitude, style, iconRotate),
+      );
+    } catch (e) {
+      debugError('[MAP] update gps puck failed: $e');
+    }
+  }
 
-    if (_gpsSymbol == null) {
+  /// One-Point FeatureCollection for the GPS puck source. `iconImage` and
+  /// `iconRotate` are read by the puck symbol layer's data-driven expressions.
+  Map<String, dynamic> _buildGpsPuckFeatureCollection(
+      double lat, double lon, String style, double iconRotate) {
+    return {
+      'type': 'FeatureCollection',
+      'features': [
+        {
+          'type': 'Feature',
+          'properties': {
+            'iconImage': _MapImages.gps(style),
+            'iconRotate': iconRotate,
+          },
+          'geometry': {
+            'type': 'Point',
+            // GeoJSON convention: [longitude, latitude]
+            'coordinates': [lon, lat],
+          },
+        },
+      ],
+    };
+  }
+
+  /// Idempotently (re)create the dedicated GPS-puck source + symbol layer.
+  /// The layer is added with NO belowLayerId so it sits on TOP of every other
+  /// layer (coverage fills/pins, repeaters) — the puck is always-on-top by layer
+  /// order, with no symbol-sort-key contention. enableInteraction:false so taps
+  /// pass through to the repeaters/clusters underneath. Mirrors
+  /// [_ensureCoverageLinesLayer].
+  Future<bool> _ensureGpsPuckLayer() async {
+    if (_gpsPuckLayerInstalled) return true;
+    if (_mapController == null) return false;
+    try {
       try {
-        _gpsSymbol = await _mapController!.addSymbol(options, {'kind': 'gps'});
-      } catch (e) {
-        debugError('[MAP] addSymbol(gps) failed: $e');
-      }
-    } else {
+        await _mapController!.removeLayer(_gpsPuckLayerId);
+      } catch (_) {}
       try {
-        await _mapController!.updateSymbol(_gpsSymbol!, options);
-      } catch (e) {
-        debugError('[MAP] updateSymbol(gps) failed: $e');
-      }
+        await _mapController!.removeSource(_gpsPuckSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+      await _mapController!.addSymbolLayer(
+        _gpsPuckSourceId,
+        _gpsPuckLayerId,
+        const SymbolLayerProperties(
+          iconImage: ['get', 'iconImage'],
+          iconRotate: ['get', 'iconRotate'],
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+        ),
+        // No belowLayerId => topmost, above all coverage pings and repeaters.
+        enableInteraction: false,
+      );
+      _gpsPuckLayerInstalled = true;
+      return true;
+    } catch (e) {
+      debugError('[MAP] gps-puck layer create failed: $e');
+      return false;
     }
   }
 
@@ -4743,16 +4811,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// bearing animates. Non-rotating styles use iconRotate = 0 and don't care.
   /// Cheaper than calling [_syncGpsSymbol] which also updates position.
   Future<void> _updateGpsSymbolRotation() async {
-    if (_gpsSymbol == null || _mapController == null) return;
+    if (!_gpsPuckLayerInstalled || _mapController == null) return;
     final appState = context.read<AppStateProvider>();
     final pos = appState.currentPosition;
     if (pos == null) return;
     final style = appState.preferences.gpsMarkerStyle;
     if (!_gpsStyleFacesHeading(style)) return;
     try {
-      await _mapController!.updateSymbol(
-        _gpsSymbol!,
-        SymbolOptions(iconRotate: _gpsIconRotate(style, _computedHeading ?? 0)),
+      await _mapController!.setGeoJsonSource(
+        _gpsPuckSourceId,
+        _buildGpsPuckFeatureCollection(pos.latitude, pos.longitude, style,
+            _gpsIconRotate(style, _computedHeading ?? 0)),
       );
     } catch (_) {}
   }
