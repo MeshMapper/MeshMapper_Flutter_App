@@ -423,6 +423,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       debugLog('[APP] App resumed from background');
       _checkTcpHealthAfterResume();
+      // Diagnostic: timers can be suspended while backgrounded; on resume, log
+      // any countdown timer stuck past its deadline (intermittent ping lockout).
+      _logStuckTimers('resume');
     } else if (state == AppLifecycleState.paused) {
       debugLog('[APP] App paused (backgrounded)');
       // Save offline pings immediately on pause to prevent data loss if OS kills app
@@ -458,6 +461,57 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         await _startAutoReconnect();
       }
     }
+  }
+
+  // Throttle for the stuck-timer diagnostic (driven off the ~1-2Hz GPS notify).
+  DateTime? _lastStuckTimerCheck;
+
+  /// Diagnostic ONLY (no state change, no notify): logs any countdown timer that
+  /// still reports `isRunning` after its deadline has passed (`remainingMs == 0`).
+  /// That is the fingerprint of the intermittent "Send Ping locks out
+  /// Hybrid/Passive" lockout — a [CountdownTimerService] whose 500ms `_update()`
+  /// stopped firing (e.g. iOS suspended its timers while backgrounded/driving)
+  /// never self-cancels, so `isRunning` (`_timer != null`) sticks true and keeps
+  /// the ping controls disabled until a force-close. A stuck `rxWindowTimer`
+  /// additionally disables Send Ping itself, so the user can't ping to reset it.
+  /// This logging is here to capture the real trigger on-device; the actual fix
+  /// is deferred until a debug log confirms it. See countdown_timer_service.dart.
+  void _logStuckTimers(String reason) {
+    void check(String name, CountdownTimerService t) {
+      if (t.isRunning && t.remainingMs == 0) {
+        debugWarn(
+            '[TIMER] $name isRunning past its deadline (stuck, remaining=0) — '
+            'locks ping controls until restart [$reason]');
+      }
+    }
+
+    check('rxWindowTimer', _rxWindowTimer);
+    check('cooldownTimer', _cooldownTimer);
+    check('manualPingCooldownTimer', _manualPingCooldownTimer);
+    check('discoveryWindowTimer', _discoveryWindowTimer);
+    check('autoPingTimer', _autoPingTimer);
+
+    // pendingDisable should clear when the RX/discovery window it is waiting on
+    // completes. Still true while no such window is counting down => stuck.
+    if (isPendingDisable &&
+        !_rxWindowTimer.isRunning &&
+        !_discoveryWindowTimer.isRunning) {
+      debugWarn(
+          '[TIMER] pendingDisable stuck true with no RX/discovery window '
+          'running — locks ping controls until restart [$reason]');
+    }
+  }
+
+  /// Runs [_logStuckTimers] at most once every 5s. Called from the GPS position
+  /// notify (~1-2Hz during wardriving) so the stuck condition is caught in the
+  /// foreground without adding a dedicated timer. Connected-only to avoid noise.
+  void _maybeLogStuckTimers() {
+    if (!isConnected) return;
+    final now = DateTime.now();
+    final last = _lastStuckTimerCheck;
+    if (last != null && now.difference(last).inSeconds < 5) return;
+    _lastStuckTimerCheck = now;
+    _logStuckTimers('watchdog');
   }
 
   // ============================================
@@ -1264,6 +1318,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // notifyListeners() reaches those position watchers; the map's Selector
       // (keyed on mapRevision) stays cached.
       notifyListeners();
+
+      // Diagnostic: catch a stuck countdown timer (the intermittent ping-control
+      // lockout) in the foreground. Throttled to 5s; logs only when stuck.
+      _maybeLogStuckTimers();
 
       // Save last position for next app launch (already throttled to 30s)
       _saveLastPosition(position.latitude, position.longitude);
