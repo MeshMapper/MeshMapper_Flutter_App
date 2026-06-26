@@ -316,8 +316,11 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   /// Compact navigation bar for landscape mode (icon-only, shorter height)
   Widget _buildCompactNavBar(AppStateProvider appState) {
+    // Pad for the system navigation/gesture bar so the icons aren't hidden
+    // behind it in landscape; the surface background fills the inset area (#224).
     return Container(
-      height: 56,
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewPadding.bottom),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         border: Border(

@@ -214,6 +214,10 @@ class PingControls extends StatelessWidget {
                                                   : 'Send Ping',
                   color: const Color(0xFF0EA5E9), // sky-500
                   enabled: canPingManual &&
+                      // Grey Send Ping while an auto mode is starting so the
+                      // single-ping icon doesn't show until the first auto ping
+                      // fires (matches active/passive gating) (#389)
+                      !isAutoStarting &&
                       !isTxModeRunning &&
                       !isTargetedRunning &&
                       !cooldownActive &&
@@ -948,6 +952,10 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
     // Determine which buttons are colored (enabled or active)
     final sendPingEnabled = canPingManual &&
+        // Grey Send Ping while an auto mode is starting so the single-ping icon
+        // doesn't show until the first auto ping fires (matches active/passive
+        // gating) (#389)
+        !isAutoStarting &&
         !isTxModeRunning &&
         !isTargetedRunning &&
         !cooldownActive &&
@@ -1503,6 +1511,10 @@ class LandscapePingControls extends StatelessWidget {
                       txNotAllowed ? 'Zone Full (Passive Only)' : 'Send Ping',
                   color: const Color(0xFF0EA5E9), // sky-500
                   enabled: canPingManual &&
+                      // Grey Send Ping while an auto mode is starting so the
+                      // single-ping icon doesn't show until the first auto ping
+                      // fires (matches active/passive gating) (#389)
+                      !isAutoStarting &&
                       !isTxModeRunning &&
                       !isTargetedRunning &&
                       !cooldownActive &&

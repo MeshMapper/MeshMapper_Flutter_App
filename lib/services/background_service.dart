@@ -212,20 +212,32 @@ class BackgroundServiceManager {
   /// On Android, the foreground service can survive app process death.
   /// Call this at app startup to ensure no stale notification persists.
   ///
-  /// This intentionally does NOT call initialize()/configure(), because
-  /// configure() with isForegroundMode:true can cause Android to resurrect
-  /// a killed foreground service as a side effect — producing a phantom
-  /// notification hours later (the "3am notification" bug).
+  /// This intentionally does NOT call BackgroundService.configure()/initialize(),
+  /// because configure() with isForegroundMode:true can cause Android to
+  /// resurrect a killed foreground service as a side effect — producing a
+  /// phantom notification hours later (the "3am notification" bug).
   ///
-  /// Instead, we cancel the notification directly by ID. Without its
-  /// required notification, Android will terminate any orphaned foreground
-  /// service within seconds.
+  /// We DO initialize the local-notifications plugin first: cancel() silently
+  /// no-ops until the plugin's platform channel is initialized, which is why
+  /// the orphaned notification kept reappearing after a reboot (#178).
+  /// Initializing the notifications plugin has no foreground-service side
+  /// effects — only configure() does.
   static Future<void> cleanupOrphanedService() async {
     if (kIsWeb) return;
     try {
       debugLog(
           '[BACKGROUND] Dismissing any orphaned notification from previous session');
       final plugin = FlutterLocalNotificationsPlugin();
+      // Establish the platform channel so cancel() actually reaches native.
+      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const iosInit = DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      );
+      await plugin.initialize(
+        const InitializationSettings(android: androidInit, iOS: iosInit),
+      );
       await plugin.cancel(_notificationId);
       debugLog('[BACKGROUND] Orphaned notification cleanup complete');
     } catch (e) {

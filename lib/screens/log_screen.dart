@@ -686,7 +686,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   double _nodeColumnWidthForLength(int idLength) {
     if (idLength <= 2) return 60;
     if (idLength <= 4) return 70;
-    return 80;
+    // 6-char (3-byte) IDs need extra room or the last digit clips on some
+    // devices (#383).
+    return 88;
   }
 
   Widget _buildTxCard(BuildContext context, TxLogEntry entry,
