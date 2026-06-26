@@ -176,6 +176,33 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   /// Persistent bottom action bar: transport picker + offline toggle + action button
   Widget _buildBottomBar(BuildContext context, AppStateProvider appState) {
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+
+    // Landscape has little vertical room: stacking the transport picker under
+    // the action row pushed the Scan/Connect button off-screen, making it
+    // impossible to reconnect after a drop (#356). In landscape, keep the
+    // picker, offline toggle, and action button on a single row so the action
+    // button is always reachable.
+    if (isLandscape) {
+      final showPicker =
+          !appState.isConnected && _availableTransports().length > 1;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+        child: Row(
+          children: [
+            if (showPicker) ...[
+              Expanded(child: _buildTransportPicker(context, appState)),
+              const SizedBox(width: 8),
+            ],
+            const Expanded(child: OfflineModeToggle()),
+            const SizedBox(width: 8),
+            Expanded(child: _buildActionButton(context, appState)),
+          ],
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       child: Column(

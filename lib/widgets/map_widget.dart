@@ -8066,7 +8066,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       case 2:
         return 70 + extraPadding;
       case 3:
-        return 80 + extraPadding;
+        // 3-byte (6-char) hex needs extra room or the last digit clips (#383)
+        return 88 + extraPadding;
       default:
         return 60 + extraPadding;
     }
