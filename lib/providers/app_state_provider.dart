@@ -3216,6 +3216,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         logError('RX Dropped\nPossible carpeater: $repeaterId\n$reason',
             severity: ErrorSeverity.warning, autoSwitch: false);
       },
+
+      // Explain RX silence when there's no GPS fix (#340): without this the RX
+      // counter quietly stops and the app appears "offline despite Internet".
+      onNoGpsDrop: () {
+        debugLog('[APP] RX not logged: no GPS fix available');
+        logError(
+            'RX not logged\nNo GPS fix — waiting for location.\n'
+            'Detection resumes automatically once GPS is restored.',
+            severity: ErrorSeverity.warning,
+            autoSwitch: false);
+      },
     );
 
     // Create packet validator with ALL allowed channels (#wardriving, #testing, #ottawa, Public)
