@@ -34,6 +34,12 @@ class RxLogger {
   /// Called with repeater ID and reason when a packet is dropped due to carpeater detection
   final void Function(String repeaterId, String reason)? onCarpeaterDrop;
 
+  /// Callback fired (throttled to once per 30s) when an otherwise-valid RX
+  /// packet is dropped purely because no GPS fix is available. Lets the UI
+  /// explain why detection went quiet instead of looking offline (#340).
+  final void Function()? onNoGpsDrop;
+  DateTime? _lastNoGpsNotify;
+
   /// CARpeater prefix — when set, multi-hop packets with this firstHop are stripped
   /// to report the underlying repeater with null SNR/RSSI
   String? carpeaterPrefix;
@@ -44,6 +50,7 @@ class RxLogger {
     required this.getGpsLocation,
     this.shouldIgnoreRepeater,
     this.onCarpeaterDrop,
+    this.onNoGpsDrop,
     this.carpeaterPrefix,
   });
 
@@ -110,6 +117,14 @@ class RxLogger {
       final gpsLocation = getGpsLocation();
       if (gpsLocation == null) {
         debugLog('[RX LOG] No GPS fix available, skipping entry');
+        // Surface the reason at most once per 30s so a missing GPS fix doesn't
+        // look like the app has gone offline despite an active connection (#340).
+        final now = DateTime.now();
+        if (_lastNoGpsNotify == null ||
+            now.difference(_lastNoGpsNotify!) > const Duration(seconds: 30)) {
+          _lastNoGpsNotify = now;
+          onNoGpsDrop?.call();
+        }
         return false;
       }
 
