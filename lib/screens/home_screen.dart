@@ -29,6 +29,54 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Landscape side panel width (220px gives more room for controls)
   static const double _landscapePanelWidth = 220.0;
 
+  // ── Map Selector memoization (overheating fix) ────────────────────────────
+  // HomeScreen.build() runs context.watch, so it rebuilds on EVERY provider
+  // notify (incl. the 2Hz GPS notify). An inline `Selector(...)` is a NEW widget
+  // instance each build, and provider's Selector invalidates its cache whenever
+  // `oldWidget != widget` (selector.dart:77) — so a fresh instance forces the
+  // cached MapWidget to rebuild BEFORE the value comparison runs, relayouting the
+  // iOS platform view (~24ms) every GPS tick. Returning the SAME Selector instance
+  // (identity stable) makes Flutter short-circuit the child and lets the value
+  // comparison actually gate the map. The instance is keyed only on the State
+  // fields its closures capture (isLandscape / _isControlsMinimized /
+  // _mapControlsExpanded); provider values (mapRevision/focus/history) are read
+  // live inside the closures and handled by the Selector's value comparison.
+  Widget? _cachedMapSelector;
+  ({bool landscape, bool minimized, bool ctrlExpanded})? _cachedMapSelectorKey;
+
+  Widget _buildMapSelector(bool isLandscape) {
+    final key = (
+      landscape: isLandscape,
+      minimized: _isControlsMinimized,
+      ctrlExpanded: _mapControlsExpanded,
+    );
+    if (_cachedMapSelector != null && _cachedMapSelectorKey == key) {
+      return _cachedMapSelector!;
+    }
+    _cachedMapSelectorKey = key;
+    _cachedMapSelector = Selector<AppStateProvider,
+        ({int rev, bool focus, bool history, double padH, bool? ctrl})>(
+      selector: (_, p) => (
+        rev: p.mapRevision,
+        focus: p.isFocusModeActive,
+        history: p.viewingHistorySession,
+        padH: isLandscape ||
+                p.isFocusModeActive ||
+                p.viewingHistorySession ||
+                p.infoPopupMinimized
+            ? 0.0
+            : _getControlPanelHeight(),
+        ctrl: isLandscape ? _mapControlsExpanded : null,
+      ),
+      builder: (_, s, __) => MapWidget(
+        bottomPaddingPixels: s.padH,
+        mapControlsExpanded: s.ctrl,
+        onMapControlsToggle: isLandscape ? _toggleMapControls : null,
+      ),
+    );
+    return _cachedMapSelector!;
+  }
+
   /// Toggle control panel in landscape mode (closes map controls if open)
   void _toggleControlPanel() {
     setState(() {
@@ -115,6 +163,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body: _buildLayout(appState, isLandscape: false),
       floatingActionButton: !_showControlPanel
           ? FloatingActionButton.extended(
+              heroTag: null,
               onPressed: () => setState(() => _showControlPanel = true),
               icon: const Icon(Icons.tune),
               label: const Text('Controls'),
@@ -422,17 +471,24 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             if (!isLandscape) const StatusBar() else const SizedBox.shrink(),
             Expanded(
-              child: MapWidget(
-                bottomPaddingPixels: isLandscape ? 0 : _getControlPanelHeight(),
-                mapControlsExpanded: isLandscape ? _mapControlsExpanded : null,
-                onMapControlsToggle: isLandscape ? _toggleMapControls : null,
-              ),
+              // The MapLibre map is the most expensive subtree in the app.
+              // Isolate it from the provider's high-frequency UI-only notifies
+              // (noise floor, battery, live stats) and the dense-mesh RX-pin
+              // storm by rebuilding it ONLY when a map-relevant value changes:
+              // AppStateProvider.mapRevision (markers/position/history) or the
+              // map's own layout inputs (focus/history/padding/controls). The
+              // Selector is MEMOIZED (_buildMapSelector) so its widget identity
+              // is stable across HomeScreen's per-notify rebuilds — otherwise a
+              // fresh Selector instance defeats its own cache (selector.dart:77,
+              // `oldWidget != widget`) and the map rebuilds every GPS tick. This
+              // is the core of the overheating fix.
+              child: _buildMapSelector(isLandscape),
             ),
           ],
         ),
 
-        // Landscape: floating status bar overlay
-        if (isLandscape)
+        // Landscape: floating status bar overlay (hidden during history view)
+        if (isLandscape && !appState.viewingHistorySession)
           Positioned(
             top: 16,
             left: leftInset + 72,
@@ -475,8 +531,12 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-        // Portrait: bottom control panel
-        if (!isLandscape)
+        // Portrait: bottom control panel (hidden during focus mode, history view,
+        // and while a cell/repeater popup is minimized to a pill)
+        if (!isLandscape &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
           Positioned(
             bottom: 0,
             left: 0,
@@ -486,18 +546,43 @@ class _HomeScreenState extends State<HomeScreen> {
                 : _buildControlPanel(),
           ),
 
-        // Landscape: side control panel or FAB
-        if (isLandscape && _showControlPanel)
+        // Landscape: full side control panel, bottom-left (hidden during focus
+        // mode, history view, and while a cell/repeater popup is minimized)
+        if (isLandscape &&
+            _showControlPanel &&
+            !_isControlsMinimized &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
           Positioned(
             bottom: 16,
             left: leftInset,
             child: _buildLandscapeControlPanel(appState),
           ),
-        if (isLandscape && !_showControlPanel)
+        // Landscape: minimized control bar, centered along the bottom of the map
+        // (see #329)
+        if (isLandscape &&
+            _showControlPanel &&
+            _isControlsMinimized &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
+          Positioned(
+            bottom: 16,
+            left: 0,
+            right: 0,
+            child: Center(child: _buildLandscapeCompactControlPanel()),
+          ),
+        if (isLandscape &&
+            !_showControlPanel &&
+            !appState.isFocusModeActive &&
+            !appState.viewingHistorySession &&
+            !appState.infoPopupMinimized)
           Positioned(
             bottom: 16,
             left: leftInset,
             child: FloatingActionButton.small(
+              heroTag: null,
               onPressed: _toggleControlPanel,
               child: const Icon(Icons.tune),
             ),
@@ -638,6 +723,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
+                // Minimize button - collapse to compact strip (see #329)
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => setState(() => _isControlsMinimized = true),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(Icons.close_fullscreen,
+                          size: 22, color: Colors.grey.shade400),
+                    ),
+                  ),
+                ),
                 // Close button - larger touch target
                 Material(
                   color: Colors.transparent,
@@ -664,6 +762,59 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Build minimized landscape control panel — a compact strip mirroring the
+  /// portrait compact panel (CompactPingControls + expand button), sized for the
+  /// landscape side overlay. Reuses the shared `_isControlsMinimized` flag (see
+  /// #329). Status/zone stays visible via the floating status bar, so this only
+  /// needs the ping controls + an expand affordance.
+  Widget _buildLandscapeCompactControlPanel() {
+    return Container(
+      width: _landscapePanelWidth,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.25),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          children: [
+            // Compact controls (expands to fill available space)
+            const Expanded(
+              child: CompactPingControls(),
+            ),
+            // Vertical divider
+            Container(
+              height: 24,
+              width: 1,
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              color: Colors.grey.withValues(alpha: 0.3),
+            ),
+            // Expand button - restores the full landscape panel
+            GestureDetector(
+              onTap: () => setState(() => _isControlsMinimized = false),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(
+                  Icons.open_in_full,
+                  size: 20,
+                  color: Colors.grey.shade500,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

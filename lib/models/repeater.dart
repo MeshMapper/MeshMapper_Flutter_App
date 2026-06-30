@@ -3,6 +3,11 @@ import 'package:intl/intl.dart';
 /// Represents a repeater from the MeshMapper API.
 /// Used to display repeater markers on the map.
 class Repeater {
+  /// Zone-level fallback for stale threshold, updated from the status API's
+  /// `stale_repeater_hours` field. Used only when a repeater lacks a
+  /// per-repeater [staleTime].
+  static int staleHoursFallback = 24;
+
   /// Unique ID (e.g., "01", "92")
   final String id;
 
@@ -37,6 +42,11 @@ class Repeater {
   /// Number of bytes per hop hash for this repeater's path (1, 2, or 3)
   final int hopBytes;
 
+  /// Repeater clock skew in seconds reported by the server (+ve = repeater
+  /// clock behind real time, -ve = ahead), or null when unknown. Drives the
+  /// "time is not set correctly" warning in the detail sheet.
+  final int? timeOffset;
+
   const Repeater({
     required this.id,
     required this.hexId,
@@ -49,6 +59,7 @@ class Repeater {
     this.createdAt,
     this.staleTime,
     this.hopBytes = 1,
+    this.timeOffset,
   });
 
   /// Parse from JSON object in repeaters.json
@@ -71,6 +82,17 @@ class Repeater {
       staleTime = int.tryParse(rawStaleTime);
     }
 
+    // Parse time_offset (repeater clock skew, seconds) which may be int or String
+    int? timeOffset;
+    final rawTimeOffset = json['time_offset'];
+    if (rawTimeOffset is int) {
+      timeOffset = rawTimeOffset;
+    } else if (rawTimeOffset is num) {
+      timeOffset = rawTimeOffset.toInt();
+    } else if (rawTimeOffset is String) {
+      timeOffset = int.tryParse(rawTimeOffset);
+    }
+
     return Repeater(
       id: json['id'] as String,
       hexId: json['hex_id'] as String? ?? '',
@@ -83,6 +105,7 @@ class Repeater {
       createdAt: createdAt,
       staleTime: staleTime,
       hopBytes: (json['hop_bytes'] as int?) ?? 1,
+      timeOffset: timeOffset,
     );
   }
 
@@ -99,6 +122,7 @@ class Repeater {
       'created_at': createdAt,
       'stale_time': staleTime,
       'hop_bytes': hopBytes,
+      'time_offset': timeOffset,
     };
   }
 
@@ -112,6 +136,13 @@ class Repeater {
   /// Check if the repeater is enabled (any non-zero value)
   bool get isEnabled => enabled != 0;
 
+  /// True when the repeater has known GPS coordinates. The API uses
+  /// `(0, 0)` as a sentinel for "location not yet published" — those
+  /// repeaters are excluded from map focus geometry (no line, no
+  /// distance label, not part of the bounds-fit) but still appear in
+  /// heard-repeater listings with a `location_off` indicator.
+  bool get hasLocation => lat != 0.0 || lon != 0.0;
+
   /// Check if the repeater was created within the past 7 days
   bool get isNew {
     if (createdAt == null) return false;
@@ -121,20 +152,28 @@ class Repeater {
 
   /// Check if the repeater is active.
   /// Uses server-provided [staleTime] when available, otherwise falls back
-  /// to a 24-hour threshold from [lastHeard].
+  /// to [staleHoursFallback] (set from the zone's `stale_repeater_hours`).
   bool get isActive {
     if (staleTime != null) {
       final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       return nowSeconds < staleTime!;
     }
-    // Fallback: 24-hour threshold from lastHeard
     if (lastHeard == 0) return false;
     final heard = DateTime.fromMillisecondsSinceEpoch(lastHeard * 1000);
-    return DateTime.now().difference(heard).inHours < 24;
+    return DateTime.now().difference(heard).inHours < staleHoursFallback;
   }
 
   /// Check if the repeater has not been heard in the past 24 hours
   bool get isDead => !isActive;
+
+  /// True if the repeater has been heard within the past 30 days. Used by
+  /// the map to hide long-stale repeaters. Returns false when [lastHeard]
+  /// is 0 (never heard).
+  bool get isHeardRecently {
+    if (lastHeard == 0) return false;
+    final heard = DateTime.fromMillisecondsSinceEpoch(lastHeard * 1000);
+    return DateTime.now().difference(heard).inDays < 30;
+  }
 
   /// Get display hex ID based on hop bytes (or override).
   /// [overrideHopBytes] is used when regional admin enforces a byte size.

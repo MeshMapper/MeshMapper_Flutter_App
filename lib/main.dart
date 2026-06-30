@@ -15,6 +15,7 @@ import 'services/bluetooth/mobile_bluetooth.dart';
 import 'services/bluetooth/web_bluetooth.dart';
 import 'services/background_service.dart';
 import 'services/debug_file_logger.dart';
+import 'services/offline_map_service.dart';
 import 'utils/debug_logger_io.dart';
 
 void main() async {
@@ -69,6 +70,11 @@ void main() async {
     await BackgroundServiceManager.cleanupOrphanedService();
   }
 
+  // Clean up any stale offline map download notification
+  if (!kIsWeb) {
+    await OfflineMapService().cleanupOrphanedNotification();
+  }
+
   runApp(MeshMapperApp(initialThemeMode: initialThemeMode));
 }
 
@@ -85,13 +91,10 @@ Future<String> _loadInitialThemeMode() async {
       }
     }
   } catch (e) {
-    debugLog('[HIVE] Failed to load initial theme: $e - deleting corrupt box');
-    // Delete corrupt box so AppStateProvider gets a clean start
-    try {
-      await Hive.deleteBoxFromDisk('user_preferences');
-    } catch (e) {
-      debugLog('[INIT] Failed to delete corrupt preferences box: $e');
-    }
+    debugLog('[HIVE] Initial theme load failed (non-fatal): $e');
+    // Do NOT delete the box here. A transient open timeout would wipe every
+    // saved setting. AppStateProvider's _attemptHiveRecovery handles real
+    // corruption later with a user-visible logError() notification.
   }
   return 'dark'; // Default to dark mode
 }
@@ -218,6 +221,9 @@ class MeshMapperApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(
           create: (_) => AppStateProvider(bluetoothService: bluetoothService),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => OfflineMapService()..initialize(),
         ),
       ],
       child: _ThemedApp(initialThemeMode: initialThemeMode),

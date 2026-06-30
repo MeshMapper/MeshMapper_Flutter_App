@@ -439,9 +439,23 @@ class MobileBluetoothService implements BluetoothService {
         if ((isError133 || isBondError) && attempt < _maxRetries) {
           if (isBondError) {
             debugLog(
-                '[BLE] Bond error (apple-code 14/15) on attempt $attempt, removing bond and retrying...');
+                '[BLE] Bond error (apple-code 14/15) on attempt $attempt');
             await removeBond(deviceId);
-            await Future.delayed(const Duration(seconds: 2));
+            // On iOS, removeBond() is a no-op (not supported by Core Bluetooth).
+            // Don't burn internal retries against stale bond keys — they will all
+            // fail the same way and each hangs for the full connect timeout.
+            // Rethrow immediately so the auto-reconnect system can apply a longer
+            // delay (giving iOS time to resolve) or inform the user.
+            debugWarn(
+                '[BLE] iOS bond error — skipping internal retries (stale keys cannot be cleared programmatically)');
+            try {
+              await _bleDevice?.disconnect();
+            } catch (_) {}
+            _bleDevice = null;
+            _rxCharacteristic = null;
+            _txCharacteristic = null;
+            _updateStatus(ConnectionStatus.error);
+            rethrow;
           } else {
             debugLog(
                 '[BLE] Error 133 on attempt $attempt, retrying after delay...');

@@ -1,22 +1,20 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show VoidCallback;
+import 'package:flutter/foundation.dart';
 
 import '../utils/debug_logger_io.dart';
 
-/// Countdown timer for cooldown, auto-ping, and RX window
+/// Countdown timer for cooldown, auto-ping, and RX window.
 /// Reference: createCountdownTimer() in wardrive.js
 ///
-/// Features:
-/// - 500ms update interval for responsive countdown display
-/// - Auto-stops when countdown reaches zero
-class CountdownTimerService {
+/// Extends ChangeNotifier so that only widgets listening to this specific timer
+/// rebuild on each tick. Previously, every tick called
+/// AppStateProvider.notifyListeners(), which rebuilt the entire widget tree
+/// (including the expensive MapWidget) 2× per second per active timer.
+class CountdownTimerService extends ChangeNotifier {
   Timer? _timer;
   DateTime? _endTime;
-  int? _durationMs; // Original duration for progress calculation
-  final VoidCallback? onUpdate; // Callback for UI refresh on each timer tick
-
-  CountdownTimerService({this.onUpdate});
+  int? _durationMs;
 
   /// Check if timer is running
   bool get isRunning => _timer != null;
@@ -41,8 +39,8 @@ class CountdownTimerService {
   /// Start countdown timer
   /// @param durationMs - Duration in milliseconds
   void start(int durationMs) {
-    stop();
-    _durationMs = durationMs; // Track original duration for progress
+    _cancelTimer();
+    _durationMs = durationMs;
     _endTime = DateTime.now().add(Duration(milliseconds: durationMs));
 
     // Start 500ms update timer for responsive countdown
@@ -50,7 +48,7 @@ class CountdownTimerService {
         Timer.periodic(const Duration(milliseconds: 500), (_) => _update());
 
     // Trigger immediate update
-    _update();
+    notifyListeners();
   }
 
   /// Update countdown display
@@ -61,35 +59,43 @@ class CountdownTimerService {
 
     // Stop when countdown reaches zero
     if (remainingMs == 0) {
-      stop();
-      // Trigger UI refresh when timer ends so UI updates immediately
-      onUpdate?.call();
+      _cancelTimer();
+      _endTime = null;
+      _durationMs = null;
+      notifyListeners();
       return;
     }
 
-    // Trigger UI refresh callback after each update
-    onUpdate?.call();
+    notifyListeners();
   }
 
   /// Stop countdown timer
   void stop() {
-    _timer?.cancel();
-    _timer = null;
+    if (_timer == null) return;
+    _cancelTimer();
     _endTime = null;
     _durationMs = null;
+    notifyListeners();
+  }
+
+  void _cancelTimer() {
+    _timer?.cancel();
+    _timer = null;
   }
 
   /// Dispose resources
+  @override
   void dispose() {
-    stop();
+    _cancelTimer();
+    _endTime = null;
+    _durationMs = null;
+    super.dispose();
   }
 }
 
 /// Specialized countdown timer for ping cooldown
 /// Reference: wardrive.js state.cooldownEndTime and cooldownUpdateTimer
 class CooldownTimer extends CountdownTimerService {
-  CooldownTimer({super.onUpdate});
-
   @override
   void stop() {
     final wasRunning = isRunning;
@@ -106,8 +112,6 @@ class AutoPingTimer extends CountdownTimerService {
   /// Skip reason (e.g., "too close", "gps too old")
   String? skipReason;
 
-  AutoPingTimer({super.onUpdate});
-
   /// Start countdown with optional skip reason
   /// Reference: startAutoCountdown() in wardrive.js with state.skipReason
   void startWithSkipReason(int durationMs, String? reason) {
@@ -118,19 +122,13 @@ class AutoPingTimer extends CountdownTimerService {
 
 /// Specialized countdown timer for RX listening window
 /// Reference: wardrive.js state.rxListeningEndTime
-class RxWindowTimer extends CountdownTimerService {
-  RxWindowTimer({super.onUpdate});
-}
+class RxWindowTimer extends CountdownTimerService {}
 
 /// Specialized countdown timer for discovery listening window (Passive Mode)
-class DiscoveryWindowTimer extends CountdownTimerService {
-  DiscoveryWindowTimer({super.onUpdate});
-}
+class DiscoveryWindowTimer extends CountdownTimerService {}
 
 /// Specialized countdown timer for manual ping cooldown (15 seconds)
 class ManualPingCooldownTimer extends CountdownTimerService {
-  ManualPingCooldownTimer({super.onUpdate});
-
   @override
   void stop() {
     final wasRunning = isRunning;

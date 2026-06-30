@@ -5,6 +5,17 @@
 
 set -e  # Exit on any error
 
+# maplibre_gl 0.25.0 plugin requires JDK 21 to compile.
+# Force the build to use Homebrew openjdk@21, regardless of the user's shell JAVA_HOME.
+JDK21_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
+if [ ! -d "$JDK21_HOME" ]; then
+    echo "Error: JDK 21 not found at $JDK21_HOME"
+    echo "Install with: brew install openjdk@21"
+    exit 1
+fi
+export JAVA_HOME="$JDK21_HOME"
+export PATH="$JAVA_HOME/bin:$PATH"
+
 # Semver comparison: returns 0 (true) if $1 >= $2
 version_gte() {
     local IFS=.
@@ -154,7 +165,7 @@ echo ""
 # Build iOS IPA
 echo "[3/3] Building iOS IPA..."
 (cd ios && pod install)
-flutter build ipa --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY"
+flutter build ipa --release --build-name="$VERSION_NUMBER" --build-number="$EPOCH" --dart-define="APP_VERSION=$APP_VERSION" --dart-define="API_KEY=$MESHMAPPER_API_KEY" --export-options-plist=ios/ExportOptions.plist
 cp build/ios/ipa/mesh_mapper.ipa "$IOS_DIR/MeshMapper-$FILE_TAG.ipa"
 echo "✓ Built: MeshMapper-$FILE_TAG.ipa"
 echo ""

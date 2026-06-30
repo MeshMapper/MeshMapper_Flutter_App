@@ -82,6 +82,7 @@ class BackgroundServiceManager {
           foregroundServiceTypes: [
             AndroidForegroundType.location,
             AndroidForegroundType.connectedDevice,
+            AndroidForegroundType.dataSync,
           ],
         ),
         iosConfiguration: IosConfiguration(

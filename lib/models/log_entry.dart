@@ -5,7 +5,8 @@ class TxLogEntry {
   final double latitude;
   final double longitude;
   final double power; // Power in watts (0.3, 0.6, 1.0, 2.0)
-  final List<RxEvent> events; // Repeaters that heard this ping
+  final List<RxEvent> events; // Direct 1-hop repeaters that heard this ping
+  final List<MultiHopEchoEvent> multiHopEvents; // Multi-hop echoes (2+ hops)
 
   TxLogEntry({
     required this.timestamp,
@@ -13,6 +14,7 @@ class TxLogEntry {
     required this.longitude,
     required this.power,
     required this.events,
+    this.multiHopEvents = const [],
   });
 
   /// Get formatted timestamp (HH:MM:SS)
@@ -36,7 +38,32 @@ class TxLogEntry {
                 ? '${e.repeaterId}(${e.snr!.toStringAsFixed(2)})'
                 : '${e.repeaterId}(null)')
             .join(',');
-    return '${timestamp.toIso8601String()},$latitude,$longitude,$power,$eventsStr';
+    final multiHopStr = multiHopEvents.isEmpty
+        ? ''
+        : ',MH:${multiHopEvents.map((e) => e.snr != null ? '${e.repeaterId}(${e.snr!.toStringAsFixed(2)})' : '${e.repeaterId}(null)').join(',')}';
+    return '${timestamp.toIso8601String()},$latitude,$longitude,$power,$eventsStr$multiHopStr';
+  }
+}
+
+/// Multi-hop echo event (repeater that relayed a TX ping via 2+ hops)
+class MultiHopEchoEvent {
+  final String repeaterId;
+  final double? snr;
+  final int? rssi;
+  final List<String> pathHops;
+
+  MultiHopEchoEvent({
+    required this.repeaterId,
+    this.snr,
+    this.rssi,
+    this.pathHops = const [],
+  });
+
+  SnrSeverity? get severity {
+    if (snr == null) return null;
+    if (snr! <= -1) return SnrSeverity.poor;
+    if (snr! <= 5) return SnrSeverity.fair;
+    return SnrSeverity.good;
   }
 }
 
@@ -81,6 +108,8 @@ class RxLogEntry {
   final int header; // Packet header byte
   final double latitude;
   final double longitude;
+  /// Display path hops, origin → ... → us. Already CARpeater-stripped.
+  final List<String> pathHops;
 
   RxLogEntry({
     required this.timestamp,
@@ -91,6 +120,7 @@ class RxLogEntry {
     required this.header,
     required this.latitude,
     required this.longitude,
+    this.pathHops = const [],
   });
 
   /// Get formatted timestamp (HH:MM:SS)
@@ -120,9 +150,10 @@ class RxLogEntry {
 
   /// Get CSV row
   String toCsv() {
+    final pathStr = pathHops.isEmpty ? '' : pathHops.join('|');
     return '${timestamp.toIso8601String()},$repeaterId,${snr ?? 'null'},${rssi ?? 'null'},'
         '$pathLength,0x${header.toRadixString(16).padLeft(2, '0')},'
-        '$latitude,$longitude';
+        '$latitude,$longitude,$pathStr';
   }
 }
 

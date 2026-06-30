@@ -1,41 +1,323 @@
+import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:flutter/services.dart' show MethodChannel;
+import 'package:geolocator/geolocator.dart';
+import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/log_entry.dart';
+import '../models/noise_floor_session.dart';
 import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
+import '../utils/coverage_summary.dart';
+import '../utils/coverage_tile_palette.dart';
 import '../utils/debug_logger_io.dart';
+import '../utils/geo_validation.dart';
+import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
+import '../utils/repeater_format.dart';
+import 'cell_summary_sheet.dart';
 import 'repeater_id_chip.dart';
+import 'rx_path_chain.dart';
 
-/// Map style options
+/// Satellite style as inline MapLibre style JSON (ArcGIS raster source).
+/// The `glyphs` URL is required because our native symbol layers
+/// (repeater cluster count, individual repeater hex IDs, distance labels)
+/// use `textField`, and MapLibre iOS wedges its resource loader with
+/// NSURLError -1002 if it tries to resolve glyphs against a style that
+/// doesn't declare a glyphs URL.
+const _satelliteStyleJson =
+    '{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","sources":{"satellite":{"type":"raster","tiles":["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],"tileSize":256,"maxzoom":17}},"layers":[{"id":"satellite-layer","type":"raster","source":"satellite"}]}';
+
+/// Default font stack used for all native text labels (textField property).
+/// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
+const _defaultFontStack = ['Noto Sans Regular'];
+
+/// Image-name constants for the marker bitmaps registered via
+/// `controller.addImage()` and referenced by `SymbolOptions.iconImage`.
+///
+/// Repeater shapes have one bitmap per (status color × hop_byte shape) — 12
+/// total. Coverage markers have one bitmap per (ping type × success state) for
+/// the user's currently-selected style — 8 total per style preference. GPS
+/// marker has one bitmap per style — 6 total.
+class _MapImages {
+  _MapImages._();
+
+  // Repeater shape bitmaps: status × hop_bytes
+  // Names: rep_active_1, rep_dead_2, rep_dup_3, etc.
+  static String repeater(String status, int hopBytes) =>
+      'rep_${status}_$hopBytes';
+
+  // Detailed-mode baked repeater CHIP bitmaps: status × hop_bytes × hex label.
+  // The hex is baked into the icon (no text-field) so overlapping un-clustered
+  // chips can't have a label detach onto a neighbour's box. One image per
+  // distinct (status, hop, hex); registered lazily + deduped. See
+  // _renderRepeaterChipPng / _ensureRepeaterChipImages.
+  // Names: repchip_active_2_A1B2, etc.
+  static String repeaterChip(String status, int hopBytes, String hex) =>
+      'repchip_${status}_${hopBytes}_$hex';
+
+  static const repeaterStatuses = ['active', 'dead', 'new', 'dup'];
+  static const repeaterHopBytes = [1, 2, 3];
+
+  // Coverage marker bitmaps: type × success state
+  // Names: cov_tx_ok, cov_disc_fail, etc.
+  static String coverage(String type, bool success) =>
+      'cov_${type}_${success ? "ok" : "fail"}';
+
+  static const coverageTypes = ['tx', 'rx', 'disc', 'trace'];
+
+  // GPS marker bitmaps: one per style
+  // Names: gps_arrow, gps_car, etc. The list of styles lives in
+  // _registerMapImages where we map each style key to its CustomPainter.
+  static String gps(String style) => 'gps_$style';
+}
+
+/// Renders a [CustomPainter] into a PNG byte buffer using `dart:ui`.
+///
+/// This is the bridge between our existing Flutter `CustomPainter` marker
+/// rendering code and MapLibre's native annotation system. The bytes returned
+/// here can be passed to `controller.addImage(name, bytes)` and then referenced
+/// by `SymbolOptions.iconImage: name`. The native engine renders the symbol
+/// in the same pass as the map tiles, eliminating the Flutter platform-view
+/// sync lag that affects widget overlays.
+///
+/// [size] is the logical size in pixels — the output bitmap is upscaled by
+/// [devicePixelRatio] for crispness on high-DPI screens. Default 3.0 covers
+/// Renders a distance-label pill: white text on a semi-transparent rounded
+/// rectangle background. Returns the PNG bytes and the logical size (width/
+/// height in logical pixels, NOT device pixels) so the caller can use it for
+/// screen-space collision tests.
+///
+/// Sized dynamically to the text — the pill grows with longer labels. Uses
+/// devicePixelRatio=3.0 to match the other bitmap markers on this map.
+Future<({Uint8List bytes, Size size})> _renderDistanceLabelPng(
+  String text, {
+  double devicePixelRatio = 3.0,
+}) async {
+  const fontSize = 11.0;
+  const horizontalPad = 6.0;
+  const verticalPad = 3.0;
+  const cornerRadius = 6.0;
+
+  // Measure the text first so we can size the pill to fit.
+  final textPainter = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: const TextStyle(
+        fontSize: fontSize,
+        color: Colors.white,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+
+  final logicalWidth = textPainter.width + horizontalPad * 2;
+  final logicalHeight = textPainter.height + verticalPad * 2;
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+
+  // Background pill.
+  final bgPaint = Paint()..color = Colors.black.withValues(alpha: 0.72);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, 0, logicalWidth, logicalHeight),
+      const Radius.circular(cornerRadius),
+    ),
+    bgPaint,
+  );
+
+  // Subtle light border for separation from dark map backgrounds.
+  final borderPaint = Paint()
+    ..color = Colors.white.withValues(alpha: 0.25)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.0;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromLTWH(0.5, 0.5, logicalWidth - 1, logicalHeight - 1),
+      const Radius.circular(cornerRadius),
+    ),
+    borderPaint,
+  );
+
+  textPainter.paint(canvas, const Offset(horizontalPad, verticalPad));
+
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(
+    (logicalWidth * devicePixelRatio).round(),
+    (logicalHeight * devicePixelRatio).round(),
+  );
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  picture.dispose();
+  image.dispose();
+  if (byteData == null) {
+    throw StateError('Failed to encode distance label to PNG bytes');
+  }
+  return (
+    bytes: byteData.buffer.asUint8List(),
+    size: Size(logicalWidth, logicalHeight),
+  );
+}
+
+/// Bakes a complete repeater "chip" — the status-colored rounded box plus its
+/// centered hex label — into a single PNG, so the label is part of the icon and
+/// can never detach onto a neighbouring chip's box (the MapLibre symbol two-pass
+/// "all icons, then all glyphs" overlap bug). Used ONLY in Detailed grid mode,
+/// where repeaters are un-clustered and can overlap. Simplified mode keeps the
+/// cheap shared-glyph text-field path (clustering guarantees ≥50px spacing).
+///
+/// Variable width — sized to the measured hex like [_renderDistanceLabelPng].
+/// Baked at devicePixelRatio 3.0 to stay crisp on hi-DPI; rendered with
+/// iconSize 1.0 + center anchor. Box visuals mirror [_RepeaterShapePainter]
+/// (drop shadow, filled box, 2px white border) so chips match the Simplified
+/// shape markers.
+Future<Uint8List> _renderRepeaterChipPng(
+  String hex,
+  Color fill,
+  double borderRadius, {
+  double devicePixelRatio = 3.0,
+}) async {
+  const fontSize = 13.0;
+  const horizontalPad = 8.0; // inside the box, each side
+  const boxHeight = 26.0;
+  const shadowBlur = 4.0;
+  const margin = 5.0; // room around the box for the (blurred, +2px) shadow
+
+  final textPainter = TextPainter(
+    text: TextSpan(
+      text: hex,
+      style: const TextStyle(
+        fontSize: fontSize,
+        color: Colors.white,
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+
+  final boxWidth = textPainter.width + horizontalPad * 2;
+  final logicalWidth = boxWidth + margin * 2;
+  const logicalHeight = boxHeight + margin * 2;
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+
+  final boxRect = Rect.fromLTWH(margin, margin, boxWidth, boxHeight);
+  final radius = Radius.circular(borderRadius);
+
+  // Drop shadow (positioned 2px below the box).
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(boxRect.shift(const Offset(0, 2)), radius),
+    Paint()
+      ..color = Colors.black26
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, shadowBlur),
+  );
+
+  // Filled colored box.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(boxRect, radius),
+    Paint()..color = fill,
+  );
+
+  // White border (2px, drawn just inside the box edge).
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      boxRect.deflate(1),
+      Radius.circular(borderRadius - 1),
+    ),
+    Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0,
+  );
+
+  // Centered hex label.
+  textPainter.paint(
+    canvas,
+    Offset(
+      margin + (boxWidth - textPainter.width) / 2,
+      margin + (boxHeight - textPainter.height) / 2,
+    ),
+  );
+
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(
+    (logicalWidth * devicePixelRatio).round(),
+    (logicalHeight * devicePixelRatio).round(),
+  );
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  picture.dispose();
+  image.dispose();
+  if (byteData == null) {
+    throw StateError('Failed to encode repeater chip to PNG bytes');
+  }
+  return byteData.buffer.asUint8List();
+}
+
+Future<Uint8List> _renderPainterToPng(
+  CustomPainter painter,
+  Size size, {
+  double devicePixelRatio = 3.0,
+}) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  // Scale the canvas so the painter still draws at logical size, but the
+  // resulting bitmap has more actual pixels.
+  canvas.scale(devicePixelRatio);
+  painter.paint(canvas, size);
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(
+    (size.width * devicePixelRatio).round(),
+    (size.height * devicePixelRatio).round(),
+  );
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  picture.dispose();
+  image.dispose();
+  if (byteData == null) {
+    throw StateError('Failed to encode CustomPainter to PNG bytes');
+  }
+  return byteData.buffer.asUint8List();
+}
+
+/// Map style options.
+///
+/// Declaration order matters: it determines the cycle order when the user
+/// taps the "switch style" button (see `_cycleMapStyle`). Liberty is first
+/// because it's the default for new users.
 enum MapStyle {
+  liberty,
   dark,
   light,
   satellite,
 }
 
 extension MapStyleExtension on MapStyle {
-  /// Convert from stored string preference to MapStyle enum
+  /// Convert from stored string preference to MapStyle enum.
+  /// Defaults to Liberty for unknown / unset preferences.
   static MapStyle fromString(String value) {
     switch (value) {
+      case 'dark':
+        return MapStyle.dark;
       case 'light':
         return MapStyle.light;
       case 'satellite':
         return MapStyle.satellite;
-      case 'dark':
+      case 'liberty':
       default:
-        return MapStyle.dark;
+        return MapStyle.liberty;
     }
   }
 
@@ -45,6 +327,8 @@ extension MapStyleExtension on MapStyle {
         return 'Dark';
       case MapStyle.light:
         return 'Light';
+      case MapStyle.liberty:
+        return 'Liberty';
       case MapStyle.satellite:
         return 'Satellite';
     }
@@ -56,58 +340,43 @@ extension MapStyleExtension on MapStyle {
         return Icons.dark_mode;
       case MapStyle.light:
         return Icons.light_mode;
+      case MapStyle.liberty:
+        return Icons.map;
       case MapStyle.satellite:
         return Icons.satellite_alt;
     }
   }
 
-  String get urlTemplate {
+  /// MapLibre style URL (or inline JSON for satellite)
+  String get styleUrl {
     switch (this) {
       case MapStyle.dark:
-        return 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+        return 'https://tiles.openfreemap.org/styles/dark';
       case MapStyle.light:
-        return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+        return 'https://tiles.openfreemap.org/styles/bright';
+      case MapStyle.liberty:
+        return 'https://tiles.openfreemap.org/styles/liberty';
       case MapStyle.satellite:
-        return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+        return _satelliteStyleJson;
     }
   }
 
-  List<String>? get subdomains {
+  /// Whether this style can be packaged as an offline region. Satellite uses
+  /// inline raster JSON which MapLibre's offline downloader doesn't support.
+  bool get isDownloadable {
     switch (this) {
       case MapStyle.dark:
-        return ['a', 'b', 'c', 'd'];
       case MapStyle.light:
-        return null; // OSM doesn't use subdomains anymore
+      case MapStyle.liberty:
+        return true;
       case MapStyle.satellite:
-        return null; // ArcGIS doesn't use subdomains
+        return false;
     }
   }
 
-  /// Whether this style supports retina tiles via {r} placeholder
-  bool get supportsRetina {
-    switch (this) {
-      case MapStyle.dark:
-        return true; // Carto supports @2x via {r}
-      case MapStyle.light:
-        return false; // OSM has no retina support
-      case MapStyle.satellite:
-        return false; // ArcGIS has no retina support
-    }
-  }
-}
-
-/// Custom tile provider that silently handles HTTP errors (404, 503, etc.)
-/// instead of flooding the console with exceptions
-final class SilentCancellableNetworkTileProvider
-    extends CancellableNetworkTileProvider {
-  SilentCancellableNetworkTileProvider()
-      : super(
-          dioClient: Dio(
-            BaseOptions(
-              validateStatus: (status) => true, // Accept all status codes
-            ),
-          ),
-        );
+  /// Styles offered in the offline download picker.
+  static List<MapStyle> get downloadable =>
+      MapStyle.values.where((s) => s.isDownloadable).toList();
 }
 
 /// Resolved repeater with SNR and ambiguity info for ping focus mode.
@@ -121,8 +390,27 @@ class _ResolvedRepeater {
   const _ResolvedRepeater(this.repeater, this.snr, this.ambiguous);
 }
 
+/// A minimized info popup (cell summary or repeater detail) rendered as a 2-row
+/// bottom pill — and the DEFAULT state a tap opens in. [title] is the row-1
+/// identity (icon + name); [statsBuilder] builds the row-2 stat chips (it may
+/// use a FutureBuilder for lazily-fetched values). [onReshow] expands to the
+/// full detail sheet; [onClose] dismisses it and runs any cleanup (e.g. clearing
+/// the cell footprint). Mirrors the ping-focus minimize, but for the tap popups.
+class _MinimizedInfoPopup {
+  final Widget title;
+  final WidgetBuilder statsBuilder;
+  final VoidCallback onReshow;
+  final VoidCallback onClose;
+  const _MinimizedInfoPopup({
+    required this.title,
+    required this.statsBuilder,
+    required this.onReshow,
+    required this.onClose,
+  });
+}
+
 /// Map widget with TX/RX markers
-/// Uses flutter_map with OpenStreetMap tiles
+/// Uses MapLibre GL with OpenFreeMap vector tiles
 class MapWidget extends StatefulWidget {
   /// Bottom padding in pixels to account for overlays (e.g., control panel in portrait)
   /// The map will offset its center point upward by half this value
@@ -151,8 +439,37 @@ class MapWidget extends StatefulWidget {
   State<MapWidget> createState() => _MapWidgetState();
 }
 
-class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
-  final MapController _mapController = MapController();
+class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
+  MapLibreMapController? _mapController;
+
+  // Tracks the app lifecycle so we can suppress every animateCamera() call
+  // while the app is not in the foreground OR while the GL surface is
+  // settling after a state transition. MapLibre Native's
+  // constrainCameraAndZoomToBounds (PR #2475) calls Projection::unproject
+  // internally — when the GL surface is degenerate (zero-sized on first
+  // frame, or not yet restored after iOS background suspension), unproject
+  // produces NaN and the LatLng constructor throws std::domain_error →
+  // SIGABRT. Suppressing animations for one frame after style-load and
+  // after resume lets the surface reach a valid state first.
+  AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+  bool _cameraAnimationReady = false;
+
+  // Set true the first time the map reports idle (`_onMapIdle`). The map only
+  // goes idle AFTER it has actually rendered a frame / loaded tiles, so this is
+  // the throw-safe Dart signal that the native viewport is non-degenerate. The
+  // one-frame `_cameraAnimationReady` latch above proved insufficient: a bad
+  // launch (tiles never load → viewport stays degenerate for the whole session)
+  // kept _cameraAnimationReady=true yet still aborted the very first flyTo. Until
+  // the map renders, every programmatic camera move is held (and the one-shot
+  // initial zoom re-attempts on later ticks instead of burning). The native
+  // viewport guard in the vendored maplibre_gl plugin is the final backstop for
+  // the case where the map reports idle on a still-degenerate surface.
+  bool _mapHasRenderedOnce = false;
+
+  bool get _canAnimateCamera =>
+      _appLifecycleState == AppLifecycleState.resumed &&
+      _cameraAnimationReady &&
+      _mapHasRenderedOnce;
 
   // Auto-follow GPS like a navigation app
   bool _autoFollow = false; // Disabled by default - users often zoom out first
@@ -163,14 +480,41 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       false; // Track if we've done the one-time initial zoom to GPS
   bool _hasZoomedToLastKnown =
       false; // Track if we've zoomed to last known position (before GPS)
+  bool _loggedMpxSanityCheck =
+      false; // One-time log comparing formula vs MapLibre m/px
 
   // Map rotation mode
   bool _alwaysNorth =
       true; // true = north always up, false = rotate with heading
   double? _lastHeading; // Track last heading for smooth rotation
 
+  // Desired camera zoom while auto-follow is active. Set when the user taps
+  // "center on position" and updated when the user pinch-zooms. Each auto-
+  // follow GPS tick uses this as the animation target zoom — otherwise a tick
+  // that arrives during the initial zoom animation cancels it (animateCamera
+  // replaces in-flight animations), leaving the camera stuck at an
+  // intermediate zoom and the marker off-center.
+  double? _autoFollowDesiredZoom;
+
+  // Bearing derivation state. geolocator's Position.heading is only reliable
+  // at speed — on both Android (Location.getBearing() requires hasBearing()
+  // and speed > 0) and iOS (CLLocation.course == -1 when invalid) it's
+  // effectively 0 or -1 when stationary or walking slowly. We keep our own
+  // anchor-to-current bearing as a fallback so the arrow/walk marker and
+  // heading-mode map rotation behave correctly at low speeds.
+  LatLng? _bearingAnchor; // last fix used as the bearing origin
+  double? _computedHeading; // last known-good bearing in degrees 0..360
+
   // MeshMapper overlay toggle (on by default)
   bool _showMeshMapperOverlay = true;
+
+  // Region boundary overlay toggle (on by default)
+  bool _showRegionBorders = true;
+
+  // Repeater pins toggle (on by default). When false, _syncRepeaterSymbols
+  // pushes an empty FeatureCollection so the pins clear without touching the
+  // layer styling (see #347).
+  bool _showRepeaters = true;
 
   // Collapsible map controls in landscape
   bool _mapControlsExpanded = true;
@@ -181,6 +525,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   // Map navigation trigger tracking (from log screen)
   int _lastNavigationTrigger = 0;
 
+  // History session map view tracking
+  bool _wasViewingHistory = false;
+
   // Ping focus mode — highlight connected repeaters when a marker is tapped
   LatLng? _focusedPingLocation;
   DateTime? _focusedPingTimestamp;
@@ -189,207 +536,711 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   double? _preFocusZoom;
   bool _wasAutoFollowBeforeFocus = false;
   bool _wasRotatingBeforeFocus = false; // true if heading mode was active
+  // True while ANY focus-style camera is engaged (ping focus OR a community
+  // tile/repeater coverage view). The pre-focus snapshot above is saved ONCE on
+  // the first entry and restored ONCE when the last view closes, so switching
+  // directly between views animates only once and restores to the original view.
+  bool _cameraFocusActive = false;
+  bool _focusPanelMinimized = false;
+  dynamic _focusedPingSource; // TxPing | RxPing | DiscLogEntry | TraceLogEntry
 
-  // Smooth animation for map movement
-  AnimationController? _animationController;
-  Animation<double>? _animation;
-  LatLng? _animationStartPosition;
-  LatLng? _animationEndPosition;
+  // A minimized cell-summary / repeater-detail popup, shown as a tappable pill
+  // (parity with the ping-focus minimize). Separate from focus state so it can't
+  // entangle focus mode; null when nothing is minimized.
+  _MinimizedInfoPopup? _minimizedInfoPopup;
 
-  // Smooth animation for map rotation
-  AnimationController? _rotationAnimationController;
-  Animation<double>? _rotationAnimation;
-  double? _rotationStartAngle;
-  double? _rotationEndAngle;
+  // MapLibre style and overlay tracking.
+  // Tracks the zone code we last rendered the coverage overlay for. When the
+  // zone check succeeds after the style has already loaded (e.g. first check
+  // failed with gps_inaccurate and a later retry succeeded), _addCoverageOverlay
+  // would otherwise never re-run and the coverage layer would stay missing.
+  String? _lastOverlayZoneCode;
+  // Last coverage overlay opacity we pushed into MapLibre. Compared against
+  // the current preference in _buildMap to detect slider changes and apply
+  // them live via _applyCoverageOverlayOpacity (no layer rebuild needed).
+  double? _lastAppliedCoverageOpacity;
+  // Guard flag that coalesces multiple overlay-refresh triggers (zone and
+  // pref changes) in the same frame into a single post-frame callback.
+  // Without this, two watchers can schedule concurrent _refreshCoverageOverlay
+  // runs whose remove/add calls interleave and produce "Source already exists"
+  // errors in the native log.
+  bool _coverageRefreshScheduled = false;
+
+  // Coverage overlay IDs: each refresh allocates fresh suffixed IDs so
+  // a remove+add sequence never collides with a stale native source.
+  String? _activeCoverageSourceId;
+  String? _activeCoverageLayerId;
+  int _coverageBufferCounter = 0;
+  // Guards against opening two GRID SUMMARY sheets when both the feature-tap and
+  // the onMapClick hit-test fire for the same coverage cell tap.
+  bool _cellSummaryShowing = false;
+  // True from a tile tap until the cell popup (pill OR sheet) is closed — gates
+  // drawing the footprint highlight so it isn't drawn after a dismiss. Cleared
+  // in _clearCellHighlight (the teardown for both the pill and the sheet).
+  bool _cellPopupActive = false;
+  // Grid size is baked into the tile URL and the CVD palette into the layer
+  // paint; a change to either rebuilds the overlay via the build watcher.
+  int? _lastAppliedGridSize;
+  String? _lastAppliedCvd;
+  // Session coverage patch: a GeoJSON layer carrying the user's own
+  // freshly-pinged cells ON TOP of the base overlay; the base layer's copies
+  // of those cells are hidden via setFilter so translucent fills never stack.
+  // The base source is never swapped during a session — only the patch
+  // updates, so nothing visibly changes except the changed cells.
+  static const String _patchSourceId = 'meshmapper-coverage-patch';
+  static const String _patchLayerId = 'meshmapper-coverage-patch-layer';
+  bool _patchLayerReady = false;
+
+  // Tap-to-highlight overlay: a fill layer painting the clicked cell's
+  // (2·blob+1)² block (3×3 Detailed / 1 cell Simplified), centred on the tapped
+  // tile, in one uniform dominant colour while the coverage backdrop dims
+  // (web highlightSpotCoverage parity). Installed once (empty); populated on a
+  // cell tap and cleared to empty when the summary sheet closes — no per-tap
+  // layer churn.
+  static const String _cellHighlightSourceId = 'meshmapper-cell-highlight';
+  static const String _cellHighlightLayerId = 'meshmapper-cell-highlight-layer';
+  bool _cellHighlightReady = false;
+  // While a tapped cell's footprint is shown, the coverage backdrop is dimmed so
+  // the bright footprint pops (parity with the web's spot-click). True between
+  // _showCellFootprint and _clearCellHighlight; gates the opacity restore and
+  // suppresses the build-method opacity-sync (which would otherwise un-dim).
+  bool _coverageDimmedForCell = false;
+  // Below this zoom, coverage cells are only a pixel or two wide, so a tile tap
+  // is almost always accidental — ignore cell taps when zoomed further out (a
+  // 300 m cell is ~8 px at z11, ~16 px at z12). Tune if needed.
+  static const double _kMinCellTapZoom = 12.0;
+  // Same backdrop dim while a selected repeater's coverage cells/lines are shown
+  // (Feature B, web `drawRepeaterCoverageFromCache` parity). True between
+  // _drawRepeaterCoverage and _clearRepeaterIsolation; gates the opacity restore
+  // and suppresses the build-method opacity-sync.
+  bool _coverageDimmedForRepeater = false;
+  static const double _kCellHighlightFadeOpacity = 0.15;
+  int _lastAppliedPatchVersion = -1;
+  bool _styleLoaded = false;
+  bool _hasStyleLoadedOnce =
+      false; // True after first onStyleLoadedCallback (prevents re-centering on style switch)
+
+  // Tracks the last marker data version we synced to native annotations.
+  // The build() method computes a version hash from app state and only triggers
+  // _syncAllAnnotations when the hash changes (avoiding unnecessary diff work).
+  int _lastMarkerDataVersion = -1;
+  // Serializes concurrent _syncAllAnnotations runs. Without this, a second
+  // build() can fire a sync while the previous one is still awaiting platform
+  // calls — both would mutate _coverageSymbols / _distanceLabelSymbols, and
+  // the older sync's cleanup loop would remove symbols the newer sync just
+  // added. The flag causes re-entrant post-frame callbacks to bail; after the
+  // in-flight sync finishes, the finally block checks if the data version
+  // advanced during the run and triggers a rebuild if so.
+  bool _syncInFlight = false;
+
+  // GPS marker sync runs on its own gate, separate from _syncAllAnnotations.
+  // GPS position is camera/sensor state — it changes every tick during
+  // auto-follow but the marker data (repeaters, pings, focus) does not.
+  // Routing GPS through _syncAllAnnotations made setGeoJsonSource fire on
+  // every tick, which triggered MapLibre's global symbol-collision recalc
+  // and made base-style POI labels flicker. Splitting the gates keeps
+  // _syncGpsSymbol cheap and lets _syncAllAnnotations idle when nothing
+  // marker-related has changed.
+  int _lastGpsSyncVersion = -1;
+  bool _gpsSyncInFlight = false;
+
+  // Tile load failure detection — shows a banner if map tiles haven't loaded
+  // within a timeout after style load. Cleared when onMapIdle fires.
+  // Only surfaces the banner after 3 consecutive timeouts to avoid confusing
+  // users with transient failures.
+  int _consecutiveTileLoadFailures = 0;
+  static const _tileLoadFailureThreshold = 3;
+
+  /// Tracks the last-applied mapTilesEnabled value so we can detect changes
+  /// in _buildMap and call setOffline() without a full style reload.
+  bool? _lastMapTilesEnabled;
+  Timer? _tileLoadTimeoutTimer;
+  static const _tileLoadTimeoutSeconds = 8;
+
+  // Re-entrance guard for _onStyleLoaded. The iOS plugin can fire
+  // onStyleLoadedCallback multiple times during a single style switch,
+  // which causes the sync logic to race against itself. This flag bails
+  // any nested call.
+  bool _styleLoadInProgress = false;
+
+  // True only after _setupRepeaterClusterLayers has finished creating the
+  // cluster GeoJSON source AND all 3 layers. Set to false at the start of
+  // each style load. Used as an additional guard for build()-triggered post-
+  // frame syncs so they don't race ahead of source creation and try to call
+  // setGeoJsonSource on a source that doesn't exist yet (which produces the
+  // "Failed to update repeater source: sourceNotFound" error at startup).
+  bool _clusterLayersReady = false;
+
+  // True while the focus-lines source + 1-2 line layers are installed in the
+  // current style. Lets _updateFocusLines short-circuit when there's nothing
+  // to remove and nothing to add — touching MapLibre's layer stack (even with
+  // no-op removes that hit try/catch) crosses the platform channel and can
+  // nudge the symbol-collision pass.
+  bool _focusLinesInstalled = false;
+
+  // Community coverage connection lines/cells (tap a tile -> fan out to heard
+  // repeaters; tap a repeater -> its coverage cells + lines). Install-once empty
+  // layers, updated in place via setGeoJsonSource. Separate from the focus-mode
+  // lines (which key off _focusedPingLocation and are rebuilt by
+  // _syncAllAnnotations) so the two features never wipe each other.
+  bool _coverageLinesInstalled = false;
+  bool _coverageCellsInstalled = false;
+  // Set while a tapped cell's fan-out is shown: the repeater ids that heard the
+  // cell's pings. Non-null -> _buildRepeaterFeatureCollection hides every
+  // repeater NOT in the set (web fades-but-keeps; the app hides for consistency
+  // with focus/isolation). Built from the capped endpoints. Null = inactive.
+  Set<String>? _coverageHeardRepeaterIds;
+  // Distance-label pills for the cell fan-out lines (own tracking, mirrors the
+  // focus-mode distance labels but keyed by endpoint lat/lon at 6dp).
+  final Map<String, Symbol> _coverageDistanceLabelSymbols = {};
+  final Set<String> _registeredCoverageLabelImages = {};
+  final Map<String, Size> _registeredCoverageLabelImageSizes = {};
+
+  // Native annotation tracking — populated by sync methods.
+  // Maps from app-state IDs to MapLibre Symbol/Line objects so we can diff
+  // (add new, update existing, remove deleted) on each data version change.
+  // NOTE: repeaters do NOT use the annotation manager — they live in a custom
+  // cluster-enabled GeoJSON source so MapLibre can group nearby markers into
+  // count bubbles at low zoom. See _setupRepeaterClusterLayers().
+  final Map<String, Symbol> _coverageSymbols = {}; // key: "{type}_{ts.ms}"
+  // Last-applied visual signature (iconImage|iconSize) per coverage symbol.
+  // A symbol's geometry is baked into its key, so only icon image/size can
+  // change after creation (TX red→green on echo, focus enlarge). We skip the
+  // native updateSymbol round-trip when the signature is unchanged — without
+  // this, every sync re-pushed ALL accumulated symbols (O(n)/event), which
+  // made marker/ping display lag grow with session length. See _syncCoverageSymbols.
+  final Map<String, String> _coverageSymbolSig = {};
+  // Per-key render order: a monotonic counter assigned on first sight, so a
+  // newer symbol always sorts above an older one. Replaces a timestamp-derived
+  // sort key that overflowed float32 (the native symbol-sort-key) and quantized
+  // recent pings into ~4s buckets, stacking simultaneous RX unpredictably.
+  final Map<String, int> _coverageZIndex = {};
+  int _coverageZCounter = 0;
+  // GPS puck lives in its OWN dedicated GeoJSON source + symbol layer rendered
+  // ABOVE every other layer (coverage fills/pins, repeaters), so it is always on
+  // top by LAYER ORDER — not by competing for a symbol-sort-key inside the shared
+  // annotation source. Keeping it out of that shared source also removes the
+  // one-frame blink where a freshly-added coverage pin painted over the puck
+  // during the source's full re-layout (the old `_gpsZIndex` sort-key approach).
+  // Installed via _ensureGpsPuckLayer (re-installed on style reload, see
+  // _onStyleLoaded) and updated in place via setGeoJsonSource.
+  static const String _gpsPuckSourceId = 'gps-puck-source';
+  static const String _gpsPuckLayerId = 'gps-puck-layer';
+  bool _gpsPuckLayerInstalled = false;
+  final Map<String, Symbol> _distanceLabelSymbols =
+      {}; // key: focused repeater id
+  // Per focused-repeater metadata used by the collision-avoidance reflow:
+  // the image size (for hit-box overlap tests) and the repeater lat/lon (so
+  // we can slide the label along the ping→repeater line at a new parameter t).
+  final Map<String, Size> _distanceLabelImageSize = {};
+  final Map<String, LatLng> _distanceLabelRepeaterPos = {};
+  // Tracks distance-label image names we've registered via addImage, so the
+  // style-reload path can drop stale names from the map's image cache if ever
+  // needed. Right now we just re-addImage on each sync (idempotent).
+  final Set<String> _registeredDistanceLabelImages = {};
+  final Map<String, Size> _registeredDistanceLabelImageSizes = {};
+  // Detailed-mode baked repeater chip image names already registered via
+  // addImage (deduped by "repchip_{status}_{hop}_{hex}"). Lazily grown by
+  // _ensureRepeaterChipImages; cleared on style reload (native drops images).
+  final Set<String> _registeredChipImages = {};
+
+  // When true, _syncAllAnnotations skips _updateFocusLines and
+  // _syncDistanceLabels so the 500ms zoom-to-fit animation runs without
+  // contention from heavy native platform calls. The deferred work runs
+  // after the animation settles via _activatePingFocus's delayed callback.
+  bool _focusSyncDeferred = false;
+
+  // Repeater cluster source/layer IDs (custom GeoJSON layer with cluster: true)
+  static const _repeaterSourceId = 'repeaters-source';
+  static const _repeaterIndividualLayerId = 'repeaters-individual';
+  static const _repeaterClusterBubbleLayerId = 'repeaters-cluster-bubble';
+  static const _repeaterClusterCountLayerId = 'repeaters-cluster-count';
+
+  // Spiderfy source/layer IDs — non-clustered shadow source rendering spread
+  // markers + leader lines for stacked repeaters that won't separate by zoom.
+  static const _spiderSourceId = 'spider-source';
+  static const _spiderLineLayerId = 'spider-leader-lines';
+  static const _spiderSymbolLayerId = 'spider-symbols';
+  // Matches the main source's clusterRadius (50px). Reused by the spiderfy
+  // group-detection logic: pairs of repeaters within `clusterRadius × m/px
+  // at the user's max zoom` of each other will visually overlap even when
+  // fully zoomed in, so they're the candidates that won't be separated by
+  // additional zoom and need to be spread apart instead.
+  static const double _clusterRadiusPx = 50;
+  static const double _spiderInnerRadiusPx = 44;
+  static const double _spiderOuterRadiusPx = 80;
+  static const double _leaderLineEndShortenPx = 8;
+  // Camera-zoom delta past which an open spider must collapse (positions are
+  // pixel-radius derived and become wrong if the user zooms far enough).
+  static const double _spiderCollapseZoomDelta = 0.25;
+
+  // Regional boundary (from /border API — always visible)
+  static const _regionBorderSourceId = 'region-border-source';
+  static const _regionBorderLineLayerId = 'region-border-line';
+  static const _regionBorderLabelLayerId = 'region-border-label';
+  int _lastBordersSignature = -1;
+
+  // Tracks which marker style preference the coverage images are currently
+  // registered for. When the user changes their preference, we re-register.
+  String? _registeredCoverageStyle;
+
+  // True after _registerMapImages() finishes — gates symbol creation.
+  bool _imagesRegistered = false;
+
+  // Last bearing seen by camera listener (for non-rotating GPS counter-rotation)
+  double _lastBearing = 0;
+
+  // Spiderfy state — when non-null, a stack of stacked repeaters has been
+  // fanned out around _spiderCenter into the shadow `spider-source`.
+  // Lifecycle: set by _spiderfy(), cleared by _collapseSpider().
+  LatLng? _spiderCenter;
+  List<Repeater> _spiderRepeaters = const [];
+  // Captured on _spiderfy() so _onCameraChanged can detect a zoom delta past
+  // _spiderCollapseZoomDelta and collapse (positions become invalid).
+  double? _spiderOpenedAtZoom;
+
+  // Repeater isolation — when non-null, ONLY this repeater is shown on the map;
+  // every other repeater is skipped in _buildRepeaterFeatureCollection (web
+  // parity: clicking a repeater hides the rest). Set when a single repeater's
+  // detail sheet opens, cleared when it closes/minimizes or on empty-map tap.
+  String? _isolatedRepeaterId;
 
   // Default center (Ottawa)
   static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
   static const double _defaultZoom = 15.0; // Closer zoom for driving
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _appLifecycleState =
+        WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+    // Coverage-patch updates are driven by a DIRECT provider listener, not the
+    // build() watchers: when the device sits still nothing else rebuilds this
+    // widget, and a patch that waits for the next rebuild only appears after
+    // the user happens to touch the map.
+    _patchProviderRef = context.read<AppStateProvider>();
+    _patchProviderRef!.addListener(_onCoveragePatchNotify);
+    // GPS position drives camera-follow / heading / puck via a DIRECT listener
+    // (not build()): the camera follows every tick WITHOUT rebuilding the map,
+    // which would relayout the iOS platform view (~28 ms/tick). See
+    // _handleGpsPosition. GPS notifies no longer bump mapRevision, so the map's
+    // Selector doesn't rebuild on position.
+    _patchProviderRef!.addListener(_onPositionNotify);
+  }
+
+  AppStateProvider? _patchProviderRef;
+
+  void _onCoveragePatchNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    if (appState.coveragePatchVersion == _lastAppliedPatchVersion) return;
+    if (!_isMapReady || !_styleLoaded) return;
+    _lastAppliedPatchVersion = appState.coveragePatchVersion;
+    _applyCoveragePatch(appState);
+  }
+
+  /// Fires on every provider notify; drives real-time camera-follow + GPS puck
+  /// from the current position without rebuilding the map. Heavy work inside is
+  /// version-gated, so non-position notifies are a cheap no-op.
+  void _onPositionNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    _handleGpsPosition(appState);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final wasBackground = _appLifecycleState != AppLifecycleState.resumed;
+    _appLifecycleState = state;
+
+    if (state != AppLifecycleState.resumed) {
+      // Going to background — block camera animations immediately.
+      _cameraAnimationReady = false;
+    } else if (wasBackground && _isMapReady) {
+      // Resuming from background — GL surface needs a frame to restore
+      // before constrainCameraAndZoomToBounds can project without NaN.
+      _cameraAnimationReady = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _cameraAnimationReady = true;
+          _recoverCoverageOverlayIfNeeded();
+          // Markers that arrived while backgrounded were skipped because the
+          // build() marker-sync is gated on _cameraAnimationReady (and left
+          // _lastMarkerDataVersion stale). Now that the gate is open, force a
+          // rebuild so build() detects the version diff and syncs the
+          // accumulated pins — otherwise they don't render until the next
+          // mapRevision bump (the next ping).
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  /// Re-add the coverage overlay if it should be visible but was lost during
+  /// a background/foreground transition.
+  void _recoverCoverageOverlayIfNeeded() {
+    if (_activeCoverageSourceId != null) return;
+    if (!_showMeshMapperOverlay) return;
+    final appState = context.read<AppStateProvider>();
+    if (!appState.preferences.mapTilesEnabled) return;
+    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) return;
+    debugLog('[MAP] Recovering coverage overlay after app resume');
+    _addCoverageOverlay(appState);
+  }
+
+  @override
   void dispose() {
-    _animationController?.dispose();
-    _rotationAnimationController?.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _patchProviderRef?.removeListener(_onCoveragePatchNotify);
+    _patchProviderRef?.removeListener(_onPositionNotify);
+    _tileLoadTimeoutTimer?.cancel();
+    final controller = _mapController;
+    if (controller != null) {
+      controller.removeListener(_onCameraChanged);
+      // Symbol/feature tap listeners are registered in _onMapCreated onto
+      // separate callback collections that ChangeNotifier.dispose() does NOT
+      // clear. Remove them explicitly so an in-flight tap that gets queued
+      // before the platform channel is torn down can't reach into a disposed
+      // State. try/catch swallows the edge case where _onMapCreated never ran.
+      try {
+        controller.onSymbolTapped.remove(_handleSymbolTap);
+      } catch (_) {}
+      try {
+        controller.onFeatureTapped.remove(_handleFeatureTap);
+      } catch (_) {}
+    }
     super.dispose();
+  }
+
+  /// Camera change listener — fires every frame during pan/zoom (because
+  /// trackCameraPosition: true is set on MapLibreMap). With native annotations,
+  /// the markers themselves don't need a per-frame rebuild — they're rendered
+  /// by the native map engine and stay in sync automatically. The only thing
+  /// we still need to do here is update the GPS marker's iconRotate when the
+  /// camera bearing changes, because for rotating styles (arrow/walk/chomper)
+  /// iconRotate = heading - bearing and the bearing animates continuously in
+  /// heading mode. Throttled by a small bearing delta to avoid spamming
+  /// updateSymbol.
+  void _onCameraChanged() {
+    if (!mounted || _mapController == null) return;
+    final pos = _mapController!.cameraPosition;
+    if (pos == null) return;
+
+    // If a spider is open and the user has zoomed past the collapse-delta
+    // threshold, drop the spider — pixel-radius spread positions are now wrong
+    // for the new zoom. Pure pan never crosses this threshold (zoom doesn't
+    // change), so the spider follows pan naturally via its geo coordinates.
+    // Once `_spiderCenter` is null after collapse, this branch no-ops.
+    if (_spiderCenter != null && _spiderOpenedAtZoom != null) {
+      if ((pos.zoom - _spiderOpenedAtZoom!).abs() > _spiderCollapseZoomDelta) {
+        _collapseSpider();
+      }
+    }
+
+    if ((pos.bearing - _lastBearing).abs() < 0.5) return;
+    _lastBearing = pos.bearing;
+    _updateGpsSymbolRotation();
   }
 
   @override
   void didUpdateWidget(MapWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     // When padding changes (panel opened/closed/minimized/orientation change), re-center if auto-following
-    if ((widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels ||
-            widget.rightPaddingPixels != oldWidget.rightPaddingPixels) &&
+    final paddingChanged =
+        widget.bottomPaddingPixels != oldWidget.bottomPaddingPixels ||
+            widget.rightPaddingPixels != oldWidget.rightPaddingPixels;
+    if (paddingChanged) {
+      debugLog('[MAP CENTER] didUpdateWidget padding change: '
+          'bottom ${oldWidget.bottomPaddingPixels}->${widget.bottomPaddingPixels} '
+          'right ${oldWidget.rightPaddingPixels}->${widget.rightPaddingPixels} '
+          '_autoFollow=$_autoFollow _isMapReady=$_isMapReady '
+          '_lastGpsPosition=${_lastGpsPosition != null}');
+    }
+    if (paddingChanged &&
         _autoFollow &&
         _isMapReady &&
         _lastGpsPosition != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _autoFollow && _lastGpsPosition != null) {
+          final double targetBearing =
+              (!_alwaysNorth && _computedHeading != null)
+                  ? _computedHeading!
+                  : 0.0;
+          final double targetZoom = _autoFollowDesiredZoom ??
+              _mapController?.cameraPosition?.zoom ??
+              _defaultZoom;
           final adjustedPosition = _offsetPositionForPadding(
             _lastGpsPosition!,
             widget.bottomPaddingPixels,
             widget.rightPaddingPixels,
+            targetZoom,
+            targetBearing,
           );
-          _animateToPosition(adjustedPosition);
+          final cam = _mapController?.cameraPosition;
+          debugLog('[MAP CENTER] re-center after padding change: '
+              'gps=(${_lastGpsPosition!.latitude.toStringAsFixed(6)},${_lastGpsPosition!.longitude.toStringAsFixed(6)}) '
+              'target=(${adjustedPosition.latitude.toStringAsFixed(6)},${adjustedPosition.longitude.toStringAsFixed(6)}) '
+              'deltaLat=${(adjustedPosition.latitude - _lastGpsPosition!.latitude).toStringAsFixed(6)} '
+              'deltaLon=${(adjustedPosition.longitude - _lastGpsPosition!.longitude).toStringAsFixed(6)} '
+              'zoom=${targetZoom.toStringAsFixed(2)} bearing=${targetBearing.toStringAsFixed(2)} '
+              'curZoom=${cam?.zoom.toStringAsFixed(2)} curBearing=${cam?.bearing.toStringAsFixed(2)} '
+              'alwaysNorth=$_alwaysNorth');
+          _animateAutoFollowCamera(
+            target: adjustedPosition,
+            zoom: targetZoom,
+            bearing: targetBearing,
+          );
         }
       });
     }
   }
 
-  /// Smoothly animate the map to a new position
-  void _animateToPosition(LatLng target) {
-    if (!_isMapReady || !mounted) return;
-
-    // Get current position
-    final currentCenter = _mapController.camera.center;
-
-    // Skip if already at target (within small threshold)
-    final distance =
-        const Distance().as(LengthUnit.Meter, currentCenter, target);
-    if (distance < 1) return; // Less than 1 meter, don't animate
-
-    // Cancel any running animation
-    _animationController?.stop();
-    _animationController?.dispose();
-
-    // Create new animation controller
-    // Duration based on distance - shorter for small movements, longer for big jumps
-    final duration = Duration(milliseconds: distance < 100 ? 200 : 300);
-
-    _animationController = AnimationController(
-      duration: duration,
-      vsync: this,
-    );
-
-    _animation = CurvedAnimation(
-      parent: _animationController!,
-      curve: Curves.easeOutCubic, // Smooth deceleration
-    );
-
-    _animationStartPosition = currentCenter;
-    _animationEndPosition = target;
-
-    _animation!.addListener(() {
-      if (!mounted ||
-          _animationStartPosition == null ||
-          _animationEndPosition == null) {
-        return;
-      }
-
-      // Interpolate between start and end positions
-      final t = _animation!.value;
-      final lat = _animationStartPosition!.latitude +
-          ((_animationEndPosition!.latitude -
-                  _animationStartPosition!.latitude) *
-              t);
-      final lng = _animationStartPosition!.longitude +
-          ((_animationEndPosition!.longitude -
-                  _animationStartPosition!.longitude) *
-              t);
-
-      _mapController.move(LatLng(lat, lng), _mapController.camera.zoom);
-    });
-
-    _animationController!.forward();
-  }
-
   /// Smoothly animate the map to a new position with zoom
   void _animateToPositionWithZoom(LatLng target, double targetZoom) {
-    if (!_isMapReady || !mounted) return;
-
-    // Get current position and zoom
-    final currentCenter = _mapController.camera.center;
-    final currentZoom = _mapController.camera.zoom;
-
-    // Cancel any running animation
-    _animationController?.stop();
-    _animationController?.dispose();
-
-    // Create new animation controller
-    const duration = Duration(milliseconds: 500); // Smooth zoom + pan
-
-    _animationController = AnimationController(
-      duration: duration,
-      vsync: this,
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
+    // Guard against NaN/infinite/out-of-range coords — MapLibre's native LatLng
+    // ctor throws (uncaught → SIGABRT) on invalid input. See isValidLatLng.
+    if (!isValidLatLng(target.latitude, target.longitude)) {
+      debugWarn('[MAP] Skipping camera move to invalid target '
+          '(${target.latitude}, ${target.longitude})');
+      return;
+    }
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngZoom(target, targetZoom),
+      duration: const Duration(milliseconds: 500),
     );
-
-    _animation = CurvedAnimation(
-      parent: _animationController!,
-      curve: Curves.easeInOutCubic, // Smooth acceleration and deceleration
-    );
-
-    _animationStartPosition = currentCenter;
-    _animationEndPosition = target;
-
-    _animation!.addListener(() {
-      if (!mounted ||
-          _animationStartPosition == null ||
-          _animationEndPosition == null) {
-        return;
-      }
-
-      // Interpolate between start and end positions
-      final t = _animation!.value;
-      final lat = _animationStartPosition!.latitude +
-          ((_animationEndPosition!.latitude -
-                  _animationStartPosition!.latitude) *
-              t);
-      final lng = _animationStartPosition!.longitude +
-          ((_animationEndPosition!.longitude -
-                  _animationStartPosition!.longitude) *
-              t);
-
-      // Interpolate zoom
-      final zoom = currentZoom + ((targetZoom - currentZoom) * t);
-
-      _mapController.move(LatLng(lat, lng), zoom);
-    });
-
-    _animationController!.forward();
   }
 
-  /// Zoom to fit a focused ping and its connected repeaters on screen
-  void _zoomToFocusBounds(
-      LatLng pingLocation, List<_ResolvedRepeater> repeaters) {
-    if (!_isMapReady || !mounted) return;
+  /// Atomic auto-follow camera update: animates target, zoom, and bearing
+  /// together in a single animateCamera call.
+  ///
+  /// Using separate animateCamera calls for position and rotation races —
+  /// the second call cancels the first, so each GPS tick in heading mode
+  /// lost either the pan or the rotation. Bundling everything into one
+  /// newCameraPosition update avoids the race entirely and also keeps the
+  /// initial zoom animation from being cancelled by the first auto-follow
+  /// tick.
+  void _animateAutoFollowCamera({
+    required LatLng target,
+    required double zoom,
+    required double bearing,
+    int durationMs = 300,
+  }) {
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
+    // Guard against NaN/infinite/out-of-range coords — MapLibre's native LatLng
+    // ctor throws (uncaught → SIGABRT) on invalid input. See isValidLatLng.
+    if (!isValidLatLng(target.latitude, target.longitude)) {
+      debugWarn('[MAP] Skipping auto-follow camera move to invalid target '
+          '(${target.latitude}, ${target.longitude})');
+      return;
+    }
+    _mapController!.animateCamera(
+      CameraUpdate.newCameraPosition(CameraPosition(
+        target: target,
+        zoom: zoom,
+        bearing: bearing,
+      )),
+      duration: Duration(milliseconds: durationMs),
+    );
+  }
 
-    final points = [
-      pingLocation,
-      ...repeaters.map((r) => LatLng(r.repeater.lat, r.repeater.lon))
-    ];
-    if (points.length < 2) return;
+  // ===========================================================================
+  // Shared focus-camera lifecycle (ping focus + tile/repeater coverage views)
+  // ===========================================================================
 
-    final fitted = CameraFit.coordinates(
-      coordinates: points,
-      padding: EdgeInsets.fromLTRB(
-          60, 60, 60, MediaQuery.of(context).size.height * 0.4),
-      maxZoom: 15,
-    ).fit(_mapController.camera);
+  /// Animate the camera to fit [points] on screen (north-up, with room for the
+  /// bottom sheet/pill). No-op with fewer than 2 valid points (nothing to frame).
+  void _fitCameraToPoints(List<LatLng> points) {
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
+    final valid = points
+        .where((p) => isValidLatLng(p.latitude, p.longitude))
+        .toList();
+    if (valid.length < 2) return;
 
-    _animateToPositionWithZoom(fitted.center, fitted.zoom);
+    double minLat = valid[0].latitude, maxLat = valid[0].latitude;
+    double minLon = valid[0].longitude, maxLon = valid[0].longitude;
+    for (final p in valid) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLon) minLon = p.longitude;
+      if (p.longitude > maxLon) maxLon = p.longitude;
+    }
+
+    // Leave room for the bottom sheet/pill that accompanies focus views.
+    final bottomPad = MediaQuery.of(context).size.height * 0.4;
+    _animateFitBounds(
+      minLat: minLat,
+      maxLat: maxLat,
+      minLon: minLon,
+      maxLon: maxLon,
+      leftPad: 60,
+      topPad: 60,
+      rightPad: 60,
+      bottomPad: bottomPad,
+    );
+  }
+
+  /// Fit the camera to a lat/lon box, guarding the two inputs MapLibre will
+  /// choke on: a degenerate (zero-area) box and edge padding that exceeds the
+  /// map's rendered size. Either yields a non-finite zoom that propagates into
+  /// MapLibre's native `unproject` and aborts the app with an uncaught C++
+  /// `LatLng` throw (SIGABRT) — the same failure mode as an invalid coordinate,
+  /// which a plain lat/lon validity check does not catch. A degenerate box falls
+  /// back to a plain center+zoom move; padding is clamped to the live map size.
+  void _animateFitBounds({
+    required double minLat,
+    required double maxLat,
+    required double minLon,
+    required double maxLon,
+    double leftPad = 60,
+    double topPad = 60,
+    double rightPad = 60,
+    double bottomPad = 60,
+  }) {
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        !_canAnimateCamera) {
+      return;
+    }
+    final centerLat = (minLat + maxLat) / 2;
+    final centerLon = (minLon + maxLon) / 2;
+
+    // A single point (or coincident cluster) has no span to frame — center on it
+    // instead of asking MapLibre to fit a zero-area box.
+    if (isDegenerateBounds(minLat, maxLat, minLon, maxLon)) {
+      _animateToPositionWithZoom(
+          LatLng(centerLat, centerLon), 16.0 - _zoomEpsilon);
+      return;
+    }
+
+    // Belt-and-suspenders: never hand MapLibre a non-finite corner.
+    if (!isValidLatLng(minLat, minLon) || !isValidLatLng(maxLat, maxLon)) {
+      debugWarn('[MAP] Skipping fit-bounds with invalid corners '
+          '($minLat,$minLon)-($maxLat,$maxLon)');
+      return;
+    }
+
+    final size = context.size ?? MediaQuery.of(context).size;
+    final pad = clampFitPadding(
+        leftPad, topPad, rightPad, bottomPad, size.width, size.height);
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLon),
+          northeast: LatLng(maxLat, maxLon),
+        ),
+        left: pad.left,
+        top: pad.top,
+        right: pad.right,
+        bottom: pad.bottom,
+      ),
+      duration: const Duration(milliseconds: 500),
+    );
+  }
+
+  /// Engage the shared focus camera: save the user's current camera / auto-follow
+  /// / rotation ONCE (so a switch between focus views keeps the original
+  /// snapshot), then lock north-up and stop following. Idempotent — a no-op when
+  /// a focus camera is already active. Camera/follow/rotation ONLY: it does NOT
+  /// touch the coverage overlay opacity or [isFocusModeActive] (each mode owns
+  /// those).
+  void _enterFocusCamera() {
+    if (_cameraFocusActive) return;
+    _cameraFocusActive = true;
+    final pos = _mapController?.cameraPosition;
+    _preFocusCenter = pos?.target;
+    _preFocusZoom = pos?.zoom;
+    _wasAutoFollowBeforeFocus = _autoFollow;
+    _wasRotatingBeforeFocus = !_alwaysNorth;
+    if (_autoFollow) _autoFollow = false;
+    if (!_alwaysNorth) {
+      _alwaysNorth = true;
+      // Snap rotation to north instantly so the zoom-to-fit view is stable.
+      if (_isMapReady && _mapController != null && _canAnimateCamera) {
+        _mapController!.animateCamera(
+          CameraUpdate.bearingTo(0),
+          duration: const Duration(milliseconds: 1),
+        );
+      }
+    }
+  }
+
+  /// Disengage the shared focus camera: animate back to the saved center/zoom and
+  /// restore auto-follow / rotation (after the zoom-back settles). Idempotent.
+  void _exitFocusCamera() {
+    if (!_cameraFocusActive) return;
+    _cameraFocusActive = false;
+    final center = _preFocusCenter;
+    final zoom = _preFocusZoom;
+    final restoreFollow = _wasAutoFollowBeforeFocus && !_autoFollow;
+    final restoreRot = _wasRotatingBeforeFocus && _alwaysNorth;
+    if (center != null && zoom != null) {
+      _animateToPositionWithZoom(center, zoom);
+      // Defer follow/rotation restore so they don't clobber the zoom-back
+      // animation mid-flight (both share the animation controller).
+      if (restoreFollow || restoreRot) {
+        Future.delayed(const Duration(milliseconds: 550), () {
+          if (!mounted) return;
+          setState(() {
+            if (restoreFollow) _autoFollow = true;
+            if (restoreRot) _alwaysNorth = false;
+          });
+        });
+      }
+    } else {
+      setState(() {
+        if (restoreFollow) _autoFollow = true;
+        if (restoreRot) _alwaysNorth = false;
+      });
+    }
+  }
+
+  /// True while any focus view (ping focus, tile coverage, repeater coverage) is
+  /// open. Drives [_exitFocusCameraIfDone] so a view switch (which clears the old
+  /// view AFTER the new one is claimed) keeps the camera engaged.
+  bool get _anyFocusViewActive =>
+      _focusedPingLocation != null ||
+      _cellPopupActive ||
+      _isolatedRepeaterId != null;
+
+  /// Restore the shared focus camera only when no focus view remains open.
+  void _exitFocusCameraIfDone() {
+    if (!_anyFocusViewActive) _exitFocusCamera();
   }
 
   /// Smoothly animate the map rotation to match heading
+  /// MapLibre bearing is clockwise from north (same as GPS heading)
   void _animateToRotation(double targetHeading) {
-    if (!_isMapReady || !mounted || _alwaysNorth) return;
-
-    // Get current rotation (in degrees)
-    final currentRotation = _mapController.camera.rotation;
-
-    // Normalize target heading to -180 to 180 range for smooth rotation
-    // Map heading is counter-clockwise from north, GPS heading is clockwise
-    // So we need to negate it: -targetHeading
-    double targetRotation = -targetHeading;
-
-    // Normalize angles to -180 to 180 range
-    while (targetRotation > 180) {
-      targetRotation -= 360;
+    if (_mapController == null ||
+        !_isMapReady ||
+        !mounted ||
+        _alwaysNorth ||
+        !_canAnimateCamera) {
+      return;
     }
-    while (targetRotation < -180) {
-      targetRotation += 360;
-    }
+
+    final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
 
     // Calculate shortest rotation path
-    double delta = targetRotation - currentRotation;
+    double delta = targetHeading - currentBearing;
     while (delta > 180) {
       delta -= 360;
     }
@@ -400,99 +1251,314 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     // Skip if rotation change is very small (less than 2 degrees)
     if (delta.abs() < 2) return;
 
-    // Cancel any running rotation animation
-    _rotationAnimationController?.stop();
-    _rotationAnimationController?.dispose();
-
-    // Create new rotation animation controller
-    // Faster rotation for small changes, slower for large changes
-    final duration = Duration(milliseconds: delta.abs() < 45 ? 300 : 500);
-
-    _rotationAnimationController = AnimationController(
-      duration: duration,
-      vsync: this,
+    _mapController!.animateCamera(
+      CameraUpdate.bearingTo(targetHeading),
+      duration: Duration(milliseconds: delta.abs() < 45 ? 300 : 500),
     );
-
-    _rotationAnimation = CurvedAnimation(
-      parent: _rotationAnimationController!,
-      curve: Curves.easeInOutCubic, // Smooth acceleration and deceleration
-    );
-
-    _rotationStartAngle = currentRotation;
-    _rotationEndAngle = currentRotation + delta;
-
-    _rotationAnimation!.addListener(() {
-      if (!mounted ||
-          _rotationStartAngle == null ||
-          _rotationEndAngle == null) {
-        return;
-      }
-
-      // Interpolate between start and end angles
-      final t = _rotationAnimation!.value;
-      final rotation = _rotationStartAngle! +
-          ((_rotationEndAngle! - _rotationStartAngle!) * t);
-
-      _mapController.rotate(rotation);
-    });
-
-    _rotationAnimationController!.forward();
   }
 
-  /// Offset a lat/lon position by screen pixels (to account for UI overlays)
-  /// Shifts the map center to keep the GPS marker centered in the visible map area
-  /// - bottomPadding: shifts center down (portrait mode with bottom panel)
-  /// - rightPadding: shifts center left (landscape mode with side panel)
-  LatLng _offsetPositionForPadding(LatLng position, double bottomPadding,
-      [double rightPadding = 0, double? atZoom]) {
-    if (!_isMapReady) return position;
+  /// Produce a reliable heading in degrees (0..360) from successive GPS fixes.
+  ///
+  /// Prefers `Position.heading` when the device is moving fast enough for the
+  /// hardware bearing to be trustworthy; otherwise derives the bearing from
+  /// the delta between the last anchor fix and the current one. Returns the
+  /// last known-good value (possibly null) when we don't have enough motion
+  /// yet. This exists because geolocator reports heading=0 (Android) or
+  /// -1 (iOS) at rest and during slow/stop-and-go movement, which would
+  /// otherwise leave the arrow/walk marker stuck pointing north.
+  double? _computeHeading(Position p) {
+    final here = LatLng(p.latitude, p.longitude);
+
+    // Fast path: trust the GPS chip when it's actually moving.
+    // geolocator reports speed in m/s. 1 m/s ≈ 3.6 km/h — slower than that,
+    // the hardware bearing is either stale or not computed.
+    final gpsHeading = p.heading;
+    if (p.speed >= 1.0 && gpsHeading >= 0 && gpsHeading <= 360) {
+      _bearingAnchor = here;
+      _computedHeading = gpsHeading;
+      return _computedHeading;
+    }
+
+    // Slow/stationary path: compute our own bearing once we have enough travel.
+    if (_bearingAnchor == null) {
+      _bearingAnchor = here;
+    } else {
+      final moved = Geolocator.distanceBetween(
+        _bearingAnchor!.latitude,
+        _bearingAnchor!.longitude,
+        here.latitude,
+        here.longitude,
+      );
+      if (moved >= 5.0) {
+        final bearing = Geolocator.bearingBetween(
+          _bearingAnchor!.latitude,
+          _bearingAnchor!.longitude,
+          here.latitude,
+          here.longitude,
+        );
+        // bearingBetween returns -180..180; normalize to 0..360.
+        _computedHeading = (bearing + 360) % 360;
+        _bearingAnchor = here;
+      }
+    }
+
+    return _computedHeading; // may be null until first meaningful motion
+  }
+
+  /// Offset a lat/lon position by screen pixels (to account for UI overlays).
+  /// Shifts the camera target so the GPS marker sits in the visible (unpadded)
+  /// part of the map:
+  /// - bottomPadding > 0: camera shifts "screen-down" so marker appears toward
+  ///   the top half (portrait with bottom panel open).
+  /// - rightPadding > 0: camera shifts "screen-right" so marker appears toward
+  ///   the left half (landscape with side panel open on the right).
+  ///
+  /// [atZoom] and [atBearing] override the current camera values. Callers that
+  /// are *about* to animate the camera to a new zoom/bearing must pass the
+  /// target values — otherwise the offset gets computed at an interpolated
+  /// mid-animation value and the marker settles off-center.
+  LatLng _offsetPositionForPadding(
+    LatLng position,
+    double bottomPadding, [
+    double rightPadding = 0,
+    double? atZoom,
+    double? atBearing,
+  ]) {
+    if (_mapController == null || !_isMapReady) return position;
     if (bottomPadding <= 0 && rightPadding <= 0) return position;
 
-    // Get meters per pixel at current zoom (or at a specific zoom if provided)
-    // Approx: 40075km / (256 * 2^zoom) at equator, adjusted by cos(lat)
-    final zoom = atZoom ?? _mapController.camera.zoom;
+    // MapLibre's internal projection uses 512-logical-px tile units (see
+    // MapLibre style spec — vector and raster sources are reprojected onto a
+    // 512px grid regardless of source tile size). The previous formula here
+    // assumed 256-px tiles, which made every offset 2× too large and pushed
+    // the GPS marker far above the visible-area centre.
+    final zoom = atZoom ?? _mapController!.cameraPosition?.zoom ?? _defaultZoom;
     final metersPerPixel = 40075000 /
-        (256 * math.pow(2, zoom)) *
+        (512 * math.pow(2, zoom)) *
         math.cos(position.latitude * math.pi / 180);
 
-    double latOffset = 0;
-    double lonOffset = 0;
-
-    // Bottom padding: shift center south (map moves up, marker appears centered)
-    if (bottomPadding > 0) {
-      final meterOffset = (bottomPadding / 2) * metersPerPixel;
-      latOffset = -(meterOffset / 111000); // ~111km per degree latitude
+    // One-time sanity check: log MapLibre's authoritative m/px and compare
+    // to our formula. If they differ, the tile-size assumption is wrong.
+    if (!_loggedMpxSanityCheck) {
+      _loggedMpxSanityCheck = true;
+      _mapController!
+          .getMetersPerPixelAtLatitude(position.latitude)
+          .then((mapLibreMpx) {
+        debugLog('[MAP CENTER] m/px sanity: formula=${metersPerPixel.toStringAsFixed(4)} '
+            'maplibre=${mapLibreMpx.toStringAsFixed(4)} '
+            'ratio=${(metersPerPixel / mapLibreMpx).toStringAsFixed(3)} '
+            '(zoom=${zoom.toStringAsFixed(2)} lat=${position.latitude.toStringAsFixed(4)})');
+      }).catchError((e) {
+        debugLog('[MAP CENTER] m/px sanity check failed: $e');
+      });
     }
 
-    // Right padding: shift center west (map moves right, marker appears centered)
-    if (rightPadding > 0) {
-      final meterOffset = (rightPadding / 2) * metersPerPixel;
-      // Longitude degrees per meter varies with latitude
-      lonOffset = -(meterOffset /
-          (111000 * math.cos(position.latitude * math.pi / 180)));
-    }
+    // Compute the desired camera shift in WORLD METERS along the
+    // (north, east) axes. Working in metres up front avoids the previous
+    // unit-mixing bug, where lat-degrees and lon-degrees were rotated as if
+    // they were the same unit (1° lat ≠ 1° lon away from the equator).
+    //
+    // We want the marker (at `position`) to appear shifted "screen-up" by
+    // `bottomPadding/2` and "screen-left" by `rightPadding/2` relative to
+    // screen centre, so the camera target itself shifts in the opposite
+    // direction (screen-down + screen-right).
+    final bearingDeg =
+        atBearing ?? _mapController!.cameraPosition?.bearing ?? 0;
+    final bearingRad = bearingDeg * math.pi / 180;
+    final cosB = math.cos(bearingRad);
+    final sinB = math.sin(bearingRad);
 
-    // When the map is rotated (heading mode), geographic "south" no longer maps
-    // to "screen down". Rotate the offset vector by the camera rotation so the
-    // shift always points in the correct screen direction.
-    final rotationDeg = _mapController.camera.rotation;
-    if (rotationDeg.abs() > 0.1) {
-      final rotationRad = -rotationDeg * math.pi / 180;
-      final cosR = math.cos(rotationRad);
-      final sinR = math.sin(rotationRad);
-      final rotatedLat = latOffset * cosR - lonOffset * sinR;
-      final rotatedLon = latOffset * sinR + lonOffset * cosR;
-      latOffset = rotatedLat;
-      lonOffset = rotatedLon;
-    }
+    // At bearing β (clockwise from north), world unit-vectors of the
+    // screen axes are:
+    //   screen-down  = (-cosβ, -sinβ)   in (north, east)
+    //   screen-right = (-sinβ,  cosβ)
+    final downMetres = bottomPadding / 2 * metersPerPixel;
+    final rightMetres = rightPadding / 2 * metersPerPixel;
+    final northShift = downMetres * -cosB + rightMetres * -sinB;
+    final eastShift = downMetres * -sinB + rightMetres * cosB;
+
+    // Convert metres → degrees. 1° latitude ≈ 111 km everywhere; 1° longitude
+    // shrinks by cos(latitude).
+    final latOffset = northShift / 111000;
+    final lonOffset =
+        eastShift / (111000 * math.cos(position.latitude * math.pi / 180));
 
     return LatLng(
         position.latitude + latOffset, position.longitude + lonOffset);
   }
 
+  /// Drives camera-follow, derived heading, one-time zooms, and the GPS-marker
+  /// puck from the current GPS position. Invoked on EVERY GPS tick by a direct
+  /// provider listener (`_onPositionNotify`) so the camera follows in real time
+  /// WITHOUT rebuilding `MapWidget` — a rebuild relayouts the iOS platform view
+  /// (~28 ms) every tick, which was the dominant wardriving CPU/heat cost. The
+  /// camera move itself is the same native controller call (`animateCamera`) as
+  /// before; only its trigger moved out of `build()`. Also called from `build()`
+  /// as an idempotent safety net (all heavy work is version-gated).
+  void _handleGpsPosition(AppStateProvider appState) {
+    // Map center — prefer current GPS, fallback to last known. Only adopt a
+    // source position when its coords are valid; otherwise stay on the safe
+    // default center (invalid coords abort the app in MapLibre's LatLng ctor).
+    LatLng center = _defaultCenter;
+    final pos = appState.currentPosition;
+    final lastKnown = appState.lastKnownPosition;
+    if (pos != null && isValidLatLng(pos.latitude, pos.longitude)) {
+      center = LatLng(pos.latitude, pos.longitude);
+    } else if (lastKnown != null &&
+        isValidLatLng(lastKnown.lat, lastKnown.lon)) {
+      center = LatLng(lastKnown.lat, lastKnown.lon);
+    }
+
+    // One-time zoom to last known position when GPS is not yet available.
+    if (appState.currentPosition == null &&
+        lastKnown != null &&
+        isValidLatLng(lastKnown.lat, lastKnown.lon) &&
+        !_hasZoomedToLastKnown &&
+        _isMapReady &&
+        _canAnimateCamera) {
+      _hasZoomedToLastKnown = true;
+      final lastKnownCenter = LatLng(lastKnown.lat, lastKnown.lon);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _animateToPositionWithZoom(lastKnownCenter, 15.0 - _zoomEpsilon);
+          debugLog('[MAP] Initial zoom to last known position');
+        }
+      });
+    }
+
+    if (appState.currentPosition != null) {
+      // Recompute derived heading (more reliable than position.heading at low
+      // speeds); _computedHeading is updated as a side effect.
+      _computeHeading(appState.currentPosition!);
+
+      // One-time initial zoom to GPS (even with auto-follow off, centered on GPS).
+      if (!_hasInitialZoomed && _isMapReady && _canAnimateCamera) {
+        _hasInitialZoomed = true;
+        final initialPosition = center;
+        _lastGpsPosition = initialPosition;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            if (_autoFollow) {
+              final adjustedPosition = _offsetPositionForPadding(
+                  initialPosition,
+                  widget.bottomPaddingPixels,
+                  widget.rightPaddingPixels,
+                  16.0 - _zoomEpsilon);
+              _animateToPositionWithZoom(
+                  adjustedPosition, 16.0 - _zoomEpsilon);
+              debugLog(
+                  '[MAP] Initial zoom to GPS position (with panel offset)');
+            } else {
+              _animateToPositionWithZoom(initialPosition, 16.0 - _zoomEpsilon);
+              debugLog('[MAP] Initial zoom to GPS position');
+            }
+          }
+        });
+      }
+
+      // Auto-follow: bundle pan, zoom, and bearing into one animateCamera call.
+      // Gate on _canAnimateCamera (not just _cameraAnimationReady) so the first
+      // follow tick is also held until the map has rendered once — same backstop
+      // as the initial zoom against the degenerate-viewport flyTo abort.
+      if (_autoFollow && _isMapReady && _canAnimateCamera) {
+        final newPosition = center;
+        if (_lastGpsPosition == null ||
+            _lastGpsPosition!.latitude != newPosition.latitude ||
+            _lastGpsPosition!.longitude != newPosition.longitude) {
+          _lastGpsPosition = newPosition;
+          final double targetBearing =
+              (!_alwaysNorth && _computedHeading != null)
+                  ? _computedHeading!
+                  : 0.0;
+          final double targetZoom = _autoFollowDesiredZoom ??
+              _mapController?.cameraPosition?.zoom ??
+              _defaultZoom;
+          if (!_alwaysNorth && _computedHeading != null) {
+            _lastHeading = _computedHeading;
+          }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _autoFollow) {
+              final adjustedPosition = _offsetPositionForPadding(
+                newPosition,
+                widget.bottomPaddingPixels,
+                widget.rightPaddingPixels,
+                targetZoom,
+                targetBearing,
+              );
+              _animateAutoFollowCamera(
+                target: adjustedPosition,
+                zoom: targetZoom,
+                bearing: targetBearing,
+              );
+            }
+          });
+        }
+      }
+
+      // Heading-based rotation when NOT auto-following.
+      if (!_autoFollow &&
+          !_alwaysNorth &&
+          _isMapReady &&
+          _computedHeading != null) {
+        final heading = _computedHeading!;
+        if (_lastHeading == null) {
+          _lastHeading = heading;
+          debugLog(
+              '[MAP] First heading after startup (${heading.toStringAsFixed(1)}°) — stored without rotating');
+        } else if ((heading - _lastHeading!).abs() > 2) {
+          _lastHeading = heading;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && !_alwaysNorth && !_autoFollow) {
+              _animateToRotation(heading);
+            }
+          });
+        }
+      }
+    } else {
+      // GPS lock lost — clear bearing state so reacquisition starts fresh.
+      _bearingAnchor = null;
+      _computedHeading = null;
+    }
+
+    // GPS marker puck — cheap updateSymbol, gated by gpsVersion (position +
+    // heading + style). Real-time every tick; does NOT go through the heavy
+    // _syncAllAnnotations pipeline.
+    if (_isMapReady &&
+        _styleLoaded &&
+        _imagesRegistered &&
+        _cameraAnimationReady) {
+      final gpsVersion = Object.hash(
+        appState.currentPosition?.latitude,
+        appState.currentPosition?.longitude,
+        _computedHeading,
+        appState.preferences.gpsMarkerStyle,
+      );
+      if (gpsVersion != _lastGpsSyncVersion) {
+        _lastGpsSyncVersion = gpsVersion;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (!mounted) return;
+          if (_gpsSyncInFlight) return;
+          _gpsSyncInFlight = true;
+          try {
+            await _syncGpsSymbol(appState);
+          } catch (e) {
+            debugError('[MAP] _syncGpsSymbol failed: $e');
+          } finally {
+            _gpsSyncInFlight = false;
+          }
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // NOTE: read (not watch). This widget is rebuilt by a Selector in
+    // home_screen.dart keyed on AppStateProvider.mapRevision (+ layout inputs),
+    // so it must NOT subscribe to the whole provider — that was the overheating
+    // root cause (the map rebuilt on every notifyListeners). build() runs
+    // whenever the Selector rebuilds it, at which point read gives fresh state.
+    final appState = context.read<AppStateProvider>();
 
     // Load saved map toggle preferences once, after Hive has finished loading
     if (!_prefsApplied && appState.preferencesLoaded) {
@@ -502,111 +1568,26 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       _rotationLocked = appState.preferences.mapRotationLocked;
     }
 
-    // Determine map center - prefer current GPS, fallback to last known, then Ottawa
+    // Determine map center - prefer current GPS, fallback to last known, then
+    // Ottawa. Only adopt a source position when its coords are valid — this
+    // feeds initialCameraPosition, and an invalid LatLng aborts the app in
+    // MapLibre's native ctor (the launch/resume crash).
     LatLng center = _defaultCenter;
-    if (appState.currentPosition != null) {
-      center = LatLng(
-        appState.currentPosition!.latitude,
-        appState.currentPosition!.longitude,
-      );
-    } else if (appState.lastKnownPosition != null) {
-      center = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
-      );
+    final centerPos = appState.currentPosition;
+    final centerLastKnown = appState.lastKnownPosition;
+    if (centerPos != null &&
+        isValidLatLng(centerPos.latitude, centerPos.longitude)) {
+      center = LatLng(centerPos.latitude, centerPos.longitude);
+    } else if (centerLastKnown != null &&
+        isValidLatLng(centerLastKnown.lat, centerLastKnown.lon)) {
+      center = LatLng(centerLastKnown.lat, centerLastKnown.lon);
     }
 
-    // One-time zoom to last known position when GPS is not yet available
-    // This runs before GPS locks, so user sees their previous location instead of Ottawa
-    if (appState.currentPosition == null &&
-        appState.lastKnownPosition != null &&
-        !_hasZoomedToLastKnown &&
-        _isMapReady) {
-      _hasZoomedToLastKnown = true;
-      final lastKnownCenter = LatLng(
-        appState.lastKnownPosition!.lat,
-        appState.lastKnownPosition!.lon,
-      );
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _animateToPositionWithZoom(lastKnownCenter, 15.0);
-          debugLog('[MAP] Initial zoom to last known position');
-        }
-      });
-    }
-
-    if (appState.currentPosition != null) {
-      // One-time initial zoom to GPS when we first get a position
-      // This happens even with auto-follow disabled so user sees their location
-      // Don't apply panel offset - center directly on GPS so pin is in middle of screen
-      if (!_hasInitialZoomed && _isMapReady) {
-        _hasInitialZoomed = true;
-        final initialPosition = center;
-        _lastGpsPosition = initialPosition;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            if (_autoFollow) {
-              // Auto-follow is on and panel may be open — apply panel offset so
-              // the marker appears centered in the visible map area.
-              final adjustedPosition = _offsetPositionForPadding(
-                  initialPosition,
-                  widget.bottomPaddingPixels,
-                  widget.rightPaddingPixels,
-                  16.0);
-              _animateToPositionWithZoom(adjustedPosition, 16.0);
-              debugLog(
-                  '[MAP] Initial zoom to GPS position (with panel offset)');
-            } else {
-              _animateToPositionWithZoom(initialPosition, 16.0);
-              debugLog('[MAP] Initial zoom to GPS position');
-            }
-          }
-        });
-      }
-
-      // Auto-follow GPS position when enabled - use smooth animation
-      if (_autoFollow && _isMapReady) {
-        final newPosition = center;
-        // Only animate if position has actually changed
-        if (_lastGpsPosition == null ||
-            _lastGpsPosition!.latitude != newPosition.latitude ||
-            _lastGpsPosition!.longitude != newPosition.longitude) {
-          _lastGpsPosition = newPosition;
-          // Use post frame callback to avoid build-during-build issues
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _autoFollow) {
-              // Apply offset for bottom padding when control panel is open
-              final adjustedPosition = _offsetPositionForPadding(newPosition,
-                  widget.bottomPaddingPixels, widget.rightPaddingPixels);
-              _animateToPosition(
-                  adjustedPosition); // Smooth animation instead of jump
-            }
-          });
-        }
-      }
-
-      // Handle map rotation based on heading (when not in Always North mode)
-      if (!_alwaysNorth && _isMapReady) {
-        final heading = appState.currentPosition!.heading;
-        if (_lastHeading == null) {
-          // First heading after startup — store without rotating so the
-          // initial zoom animation can settle at rotation 0 (where the
-          // panel offset was computed). Heading mode will begin rotating
-          // on the next GPS update when heading changes.
-          _lastHeading = heading;
-          debugLog(
-              '[MAP] First heading after startup (${heading.toStringAsFixed(1)}°) — stored without rotating');
-        } else if ((heading - _lastHeading!).abs() > 2) {
-          _lastHeading = heading;
-          // Use post frame callback to avoid build-during-build issues
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && !_alwaysNorth) {
-              _animateToRotation(heading);
-            }
-          });
-        }
-      }
-    }
+    // Camera-follow / derived heading / one-time zooms / GPS-marker puck now
+    // run in _handleGpsPosition, invoked every GPS tick by _onPositionNotify
+    // (real-time follow WITHOUT rebuilding the map / relayouting the platform
+    // view). Called here too as an idempotent safety net — version-gated.
+    _handleGpsPosition(appState);
 
     // Handle navigation trigger from log screen or graph
     // Reset map state and navigate to the target location
@@ -617,28 +1598,94 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       if (target != null) {
         // Reset map controls to default state
         _autoFollow = false; // Disable center on GPS
+        _autoFollowDesiredZoom = null;
         _alwaysNorth = true; // Set to north-up mode
         _rotationLocked = false; // Unlock rotation
         _lastHeading = null; // Reset heading tracking
+        _bearingAnchor = null; // Reset derived-heading anchor
+        _computedHeading = null;
 
         // Navigate to the coordinates with close zoom (18 = street level view)
         // Center directly on target without offset - we want the pin in the middle
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
+          if (mounted && _mapController != null) {
             final targetPosition = LatLng(target.lat, target.lon);
 
             // Rotate map back to north (0 degrees) first
-            final currentRotation = _mapController.camera.rotation;
-            if (currentRotation.abs() > 2) {
-              _mapController.rotate(0);
+            final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
+            if (currentBearing.abs() > 2 && _canAnimateCamera) {
+              _mapController!.animateCamera(CameraUpdate.bearingTo(0));
             }
 
             // Animate to the exact target position (no offset)
-            _animateToPositionWithZoom(targetPosition, 18.0);
+            _animateToPositionWithZoom(targetPosition, 18.0 - _zoomEpsilon);
           }
         });
       }
     }
+
+    // Handle history session view — fit camera to session bounds on transition
+    if (_isMapReady && appState.viewingHistorySession && !_wasViewingHistory) {
+      _wasViewingHistory = true;
+      final markers = appState.historySessionMarkers;
+      if (markers != null && markers.isNotEmpty) {
+        _autoFollow = false;
+        _alwaysNorth = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _mapController == null) return;
+          _fitCameraToHistoryMarkers(markers);
+        });
+      }
+    } else if (!appState.viewingHistorySession && _wasViewingHistory) {
+      _wasViewingHistory = false;
+    }
+
+    // Sync native annotations whenever marker data changes (provider triggers
+    // a rebuild). The version hash detects changes to ping/repeater counts,
+    // GPS position, focus state, prefs, etc. Native annotations stay in sync
+    // with the camera automatically — we only need to push data updates.
+    //
+    // _clusterLayersReady is the critical guard here: it ensures the cluster
+    // GeoJSON source actually exists before any sync attempts to push data
+    // into it. Without this, a Provider data update arriving in the brief
+    // window between _registerMapImages and _setupRepeaterClusterLayers
+    // (inside _onStyleLoaded) would race ahead and call setGeoJsonSource on
+    // a not-yet-created source, throwing "sourceNotFound".
+    if (_isMapReady &&
+        _styleLoaded &&
+        _imagesRegistered &&
+        _clusterLayersReady &&
+        _cameraAnimationReady) {
+      final dataVersion = _computeMarkerDataVersion(appState);
+      if (dataVersion != _lastMarkerDataVersion) {
+        _lastMarkerDataVersion = dataVersion;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (!mounted) return;
+          // Guard against concurrent build()-triggered syncs stepping on each
+          // other. _syncAllAnnotations awaits multiple native platform calls
+          // and can take ~100ms+; during auto-ping bursts multiple rebuilds
+          // would otherwise schedule overlapping runs whose cleanup loops
+          // would remove symbols the other sync just added.
+          if (_syncInFlight) return;
+          _syncInFlight = true;
+          try {
+            await _syncAllAnnotations(appState);
+          } catch (e) {
+            debugError('[MAP] _syncAllAnnotations failed: $e');
+          } finally {
+            _syncInFlight = false;
+            if (mounted) {
+              final freshVersion = _computeMarkerDataVersion(appState);
+              if (freshVersion != _lastMarkerDataVersion) {
+                setState(() {});
+              }
+            }
+          }
+        });
+      }
+    }
+
+    // (GPS marker puck sync moved into _handleGpsPosition — runs every tick.)
 
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
@@ -649,32 +1696,183 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
     return Stack(
       children: [
-        // Map
-        _buildMap(appState, center),
-
-        // GPS Info + Top Repeaters overlay (top-left, respects dynamic island in landscape)
-        Positioned(
-          top: topPadding,
-          left: leftPadding,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildGpsInfoOverlay(appState),
-              if (appState.preferences.showTopRepeaters) ...[
-                const SizedBox(height: 6),
-                _buildTopRepeatersOverlay(appState),
-              ],
-            ],
+        // Map — wait for Hive-loaded preferences before constructing
+        // MapLibreMap, otherwise the default mapStyle ('liberty') would
+        // render first and then swap to the user's saved style.
+        if (appState.preferencesLoaded)
+          _buildMap(appState, center)
+        else
+          const ColoredBox(
+            color: Color(0xFF1A1A1A),
+            child: SizedBox.expand(),
           ),
-        ),
 
-        // Map controls - top-right in both orientations, collapsible
-        Positioned(
-          top: topPadding,
-          right: 8,
-          child: _buildCollapsibleMapControls(appState),
-        ),
+        // GPS Info + Top Repeaters overlay (hidden during history view)
+        if (!appState.viewingHistorySession)
+          Positioned(
+            top: topPadding,
+            left: leftPadding,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildGpsInfoOverlay(appState),
+                if (appState.preferences.showTopRepeaters) ...[
+                  const SizedBox(height: 6),
+                  _buildTopRepeatersOverlay(appState),
+                ],
+              ],
+            ),
+          ),
+
+        // Map controls (hidden during history view)
+        if (!appState.viewingHistorySession)
+          Positioned(
+            top: topPadding,
+            right: 8,
+            child: _buildCollapsibleMapControls(appState),
+          ),
+
+        if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold)
+          Positioned(
+            top: topPadding,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: _buildTileLoadFailedBanner(),
+            ),
+          ),
+
+        // Minimized focus panel pill — the DEFAULT view for a ping tap (and what
+        // the full sheet collapses to). Gated on _focusedPingSource (not
+        // _focusedPingLocation) so a "missed" ping — heard by nobody, so no focus
+        // location/camera — still shows its pill. Full-width like the info pill so
+        // its 2-row layout has room. Not a modal: the map stays interactable.
+        if (_focusPanelMinimized && _focusedPingSource != null)
+          Positioned(
+            bottom: 16 + MediaQuery.of(context).padding.bottom,
+            left: 16,
+            right: 16,
+            child: _buildMinimizedFocusPanel(),
+          ),
+
+        // Minimized cell-summary / repeater-detail pill — same idea as the focus
+        // pill, for the tap popups. Map stays interactive while it's shown.
+        if (_minimizedInfoPopup != null)
+          Positioned(
+            bottom: 16 + MediaQuery.of(context).padding.bottom,
+            left: 16,
+            right: 16,
+            child: _buildMinimizedInfoPill(_minimizedInfoPopup!),
+          ),
+
+        // History session pill (bottom, styled like minimized focus panel).
+        // Hidden while a minimized focus/info pill occupies the same bottom
+        // slot, so the pill takes over the bottom area instead of stacking on
+        // top of (or under) this banner — parity with how the live-session
+        // control panel hides on infoPopupMinimized / isFocusModeActive.
+        if (appState.viewingHistorySession &&
+            _minimizedInfoPopup == null &&
+            !(_focusPanelMinimized && _focusedPingSource != null))
+          Positioned(
+            bottom: 16 + MediaQuery.of(context).padding.bottom,
+            left: 16,
+            right: 16,
+            child: Center(
+              child: _buildHistoryBanner(appState),
+            ),
+          ),
       ],
+    );
+  }
+
+  /// Banner shown when map tiles fail to load within the timeout window.
+  Widget _buildTileLoadFailedBanner() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 80),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade900.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.shade700, width: 1),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.cloud_off, color: Colors.white, size: 16),
+          SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              'Map tiles unavailable — check connection',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Pill shown at the bottom of the map when viewing a history session
+  Widget _buildHistoryBanner(AppStateProvider appState) {
+    final count = appState.historySessionMarkers?.length ?? 0;
+    return GestureDetector(
+      onTap: () => appState.clearHistorySession(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.history,
+              color: Theme.of(context).colorScheme.primary,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Session History',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '$count events',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () => appState.clearHistorySession(),
+              child: Icon(
+                Icons.close,
+                size: 18,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -712,171 +1910,3914 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
+  /// Method channel to the iOS native bridge (AppDelegate.swift). iOS
+  /// maplibre_gl 0.25.0 has no `setOffline` implementation, so we ship our
+  /// own: a URLProtocol that fails tile requests fast while offline mode is
+  /// engaged, letting MapLibre-iOS render only its cached tiles.
+  static const _iosOfflineChannel =
+      MethodChannel('meshmapper/ios_map_offline');
+
+  /// Toggle MapLibre between online (network tiles) and offline (cache-only).
+  /// Android uses the plugin's native `setOffline`; iOS uses our bridge.
+  Future<void> _setOfflineIfSupported(bool offline) async {
+    if (kIsWeb) return;
+    try {
+      if (Platform.isIOS) {
+        await _iosOfflineChannel
+            .invokeMethod('setOffline', {'offline': offline});
+      } else {
+        await setOffline(offline);
+      }
+      debugLog('[MAP] setOffline($offline) — '
+          'tiles ${offline ? "cache-only" : "enabled"}');
+    } catch (e) {
+      debugWarn('[MAP] setOffline failed: $e');
+    }
+  }
+
   Widget _buildMap(AppStateProvider appState, LatLng center) {
-    return Builder(
-      builder: (context) => FlutterMap(
-        mapController: _mapController,
-        options: MapOptions(
-          initialCenter: center,
-          initialZoom: _defaultZoom,
-          minZoom: 3,
-          maxZoom: 17,
-          interactionOptions: InteractionOptions(
-            flags: _rotationLocked
-                ? InteractiveFlag.all & ~InteractiveFlag.rotate
-                : InteractiveFlag.all,
+    final mapStyle =
+        MapStyleExtension.fromString(appState.preferences.mapStyle);
+    // Always use the real style so downloaded offline tiles can render from
+    // cache. Network access is controlled via setOffline() instead.
+    final newStyleUrl = mapStyle.styleUrl;
+
+    // Detect mapTilesEnabled toggle changes and switch MapLibre between
+    // online (network tiles) and offline (cache-only) mode. This avoids
+    // a full style reload — the same style stays loaded but MapLibre stops
+    // or starts making network requests for tiles.
+    //
+    // When disabling tiles, also drop the coverage overlay source/layer:
+    // MapLibre's ambient cache would still serve previously-fetched tiles,
+    // but the overlay is a live-data layer and shouldn't linger on the map
+    // in an indeterminate half-cached state once the user opted out. When
+    // re-enabling, re-add it so it reappears without waiting for a style
+    // reload or cache-bust.
+    final tilesEnabled = appState.preferences.mapTilesEnabled;
+    if (_lastMapTilesEnabled != tilesEnabled && _isMapReady) {
+      final wasEnabled = _lastMapTilesEnabled;
+      _lastMapTilesEnabled = tilesEnabled;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        await _setOfflineIfSupported(!tilesEnabled);
+        if (wasEnabled == true && !tilesEnabled) {
+          await _removeCoverageOverlay();
+          // No overlay on the map -> the post-wardrive fresh-tile flow must
+          // not keep rendering server tiles for it.
+          appState.reportVectorOverlayActive(false);
+        } else if (wasEnabled == false && tilesEnabled && _styleLoaded) {
+          await _addCoverageOverlay(appState);
+        }
+      });
+    }
+
+    // Style changes flow through MapLibreMap.styleString — the plugin's
+    // didUpdateWidget detects the new value and fires a native setStyle.
+    // onStyleLoadedCallback → _onStyleLoaded re-registers images, rebuilds
+    // cluster layers, re-adds the coverage overlay, and re-syncs annotations.
+
+    // Detect zoneCode or overlay-pref changes → schedule a SINGLE coalesced
+    // refresh; the _coverageRefreshScheduled flag ensures at most one refresh
+    // is queued per frame even when both change together.
+    //
+    // The zoneCode watcher is needed because _addCoverageOverlay only runs
+    // during _onStyleLoaded — if the first zone check failed with
+    // gps_inaccurate, the style loads with zoneCode=null and the overlay is
+    // skipped. When a later retry sets the zone, nothing else would trigger
+    // the coverage layer.
+    final zoneChanged = appState.zoneCode != _lastOverlayZoneCode &&
+        _isMapReady &&
+        _styleLoaded;
+    // Grid size is baked into the tile URL and the CVD palette into the layer
+    // paint, so either change rebuilds the overlay.
+    final prefsForOverlay = appState.preferences;
+    final overlayPrefChanged = _isMapReady &&
+        _styleLoaded &&
+        ((_lastAppliedGridSize != null &&
+                _lastAppliedGridSize != prefsForOverlay.coverageGridSize) ||
+            (_lastAppliedCvd != null &&
+                _lastAppliedCvd != prefsForOverlay.colorVisionType));
+    // A Grid Mode change ALSO toggles repeater clustering (Detailed = 100 is
+    // un-clustered). `cluster` is fixed at source creation, so the repeater
+    // source/layers must be rebuilt — not just the coverage overlay.
+    final gridChanged = _isMapReady &&
+        _styleLoaded &&
+        _lastAppliedGridSize != null &&
+        _lastAppliedGridSize != prefsForOverlay.coverageGridSize;
+
+    if (zoneChanged || overlayPrefChanged) {
+      if (zoneChanged) {
+        _lastOverlayZoneCode = appState.zoneCode;
+        // The session patch belongs to the old region's grid.
+        appState.clearCoveragePatch();
+      }
+      if (overlayPrefChanged) {
+        // Patched cell ids/geometry are per grid preset; a palette-only
+        // change keeps them (the rebuild restyles the patch layer too).
+        if (gridChanged) {
+          appState.clearCoveragePatch();
+        }
+        // An open community coverage view (cell fan-out / repeater cells) is
+        // tied to the old grid steps/blob and palette — clear it so it doesn't
+        // render stale geometry/colours over the rebuilt overlay.
+        _clearCoverageConnections();
+        _lastAppliedGridSize = prefsForOverlay.coverageGridSize;
+        _lastAppliedCvd = prefsForOverlay.colorVisionType;
+      }
+      if (!_coverageRefreshScheduled) {
+        _coverageRefreshScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          _coverageRefreshScheduled = false;
+          if (!mounted) return;
+          // Rebuild the repeater source/layers with the new cluster flag BEFORE
+          // the coverage overlay refresh — coverage targets the bottom repeater
+          // layer as its belowLayerId, so those layers must exist first. Collapse
+          // any open spider so its (cluster-only) state doesn't leak across the
+          // rebuild.
+          if (gridChanged && _clusterLayersReady) {
+            _collapseSpider();
+            _clusterLayersReady = false;
+            await _setupRepeaterClusterLayers(
+                clustered: appState.preferences.coverageGridSize != 100);
+            await _syncRepeaterSymbols(appState);
+          }
+          await _refreshCoverageOverlay(appState);
+          // Region borders sit below the repeater stack; re-add them so they
+          // stay beneath the freshly-rebuilt repeater layers.
+          if (gridChanged && _showRegionBorders) {
+            await _refreshRegionBorders(appState);
+          }
+        });
+      }
+    }
+
+    // Watch for region boundary polygon changes. Signature is derived from
+    // the polygon codes AND point counts so zone transfers (same code, new
+    // shape) and refreshes both trigger a rebuild.
+    final borders = appState.regionBorders;
+    final bordersSig = Object.hashAll(borders.map(
+      (p) => Object.hash(p['code'], (p['polygon'] as List?)?.length ?? 0),
+    ));
+    if (bordersSig != _lastBordersSignature && _isMapReady && _styleLoaded) {
+      _lastBordersSignature = bordersSig;
+      if (_showRegionBorders) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _refreshRegionBorders(appState);
+        });
+      }
+    }
+
+    // (Session-patch application: direct provider listener
+    // _onCoveragePatchNotify — see initState for why it's not a build watcher.)
+
+    // Detect coverage overlay opacity change (user dragged the slider in
+    // Settings → General) and push it to the live raster layer without
+    // rebuilding the whole overlay. Skipped while ping focus mode is active —
+    // focus forces opacity to 0 and _dismissPingFocus restores the preference
+    // value directly — and while a tapped cell dims the backdrop (_clearCellHighlight
+    // restores it on sheet close), or this would un-dim it mid-sheet.
+    final wantedOpacity = appState.preferences.coverageOverlayOpacity;
+    if (_isMapReady &&
+        _styleLoaded &&
+        _focusedPingLocation == null &&
+        !_coverageDimmedForCell &&
+        !_coverageDimmedForRepeater &&
+        _lastAppliedCoverageOpacity != null &&
+        _lastAppliedCoverageOpacity != wantedOpacity) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _applyCoverageOverlayOpacity(wantedOpacity);
+      });
+    }
+
+    return Stack(
+      children: [
+        // MapLibre GL map (base tiles via style; coverage overlay added programmatically)
+        MapLibreMap(
+          styleString: newStyleUrl,
+          initialCameraPosition: CameraPosition(
+            target: center,
+            zoom: _defaultZoom,
           ),
-          onMapReady: () {
-            _isMapReady = true;
-            // Initial center on GPS if available
-            if (appState.currentPosition != null) {
-              _mapController.move(center, _defaultZoom);
+          minMaxZoomPreference: const MinMaxZoomPreference(3, _maxUserZoom),
+          rotateGesturesEnabled: !_rotationLocked,
+          scrollGesturesEnabled: true,
+          zoomGesturesEnabled: true,
+          tiltGesturesEnabled: false, // 2D wardriving map
+          compassEnabled: false, // We have our own controls
+          // CRITICAL: must be true so the controller's `cameraPosition` getter
+          // stays synced with the platform side. Without this, the Dart-side
+          // _cameraPosition is set once at construction and never updated, which
+          // breaks our sync projection (markers project to stale positions and
+          // get filtered out by viewport bounds). Also enables camera-move events
+          // during gestures so _onCameraChanged fires every frame for live
+          // marker overlay updates.
+          trackCameraPosition: true,
+          onMapCreated: _onMapCreated,
+          onStyleLoadedCallback: () => _onStyleLoaded(appState),
+          onMapIdle: _onMapIdle,
+          onCameraIdle: _onCameraIdle,
+          // onMapClick fires ONLY for taps that DON'T hit an interactive
+          // layer (the iOS/Android plugin routes feature hits to
+          // `feature#onTap` and doesn't dispatch onMapClick in that case).
+          // That's exactly what we need for the empty-area-collapse path —
+          // tapping the map background closes any open spider.
+          // Custom-layer feature taps still flow through
+          // `controller.onFeatureTapped` (registered in _onMapCreated).
+          onMapClick: _onMapEmptyTap,
+        ),
+        // No widget marker overlay — markers are now native MapLibre
+        // annotations rendered by the platform view itself.
+      ],
+    );
+  }
+
+  void _onMapCreated(MapLibreMapController controller) {
+    _mapController = controller;
+    // Wire up native annotation tap callbacks. These streams fire when the
+    // user taps on a symbol/line that the platform-side hit-test matches.
+    // Since the controller is created exactly once, this listener registration
+    // happens exactly once too — no need to remove and re-add on style switch.
+    controller.onSymbolTapped.add(_handleSymbolTap);
+    // Generic feature tap handler — fires for ANY interactive style layer,
+    // including our custom repeater cluster + individual layers (which are
+    // NOT managed by the annotation manager). We dispatch in _handleFeatureTap
+    // based on the layerId.
+    controller.onFeatureTapped.add(_handleFeatureTap);
+  }
+
+  /// Routes a native symbol tap to the appropriate detail sheet.
+  /// The tap event carries the [Symbol] object, which has the metadata Map we
+  /// attached when calling addSymbol() in the various sync methods. We use the
+  /// `kind` and `id` keys to look up the original ping/repeater object from
+  /// app state and call the existing `_show*Details()` method (which expects
+  /// the full object, not just an ID).
+  void _handleSymbolTap(Symbol symbol) {
+    if (!mounted) return;
+    final data = symbol.data;
+    if (data == null) return;
+    final kind = data['kind'] as String?;
+    final id = data['id'];
+    final appState = context.read<AppStateProvider>();
+
+    switch (kind) {
+      // 'repeater' is no longer handled here — repeaters are in a custom
+      // cluster GeoJSON layer (not the annotation manager) and dispatch
+      // through _handleMapClick + queryRenderedFeatures instead.
+      case 'tx':
+        final ping = appState.txPings
+            .where((p) => p.timestamp.millisecondsSinceEpoch == id)
+            .firstOrNull;
+        if (ping != null) _showTxPingDetails(ping);
+        break;
+      case 'rx':
+        final ping = appState.rxPings
+            .where((p) => p.timestamp.millisecondsSinceEpoch == id)
+            .firstOrNull;
+        if (ping != null) _showRxPingDetails(ping);
+        break;
+      case 'disc':
+        final entry = appState.discLogEntries
+            .where((e) => e.timestamp.millisecondsSinceEpoch == id)
+            .firstOrNull;
+        if (entry != null) _showDiscPingDetails(entry);
+        break;
+      case 'trace':
+        final entry = appState.traceLogEntries
+            .where((e) => e.timestamp.millisecondsSinceEpoch == id)
+            .firstOrNull;
+        if (entry != null) _showTraceDetails(entry);
+        break;
+      case 'history_tx':
+      case 'history_rx':
+      case 'history_disc':
+      case 'history_trace':
+        final marker = appState.historySessionMarkers
+            ?.where((m) => m.timestamp.millisecondsSinceEpoch == id)
+            .firstOrNull;
+        if (marker != null) _showHistoryMarkerAsLive(marker);
+        break;
+    }
+  }
+
+  /// Fires for taps on the map background that don't hit any interactive
+  /// custom-layer feature. Used to close an open spider when the user taps
+  /// somewhere outside the spread / cluster — the standard "click empty
+  /// area to dismiss" interaction. Wired via the MapLibreMap `onMapClick`
+  /// parameter.
+  void _onMapEmptyTap(math.Point<double> point, LatLng coordinates) {
+    if (!mounted) return;
+    if (_spiderCenter != null) {
+      _collapseSpider();
+      return; // dismissing the spider shouldn't also open a cell summary
+    }
+    // Safety net for a stranded isolation (active but no sheet and no pill
+    // keeping the selection alive). While minimized to a pill, the repeater
+    // stays the active selection, so leave the others hidden — don't restore.
+    if (_isolatedRepeaterId != null && _minimizedInfoPopup == null) {
+      _clearRepeaterIsolation(); // restore hidden repeaters, don't open a cell
+      return;
+    }
+    // Safety net for a stranded Feature A fan-out (faded repeaters + lines but
+    // no pill keeping the cell summary alive) — full teardown (clears the
+    // footprint/dim/fade and restores the shared focus camera) on empty tap.
+    if (_coverageHeardRepeaterIds != null && _minimizedInfoPopup == null) {
+      _clearCellHighlight();
+      return;
+    }
+    // Fallback cell hit-test: some platforms don't dispatch coverage fill-layer
+    // taps through onFeatureTapped, so query the coverage layer at the tap point.
+    _maybeShowCellSummaryAt(point, coordinates);
+  }
+
+  /// Hit-test the active coverage fill layer around [point]; if a cell is there,
+  /// open its GRID SUMMARY. The onMapClick fallback to _handleFeatureTap.
+  Future<void> _maybeShowCellSummaryAt(
+      math.Point<double> point, LatLng coordinates) async {
+    final layerId = _activeCoverageLayerId;
+    if (layerId == null || _mapController == null) return;
+    try {
+      // Hit-test a small BOX around the tap, not the exact pixel: at low zoom a
+      // coverage cell is only a pixel or two wide (a 300 m cell ≈ 2 px at z9), so
+      // an exact-point query nearly always lands in a gap and the tap "doesn't
+      // register". A ~30 px box makes tiles tappable at any zoom.
+      const pad = 15.0;
+      final rect =
+          Rect.fromLTWH(point.x - pad, point.y - pad, pad * 2, pad * 2);
+      // Include the session patch layer (the user's own freshly-pinged cells,
+      // drawn on top of the base) so tapping a patched cell still hit-tests.
+      final layers = <String>[layerId];
+      if (_patchLayerReady) layers.add(_patchLayerId);
+      final features =
+          await _mapController!.queryRenderedFeaturesInRect(rect, layers, null);
+      if (!mounted || features.isEmpty) return;
+      _showCellSummary(coordinates);
+    } catch (e) {
+      debugWarn('[COVERAGE] cell hit-test failed: $e');
+    }
+  }
+
+  /// Open the GRID SUMMARY bottom sheet for the coverage cell at [coordinates].
+  /// Lazily fetches the cell's coverage points and aggregates them client-side,
+  /// mirroring the web cell-click popup (minus PING HISTORY).
+  void _showCellSummary(LatLng coordinates) {
+    if (!mounted || _cellSummaryShowing) return;
+    // Don't open a cell summary when zoomed too far out — cells are barely
+    // visible there, so taps are almost always accidental. Both tap paths
+    // (_handleFeatureTap + _maybeShowCellSummaryAt) funnel here, so this one
+    // guard covers them and also skips the network fetch below.
+    final zoom = _mapController?.cameraPosition?.zoom ?? 0;
+    if (zoom < _kMinCellTapZoom) {
+      debugLog('[COVERAGE] cell tap ignored — zoom '
+          '${zoom.toStringAsFixed(2)} < $_kMinCellTapZoom');
+      return;
+    }
+    final appState = context.read<AppStateProvider>();
+    final zone = appState.zoneCode;
+    if (zone == null || zone.isEmpty) return;
+
+    final gridSize = appState.preferences.coverageGridSize;
+    // Snap to the clicked CELL (same grid as the server/web) so the summary is
+    // identical anywhere in the cell and matches the web's lazyShowPingsAt.
+    final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
+    final cell = GridCell.containing(
+        coordinates.latitude, coordinates.longitude, steps[0], steps[1]);
+    // The Detailed (100 m) coverage tile smears each ping over a 3×3 cell block
+    // (server $blob=1); Simplified (300 m) doesn't (blob=0). So a green cell can
+    // be coloured by a ping up to blob cells away — fetch out to the block's far
+    // corner and keep the pings whose blob covers this cell, else a blob-painted
+    // neighbour cell falsely reads "no coverage data here" (matches the web's
+    // ($gsize === 100 ? 1 : 0) blob rule for both presets).
+    final blob = gridSize == 100 ? 1 : 0;
+    final radius = cell.blobFetchRadiusMeters(blob, gridSize.toDouble());
+    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
+        hopBytes: appState.effectiveHopBytes);
+    final isImperial = appState.preferences.isImperial;
+
+    debugLog('[COVERAGE] cell tap @ '
+        '${coordinates.latitude.toStringAsFixed(5)},'
+        '${coordinates.longitude.toStringAsFixed(5)} '
+        'cell=${cell.i}/${cell.j} blob=$blob r=${radius.toStringAsFixed(0)}m');
+
+    // Supersede a currently-minimized popup. If it was a cell, its footprint
+    // stays until this tap's own footprint replaces it (no bright flash); if it
+    // was a repeater, drop the pill AND restore the hidden repeaters.
+    // Mark the cell view active BEFORE the teardowns so the shared focus camera
+    // isn't restored mid-switch (it stays engaged and re-fits below).
+    _cellPopupActive = true;
+    _clearMinimizedInfoPopup();
+    _clearRepeaterIsolation();
+    // Switching from a minimized ping focus: tear it down so its pill doesn't
+    // linger and overlap this cell view's pill at the shared bottom slot
+    // (symmetric to _enterPingFocus, which tears down the coverage views). The
+    // cell view is already claimed (_cellPopupActive = true), so this dismiss's
+    // _exitFocusCameraIfDone no-ops and the shared focus camera stays engaged.
+    _dismissPingFocus();
+    _enterFocusCamera();
+
+    // Fetch the pings once, keep the ones whose blob covers the tapped cell, and
+    // drive BOTH the summary sheet and the footprint highlight off that list.
+    final Future<List<Map<String, dynamic>>> blobPointsFuture = appState
+        .fetchCellCoverage(
+          lat: cell.centerLat,
+          lon: cell.centerLon,
+          radiusMeters: radius,
+        )
+        .then((points) => cell.filterWithinBlob(points, blob));
+
+    // Footprint highlight + backdrop dim appear with the data (web parity with
+    // highlightSpotCoverage(points)): the block fills in the dominant colour of
+    // the in-blob pings. No pings → no footprint, no dim (web early-return).
+    blobPointsFuture.then((pts) {
+      if (!mounted || !_cellPopupActive) return;
+      final st = dominantCoverageStatus(pts);
+      if (st != null) _showCellFootprint(cell, blob, st);
+    }).catchError((Object e) {
+      debugWarn('[COVERAGE] cell highlight failed: $e');
+    });
+
+    // Feature A: fan out a dashed line from the cell centre to every UNIQUE
+    // repeater that heard the cell's pings (web `updateAllActiveLines` parity),
+    // hide the repeaters that didn't, and label each line with its distance.
+    // Lines are theme-aware blue (web keys off the basemap; we key off the
+    // Flutter theme). Read brightness before the async gap.
+    final fanColor = Theme.of(context).brightness == Brightness.dark
+        ? '#4da6ff'
+        : '#00008b';
+    blobPointsFuture.then((pts) {
+      if (!mounted || !_cellPopupActive) return;
+      final eps = _capByFarthest(
+        heardEndpointsForCell(pts, lookup,
+            startLat: cell.centerLat, startLon: cell.centerLon),
+        (e) => e.distanceMeters,
+        250,
+        '[COVERAGE] cell fan-out',
+      );
+      final segments = [
+        for (final e in eps) (lat: e.lat, lon: e.lon, color: fanColor)
+      ];
+      _updateCoverageLines(segments, cell.centerLat, cell.centerLon);
+      _syncCoverageDistanceLabels(
+          segments, cell.centerLat, cell.centerLon, isImperial);
+      // Empty -> null restores all repeaters (never hide-all on an empty set).
+      _coverageHeardRepeaterIds =
+          eps.isEmpty ? null : {for (final e in eps) e.repeaterId};
+      _syncRepeaterSymbols(appState);
+      // Match ping focus: frame the cell + the repeaters that heard it (no-op
+      // when nothing was heard — single point — leaving the north-up view).
+      _fitCameraToPoints([
+        LatLng(cell.centerLat, cell.centerLon),
+        for (final e in eps) LatLng(e.lat, e.lon),
+      ]);
+    }).catchError((Object e) {
+      debugWarn('[COVERAGE] cell fan-out failed: $e');
+    });
+
+    final Future<GridSummary?> summaryFuture = blobPointsFuture
+        .then<GridSummary?>((pts) => GridSummary.fromPoints(pts, lookup))
+        .catchError((Object e) {
+      debugWarn('[COVERAGE] cell summary failed: $e');
+      return null;
+    });
+
+    // Open minimized by default — a compact stats pill; tap it to expand to the
+    // full GRID SUMMARY sheet.
+    _minimizeCellSummary(
+      cell: cell,
+      blob: blob,
+      summaryFuture: summaryFuture,
+      isImperial: isImperial,
+    );
+  }
+
+  /// Present (or re-present) the cell GRID SUMMARY sheet for [cell]. Bright map
+  /// (transparent barrier so the footprint dim still pops) + a minimize button
+  /// that collapses to a tappable pill, mirroring the ping-focus sheets. The
+  /// footprint highlight + dim stay while minimized and are cleared on a real
+  /// close. Reused by both the initial tap and the pill's reshow.
+  void _presentCellSummarySheet({
+    required GridCell cell,
+    required int blob,
+    required Future<GridSummary?> summaryFuture,
+    required bool isImperial,
+  }) {
+    _cellSummaryShowing = true;
+    showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      // Transparent barrier so the map stays bright (footprint dim still pops).
+      barrierColor: Colors.transparent,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => CellSummarySheet(
+        summaryFuture: summaryFuture,
+        isImperial: isImperial,
+        onMinimize: () => Navigator.pop(ctx, 'minimized'),
+      ),
+    ).then((result) {
+      _cellSummaryShowing = false;
+      if (!mounted) return;
+      if (result == 'minimized') {
+        // Collapse back to the stats pill (keep the footprint).
+        _minimizeCellSummary(
+          cell: cell,
+          blob: blob,
+          summaryFuture: summaryFuture,
+          isImperial: isImperial,
+        );
+      } else {
+        _clearCellHighlight();
+      }
+    });
+  }
+
+  /// Handles taps on custom layer features (repeater cluster bubbles and
+  /// individual repeaters). Wired in [_onMapCreated] via
+  /// `controller.onFeatureTapped.add(_handleFeatureTap)`.
+  ///
+  /// The iOS/Android tap dispatcher calls this for ANY tap that hits an
+  /// interactive style layer, BEFORE falling back to `onMapClick`. Since our
+  /// cluster source layers are interactive, taps on repeaters/clusters always
+  /// route here (not through onMapClick).
+  ///
+  /// We dispatch by [layerId]:
+  ///  - cluster bubble layer → zoom in 2 levels around the tap point
+  ///  - individual repeater layer → look up the Repeater by id and open the
+  ///    existing detail sheet
+  ///
+  /// [id] is the GeoJSON Feature `id` (which we set to `repeater.id` for
+  /// individual repeaters; MapLibre auto-generates one for cluster features).
+  /// [annotation] is always null here since these layers aren't managed by
+  /// the annotation manager.
+  void _handleFeatureTap(
+    math.Point<double> point,
+    LatLng coordinates,
+    String id,
+    String layerId,
+    Annotation? annotation,
+  ) {
+    if (!mounted) return;
+
+    // Spider spread marker: the user has picked one of the fanned-out repeaters
+    // to inspect → collapse the spider and focus that repeater (focus mode + its
+    // coverage cells), mirroring the GPS fall-through path in
+    // _fallThroughToRepeaterAt.
+    if (layerId == _spiderSymbolLayerId) {
+      _collapseSpider();
+      _showRepeaterDetailsById(id); // isolate: true (default)
+      return;
+    }
+
+    // Cluster tap: zoom in by default, but spiderfy first when the cluster
+    // contains markers stacked tightly enough that no further zoom would
+    // separate them. We accept hits on either the bubble circle layer or
+    // the count-text symbol layer (either may win the platform-side
+    // top-down hit-test depending on tap position).
+    //
+    // The explicit 200ms duration is important for perceived responsiveness.
+    // Without it, iOS uses setCamera(animated: true) which has a slow ease-in
+    // start (~150ms before any noticeable motion). Passing a duration switches
+    // the native code path to fly(to:withDuration:) which ramps in faster and
+    // finishes in 200ms, making the tap feel "instant" rather than delayed.
+    if (layerId == _repeaterClusterBubbleLayerId ||
+        layerId == _repeaterClusterCountLayerId) {
+      _handleClusterBubbleTap(point, coordinates);
+      return;
+    }
+
+    // Individual repeater: open the detail sheet. We ALSO check for stacked
+    // siblings within the spider stick threshold and spread them out. In
+    // Simplified Mode this is gated to max zoom (clustered, so the bubble-tap
+    // path zooms in first; an individual hit below max zoom is a real lone
+    // marker). In Detailed Mode there is no cluster bubble / "zoom in first"
+    // path and stacked markers overlap at every zoom, so spiderfy fires at any
+    // zoom — otherwise a stacked pile can only ever show one repeater's coverage
+    // and the rest stay buried.
+    if (layerId == _repeaterIndividualLayerId) {
+      // If a spider is open and the user tapped a non-spider individual
+      // (originals are filtered out via `inSpider`, so this can only be a
+      // marker outside the spider's group), collapse the existing spider.
+      if (_spiderCenter != null) {
+        _collapseSpider();
+      }
+
+      final appState = context.read<AppStateProvider>();
+      final detailed = appState.preferences.coverageGridSize == 100;
+      if (_isAtMaxZoom() || detailed) {
+        final group = _findSpiderGroup(coordinates, appState);
+        if (group.length >= 2) {
+          _spiderfy(coordinates, group);
+          return;
+        }
+      }
+
+      _showRepeaterDetailsById(id);
+      return;
+    }
+
+    // Regional boundary: either the line or the label → info dialog.
+    if (layerId == _regionBorderLineLayerId ||
+        layerId == _regionBorderLabelLayerId) {
+      _showBorderInfoDialog();
+      return;
+    }
+
+    // Coverage cell: open the GRID SUMMARY. Coverage fills sit below the
+    // repeaters, so reaching one means no repeater/cluster was hit. Accept ALL
+    // coverage fill layers, not just the base overlay: the session patch layer
+    // (the user's own freshly-pinged cells) renders ON TOP of the base, so a tap
+    // on a patched cell — common when zoomed in near where you've wardriven —
+    // returns the patch layer id and would otherwise be a dead tap. The tapped
+    // footprint highlight and the repeater coverage cells are likewise tappable.
+    // Platforms that don't dispatch fill-layer taps fall back to the
+    // queryRenderedFeatures hit-test in _onMapEmptyTap.
+    if (layerId == _activeCoverageLayerId ||
+        layerId == _patchLayerId ||
+        layerId == _cellHighlightLayerId ||
+        layerId == _coverageCellsLayerId) {
+      _showCellSummary(coordinates);
+      return;
+    }
+
+    // GPS marker tap: the GPS marker is a non-interactive symbol on the
+    // annotation manager layer (which sits ON TOP of all custom layers in
+    // paint order). Without intervention, taps on the GPS marker hit the
+    // annotation layer first and stop the iOS dispatcher from checking the
+    // cluster layers underneath. Detect that case here and re-query the
+    // cluster layers at the same screen point so the user can still tap
+    // a cluster/repeater that the GPS marker happens to be sitting on top of.
+    if (annotation is Symbol) {
+      final kind = annotation.data?['kind'] as String?;
+      if (kind == 'gps') {
+        _fallThroughToRepeaterAt(point, coordinates);
+        return;
+      }
+    }
+  }
+
+  /// Handle a tap on a cluster bubble (or its count label). Spiderfy is gated
+  /// to max zoom; below that we just zoom in.
+  ///
+  /// At max zoom, the spider group is computed from the actual MapLibre
+  /// cluster's `point_count` (queried back from the rendered feature) — we
+  /// take the N nearest repeaters to the tapped coordinate. This deliberately
+  /// avoids the transitive single-link clustering used by [_findSpiderGroup],
+  /// which could chain across separate visual clusters when markers form a
+  /// 42m-spaced trail and pull every chained marker into a single spider.
+  Future<void> _handleClusterBubbleTap(
+      math.Point<double> point, LatLng coordinates) async {
+    if (!mounted) return;
+
+    // Below max zoom: zoom in further so the user has a chance to separate
+    // the stack visually before we resort to the spread UI. _spiderCenter is
+    // always null at non-max zoom (the camera-change collapse fires when the
+    // user zooms out), so no collapse-handling is needed here.
+    if (!_isAtMaxZoom()) {
+      if (_canAnimateCamera &&
+          isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+        final currentZoom =
+            _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+        final newZoom = math.min(currentZoom + 2, _maxUserZoom);
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLngZoom(coordinates, newZoom),
+          duration: const Duration(milliseconds: 200),
+        );
+      }
+      return;
+    }
+
+    // Read the tapped cluster's point_count from MapLibre. This is the
+    // authoritative count of leaves Supercluster grouped into this bubble —
+    // matching it ensures the spider expands exactly the markers represented
+    // by the tapped bubble, not a chained connected component.
+    int? pointCount;
+    try {
+      final features = await _mapController?.queryRenderedFeatures(
+        point,
+        const [
+          _repeaterClusterBubbleLayerId,
+          _repeaterClusterCountLayerId,
+        ],
+        null,
+      );
+      if (features != null) {
+        for (final f in features) {
+          final props = ((f as Map)['properties'] as Map?) ?? const {};
+          if (props['cluster'] == true) {
+            final pc = props['point_count'];
+            if (pc is num) {
+              pointCount = pc.toInt();
+              break;
             }
+          }
+        }
+      }
+    } catch (e) {
+      debugError('[MAP] cluster point_count query failed: $e');
+    }
+
+    if (!mounted) return;
+
+    final appState = context.read<AppStateProvider>();
+    // If we couldn't read point_count (race with style reload, etc.), fall
+    // back to the BFS-based group — better to spiderfy something than nothing.
+    final group = pointCount != null
+        ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
+        : _findSpiderGroup(coordinates, appState);
+
+    // Re-tap on the open spider's own group → collapse instead of churn.
+    if (_spiderCenter != null) {
+      final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+      if (group.any((r) => spiderIds.contains(r.id))) {
+        _collapseSpider();
+        return;
+      }
+      _collapseSpider();
+    }
+
+    if (group.length >= 2) {
+      _spiderfy(coordinates, group);
+    }
+    // Already at max zoom with a single-marker group: nothing useful to
+    // zoom into and no stack to spread. Silent no-op.
+  }
+
+  /// When a tap hits the GPS marker (which has no detail sheet), try to find
+  /// any repeater cluster or individual repeater under the same point and
+  /// dispatch THAT instead. We use [queryRenderedFeatures] explicitly scoped
+  /// to the cluster source's layers, since the iOS native tap dispatcher
+  /// already short-circuited at the GPS marker layer above.
+  Future<void> _fallThroughToRepeaterAt(
+    math.Point<double> point,
+    LatLng coordinates,
+  ) async {
+    if (_mapController == null) return;
+    try {
+      // Query the spider symbols FIRST so a tap on a spread marker hidden
+      // under the GPS overlay still routes to the spider's detail sheet
+      // (rather than the original repeater layer beneath it).
+      final features = await _mapController!.queryRenderedFeatures(
+        point,
+        const [
+          _spiderSymbolLayerId,
+          _repeaterClusterCountLayerId,
+          _repeaterClusterBubbleLayerId,
+          _repeaterIndividualLayerId,
+        ],
+        null,
+      );
+      if (features.isEmpty || !mounted) return;
+
+      // The Dart-side wrapper jsonDecodes each feature into a Map for us
+      // (see method_channel_maplibre_gl.dart::queryRenderedFeatures). So we
+      // can read properties directly without parsing JSON.
+      final feature = features.first as Map;
+      final properties = (feature['properties'] as Map?) ?? {};
+
+      // Cluster (auto-tagged by MapLibre when cluster: true is set on source).
+      // Mirrors the cluster path in _handleFeatureTap, including the
+      // max-zoom gate on spiderfy. We already have the feature in hand here,
+      // so read `point_count` directly instead of re-querying.
+      if (properties['cluster'] == true) {
+        if (!_isAtMaxZoom()) {
+          if (_canAnimateCamera &&
+              isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+            final currentZoom =
+                _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+            final newZoom = math.min(currentZoom + 2, _maxUserZoom);
+            _mapController?.animateCamera(
+              CameraUpdate.newLatLngZoom(coordinates, newZoom),
+              duration: const Duration(milliseconds: 200),
+            );
+          }
+          return;
+        }
+        final appState = context.read<AppStateProvider>();
+        final pcRaw = properties['point_count'];
+        final pointCount = pcRaw is num ? pcRaw.toInt() : null;
+        final group = pointCount != null
+            ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
+            : _findSpiderGroup(coordinates, appState);
+        if (_spiderCenter != null) {
+          final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+          if (group.any((r) => spiderIds.contains(r.id))) {
+            _collapseSpider();
+            return;
+          }
+          _collapseSpider();
+        }
+        if (group.length >= 2) {
+          _spiderfy(coordinates, group);
+        }
+        return;
+      }
+
+      // Individual repeater (cluster or spider symbol). The feature `id`
+      // field is the repeater.id we set in our feature builders. Spider
+      // symbols never need spiderfy expansion — they ARE the spread; just
+      // open the detail sheet and leave the spider open.
+      final repeaterId =
+          (feature['id'] ?? properties['repeaterId'])?.toString();
+      if (repeaterId == null) return;
+
+      // For an individual layer hit (not a spider symbol), apply the same
+      // stacked-siblings test as the direct tap path. queryRenderedFeatures
+      // doesn't expose layerId per result in 0.25, so we infer: if a spider is
+      // open, the original individuals are filtered out, so any individual hit
+      // must be a non-stacked marker → just open the detail sheet. Otherwise run
+      // the spiderfy test — gated to max zoom in Simplified Mode, but at any
+      // zoom in Detailed Mode (un-clustered, so stacked markers overlap at every
+      // zoom and have no cluster-bubble "zoom in first" path). Mirrors the
+      // direct tap path.
+      if (_spiderCenter != null) {
+        // User tapped outside the open spider's group — collapse + show
+        // detail sheet for the tapped marker.
+        _collapseSpider();
+      } else {
+        final appState = context.read<AppStateProvider>();
+        final detailed = appState.preferences.coverageGridSize == 100;
+        if (_isAtMaxZoom() || detailed) {
+          final group = _findSpiderGroup(coordinates, appState);
+          if (group.length >= 2) {
+            _spiderfy(coordinates, group);
+            return;
+          }
+        }
+      }
+      _showRepeaterDetailsById(repeaterId);
+    } catch (e) {
+      debugError('[MAP] queryRenderedFeatures fall-through failed: $e');
+    }
+  }
+
+  /// Open the repeater detail sheet for a given [repeaterId]. Looks up the
+  /// Repeater object from app state and recomputes the duplicate/hopOverride
+  /// flags. Used by both direct tap dispatch and the GPS fall-through path.
+  void _showRepeaterDetailsById(String repeaterId, {bool isolate = true}) {
+    if (!mounted) return;
+    final appState = context.read<AppStateProvider>();
+    final repeater =
+        appState.repeaters.where((r) => r.id == repeaterId).firstOrNull;
+    if (repeater == null) return;
+
+    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
+    final isDuplicate = duplicates.contains(repeater.id);
+    final hopOverride =
+        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+
+    _showRepeaterDetails(
+      repeater,
+      isDuplicate: isDuplicate,
+      regionHopBytesOverride: hopOverride,
+      isolate: isolate,
+    );
+  }
+
+  /// Restore all repeaters after a repeater isolation (web-parity "click a
+  /// repeater hides the rest"). No-op if nothing is isolated. No setState —
+  /// nothing in build() reads [_isolatedRepeaterId]; the source is pushed
+  /// imperatively, matching the focus/spider resyncs.
+  void _clearRepeaterIsolation() {
+    if (_isolatedRepeaterId == null) return;
+    _isolatedRepeaterId = null;
+    // Tear down any Feature B coverage cells/lines drawn for the selection and
+    // restore the base coverage tiles it dimmed.
+    _clearCoverageLines();
+    _clearCoverageCells();
+    _restoreCoverageBackdropForRepeater();
+    if (!mounted) return;
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
+    // Restore the shared focus camera if no focus view remains (no-op during a
+    // switch, where the incoming view is already marked active).
+    _exitFocusCameraIfDone();
+  }
+
+  /// Restore the base coverage overlay opacity dimmed by a Feature B repeater
+  /// coverage draw (honours ping focus, which keeps the overlay hidden at 0).
+  /// No-op when not dimmed.
+  void _restoreCoverageBackdropForRepeater() {
+    if (!_coverageDimmedForRepeater) return;
+    _coverageDimmedForRepeater = false;
+    if (!mounted) return;
+    final restore = _focusedPingLocation != null
+        ? 0.0
+        : context.read<AppStateProvider>().preferences.coverageOverlayOpacity;
+    _applyCoverageOverlayOpacity(restore);
+  }
+
+  Future<void> _onStyleLoaded(AppStateProvider appState) async {
+    // Re-entrance guard. iOS plugin sometimes fires onStyleLoadedCallback
+    // multiple times during a single setStyle. The race causes "Layer not
+    // found" errors during the symbol manager's _rebuildLayers and
+    // double-registers images. Bail any nested call so the first invocation
+    // runs to completion uninterrupted.
+    if (_styleLoadInProgress) {
+      debugLog(
+          '[MAP] _onStyleLoaded re-entered while already running, skipping');
+      return;
+    }
+    _styleLoadInProgress = true;
+    try {
+      _styleLoaded = true;
+      _isMapReady = true;
+
+      // Let the GL surface render one frame before allowing camera animations.
+      // Without this, constrainCameraAndZoomToBounds can produce NaN on the
+      // very first flyTo/easeTo after style load (the viewport may be
+      // zero-sized or the projection matrix degenerate).
+      _cameraAnimationReady = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _cameraAnimationReady = true;
+        }
+      });
+
+      // CRITICAL: clear stale Symbol references from any previous style load.
+      // Style reloads cause maplibre_gl to construct a brand-new SymbolManager
+      // with empty internal _idToAnnotation maps. Our _coverageSymbols /
+      // _distanceLabelSymbols still reference the OLD
+      // Symbol objects whose IDs are not in the new manager — calling
+      // updateSymbol on them throws "you can only set existing annotations".
+      // Clearing them now means the next sync will call addSymbol (which
+      // creates fresh symbols in the new manager) instead of updateSymbol.
+      // The dedicated GPS-puck source/layer is wiped by the style reload too;
+      // reset the guard so _ensureGpsPuckLayer recreates it (topmost) below.
+      _gpsPuckLayerInstalled = false;
+      _coverageSymbols.clear();
+      _coverageSymbolSig.clear();
+      // The native SymbolManager is rebuilt empty here, so the next sync re-adds
+      // every symbol via addSymbol. Drop the stale z-order map so re-added keys
+      // get fresh (higher) counter values and stay monotonic with re-creation
+      // order — but keep _coverageZCounter climbing (never reset it).
+      _coverageZIndex.clear();
+      _distanceLabelSymbols.clear();
+      // Distance-label companions: the native side wipes registered images on
+      // style reload, so the "already registered" cache must be cleared too or
+      // the next focus mode will skip addImage() and reference a non-existent
+      // image. The size/repeater-position maps are cleared for consistency.
+      _distanceLabelImageSize.clear();
+      _distanceLabelRepeaterPos.clear();
+      _registeredDistanceLabelImages.clear();
+      _registeredDistanceLabelImageSizes.clear();
+      // Detailed-mode baked repeater chips are dropped by the native side on
+      // style reload too — clear the cache so the next sync re-registers them.
+      _registeredChipImages.clear();
+      // Mark cluster layers as not-ready until _setupRepeaterClusterLayers
+      // creates them on the new style. This gates build()-driven post-frame
+      // syncs from racing ahead of source creation.
+      _clusterLayersReady = false;
+
+      // Style reload wipes the native layer stack, so any tracked coverage
+      // overlay IDs now reference layers that no longer exist. Reset them so
+      // the next refresh treats this as a fresh add.
+      _activeCoverageSourceId = null;
+      _activeCoverageLayerId = null;
+      // Same reasoning for the focus-lines source/layers — gone with the
+      // style. Clear the flag so _updateFocusLines won't try to remove
+      // already-gone layers next time it's called.
+      _focusLinesInstalled = false;
+      // The tap cell-highlight overlay is likewise gone; _addCoverageOverlay
+      // re-installs it below.
+      _cellHighlightReady = false;
+      // Community coverage line/cell layers + their tracked symbols/images are
+      // also gone with the style; reset so the next draw treats it as fresh.
+      _coverageLinesInstalled = false;
+      _coverageCellsInstalled = false;
+      _coverageHeardRepeaterIds = null;
+      _coverageDistanceLabelSymbols.clear();
+      _registeredCoverageLabelImages.clear();
+      _registeredCoverageLabelImageSizes.clear();
+
+      // Disable symbol decluttering on the annotation manager. By default,
+      // MapLibre symbol layers hide overlapping icons/labels at lower zoom to
+      // reduce visual clutter — but for wardriving we want every coverage
+      // marker visible regardless of density. (Repeaters are now in their own
+      // cluster-enabled GeoJSON layer with its own per-layer overlap settings.)
+      await _configureSymbolDecluttering();
+
+      // Pre-render and register all marker bitmaps for native annotations.
+      // Style reloads (e.g., user switches dark→liberty) wipe registered images,
+      // so we always re-register on every style load. Awaited so the cluster
+      // layer (which references icon image names) sees them when it's created.
+      _imagesRegistered = false;
+      await _registerMapImages(appState);
+
+      // Set up the repeater source + layers. Must run AFTER images are
+      // registered, since the individual symbol layer's iconImage expression
+      // looks up names registered by _registerMapImages. Clustering follows the
+      // Grid Mode pref: Detailed (gsize 100) renders every repeater individually.
+      await _setupRepeaterClusterLayers(
+          clustered: appState.preferences.coverageGridSize != 100);
+
+      // Re-add coverage overlay AFTER cluster layers exist so _addCoverageOverlay
+      // can target the bottom repeater layer as its belowLayerId reference. This
+      // keeps the insertion point consistent with the zoneCode watcher path —
+      // both end up with raster at the bottom of the repeater stack, not above it.
+      await _refreshCoverageOverlay(appState);
+      _lastOverlayZoneCode = appState.zoneCode;
+
+      // Regional boundary layer — style reload wipes custom sources/layers.
+      // Reset the signature so the build()-driven watcher will repaint even
+      // if the polygon list hasn't changed (it almost always hasn't).
+      _lastBordersSignature = -1;
+      await _refreshRegionBorders(appState);
+
+      // GPS puck: dedicated top-most source+layer. Install AFTER coverage +
+      // repeaters + borders so it sits above them all (always-on-top by layer
+      // order). Idempotent; _syncGpsSymbol also ensures it before its first push.
+      await _ensureGpsPuckLayer();
+
+      // Start tile-load timeout. If onMapIdle doesn't fire within N seconds,
+      // we assume tiles are failing to load (network down, server error, etc.)
+      // and surface a banner. Cleared as soon as onMapIdle fires.
+      // When tiles are disabled (cache-only mode), suppress the warning — cached
+      // tiles load instantly or not at all; a timeout would be misleading.
+      _tileLoadTimeoutTimer?.cancel();
+      final tilesEnabled = appState.preferences.mapTilesEnabled;
+      _lastMapTilesEnabled = tilesEnabled;
+      // Ensure MapLibre offline mode matches the user's preference.
+      _setOfflineIfSupported(!tilesEnabled);
+      if (tilesEnabled) {
+        _tileLoadTimeoutTimer =
+            Timer(const Duration(seconds: _tileLoadTimeoutSeconds), () {
+          if (!mounted) return;
+          _consecutiveTileLoadFailures++;
+          debugWarn(
+              '[MAP] Tile load timeout — tiles did not finish loading within ${_tileLoadTimeoutSeconds}s ($_consecutiveTileLoadFailures/$_tileLoadFailureThreshold)');
+          if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold) {
+            appState.logError(
+              'Map tiles unavailable — check connection',
+              severity: ErrorSeverity.warning,
+              autoSwitch: false,
+            );
+            setState(() {});
+          }
+        });
+      } else {
+        _consecutiveTileLoadFailures = 0;
+      }
+
+      // First-load-only setup: center on GPS and register camera listener.
+      // On subsequent style switches, preserve the user's pan position.
+      if (!_hasStyleLoadedOnce) {
+        _hasStyleLoadedOnce = true;
+
+        // Center on GPS if available (initial centering). Skip on invalid
+        // coords — an out-of-range/NaN LatLng aborts the app in MapLibre.
+        final stylePos = appState.currentPosition;
+        if (stylePos != null &&
+            isValidLatLng(stylePos.latitude, stylePos.longitude) &&
+            _canAnimateCamera) {
+          final center = LatLng(stylePos.latitude, stylePos.longitude);
+          _mapController!.animateCamera(
+            CameraUpdate.newLatLngZoom(center, _defaultZoom),
+          );
+        }
+
+        // Register camera listener ONCE so marker overlay positions update on pan/zoom
+        _mapController!.addListener(_onCameraChanged);
+      }
+
+      // Force an initial annotation sync now that images are registered AND the
+      // cluster source/layers exist. This pushes the current app state into the
+      // newly-created native annotations on first style load (and again whenever
+      // the style is reloaded, since style reloads wipe everything).
+      if (mounted) {
+        await _syncAllAnnotations(appState);
+        // Update the data version to match what we just synced. Without this,
+        // the build()-driven post-frame sync would fire AGAIN with the same
+        // data because _lastMarkerDataVersion still holds the previous value
+        // — that double-sync was racing the first sync's symbol refs and
+        // throwing "you can only set existing annotations" errors twice.
+        _lastMarkerDataVersion = _computeMarkerDataVersion(appState);
+        // Same idea for the GPS-only sync gate: _syncAllAnnotations already
+        // ran _syncGpsSymbol, so capture the current GPS version to keep the
+        // next build from scheduling a redundant updateSymbol call.
+        _lastGpsSyncVersion = Object.hash(
+          appState.currentPosition?.latitude,
+          appState.currentPosition?.longitude,
+          _computedHeading,
+          appState.preferences.gpsMarkerStyle,
+        );
+        if (mounted) setState(() {});
+      }
+    } finally {
+      _styleLoadInProgress = false;
+    }
+  }
+
+  /// Fires when the map finishes loading visible tiles and the camera is idle.
+  /// We use this as the "tiles loaded successfully" signal — clears the failure
+  /// timer and hides any tile-load warning banner. Also releases any pending
+  /// coverage-overlay swap waiter so the previous buffer can be retired now
+  /// that the new tiles have rendered.
+  void _onMapIdle() {
+    _tileLoadTimeoutTimer?.cancel();
+
+    // First idle = the GL surface has rendered → the native viewport is now
+    // valid and camera animations are safe (see _mapHasRenderedOnce). Nudge a
+    // rebuild so the deferred one-shot initial zoom (held while the map was not
+    // yet rendered) re-attempts via build()'s _handleGpsPosition safety-net.
+    if (!_mapHasRenderedOnce && mounted) {
+      _mapHasRenderedOnce = true;
+      debugLog('[MAP] First map idle — camera animations enabled');
+      setState(() {});
+    }
+
+    if (_consecutiveTileLoadFailures > 0 && mounted) {
+      if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold) {
+        debugLog('[MAP] Tiles recovered after $_consecutiveTileLoadFailures consecutive load failures');
+      }
+      _consecutiveTileLoadFailures = 0;
+      setState(() {});
+    }
+  }
+
+  /// Fires when the camera stops moving — after both gestures and
+  /// programmatic animations. Auto-follow uses [_autoFollowDesiredZoom] as
+  /// a *one-shot* zoom target: tap-to-follow sets it to [_maxUserZoom],
+  /// the resulting animateCamera lands at that zoom, and this idle handler
+  /// then clears it. Subsequent GPS ticks fall through to the camera's
+  /// current zoom (line ~1005), so the user can pinch-zoom freely while
+  /// auto-follow is on without each tick snapping the zoom back.
+  void _onCameraIdle() {
+    if (!_autoFollow || _mapController == null) return;
+    _autoFollowDesiredZoom = null;
+  }
+
+  /// Add MeshMapper coverage raster overlay as a MapLibre source+layer.
+  /// Allocates fresh suffixed IDs each call to avoid native collisions.
+  Future<void> _addCoverageOverlay(AppStateProvider appState) async {
+    if (_mapController == null || !_showMeshMapperOverlay) {
+      debugLog(
+          '[MAP] Coverage overlay add skipped: controller=${_mapController != null}, showOverlay=$_showMeshMapperOverlay');
+      return;
+    }
+    if (!appState.preferences.mapTilesEnabled) {
+      debugLog('[MAP] Coverage overlay add skipped: mapTilesEnabled=false');
+      return;
+    }
+    if (appState.zoneCode == null || appState.zoneCode!.isEmpty) {
+      debugLog(
+          '[MAP] Coverage overlay add skipped: zoneCode=${appState.zoneCode}');
+      return;
+    }
+
+    final prefs = appState.preferences;
+    final zone = appState.zoneCode!.toLowerCase();
+    final gridSize = prefs.coverageGridSize;
+
+    final sourceId = _nextCoverageSourceId();
+    final layerId = _coverageLayerIdFor(sourceId);
+
+    try {
+      // Target the bottom of the repeater cluster stack when it exists, so the
+      // overlay lands beneath ALL marker layers (repeater clusters + symbol
+      // annotations). Fallback to the symbol annotation layer if cluster layers
+      // haven't been created yet.
+      final belowLayer = _clusterLayersReady
+          ? _repeaterIndividualLayerId
+          : _symbolAnnotationLayerId();
+      // While ping focus mode is active, force the newly added layer to
+      // opacity 0 so an overlay rebuild (zone/grid/palette change) doesn't
+      // make the overlay pop back into view in the middle of focus mode.
+      // Dismissing focus restores the preference value via
+      // _applyCoverageOverlayOpacity in _dismissPingFocus.
+      final opacity =
+          _focusedPingLocation != null ? 0.0 : prefs.coverageOverlayOpacity;
+
+      // The server emits an integer status category per cell (st); colour
+      // happens HERE via match expressions, so colour-vision palettes apply
+      // without any server param and a tile carries data, not pixels.
+      final url =
+          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize';
+      // minzoom 7 = the raster's old on-screen range (512px-convention vector
+      // tiles sit one display-zoom lower than 256px raster tiles).
+      await _mapController!.addSource(
+        sourceId,
+        VectorSourceProperties(tiles: [url], minzoom: 7, maxzoom: 14),
+      );
+      await _mapController!.addFillLayer(
+        sourceId,
+        layerId,
+        FillLayerProperties(
+          fillColor:
+              CoverageTilePalette.fillColorExpression(prefs.colorVisionType),
+          fillOutlineColor:
+              CoverageTilePalette.borderColorExpression(prefs.colorVisionType),
+          fillOpacity: opacity,
+        ),
+        sourceLayer: 'coverage',
+        belowLayerId: belowLayer,
+      );
+      _activeCoverageSourceId = sourceId;
+      _activeCoverageLayerId = layerId;
+
+      // The session patch rides directly above the base layer (same anchor,
+      // added later = higher) with identical styling. Creation is
+      // self-healing: if it fails here, the next patch update retries it.
+      // The base-layer filter is only applied once the patch layer exists —
+      // hiding cells the patch can't draw would punch holes in the overlay.
+      _patchLayerReady = false;
+      if (await _ensureCoveragePatchLayer(appState)) {
+        _lastAppliedPatchVersion = appState.coveragePatchVersion;
+        await _applyBasePatchFilter(appState, layerId);
+      }
+
+      // Tap-to-highlight overlay: installed empty here (renders nothing until a
+      // cell tap pushes a block into it). Self-heals on first tap if this fails.
+      _cellHighlightReady = false;
+      await _ensureCellHighlightLayer();
+
+      _lastAppliedCoverageOpacity = opacity;
+      _lastAppliedGridSize = gridSize;
+      _lastAppliedCvd = prefs.colorVisionType;
+      appState.reportVectorOverlayActive(true);
+      debugLog(
+          '[MAP] Coverage overlay added as $layerId (grid $gridSize, below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
+    } catch (e) {
+      // No overlay on the map — the post-wardrive fresh-tile flow must not
+      // keep fetching for it.
+      appState.reportVectorOverlayActive(false);
+      debugLog('[MAP] Failed to add coverage overlay: $e');
+    }
+  }
+
+  String _nextCoverageSourceId() =>
+      'meshmapper-overlay-${++_coverageBufferCounter}';
+
+  String _coverageLayerIdFor(String sourceId) => '$sourceId-layer';
+
+  /// Apply a new coverage overlay opacity to the live fill layers without
+  /// removing/re-adding them. No-op if the layer doesn't exist yet.
+  ///
+  /// setLayerProperties serializes with skipNulls:false — every property left
+  /// null is RESET to its style-spec default on iOS/web (fill-color → black),
+  /// so the full colour expressions must be resent alongside the new opacity,
+  /// never a partial FillLayerProperties.
+  Future<void> _applyCoverageOverlayOpacity(double opacity) async {
+    if (_mapController == null || !mounted) return;
+    final layerId = _activeCoverageLayerId;
+    if (layerId == null) return;
+    try {
+      final cvd = context.read<AppStateProvider>().preferences.colorVisionType;
+      final props = FillLayerProperties(
+        fillColor: CoverageTilePalette.fillColorExpression(cvd),
+        fillOutlineColor: CoverageTilePalette.borderColorExpression(cvd),
+        fillOpacity: opacity,
+      );
+      if (_patchLayerReady) {
+        await _mapController!.setLayerProperties(_patchLayerId, props);
+      }
+      await _mapController!.setLayerProperties(layerId, props);
+      _lastAppliedCoverageOpacity = opacity;
+      debugLog(
+          '[MAP] Coverage overlay opacity updated to ${opacity.toStringAsFixed(2)}');
+    } catch (e) {
+      // Layer may not exist yet (e.g. before first style load or when the
+      // overlay is hidden). Safe to ignore — next _addCoverageOverlay call
+      // will pick up the current preference value.
+      debugLog('[MAP] Coverage overlay opacity update skipped: $e');
+    }
+  }
+
+  /// Empty FeatureCollection — used to clear a GeoJSON source without removing
+  /// its layer (an empty source renders nothing, costs nothing).
+  Map<String, dynamic> _emptyFeatureCollection() =>
+      <String, dynamic>{'type': 'FeatureCollection', 'features': <dynamic>[]};
+
+  /// Filled FeatureCollection for the tapped cell's (2·blob+1)² block — one
+  /// Polygon per cell (nine in Detailed, one in Simplified), centred on the
+  /// tapped tile. Drawn in a single uniform colour to mirror the web's nine
+  /// `L.rectangle`s.
+  Map<String, dynamic> _buildCellFootprintGeoJson(GridCell cell, int blob) =>
+      <String, dynamic>{
+        'type': 'FeatureCollection',
+        'features': [
+          for (final ring in cell.blockCellPolygons(blob))
+            {
+              'type': 'Feature',
+              'properties': <String, dynamic>{},
+              'geometry': {
+                'type': 'Polygon',
+                'coordinates': [ring],
+              },
+            },
+        ],
+      };
+
+  /// Idempotently (re)create the tap cell-highlight source + fill layer. Nothing
+  /// renders while the source is empty (the idle state); colours are set per tap
+  /// in [_showCellFootprint]. Self-healing like the patch layer.
+  Future<bool> _ensureCellHighlightLayer() async {
+    if (_cellHighlightReady) return true;
+    if (_mapController == null) return false;
+    try {
+      final belowLayer = _clusterLayersReady
+          ? _repeaterIndividualLayerId
+          : _symbolAnnotationLayerId();
+      try {
+        await _mapController!.removeLayer(_cellHighlightLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_cellHighlightSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_cellHighlightSourceId, _emptyFeatureCollection());
+      await _mapController!.addFillLayer(
+        _cellHighlightSourceId,
+        _cellHighlightLayerId,
+        // Placeholder colours; the per-tap dominant colour is pushed in
+        // _showCellFootprint. Full opacity so the footprint pops over the
+        // dimmed coverage backdrop.
+        const FillLayerProperties(
+          fillColor: '#bd2130',
+          fillOutlineColor: '#8b101b',
+          fillOpacity: 1.0,
+        ),
+        belowLayerId: belowLayer,
+      );
+      _cellHighlightReady = true;
+      return true;
+    } catch (e) {
+      debugLog('[COVERAGE] cell-highlight layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Fill the tapped [cell]'s block in the [st] dominant colour and dim the
+  /// coverage backdrop so the footprint stands out (web `highlightSpotCoverage`
+  /// parity). [blob] = 1 in Detailed (3×3), 0 in Simplified (single cell).
+  Future<void> _showCellFootprint(GridCell cell, int blob, int st) async {
+    if (_mapController == null || !mounted) return;
+    // Read the palette before any await so context isn't used across an async gap.
+    final cvd = context.read<AppStateProvider>().preferences.colorVisionType;
+    final colors = CoverageTilePalette.colorsForStatus(cvd, st);
+    if (!await _ensureCellHighlightLayer()) return;
+    try {
+      // setLayerProperties serializes with skipNulls:false (resets omitted
+      // fields to spec defaults), so resend all three fill props together.
+      await _mapController!.setLayerProperties(
+        _cellHighlightLayerId,
+        FillLayerProperties(
+          fillColor: colors[0],
+          fillOutlineColor: colors[1],
+          fillOpacity: 1.0,
+        ),
+      );
+      await _mapController!.setGeoJsonSource(
+          _cellHighlightSourceId, _buildCellFootprintGeoJson(cell, blob));
+      // Dim the coverage backdrop (base + patch) beneath the bright footprint.
+      _coverageDimmedForCell = true;
+      await _applyCoverageOverlayOpacity(_kCellHighlightFadeOpacity);
+    } catch (e) {
+      debugLog('[COVERAGE] cell-highlight set failed: $e');
+    }
+  }
+
+  /// Clear the tap highlight (summary sheet closed): empty the source so the
+  /// layer renders nothing, and restore the dimmed coverage backdrop. The layer
+  /// stays installed (cheap, no churn).
+  Future<void> _clearCellHighlight() async {
+    _cellPopupActive = false;
+    // Tear down the Feature A fan-out (lines + distance labels) and restore any
+    // repeaters faded to the heard set whenever the cell summary closes. Also
+    // drop any Feature B cells defensively (cheap no-op when none).
+    _restoreFadedRepeaters();
+    _clearCoverageLines();
+    _clearCoverageCells();
+    _clearCoverageDistanceLabels();
+    if (_coverageDimmedForCell) {
+      _coverageDimmedForCell = false;
+      // Restore the backdrop, honouring ping-focus mode (which keeps it hidden).
+      if (mounted) {
+        final restore = _focusedPingLocation != null
+            ? 0.0
+            : context
+                .read<AppStateProvider>()
+                .preferences
+                .coverageOverlayOpacity;
+        await _applyCoverageOverlayOpacity(restore);
+      }
+    }
+    // Restore the shared focus camera if no focus view remains (a no-op during a
+    // switch, where the incoming view is already marked active). Runs before the
+    // early-return below so it always fires.
+    _exitFocusCameraIfDone();
+    if (_mapController == null || !_cellHighlightReady) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_cellHighlightSourceId, _emptyFeatureCollection());
+    } catch (e) {
+      debugLog('[COVERAGE] cell-highlight clear failed: $e');
+    }
+  }
+
+  /// Returns the layer ID of the symbol annotation manager's first (and only)
+  /// layer, or `null` if the manager isn't initialized yet. Used as a
+  /// `belowLayerId` reference to insert other layers (coverage overlay, focus
+  /// lines) BENEATH the marker symbols so markers always render on top.
+  String? _symbolAnnotationLayerId() {
+    final manager = _mapController?.symbolManager;
+    if (manager == null) return null;
+    return '${manager.id}_0';
+  }
+
+  /// Disables MapLibre's default symbol-collision behavior for our marker
+  /// annotations. Without this, repeater markers fade out as you zoom out
+  /// because the symbol layer hides overlapping icons + labels to reduce
+  /// visual clutter — undesirable for a wardriving app where every marker
+  /// matters. Called once per style load, before any symbols are added.
+  Future<void> _configureSymbolDecluttering() async {
+    if (_mapController == null) return;
+    try {
+      await _mapController!.setSymbolIconAllowOverlap(true);
+      await _mapController!.setSymbolIconIgnorePlacement(true);
+      await _mapController!.setSymbolTextAllowOverlap(true);
+      await _mapController!.setSymbolTextIgnorePlacement(true);
+    } catch (e) {
+      debugError('[MAP] Failed to configure symbol decluttering: $e');
+    }
+  }
+
+  /// Remove the active coverage overlay source and layer (if any) and clear
+  /// the tracked IDs. Called by the mapTilesEnabled-toggle teardown and on
+  /// style reload — it does NOT participate in the double-buffer swap path.
+  Future<void> _removeCoverageOverlay() async {
+    final layerId = _activeCoverageLayerId;
+    final sourceId = _activeCoverageSourceId;
+    _activeCoverageLayerId = null;
+    _activeCoverageSourceId = null;
+    if (layerId != null && sourceId != null) {
+      await _removeCoverageLayerById(layerId, sourceId);
+    }
+    await _removeCoveragePatchLayer();
+  }
+
+  /// Remove a specific coverage source+layer pair without touching the
+  /// active-ID tracking.
+  Future<void> _removeCoverageLayerById(
+      String layerId, String sourceId) async {
+    if (_mapController == null) return;
+    try {
+      await _mapController!.removeLayer(layerId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeSource(sourceId);
+    } catch (_) {}
+  }
+
+  /// Remove the session-patch source+layer (vector overlay companion).
+  Future<void> _removeCoveragePatchLayer() async {
+    _patchLayerReady = false;
+    if (_mapController == null) return;
+    try {
+      await _mapController!.removeLayer(_patchLayerId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeSource(_patchSourceId);
+    } catch (_) {}
+  }
+
+  /// GeoJSON FeatureCollection of the session patch: one rectangle per cell,
+  /// corners computed from grid indices exactly like the server's tiles.
+  Map<String, dynamic> _buildPatchGeoJson(AppStateProvider appState) {
+    final steps =
+        kCoverageGridSteps[appState.preferences.coverageGridSize] ??
+            kCoverageGridSteps[300]!;
+    final features = <Map<String, dynamic>>[];
+    for (final cell in appState.coveragePatchCells.values) {
+      final lat0 = cell.i * steps[0];
+      final lon0 = cell.j * steps[1];
+      // No feature id: nothing reads it on the patch layer, and 42-bit ids
+      // don't survive Android's float32 JSON bridge anyway (see
+      // _applyBasePatchFilter).
+      features.add({
+        'type': 'Feature',
+        'properties': {'st': cell.st},
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [
+            [
+              [lon0, lat0],
+              [lon0 + steps[1], lat0],
+              [lon0 + steps[1], lat0 + steps[0]],
+              [lon0, lat0 + steps[0]],
+              [lon0, lat0],
+            ]
+          ],
+        },
+      });
+    }
+    return {'type': 'FeatureCollection', 'features': features};
+  }
+
+  /// Hide the BASE layer's copies of patched cells — the patch layer owns
+  /// them now; without the filter the translucent fills would stack and the
+  /// patched cells would render darker than their neighbours.
+  ///
+  /// Matched on an "i_j" string built from the small-int grid properties, NOT
+  /// on the feature id: Android's filter converter parses every JSON number
+  /// as float32, which silently rounds the 42-bit ids so an id-based `in`
+  /// never matches. Strings cross the bridge untouched on every platform.
+  Future<void> _applyBasePatchFilter(
+      AppStateProvider appState, String baseLayerId) async {
+    if (_mapController == null || appState.coveragePatchCells.isEmpty) return;
+    final keys = [
+      for (final cell in appState.coveragePatchCells.values)
+        '${cell.i}_${cell.j}'
+    ];
+    try {
+      await _mapController!.setFilter(baseLayerId, [
+        '!',
+        [
+          'in',
+          [
+            'concat',
+            ['to-string', ['get', 'i']],
+            '_',
+            ['to-string', ['get', 'j']],
+          ],
+          ['literal', keys],
+        ],
+      ]);
+    } catch (e) {
+      debugLog('[MAP] Coverage base filter failed: $e');
+    }
+  }
+
+  /// Idempotently (re)create the patch source+layer. Self-healing: if the
+  /// creation during overlay add failed, or a style change replaced the
+  /// native layers, the next patch application rebuilds it here.
+  Future<bool> _ensureCoveragePatchLayer(AppStateProvider appState) async {
+    if (_patchLayerReady) return true;
+    if (_mapController == null || _activeCoverageLayerId == null) return false;
+    try {
+      final prefs = appState.preferences;
+      final belowLayer = _clusterLayersReady
+          ? _repeaterIndividualLayerId
+          : _symbolAnnotationLayerId();
+      final opacity =
+          _focusedPingLocation != null ? 0.0 : prefs.coverageOverlayOpacity;
+      await _removeCoveragePatchLayer();
+      await _mapController!
+          .addGeoJsonSource(_patchSourceId, _buildPatchGeoJson(appState));
+      await _mapController!.addFillLayer(
+        _patchSourceId,
+        _patchLayerId,
+        FillLayerProperties(
+          fillColor:
+              CoverageTilePalette.fillColorExpression(prefs.colorVisionType),
+          fillOutlineColor:
+              CoverageTilePalette.borderColorExpression(prefs.colorVisionType),
+          fillOpacity: opacity,
+        ),
+        belowLayerId: belowLayer,
+      );
+      _patchLayerReady = true;
+      debugLog('[MAP] Coverage patch layer created');
+      return true;
+    } catch (e) {
+      debugLog('[MAP] Coverage patch layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Push the latest session patch into the map: update the GeoJSON source
+  /// (flash-free, in-place) and extend the base-layer filter. Nothing else on
+  /// the map changes — this is the live-update path for the user's own pings.
+  Future<void> _applyCoveragePatch(AppStateProvider appState) async {
+    if (_mapController == null) return;
+    final baseLayerId = _activeCoverageLayerId;
+    if (baseLayerId == null) {
+      debugLog('[MAP] Coverage patch skipped: no active coverage layer');
+      return;
+    }
+    if (!await _ensureCoveragePatchLayer(appState)) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_patchSourceId, _buildPatchGeoJson(appState));
+      await _applyBasePatchFilter(appState, baseLayerId);
+      debugLog(
+          '[MAP] Coverage patch applied: ${appState.coveragePatchCells.length} cell(s)');
+    } catch (e) {
+      debugLog('[MAP] Coverage patch apply failed: $e');
+    }
+  }
+
+  /// Rebuild the coverage overlay (remove + re-add). Only runs on real
+  /// transitions — zone change, grid/palette pref change, style reload —
+  /// never as a live-refresh path (that's the session patch's job), so the
+  /// brief remove/add gap is acceptable.
+  Future<void> _refreshCoverageOverlay(AppStateProvider appState) async {
+    await _removeCoverageOverlay();
+    await _addCoverageOverlay(appState);
+  }
+
+  /// Returns the fill color for a repeater status keyword.
+  /// Mirrors the priority logic in [_getRepeaterMarkerColor].
+  Color _repeaterStatusColor(String status) {
+    switch (status) {
+      case 'dup':
+        return PingColors.repeaterDuplicate;
+      case 'dead':
+        return PingColors.repeaterDead;
+      case 'new':
+        return PingColors.repeaterNew;
+      case 'active':
+      default:
+        return PingColors.repeaterActive;
+    }
+  }
+
+  /// Returns the color for a coverage marker (TX/RX/DISC/Trace × success/fail).
+  Color _coverageStatusColor(String type, bool success) {
+    switch (type) {
+      case 'tx':
+        return success ? PingColors.txSuccess : PingColors.txFail;
+      case 'rx':
+        return PingColors.rx;
+      case 'disc':
+        return success ? PingColors.discSuccess : PingColors.discFail;
+      case 'trace':
+        return success ? Colors.cyan : Colors.grey;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  /// Returns the borderRadius value for a repeater shape based on hop_bytes.
+  /// Mirrors the values in the original `_buildRepeaterMarkers` (lines ~2390).
+  double _repeaterBorderRadius(int hopBytes) {
+    if (hopBytes >= 3) return 8;
+    if (hopBytes == 2) return 6;
+    return 4;
+  }
+
+  /// Pre-renders and registers all marker bitmaps that the native MapLibre
+  /// symbols reference via `iconImage`. Called from [_onStyleLoaded] after the
+  /// style is ready (so addImage can succeed). Idempotent — safe to call again
+  /// if a style reload happens; addImage replaces existing entries by name.
+  ///
+  /// Generates:
+  ///   - 12 repeater shape bitmaps (4 status colors × 3 hop_byte radii) — fixed
+  ///     width 48px, the widest case (6-char hex IDs); shorter text is centered
+  ///     by MapLibre's textField rendering.
+  ///   - 8 coverage marker bitmaps for the user's currently-selected style.
+  ///   - 6 GPS marker bitmaps (one per style).
+  ///
+  /// Marker style preference changes are handled separately by
+  /// [_reregisterCoverageImages] which only re-runs the coverage section.
+  Future<void> _registerMapImages(AppStateProvider appState) async {
+    if (_mapController == null) return;
+
+    try {
+      // 1. Repeater shapes — 12 variants
+      const repeaterSize = Size(48, 28);
+      for (final status in _MapImages.repeaterStatuses) {
+        final color = _repeaterStatusColor(status);
+        for (final hopBytes in _MapImages.repeaterHopBytes) {
+          final painter = _RepeaterShapePainter(
+            fillColor: color,
+            borderRadius: _repeaterBorderRadius(hopBytes),
+          );
+          final bytes = await _renderPainterToPng(painter, repeaterSize);
+          await _mapController!.addImage(
+            _MapImages.repeater(status, hopBytes),
+            bytes,
+          );
+        }
+      }
+
+      // 2. Coverage markers — 8 variants for current style
+      await _registerCoverageImages(appState.preferences.markerStyle);
+
+      // 3. GPS marker variants — 6 styles
+      const gpsSize = Size(48, 48);
+      final gpsPainters = <String, CustomPainter>{
+        'arrow': const _ArrowPainter(),
+        'car': const _CarMarkerPainter(),
+        'bike': const _BikeMarkerPainter(),
+        'boat': const _BoatMarkerPainter(),
+        'walk': const _WalkMarkerPainter(),
+        'chomper': const _ChomperMarkerPainter(),
+      };
+      for (final entry in gpsPainters.entries) {
+        final bytes = await _renderPainterToPng(entry.value, gpsSize);
+        await _mapController!.addImage(_MapImages.gps(entry.key), bytes);
+      }
+
+      _imagesRegistered = true;
+      debugLog(
+          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater + 8 coverage + ${gpsPainters.length} GPS marker images');
+      // NOTE: do NOT trigger _syncAllAnnotations here. The repeater cluster
+      // source/layers haven't been created yet — _onStyleLoaded calls
+      // _setupRepeaterClusterLayers AFTER us, then triggers the initial sync
+      // once everything is in place.
+    } catch (e) {
+      debugError('[MAP] Failed to register marker images: $e');
+    }
+  }
+
+  /// Generates and registers the 8 coverage marker bitmaps for [styleName].
+  /// Called from [_registerMapImages] on initial setup, and from the
+  /// preference-change handler when the user picks a different marker shape.
+  Future<void> _registerCoverageImages(String styleName) async {
+    if (_mapController == null) return;
+    // 40×40 canvas with the 24×24 glyph centered inside it — the transparent
+    // padding enlarges the native symbol hit target (~40×40 px) without
+    // changing the visual marker size. Fixes finicky taps on small markers.
+    const coverageSize = Size(40, 40);
+    for (final type in _MapImages.coverageTypes) {
+      for (final success in [true, false]) {
+        final painter = _CoverageMarkerPainter(
+          style: styleName,
+          color: _coverageStatusColor(type, success),
+        );
+        final bytes = await _renderPainterToPng(painter, coverageSize);
+        await _mapController!.addImage(
+          _MapImages.coverage(type, success),
+          bytes,
+        );
+      }
+    }
+    _registeredCoverageStyle = styleName;
+  }
+
+  /// Returns the status keyword used as the iconImage suffix for a repeater.
+  /// Mirrors the priority logic in [_getRepeaterMarkerColor]: duplicate > dead
+  /// > new > active.
+  String _repeaterStatusKey(Repeater repeater, bool isDuplicate) {
+    if (isDuplicate) return 'dup';
+    if (repeater.isDead) return 'dead';
+    if (repeater.isNew) return 'new';
+    return 'active';
+  }
+
+  /// Ensures every baked repeater-chip image referenced by [featureCollection]
+  /// (Detailed grid mode) is registered via addImage. Deduped by image name —
+  /// each distinct `repchip_{status}_{hop}_{hex}` chip is baked at most once and
+  /// cached in [_registeredChipImages] (cleared on style reload). Driven off the
+  /// FeatureCollection itself so the registered set can't drift from what the
+  /// layer actually references. The status/hop/hex are parsed back out of the
+  /// (controlled, underscore-free) image name to re-derive colour + radius.
+  Future<void> _ensureRepeaterChipImages(
+      Map<String, dynamic> featureCollection) async {
+    if (_mapController == null) return;
+    final features =
+        (featureCollection['features'] as List?) ?? const <dynamic>[];
+    var baked = 0;
+    for (final f in features) {
+      final props = (f as Map)['properties'] as Map?;
+      final name = props?['iconImage'] as String?;
+      if (name == null ||
+          !name.startsWith('repchip_') ||
+          _registeredChipImages.contains(name)) {
+        continue;
+      }
+      // repchip_{status}_{hop}_{hex} — status/hex are underscore-free.
+      final parts = name.split('_');
+      if (parts.length != 4) continue;
+      final status = parts[1];
+      final hop = int.tryParse(parts[2]) ?? 1;
+      final hex = parts[3];
+      try {
+        final bytes = await _renderRepeaterChipPng(
+          hex,
+          _repeaterStatusColor(status),
+          _repeaterBorderRadius(hop),
+        );
+        await _mapController!.addImage(name, bytes);
+        _registeredChipImages.add(name);
+        baked++;
+      } catch (e) {
+        debugError('[MAP] render/addImage(repeater chip $name) failed: $e');
+      }
+    }
+    if (baked > 0) {
+      debugLog('[MAP] Baked $baked new repeater chip image(s); '
+          '${_registeredChipImages.length} total registered');
+    }
+  }
+
+  /// Converts a Flutter [Color] to a `#RRGGBB` (or `#RRGGBBAA`) hex string
+  /// for MapLibre symbol/line properties (which take CSS-style color strings).
+  String _colorToHex(Color color, {bool includeAlpha = false}) {
+    final argb = color.toARGB32() & 0xFFFFFFFF;
+    final rr = ((argb >> 16) & 0xFF).toRadixString(16).padLeft(2, '0');
+    final gg = ((argb >> 8) & 0xFF).toRadixString(16).padLeft(2, '0');
+    final bb = (argb & 0xFF).toRadixString(16).padLeft(2, '0');
+    if (includeAlpha) {
+      final aa = ((argb >> 24) & 0xFF).toRadixString(16).padLeft(2, '0');
+      return '#$rr$gg$bb$aa';
+    }
+    return '#$rr$gg$bb';
+  }
+
+  /// Builds a GeoJSON FeatureCollection of all repeaters in app state, with
+  /// per-feature properties used by the data-driven symbol layer expressions
+  /// (iconImage, color, opacity, hex). Re-pushed to the cluster source whenever
+  /// the marker data version changes — MapLibre handles re-clustering natively.
+  Map<String, dynamic> _buildRepeaterFeatureCollection(
+      AppStateProvider appState) {
+    final visible = _mapVisibleRepeaters(appState);
+    final duplicates = _getDuplicateRepeaterIds(visible);
+    final hopOverride =
+        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    // Detailed (gsize 100) is un-clustered, so each feature references a baked
+    // chip image (hex baked in). Simplified reuses the 12 shared shape images
+    // + a text-field hex label. See _setupRepeaterClusterLayers.
+    final detailed = appState.preferences.coverageGridSize == 100;
+    final focusActive = _focusedPingLocation != null;
+    // While a spider is open, repeaters in the spread set are tagged with
+    // `inSpider:true`. The individual symbol layer's filter excludes those
+    // features so the spread markers from `_spiderSourceId` render in their
+    // place. Cluster aggregation is not affected — the cluster bubble keeps
+    // its full point_count.
+    final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+
+    final features = <Map<String, dynamic>>[];
+    for (final repeater in visible) {
+      // Repeater isolation: while a repeater is focused/selected, hide every
+      // other repeater entirely (skip the feature, so they also drop out of
+      // cluster counts) — same approach as focus mode below. Restored on close
+      // by _clearRepeaterIsolation.
+      if (_isolatedRepeaterId != null && repeater.id != _isolatedRepeaterId) {
+        continue;
+      }
+      // Feature A (tile fan-out): when a tapped cell's heard-repeater set is
+      // active and no single repeater is isolated, hide every repeater that did
+      // NOT hear the cell's pings (the web fades-but-keeps; we hide, matching
+      // focus/isolation). Cleared by _restoreFadedRepeaters. The set holds
+      // lowercased ids (from RepeaterLookup), so compare lowercased.
+      if (_coverageHeardRepeaterIds != null &&
+          _isolatedRepeaterId == null &&
+          !_coverageHeardRepeaterIds!.contains(repeater.id.toLowerCase())) {
+        continue;
+      }
+      final isDuplicate = duplicates.contains(repeater.id);
+      final statusKey = _repeaterStatusKey(repeater, isDuplicate);
+      final isConnected = focusActive &&
+          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
+      // In focus mode, hide repeaters not involved in the focused ping entirely
+      // (skip the feature) rather than dimming — cleaner focus view and prevents
+      // them from contributing to clusters.
+      if (focusActive && !isConnected) continue;
+      final effectiveBytes = hopOverride ?? repeater.hopBytes;
+      // Clamp to the 1/2/3 hop_byte image variants we registered
+      final shapeBytes = effectiveBytes >= 3
+          ? 3
+          : effectiveBytes == 2
+              ? 2
+              : 1;
+      final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      // Detailed: per-(status,hop,hex) baked chip (hex baked in); Simplified:
+      // shared shape image + a text-field hex label. _ensureRepeaterChipImages
+      // registers the chip lazily before the source is pushed.
+      final iconImage = detailed
+          ? _MapImages.repeaterChip(statusKey, shapeBytes, hex)
+          : _MapImages.repeater(statusKey, shapeBytes);
+      final colorHex = _colorToHex(_repeaterStatusColor(statusKey));
+
+      features.add({
+        'type': 'Feature',
+        'id': repeater.id,
+        'properties': {
+          'repeaterId': repeater.id,
+          'iconImage': iconImage,
+          'color': colorHex,
+          'hex': hex,
+          'isDuplicate': isDuplicate,
+          if (hopOverride != null) 'hopOverride': hopOverride,
+          if (spiderIds.contains(repeater.id)) 'inSpider': true,
+        },
+        'geometry': {
+          'type': 'Point',
+          // GeoJSON convention: [longitude, latitude]
+          'coordinates': [repeater.lon, repeater.lat],
+        },
+      });
+    }
+
+    return {'type': 'FeatureCollection', 'features': features};
+  }
+
+  /// Creates the repeater GeoJSON source and its rendering layers (individual
+  /// symbols, cluster bubble circles, cluster count text, spider line/symbols).
+  /// Called once per style load AFTER images are registered, and again whenever
+  /// Grid Mode changes (the `cluster` flag is fixed at source creation, so the
+  /// source must be rebuilt to toggle it).
+  ///
+  /// [clustered] follows Grid Mode: Simplified (gsize 300) clusters; Detailed
+  /// (gsize 100) does NOT — every repeater renders individually. The bubble /
+  /// count / spider layers are still created when un-clustered, but stay inert
+  /// (no `point_count` features ever exist, the spider source stays empty) so
+  /// the layer ids that other code paths reference — `queryRenderedFeatures`,
+  /// the region-border `belowLayerId` — remain valid in both modes.
+  ///
+  /// Styling differs by mode: clustered uses the cheap shared-glyph `textField`
+  /// hex label (clustering guarantees ≥50px spacing, so labels never overlap);
+  /// un-clustered uses the baked-in-icon chip (no `textField`) so an overlapping
+  /// chip's label can't detach onto a neighbour's box.
+  Future<void> _setupRepeaterClusterLayers({required bool clustered}) async {
+    if (_mapController == null) return;
+
+    // Idempotent: tear down any existing source/layers from a previous style load.
+    // Spider layers are torn down first because they reference `_spiderSourceId`.
+    for (final layerId in [
+      _spiderSymbolLayerId,
+      _spiderLineLayerId,
+      _repeaterClusterCountLayerId,
+      _repeaterClusterBubbleLayerId,
+      _repeaterIndividualLayerId,
+    ]) {
+      try {
+        await _mapController!.removeLayer(layerId);
+      } catch (_) {}
+    }
+    try {
+      await _mapController!.removeSource(_repeaterSourceId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeSource(_spiderSourceId);
+    } catch (_) {}
+
+    // Shared symbol styling for the individual layer AND the spider symbol
+    // layer (the spider comment requires they look identical). Selected once by
+    // mode: Simplified keeps the shared-glyph text-field hex; Detailed bakes the
+    // hex into the chip image (no text-field, no iconColor — colour is baked in)
+    // so overlapping un-clustered chips can't have a label detach. iconSize 1.0
+    // matches the distance-label baked-icon convention (DPR-3 PNG, centre
+    // anchor); the Simplified 48×28 shape keeps its existing 1.4 scale.
+    final SymbolLayerProperties repeaterSymbolProps = clustered
+        ? const SymbolLayerProperties(
+            iconImage: ['get', 'iconImage'],
+            iconColor: ['get', 'color'],
+            iconSize: 1.4,
+            iconAllowOverlap: true,
+            iconIgnorePlacement: true,
+            textField: ['get', 'hex'],
+            textColor: '#FFFFFF',
+            textHaloColor: '#000000',
+            textHaloWidth: 1.5,
+            textSize: 13,
+            textAllowOverlap: true,
+            textIgnorePlacement: true,
+            textFont: _defaultFontStack,
+          )
+        : const SymbolLayerProperties(
+            iconImage: ['get', 'iconImage'],
+            iconSize: 1.0,
+            iconAllowOverlap: true,
+            iconIgnorePlacement: true,
+          );
+
+    // Empty source. We'll push real data via setGeoJsonSource from
+    // _syncRepeaterSymbols whenever the marker data version changes. `cluster`
+    // is fixed at creation, so a Grid Mode change rebuilds this whole source.
+    //
+    // IMPORTANT: pass `data` as a Dart Map (NOT jsonEncode-d string). The iOS
+    // plugin's `buildShapeSource` assumes that if `data` is a String, it must be
+    // a URL — and crashes via JSONSerialization.data() if a non-URL string is
+    // passed and the URL parse fails. Maps are handled correctly.
+    try {
+      await _mapController!.addSource(
+        _repeaterSourceId,
+        GeojsonSourceProperties(
+          data: const <String, dynamic>{
+            'type': 'FeatureCollection',
+            'features': <dynamic>[]
+          },
+          // Simplified clusters; Detailed shows every repeater individually.
+          cluster: clustered,
+          clusterRadius: 50,
+          // Cluster at every reachable zoom (max user zoom is 17). Stacked
+          // markers — those within `clusterRadius` pixels at the current
+          // zoom — stay as a cluster bubble + count instead of degenerating
+          // into a pile of overlapping individual symbols when the user is
+          // zoomed all the way in. Tap a cluster → spiderfy. Markers far
+          // enough apart that they exceed `clusterRadius` pixels at higher
+          // zooms still separate into individuals naturally on zoom. Inert
+          // when cluster is false.
+          clusterMaxZoom: 17,
+        ),
+      );
+
+      // Place all three layers BELOW the symbol annotation manager so coverage
+      // markers / GPS / distance labels still render on top of repeater clusters.
+      final belowLayer = _symbolAnnotationLayerId();
+
+      // Layer 1: individual repeater markers (when not part of a cluster).
+      // Data-driven properties read from each feature's `properties` map.
+      // Filter excludes both clustered features AND any feature tagged
+      // `inSpider` (spiderfy hides the originals so the spread markers from
+      // _spiderSourceId render in their place).
+      await _mapController!.addSymbolLayer(
+        _repeaterSourceId,
+        _repeaterIndividualLayerId,
+        repeaterSymbolProps,
+        filter: [
+          'all',
+          [
+            '!',
+            ['has', 'point_count']
+          ],
+          [
+            '!=',
+            ['get', 'inSpider'],
+            true
+          ],
+        ],
+        belowLayerId: belowLayer,
+      );
+
+      // Layer 2: cluster bubble (circle, sized by point_count).
+      // The 'step' expression makes the bubble grow as more repeaters merge:
+      //   - default radius 18px (clusters of 2-9)
+      //   - 22px for clusters of 10+
+      //   - 26px for clusters of 50+
+      await _mapController!.addCircleLayer(
+        _repeaterSourceId,
+        _repeaterClusterBubbleLayerId,
+        CircleLayerProperties(
+          circleColor: _colorToHex(PingColors.repeaterActive),
+          circleRadius: const [
+            'step',
+            ['get', 'point_count'],
+            18,
+            10,
+            22,
+            50,
+            26,
+          ],
+          circleStrokeColor: '#FFFFFF',
+          circleStrokeWidth: 2,
+          circleOpacity: 0.9,
+        ),
+        filter: ['has', 'point_count'],
+        belowLayerId: belowLayer,
+      );
+
+      // Layer 3: cluster count text (uses MapLibre's built-in
+      // 'point_count_abbreviated' property — automatically formatted as
+      // "1.2k" for large counts).
+      await _mapController!.addSymbolLayer(
+        _repeaterSourceId,
+        _repeaterClusterCountLayerId,
+        const SymbolLayerProperties(
+          textField: ['get', 'point_count_abbreviated'],
+          textColor: '#FFFFFF',
+          textSize: 14,
+          textHaloColor: '#000000',
+          textHaloWidth: 1,
+          textAllowOverlap: true,
+          textIgnorePlacement: true,
+          textFont: _defaultFontStack,
+        ),
+        filter: ['has', 'point_count'],
+        belowLayerId: belowLayer,
+      );
+
+      // Spider shadow source + layers — non-clustered. Carries spread Point
+      // features (one per spiderfied repeater) and LineString features for
+      // leader lines from the cluster centre to each spread position.
+      // Cluster on this source MUST stay false; we want every Point to render
+      // verbatim where _computeSpiderRing placed it.
+      await _mapController!.addSource(
+        _spiderSourceId,
+        const GeojsonSourceProperties(
+          data: <String, dynamic>{
+            'type': 'FeatureCollection',
+            'features': <dynamic>[]
           },
         ),
-        children: [
-          // Tile layer (dynamic based on selected style from preferences)
-          // Skipped entirely when map tiles are disabled to save mobile data
-          if (appState.preferences.mapTilesEnabled)
-            Builder(
-              builder: (context) {
-                final mapStyle =
-                    MapStyleExtension.fromString(appState.preferences.mapStyle);
-                return TileLayer(
-                  urlTemplate: mapStyle.urlTemplate,
-                  subdomains: mapStyle.subdomains ?? const [],
-                  userAgentPackageName: 'com.meshmapper.app',
-                  maxZoom: 17,
-                  retinaMode: mapStyle.supportsRetina &&
-                      RetinaMode.isHighDensity(context),
-                  tileDisplay: const TileDisplay.fadeIn(
-                    reloadStartOpacity: 1.0,
-                  ),
-                  tileProvider: SilentCancellableNetworkTileProvider(),
-                );
-              },
-            ),
+      );
 
-          // MeshMapper coverage overlay (only when zone code available, overlay enabled, and tiles enabled)
-          if (appState.preferences.mapTilesEnabled &&
-              appState.zoneCode != null &&
-              _showMeshMapperOverlay)
-            TileLayer(
-              urlTemplate:
-                  'https://${appState.zoneCode!.toLowerCase()}.meshmapper.net/tiles.php?x={x}&y={y}&z={z}&t=${appState.overlayCacheBust}${appState.preferences.colorVisionType != 'none' ? '&cvd=${appState.preferences.colorVisionType}' : ''}',
-              userAgentPackageName: 'com.meshmapper.app',
-              minZoom: 3,
-              maxZoom: 17,
-              tileDisplay: const TileDisplay.fadeIn(
-                reloadStartOpacity: 1.0,
-              ),
-              tileProvider: SilentCancellableNetworkTileProvider(),
-            ),
+      // Layer 4: spider leader lines (LineString features). Inserted just
+      // below the individual repeater layer so lines render BENEATH every
+      // repeater layer — the cluster bubble (which sits above individuals)
+      // visually contains the lines' inner endpoints, and the spread markers
+      // (added next, above the annotation manager's siblings) hide the outer
+      // endpoints. Static filter selects LineString geometry only so Point
+      // features in the same source don't try to render as zero-length lines.
+      await _mapController!.addLineLayer(
+        _spiderSourceId,
+        _spiderLineLayerId,
+        const LineLayerProperties(
+          lineColor: '#888888',
+          lineWidth: 1.0,
+          lineOpacity: 0.7,
+          lineCap: 'round',
+        ),
+        filter: [
+          '==',
+          ['geometry-type'],
+          'LineString'
+        ],
+        belowLayerId: _repeaterIndividualLayerId,
+      );
 
-          // Coverage markers (TX, RX, DISC, Trace) — sorted by timestamp, newest on top
-          // During focus mode, the focused marker is excluded and rendered in its own top layer
-          MarkerLayer(
-            markers: _buildCoverageMarkers(
-              txPings: appState.txPings,
-              rxPings: appState.rxPings,
-              discEntries: appState.discLogEntries,
-              discDropEnabled: appState.discDropEnabled,
-              traceEntries: appState.traceLogEntries,
-              excludeFocused: _focusedPingLocation != null,
+      // Layer 5: spider symbols (Point features). Same icon/text styling as
+      // the individual repeater layer so spread markers look identical to the
+      // originals. Inserted just below the symbol annotation manager — that
+      // puts it ABOVE the individual repeater layer (so spread markers win
+      // hit-tests against the now-hidden originals) but BELOW the GPS marker
+      // / coverage symbols on the annotation manager. iconAllowOverlap +
+      // iconIgnorePlacement are critical: without them MapLibre's collision
+      // detector hides adjacent spread markers and defeats the spread.
+      await _mapController!.addSymbolLayer(
+        _spiderSourceId,
+        _spiderSymbolLayerId,
+        repeaterSymbolProps,
+        filter: [
+          '==',
+          ['geometry-type'],
+          'Point'
+        ],
+        belowLayerId: belowLayer,
+      );
+
+      // All 3 layers + source + spider source/layers created successfully —
+      // mark ready so the build()-triggered post-frame sync can run, and so
+      // _syncRepeaterSymbols is allowed to push data via setGeoJsonSource.
+      _clusterLayersReady = true;
+    } catch (e) {
+      debugError('[MAP] Failed to set up repeater cluster layers: $e');
+    }
+  }
+
+  /// Pushes the current repeater state into the cluster source. MapLibre
+  /// re-clusters natively whenever the source data changes. Replaces the
+  /// previous per-symbol addSymbol/updateSymbol/removeSymbol diff loop.
+  ///
+  /// When a spider is open, also schedules a post-frame push of the spider
+  /// shadow source. Deferring one frame avoids an iOS race where the main
+  /// source's reclustering and the spider source's symbol render arrive in
+  /// different frames, briefly showing originals + spread together.
+  Future<void> _syncRepeaterSymbols(AppStateProvider appState) async {
+    if (_mapController == null ||
+        !_styleLoaded ||
+        !_imagesRegistered ||
+        !_clusterLayersReady) {
+      return;
+    }
+    try {
+      // When repeaters are toggled off, push an empty collection so the pins
+      // clear without removing/recreating the styled layers (see #347).
+      final geojson = _showRepeaters
+          ? _buildRepeaterFeatureCollection(appState)
+          : _emptyFeatureCollection();
+      // Detailed mode references baked per-chip images — make sure every one is
+      // registered before pushing, or the symbol layer would reference a
+      // missing icon. No-op in Simplified (features use the pre-registered
+      // shape images). Driven off the FeatureCollection, so it can't drift.
+      if (appState.preferences.coverageGridSize == 100) {
+        await _ensureRepeaterChipImages(geojson);
+      }
+      await _mapController!.setGeoJsonSource(_repeaterSourceId, geojson);
+    } catch (e) {
+      debugError('[MAP] Failed to update repeater source: $e');
+    }
+    // Also push the spider source. Empty FeatureCollection if no spider open.
+    final currentZoom =
+        _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _syncSpiderSymbols(appState, currentZoom);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Spiderfy helpers — see plan: stacked repeaters fan out around the centroid
+  // when a tap can't be resolved by zooming further.
+  // ---------------------------------------------------------------------------
+
+  /// Web-Mercator metres-per-pixel at the given latitude and zoom.
+  double _metersPerPxAtZoom(double latDeg, num zoom) {
+    return 156543.03392 *
+        math.cos(latDeg * math.pi / 180) /
+        math.pow(2, zoom);
+  }
+
+  /// Great-circle distance between two LatLngs in metres (haversine).
+  /// Used for the spider candidate / connectivity tests — accurate at any
+  /// latitude, including the poles.
+  double _haversineMeters(LatLng a, LatLng b) {
+    const earthRadiusM = 6378137.0;
+    final lat1 = a.latitude * math.pi / 180;
+    final lat2 = b.latitude * math.pi / 180;
+    final dLat = (b.latitude - a.latitude) * math.pi / 180;
+    final dLon = (b.longitude - a.longitude) * math.pi / 180;
+    final h = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1) *
+            math.cos(lat2) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    return 2 *
+        earthRadiusM *
+        math.asin(math.min(1.0, math.sqrt(h)));
+  }
+
+  /// MapLibre Native (Android SDK 12.3.1 / iOS 6.19.1, both bound by
+  /// maplibre_gl 0.25.0) blinks symbol-layer labels for one frame when an
+  /// `animateCamera` call ends on an exact integer zoom level (15.0, 16.0,
+  /// 17.0, …). Tracking issue:
+  /// https://github.com/maplibre/maplibre-native/issues/2477
+  ///
+  /// Workaround until upstream fix: nudge every programmatic zoom value
+  /// in this file by this epsilon so the camera never settles on an
+  /// integer. Visually identical (~0.001 zoom is sub-pixel at any scale)
+  /// but avoids the bug. When it's resolved upstream, set this to 0.0
+  /// (or remove the subtractions).
+  static const double _zoomEpsilon = 0.001;
+
+  /// Maximum zoom the camera can reach (matches `minMaxZoomPreference`).
+  /// Subtracted by [_zoomEpsilon] to dodge the integer-zoom label-blink
+  /// bug described above.
+  static const double _maxUserZoom = 17.0 - _zoomEpsilon;
+
+  /// True when the camera is at (or floating-point close to) the user's
+  /// hard zoom cap. Spider expansion is gated on this — at any lower zoom
+  /// taps just zoom in further so the user has a chance to separate the
+  /// stack visually before falling back to the spider UI.
+  bool _isAtMaxZoom() {
+    final z = _mapController?.cameraPosition?.zoom;
+    if (z == null) return false;
+    // Small epsilon: zoom can settle at e.g. 16.997 even when the user has
+    // pinched all the way in; treat that as max.
+    return z >= _maxUserZoom - 0.05;
+  }
+
+  /// Find the connected component of repeaters around [anchor] that would
+  /// still visually overlap at [_maxUserZoom] (the "won't break apart by
+  /// more zoom" group).
+  ///
+  /// Two repeaters are linked when their geographic distance is ≤ the
+  /// "stick threshold" — `_clusterRadiusPx × metres-per-pixel at the max
+  /// zoom`. At lat 45° this is ~42 m. Markers within this distance of
+  /// each other are within the cluster radius even at the user's deepest
+  /// zoom, so zooming will not separate them visually.
+  ///
+  /// BFS seed: repeater closest to [anchor]. Returns at least the seed when
+  /// any repeater is within the broad search disc; caller should treat a
+  /// result of length < 2 as "no spiderfy needed".
+  List<Repeater> _findSpiderGroup(LatLng anchor, AppStateProvider appState) {
+    final mPerPxMaxZoom =
+        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
+
+    // Broad initial radius: 10× the stick threshold so we don't miss an
+    // indirect CC member that's near another member but far from the anchor.
+    // Bounded fixed multiplier — keeps the candidate set small even when a
+    // user taps a continent-scale cluster at low zoom.
+    final broadRadiusM = stickThresholdM * 10;
+    final candidates = <Repeater>[];
+    for (final r in _mapVisibleRepeaters(appState)) {
+      if (_haversineMeters(anchor, LatLng(r.lat, r.lon)) <= broadRadiusM) {
+        candidates.add(r);
+      }
+    }
+    if (candidates.isEmpty) return const [];
+
+    // Pick the closest-to-anchor as the BFS seed.
+    Repeater seed = candidates.first;
+    var bestD = double.infinity;
+    for (final r in candidates) {
+      final d = _haversineMeters(anchor, LatLng(r.lat, r.lon));
+      if (d < bestD) {
+        bestD = d;
+        seed = r;
+      }
+    }
+
+    // Connected component (single-link clustering at stick threshold).
+    final visited = <String>{seed.id};
+    final queue = <Repeater>[seed];
+    final result = <Repeater>[seed];
+    while (queue.isNotEmpty) {
+      final cur = queue.removeAt(0);
+      final curPos = LatLng(cur.lat, cur.lon);
+      for (final r in candidates) {
+        if (visited.contains(r.id)) continue;
+        if (_haversineMeters(curPos, LatLng(r.lat, r.lon)) <=
+            stickThresholdM) {
+          visited.add(r.id);
+          result.add(r);
+          queue.add(r);
+        }
+      }
+    }
+    return result;
+  }
+
+  /// Find the [pointCount] repeaters nearest to [anchor], used when expanding
+  /// a tapped MapLibre cluster bubble.
+  ///
+  /// Unlike [_findSpiderGroup] (transitive BFS connected component), this is
+  /// a non-transitive proximity query — it cannot chain across separate
+  /// visual clusters. The count comes from Supercluster's `point_count` on
+  /// the tapped feature, so the result matches the bubble exactly in every
+  /// realistic case (centroid drift in extreme layouts may shuffle a 1–2
+  /// marker boundary, but the spider count is always correct).
+  List<Repeater> _findSpiderGroupForCluster(
+      LatLng anchor, int pointCount, AppStateProvider appState) {
+    if (pointCount <= 0) return const [];
+    // Bound the candidate set with a generous radius. Supercluster's max
+    // cluster diameter at maxZoom is ~2× the cluster radius (centroid
+    // drift); pointCount × stickThreshold is a comfortable upper bound for
+    // any plausible cluster size.
+    final mPerPxMaxZoom =
+        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
+    final broadRadiusM = stickThresholdM * math.max(10, pointCount);
+    final candidates = <MapEntry<Repeater, double>>[];
+    for (final r in _mapVisibleRepeaters(appState)) {
+      final d = _haversineMeters(anchor, LatLng(r.lat, r.lon));
+      if (d <= broadRadiusM) {
+        candidates.add(MapEntry(r, d));
+      }
+    }
+    candidates.sort((a, b) => a.value.compareTo(b.value));
+    return candidates.take(pointCount).map((e) => e.key).toList();
+  }
+
+  /// Layout the [n] spread positions around [center]. Uses a single ring up to
+  /// 8 markers, two concentric rings up to 20, and a Fermat / golden-angle
+  /// spiral past 20.
+  List<LatLng> _computeSpiderRing(
+      LatLng center, int n, double currentZoom) {
+    final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
+    final lat0 = center.latitude;
+    final lon0 = center.longitude;
+    final cosLat = math.cos(lat0 * math.pi / 180);
+
+    // Convert (dx_px, dy_px) — screen-space offset from centre — back to a
+    // geographic LatLng. Screen y grows downward; flip dy so positive screen-y
+    // maps to a southward (lower-latitude) offset.
+    LatLng offset(double dxPx, double dyPx) {
+      final dxM = dxPx * mPerPx;
+      final dyM = dyPx * mPerPx;
+      final dLat = -dyM / 111320;
+      final dLon = dxM / (111320 * cosLat);
+      return LatLng(lat0 + dLat, lon0 + dLon);
+    }
+
+    final positions = <LatLng>[];
+    if (n <= 8) {
+      // Single ring at the inner radius, evenly spaced from top (-π/2).
+      for (var i = 0; i < n; i++) {
+        final angle = -math.pi / 2 + 2 * math.pi * i / n;
+        positions.add(offset(
+          _spiderInnerRadiusPx * math.cos(angle),
+          _spiderInnerRadiusPx * math.sin(angle),
+        ));
+      }
+    } else if (n <= 20) {
+      // Two concentric rings: 7 inner + (n−7) outer with a half-angle stagger
+      // so outer markers don't sit directly behind inner ones.
+      const innerCount = 7;
+      final outerCount = n - innerCount;
+      for (var i = 0; i < innerCount; i++) {
+        final angle = -math.pi / 2 + 2 * math.pi * i / innerCount;
+        positions.add(offset(
+          _spiderInnerRadiusPx * math.cos(angle),
+          _spiderInnerRadiusPx * math.sin(angle),
+        ));
+      }
+      for (var i = 0; i < outerCount; i++) {
+        final angle = -math.pi / 2 +
+            math.pi / outerCount +
+            2 * math.pi * i / outerCount;
+        positions.add(offset(
+          _spiderOuterRadiusPx * math.cos(angle),
+          _spiderOuterRadiusPx * math.sin(angle),
+        ));
+      }
+    } else {
+      // Golden-angle spiral — markers self-space without overlap.
+      const goldenAngle = 137.508 * math.pi / 180;
+      for (var i = 0; i < n; i++) {
+        final angle = i * goldenAngle - math.pi / 2;
+        final r = 30 + 9 * math.sqrt(i + 1);
+        positions.add(offset(
+          r * math.cos(angle),
+          r * math.sin(angle),
+        ));
+      }
+    }
+    return positions;
+  }
+
+  /// Build the spider shadow source's FeatureCollection — Point features for
+  /// every spread marker plus LineString features for the leader lines.
+  /// Returns an empty collection when no spider is open.
+  Map<String, dynamic> _buildSpiderFeatureCollection(
+      AppStateProvider appState, double currentZoom) {
+    if (_spiderCenter == null || _spiderRepeaters.isEmpty) {
+      return {
+        'type': 'FeatureCollection',
+        'features': <Map<String, dynamic>>[]
+      };
+    }
+    final center = _spiderCenter!;
+    final positions =
+        _computeSpiderRing(center, _spiderRepeaters.length, currentZoom);
+    final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
+    final cosLat = math.cos(center.latitude * math.pi / 180);
+
+    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
+    final hopOverride =
+        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    // Match the individual layer: Detailed (gsize 100) bakes the hex into the
+    // chip image (the spider layer reuses the same no-text-field props, so a
+    // generic shape would render as an empty box); Simplified uses the shared
+    // shape + text-field hex. See _buildRepeaterFeatureCollection.
+    final detailed = appState.preferences.coverageGridSize == 100;
+
+    final features = <Map<String, dynamic>>[];
+    for (var i = 0; i < _spiderRepeaters.length; i++) {
+      final repeater = _spiderRepeaters[i];
+      final pos = positions[i];
+
+      final isDuplicate = duplicates.contains(repeater.id);
+      final statusKey = _repeaterStatusKey(repeater, isDuplicate);
+      final effectiveBytes = hopOverride ?? repeater.hopBytes;
+      final shapeBytes = effectiveBytes >= 3
+          ? 3
+          : effectiveBytes == 2
+              ? 2
+              : 1;
+      final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      final iconImage = detailed
+          ? _MapImages.repeaterChip(statusKey, shapeBytes, hex)
+          : _MapImages.repeater(statusKey, shapeBytes);
+      final colorHex = _colorToHex(_repeaterStatusColor(statusKey));
+
+      features.add({
+        'type': 'Feature',
+        'id': repeater.id,
+        'properties': {
+          'repeaterId': repeater.id,
+          'iconImage': iconImage,
+          'color': colorHex,
+          'hex': hex,
+          'isDuplicate': isDuplicate,
+          if (hopOverride != null) 'hopOverride': hopOverride,
+        },
+        'geometry': {
+          'type': 'Point',
+          'coordinates': [pos.longitude, pos.latitude],
+        },
+      });
+
+      // Leader line — shortened by `_leaderLineEndShortenPx` at the marker
+      // end so it doesn't punch through the icon / label halo. Compute the
+      // shortening in screen-pixel space, then convert back to lat/lon.
+      final dxM =
+          (pos.longitude - center.longitude) * 111320 * cosLat;
+      final dyM = (pos.latitude - center.latitude) * 111320;
+      final dxPx = dxM / mPerPx;
+      final dyPx = dyM / mPerPx;
+      final lenPx = math.sqrt(dxPx * dxPx + dyPx * dyPx);
+      if (lenPx <= _leaderLineEndShortenPx) continue;
+      final scale = (lenPx - _leaderLineEndShortenPx) / lenPx;
+      final endLon =
+          center.longitude + (pos.longitude - center.longitude) * scale;
+      final endLat =
+          center.latitude + (pos.latitude - center.latitude) * scale;
+      features.add({
+        'type': 'Feature',
+        'properties': {'repeaterId': repeater.id},
+        'geometry': {
+          'type': 'LineString',
+          'coordinates': [
+            [center.longitude, center.latitude],
+            [endLon, endLat],
+          ],
+        },
+      });
+    }
+
+    return {'type': 'FeatureCollection', 'features': features};
+  }
+
+  /// Push the current spider state to the spider GeoJSON source. Called from
+  /// `_syncRepeaterSymbols` (post-frame) and after spider state mutations.
+  Future<void> _syncSpiderSymbols(
+      AppStateProvider appState, double currentZoom) async {
+    if (_mapController == null || !_clusterLayersReady) return;
+    try {
+      final geojson =
+          _buildSpiderFeatureCollection(appState, currentZoom);
+      // Detailed mode references baked per-chip images. The main collection
+      // usually registers them first, but a spidered repeater that the main
+      // builder filtered out (focus / isolation / heard-repeater fade) would
+      // reference an unregistered chip — bake any missing ones here too.
+      if (appState.preferences.coverageGridSize == 100) {
+        await _ensureRepeaterChipImages(geojson);
+      }
+      await _mapController!.setGeoJsonSource(_spiderSourceId, geojson);
+    } catch (e) {
+      debugError('[MAP] Failed to update spider source: $e');
+    }
+  }
+
+  /// Open the spider — fan out [repeaters] around [center]. No-op for groups
+  /// of fewer than 2 (caller should fall through to detail-sheet/zoom paths).
+  void _spiderfy(LatLng center, List<Repeater> repeaters) {
+    if (repeaters.length < 2 || _mapController == null || !mounted) return;
+    setState(() {
+      _spiderCenter = center;
+      _spiderRepeaters = List.unmodifiable(repeaters);
+      _spiderOpenedAtZoom = _mapController!.cameraPosition?.zoom;
+    });
+    debugLog(
+        '[MAP] Spider opened with ${repeaters.length} markers at ${center.latitude.toStringAsFixed(5)},${center.longitude.toStringAsFixed(5)}');
+    // Resync the main source (so the inSpider tag hides originals on the
+    // individual layer) and the spider source (post-frame inside the sync).
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
+  }
+
+  /// Close the spider — clears state and resyncs both sources.
+  void _collapseSpider() {
+    if (_spiderCenter == null || !mounted) return;
+    setState(() {
+      _spiderCenter = null;
+      _spiderRepeaters = const [];
+      _spiderOpenedAtZoom = null;
+    });
+    debugLog('[MAP] Spider collapsed');
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
+  }
+
+  /// Composite key for a coverage marker symbol — kind + timestamp ms + lat/lon.
+  /// Used as the map key in [_coverageSymbols] and to detect updates/removals.
+  /// Lat/lon at 5-decimal precision (~1.1m) is included so two distinct pings
+  /// that happen to land in the same millisecond (possible under heavy RX
+  /// traffic) don't collide on a shared key.
+  String _coverageKey(String type, DateTime ts, double lat, double lon) =>
+      '${type}_${ts.millisecondsSinceEpoch}_'
+      '${lat.toStringAsFixed(5)}_${lon.toStringAsFixed(5)}';
+
+  /// Render/tap z-order for a coverage marker: a monotonic counter assigned
+  /// once per [_coverageKey], so a newer symbol always renders on top of (and
+  /// wins the topmost-first tap hit-test over) an older overlapping one.
+  ///
+  /// The annotation manager's symbol layer uses `symbol-sort-key: ["get",
+  /// "zIndex"]`; with `icon-allow-overlap = true` a higher sort key overlaps a
+  /// lower one (and flips `symbol-z-order: auto` off its `viewport-y` default).
+  ///
+  /// Assign-once → an existing symbol's key never changes value, so the
+  /// incremental-sync skip path never needs to re-push it. The counter stays
+  /// well under 2^24, the exact-integer limit of the native float32 sort-key —
+  /// the previous timestamp-in-seconds key had grown to ~46M, where float32
+  /// quantizes to multiples of 4, so pings within ~4s collided on one sort key
+  /// and stacked in undefined order (the RX burst bug this replaces).
+  ///
+  /// NOTE: within a single sync, brand-new keys are numbered in iteration order
+  /// (TX→RX→DISC→Trace, each oldest→newest); cross-type ties in the same ~250ms
+  /// window are cosmetic (different icons) and intentionally not pre-sorted.
+  int _zIndexFor(String key) =>
+      _coverageZIndex.putIfAbsent(key, () => ++_coverageZCounter);
+
+  /// Diff-syncs native coverage symbols (TX/RX/DISC/Trace) against app state.
+  /// One symbol per ping, image varies by type/success state, opacity reflects
+  /// focus mode (faded if focus active and this isn't the focused ping).
+  ///
+  /// Marker style preference changes are NOT handled here — when the user
+  /// switches between circle/pin/diamond/dot, the caller must first call
+  /// [_handleMarkerStyleChange] to re-register the bitmap variants.
+  Future<void> _syncCoverageSymbols(AppStateProvider appState) async {
+    if (_mapController == null || !_styleLoaded || !_imagesRegistered) return;
+
+    // Re-register coverage images if the user changed their style preference
+    final currentStyle = appState.preferences.markerStyle;
+    if (_registeredCoverageStyle != currentStyle) {
+      await _registerCoverageImages(currentStyle);
+      // After re-registering, all existing coverage symbols still reference
+      // the same image names — but the underlying bitmaps have changed shape.
+      // The native side picks up the new bitmaps automatically. No need to
+      // update each symbol.
+    }
+
+    final wantedKeys = <String>{};
+    final focusActive = _focusedPingLocation != null;
+    // Diagnostics so the O(n)-per-event regression stays measurable on-device:
+    // a healthy steady-state sync should be mostly "unchanged".
+    int added = 0, updated = 0, skipped = 0;
+
+    Future<void> syncOne({
+      required String type,
+      required double lat,
+      required double lon,
+      required DateTime ts,
+      required bool success,
+      required int idForMetadata,
+      String? iconImageOverride,
+    }) async {
+      final key = _coverageKey(type, ts, lat, lon);
+      final isFocused = _isFocusedPing(lat, lon, ts);
+      // In focus mode, hide every coverage marker except the focused ping.
+      // Skipping wantedKeys lets the cleanup loop remove them entirely so the
+      // map is uncluttered. Dismissing focus re-syncs and restores them.
+      if (focusActive && !isFocused) return;
+      wantedKeys.add(key);
+
+      final iconImage = iconImageOverride ?? _MapImages.coverage(type, success);
+      final iconSize = isFocused ? 1.2 : 1.0;
+      // Everything that can change for an existing symbol (geometry is fixed by
+      // the key). If unchanged, skip the native round-trip entirely.
+      final sig = '$iconImage|$iconSize';
+
+      final existing = _coverageSymbols[key];
+      if (existing == null) {
+        try {
+          final symbol = await _mapController!.addSymbol(
+            SymbolOptions(
+              geometry: LatLng(lat, lon),
+              iconImage: iconImage,
+              iconSize: iconSize,
+              // Recency-ordered sort key: the most recent ping renders on top
+              // and wins the native topmost-first tap hit-test, so an older
+              // overlapping marker is never selected in its place.
+              zIndex: _zIndexFor(key),
             ),
+            {'kind': type, 'id': idForMetadata},
+          );
+          _coverageSymbols[key] = symbol;
+          _coverageSymbolSig[key] = sig;
+          added++;
+        } catch (e) {
+          debugError('[MAP] addSymbol($type) failed at $ts: $e');
+        }
+      } else if (_coverageSymbolSig[key] != sig) {
+        try {
+          await _mapController!.updateSymbol(
+            existing,
+            SymbolOptions(
+              geometry: LatLng(lat, lon),
+              iconImage: iconImage,
+              iconSize: iconSize,
+            ),
+          );
+          _coverageSymbolSig[key] = sig;
+          updated++;
+        } catch (e) {
+          debugError('[MAP] updateSymbol($type) failed at $ts: $e');
+        }
+      } else {
+        skipped++;
+      }
+    }
+
+    // When viewing a history session, show only those markers
+    if (appState.viewingHistorySession &&
+        appState.historySessionMarkers != null) {
+      for (final marker in appState.historySessionMarkers!) {
+        if (marker.latitude == null || marker.longitude == null) continue;
+        final mapping = _historyMarkerType(marker.type);
+        await syncOne(
+          type: 'history_${mapping.type}',
+          lat: marker.latitude!,
+          lon: marker.longitude!,
+          ts: marker.timestamp,
+          success: mapping.success,
+          idForMetadata: marker.timestamp.millisecondsSinceEpoch,
+          iconImageOverride: _MapImages.coverage(mapping.type, mapping.success),
+        );
+      }
+    } else {
+      // TX pings
+      for (final ping in appState.txPings) {
+        final hasDirectEcho =
+            ping.heardRepeaters.any((r) => r.pathHops == null);
+        final hasMultiHopOnly =
+            !hasDirectEcho && ping.heardRepeaters.isNotEmpty;
+        await syncOne(
+          type: 'tx',
+          lat: ping.latitude,
+          lon: ping.longitude,
+          ts: ping.timestamp,
+          success: ping.heardRepeaters.isNotEmpty,
+          idForMetadata: ping.timestamp.millisecondsSinceEpoch,
+          iconImageOverride:
+              hasMultiHopOnly ? _MapImages.coverage('rx', true) : null,
+        );
+      }
+
+      // RX pings
+      for (final ping in appState.rxPings) {
+        await syncOne(
+          type: 'rx',
+          lat: ping.latitude,
+          lon: ping.longitude,
+          ts: ping.timestamp,
+          success: true,
+          idForMetadata: ping.timestamp.millisecondsSinceEpoch,
+        );
+      }
+
+      // DISC entries (success = received node responses; drop = treat as TX fail)
+      for (final entry in appState.discLogEntries) {
+        final received = entry.nodeCount > 0;
+        final renderAsTxFail = !received && appState.discDropEnabled;
+        await syncOne(
+          type: 'disc',
+          lat: entry.latitude,
+          lon: entry.longitude,
+          ts: entry.timestamp,
+          success: received,
+          idForMetadata: entry.timestamp.millisecondsSinceEpoch,
+          iconImageOverride:
+              renderAsTxFail ? _MapImages.coverage('tx', false) : null,
+        );
+      }
+
+      // Trace entries
+      for (final entry in appState.traceLogEntries) {
+        await syncOne(
+          type: 'trace',
+          lat: entry.latitude,
+          lon: entry.longitude,
+          ts: entry.timestamp,
+          success: entry.success,
+          idForMetadata: entry.timestamp.millisecondsSinceEpoch,
+        );
+      }
+    }
+
+    // Remove symbols for pings that no longer exist (e.g., user cleared markers)
+    final toRemove =
+        _coverageSymbols.keys.where((k) => !wantedKeys.contains(k)).toList();
+    for (final key in toRemove) {
+      final sym = _coverageSymbols.remove(key);
+      _coverageSymbolSig.remove(key);
+      _coverageZIndex.remove(key);
+      if (sym != null) {
+        try {
+          await _mapController!.removeSymbol(sym);
+        } catch (_) {}
+      }
+    }
+
+    // Only log when work actually happened — a healthy sync over a large
+    // session should read "+0 added, 0 updated, N unchanged" (no native churn).
+    if (added > 0 || updated > 0 || toRemove.isNotEmpty) {
+      debugLog('[MAP] Coverage sync: +$added added, $updated updated, '
+          '$skipped unchanged, ${toRemove.length} removed');
+    }
+  }
+
+  /// Returns true if the given GPS marker style should rotate to face the
+  /// user's heading (vs staying screen-aligned). Arrow/walk/pacman face the
+  /// heading; car/bike/boat icons stay upright on a rotated map.
+  bool _gpsStyleFacesHeading(String style) =>
+      style == 'arrow' || style == 'walk' || style == 'chomper';
+
+  /// Computes the iconRotate value for the GPS marker.
+  ///
+  /// MapLibre annotation symbols use the default `icon-rotation-alignment: auto`
+  /// which resolves to `viewport` for point symbols — meaning iconRotate is
+  /// applied in screen space, not map space. That has two consequences:
+  ///
+  ///  - Rotating styles (arrow/walk/chomper) must point in the direction of
+  ///    travel both in always-north mode (where bearing = 0, so iconRotate
+  ///    = heading) AND in heading mode (where the map is rotated so that
+  ///    direction-of-travel is screen-up — so iconRotate should be 0).
+  ///    The single formula that works for both is `heading - bearing`.
+  ///
+  ///  - Non-rotating styles (car/bike/boat) should always be drawn upright
+  ///    on screen. With viewport alignment that's iconRotate = 0 regardless
+  ///    of bearing; the icon is already screen-aligned by default.
+  double _gpsIconRotate(String style, double heading) {
+    final bearing = _mapController?.cameraPosition?.bearing ?? 0;
+    if (_gpsStyleFacesHeading(style)) {
+      final rotated = heading - bearing;
+      // Normalize to 0..360 so MapLibre doesn't take the "long way around"
+      // when iconRotate crosses the ±180° seam during interpolation.
+      return (rotated % 360 + 360) % 360;
+    }
+    return 0;
+  }
+
+  /// Pushes the single GPS position feature into the dedicated puck source to
+  /// match [appState.currentPosition]. Called from the post-frame sync trigger.
+  /// The puck lives in its own top-most layer (see [_ensureGpsPuckLayer]), so
+  /// this only ever rewrites a one-feature source — it never touches the shared
+  /// coverage-pin source, which is what eliminated the blink.
+  Future<void> _syncGpsSymbol(AppStateProvider appState) async {
+    if (_mapController == null || !_styleLoaded || !_imagesRegistered) return;
+
+    // Ensure the dedicated puck source+layer exists (idempotent). On style
+    // reload _gpsPuckLayerInstalled is reset so this recreates it topmost.
+    if (!await _ensureGpsPuckLayer()) return;
+
+    final pos = appState.currentPosition;
+    if (pos == null) {
+      // No GPS lock — clear the puck by pushing an empty collection. Keeps the
+      // styled layer in place (no remove/recreate).
+      try {
+        await _mapController!
+            .setGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+      } catch (e) {
+        debugError('[MAP] clear gps puck failed: $e');
+      }
+      return;
+    }
+
+    final style = appState.preferences.gpsMarkerStyle;
+    // Use the derived heading (updated by _computeHeading in build()) so the
+    // arrow/walk/chomper markers actually point in the direction of travel
+    // even when pos.heading is stale or unset.
+    final iconRotate = _gpsIconRotate(style, _computedHeading ?? 0);
+
+    try {
+      await _mapController!.setGeoJsonSource(
+        _gpsPuckSourceId,
+        _buildGpsPuckFeatureCollection(
+            pos.latitude, pos.longitude, style, iconRotate),
+      );
+    } catch (e) {
+      debugError('[MAP] update gps puck failed: $e');
+    }
+  }
+
+  /// One-Point FeatureCollection for the GPS puck source. `iconImage` and
+  /// `iconRotate` are read by the puck symbol layer's data-driven expressions.
+  Map<String, dynamic> _buildGpsPuckFeatureCollection(
+      double lat, double lon, String style, double iconRotate) {
+    return {
+      'type': 'FeatureCollection',
+      'features': [
+        {
+          'type': 'Feature',
+          'properties': {
+            'iconImage': _MapImages.gps(style),
+            'iconRotate': iconRotate,
+          },
+          'geometry': {
+            'type': 'Point',
+            // GeoJSON convention: [longitude, latitude]
+            'coordinates': [lon, lat],
+          },
+        },
+      ],
+    };
+  }
+
+  /// Idempotently (re)create the dedicated GPS-puck source + symbol layer.
+  /// The layer is added with NO belowLayerId so it sits on TOP of every other
+  /// layer (coverage fills/pins, repeaters) — the puck is always-on-top by layer
+  /// order, with no symbol-sort-key contention. enableInteraction:false so taps
+  /// pass through to the repeaters/clusters underneath. Mirrors
+  /// [_ensureCoverageLinesLayer].
+  Future<bool> _ensureGpsPuckLayer() async {
+    if (_gpsPuckLayerInstalled) return true;
+    if (_mapController == null) return false;
+    try {
+      try {
+        await _mapController!.removeLayer(_gpsPuckLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_gpsPuckSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+      await _mapController!.addSymbolLayer(
+        _gpsPuckSourceId,
+        _gpsPuckLayerId,
+        const SymbolLayerProperties(
+          iconImage: ['get', 'iconImage'],
+          iconRotate: ['get', 'iconRotate'],
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+        ),
+        // No belowLayerId => topmost, above all coverage pings and repeaters.
+        enableInteraction: false,
+      );
+      _gpsPuckLayerInstalled = true;
+      return true;
+    } catch (e) {
+      debugError('[MAP] gps-puck layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Updates only the GPS symbol's iconRotate. Called from the camera-change
+  /// listener when the bearing changes — under viewport alignment, rotating
+  /// styles (arrow/walk/chomper) are the ones whose iconRotate depends on the
+  /// bearing (iconRotate = heading - bearing), so they need refreshing as the
+  /// bearing animates. Non-rotating styles use iconRotate = 0 and don't care.
+  /// Cheaper than calling [_syncGpsSymbol] which also updates position.
+  Future<void> _updateGpsSymbolRotation() async {
+    if (!_gpsPuckLayerInstalled || _mapController == null) return;
+    final appState = context.read<AppStateProvider>();
+    final pos = appState.currentPosition;
+    if (pos == null) return;
+    final style = appState.preferences.gpsMarkerStyle;
+    if (!_gpsStyleFacesHeading(style)) return;
+    try {
+      await _mapController!.setGeoJsonSource(
+        _gpsPuckSourceId,
+        _buildGpsPuckFeatureCollection(pos.latitude, pos.longitude, style,
+            _gpsIconRotate(style, _computedHeading ?? 0)),
+      );
+    } catch (_) {}
+  }
+
+  // Source/layer ID constants for the focus-mode dotted lines
+  static const _focusLinesSourceId = 'focus-lines-source';
+  static const _focusLinesLayerId = 'focus-lines-layer';
+  static const _focusLinesAmbiguousLayerId = 'focus-lines-ambiguous-border';
+  static const _focusLinesAmbiguousLabelId = 'focus-lines-ambiguous-label';
+
+  // Source/layer IDs for the community coverage connection lines (shared by the
+  // tile fan-out and the repeater coverage view — mutually exclusive in time,
+  // per-feature `color`) and the repeater coverage cells (per-feature fill).
+  static const _coverageLinesSourceId = 'coverage-lines-source';
+  static const _coverageLinesLayerId = 'coverage-lines-layer';
+  static const _coverageCellsSourceId = 'coverage-cells-source';
+  static const _coverageCellsLayerId = 'coverage-cells-layer';
+
+  /// Builds and applies the focus-mode dotted polylines that visually connect
+  /// a focused ping to each repeater that heard it. Color-coded by SNR;
+  /// ambiguous matches get a wider white outline drawn underneath.
+  ///
+  /// Implementation uses a GeoJSON source + line layer (rather than the
+  /// annotation-level addLine API) because LineOptions does not expose
+  /// `lineDasharray`, but LineLayerProperties does.
+  ///
+  /// Idempotent: removes any existing source/layers first, then re-adds with
+  /// the latest focus state.
+  Future<void> _updateFocusLines() async {
+    if (_mapController == null || !_styleLoaded) return;
+
+    final hasFocus =
+        _focusedPingLocation != null && _focusedRepeaters.isNotEmpty;
+
+    // No focus → no install. Skip the platform calls entirely when there's
+    // nothing on the map to begin with; only run the remove block when a
+    // previous activation actually installed the layers.
+    if (!hasFocus) {
+      if (!_focusLinesInstalled) return;
+      try {
+        await _mapController!.removeLayer(_focusLinesLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeLayer(_focusLinesAmbiguousLabelId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeLayer(_focusLinesAmbiguousLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_focusLinesSourceId);
+      } catch (_) {}
+      _focusLinesInstalled = false;
+      return;
+    }
+
+    // Focus is active — remove any prior install before re-adding with the
+    // current focus state. Order matters: layers BEFORE their source.
+    if (_focusLinesInstalled) {
+      try {
+        await _mapController!.removeLayer(_focusLinesLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeLayer(_focusLinesAmbiguousLabelId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeLayer(_focusLinesAmbiguousLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_focusLinesSourceId);
+      } catch (_) {}
+      _focusLinesInstalled = false;
+    }
+
+    // Build a FeatureCollection with one LineString per connected repeater.
+    // Per-feature properties carry the line color (data-driven styling) and
+    // ambiguous flag (used as a layer filter for the border line).
+    final features = <Map<String, dynamic>>[];
+    for (final r in _focusedRepeaters) {
+      final color = r.snr != null ? PingColors.snrColor(r.snr!) : Colors.grey;
+      features.add({
+        'type': 'Feature',
+        'properties': {
+          'color': _colorToHex(color),
+          'ambiguous': r.ambiguous,
+        },
+        'geometry': {
+          'type': 'LineString',
+          'coordinates': [
+            [_focusedPingLocation!.longitude, _focusedPingLocation!.latitude],
+            [r.repeater.lon, r.repeater.lat],
+          ],
+        },
+      });
+    }
+
+    // Pass the FeatureCollection as a Dart Map (NOT a jsonEncode-d string).
+    // The iOS plugin's buildShapeSource crashes if `data` is a string that's
+    // not a URL — see fix in _setupRepeaterClusterLayers for the same gotcha.
+    final geojson = <String, dynamic>{
+      'type': 'FeatureCollection',
+      'features': features,
+    };
+
+    try {
+      await _mapController!.addSource(
+        _focusLinesSourceId,
+        GeojsonSourceProperties(data: geojson),
+      );
+
+      // Insert focus line layers BELOW the individual repeater layer so
+      // repeater boxes (and the cluster bubbles/count text above them, plus
+      // the symbol annotation markers on top of those) all render on top of
+      // the connecting lines. This is especially important at the repeater
+      // end of each line, where the dotted stroke would otherwise draw over
+      // the repeater box.
+      const belowLayer = _repeaterIndividualLayerId;
+
+      // Border line (amber, wider, only for ambiguous matches) — added FIRST
+      // so it renders BENEATH the colored line on top.
+      await _mapController!.addLineLayer(
+        _focusLinesSourceId,
+        _focusLinesAmbiguousLayerId,
+        const LineLayerProperties(
+          lineColor: '#F59E0B',
+          lineOpacity: 0.8,
+          lineWidth: 6.5,
+          lineDasharray: [2, 4],
+          lineCap: 'round',
+        ),
+        filter: [
+          '==',
+          ['get', 'ambiguous'],
+          true
+        ],
+        belowLayerId: belowLayer,
+      );
+
+      // "DUPLICATE ID" text along ambiguous lines — only renders when the
+      // line is long enough for the label to fit without collision.
+      await _mapController!.addSymbolLayer(
+        _focusLinesSourceId,
+        _focusLinesAmbiguousLabelId,
+        const SymbolLayerProperties(
+          symbolPlacement: 'line',
+          textField: 'DUP',
+          textSize: 11,
+          textColor: '#F59E0B',
+          textHaloColor: '#FFFFFF',
+          textHaloWidth: 1.5,
+          textKeepUpright: true,
+          textFont: _defaultFontStack,
+          symbolSpacing: 200,
+          textAllowOverlap: false,
+          textOptional: true,
+        ),
+        filter: [
+          '==',
+          ['get', 'ambiguous'],
+          true
+        ],
+        belowLayerId: belowLayer,
+      );
+
+      // Main colored line (color from feature property via data-driven expression)
+      await _mapController!.addLineLayer(
+        _focusLinesSourceId,
+        _focusLinesLayerId,
+        const LineLayerProperties(
+          lineColor: ['get', 'color'],
+          lineOpacity: 0.9,
+          lineWidth: 3.5,
+          lineDasharray: [2, 4],
+          lineCap: 'round',
+        ),
+        belowLayerId: belowLayer,
+      );
+      _focusLinesInstalled = true;
+    } catch (e) {
+      debugError('[MAP] Failed to add focus lines: $e');
+    }
+  }
+
+  // ===========================================================================
+  // Community coverage connection lines + cells (Features A & B)
+  // ===========================================================================
+
+  /// Volume cap shared by both coverage features (user choice: keep the
+  /// FARTHEST). When [items] exceeds [cap], sorts by [dist] DESCENDING and keeps
+  /// the first [cap] (so the longest-reach lines/cells always survive); logs the
+  /// truncation. Returns [items] unchanged when within the cap.
+  List<T> _capByFarthest<T>(
+      List<T> items, double Function(T) dist, int cap, String logTag) {
+    if (items.length <= cap) return items;
+    final sorted = [...items]..sort((a, b) => dist(b).compareTo(dist(a)));
+    debugLog('$logTag truncated ${items.length}->$cap (kept farthest)');
+    return sorted.take(cap).toList();
+  }
+
+  /// Idempotently (re)create the empty coverage connection-line layer
+  /// (data-driven dashed lines, below the repeater chips). Modeled on
+  /// [_ensureCellHighlightLayer].
+  Future<bool> _ensureCoverageLinesLayer() async {
+    if (_coverageLinesInstalled) return true;
+    if (_mapController == null) return false;
+    try {
+      final belowLayer = _clusterLayersReady
+          ? _repeaterIndividualLayerId
+          : _symbolAnnotationLayerId();
+      try {
+        await _mapController!.removeLayer(_coverageLinesLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_coverageLinesSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_coverageLinesSourceId, _emptyFeatureCollection());
+      await _mapController!.addLineLayer(
+        _coverageLinesSourceId,
+        _coverageLinesLayerId,
+        const LineLayerProperties(
+          lineColor: ['get', 'color'],
+          lineOpacity: 0.9,
+          // Per-feature width: the tile fan-out (Feature A) and the repeater
+          // coverage (Feature B) share this layer but use different widths.
+          lineWidth: ['get', 'width'],
+          lineDasharray: [2, 4],
+          lineCap: 'round',
+        ),
+        belowLayerId: belowLayer,
+      );
+      _coverageLinesInstalled = true;
+      return true;
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-lines layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Idempotently (re)create the empty coverage cells fill layer (Feature B),
+  /// anchored BELOW the lines layer so the lines read on top of the cells.
+  Future<bool> _ensureCoverageCellsLayer() async {
+    if (_coverageCellsInstalled) return true;
+    if (_mapController == null) return false;
+    try {
+      final belowLayer = _coverageLinesInstalled
+          ? _coverageLinesLayerId
+          : (_clusterLayersReady
+              ? _repeaterIndividualLayerId
+              : _symbolAnnotationLayerId());
+      try {
+        await _mapController!.removeLayer(_coverageCellsLayerId);
+      } catch (_) {}
+      try {
+        await _mapController!.removeSource(_coverageCellsSourceId);
+      } catch (_) {}
+      await _mapController!
+          .addGeoJsonSource(_coverageCellsSourceId, _emptyFeatureCollection());
+      await _mapController!.addFillLayer(
+        _coverageCellsSourceId,
+        _coverageCellsLayerId,
+        const FillLayerProperties(
+          fillColor: ['get', 'fill'],
+          fillOutlineColor: ['get', 'border'],
+          fillOpacity: 0.8,
+        ),
+        belowLayerId: belowLayer,
+      );
+      _coverageCellsInstalled = true;
+      return true;
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-cells layer create failed: $e');
+      return false;
+    }
+  }
+
+  /// Draw one dashed connection line per [segments] entry from
+  /// ([startLat],[startLon]) out to each segment's endpoint, coloured by the
+  /// segment's `color` (blue for the tile fan-out, status colour for a repeater).
+  /// Empty list clears the layer.
+  Future<void> _updateCoverageLines(
+      List<({double lat, double lon, String color})> segments,
+      double startLat,
+      double startLon,
+      {double width = 2.5}) async {
+    if (_mapController == null || !_styleLoaded) return;
+    if (segments.isEmpty) {
+      await _clearCoverageLines();
+      return;
+    }
+    if (!await _ensureCoverageLinesLayer()) return;
+    final features = <Map<String, dynamic>>[
+      for (final s in segments)
+        {
+          'type': 'Feature',
+          'properties': {'color': s.color, 'width': width},
+          'geometry': {
+            'type': 'LineString',
+            'coordinates': [
+              [startLon, startLat],
+              [s.lon, s.lat],
+            ],
+          },
+        },
+    ];
+    try {
+      await _mapController!.setGeoJsonSource(_coverageLinesSourceId,
+          {'type': 'FeatureCollection', 'features': features});
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-lines set failed: $e');
+    }
+  }
+
+  /// Empty the coverage-lines source so it renders nothing (layer stays).
+  Future<void> _clearCoverageLines() async {
+    if (_mapController == null || !_coverageLinesInstalled) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_coverageLinesSourceId, _emptyFeatureCollection());
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-lines clear failed: $e');
+    }
+  }
+
+  /// Draw the selected repeater's coverage [cells] as status-coloured fills
+  /// (Feature B). [latStep]/[lonStep] size each cell's ring. Empty list clears.
+  Future<void> _updateCoverageCells(List<RepeaterCoverageCell> cells, String cvd,
+      double latStep, double lonStep) async {
+    if (_mapController == null || !_styleLoaded) return;
+    if (cells.isEmpty) {
+      await _clearCoverageCells();
+      return;
+    }
+    if (!await _ensureCoverageCellsLayer()) return;
+    final features = <Map<String, dynamic>>[];
+    for (final c in cells) {
+      final colors = CoverageTilePalette.colorsForStatus(cvd, c.st);
+      final ring = GridCell(c.li, c.lj, latStep, lonStep).blockRing(0);
+      features.add({
+        'type': 'Feature',
+        'properties': {'fill': colors[0], 'border': colors[1]},
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [ring],
+        },
+      });
+    }
+    try {
+      await _mapController!.setGeoJsonSource(_coverageCellsSourceId,
+          {'type': 'FeatureCollection', 'features': features});
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-cells set failed: $e');
+    }
+  }
+
+  /// Empty the coverage-cells source so it renders nothing (layer stays).
+  Future<void> _clearCoverageCells() async {
+    if (_mapController == null || !_coverageCellsInstalled) return;
+    try {
+      await _mapController!
+          .setGeoJsonSource(_coverageCellsSourceId, _emptyFeatureCollection());
+    } catch (e) {
+      debugLog('[COVERAGE] coverage-cells clear failed: $e');
+    }
+  }
+
+  /// Place a distance-pill label at the midpoint of each coverage fan-out line
+  /// (Feature A). Mirrors [_syncDistanceLabels] but with its own tracking keyed
+  /// by endpoint lat/lon (6dp). Empty list removes all coverage labels.
+  /// Screen-space rotation (degrees, clockwise) so a horizontal distance label
+  /// runs ALONG the line from ([startLat],[startLon]) to ([endLat],[endLon])
+  /// instead of staying flat. Annotation symbols rotate in viewport space, so
+  /// this is the line's on-screen angle — the geographic bearing minus the
+  /// camera bearing, minus 90° (a horizontal label already lies along an
+  /// east-west line) — flipped 180° when it would otherwise read upside-down.
+  double _lineLabelRotation(
+      double startLat, double startLon, double endLat, double endLon) {
+    final bearing =
+        Geolocator.bearingBetween(startLat, startLon, endLat, endLon);
+    final cam = _mapController?.cameraPosition?.bearing ?? 0;
+    var angle = bearing - cam - 90;
+    angle = (angle + 180) % 360 - 180; // normalize to [-180, 180)
+    if (angle > 90) angle -= 180; // keep upright (text never reads inverted)
+    if (angle < -90) angle += 180;
+    return angle;
+  }
+
+  Future<void> _syncCoverageDistanceLabels(
+      List<({double lat, double lon, String color})> segments,
+      double startLat,
+      double startLon,
+      bool isImperial) async {
+    if (_mapController == null || !_styleLoaded) return;
+    if (segments.isEmpty) {
+      await _clearCoverageDistanceLabels();
+      return;
+    }
+    final wanted = <String>{};
+    for (final s in segments) {
+      final key = '${s.lat.toStringAsFixed(6)},${s.lon.toStringAsFixed(6)}';
+      wanted.add(key);
+      final midLat = (startLat + s.lat) / 2;
+      final midLon = (startLon + s.lon) / 2;
+      final meters =
+          GpsService.distanceBetween(startLat, startLon, s.lat, s.lon);
+      final labelText = meters < 1000
+          ? formatMeters(meters, isImperial: isImperial)
+          : formatKilometers(meters / 1000, isImperial: isImperial);
+      final imageName = 'cov-dist-${labelText.hashCode}';
+      if (!_registeredCoverageLabelImages.contains(imageName)) {
+        try {
+          final rendered = await _renderDistanceLabelPng(labelText);
+          await _mapController!.addImage(imageName, rendered.bytes);
+          _registeredCoverageLabelImages.add(imageName);
+          _registeredCoverageLabelImageSizes[imageName] = rendered.size;
+        } catch (e) {
+          debugError('[MAP] render/addImage(coverage label) failed: $e');
+        }
+      }
+      final options = SymbolOptions(
+        geometry: LatLng(midLat, midLon),
+        iconImage: imageName,
+        iconSize: 1.0,
+        iconAnchor: 'center',
+        // Rotate the pill to follow its line (kept upright) instead of staying
+        // flat across the fan-out.
+        iconRotate: _lineLabelRotation(startLat, startLon, s.lat, s.lon),
+      );
+      final existing = _coverageDistanceLabelSymbols[key];
+      if (existing == null) {
+        try {
+          _coverageDistanceLabelSymbols[key] = await _mapController!
+              .addSymbol(options, {'kind': 'cov-distance'});
+        } catch (e) {
+          debugError('[MAP] addSymbol(coverage distance) failed: $e');
+        }
+      } else {
+        try {
+          await _mapController!.updateSymbol(existing, options);
+        } catch (e) {
+          debugError('[MAP] updateSymbol(coverage distance) failed: $e');
+        }
+      }
+    }
+    final toRemove = _coverageDistanceLabelSymbols.keys
+        .where((k) => !wanted.contains(k))
+        .toList();
+    for (final k in toRemove) {
+      final sym = _coverageDistanceLabelSymbols.remove(k);
+      if (sym != null) {
+        try {
+          await _mapController!.removeSymbol(sym);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Remove all coverage distance-label pills.
+  Future<void> _clearCoverageDistanceLabels() async {
+    if (_mapController == null) return;
+    final toRemove = List.of(_coverageDistanceLabelSymbols.values);
+    _coverageDistanceLabelSymbols.clear();
+    for (final sym in toRemove) {
+      try {
+        await _mapController!.removeSymbol(sym);
+      } catch (_) {}
+    }
+  }
+
+  /// Restore all repeaters hidden by a Feature A fan-out (clears the heard set
+  /// and re-pushes the repeater source). No-op when no fade is active. No
+  /// setState — the source is pushed imperatively, like [_clearRepeaterIsolation].
+  void _restoreFadedRepeaters() {
+    if (_coverageHeardRepeaterIds == null) return;
+    _coverageHeardRepeaterIds = null;
+    if (!mounted) return;
+    _syncRepeaterSymbols(context.read<AppStateProvider>());
+  }
+
+  /// Tear down ALL community coverage visuals (lines, cells, labels, fade).
+  /// The single funnel used by every entry/exit path.
+  Future<void> _clearCoverageConnections() async {
+    _restoreFadedRepeaters();
+    _restoreCoverageBackdropForRepeater();
+    await _clearCoverageLines();
+    await _clearCoverageCells();
+    await _clearCoverageDistanceLabels();
+  }
+
+  /// Feature B draw: render [matched] (the points that heard [repeater]) as
+  /// deduped status-coloured coverage cells plus a status-coloured dashed line
+  /// from the repeater to each cell centre. The lines layer is ensured BEFORE
+  /// the cells layer so the lines read on top. Returns the (capped) cells so the
+  /// caller can frame them with the repeater.
+  Future<List<RepeaterCoverageCell>> _drawRepeaterCoverage(Repeater repeater,
+      List<Map<String, dynamic>> matched, String cvd, int gridSize) async {
+    final steps = kCoverageGridSteps[gridSize] ?? const [0.0009, 0.00128];
+    final blob = gridSize == 100 ? 1 : 0;
+    // High cap so a repeater's full footprint draws (web parity — it draws all).
+    // Still bounded (farthest-first) to protect against pathological volumes.
+    final cells = _capByFarthest(
+      repeaterCoverageCells(matched, repeater,
+          latStep: steps[0], lonStep: steps[1], blob: blob),
+      (c) => c.distanceMeters,
+      5000,
+      '[COVERAGE] repeater coverage',
+    );
+    if (cells.isEmpty) {
+      await _clearCoverageCells();
+      await _clearCoverageLines();
+      return cells;
+    }
+    await _ensureCoverageLinesLayer();
+    await _updateCoverageCells(cells, cvd, steps[0], steps[1]);
+    final segments = [
+      for (final c in cells)
+        (
+          lat: c.centerLat,
+          lon: c.centerLon,
+          color: CoverageTilePalette.colorsForStatus(cvd, c.st)[0],
+        ),
+    ];
+    // Skinnier than the tile fan-out — a repeater draws many lines at once.
+    await _updateCoverageLines(segments, repeater.lat, repeater.lon, width: 1.5);
+    // Dim the base coverage tiles so the repeater's coloured cells + lines pop
+    // (web `drawRepeaterCoverageFromCache` tile-dim parity). Restored in
+    // _clearRepeaterIsolation. Skip while ping focus already hid the overlay.
+    if (_focusedPingLocation == null) {
+      _coverageDimmedForRepeater = true;
+      await _applyCoverageOverlayOpacity(_kCellHighlightFadeOpacity);
+    }
+    return cells;
+  }
+
+  /// Rebuilds the regional boundary layer from `appState.regionBorders`.
+  /// Always-on: renders whenever polygons are present, independent of BLE
+  /// or auth state. Idempotent — safe to call repeatedly (removes existing
+  /// source/layers first).
+  Future<void> _refreshRegionBorders(AppStateProvider appState) async {
+    if (_mapController == null || !_styleLoaded) return;
+
+    // Remove existing layers (label, line) and source. Order matters: layers
+    // reference the source, so they must go first. Each try/catch tolerates
+    // a missing layer on the first call.
+    try {
+      await _mapController!.removeLayer(_regionBorderLabelLayerId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeLayer(_regionBorderLineLayerId);
+    } catch (_) {}
+    try {
+      await _mapController!.removeSource(_regionBorderSourceId);
+    } catch (_) {}
+
+    final borders = appState.regionBorders;
+    if (borders.isEmpty) return;
+
+    // Build a FeatureCollection. API sends `[lat, lon]` pairs; GeoJSON wants
+    // `[lon, lat]` — flip during conversion. Polygon rings must be closed,
+    // so append the first point if the last doesn't already match.
+    final features = <Map<String, dynamic>>[];
+    for (final entry in borders) {
+      final code = entry['code']?.toString() ?? '';
+      final raw = entry['polygon'];
+      if (raw is! List || raw.length < 3) continue;
+
+      final ring = <List<double>>[];
+      for (final pt in raw) {
+        if (pt is! List || pt.length < 2) continue;
+        final lat = (pt[0] as num).toDouble();
+        final lon = (pt[1] as num).toDouble();
+        ring.add([lon, lat]);
+      }
+      if (ring.length < 3) continue;
+      if (ring.first[0] != ring.last[0] || ring.first[1] != ring.last[1]) {
+        ring.add([ring.first[0], ring.first[1]]);
+      }
+
+      features.add({
+        'type': 'Feature',
+        'properties': {
+          'iata': code,
+          'label': '$code BOUNDARY',
+        },
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [ring],
+        },
+      });
+    }
+
+    if (features.isEmpty) return;
+
+    final geojson = <String, dynamic>{
+      'type': 'FeatureCollection',
+      'features': features,
+    };
+
+    try {
+      await _mapController!.addSource(
+        _regionBorderSourceId,
+        GeojsonSourceProperties(data: geojson),
+      );
+
+      // Render beneath the repeater cluster so repeaters stay tappable on top.
+      // Fallback gracefully if cluster layer isn't ready yet.
+      final belowLayer =
+          _clusterLayersReady ? _repeaterClusterBubbleLayerId : null;
+
+      await _mapController!.addLineLayer(
+        _regionBorderSourceId,
+        _regionBorderLineLayerId,
+        const LineLayerProperties(
+          lineColor: '#FF6A00',
+          lineOpacity: 0.9,
+          lineWidth: 3.0,
+          lineCap: 'round',
+          lineJoin: 'round',
+        ),
+        belowLayerId: belowLayer,
+      );
+
+      await _mapController!.addSymbolLayer(
+        _regionBorderSourceId,
+        _regionBorderLabelLayerId,
+        const SymbolLayerProperties(
+          symbolPlacement: 'line',
+          textField: ['get', 'label'],
+          textSize: 12,
+          textColor: '#FF6A00',
+          textHaloColor: '#FFFFFF',
+          textHaloWidth: 1.5,
+          textKeepUpright: true,
+          textFont: _defaultFontStack,
+        ),
+        minzoom: 13,
+        belowLayerId: belowLayer,
+      );
+    } catch (e) {
+      debugError('[MAP] Failed to add region border layer: $e');
+    }
+  }
+
+  /// Shows the dialog explaining how to expand the regional boundary.
+  void _showBorderInfoDialog() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Region Boundary'),
+        content: const Text(
+          'To expand the boundary, talk to your MeshMapper regional admin.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
           ),
-
-          // Focus mode: polylines from focused ping to each connected repeater
-          // Line color = SNR (green/yellow/red). Ambiguous matches get a white border.
-          if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty)
-            PolylineLayer(
-              polylines: _focusedRepeaters.map((r) {
-                final lineColor =
-                    r.snr != null ? PingColors.snrColor(r.snr!) : Colors.grey;
-                return Polyline(
-                  points: [
-                    _focusedPingLocation!,
-                    LatLng(r.repeater.lat, r.repeater.lon)
-                  ],
-                  color: lineColor.withValues(alpha: 0.9),
-                  strokeWidth: 3.5,
-                  isDotted: true,
-                  borderStrokeWidth: r.ambiguous ? 1.5 : 0,
-                  borderColor:
-                      r.ambiguous ? Colors.white.withValues(alpha: 0.6) : null,
-                );
-              }).toList(),
-            ),
-
-          // Repeater markers (magenta with ID, rotate with map)
-          // During focus mode, split into two layers: faded repeaters below, connected on top
-          if (_focusedPingLocation != null && _focusedRepeaters.isNotEmpty) ...[
-            // Faded non-connected repeaters (below)
-            MarkerLayer(
-              rotate: true,
-              markers: _buildRepeaterMarkers(
-                appState.repeaters,
-                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-                onlyFaded: true,
-              ),
-            ),
-            // Distance labels (middle)
-            MarkerLayer(
-              rotate: true,
-              markers: _buildFocusDistanceLabels(appState),
-            ),
-            // Connected repeaters (on top)
-            MarkerLayer(
-              rotate: true,
-              markers: _buildRepeaterMarkers(
-                appState.repeaters,
-                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-                onlyConnected: true,
-              ),
-            ),
-            // Focused ping marker (above everything except GPS)
-            MarkerLayer(
-              markers: _buildFocusedPingMarker(
-                txPings: appState.txPings,
-                rxPings: appState.rxPings,
-                discEntries: appState.discLogEntries,
-                discDropEnabled: appState.discDropEnabled,
-                traceEntries: appState.traceLogEntries,
-              ),
-            ),
-          ] else
-            // Normal mode: single layer with all repeaters
-            MarkerLayer(
-              rotate: true,
-              markers: _buildRepeaterMarkers(
-                appState.repeaters,
-                appState.enforceHopBytes ? appState.effectiveHopBytes : null,
-              ),
-            ),
-
-          // Current position marker
-          if (appState.currentPosition != null)
-            MarkerLayer(
-              // Vehicle/boat icons stay upright by counter-rotating against map rotation;
-              // arrow, walk, and chomper rotate with heading (handled by Transform.rotate in the painter)
-              rotate: appState.preferences.gpsMarkerStyle != 'arrow' &&
-                  appState.preferences.gpsMarkerStyle != 'walk' &&
-                  appState.preferences.gpsMarkerStyle != 'chomper',
-              markers: [
-                Marker(
-                  point: LatLng(
-                    appState.currentPosition!.latitude,
-                    appState.currentPosition!.longitude,
-                  ),
-                  width: 48,
-                  height: 48,
-                  child: _buildCurrentPositionMarker(
-                      appState.currentPosition!.heading),
-                ),
-              ],
-            ),
         ],
       ),
+    );
+  }
+
+  /// Diff-syncs the distance label symbols shown in focus mode. Each label is
+  /// a bitmap pill (white text on a dark rounded rectangle background, baked
+  /// into an addImage icon) placed at the midpoint of the ping→repeater line.
+  ///
+  /// A later pass ([_reflowDistanceLabelsForCollisions]) may slide individual
+  /// labels along their lines after the zoom-to-fit animation settles, to
+  /// prevent them from overlapping on screen.
+  Future<void> _syncDistanceLabels(AppStateProvider appState) async {
+    if (_mapController == null || !_styleLoaded) return;
+
+    // No focus → remove all existing labels and wipe the tracking maps.
+    //
+    // Order matters here: snapshot the symbols to remove and clear the
+    // tracking maps SYNCHRONOUSLY before awaiting any removeSymbol call.
+    //
+    // Why: removeSymbol is async. If we cleared after the await loop, a
+    // concurrent _syncDistanceLabels call (triggered by e.g. the user
+    // tapping a new ping and its focus activating during the yield) would
+    // see the old tracking data — populate new symbols for the new focus
+    // into the still-populated map — and then our late `.clear()` would
+    // wipe the new-focus entries from tracking, leaving orphaned native
+    // symbols on the map and causing the NEXT sync to double-add them.
+    // By clearing first, any concurrent sync starts from a clean slate.
+    if (_focusedPingLocation == null || _focusedRepeaters.isEmpty) {
+      final toRemove = List.of(_distanceLabelSymbols.values);
+      _distanceLabelSymbols.clear();
+      _distanceLabelImageSize.clear();
+      _distanceLabelRepeaterPos.clear();
+      for (final sym in toRemove) {
+        try {
+          await _mapController!.removeSymbol(sym);
+        } catch (_) {}
+      }
+      return;
+    }
+
+    final isImperial = appState.preferences.isImperial;
+    final ping = _focusedPingLocation!;
+    final wantedKeys = <String>{};
+
+    for (final r in _focusedRepeaters) {
+      final key = r.repeater.id;
+      wantedKeys.add(key);
+      final midLat = (ping.latitude + r.repeater.lat) / 2;
+      final midLon = (ping.longitude + r.repeater.lon) / 2;
+      final meters = GpsService.distanceBetween(
+        ping.latitude,
+        ping.longitude,
+        r.repeater.lat,
+        r.repeater.lon,
+      );
+      final labelText = meters < 1000
+          ? formatMeters(meters, isImperial: isImperial)
+          : formatKilometers(meters / 1000, isImperial: isImperial);
+
+      // Dedup the bitmap image by label text — identical distances reuse one
+      // registered image. addImage is idempotent by name, so re-registering
+      // the same name is a no-op on subsequent calls.
+      final imageName = 'distance-label-${labelText.hashCode}';
+      Size? imageSize;
+      if (!_registeredDistanceLabelImages.contains(imageName)) {
+        try {
+          final rendered = await _renderDistanceLabelPng(labelText);
+          await _mapController!.addImage(imageName, rendered.bytes);
+          _registeredDistanceLabelImages.add(imageName);
+          _registeredDistanceLabelImageSizes[imageName] = rendered.size;
+          imageSize = rendered.size;
+        } catch (e) {
+          debugError('[MAP] render/addImage(distance label) failed: $e');
+        }
+      }
+      imageSize ??= _registeredDistanceLabelImageSizes[imageName] ??
+          const Size(60, 18);
+      _distanceLabelImageSize[key] = imageSize;
+      _distanceLabelRepeaterPos[key] = LatLng(r.repeater.lat, r.repeater.lon);
+
+      final options = SymbolOptions(
+        geometry: LatLng(midLat, midLon),
+        iconImage: imageName,
+        iconSize: 1.0,
+        iconAnchor: 'center',
+        // Rotate the pill to follow its ping→repeater line (kept upright), so
+        // ping focus matches the tile/repeater coverage labels.
+        iconRotate: _lineLabelRotation(
+            ping.latitude, ping.longitude, r.repeater.lat, r.repeater.lon),
+      );
+
+      final existing = _distanceLabelSymbols[key];
+      if (existing == null) {
+        try {
+          _distanceLabelSymbols[key] = await _mapController!.addSymbol(
+            options,
+            {'kind': 'distance'},
+          );
+        } catch (e) {
+          debugError('[MAP] addSymbol(distance) failed: $e');
+        }
+      } else {
+        try {
+          await _mapController!.updateSymbol(existing, options);
+        } catch (e) {
+          debugError('[MAP] updateSymbol(distance) failed: $e');
+        }
+      }
+    }
+
+    // Remove labels for repeaters no longer in focus
+    final toRemove = _distanceLabelSymbols.keys
+        .where((k) => !wantedKeys.contains(k))
+        .toList();
+    for (final key in toRemove) {
+      final sym = _distanceLabelSymbols.remove(key);
+      _distanceLabelImageSize.remove(key);
+      _distanceLabelRepeaterPos.remove(key);
+      if (sym != null) {
+        try {
+          await _mapController!.removeSymbol(sym);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// After the focus zoom-to-fit animation settles, walks the placed distance
+  /// labels and slides any that overlap on screen to a different position
+  /// along their ping→repeater line. Uses toScreenLocationBatch to sample
+  /// candidate t values (0.5, 0.4, 0.6, 0.3, 0.7, 0.25, 0.75) for each label
+  /// and greedily picks the first non-colliding slot.
+  Future<void> _reflowDistanceLabelsForCollisions() async {
+    if (_mapController == null || !mounted) return;
+    if (_focusedPingLocation == null) return;
+    if (_distanceLabelSymbols.isEmpty) return;
+
+    final ping = _focusedPingLocation!;
+    // Deterministic order: iterate focused repeaters in the list order we got
+    // them in (SNR-ranked upstream), so the "primary" label wins t=0.5.
+    final orderedIds = _focusedRepeaters
+        .map((r) => r.repeater.id)
+        .where(_distanceLabelSymbols.containsKey)
+        .toList();
+    if (orderedIds.isEmpty) return;
+
+    // Candidate t values to try, in preference order.
+    const candidateTs = [0.5, 0.4, 0.6, 0.3, 0.7, 0.25, 0.75];
+
+    // Step 1: compute all candidate LatLngs for every label so we can batch
+    // the toScreenLocation calls (one round-trip instead of N×T).
+    final candidateLatLngs = <LatLng>[];
+    for (final id in orderedIds) {
+      final repeaterPos = _distanceLabelRepeaterPos[id];
+      if (repeaterPos == null) continue;
+      for (final t in candidateTs) {
+        candidateLatLngs.add(LatLng(
+          ping.latitude + (repeaterPos.latitude - ping.latitude) * t,
+          ping.longitude + (repeaterPos.longitude - ping.longitude) * t,
+        ));
+      }
+    }
+
+    List<math.Point<num>> screenPoints;
+    try {
+      screenPoints =
+          await _mapController!.toScreenLocationBatch(candidateLatLngs);
+    } catch (e) {
+      debugError('[MAP] toScreenLocationBatch(distance labels) failed: $e');
+      return;
+    }
+    if (!mounted || _focusedPingLocation == null) return;
+
+    // Step 2: greedily place each label at the first candidate t whose
+    // screen rect doesn't overlap any already-placed label rect.
+    const gap = 4.0; // extra spacing between pills in logical pixels
+    final placedRects = <Rect>[];
+    var cursor = 0;
+    for (final id in orderedIds) {
+      final repeaterPos = _distanceLabelRepeaterPos[id];
+      final labelSize = _distanceLabelImageSize[id] ?? const Size(60, 18);
+      if (repeaterPos == null) {
+        cursor += candidateTs.length;
+        continue;
+      }
+
+      int bestIdx = 0;
+      Rect? bestRect;
+      for (var i = 0; i < candidateTs.length; i++) {
+        final sp = screenPoints[cursor + i];
+        final rect = Rect.fromCenter(
+          center: Offset(sp.x.toDouble(), sp.y.toDouble()),
+          width: labelSize.width + gap,
+          height: labelSize.height + gap,
+        );
+        final collides = placedRects.any((r) => r.overlaps(rect));
+        if (!collides) {
+          bestIdx = i;
+          bestRect = rect;
+          break;
+        }
+        // Fallback: keep the first candidate rect so we still place somewhere
+        // if every slot collides.
+        bestRect ??= rect;
+      }
+
+      final tChosen = candidateTs[bestIdx];
+      final targetLatLng = LatLng(
+        ping.latitude + (repeaterPos.latitude - ping.latitude) * tChosen,
+        ping.longitude + (repeaterPos.longitude - ping.longitude) * tChosen,
+      );
+      placedRects.add(bestRect!);
+
+      final symbol = _distanceLabelSymbols[id];
+      if (symbol != null) {
+        try {
+          await _mapController!.updateSymbol(
+            symbol,
+            // Re-assert the line rotation (unchanged — sliding along the same
+            // line) alongside the new position.
+            SymbolOptions(
+              geometry: targetLatLng,
+              iconRotate: _lineLabelRotation(ping.latitude, ping.longitude,
+                  repeaterPos.latitude, repeaterPos.longitude),
+            ),
+          );
+        } catch (e) {
+          debugError('[MAP] updateSymbol(distance reflow) failed: $e');
+        }
+      }
+
+      cursor += candidateTs.length;
+    }
+  }
+
+  /// Single entry point that syncs all native annotations against current
+  /// app state. Called from the post-frame callback in [build] when the
+  /// marker data version changes (so we don't sync on every camera tick).
+  Future<void> _syncAllAnnotations(AppStateProvider appState) async {
+    await _syncRepeaterSymbols(appState);
+    await _syncCoverageSymbols(appState);
+    await _syncGpsSymbol(appState);
+    if (!_focusSyncDeferred) {
+      await _updateFocusLines();
+      await _syncDistanceLabels(appState);
+    }
+  }
+
+  /// Fit camera to show all history session markers
+  void _fitCameraToHistoryMarkers(List<PingEventMarker> markers) {
+    final pts = markers
+        .where((m) =>
+            m.latitude != null &&
+            m.longitude != null &&
+            isValidLatLng(m.latitude!, m.longitude!))
+        .toList();
+    if (pts.isEmpty) return;
+
+    if (pts.length == 1) {
+      _animateToPositionWithZoom(
+        LatLng(pts.first.latitude!, pts.first.longitude!),
+        16.0 - _zoomEpsilon,
+      );
+      return;
+    }
+
+    double minLat = pts.first.latitude!;
+    double maxLat = pts.first.latitude!;
+    double minLon = pts.first.longitude!;
+    double maxLon = pts.first.longitude!;
+    for (final p in pts) {
+      if (p.latitude! < minLat) minLat = p.latitude!;
+      if (p.latitude! > maxLat) maxLat = p.latitude!;
+      if (p.longitude! < minLon) minLon = p.longitude!;
+      if (p.longitude! > maxLon) maxLon = p.longitude!;
+    }
+
+    _animateFitBounds(
+      minLat: minLat,
+      maxLat: maxLat,
+      minLon: minLon,
+      maxLon: maxLon,
+    );
+  }
+
+  /// Map PingEventType to coverage marker type and success state
+  static ({String type, bool success}) _historyMarkerType(PingEventType t) =>
+      switch (t) {
+        PingEventType.txSuccess => (type: 'tx', success: true),
+        PingEventType.txFail => (type: 'tx', success: false),
+        PingEventType.rx => (type: 'rx', success: true),
+        PingEventType.discSuccess => (type: 'disc', success: true),
+        PingEventType.discFail => (type: 'disc', success: false),
+        PingEventType.traceSuccess => (type: 'trace', success: true),
+        PingEventType.traceFail => (type: 'trace', success: false),
+        PingEventType.txMultiHopOnly => (type: 'rx', success: true),
+      };
+
+  /// Compute a version hash of all data that affects the marker list.
+  /// When this changes, the cached marker list is rebuilt; otherwise it's reused
+  /// across camera-change rebuilds (which happen at ~60Hz during pan/zoom).
+  ///
+  /// Captures **in-place** mutations too: TX pings grow `heardRepeaters` during
+  /// the 7s echo window, and DISC entries grow `discoveredNodes` as late
+  /// responses land. Summing counts makes the hash sensitive to these additions
+  /// even though the parent list length doesn't change.
+  int _computeMarkerDataVersion(AppStateProvider appState) {
+    int txEchoTotal = 0;
+    for (final p in appState.txPings) {
+      txEchoTotal += p.heardRepeaters.length;
+    }
+    int discNodeTotal = 0;
+    for (final e in appState.discLogEntries) {
+      discNodeTotal += e.discoveredNodes.length;
+    }
+    int traceSuccessTotal = 0;
+    for (final t in appState.traceLogEntries) {
+      if (t.success) traceSuccessTotal++;
+    }
+
+    return Object.hash(
+      appState.txPings.length,
+      appState.rxPings.length,
+      appState.discLogEntries.length,
+      appState.traceLogEntries.length,
+      appState.repeaters.length,
+      appState.discDropEnabled,
+      appState.enforceHopBytes,
+      appState.effectiveHopBytes,
+      _focusedPingLocation,
+      _focusedPingTimestamp,
+      _focusedRepeaters.length,
+      appState.preferences.gpsMarkerStyle,
+      appState.preferences.markerStyle,
+      txEchoTotal,
+      discNodeTotal,
+      traceSuccessTotal,
+      appState.viewingHistorySession,
+      appState.historySessionMarkers?.length ?? 0,
     );
   }
 
@@ -1062,10 +6003,101 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return PingColors.signalBad;
   }
 
-  /// Map controls (always vertical, used inside collapsible wrapper)
+  /// Map controls. Single vertical column in portrait; in landscape the taller
+  /// set is split into two columns so the lower icons don't run off the short
+  /// viewport (hidden under the bottom edge) — see issue #329 follow-up.
   Widget _buildMapControls(AppStateProvider appState) {
     final mapStyle =
         MapStyleExtension.fromString(appState.preferences.mapStyle);
+
+    // Collect the active control buttons (conditionals preserved); dividers are
+    // interleaved later by _stackControlButtons so the two-column split is clean.
+    final buttons = <Widget>[
+      // Map style toggle
+      _buildControlButton(
+        icon: mapStyle.icon,
+        tooltip: 'Map Style: ${mapStyle.label}',
+        onPressed: () => _cycleMapStyle(appState),
+      ),
+      // MeshMapper overlay toggle (only show when zone code available)
+      if (appState.zoneCode != null)
+        _buildControlButton(
+          icon: Icons.layers,
+          tooltip: _showMeshMapperOverlay
+              ? 'Hide Coverage Overlay'
+              : 'Show Coverage Overlay',
+          onPressed: _toggleMeshMapperOverlay,
+          isActive: _showMeshMapperOverlay,
+        ),
+      // Repeater pins toggle (only show when repeaters are present)
+      if (appState.repeaters.isNotEmpty)
+        _buildControlButton(
+          icon: Icons.cell_tower,
+          tooltip: _showRepeaters ? 'Hide Repeaters' : 'Show Repeaters',
+          onPressed: () => _toggleRepeaters(appState),
+          isActive: _showRepeaters,
+        ),
+      // Region boundary toggle (only show when borders available)
+      if (appState.regionBorders.isNotEmpty)
+        _buildControlButton(
+          icon: Icons.fence,
+          tooltip: _showRegionBorders
+              ? 'Hide Region Boundary'
+              : 'Show Region Boundary',
+          onPressed: () => _toggleRegionBorders(appState),
+          isActive: _showRegionBorders,
+        ),
+      // Center on position / toggle auto-follow
+      _buildControlButton(
+        icon: _autoFollow ? Icons.my_location : Icons.location_searching,
+        tooltip: _autoFollow ? 'Following GPS' : 'Center on Position',
+        onPressed:
+            appState.currentPosition != null ? _centerOnPosition : null,
+        isActive: _autoFollow,
+      ),
+      // Always North toggle
+      _buildControlButton(
+        icon: _alwaysNorth ? Icons.navigation : Icons.explore,
+        tooltip: _alwaysNorth
+            ? 'Always North (Click to Rotate with Heading)'
+            : 'Rotating with Heading (Click for Always North)',
+        onPressed: _toggleNorthMode,
+        isActive: !_alwaysNorth,
+      ),
+      // Rotation lock toggle
+      _buildControlButton(
+        icon: _rotationLocked ? Icons.sync_disabled : Icons.rotate_right,
+        tooltip: _rotationLocked ? 'Unlock Rotation' : 'Lock Rotation',
+        onPressed: _toggleRotationLock,
+        isActive: _rotationLocked,
+      ),
+      // Legend button
+      _buildControlButton(
+        icon: Icons.info_outline,
+        tooltip: 'Legend & Info',
+        onPressed: _showLegendPopup,
+      ),
+    ];
+
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+
+    final Widget body;
+    if (isLandscape && buttons.length > 4) {
+      // Split into two side-by-side columns so the set fits vertically.
+      final half = (buttons.length / 2).ceil();
+      body = Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _stackControlButtons(buttons.sublist(0, half)),
+          Container(width: 1, color: Colors.white24),
+          _stackControlButtons(buttons.sublist(half)),
+        ],
+      );
+    } else {
+      body = _stackControlButtons(buttons);
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -1073,63 +6105,21 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         // Controls are below the toggle button, so rounded bottom only
         borderRadius: const BorderRadius.vertical(bottom: Radius.circular(8)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Map style toggle
-          _buildControlButton(
-            icon: mapStyle.icon,
-            tooltip: 'Map Style: ${mapStyle.label}',
-            onPressed: () => _cycleMapStyle(appState),
-          ),
-          // MeshMapper overlay toggle (only show when zone code available)
-          if (appState.zoneCode != null) ...[
-            _buildControlDivider(),
-            _buildControlButton(
-              icon: Icons.layers,
-              tooltip: _showMeshMapperOverlay
-                  ? 'Hide Coverage Overlay'
-                  : 'Show Coverage Overlay',
-              onPressed: _toggleMeshMapperOverlay,
-              isActive: _showMeshMapperOverlay,
-            ),
-          ],
-          _buildControlDivider(),
-          // Center on position / toggle auto-follow
-          _buildControlButton(
-            icon: _autoFollow ? Icons.my_location : Icons.location_searching,
-            tooltip: _autoFollow ? 'Following GPS' : 'Center on Position',
-            onPressed:
-                appState.currentPosition != null ? _centerOnPosition : null,
-            isActive: _autoFollow,
-          ),
-          _buildControlDivider(),
-          // Always North toggle
-          _buildControlButton(
-            icon: _alwaysNorth ? Icons.navigation : Icons.explore,
-            tooltip: _alwaysNorth
-                ? 'Always North (Click to Rotate with Heading)'
-                : 'Rotating with Heading (Click for Always North)',
-            onPressed: _toggleNorthMode,
-            isActive: !_alwaysNorth,
-          ),
-          _buildControlDivider(),
-          // Rotation lock toggle
-          _buildControlButton(
-            icon: _rotationLocked ? Icons.sync_disabled : Icons.rotate_right,
-            tooltip: _rotationLocked ? 'Unlock Rotation' : 'Lock Rotation',
-            onPressed: _toggleRotationLock,
-            isActive: _rotationLocked,
-          ),
-          _buildControlDivider(),
-          // Legend button
-          _buildControlButton(
-            icon: Icons.info_outline,
-            tooltip: 'Legend & Info',
-            onPressed: _showLegendPopup,
-          ),
-        ],
-      ),
+      child: body,
+    );
+  }
+
+  /// Stack control buttons vertically with a divider between each (no leading or
+  /// trailing divider), matching the original single-column look.
+  Widget _stackControlButtons(List<Widget> buttons) {
+    final children = <Widget>[];
+    for (var i = 0; i < buttons.length; i++) {
+      if (i > 0) children.add(_buildControlDivider());
+      children.add(buttons[i]);
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: children,
     );
   }
 
@@ -1184,6 +6174,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     if (_autoFollow) {
       setState(() {
         _autoFollow = false;
+        _autoFollowDesiredZoom = null;
       });
       appState.setMapAutoFollow(false);
       return;
@@ -1195,16 +6186,31 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         appState.currentPosition!.latitude,
         appState.currentPosition!.longitude,
       );
+      const targetZoom =
+          _maxUserZoom; // Street-level zoom when enabling follow (already nudged off integer)
       setState(() {
         _autoFollow = true;
         _lastGpsPosition = targetPosition;
+        _autoFollowDesiredZoom = targetZoom;
       });
       appState.setMapAutoFollow(true);
-      // Apply offset for bottom padding when control panel is open
-      final adjustedPosition = _offsetPositionForPadding(targetPosition,
-          widget.bottomPaddingPixels, widget.rightPaddingPixels);
-      _animateToPositionWithZoom(
-          adjustedPosition, 17.0); // Street level zoom when enabling follow
+      // Bundle target + zoom + bearing into one animation so the
+      // initial centering can't be half-cancelled by a racing GPS tick.
+      final double targetBearing =
+          (!_alwaysNorth && _computedHeading != null) ? _computedHeading! : 0.0;
+      final adjustedPosition = _offsetPositionForPadding(
+        targetPosition,
+        widget.bottomPaddingPixels,
+        widget.rightPaddingPixels,
+        targetZoom,
+        targetBearing,
+      );
+      _animateAutoFollowCamera(
+        target: adjustedPosition,
+        zoom: targetZoom,
+        bearing: targetBearing,
+        durationMs: 500,
+      );
     }
   }
 
@@ -1212,6 +6218,44 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     setState(() {
       _showMeshMapperOverlay = !_showMeshMapperOverlay;
     });
+    if (_showMeshMapperOverlay) {
+      _addCoverageOverlay(context.read<AppStateProvider>());
+    } else {
+      _removeCoverageOverlay();
+      context.read<AppStateProvider>().reportVectorOverlayActive(false);
+    }
+  }
+
+  void _toggleRegionBorders(AppStateProvider appState) {
+    setState(() {
+      _showRegionBorders = !_showRegionBorders;
+    });
+    if (_showRegionBorders) {
+      _refreshRegionBorders(appState);
+    } else {
+      _removeRegionBorders();
+    }
+  }
+
+  void _toggleRepeaters(AppStateProvider appState) {
+    setState(() {
+      _showRepeaters = !_showRepeaters;
+    });
+    // Re-push the repeater source: real features when shown, empty when hidden.
+    _syncRepeaterSymbols(appState);
+  }
+
+  void _removeRegionBorders() {
+    if (_mapController == null) return;
+    try {
+      _mapController!.removeLayer(_regionBorderLabelLayerId);
+    } catch (_) {}
+    try {
+      _mapController!.removeLayer(_regionBorderLineLayerId);
+    } catch (_) {}
+    try {
+      _mapController!.removeSource(_regionBorderSourceId);
+    } catch (_) {}
   }
 
   void _toggleNorthMode() {
@@ -1220,53 +6264,25 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       _alwaysNorth = !_alwaysNorth;
 
       // If switching to Always North mode, smoothly rotate map back to north
-      if (_alwaysNorth && _isMapReady) {
-        // Reset heading tracking
+      if (_alwaysNorth && _isMapReady && _mapController != null) {
         _lastHeading = null;
-        // Smoothly rotate back to north (0 degrees)
-        final currentRotation = _mapController.camera.rotation;
-        if (currentRotation.abs() > 2) {
-          // Cancel any running rotation animation
-          _rotationAnimationController?.stop();
-          _rotationAnimationController?.dispose();
-
-          // Create animation to rotate back to north
-          const duration = Duration(milliseconds: 500);
-          _rotationAnimationController = AnimationController(
-            duration: duration,
-            vsync: this,
+        final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
+        if (currentBearing.abs() > 2 && _canAnimateCamera) {
+          _mapController!.animateCamera(
+            CameraUpdate.bearingTo(0),
+            duration: const Duration(milliseconds: 500),
           );
-
-          _rotationAnimation = CurvedAnimation(
-            parent: _rotationAnimationController!,
-            curve: Curves.easeInOutCubic,
-          );
-
-          _rotationStartAngle = currentRotation;
-          _rotationEndAngle = 0.0; // North
-
-          _rotationAnimation!.addListener(() {
-            if (!mounted ||
-                _rotationStartAngle == null ||
-                _rotationEndAngle == null) {
-              return;
-            }
-
-            final t = _rotationAnimation!.value;
-            final rotation = _rotationStartAngle! +
-                ((_rotationEndAngle! - _rotationStartAngle!) * t);
-
-            _mapController.rotate(rotation);
-          });
-
-          _rotationAnimationController!.forward();
         }
       } else if (!_alwaysNorth && appState.currentPosition != null) {
         // If switching to heading mode, immediately start rotating to current heading
         _lastHeading = null; // Force initial rotation
+        // Prefer our derived heading; fall back to whatever GPS reports (may
+        // be 0 if we haven't moved yet — better than no rotation at all).
+        final initialHeading =
+            _computedHeading ?? appState.currentPosition!.heading;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && !_alwaysNorth && appState.currentPosition != null) {
-            _animateToRotation(appState.currentPosition!.heading);
+            _animateToRotation(initialHeading);
           }
         });
       }
@@ -1280,44 +6296,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       _rotationLocked = !_rotationLocked;
 
       // When enabling lock in "Always North" mode, rotate back to north
-      // When in "Rotate with Heading" mode, keep current rotation
-      if (_rotationLocked && _isMapReady && _alwaysNorth) {
-        final currentRotation = _mapController.camera.rotation;
-        if (currentRotation.abs() > 2) {
-          // Cancel any running rotation animation
-          _rotationAnimationController?.stop();
-          _rotationAnimationController?.dispose();
-
-          // Create animation to rotate back to north
-          const duration = Duration(milliseconds: 500);
-          _rotationAnimationController = AnimationController(
-            duration: duration,
-            vsync: this,
+      if (_rotationLocked &&
+          _isMapReady &&
+          _alwaysNorth &&
+          _mapController != null) {
+        final currentBearing = _mapController!.cameraPosition?.bearing ?? 0;
+        if (currentBearing.abs() > 2 && _canAnimateCamera) {
+          _mapController!.animateCamera(
+            CameraUpdate.bearingTo(0),
+            duration: const Duration(milliseconds: 500),
           );
-
-          _rotationAnimation = CurvedAnimation(
-            parent: _rotationAnimationController!,
-            curve: Curves.easeInOutCubic,
-          );
-
-          _rotationStartAngle = currentRotation;
-          _rotationEndAngle = 0.0; // North
-
-          _rotationAnimation!.addListener(() {
-            if (!mounted ||
-                _rotationStartAngle == null ||
-                _rotationEndAngle == null) {
-              return;
-            }
-
-            final t = _rotationAnimation!.value;
-            final rotation = _rotationStartAngle! +
-                ((_rotationEndAngle! - _rotationStartAngle!) * t);
-
-            _mapController.rotate(rotation);
-          });
-
-          _rotationAnimationController!.forward();
         }
       }
     });
@@ -1741,6 +6729,19 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                       .withValues(alpha: 0.3)),
                               _buildHelpItem(
                                 context: context,
+                                icon: Icons.fence,
+                                label: 'Region Boundary',
+                                description:
+                                    'Toggle the regional boundary outline and labels on the map',
+                              ),
+                              Divider(
+                                  height: 1,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline
+                                      .withValues(alpha: 0.3)),
+                              _buildHelpItem(
+                                context: context,
                                 icon: Icons.info_outline,
                                 label: 'Legend & Info',
                                 description:
@@ -1965,115 +6966,9 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
   }
 
   /// Build a coverage marker child widget based on the user's marker style preference.
-  Widget _buildCoverageMarkerChild(Color color) {
-    final style = context.read<AppStateProvider>().preferences.markerStyle;
-    switch (style) {
-      case 'circle':
-        return Container(
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2.0),
-            boxShadow: const [
-              BoxShadow(
-                  color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))
-            ],
-          ),
-        );
-      case 'pin':
-        return CustomPaint(
-          size: const Size(20, 20),
-          painter: _PinMarkerPainter(color),
-        );
-      case 'diamond':
-        return CustomPaint(
-          size: const Size(20, 20),
-          painter: _DiamondMarkerPainter(color),
-        );
-      case 'dot':
-      default:
-        return Container(
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(
-                color: Colors.white.withValues(alpha: 0.6), width: 1.5),
-            boxShadow: const [
-              BoxShadow(
-                  color: Colors.black12, blurRadius: 2, offset: Offset(0, 1))
-            ],
-          ),
-        );
-    }
-  }
-
-  /// Build all coverage dot markers sorted by timestamp (oldest first = drawn underneath).
-  /// Newer pings always render on top regardless of type.
-  List<Marker> _buildCoverageMarkers({
-    required List<TxPing> txPings,
-    required List<RxPing> rxPings,
-    required List<DiscLogEntry> discEntries,
-    required bool discDropEnabled,
-    required List<TraceLogEntry> traceEntries,
-    bool excludeFocused = false,
-  }) {
-    final timestamped = <(DateTime, Marker)>[
-      for (final ping in txPings)
-        if (!excludeFocused ||
-            !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
-          (ping.timestamp, _buildTxMarker(ping)),
-      for (final ping in rxPings)
-        if (!excludeFocused ||
-            !_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp))
-          (ping.timestamp, _buildRxMarker(ping)),
-      for (final entry in discEntries)
-        if (!excludeFocused ||
-            !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
-          (entry.timestamp, _buildDiscMarker(entry, discDropEnabled)),
-      for (final entry in traceEntries)
-        if (!excludeFocused ||
-            !_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp))
-          (entry.timestamp, _buildTraceMarker(entry)),
-    ];
-
-    timestamped.sort((a, b) => a.$1.compareTo(b.$1));
-    return timestamped.map((e) => e.$2).toList();
-  }
-
-  /// Build just the focused ping marker for rendering in its own top layer.
-  List<Marker> _buildFocusedPingMarker({
-    required List<TxPing> txPings,
-    required List<RxPing> rxPings,
-    required List<DiscLogEntry> discEntries,
-    required bool discDropEnabled,
-    required List<TraceLogEntry> traceEntries,
-  }) {
-    if (_focusedPingLocation == null) return [];
-
-    for (final ping in txPings) {
-      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
-        return [_buildTxMarker(ping)];
-      }
-    }
-    for (final ping in rxPings) {
-      if (_isFocusedPing(ping.latitude, ping.longitude, ping.timestamp)) {
-        return [_buildRxMarker(ping)];
-      }
-    }
-    for (final entry in discEntries) {
-      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
-        return [_buildDiscMarker(entry, discDropEnabled)];
-      }
-    }
-    for (final entry in traceEntries) {
-      if (_isFocusedPing(entry.latitude, entry.longitude, entry.timestamp)) {
-        return [_buildTraceMarker(entry)];
-      }
-    }
-    return [];
-  }
-
   /// Check if a ping at given lat/lon/timestamp is the currently focused ping.
+  /// Used by the native annotation sync to apply focus-mode styling (size,
+  /// opacity) to the focused ping vs other pings.
   bool _isFocusedPing(double lat, double lon, DateTime timestamp) {
     return _focusedPingLocation != null &&
         _focusedPingTimestamp == timestamp &&
@@ -2081,97 +6976,33 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
         _focusedPingLocation!.longitude == lon;
   }
 
-  /// Apply focus fade to a marker color. Returns dimmed color if focus is active
-  /// and this marker is not the focused one.
-  Color _applyFocusFade(Color color, bool isFocused) {
-    if (_focusedPingLocation == null || isFocused) return color;
-    return color.withValues(alpha: 0.15);
-  }
-
-  Marker _buildTxMarker(TxPing ping) {
-    final isFocused =
-        _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
-    final color =
-        ping.heardRepeaters.isEmpty ? PingColors.txFail : PingColors.txSuccess;
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(ping.latitude, ping.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showTxPingDetails(ping),
-        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
-      ),
-    );
-  }
-
-  Marker _buildRxMarker(RxPing ping) {
-    final isFocused =
-        _isFocusedPing(ping.latitude, ping.longitude, ping.timestamp);
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(ping.latitude, ping.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showRxPingDetails(ping),
-        child: _buildCoverageMarkerChild(
-            _applyFocusFade(PingColors.rx, isFocused)),
-      ),
-    );
-  }
-
-  Marker _buildDiscMarker(DiscLogEntry entry, bool discDropEnabled) {
-    final isFocused =
-        _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
-    final color = entry.nodeCount == 0
-        ? (discDropEnabled ? PingColors.txFail : PingColors.discFail)
-        : _discMarkerColor;
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(entry.latitude, entry.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showDiscPingDetails(entry),
-        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
-      ),
-    );
-  }
-
-  Marker _buildTraceMarker(TraceLogEntry entry) {
-    final isFocused =
-        _isFocusedPing(entry.latitude, entry.longitude, entry.timestamp);
-    final color = entry.success ? Colors.cyan : Colors.grey;
-    final size = isFocused ? 24.0 : 20.0;
-    return Marker(
-      point: LatLng(entry.latitude, entry.longitude),
-      width: size,
-      height: size,
-      child: GestureDetector(
-        onTap: () => _showTraceDetails(entry),
-        child: _buildCoverageMarkerChild(_applyFocusFade(color, isFocused)),
-      ),
-    );
-  }
-
-  void _showTraceDetails(TraceLogEntry entry) {
-    // Activate focus mode for successful traces with a known repeater
-    if (entry.success) {
-      final resolved = _resolveRepeatersByHexIds(
-        [entry.targetRepeaterId],
-        snrValues: [entry.localSnr],
-      );
-      if (resolved.isNotEmpty) {
-        _activatePingFocus(
-            LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
-      }
+  void _showTraceDetails(TraceLogEntry entry, {bool fromMinimized = false}) {
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true). _activatePingFocus engages focus for a
+    // successful trace's target or clears any prior focus / community view (empty
+    // list for a failed trace); set _focusedPingSource AFTER it (its missed branch
+    // dismisses a prior ping, which would otherwise clear the source).
+    if (!fromMinimized) {
+      final resolved = entry.success
+          ? _resolveRepeatersByHexIds(
+              [entry.targetRepeaterId],
+              snrValues: [entry.localSnr],
+            )
+          : const <_ResolvedRepeater>[];
+      _activatePingFocus(
+          LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+      _focusedPingSource = entry;
+      _minimizePingFocus(entry.timestamp);
+      return;
     }
 
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
       isScrollControlled: true,
+      // Transparent barrier so the map stays fully bright during focus mode —
+      // the default Colors.black54 scrim would defeat the purpose of focus.
+      barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -2228,6 +7059,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         ],
                       ),
                     ),
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                      onPressed: () => Navigator.pop(context, 'minimized'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      tooltip: 'Minimize',
+                    ),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: () => Navigator.pop(context),
@@ -2288,8 +7127,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
                 if (entry.success) ...[
                   const SizedBox(height: 12),
-                  // Table with headers
-                  Container(
+                  // Table with headers — reserve a sliver of node-column
+                  // width for the inline `location_off` indicator when the
+                  // target repeater has no GPS on file.
+                  Builder(builder: (context) {
+                    final chipWidth = _nodeColumnWidth();
+                    final lacksLocation =
+                        _hexIdLacksLocation(entry.targetRepeaterId);
+                    final iconReserve = lacksLocation ? 18.0 : 0.0;
+                    final nodeColWidth = chipWidth + iconReserve;
+                    return Container(
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(8),
@@ -2308,7 +7155,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           child: Row(
                             children: [
                               SizedBox(
-                                width: _nodeColumnWidth(),
+                                width: nodeColWidth,
                                 child: Text(
                                   'Node',
                                   style: TextStyle(
@@ -2386,10 +7233,26 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                   horizontal: 12, vertical: 8),
                               child: Row(
                                 children: [
-                                  RepeaterIdChip(
-                                      repeaterId: entry.targetRepeaterId,
-                                      fontSize: 13,
-                                      width: _nodeColumnWidth()),
+                                  // Repeater ID + optional no-location icon,
+                                  // pinned to the node column width so the
+                                  // SNR/RSSI/TX columns stay aligned.
+                                  SizedBox(
+                                    width: nodeColWidth,
+                                    child: Row(
+                                      children: [
+                                        RepeaterIdChip(
+                                            repeaterId: entry.targetRepeaterId,
+                                            fontSize: 13,
+                                            width: chipWidth),
+                                        if (lacksLocation)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                                left: 4),
+                                            child: _noLocationIndicator(),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
                                   // RX SNR
                                   Expanded(
                                     child: Center(
@@ -2424,61 +7287,21 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         }),
                       ],
                     ),
-                  ),
+                  );
+                  }),
                 ],
               ],
             ),
           ),
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
-  }
-
-  /// Build distance label markers at the midpoint of each focus line.
-  List<Marker> _buildFocusDistanceLabels(AppStateProvider appState) {
-    if (_focusedPingLocation == null) return [];
-    final isImperial = appState.preferences.isImperial;
-    final ping = _focusedPingLocation!;
-
-    return _focusedRepeaters.map((r) {
-      final repeaterPos = LatLng(r.repeater.lat, r.repeater.lon);
-      // Midpoint of the line
-      final midLat = (ping.latitude + repeaterPos.latitude) / 2;
-      final midLon = (ping.longitude + repeaterPos.longitude) / 2;
-      // Distance in meters — use GpsService for consistency with repeater popup
-      final meters = GpsService.distanceBetween(
-        ping.latitude,
-        ping.longitude,
-        repeaterPos.latitude,
-        repeaterPos.longitude,
-      );
-      final label = meters < 1000
-          ? formatMeters(meters, isImperial: isImperial)
-          : formatKilometers(meters / 1000, isImperial: isImperial);
-
-      return Marker(
-        point: LatLng(midLat, midLon),
-        width: 70,
-        height: 22,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'monospace',
-              color: Colors.white,
-            ),
-          ),
-        ),
-      );
-    }).toList();
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
   }
 
   /// DISC marker color (delegates to active palette)
@@ -2523,79 +7346,684 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return resolved;
   }
 
+  /// Look up the first matching [Repeater] by hex-ID prefix (case-insensitive).
+  /// Used by focus bottom-sheet rows to decide whether to surface the
+  /// `location_off` indicator. Returns null when no match is found — callers
+  /// treat that as "no location" too, since we have no coordinates.
+  Repeater? _lookupRepeaterByHexId(String hexId) {
+    if (hexId.isEmpty) return null;
+    final all = context.read<AppStateProvider>().repeaters;
+    final key = hexId.toLowerCase();
+    for (final r in all) {
+      if (r.hexId.toLowerCase().startsWith(key)) return r;
+    }
+    return null;
+  }
+
+  /// True when we should show a "no location" hint for the given hex ID,
+  /// either because the matched repeater is at `(0, 0)` or because there is
+  /// no match at all.
+  bool _hexIdLacksLocation(String hexId) {
+    final r = _lookupRepeaterByHexId(hexId);
+    return r == null || !r.hasLocation;
+  }
+
+  /// Small grey [Icons.location_off] used inline next to repeater chips in
+  /// the focus bottom sheets to signal "we heard this repeater but don't
+  /// know where it is". Tooltip explains on long-press.
+  Widget _noLocationIndicator() {
+    return Tooltip(
+      message: 'No location on file',
+      child: Icon(
+        Icons.location_off,
+        size: 14,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+
   /// Activate ping focus mode — draw lines, fade markers, zoom to fit.
   void _activatePingFocus(LatLng pingLocation, DateTime timestamp,
       List<_ResolvedRepeater> repeaters) {
-    _preFocusCenter = _mapController.camera.center;
-    _preFocusZoom = _mapController.camera.zoom;
-    _wasAutoFollowBeforeFocus = _autoFollow;
-    _wasRotatingBeforeFocus = !_alwaysNorth;
+    // Repeaters lacking GPS would draw lines off to (0, 0); the bottom-sheet row
+    // builder still surfaces them with a no-location icon.
+    final located =
+        repeaters.where((r) => r.repeater.hasLocation).toList(growable: false);
 
-    if (_autoFollow) {
-      _autoFollow = false;
+    // "Dead" ping (nothing to focus): don't enter focus (north-up + hiding every
+    // marker over an empty map is jarring). Tear down any PRIOR ping focus first
+    // (its lines / hidden markers / overlay-dim — else they'd linger under this
+    // ping's pill); _dismissPingFocus no-ops when no ping is active. It also
+    // clears _focusedPingSource, so the caller re-sets it for THIS ping AFTER
+    // _activatePingFocus returns. Then close any open community view so the pill
+    // isn't shown over a stale fan-out (req: tapping a ping closes coverage).
+    if (located.isEmpty) {
+      _dismissPingFocus();
+      _clearMinimizedInfoPopup();
+      _clearCellHighlight();
+      _clearRepeaterIsolation();
+      _clearCoverageConnections();
+      return;
     }
 
-    // Lock to north-up during focus so the zoom-to-fit view is stable
-    if (!_alwaysNorth) {
-      _alwaysNorth = true;
-      _animateToRotation(0); // Won't fire because _alwaysNorth is now true
-      // Snap rotation to 0 directly
-      if (_isMapReady) {
-        _mapController.rotate(0);
-      }
+    final alreadyInFocus = _focusedPingLocation != null;
+    // Claim ping focus as the active view FIRST, so the community teardowns below
+    // see a focus view active and don't restore the shared camera mid-switch
+    // (then ping re-fits) — switching from a coverage view to a ping animates once.
+    _focusedPingLocation = pingLocation;
+
+    // Close any open community coverage view (pill + footprint + dim + isolation +
+    // lines/cells/fade). Each teardown's _exitFocusCameraIfDone no-ops because
+    // ping focus is now the active view.
+    _clearMinimizedInfoPopup();
+    _clearCellHighlight();
+    _clearRepeaterIsolation();
+    _clearCoverageConnections();
+
+    // Engage the shared focus camera (saves the pre-focus snapshot once,
+    // north-up, stop follow). isFocusModeActive is a PING-only flag (it gates the
+    // home-screen map Selector); set it only for ping focus, only on first entry.
+    _enterFocusCamera();
+    if (!alreadyInFocus) {
+      context.read<AppStateProvider>().isFocusModeActive = true;
     }
+
+    _focusPanelMinimized = false;
+
+    // Defer focus lines and distance labels so the 500ms zoom-to-fit
+    // animation runs without contention from heavy native platform calls.
+    _focusSyncDeferred = true;
 
     setState(() {
-      _focusedPingLocation = pingLocation;
       _focusedPingTimestamp = timestamp;
-      _focusedRepeaters = repeaters;
+      _focusedRepeaters = located;
     });
+
+    // Hide the MeshMapper coverage raster overlay for a clean focus view.
+    // Uses opacity=0 rather than removing the layer to avoid a tile refetch
+    // on dismiss. No-ops gracefully if the layer isn't present.
+    _applyCoverageOverlayOpacity(0.0);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _focusedPingLocation != null) {
-        _zoomToFocusBounds(pingLocation, repeaters);
+        _fitCameraToPoints([
+          pingLocation,
+          ...located.map((r) => LatLng(r.repeater.lat, r.repeater.lon)),
+        ]);
       }
+    });
+
+    // Once the 500ms zoom-to-fit animation settles, run the deferred focus
+    // line and distance label sync, then reflow labels for collisions.
+    final appState = context.read<AppStateProvider>();
+    Future.delayed(const Duration(milliseconds: 600), () async {
+      if (!mounted || _focusedPingLocation == null) return;
+      _focusSyncDeferred = false;
+      await _updateFocusLines();
+      await _syncDistanceLabels(appState);
+      _reflowDistanceLabelsForCollisions();
     });
   }
 
   /// Dismiss ping focus mode — restore map state.
   void _dismissPingFocus() {
-    if (_focusedPingLocation == null || !mounted) return;
+    // Key off the SOURCE, not the location: a "missed" ping has a source but no
+    // focus location, and must still be torn down (clear isFocusModeActive so the
+    // control bar returns, clear the pill state, etc.).
+    if (_focusedPingSource == null || !mounted) return;
 
-    final center = _preFocusCenter;
-    final zoom = _preFocusZoom;
-    final shouldRestoreAutoFollow = _wasAutoFollowBeforeFocus && !_autoFollow;
-    final shouldRestoreRotation = _wasRotatingBeforeFocus && _alwaysNorth;
+    context.read<AppStateProvider>().isFocusModeActive = false;
 
-    // Clear focus state but do NOT restore auto-follow or rotation yet —
-    // they would immediately trigger animations in the build method that
-    // override our zoom-back animation (both share _animationController).
+    // Clear focus state first so _anyFocusViewActive sees ping focus gone.
     setState(() {
       _focusedPingLocation = null;
       _focusedPingTimestamp = null;
       _focusedRepeaters = [];
+      _focusPanelMinimized = false;
+      _focusedPingSource = null;
     });
 
-    if (center != null && zoom != null) {
-      _animateToPositionWithZoom(center, zoom);
+    // Restore the MeshMapper coverage raster overlay opacity. Safe if the
+    // layer was hidden via the toggle during focus — setLayerProperties is
+    // wrapped in try/catch inside the helper.
+    final appState = context.read<AppStateProvider>();
+    _applyCoverageOverlayOpacity(appState.preferences.coverageOverlayOpacity);
 
-      // Restore auto-follow and heading rotation after the zoom-back
-      // animation completes (500ms) so they don't clobber it mid-flight.
-      if (shouldRestoreAutoFollow || shouldRestoreRotation) {
-        Future.delayed(const Duration(milliseconds: 550), () {
-          if (mounted) {
-            setState(() {
-              if (shouldRestoreAutoFollow) _autoFollow = true;
-              if (shouldRestoreRotation) _alwaysNorth = false;
-            });
-          }
-        });
-      }
+    // Restore the shared focus camera (center/zoom + follow/rotation) now that no
+    // focus view remains. A no-op if a community view is somehow still open
+    // (can't happen — ping focus tears them down on entry).
+    _exitFocusCameraIfDone();
+  }
+
+  /// Collapse a just-tapped ping to the minimized 2-row pill — the DEFAULT for a
+  /// ping tap (parity with the cell/repeater tap flow). Run right after
+  /// [_activatePingFocus]: for a HEARD ping that engaged focus this just flips the
+  /// panel to minimized; for a MISSED ping (no focus location) it also sets
+  /// isFocusModeActive so the control bar hides under the pill — without any of
+  /// the focus VISUALS (those key off _focusedPingLocation, which stays null).
+  void _minimizePingFocus(DateTime timestamp) {
+    context.read<AppStateProvider>().isFocusModeActive = true;
+    setState(() {
+      _focusedPingTimestamp = timestamp;
+      _focusPanelMinimized = true;
+    });
+  }
+
+  void _reshowFocusPanel() {
+    setState(() => _focusPanelMinimized = false);
+    final source = _focusedPingSource;
+    if (source is TxPing) {
+      _showTxPingDetails(source, fromMinimized: true);
+    } else if (source is RxPing) {
+      _showRxPingDetails(source, fromMinimized: true);
+    } else if (source is DiscLogEntry) {
+      _showDiscPingDetails(source, fromMinimized: true);
+    } else if (source is TraceLogEntry) {
+      _showTraceDetails(source, fromMinimized: true);
+    }
+  }
+
+  /// Show the minimized info pill and hide the control panel (the focus/history
+  /// pills do the same — they share the bottom area). [infoPopupMinimized] zeroes
+  /// the map's bottom padding and removes the control panel in home_screen.
+  void _setMinimizedInfoPopup(_MinimizedInfoPopup popup) {
+    setState(() => _minimizedInfoPopup = popup);
+    context.read<AppStateProvider>().infoPopupMinimized = true;
+  }
+
+  /// Hide the minimized info pill and restore the control panel.
+  void _clearMinimizedInfoPopup() {
+    if (_minimizedInfoPopup == null) return;
+    setState(() => _minimizedInfoPopup = null);
+    context.read<AppStateProvider>().infoPopupMinimized = false;
+  }
+
+  /// Pill for a minimized cell-summary / repeater-detail popup (parity with
+  /// [_buildMinimizedFocusPanel]). Tap (or the up-arrow) re-opens it; the X
+  /// closes it and runs its cleanup.
+  /// A minimized-pill control (↑ expand / ✕ close) with a generous ~44px hit
+  /// target so it's hard to mis-tap. Opaque so the tap never falls through to the
+  /// map (or the pill body's tap-swallow).
+  Widget _pillIconButton(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Icon(icon,
+            size: 22, color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
+    );
+  }
+
+  Widget _buildMinimizedInfoPill(_MinimizedInfoPopup popup) {
+    final theme = Theme.of(context);
+    return GestureDetector(
+      // Swallow body taps: tapping the pill body must NOT expand (too easy to hit
+      // when reaching for close) and must NOT fall through to the map. Expand is
+      // only via the ↑ button; close only via the ✕ button.
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 2, 4, 8),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: theme.colorScheme.outline.withValues(alpha: 0.5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Row 1: identity + expand/close controls (each ~44px hit target).
+            Row(
+              children: [
+                Expanded(child: popup.title),
+                const SizedBox(width: 4),
+                _pillIconButton(Icons.keyboard_arrow_up, popup.onReshow),
+                _pillIconButton(Icons.close, popup.onClose),
+              ],
+            ),
+            // Row 2: stat chips (wraps if the row is too narrow).
+            popup.statsBuilder(context),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// One icon+value stat chip for the minimized pill's row 2. [iconColor] tints
+  /// the icon; [valueColor] tints the value (defaults to onSurface).
+  Widget _pillStat(IconData icon, String value,
+      {Color? iconColor, Color? valueColor}) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon,
+            size: 14, color: iconColor ?? theme.colorScheme.onSurfaceVariant),
+        const SizedBox(width: 3),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: valueColor ?? theme.colorScheme.onSurface,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Web GRID SUMMARY / repeater palette colours reused for the pill chips.
+  static const Color _pillGood = Color(0xFF1E7E34);
+  static const Color _pillBad = Color(0xFFBD2130);
+  static const Color _pillDistBlue = Color(0xFF007BFF);
+
+  /// Row-1 identity for the cell pill: grid icon + "Grid Summary".
+  Widget _cellPillTitle() {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.grid_on, size: 16, color: theme.colorScheme.primary),
+        const SizedBox(width: 8),
+        Text('Grid Summary',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface)),
+      ],
+    );
+  }
+
+  /// Row-2 stats for the cell pill: Max Dist · Avg SNR · Avg Noise · Total Pings.
+  Widget _cellPillStats(
+      BuildContext context, Future<GridSummary?> summaryFuture, bool isImperial) {
+    return FutureBuilder<GridSummary?>(
+      future: summaryFuture,
+      builder: (context, snap) {
+        final loading = snap.connectionState != ConnectionState.done;
+        final s = snap.data;
+        final dist = loading
+            ? '…'
+            : (s?.maxDistMeters != null
+                ? formatCoverageDistance(s!.maxDistMeters!, isImperial: isImperial)
+                : 'N/A');
+        final noise =
+            loading ? '…' : (s?.avgNoise != null ? '${s!.avgNoise} dBm' : 'N/A');
+        final total = loading ? '…' : '${s?.total ?? 0}';
+        return Wrap(
+          spacing: 14,
+          runSpacing: 6,
+          children: [
+            _pillStat(Icons.straighten, dist, iconColor: _pillDistBlue),
+            _snrPillStat(loading ? null : s),
+            _pillStat(Icons.graphic_eq, noise),
+            _pillStat(Icons.tag, total),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Avg-SNR pill chip — a signal-bar icon coloured by quality bucket + the
+  /// averaged value (mirrors CellSummarySheet._snrCell). [s] null = still loading.
+  Widget _snrPillStat(GridSummary? s) {
+    final bucket = s?.snrBucket;
+    if (s == null || bucket == null || s.avgSnr == null) {
+      return _pillStat(Icons.signal_cellular_alt, s == null ? '…' : 'N/A');
+    }
+    final IconData icon;
+    final Color color;
+    switch (bucket) {
+      case 'good':
+        icon = Icons.signal_cellular_4_bar;
+        color = _pillGood;
+        break;
+      case 'medium':
+        icon = Icons.signal_cellular_alt;
+        color = const Color(0xFF856404);
+        break;
+      default:
+        icon = Icons.signal_cellular_alt_1_bar;
+        color = _pillBad;
+    }
+    return _pillStat(icon, s.avgSnr!.toStringAsFixed(1),
+        iconColor: color, valueColor: color);
+  }
+
+  /// Row-1 identity for the repeater pill: a status-coloured dot + the name.
+  Widget _repeaterPillTitle(Repeater repeater, Color statusColor) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        // Status as a coloured tower (green = online, grey = stale/offline, plus
+        // the new/ambiguous palette colours). Carries the status that used to be
+        // a word in the stats row, so that row now fits on a single line.
+        Icon(Icons.cell_tower, size: 16, color: statusColor),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            repeater.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Row-2 stats for the repeater pill: Max Range · Hop Bytes · Clock Sync ·
+  /// Last Heard. (Online/offline status is the coloured tower in the title.)
+  /// Max Range comes from the lazy [statsFuture].
+  Widget _repeaterPillStats(
+      BuildContext context,
+      Repeater repeater,
+      Future<RepeaterStats?> statsFuture,
+      String? clockSkew,
+      bool isImperial) {
+    final clockOk = clockSkew == null;
+    final lastHeard = repeater.lastHeard > 0 ? daysAgo(repeater.lastHeard) : 'N/A';
+    return FutureBuilder<RepeaterStats?>(
+      future: statsFuture,
+      builder: (context, snap) {
+        final loading = snap.connectionState != ConnectionState.done;
+        final stats = snap.data;
+        final range = loading
+            ? '…'
+            : (stats?.maxRangeMeters != null
+                ? formatCoverageDistance(stats!.maxRangeMeters!,
+                    isImperial: isImperial)
+                : 'N/A');
+        return Wrap(
+          spacing: 14,
+          runSpacing: 6,
+          children: [
+            _pillStat(Icons.open_in_full, range, iconColor: _pillDistBlue),
+            _pillStat(Icons.swap_horiz, '${repeater.hopBytes}B'),
+            _pillStat(Icons.schedule, clockOk ? 'Synced' : 'Off',
+                iconColor: clockOk ? _pillGood : _pillBad,
+                valueColor: clockOk ? _pillGood : _pillBad),
+            _pillStat(Icons.history, lastHeard),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Show the cell GRID SUMMARY as a minimized pill (the default a tile tap
+  /// opens in). Tapping it expands to the full sheet; closing clears the
+  /// footprint. Reused on the initial tap and when the sheet is minimized.
+  void _minimizeCellSummary({
+    required GridCell cell,
+    required int blob,
+    required Future<GridSummary?> summaryFuture,
+    required bool isImperial,
+  }) {
+    _setMinimizedInfoPopup(_MinimizedInfoPopup(
+      title: _cellPillTitle(),
+      statsBuilder: (ctx) => _cellPillStats(ctx, summaryFuture, isImperial),
+      onReshow: () {
+        _clearMinimizedInfoPopup();
+        _presentCellSummarySheet(
+          cell: cell,
+          blob: blob,
+          summaryFuture: summaryFuture,
+          isImperial: isImperial,
+        );
+      },
+      onClose: () {
+        _clearMinimizedInfoPopup();
+        _clearCellHighlight();
+      },
+    ));
+  }
+
+  Widget _buildMinimizedFocusPanel() {
+    final source = _focusedPingSource;
+    String title;
+    IconData icon;
+    Color color;
+    if (source is TxPing) {
+      title = 'TX Ping';
+      icon = Icons.arrow_upward;
+      color = PingColors.txSuccess;
+    } else if (source is RxPing) {
+      title = 'RX Ping';
+      icon = Icons.arrow_downward;
+      color = PingColors.rx;
+    } else if (source is DiscLogEntry) {
+      title = 'Disc Request';
+      icon = Icons.radar;
+      color = PingColors.discSuccess;
+    } else if (source is TraceLogEntry) {
+      title = 'Trace';
+      icon = Icons.gps_fixed;
+      color = Colors.cyan;
     } else {
-      setState(() {
-        if (shouldRestoreAutoFollow) _autoFollow = true;
-        if (shouldRestoreRotation) _alwaysNorth = false;
-      });
+      return const SizedBox.shrink();
+    }
+
+    final theme = Theme.of(context);
+    final timeStr =
+        _focusedPingTimestamp != null ? _formatTime(_focusedPingTimestamp!) : '';
+
+    return GestureDetector(
+      // Swallow body taps (no accidental expand / no fall-through to the map).
+      // Expand only via ↑, close only via ✕ — parity with _buildMinimizedInfoPill.
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 2, 4, 8),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: theme.colorScheme.outline.withValues(alpha: 0.5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Row 1: type icon + title + timestamp + expand/close (each ~44px hit).
+            Row(
+              children: [
+                Icon(icon, color: color, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    timeStr,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                _pillIconButton(Icons.keyboard_arrow_up, _reshowFocusPanel),
+                _pillIconButton(Icons.close, _dismissPingFocus),
+              ],
+            ),
+            // Row 2: summary stat chips computed synchronously from the source.
+            _buildFocusPingStats(source),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Row-2 summary chips for the minimized ping pill, computed synchronously from
+  /// the focused ping [source] (parity with the cell/repeater pill's stats row).
+  /// Best-of (max) SNR/RSSI across all heard repeaters for multi-repeater TX/DISC;
+  /// the single value for RX/TRACE. "Missed" pings show a short miss label.
+  Widget _buildFocusPingStats(Object source) {
+    final missColor = Theme.of(context).colorScheme.onSurfaceVariant;
+    final chips = <Widget>[];
+
+    Widget snrChip(double snr) => _pillStat(
+          Icons.signal_cellular_alt,
+          '${snr.toStringAsFixed(1)} SNR',
+          iconColor: PingColors.snrColor(snr),
+          valueColor: PingColors.snrColor(snr),
+        );
+    Widget rssiChip(int rssi) => _pillStat(
+          Icons.cell_tower,
+          '$rssi dBm',
+          iconColor: PingColors.rssiColor(rssi),
+          valueColor: PingColors.rssiColor(rssi),
+        );
+
+    if (source is TxPing) {
+      final reps = source.heardRepeaters;
+      if (reps.isEmpty) {
+        chips.add(_pillStat(Icons.close, 'Not heard', iconColor: missColor));
+      } else {
+        final direct = reps.where((r) => r.pathHops == null).length;
+        final multi = reps.length - direct;
+        if (direct > 0) {
+          chips.add(_pillStat(Icons.arrow_upward, '$direct direct'));
+        }
+        if (multi > 0) {
+          chips.add(_pillStat(Icons.alt_route, '$multi multi'));
+        }
+        final snrs = reps.map((r) => r.snr).whereType<double>();
+        if (snrs.isNotEmpty) chips.add(snrChip(snrs.reduce(math.max)));
+        final rssis = reps.map((r) => r.rssi).whereType<int>();
+        if (rssis.isNotEmpty) chips.add(rssiChip(rssis.reduce(math.max)));
+      }
+    } else if (source is RxPing) {
+      chips.add(snrChip(source.snr));
+      chips.add(rssiChip(source.rssi));
+      if (source.pathHops.isNotEmpty) {
+        chips.add(_pillStat(Icons.alt_route, '${source.pathHops.length} hops'));
+      }
+    } else if (source is DiscLogEntry) {
+      final nodes = source.discoveredNodes;
+      if (nodes.isEmpty) {
+        chips.add(_pillStat(Icons.close, 'No response', iconColor: missColor));
+      } else {
+        chips.add(_pillStat(Icons.radar,
+            '${nodes.length} node${nodes.length != 1 ? 's' : ''}'));
+        chips.add(snrChip(nodes.map((n) => n.localSnr).reduce(math.max)));
+        chips.add(rssiChip(nodes.map((n) => n.localRssi).reduce(math.max)));
+      }
+    } else if (source is TraceLogEntry) {
+      if (!source.success) {
+        chips.add(_pillStat(Icons.close, 'No response', iconColor: missColor));
+      } else {
+        chips.add(_pillStat(Icons.check_circle, 'Success',
+            iconColor: PingColors.txSuccess));
+        if (source.localSnr != null) chips.add(snrChip(source.localSnr!));
+        if (source.remoteSnr != null) {
+          chips.add(_pillStat(
+              Icons.arrow_upward, 'TX ${source.remoteSnr!.toStringAsFixed(1)}'));
+        }
+        if (source.localRssi != null) chips.add(rssiChip(source.localRssi!));
+      }
+    }
+
+    if (chips.isEmpty) return const SizedBox.shrink();
+    return Wrap(spacing: 14, runSpacing: 6, children: chips);
+  }
+
+  void _showHistoryMarkerAsLive(PingEventMarker marker) {
+    if (marker.latitude == null || marker.longitude == null) return;
+    final lat = marker.latitude!;
+    final lon = marker.longitude!;
+    final repeaters = marker.repeaters ?? [];
+
+    switch (marker.type) {
+      case PingEventType.txSuccess:
+      case PingEventType.txFail:
+      case PingEventType.txMultiHopOnly:
+        _showTxPingDetails(TxPing(
+          latitude: lat,
+          longitude: lon,
+          timestamp: marker.timestamp,
+          power: 0,
+          deviceId: '',
+          heardRepeaters: repeaters
+              .map((r) => HeardRepeater(
+                    repeaterId: r.repeaterId,
+                    snr: r.snr,
+                    rssi: r.rssi,
+                    pathHops: r.pathHops,
+                  ))
+              .toList(),
+        ));
+      case PingEventType.rx:
+        final r = repeaters.isNotEmpty ? repeaters.first : null;
+        _showRxPingDetails(RxPing(
+          latitude: lat,
+          longitude: lon,
+          timestamp: marker.timestamp,
+          repeaterId: r?.repeaterId ?? '',
+          snr: r?.snr ?? 0,
+          rssi: r?.rssi ?? 0,
+        ));
+      case PingEventType.discSuccess:
+      case PingEventType.discFail:
+        _showDiscPingDetails(DiscLogEntry(
+          timestamp: marker.timestamp,
+          latitude: lat,
+          longitude: lon,
+          noiseFloor: marker.noiseFloor,
+          discoveredNodes: repeaters
+              .map((r) => DiscoveredNodeEntry(
+                    repeaterId: r.repeaterId,
+                    nodeType: 'REPEATER',
+                    localSnr: r.snr,
+                    localRssi: r.rssi,
+                    remoteSnr: 0,
+                    pubkeyHex: r.pubkeyHex,
+                  ))
+              .toList(),
+        ));
+      case PingEventType.traceSuccess:
+      case PingEventType.traceFail:
+        final r = repeaters.isNotEmpty ? repeaters.first : null;
+        _showTraceDetails(TraceLogEntry(
+          timestamp: marker.timestamp,
+          latitude: lat,
+          longitude: lon,
+          targetRepeaterId: r?.repeaterId ?? '',
+          noiseFloor: marker.noiseFloor,
+          localSnr: r?.snr,
+          localRssi: r?.rssi,
+          success: marker.type == PingEventType.traceSuccess,
+        ));
     }
   }
 
@@ -2607,6 +8035,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     return idCounts.entries.where((e) => e.value > 1).map((e) => e.key).toSet();
   }
 
+  /// Repeaters eligible for map rendering — excludes anything not heard in
+  /// the past 30 days so long-stale entries don't appear, contribute to
+  /// clusters, or get pulled into spider expansions. All map-rendering
+  /// paths route through this; non-map consumers (log, picker) keep using
+  /// `appState.repeaters` directly.
+  List<Repeater> _mapVisibleRepeaters(AppStateProvider appState) =>
+      appState.repeaters.where((r) => r.isHeardRecently).toList();
+
   /// Get marker color for a repeater based on status priority:
   /// 1. Duplicate → Red (always takes priority)
   /// 2. Dead → Grey (not heard in 24 hours)
@@ -2617,136 +8053,6 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     if (repeater.isDead) return _repeaterDeadColor;
     if (repeater.isNew) return _repeaterNewColor;
     return _repeaterMarkerColor; // Active (default)
-  }
-
-  List<Marker> _buildRepeaterMarkers(
-    List<Repeater> repeaters,
-    int? regionHopBytesOverride, {
-    bool onlyFaded = false,
-    bool onlyConnected = false,
-  }) {
-    final duplicateIds = _getDuplicateRepeaterIds(repeaters);
-    final hasFocus = _focusedPingLocation != null;
-
-    return repeaters.where((repeater) {
-      if (!hasFocus) return true; // No focus — include all
-      final isConnected =
-          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
-      if (onlyConnected) return isConnected;
-      if (onlyFaded) return !isConnected;
-      return true;
-    }).map((repeater) {
-      final isDuplicate = duplicateIds.contains(repeater.id);
-      final markerColor = _getRepeaterMarkerColor(repeater, isDuplicate);
-
-      // During focus mode, fade repeaters not connected to the focused ping
-      final isConnected = hasFocus &&
-          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
-      final effectiveColor = (hasFocus && !isConnected)
-          ? markerColor.withValues(alpha: 0.15)
-          : markerColor;
-      final effectiveBorderColor = (hasFocus && !isConnected)
-          ? Colors.white.withValues(alpha: 0.15)
-          : Colors.white;
-      final effectiveTextColor = (hasFocus && !isConnected)
-          ? Colors.white.withValues(alpha: 0.15)
-          : Colors.white;
-
-      // Display hex ID based on per-repeater hop_bytes (or regional admin override)
-      final displayId =
-          repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
-      final effectiveBytes = regionHopBytesOverride ?? repeater.hopBytes;
-      final isLongId = displayId.length > 2;
-      final markerWidth = displayId.length > 4
-          ? 48.0
-          : isLongId
-              ? 40.0
-              : 28.0;
-
-      // Shape varies by hop bytes: 1=square, 2=rounded rect, 3=more rounded
-      final borderRadius = effectiveBytes >= 3
-          ? BorderRadius.circular(8)
-          : effectiveBytes == 2
-              ? BorderRadius.circular(6)
-              : BorderRadius.circular(4);
-
-      return Marker(
-        point: LatLng(repeater.lat, repeater.lon),
-        width: markerWidth,
-        height: 28,
-        child: GestureDetector(
-          onTap: () => _showRepeaterDetails(repeater,
-              isDuplicate: isDuplicate,
-              regionHopBytesOverride: regionHopBytesOverride),
-          child: Container(
-            padding: isLongId
-                ? const EdgeInsets.symmetric(horizontal: 4)
-                : EdgeInsets.zero,
-            decoration: BoxDecoration(
-              color: effectiveColor,
-              borderRadius: borderRadius,
-              border: Border.all(color: effectiveBorderColor, width: 2),
-              boxShadow: (hasFocus && !isConnected)
-                  ? null
-                  : const [
-                      BoxShadow(
-                        color: Colors.black26,
-                        blurRadius: 4,
-                        offset: Offset(0, 2),
-                      ),
-                    ],
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              displayId,
-              style: TextStyle(
-                fontSize: displayId.length > 4
-                    ? 8
-                    : isLongId
-                        ? 9
-                        : 10,
-                fontWeight: FontWeight.bold,
-                color: effectiveTextColor,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
-        ),
-      );
-    }).toList();
-  }
-
-  Widget _buildCurrentPositionMarker(double heading) {
-    // Convert heading from degrees to radians
-    // heading is 0-360 degrees, 0 = North, 90 = East
-    final headingRadians = heading * (math.pi / 180);
-    final style = context.read<AppStateProvider>().preferences.gpsMarkerStyle;
-
-    // Arrow, walk, and chomper rotate with heading; vehicle/boat icons don't (they face up)
-    final shouldRotate =
-        style == 'arrow' || style == 'walk' || style == 'chomper';
-
-    final CustomPainter painter;
-    switch (style) {
-      case 'car':
-        painter = const _CarMarkerPainter();
-      case 'bike':
-        painter = const _BikeMarkerPainter();
-      case 'boat':
-        painter = const _BoatMarkerPainter();
-      case 'walk':
-        painter = const _WalkMarkerPainter();
-      case 'chomper':
-        painter = const _ChomperMarkerPainter();
-      case 'arrow':
-      default:
-        painter = const _ArrowPainter();
-    }
-
-    final child = CustomPaint(size: const Size(24, 24), painter: painter);
-    return shouldRotate
-        ? Transform.rotate(angle: headingRadians, child: child)
-        : child;
   }
 
   /// Compute node column width based on hop byte count.
@@ -2766,27 +8072,114 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     }
   }
 
+  /// Show all ambiguous (duplicate-ID) repeaters in a dialog.
+  void _showDuplicateRepeaterPopup(
+    List<_ResolvedRepeater> resolved, {
+    ({double lat, double lon})? fromLatLng,
+  }) {
+    final ambiguous = resolved.where((r) => r.ambiguous).toList();
+    if (ambiguous.isEmpty) return;
+
+    final appState = context.read<AppStateProvider>();
+    final regionOverride =
+        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+          ),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        size: 18, color: Color(0xFFF59E0B)),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Duplicate Repeater IDs',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Divider(height: 1, color: Theme.of(context).dividerColor),
+                const SizedBox(height: 8),
+                Text(
+                  'Multiple repeaters share the same short ID. '
+                  'We can\'t determine which one heard your ping.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...ambiguous.map((r) => RepeaterIdChip.buildRepeaterRow(
+                      context,
+                      r.repeater,
+                      refLat: fromLatLng?.lat,
+                      refLon: fromLatLng?.lon,
+                      regionHopBytesOverride: regionOverride,
+                    )),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Show TX ping details popup
-  void _showTxPingDetails(TxPing ping) {
+  void _showTxPingDetails(TxPing ping, {bool fromMinimized = false}) {
     // Use the heardRepeaters directly from the TxPing
     final heardRepeaters = ping.heardRepeaters;
 
-    // Activate focus mode if the ping was heard by known repeaters
-    if (heardRepeaters.isNotEmpty) {
-      final resolved = _resolveRepeatersByHexIds(
-        heardRepeaters.map((r) => r.repeaterId).toList(),
-        snrValues: heardRepeaters.map((r) => r.snr).toList(),
-      );
-      if (resolved.isNotEmpty) {
-        _activatePingFocus(
-            LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
-      }
+    // Resolve all repeaters (direct + multi-hop) for focus-mode lines
+    final resolved = heardRepeaters.isNotEmpty
+        ? _resolveRepeatersByHexIds(
+            heardRepeaters.map((r) => r.repeaterId).toList(),
+            snrValues: heardRepeaters.map((r) => r.snr).toList(),
+          )
+        : <_ResolvedRepeater>[];
+    final hasAmbiguous = resolved.any((r) => r.ambiguous);
+
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true, via _reshowFocusPanel). _activatePingFocus
+    // engages focus when the ping was heard, or clears any prior focus / open
+    // community view when it wasn't; set _focusedPingSource AFTER it (its missed
+    // branch dismisses a prior ping, which would otherwise clear a source set
+    // earlier).
+    if (!fromMinimized) {
+      _activatePingFocus(
+          LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+      _focusedPingSource = ping;
+      _minimizePingFocus(ping.timestamp);
+      return;
     }
 
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
       isScrollControlled: true,
+      // Transparent barrier so the map stays fully bright during focus mode —
+      // the default Colors.black54 scrim would defeat the purpose of focus.
+      barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -2845,6 +8238,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                       ),
                     ),
                     IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                      onPressed: () => Navigator.pop(context, 'minimized'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      tooltip: 'Minimize',
+                    ),
+                    const SizedBox(width: 4),
+                    IconButton(
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: () => Navigator.pop(context),
                       padding: EdgeInsets.zero,
@@ -2889,150 +8290,394 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 16),
 
-                // Repeaters section header
-                Text(
-                  heardRepeaters.isEmpty
-                      ? 'No repeaters heard'
-                      : 'Heard Repeaters (${heardRepeaters.length})',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-
-                if (heardRepeaters.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  // Repeaters table
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: _nodeColumnWidth(),
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(
-                            height: 1, color: Theme.of(context).dividerColor),
-                        // Data rows
-                        ...heardRepeaters.map((repeater) {
-                          final snrColor = repeater.snr != null
-                              ? PingColors.snrColor(repeater.snr!)
-                              : Colors.grey;
-                          final rssiColor = repeater.rssi != null
-                              ? PingColors.rssiColor(repeater.rssi!)
-                              : Colors.grey;
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(
-                                context, repeater.repeaterId, fromLatLng: (
-                              lat: ping.latitude,
-                              lon: ping.longitude
-                            )),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Repeater ID
-                                  RepeaterIdChip(
-                                      repeaterId: repeater.repeaterId,
-                                      fontSize: 13,
-                                      width: _nodeColumnWidth()),
-                                  // SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value:
-                                            repeater.snr?.toStringAsFixed(1) ??
-                                                '-',
-                                        color: snrColor,
-                                      ),
-                                    ),
-                                  ),
-                                  // RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: repeater.rssi != null
-                                            ? '${repeater.rssi}'
-                                            : '-',
-                                        color: rssiColor,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                ],
+                // Split repeaters into direct and multi-hop
+                ..._buildTxRepeaterSections(context, ping, heardRepeaters,
+                    resolved, hasAmbiguous),
               ],
             ),
           ),
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
+  }
+
+  List<Widget> _buildTxRepeaterSections(
+    BuildContext context,
+    TxPing ping,
+    List<HeardRepeater> allRepeaters,
+    List<_ResolvedRepeater> resolved,
+    bool hasAmbiguous,
+  ) {
+    final directRepeaters =
+        allRepeaters.where((r) => r.pathHops == null).toList();
+    final multiHopRepeaters =
+        allRepeaters.where((r) => r.pathHops != null).toList();
+
+    if (directRepeaters.isEmpty && multiHopRepeaters.isEmpty) {
+      return [
+        Text(
+          'No repeaters heard',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ];
+    }
+
+    final widgets = <Widget>[];
+
+    // --- Direct echoes section ---
+    widgets.add(Text(
+      directRepeaters.isEmpty
+          ? 'No direct repeats heard'
+          : 'Direct Repeats (${directRepeaters.length})',
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        letterSpacing: 0.5,
+        fontStyle:
+            directRepeaters.isEmpty ? FontStyle.italic : FontStyle.normal,
+      ),
+    ));
+
+    if (hasAmbiguous) {
+      widgets.add(GestureDetector(
+        onTap: () => _showDuplicateRepeaterPopup(
+          resolved,
+          fromLatLng: (lat: ping.latitude, lon: ping.longitude),
+        ),
+        child: const Padding(
+          padding: EdgeInsets.only(top: 6),
+          child: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded,
+                  size: 14, color: Color(0xFFF59E0B)),
+              SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  'Duplicate repeater ID — lines shown to all possible matches',
+                  style: TextStyle(fontSize: 11, color: Color(0xFFF59E0B)),
+                ),
+              ),
+              SizedBox(width: 4),
+              Icon(Icons.info_outline, size: 14, color: Color(0xFFF59E0B)),
+            ],
+          ),
+        ),
+      ));
+    }
+
+    if (directRepeaters.isNotEmpty) {
+      widgets.add(const SizedBox(height: 12));
+      widgets.add(_buildRepeaterTable(context, ping, directRepeaters));
+    }
+
+    // --- Multi-hop echoes section ---
+    if (multiHopRepeaters.isNotEmpty) {
+      widgets.add(const SizedBox(height: 16));
+      widgets.add(Row(
+        children: [
+          Icon(Icons.route, size: 14, color: PingColors.rx),
+          const SizedBox(width: 6),
+          Text(
+            'Multi-hop Repeats (${multiHopRepeaters.length})',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ],
+      ));
+      widgets.add(const SizedBox(height: 12));
+      widgets.add(_buildMultiHopRepeaterTable(
+          context, ping, multiHopRepeaters));
+    }
+
+    return widgets;
+  }
+
+  Widget _buildRepeaterTable(
+      BuildContext context, TxPing ping, List<HeardRepeater> repeaters) {
+    final chipWidth = _nodeColumnWidth();
+    final anyLacksLocation =
+        repeaters.any((hr) => _hexIdLacksLocation(hr.repeaterId));
+    final iconReserve = anyLacksLocation ? 18.0 : 0.0;
+    final nodeColWidth = chipWidth + iconReserve;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color: Theme.of(context)
+                .colorScheme
+                .outline
+                .withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: nodeColWidth,
+                  child: Text('Node',
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant)),
+                ),
+                Expanded(
+                    child: Text('SNR',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+                Expanded(
+                    child: Text('RSSI',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          ...repeaters.map((repeater) {
+            final snrColor = repeater.snr != null
+                ? PingColors.snrColor(repeater.snr!)
+                : Colors.grey;
+            final rssiColor = repeater.rssi != null
+                ? PingColors.rssiColor(repeater.rssi!)
+                : Colors.grey;
+            final lacksLocation = _hexIdLacksLocation(repeater.repeaterId);
+
+            return InkWell(
+              onTap: () => RepeaterIdChip.showRepeaterPopup(
+                  context, repeater.repeaterId,
+                  fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: nodeColWidth,
+                      child: Row(
+                        children: [
+                          RepeaterIdChip(
+                              repeaterId: repeater.repeaterId,
+                              fontSize: 13,
+                              width: chipWidth),
+                          if (lacksLocation)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 4),
+                              child: _noLocationIndicator(),
+                            ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Center(
+                        child: _buildStatChip(
+                          value: repeater.snr?.toStringAsFixed(1) ?? '-',
+                          color: snrColor,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Center(
+                        child: _buildStatChip(
+                          value: repeater.rssi != null
+                              ? '${repeater.rssi}'
+                              : '-',
+                          color: rssiColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMultiHopRepeaterTable(
+      BuildContext context, TxPing ping, List<HeardRepeater> repeaters) {
+    final chipWidth = _nodeColumnWidth();
+    final anyLacksLocation =
+        repeaters.any((hr) => _hexIdLacksLocation(hr.repeaterId));
+    final iconReserve = anyLacksLocation ? 18.0 : 0.0;
+    final nodeColWidth = chipWidth + iconReserve;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color: Theme.of(context)
+                .colorScheme
+                .outline
+                .withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: nodeColWidth,
+                  child: Text('Node',
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant)),
+                ),
+                Expanded(
+                    child: Text('SNR',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+                Expanded(
+                    child: Text('RSSI',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant))),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          ...repeaters.map((repeater) {
+            final snrColor = repeater.snr != null
+                ? PingColors.snrColor(repeater.snr!)
+                : Colors.grey;
+            final rssiColor = repeater.rssi != null
+                ? PingColors.rssiColor(repeater.rssi!)
+                : Colors.grey;
+            final lacksLocation = _hexIdLacksLocation(repeater.repeaterId);
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                InkWell(
+                  onTap: () => RepeaterIdChip.showRepeaterPopup(
+                      context, repeater.repeaterId,
+                      fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: nodeColWidth,
+                          child: Row(
+                            children: [
+                              RepeaterIdChip(
+                                  repeaterId: repeater.repeaterId,
+                                  fontSize: 13,
+                                  width: chipWidth),
+                              if (lacksLocation)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 4),
+                                  child: _noLocationIndicator(),
+                                ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: Center(
+                            child: _buildStatChip(
+                              value:
+                                  repeater.snr?.toStringAsFixed(1) ?? '-',
+                              color: snrColor,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Center(
+                            child: _buildStatChip(
+                              value: repeater.rssi != null
+                                  ? '${repeater.rssi}'
+                                  : '-',
+                              color: rssiColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (repeater.pathHops != null && repeater.pathHops!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(
+                        left: 12, right: 12, bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.route,
+                              size: 12,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: RxPathChain(
+                              hops: repeater.pathHops!, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          }),
+        ],
+      ),
+    );
   }
 
   /// Show RX ping details popup
-  void _showRxPingDetails(RxPing ping) {
+  void _showRxPingDetails(RxPing ping, {bool fromMinimized = false}) {
     final snrColor = PingColors.snrColor(ping.snr);
     final rssiColor = PingColors.rssiColor(ping.rssi);
 
@@ -3041,14 +8686,25 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       [ping.repeaterId],
       snrValues: [ping.snr],
     );
-    if (resolved.isNotEmpty) {
+
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true). Set _focusedPingSource AFTER
+    // _activatePingFocus (its missed branch dismisses a prior ping, clearing the
+    // source). RX is always a reception, so it always has located repeater data.
+    if (!fromMinimized) {
       _activatePingFocus(
           LatLng(ping.latitude, ping.longitude), ping.timestamp, resolved);
+      _focusedPingSource = ping;
+      _minimizePingFocus(ping.timestamp);
+      return;
     }
 
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
+      // Transparent barrier so the map stays fully bright during focus mode —
+      // the default Colors.black54 scrim would defeat the purpose of focus.
+      barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -3067,13 +8723,13 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.15),
+                    color: PingColors.rx.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
-                    border:
-                        Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    border: Border.all(
+                        color: PingColors.rx.withValues(alpha: 0.4)),
                   ),
-                  child: const Icon(Icons.arrow_downward,
-                      color: Colors.blue, size: 24),
+                  child: Icon(Icons.arrow_downward,
+                      color: PingColors.rx, size: 24),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -3096,6 +8752,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     ],
                   ),
                 ),
+                IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                  onPressed: () => Navigator.pop(context, 'minimized'),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Minimize',
+                ),
+                const SizedBox(width: 4),
                 IconButton(
                   icon: const Icon(Icons.close, size: 20),
                   onPressed: () => Navigator.pop(context),
@@ -3151,8 +8815,15 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
             ),
             const SizedBox(height: 12),
 
-            // Repeater table (single row)
-            Container(
+            // Repeater table (single row). When the repeater has no GPS on
+            // file, surface a small grey location_off icon next to the chip
+            // so the user knows the focus map deliberately skipped it.
+            Builder(builder: (context) {
+              final chipWidth = _nodeColumnWidth();
+              final lacksLocation = _hexIdLacksLocation(ping.repeaterId);
+              final iconReserve = lacksLocation ? 18.0 : 0.0;
+              final nodeColWidth = chipWidth + iconReserve;
+              return Container(
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
@@ -3171,7 +8842,7 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                     child: Row(
                       children: [
                         SizedBox(
-                          width: _nodeColumnWidth(),
+                          width: nodeColWidth,
                           child: Text(
                             'Node',
                             style: TextStyle(
@@ -3223,11 +8894,24 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           horizontal: 12, vertical: 8),
                       child: Row(
                         children: [
-                          // Repeater ID
-                          RepeaterIdChip(
-                              repeaterId: ping.repeaterId,
-                              fontSize: 13,
-                              width: _nodeColumnWidth()),
+                          // Repeater ID + optional no-location icon, pinned
+                          // to the node column width so SNR/RSSI stay aligned.
+                          SizedBox(
+                            width: nodeColWidth,
+                            child: Row(
+                              children: [
+                                RepeaterIdChip(
+                                    repeaterId: ping.repeaterId,
+                                    fontSize: 13,
+                                    width: chipWidth),
+                                if (lacksLocation)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 4),
+                                    child: _noLocationIndicator(),
+                                  ),
+                              ],
+                            ),
+                          ),
                           // SNR
                           Expanded(
                             child: Center(
@@ -3252,33 +8936,84 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                   ),
                 ],
               ),
-            ),
+            );
+            }),
+
+            // Path section (origin → ... → us). Skipped when the path is
+            // unavailable, e.g. RxPings reloaded from Hive (transient field).
+            if (ping.pathHops.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Path',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: RxPathChain(
+                  hops: ping.pathHops,
+                  fromLatLng: (lat: ping.latitude, lon: ping.longitude),
+                  fontSize: 13,
+                ),
+              ),
+            ],
           ],
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
   }
 
   /// Show DISC ping details popup
-  void _showDiscPingDetails(DiscLogEntry entry) {
-    // Activate focus mode for discovered nodes with known repeater positions
-    if (entry.discoveredNodes.isNotEmpty) {
-      final resolved = _resolveRepeatersByHexIds(
-        entry.discoveredNodes.map((n) => n.repeaterId).toList(),
-        fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
-        snrValues:
-            entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
-      );
-      if (resolved.isNotEmpty) {
-        _activatePingFocus(
-            LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
-      }
+  void _showDiscPingDetails(DiscLogEntry entry, {bool fromMinimized = false}) {
+    // Default a real tap to the minimized 2-row pill — the full sheet opens only
+    // on expand (fromMinimized: true). _activatePingFocus engages focus for
+    // located nodes or clears any prior focus / community view (empty list when
+    // nothing was discovered); set _focusedPingSource AFTER it (its missed branch
+    // dismisses a prior ping, which would otherwise clear the source).
+    if (!fromMinimized) {
+      final resolved = entry.discoveredNodes.isNotEmpty
+          ? _resolveRepeatersByHexIds(
+              entry.discoveredNodes.map((n) => n.repeaterId).toList(),
+              fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
+              snrValues:
+                  entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
+            )
+          : const <_ResolvedRepeater>[];
+      _activatePingFocus(
+          LatLng(entry.latitude, entry.longitude), entry.timestamp, resolved);
+      _focusedPingSource = entry;
+      _minimizePingFocus(entry.timestamp);
+      return;
     }
 
     showModalBottomSheet(
       context: context,
       useSafeArea: true,
       isScrollControlled: true,
+      // Transparent barrier so the map stays fully bright during focus mode —
+      // the default Colors.black54 scrim would defeat the purpose of focus.
+      barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -3336,6 +9071,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         ],
                       ),
                     ),
+                    IconButton(
+                      icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                      onPressed: () => Navigator.pop(context, 'minimized'),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      tooltip: 'Minimize',
+                    ),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: () => Navigator.pop(context),
@@ -3396,8 +9139,15 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
 
                 if (entry.discoveredNodes.isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  // Table with headers
-                  Container(
+                  // Table with headers — reserve a sliver of node-column
+                  // width for the inline `location_off` indicator when any
+                  // discovered node has no GPS on file, so the RX/RSSI/TX
+                  // columns stay aligned row-to-row.
+                  Builder(builder: (context) {
+                    final anyLacksLocation = entry.discoveredNodes
+                        .any((n) => _hexIdLacksLocation(n.repeaterId));
+                    final nodeExtra = 20.0 + (anyLacksLocation ? 18.0 : 0.0);
+                    return Container(
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(8),
@@ -3416,7 +9166,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                           child: Row(
                             children: [
                               SizedBox(
-                                width: _nodeColumnWidth(extraPadding: 20),
+                                width:
+                                    _nodeColumnWidth(extraPadding: nodeExtra),
                                 child: Text(
                                   'Node',
                                   style: TextStyle(
@@ -3479,6 +9230,8 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                               PingColors.rssiColor(node.localRssi);
                           final txSnrColor =
                               PingColors.snrColor(node.remoteSnr.toDouble());
+                          final lacksLocation =
+                              _hexIdLacksLocation(node.repeaterId);
 
                           return InkWell(
                             onTap: () => RepeaterIdChip.showRepeaterPopup(
@@ -3493,9 +9246,10 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                   horizontal: 12, vertical: 8),
                               child: Row(
                                 children: [
-                                  // Node ID with type
+                                  // Node ID with type (+ optional no-loc icon)
                                   SizedBox(
-                                    width: _nodeColumnWidth(extraPadding: 20),
+                                    width:
+                                        _nodeColumnWidth(extraPadding: nodeExtra),
                                     child: Row(
                                       children: [
                                         RepeaterIdChip(
@@ -3509,6 +9263,12 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                                             color: _discMarkerColor,
                                           ),
                                         ),
+                                        if (lacksLocation)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                                left: 4),
+                                            child: _noLocationIndicator(),
+                                          ),
                                       ],
                                     ),
                                   ),
@@ -3547,14 +9307,21 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                         }),
                       ],
                     ),
-                  ),
+                  );
+                  }),
                 ],
               ],
             ),
           ),
         ),
       ),
-    ).whenComplete(() => _dismissPingFocus());
+    ).then((result) {
+      if (result == 'minimized') {
+        setState(() => _focusPanelMinimized = true);
+      } else {
+        _dismissPingFocus();
+      }
+    });
   }
 
   /// Build a status chip for the repeater popup
@@ -3577,29 +9344,148 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
     );
   }
 
-  /// Show repeater details popup
+  /// Show repeater details. Opens minimized as a stats pill by default; tapping
+  /// the pill re-enters with [expand] true to show the full detail sheet, and
+  /// the sheet's minimize re-enters with [expand] false. [cachedStats] carries
+  /// the lazily-fetched stats across those toggles so they aren't re-fetched.
   void _showRepeaterDetails(Repeater repeater,
-      {bool isDuplicate = false, int? regionHopBytesOverride}) {
+      {bool isDuplicate = false,
+      int? regionHopBytesOverride,
+      bool isolate = true,
+      bool expand = false,
+      Future<RepeaterStats?>? cachedStats}) {
+    // Focus this repeater: hide every OTHER repeater while its detail sheet/pill
+    // is open (web setSoloCircle parity) and track it as the active selection
+    // (Feature B draw guard + teardown). Claim it as the active view BEFORE
+    // tearing down any prior view, so the shared focus camera isn't restored
+    // mid-switch (it stays engaged and re-fits to this repeater below). Restored
+    // by _clearRepeaterIsolation on sheet/pill close or empty-map tap.
+    final wasCell = _cellPopupActive;
+    final prevRepeater = _isolatedRepeaterId;
+    if (isolate) _isolatedRepeaterId = repeater.id;
+    _clearMinimizedInfoPopup(); // drop the prior pill widget only
+    if (wasCell) {
+      // Switching from a tile view: tear down its footprint/dim/fade/lines.
+      _clearCellHighlight();
+    } else if (prevRepeater != null && prevRepeater != repeater.id) {
+      // Switching repeater->repeater: tear down the old cells/lines/dim WITHOUT
+      // clearing the (now new) _isolatedRepeaterId via _clearRepeaterIsolation.
+      _clearCoverageLines();
+      _clearCoverageCells();
+      _restoreCoverageBackdropForRepeater();
+    }
+    // Drop any lingering Feature A fade so it doesn't reappear when this
+    // repeater's isolation is later cleared.
+    _restoreFadedRepeaters();
+    // Switching from a minimized ping focus: tear it down so its pill doesn't
+    // linger and overlap this repeater view's pill at the shared bottom slot
+    // (symmetric to _enterPingFocus). When isolating, the repeater view is
+    // already claimed (_isolatedRepeaterId set above), so this dismiss's
+    // _exitFocusCameraIfDone no-ops and the shared focus camera stays engaged.
+    _dismissPingFocus();
+    if (isolate) {
+      _enterFocusCamera(); // save the pre-focus snapshot once; north-up, stop follow
+      _syncRepeaterSymbols(context.read<AppStateProvider>());
+    }
+
     // Determine icon badge color based on primary status
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
-    // Determine status label and color
+    // Determine status label and color (web labels, generateRepeaterPopup).
     String statusLabel;
     Color statusColor;
-    if (repeater.isNew) {
-      statusLabel = 'New';
+    if (repeater.enabled == 2) {
+      statusLabel = 'Ambiguous';
+      statusColor = _repeaterDuplicateColor;
+    } else if (repeater.enabled == 0) {
+      statusLabel = 'Disabled';
+      statusColor = _repeaterDeadColor;
+    } else if (repeater.isNew) {
+      statusLabel = 'New Repeater';
       statusColor = _repeaterNewColor;
     } else if (repeater.isActive) {
-      statusLabel = 'Active';
+      statusLabel = 'Repeater Online';
       statusColor = _repeaterMarkerColor;
     } else {
-      statusLabel = 'Stale';
+      statusLabel = 'Stale Repeater';
       statusColor = _repeaterDeadColor;
     }
 
-    showModalBottomSheet(
+    // Lazily fetch this repeater's coverage points for the BIDIR/TX/RX/DISC/DEAD
+    // totals + max range, then aggregate client-side (renderRepeaterChart parity).
+    final appState = context.read<AppStateProvider>();
+    final lookup = RepeaterLookup.fromRepeaters(appState.repeaters,
+        hopBytes: appState.effectiveHopBytes);
+    final isImperial = appState.preferences.isImperial;
+    final cvd = appState.preferences.colorVisionType;
+    final gridSize = appState.preferences.coverageGridSize;
+    final Future<RepeaterStats?> statsFuture = cachedStats ??
+        appState
+            .fetchRepeaterCoveragePoints(prefix: repeater.id)
+            .then<RepeaterStats?>((pts) {
+          final res =
+              RepeaterStats.fromCoverageWithPoints(pts, repeater, lookup);
+          // Feature B: draw this repeater's coverage cells + status-coloured
+          // connection lines (web `drawRepeaterCoverageFromCache` parity). Only
+          // on the first fetch (cachedStats == null reaches here), and only if
+          // this repeater is still the isolated selection — guards a fast
+          // repeater switch during the network fetch — and has a known location.
+          if (mounted &&
+              _isolatedRepeaterId == repeater.id &&
+              repeater.hasLocation) {
+            _drawRepeaterCoverage(repeater, res.matched, cvd, gridSize)
+                .then((cells) {
+              if (!mounted || _isolatedRepeaterId != repeater.id) return;
+              // Match ping focus: frame the repeater + its whole coverage
+              // footprint (no-op when it heard nothing — single point).
+              _fitCameraToPoints([
+                LatLng(repeater.lat, repeater.lon),
+                for (final c in cells) LatLng(c.centerLat, c.centerLon),
+              ]);
+            });
+          }
+          return res.stats;
+        }).catchError((Object e) {
+          debugWarn('[COVERAGE] repeater stats failed: $e');
+          return null;
+        });
+
+    final fingerprintShort =
+        repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
+    final fingerprintFull = repeater.hexId.length >= 8
+        ? repeater.hexId.substring(0, 8).toUpperCase()
+        : repeater.hexId.toUpperCase();
+    final clockSkew = humanizeClockSkew(repeater.timeOffset);
+
+    // Open minimized by default — a compact stats pill; tap it to expand to the
+    // full detail sheet. Isolation (others hidden) persists across pill<->sheet.
+    if (!expand) {
+      _setMinimizedInfoPopup(_MinimizedInfoPopup(
+        title: _repeaterPillTitle(repeater, statusColor),
+        statsBuilder: (ctx) => _repeaterPillStats(
+            ctx, repeater, statsFuture, clockSkew, isImperial),
+        onReshow: () {
+          _clearMinimizedInfoPopup();
+          _showRepeaterDetails(repeater,
+              isDuplicate: isDuplicate,
+              regionHopBytesOverride: regionHopBytesOverride,
+              isolate: false,
+              expand: true,
+              cachedStats: statsFuture);
+        },
+        onClose: () {
+          _clearMinimizedInfoPopup();
+          _clearRepeaterIsolation();
+        },
+      ));
+      return;
+    }
+
+    showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
+      // Transparent barrier so the map stays bright (like focus mode).
+      barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -3607,12 +9493,16 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
       builder: (context) => Container(
         padding: EdgeInsets.fromLTRB(
             20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Header with icon badge (containing ID) and name
-            Row(
+        // Scrollable so the content can't overflow on shorter screens — this
+        // (non-scroll-controlled) bottom sheet caps height to ~9/16 of the
+        // screen, and the detail card is occasionally taller than that.
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Header with icon badge (containing ID) and name
+              Row(
               children: [
                 // Icon badge with hex ID (mirrors map marker)
                 Builder(builder: (context) {
@@ -3655,6 +9545,14 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
                 ),
                 const SizedBox(width: 8),
                 IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                  onPressed: () => Navigator.pop(context, 'minimized'),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Minimize',
+                ),
+                const SizedBox(width: 8),
+                IconButton(
                   icon: const Icon(Icons.close, size: 20),
                   onPressed: () => Navigator.pop(context),
                   padding: EdgeInsets.zero,
@@ -3691,51 +9589,190 @@ class _MapWidgetState extends State<MapWidget> with TickerProviderStateMixin {
               ),
               child: Column(
                 children: [
-                  // Location row
-                  Row(
-                    children: [
-                      Icon(Icons.location_on,
-                          size: 16,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
-                          style: TextStyle(
+                  // Location
+                  _repRow(
+                    context,
+                    Icons.location_on,
+                    Text(
+                      '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
+                      style: const TextStyle(
+                          fontSize: 13, fontFamily: 'monospace'),
+                    ),
+                  ),
+                  // Fingerprint (id / hex)
+                  _repRow(
+                    context,
+                    Icons.fingerprint,
+                    Text.rich(TextSpan(children: [
+                      TextSpan(
+                        text: fingerprintShort,
+                        style: const TextStyle(
                             fontSize: 13,
                             fontFamily: 'monospace',
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
-                        ),
+                            fontWeight: FontWeight.w600),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  // Last heard row
-                  Row(
-                    children: [
-                      Icon(Icons.access_time,
-                          size: 16,
+                      TextSpan(
+                        text: '  ($fingerprintFull)',
+                        style: TextStyle(
+                          fontSize: 12,
                           color:
-                              Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          repeater.lastHeardFormatted,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
+                              Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
-                    ],
+                    ])),
+                  ),
+                  // Hop bytes
+                  _repRow(
+                    context,
+                    Icons.swap_horiz,
+                    Text(
+                      'Hop Bytes: ${repeater.hopBytes} byte${repeater.hopBytes == 1 ? '' : 's'}',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  // Last heard (schedule)
+                  if (repeater.lastHeard > 0)
+                    _repRow(
+                      context,
+                      Icons.schedule,
+                      Text(formatDateWithAgo(repeater.lastHeard),
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  // Clock-skew warning — single compact row, e.g. "Clock is
+                  // 1.2 days ahead" (was two rows / a long sentence).
+                  if (clockSkew != null)
+                    _repRow(
+                      context,
+                      Icons.warning_amber_rounded,
+                      Text('Clock is $clockSkew',
+                          style: const TextStyle(fontSize: 13)),
+                      color: Colors.red.shade400,
+                    ),
+                  // First heard
+                  if (repeater.createdAt != null)
+                    _repRow(
+                      context,
+                      Icons.event,
+                      Text(
+                          'First Heard: ${formatDateWithAgo(repeater.createdAt)}',
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  // Max range (lazy)
+                  FutureBuilder<RepeaterStats?>(
+                    future: statsFuture,
+                    builder: (context, snap) {
+                      final loading =
+                          snap.connectionState != ConnectionState.done;
+                      final stats = snap.data;
+                      final range = loading
+                          ? '…'
+                          : (stats?.maxRangeMeters != null
+                              ? formatCoverageDistance(stats!.maxRangeMeters!,
+                                  isImperial: isImperial)
+                              : 'N/A');
+                      return _repRow(
+                        context,
+                        Icons.open_in_full,
+                        Text('Max Range: $range',
+                            style: const TextStyle(fontSize: 13)),
+                      );
+                    },
                   ),
                 ],
               ),
             ),
+            const SizedBox(height: 14),
+            // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
+            FutureBuilder<RepeaterStats?>(
+              future: statsFuture,
+              builder: (context, snap) {
+                final loading = snap.connectionState != ConnectionState.done;
+                final stats = snap.data;
+                String v(int? n) => loading ? '…' : '${n ?? 0}';
+                return Row(
+                  children: [
+                    _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
+                        const Color(0xFF1E7E34)),
+                    _repeaterStatCell(
+                        context, 'TX', v(stats?.tx), const Color(0xFFFD7E14)),
+                    _repeaterStatCell(
+                        context, 'RX', v(stats?.rx), const Color(0xFF6F42C1)),
+                    _repeaterStatCell(context, 'DISC', v(stats?.disc),
+                        const Color(0xFF17A2B8)),
+                    _repeaterStatCell(context, 'DEAD', v(stats?.dead),
+                        const Color(0xFF6C757D)),
+                  ],
+                );
+              },
+            ),
           ],
         ),
+        ),
+      ),
+    ).then((result) {
+      if (!mounted) return;
+      if (result == 'minimized') {
+        // Collapse back to the stats pill. The selection (and its coverage
+        // cells/lines + tile dim) persists throughout pill<->sheet; it's torn
+        // down only on a real close. Reuse the already-fetched stats so the pill
+        // doesn't re-fetch (and doesn't redraw the coverage).
+        _showRepeaterDetails(repeater,
+            isDuplicate: isDuplicate,
+            regionHopBytesOverride: regionHopBytesOverride,
+            isolate: false,
+            expand: false,
+            cachedStats: statsFuture);
+      } else {
+        // Dismissed for real (X / swipe / barrier tap): clear the coverage
+        // cells/lines and restore the dimmed coverage tiles.
+        _clearRepeaterIsolation();
+      }
+    });
+  }
+
+  /// One labelled icon row in the repeater detail card. A null [icon] leaves the
+  /// icon gutter blank (used to indent the clock-skew magnitude under its warning).
+  Widget _repRow(BuildContext context, IconData? icon, Widget child,
+      {Color? color}) {
+    final iconColor = color ?? Theme.of(context).colorScheme.onSurfaceVariant;
+    final textColor = color ?? Theme.of(context).colorScheme.onSurface;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 20,
+            child: icon == null ? null : Icon(icon, size: 16, color: iconColor),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DefaultTextStyle.merge(
+              style: TextStyle(fontSize: 13, color: textColor),
+              child: child,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One cell of the repeater's BIDIR/TX/RX/DISC/DEAD totals row.
+  Widget _repeaterStatCell(
+      BuildContext context, String label, String value, Color color) {
+    return Expanded(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(value,
+              style: TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 2),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 10,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        ],
       ),
     );
   }
@@ -4209,6 +10246,133 @@ class _DiamondMarkerPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _DiamondMarkerPainter oldDelegate) =>
       oldDelegate.color != color;
+}
+
+/// Paints a repeater marker shape (filled colored rounded box with white border
+/// and drop shadow). Used at startup to generate bitmap variants for native
+/// MapLibre symbols. The text (hex ID) is rendered separately by the symbol's
+/// `textField` property at runtime — this painter only draws the box itself.
+class _RepeaterShapePainter extends CustomPainter {
+  final Color fillColor;
+  final double borderRadius;
+
+  const _RepeaterShapePainter({
+    required this.fillColor,
+    required this.borderRadius,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Inset the box by the shadow blur amount so the shadow has room to draw
+    const shadowBlur = 4.0;
+    final boxRect = Rect.fromLTWH(
+      shadowBlur,
+      shadowBlur,
+      size.width - 2 * shadowBlur,
+      size.height - 2 * shadowBlur,
+    );
+
+    // Drop shadow (positioned 2px below the box)
+    final shadowPaint = Paint()
+      ..color = Colors.black26
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, shadowBlur);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        boxRect.shift(const Offset(0, 2)),
+        Radius.circular(borderRadius),
+      ),
+      shadowPaint,
+    );
+
+    // Filled colored box
+    final fillPaint = Paint()..color = fillColor;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(boxRect, Radius.circular(borderRadius)),
+      fillPaint,
+    );
+
+    // White border (2px wide, drawn inside the box edge)
+    final borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0;
+    final innerRect = boxRect.deflate(1);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(innerRect, Radius.circular(borderRadius - 1)),
+      borderPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _RepeaterShapePainter old) =>
+      old.fillColor != fillColor || old.borderRadius != borderRadius;
+}
+
+/// Paints a coverage ping marker (TX/RX/DISC/Trace) in one of the four user
+/// styles. Used at startup to generate bitmap variants for native MapLibre
+/// symbols. Reuses _PinMarkerPainter and _DiamondMarkerPainter for those styles.
+class _CoverageMarkerPainter extends CustomPainter {
+  final String style; // 'circle' / 'pin' / 'diamond' / 'dot'
+  final Color color;
+
+  const _CoverageMarkerPainter({required this.style, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Visible glyph area — the canvas is typically larger (40×40) so the
+    // surrounding pixels stay transparent, giving MapLibre a bigger native
+    // tap hit target without enlarging the actual marker visual.
+    const innerSize = Size(24, 24);
+    final dx = (size.width - innerSize.width) / 2;
+    final dy = (size.height - innerSize.height) / 2;
+    canvas.save();
+    canvas.translate(dx, dy);
+    switch (style) {
+      case 'pin':
+        _PinMarkerPainter(color).paint(canvas, innerSize);
+        break;
+      case 'diamond':
+        _DiamondMarkerPainter(color).paint(canvas, innerSize);
+        break;
+      case 'circle':
+        _paintCircle(canvas, innerSize, borderAlpha: 1.0, borderWidth: 2.0);
+        break;
+      case 'dot':
+      default:
+        _paintCircle(canvas, innerSize, borderAlpha: 0.6, borderWidth: 1.5);
+        break;
+    }
+    canvas.restore();
+  }
+
+  void _paintCircle(Canvas canvas, Size size,
+      {required double borderAlpha, required double borderWidth}) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = math.min(size.width, size.height) / 2 - 2;
+
+    // Drop shadow (slightly below)
+    final shadowPaint = Paint()
+      ..color = Colors.black12
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
+    canvas.drawCircle(center.translate(0, 1), radius, shadowPaint);
+
+    // Filled circle
+    canvas.drawCircle(center, radius, Paint()..color = color);
+
+    // White border
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = Colors.white.withValues(alpha: borderAlpha)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = borderWidth,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _CoverageMarkerPainter old) =>
+      old.style != style || old.color != color;
 }
 
 /// A stateful widget for sound item with play button visual feedback

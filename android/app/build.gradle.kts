@@ -42,7 +42,7 @@ android {
         applicationId = "net.meshmapper.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = flutter.minSdkVersion  // MapLibre GL requires 23+
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -60,6 +60,7 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 }
@@ -71,4 +72,10 @@ flutter {
 dependencies {
     // Required for flutter_local_notifications core library desugaring
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+
+    // MapLibre Android SDK — already pulled transitively by maplibre_gl, but
+    // declaring it explicitly gives MainActivity.kt compile-time access to
+    // OfflineManager for the tile cache MethodChannel handlers. Version must
+    // match maplibre_gl-0.25.0's transitive dep.
+    implementation("org.maplibre.gl:android-sdk:12.3.1")
 }
