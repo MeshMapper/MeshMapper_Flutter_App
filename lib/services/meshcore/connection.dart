@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import '../../models/connection_state.dart';
 import '../../models/device_model.dart';
 import '../../utils/debug_logger_io.dart';
-import '../bluetooth/bluetooth_service.dart';
+import '../transport/companion_transport.dart';
 import 'buffer_utils.dart';
 import 'channel_service.dart';
 import 'crypto_service.dart';
@@ -40,12 +40,25 @@ class SelfInfo {
   final Uint8List publicKey;
   final String name;
 
+  /// Radio configuration reported in the SelfInfo response (newer firmware only;
+  /// null on older firmware that omits the radio block). Encoding as sent by the device:
+  /// frequency in kHz, bandwidth in Hz, SF/CR raw. (The companion-protocol wiki documents
+  /// freq as Hz, but real hardware reports kHz — a 910.525 MHz radio sends 910525.)
+  final int? radioFreqKHz;
+  final int? radioBwHz;
+  final int? radioSf;
+  final int? radioCr;
+
   const SelfInfo({
     required this.type,
     required this.txPower,
     required this.maxTxPower,
     required this.publicKey,
     required this.name,
+    this.radioFreqKHz,
+    this.radioBwHz,
+    this.radioSf,
+    this.radioCr,
   });
 
   /// Get public key as hex string
@@ -53,6 +66,37 @@ class SelfInfo {
       .map((b) => b.toRadixString(16).padLeft(2, '0'))
       .join('')
       .toUpperCase();
+
+  /// Whether the device reported a usable radio configuration.
+  bool get hasRadioConfig => radioFreqKHz != null && radioFreqKHz! > 0;
+
+  /// Compact radio config for the API: "freqMHz,bwKHz,SF,CR" (e.g. "910.525,62.5,7,5").
+  /// Frequency kHz→MHz (÷1000), bandwidth Hz→kHz (÷1000). Null when no radio params.
+  String? get radioConfigApi {
+    if (!hasRadioConfig) return null;
+    final freq = _trimNum(radioFreqKHz! / 1e3);
+    final bw = _trimNum((radioBwHz ?? 0) / 1e3);
+    return '$freq,$bw,${radioSf ?? 0},${radioCr ?? 0}';
+  }
+
+  /// Human-readable radio config for the UI: "910.525 MHz · 62.5 kHz · SF7 · CR5".
+  /// Null when unavailable.
+  String? get radioConfigDisplay {
+    if (!hasRadioConfig) return null;
+    final freq = _trimNum(radioFreqKHz! / 1e3);
+    final bw = _trimNum((radioBwHz ?? 0) / 1e3);
+    return '$freq MHz · $bw kHz · SF${radioSf ?? 0} · CR${radioCr ?? 0}';
+  }
+
+  /// Format a number with up to 3 decimals, trimming trailing zeros and a trailing dot
+  /// (910.525 → "910.525", 62.5 → "62.5", 915.0 → "915").
+  static String _trimNum(double v) {
+    var s = v.toStringAsFixed(3);
+    if (s.contains('.')) {
+      s = s.replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
+    }
+    return s;
+  }
 }
 
 /// MeshCore connection manager
@@ -69,7 +113,7 @@ class SelfInfo {
 /// 8. GPS Init
 /// 9. Connected State
 class MeshCoreConnection {
-  final BluetoothService _bluetooth;
+  final CompanionTransport _transport;
   bool _disposed = false;
   final _stepController = StreamController<ConnectionStep>.broadcast();
   final _channelMessageController =
@@ -97,6 +141,7 @@ class MeshCoreConnection {
   Completer<ChannelInfo>? _channelInfoCompleter;
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
+  Completer<int>? _getTimeCompleter;
 
   // Device self info (contains public key)
   SelfInfo? _selfInfo;
@@ -116,9 +161,9 @@ class MeshCoreConnection {
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
   Timer? _batteryTimer;
 
-  MeshCoreConnection({required BluetoothService bluetooth})
-      : _bluetooth = bluetooth {
-    _dataSubscription = _bluetooth.dataStream.listen(_onFrameReceived);
+  MeshCoreConnection({required CompanionTransport transport})
+      : _transport = transport {
+    _dataSubscription = _transport.dataStream.listen(_onFrameReceived);
   }
 
   /// Stream of connection step changes
@@ -205,16 +250,15 @@ class MeshCoreConnection {
   /// Returns (deviceModel, deviceModelMatched) for display/reporting purposes
   /// Note: This method does NOT modify radio TX power settings - it only reads device info
   Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(
-      String deviceId, List<DeviceModel> deviceModels) async {
+      List<DeviceModel> deviceModels) async {
     if (_disposed) {
       throw Exception('Connection instance has been disposed');
     }
     bool deviceModelMatched = false;
 
     try {
-      // Step 1: BLE Connect
-      _updateStep(ConnectionStep.bleConnecting);
-      await _bluetooth.connect(deviceId);
+      // Step 1: Transport connect (already connected by caller)
+      _updateStep(ConnectionStep.transportConnecting);
 
       // Step 2: Protocol Handshake (handled automatically by device)
       _updateStep(ConnectionStep.protocolHandshake);
@@ -281,6 +325,13 @@ class MeshCoreConnection {
             '[CONN] No auth callback set, skipping API session acquisition');
       }
 
+      // Guard: transport may have disconnected during the async auth API call
+      if (_disposed ||
+          _transport.connectionStatus != ConnectionStatus.connected) {
+        throw Exception(
+            'Transport disconnected during authentication. Please try connecting again.');
+      }
+
       // Step 7: Channel Setup
       _updateStep(ConnectionStep.channelSetup);
       debugLog('[CONN] Creating #wardriving channel');
@@ -315,7 +366,7 @@ class MeshCoreConnection {
       _updateStep(ConnectionStep.error);
       // Clean up BLE connection on failure
       try {
-        await _bluetooth.disconnect();
+        await _transport.disconnect();
         debugLog('[CONN] Disconnected BLE after connection failure');
       } catch (disconnectError) {
         debugError('[CONN] Failed to disconnect after error: $disconnectError');
@@ -349,7 +400,7 @@ class MeshCoreConnection {
       // See deleteWardrivingChannelEarly() called from app_state_provider
 
       // Disconnect BLE
-      await _bluetooth.disconnect();
+      await _transport.disconnect();
       _deviceInfo = null;
       _deviceModel = null;
       _selfInfo = null;
@@ -434,6 +485,8 @@ class MeshCoreConnection {
           _deviceQueryCompleter = null;
           _exportContactCompleter?.completeError(errException);
           _exportContactCompleter = null;
+          _getTimeCompleter?.completeError(errException);
+          _getTimeCompleter = null;
           break;
         case ResponseCodes.deviceInfo:
           _onDeviceInfoResponse(reader);
@@ -467,6 +520,12 @@ class MeshCoreConnection {
           break;
         case ResponseCodes.batteryVoltage:
           _onBatteryVoltageResponse(reader);
+          break;
+        case ResponseCodes.currTime:
+          if (_getTimeCompleter != null && reader.remainingBytesCount >= 4) {
+            _getTimeCompleter?.complete(reader.readUInt32LE());
+            _getTimeCompleter = null;
+          }
           break;
         case ResponseCodes.exportContact:
           _onExportContactResponse(reader);
@@ -571,17 +630,23 @@ class MeshCoreConnection {
       final maxTxPower = reader.readByte();
       final publicKey = reader.readBytes(32);
 
-      // Skip additional fields added in newer firmware versions
-      // These fields exist between publicKey and name
+      // Additional fields added in newer firmware versions, between publicKey and name
+      // (MeshCore companion protocol RESP_CODE_SELF_INFO). Older firmware omits this block.
+      // Encoding note: the wiki documents radioFreq as uint32 Hz, but real hardware reports
+      // it in kHz (a 910.525 MHz radio sends 910525); radioBw is uint32 Hz; SF/CR are bytes.
+      int? radioFreqKHz;
+      int? radioBwHz;
+      int? radioSf;
+      int? radioCr;
       if (reader.remainingBytesCount >= 22) {
         reader.readInt32LE(); // advLat
         reader.readInt32LE(); // advLon
         reader.readBytes(3); // reserved
         reader.readByte(); // manualAddContacts
-        reader.readUInt32LE(); // radioFreq
-        reader.readUInt32LE(); // radioBw
-        reader.readByte(); // radioSf
-        reader.readByte(); // radioCr
+        radioFreqKHz = reader.readUInt32LE(); // radioFreq (kHz on real hardware)
+        radioBwHz = reader.readUInt32LE(); // radioBw (Hz)
+        radioSf = reader.readByte(); // radioSf
+        radioCr = reader.readByte(); // radioCr
       }
 
       // Read name from remaining bytes
@@ -593,11 +658,19 @@ class MeshCoreConnection {
         maxTxPower: maxTxPower,
         publicKey: publicKey,
         name: name,
+        radioFreqKHz: radioFreqKHz,
+        radioBwHz: radioBwHz,
+        radioSf: radioSf,
+        radioCr: radioCr,
       );
 
       _selfInfo = selfInfo;
       debugLog(
-          '[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}...');
+          '[CONN] SelfInfo received: name="${selfInfo.name}", publicKey=${selfInfo.publicKeyHex.substring(0, 16)}..., radio=${selfInfo.radioConfigApi ?? "n/a"}');
+      // Raw radio values straight off the device — surfaces the actual encoding in the
+      // downloadable debug log (diagnoses any future unit questions).
+      debugLog(
+          '[CONN] Radio raw: freqKHz=$radioFreqKHz bwHz=$radioBwHz sf=$radioSf cr=$radioCr → ${selfInfo.radioConfigApi ?? "n/a"}');
 
       _selfInfoCompleter?.complete(selfInfo);
       _selfInfoCompleter = null;
@@ -775,7 +848,7 @@ class MeshCoreConnection {
 
   /// Write frame to device
   Future<void> _sendToRadio(BufferWriter data) async {
-    await _bluetooth.write(data.toBytes());
+    await _transport.write(data.toBytes());
   }
 
   // ============================================
@@ -824,6 +897,10 @@ class MeshCoreConnection {
     data.writeByte(appTargetVer);
     await _sendToRadio(data);
 
+    // Send APP_START so device enters companion mode.
+    // Without this, some devices won't respond to the device query.
+    await sendCommandAppStart();
+
     return future.timeout(
       const Duration(seconds: 5),
       onTimeout: () => throw TimeoutException('Device query timed out'),
@@ -845,6 +922,24 @@ class MeshCoreConnection {
       onTimeout: () {
         _setTimeCompleter = null;
         debugWarn('[CONN] Time sync timed out - continuing anyway');
+      },
+    );
+  }
+
+  /// Query the device's current RTC clock (epoch seconds)
+  Future<int> getDeviceTime() async {
+    _getTimeCompleter = Completer<int>();
+    final future = _getTimeCompleter!.future;
+
+    final data = BufferWriter();
+    data.writeByte(CommandCodes.getDeviceTime);
+    await _sendToRadio(data);
+
+    return future.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        _getTimeCompleter = null;
+        throw TimeoutException('getDeviceTime timed out');
       },
     );
   }
@@ -891,7 +986,7 @@ class MeshCoreConnection {
     final bytes = data.toBytes();
     debugLog(
         '[CONN] getChannel bytes: ${bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
-    await _bluetooth.write(bytes);
+    await _transport.write(bytes);
 
     return future.timeout(
       const Duration(seconds: 5),
@@ -1010,19 +1105,17 @@ class MeshCoreConnection {
     );
   }
 
-  /// Send ping to #wardriving channel
-  /// Format: @[MapperBot] LAT, LON
-  /// Power is no longer included in the mesh message — it is sent per-ping in the API payload instead
-  /// Reference: buildPayload() in wardrive.js
-  Future<void> sendPing(double lat, double lon) async {
+  /// Send a pre-composed TX body to the #wardriving channel.
+  /// The caller composes the body (privacy wire tag "MM:..." by default, or the
+  /// legacy "@[MapperBot] LAT, LON" when the user opts into broadcasting coords)
+  /// so the exact same string is used for both TxTracker echo matching and the
+  /// actual transmission.
+  /// Power is not included in the mesh message — it is sent per-ping in the API payload.
+  Future<void> sendPing(String message) async {
     final channel = _wardrivingChannel;
     if (channel == null) {
       throw Exception('Wardriving channel not initialized');
     }
-
-    // Format coordinates to 5 decimal places with comma separator
-    final coordsStr = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
-    final message = '@[MapperBot] $coordsStr';
 
     debugLog('[CONN] Sending ping: $message');
     final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;

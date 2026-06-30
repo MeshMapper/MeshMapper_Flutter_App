@@ -43,8 +43,11 @@ class ApiQueueService {
   /// Callback for queue updates
   void Function(int queueSize)? onQueueUpdated;
 
-  /// Callback for successful uploads (passes count of items uploaded)
-  void Function(int uploadedCount)? onUploadSuccess;
+  /// Callback for successful uploads. Passes the count AND the uploaded items
+  /// so the listener can compute which coverage tiles the batch touched (the
+  /// post-wardrive vector tile refresh needs the ping coordinates).
+  void Function(int uploadedCount, List<ApiQueueItem> uploadedItems)?
+      onUploadSuccess;
 
   /// Callback when persistence fails (for user-visible error logging)
   void Function(String errorMessage)? onPersistenceError;
@@ -237,6 +240,8 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    int? pingCounter,
+    String? wireTag,
   }) async {
     final item = ApiQueueItem.fromTx(
       latitude: latitude,
@@ -246,6 +251,8 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      pingCounter: pingCounter,
+      wireTag: wireTag,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -572,11 +579,15 @@ class ApiQueueService {
       // Convert to API format
       final pings = items.map((item) => item.toApiJson()).toList();
 
-      // Log each item with external_antenna value
+      // Log each item with external_antenna value. Token-mode TX entries also log their
+      // wire_tag + ping_counter so a debug log self-documents any tag collision/drop.
       for (int i = 0; i < items.length; i++) {
         final item = items[i];
+        final tagInfo = item.wireTag != null
+            ? ', wire_tag=${item.wireTag}, ping_counter=${item.pingCounter}'
+            : '';
         debugLog(
-            '[API QUEUE] Item ${i + 1}/${items.length}: type=${item.type}, external_antenna=${item.externalAntenna}');
+            '[API QUEUE] Item ${i + 1}/${items.length}: type=${item.type}, external_antenna=${item.externalAntenna}$tagInfo');
       }
 
       final memoryCount = memoryItems.length;
@@ -603,7 +614,7 @@ class ApiQueueService {
           _memoryQueue.remove(item);
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
-        onUploadSuccess?.call(uploadedCount);
+        onUploadSuccess?.call(uploadedCount, items);
         // Fire-and-forget: forward to custom API endpoint
         customApiService?.forwardPings(pings);
       } else if (result == UploadResult.nonRetryable) {

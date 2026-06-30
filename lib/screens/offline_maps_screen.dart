@@ -1,0 +1,1665 @@
+import 'dart:async' show unawaited;
+import 'dart:math' show Point, max, min;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:provider/provider.dart';
+
+import '../providers/app_state_provider.dart';
+import '../services/offline_map_service.dart';
+import '../services/tile_cache_service.dart';
+import '../utils/debug_logger_io.dart';
+import '../utils/geo_validation.dart';
+import '../widgets/app_toast.dart';
+import '../widgets/map_widget.dart' show MapStyle, MapStyleExtension;
+
+/// Label → URL map for styles the user can download, derived from
+/// [MapStyle.downloadable]. Satellite is excluded (inline raster JSON
+/// doesn't work with MapLibre's offline region downloader).
+final Map<String, String> _downloadStyles = {
+  for (final s in MapStyleExtension.downloadable) s.label: s.styleUrl,
+};
+
+/// Screen for managing offline map tile downloads.
+///
+/// Accessible from the Settings screen. The underlying [OfflineMapService]
+/// lives at the app level (via Provider), so downloads continue even after
+/// navigating away from this screen. A system notification shows progress.
+class OfflineMapsScreen extends StatefulWidget {
+  const OfflineMapsScreen({super.key});
+
+  @override
+  State<OfflineMapsScreen> createState() => _OfflineMapsScreenState();
+}
+
+class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
+  bool _tileCacheBusy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Listen for background download completions to show a toast.
+    final service = context.read<OfflineMapService>();
+    service.addListener(_onServiceUpdate);
+    // Pull fresh per-region + total cache sizes so the storage bar reflects
+    // current on-disk reality (including any ambient-cache growth since the
+    // service last refreshed).
+    service.refreshRegions();
+  }
+
+  @override
+  void dispose() {
+    // Use try-catch in case the provider is already disposed during app teardown.
+    try {
+      context.read<OfflineMapService>().removeListener(_onServiceUpdate);
+    } catch (_) {}
+    super.dispose();
+  }
+
+  void _onServiceUpdate() {
+    if (!mounted) return;
+    final service = context.read<OfflineMapService>();
+    final completed = service.consumeLastCompletedName();
+    if (completed != null) {
+      AppToast.success(context, '"$completed" downloaded');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final service = context.watch<OfflineMapService>();
+
+    return Scaffold(
+      appBar: AppBar(
+        toolbarHeight: 40,
+        title: const Text('Offline Maps', style: TextStyle(fontSize: 18)),
+      ),
+      body: !service.initialized
+          ? const Center(child: CircularProgressIndicator())
+          : kIsWeb
+              ? _buildWebUnsupported(theme)
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                  children: [
+                    _buildStorageCard(context, service, theme, isDark),
+                    const SizedBox(height: 8),
+                    _buildDownloadedRegionsCard(
+                        context, service, theme, isDark),
+                    const SizedBox(height: 8),
+                    if (service.isDownloading)
+                      _buildDownloadProgressCard(
+                          context, service, theme, isDark),
+                  ],
+                ),
+      floatingActionButton:
+          (service.initialized && !kIsWeb && !service.isDownloading)
+              ? FloatingActionButton.extended(
+                  heroTag: null,
+                  onPressed: () => _showDownloadDialog(context),
+                  icon: const Icon(Icons.download),
+                  label: const Text('Download Area'),
+                )
+              : null,
+    );
+  }
+
+  Widget _buildWebUnsupported(ThemeData theme) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off, size: 64, color: Colors.grey.shade400),
+            const SizedBox(height: 16),
+            Text(
+              'Offline maps are not available on web',
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(color: Colors.grey.shade500),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Use the mobile app to download map areas for offline use',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: Colors.grey.shade400),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ──────────────────────────────────────────────
+  // Storage usage card
+  // ──────────────────────────────────────────────
+
+  Widget _buildStorageCard(BuildContext context, OfflineMapService service,
+      ThemeData theme, bool isDark) {
+    final downloadsRatio = service.downloadsRatio;
+    final ambientRatio = service.ambientRatio;
+    final usageRatio = service.usageRatio;
+
+    // Over-quota colors the total-used text red; the bar itself stays
+    // segmented so the user can still see which bucket is driving the limit.
+    final overQuota = usageRatio >= 1.0;
+    final totalColor = overQuota
+        ? Colors.red
+        : (usageRatio > 0.9
+            ? Colors.red
+            : (usageRatio > 0.7 ? Colors.orange : theme.colorScheme.primary));
+
+    final downloadsColor = theme.colorScheme.primary;
+    final ambientColor = theme.colorScheme.tertiary;
+    final trackColor =
+        isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.shade200;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Storage',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 18),
+                  onPressed: _tileCacheBusy
+                      ? null
+                      : () => service.refreshRegions(),
+                  tooltip: 'Refresh sizes',
+                  visualDensity: VisualDensity.compact,
+                ),
+                TextButton.icon(
+                  onPressed: () => _showStorageLimitDialog(context, service),
+                  icon: const Icon(Icons.tune, size: 16),
+                  label: const Text('Limit'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Segmented usage bar: downloads (primary) + ambient (tertiary)
+            // stacked left-to-right against the storage limit.
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(
+                height: 20,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final total = constraints.maxWidth;
+                    final downloadsWidth =
+                        (downloadsRatio.clamp(0.0, 1.0)) * total;
+                    // Ambient is clamped so the two segments can never exceed
+                    // the track width even if the real total briefly overshoots.
+                    final ambientWidth =
+                        ((ambientRatio.clamp(0.0, 1.0)) * total)
+                            .clamp(0.0, total - downloadsWidth);
+                    return Stack(
+                      children: [
+                        Positioned.fill(child: Container(color: trackColor)),
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: downloadsWidth,
+                          child: Container(color: downloadsColor),
+                        ),
+                        Positioned(
+                          left: downloadsWidth,
+                          top: 0,
+                          bottom: 0,
+                          width: ambientWidth,
+                          child: Container(color: ambientColor),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Totals
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '${service.totalUsedDisplay} used',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: totalColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  '${service.storageLimitDisplay} limit',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: Colors.grey,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // Legend
+            _buildLegendRow(
+              theme,
+              color: downloadsColor,
+              label: 'Downloads',
+              value: service.downloadsDisplay,
+              sublabel: '${service.regions.length} '
+                  'area${service.regions.length == 1 ? '' : 's'}',
+            ),
+            const SizedBox(height: 4),
+            _buildLegendRow(
+              theme,
+              color: ambientColor,
+              label: 'Ambient cache',
+              value: service.ambientDisplay,
+              sublabel: 'auto-cached while panning',
+            ),
+
+            const SizedBox(height: 12),
+
+            // Ambient cache actions (downloads are managed below).
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _tileCacheBusy ? null : _onInvalidateTileCache,
+                    icon: const Icon(Icons.refresh_outlined, size: 18),
+                    label: const Text('Invalidate cache'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _tileCacheBusy ? null : _onClearTileCache,
+                    icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                    label: const Text('Clear cache'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLegendRow(
+    ThemeData theme, {
+    required Color color,
+    required String label,
+    required String value,
+    required String sublabel,
+  }) {
+    return Row(
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            '· $sublabel',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: Colors.grey.shade500,
+              fontSize: 11,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        Text(
+          value,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _onInvalidateTileCache() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Invalidate tile cache?'),
+        content: const Text(
+          'Marks cached tiles as stale so they refresh on next view. '
+          'Downloaded areas are not affected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Invalidate'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _tileCacheBusy = true);
+    try {
+      await TileCacheService.instance.invalidateAmbientCache();
+      if (!mounted) return;
+      AppToast.success(context, 'Tile cache invalidated');
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.error(context, 'Invalidate failed: $e');
+    } finally {
+      if (mounted) setState(() => _tileCacheBusy = false);
+      if (mounted) await context.read<OfflineMapService>().refreshCacheSize();
+    }
+  }
+
+  Future<void> _onClearTileCache() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear tile cache?'),
+        content: const Text(
+          'Removes opportunistically cached tiles from disk. '
+          'Downloaded areas are preserved.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _tileCacheBusy = true);
+    try {
+      await TileCacheService.instance.clearAmbientCache();
+      if (!mounted) return;
+      AppToast.success(context, 'Tile cache cleared');
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.error(context, 'Clear failed: $e');
+    } finally {
+      if (mounted) setState(() => _tileCacheBusy = false);
+      if (mounted) await context.read<OfflineMapService>().refreshCacheSize();
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Downloaded regions list
+  // ──────────────────────────────────────────────
+
+  Widget _buildDownloadedRegionsCard(BuildContext context,
+      OfflineMapService service, ThemeData theme, bool isDark) {
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+            child: Row(
+              children: [
+                Text(
+                  'Downloaded Areas',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                if (service.regions.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 20),
+                    onPressed: () => service.refreshRegions(),
+                    tooltip: 'Refresh',
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+          ),
+          if (service.regions.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Column(
+                children: [
+                  Icon(Icons.map_outlined,
+                      size: 48, color: Colors.grey.shade400),
+                  const SizedBox(height: 8),
+                  Text(
+                    'No offline areas downloaded',
+                    style: TextStyle(color: Colors.grey.shade500),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Tap "Download Area" to save map tiles for offline use',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            )
+          else
+            ...service.regions.map(
+              (region) => _RegionTile(
+                region: region,
+                onDelete: () => _confirmDeleteRegion(context, service, region),
+              ),
+            ),
+          if (service.regions.length > 1)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: OutlinedButton.icon(
+                onPressed: () => _confirmDeleteAll(context, service),
+                icon: const Icon(Icons.delete_sweep, size: 18),
+                label: const Text('Delete All'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.red,
+                  side: const BorderSide(color: Colors.red, width: 0.5),
+                  minimumSize: const Size.fromHeight(36),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ),
+          const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+
+  // ──────────────────────────────────────────────
+  // Download progress card
+  // ──────────────────────────────────────────────
+
+  Widget _buildDownloadProgressCard(BuildContext context,
+      OfflineMapService service, ThemeData theme, bool isDark) {
+    final progress = service.downloadProgress ?? 0;
+    final isPreparing = progress == 0;
+    final speed = service.downloadBytesPerSecond;
+    final eta = service.downloadEta;
+
+    String? stats;
+    if (!isPreparing) {
+      final parts = <String>[];
+      if (speed != null) parts.add(_formatSpeed(speed));
+      if (eta != null) parts.add('${_formatDuration(eta)} remaining');
+      if (parts.isNotEmpty) stats = parts.join(' · ');
+    }
+
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Downloading',
+              style: theme.textTheme.titleSmall?.copyWith(
+                color: theme.colorScheme.primary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        service.downloadingRegionName ?? 'Area',
+                        style: theme.textTheme.bodyMedium,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: isPreparing ? null : progress,
+                          minHeight: 8,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  isPreparing ? '—' : '${(progress * 100).round()}%',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              isPreparing
+                  ? 'Preparing download…'
+                  : (stats ?? 'Calculating speed…'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Colors.grey.shade600,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Download continues in the background if you leave this screen',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+            ),
+            if (service.queueLength > 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                '${service.queueLength} more queued after this',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey.shade500,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () => _confirmCancelDownload(context, service),
+                icon: const Icon(Icons.close, size: 16, color: Colors.red),
+                label: const Text('Cancel',
+                    style: TextStyle(color: Colors.red)),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Formats bytes/sec into a short display string (e.g. "1.2 MB/s").
+  String _formatSpeed(double bytesPerSecond) {
+    if (bytesPerSecond < 1024) {
+      return '${bytesPerSecond.toStringAsFixed(0)} B/s';
+    }
+    if (bytesPerSecond < 1024 * 1024) {
+      return '${(bytesPerSecond / 1024).toStringAsFixed(1)} KB/s';
+    }
+    return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  }
+
+  /// Formats a Duration as a short human-readable string (e.g. "4m 20s").
+  String _formatDuration(Duration d) {
+    if (d.inSeconds < 60) return '${d.inSeconds}s';
+    if (d.inMinutes < 60) {
+      final s = d.inSeconds % 60;
+      return s == 0 ? '${d.inMinutes}m' : '${d.inMinutes}m ${s}s';
+    }
+    final minutes = d.inMinutes % 60;
+    return minutes == 0
+        ? '${d.inHours}h'
+        : '${d.inHours}h ${minutes}m';
+  }
+
+  Future<void> _confirmCancelDownload(
+      BuildContext context, OfflineMapService service) async {
+    final name = service.downloadingRegionName ?? 'this download';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel download?'),
+        content: Text(
+          'Tiles downloaded so far for "$name" will be discarded. '
+          'Queued downloads (if any) will continue automatically.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep downloading'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Cancel download'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final ok = await service.cancelActiveDownload();
+    if (context.mounted && ok) {
+      AppToast.info(context, 'Download cancelled');
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Storage limit dialog
+  // ──────────────────────────────────────────────
+
+  Future<void> _showStorageLimitDialog(
+      BuildContext context, OfflineMapService service) async {
+    int currentLimit = service.storageLimitMb;
+
+    final result = await showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: const Text('Storage Limit'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$currentLimit MB',
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                  ),
+                  const SizedBox(height: 16),
+                  Slider(
+                    value: currentLimit.toDouble(),
+                    min: OfflineMapService.minStorageLimitMb.toDouble(),
+                    max: OfflineMapService.maxStorageLimitMb.toDouble(),
+                    divisions: (OfflineMapService.maxStorageLimitMb -
+                            OfflineMapService.minStorageLimitMb) ~/
+                        50,
+                    label: '$currentLimit MB',
+                    onChanged: (value) {
+                      setDialogState(() => currentLimit = value.round());
+                    },
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '${OfflineMapService.minStorageLimitMb} MB',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      Text(
+                        '${OfflineMapService.maxStorageLimitMb} MB',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Currently using ${service.totalUsedDisplay}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey,
+                        ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, currentLimit),
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result != null) {
+      await service.setStorageLimit(result);
+      if (context.mounted) {
+        AppToast.success(context, 'Storage limit set to $result MB');
+      }
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Download new region dialog
+  // ──────────────────────────────────────────────
+
+  Future<void> _showDownloadDialog(BuildContext context) async {
+    final started = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const _DownloadRegionPage(),
+      ),
+    );
+
+    // Toast is handled by the _onServiceUpdate listener when the download
+    // completes (which may happen long after this page returns).
+    if (started == true && context.mounted) {
+      AppToast.simple(
+          context, 'Download started — check notifications for progress');
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Delete confirmations
+  // ──────────────────────────────────────────────
+
+  Future<void> _confirmDeleteRegion(BuildContext context,
+      OfflineMapService service, OfflineMapRegion region) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Area?'),
+        content: Text(
+          'Delete "${region.name}"? This will free '
+          '${region.sizeDisplay} of storage.\n\n'
+          'Note: shared tiles used by other areas may not be freed immediately.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final success = await service.deleteRegion(region.id);
+      if (context.mounted) {
+        if (success) {
+          AppToast.success(context, '"${region.name}" deleted');
+        } else {
+          AppToast.error(
+              context, service.consumeLastError() ?? 'Failed to delete area');
+        }
+      }
+    }
+  }
+
+  Future<void> _confirmDeleteAll(
+      BuildContext context, OfflineMapService service) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete All Areas?'),
+        content: Text(
+          'Delete all ${service.regions.length} downloaded areas? '
+          'This will free ${service.downloadsDisplay} of downloaded tiles '
+          '(ambient cache is preserved).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete All'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await service.deleteAllRegions();
+      if (context.mounted) {
+        AppToast.success(context, 'All areas deleted');
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// Region list tile
+// ═══════════════════════════════════════════════
+
+class _RegionTile extends StatelessWidget {
+  final OfflineMapRegion region;
+  final VoidCallback onDelete;
+
+  const _RegionTile({required this.region, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: _styleIcon(region.styleName),
+      title: Text(
+        region.name,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        '${region.styleName} · z${region.minZoom.round()}-${region.maxZoom.round()} · ${region.sizeDisplay}\n'
+        '${region.boundsDisplay}',
+        style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+      ),
+      isThreeLine: true,
+      trailing: IconButton(
+        icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+        onPressed: onDelete,
+        tooltip: 'Delete',
+      ),
+    );
+  }
+
+  Widget _styleIcon(String styleName) {
+    switch (styleName.toLowerCase()) {
+      case 'dark':
+        return const Icon(Icons.dark_mode);
+      case 'light':
+        return const Icon(Icons.light_mode);
+      case 'satellite':
+        return const Icon(Icons.satellite_alt);
+      case 'liberty':
+      default:
+        return const Icon(Icons.map);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// Download region flow (full-page)
+// ═══════════════════════════════════════════════
+
+class _DownloadRegionPage extends StatefulWidget {
+  const _DownloadRegionPage();
+
+  @override
+  State<_DownloadRegionPage> createState() => _DownloadRegionPageState();
+}
+
+class _DownloadRegionPageState extends State<_DownloadRegionPage> {
+  final _nameController = TextEditingController();
+  String _selectedStyle = 'Liberty';
+  double _minZoom = 6;
+  double _maxZoom = 14;
+  bool _submitting = false;
+  String? _error;
+
+  // Default center (Ottawa)
+  static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
+
+  // Bounds selection via interactive map
+  MapLibreMapController? _mapController;
+  LatLng? _boundsNE;
+  LatLng? _boundsSW;
+  Line? _boundsLine;
+  Fill? _boundsFill;
+
+  // Draggable corner resize handles. Each corner has two stacked circles:
+  // a larger invisible-ish "halo" below and a smaller visible handle on top.
+  // Both are draggable so fingers landing on the halo still start a drag —
+  // maplibre's iOS pan gesture only hit-tests after crossing its activation
+  // threshold (~10pt of movement), so the touch target has to be bigger than
+  // the visual. `_handleIdToCorner` maps each Circle id back to its corner
+  // so onFeatureDrag resolves either shape to the correct bounds update.
+  final Map<String, List<Circle>> _cornerHandles = {};
+  final Map<String, String> _handleIdToCorner = {};
+
+  // Existing region overlays
+  final List<Fill> _existingFills = [];
+  final List<Line> _existingLines = [];
+  bool _showExisting = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // grab user's current map style to start
+    final pref = context.read<AppStateProvider>().preferences.mapStyle;
+    final mapped = pref.substring(0, 1).toUpperCase() + pref.substring(1);
+    if (_downloadStyles.containsKey(mapped)) {
+      _selectedStyle = mapped;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  LatLngBounds? get _selectedBounds {
+    if (_boundsNE == null || _boundsSW == null) return null;
+    // Normalize so tile estimates stay valid mid-drag when a corner has been
+    // pulled past its opposite (stored SW/NE may be inverted).
+    final sw = LatLng(
+      min(_boundsSW!.latitude, _boundsNE!.latitude),
+      min(_boundsSW!.longitude, _boundsNE!.longitude),
+    );
+    final ne = LatLng(
+      max(_boundsSW!.latitude, _boundsNE!.latitude),
+      max(_boundsSW!.longitude, _boundsNE!.longitude),
+    );
+    return LatLngBounds(southwest: sw, northeast: ne);
+  }
+
+  bool get _canSubmit =>
+      _nameController.text.trim().isNotEmpty &&
+      _selectedBounds != null &&
+      !_submitting;
+
+  int get _estimatedTiles {
+    final bounds = _selectedBounds;
+    if (bounds == null) return 0;
+    return OfflineMapService.estimateTileCount(bounds, _minZoom, _maxZoom);
+  }
+
+  String get _estimatedSize {
+    final bytes = OfflineMapService.estimateSizeBytes(_estimatedTiles);
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppStateProvider>();
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    // Determine map center - prefer current GPS, fallback to last known, then
+    // Ottawa. Only adopt a source position when its coords are valid — this
+    // feeds initialCameraPosition, and an invalid LatLng aborts the app in
+    // MapLibre's native ctor.
+    LatLng center = _defaultCenter;
+    final pos = appState.currentPosition;
+    final lastKnown = appState.lastKnownPosition;
+    if (pos != null && isValidLatLng(pos.latitude, pos.longitude)) {
+      center = LatLng(pos.latitude, pos.longitude);
+    } else if (lastKnown != null &&
+        isValidLatLng(lastKnown.lat, lastKnown.lon)) {
+      center = LatLng(lastKnown.lat, lastKnown.lon);
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        toolbarHeight: 40,
+        title: const Text('Download Area', style: TextStyle(fontSize: 18)),
+      ),
+      body: Column(
+        children: [
+          // Map for bounds selection
+          Expanded(
+            flex: 3,
+            child: Stack(
+              children: [
+                MapLibreMap(
+                  styleString: _downloadStyles[_selectedStyle]!,
+                  initialCameraPosition: CameraPosition(
+                    target: center, // Vancouver default
+                    zoom: 10,
+                  ),
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                    controller.onFeatureDrag.add(_onFeatureDrag);
+                  },
+                  onStyleLoadedCallback: () {
+                    if (_showExisting) _drawExistingRegions();
+                  },
+                  onMapClick: _onMapTap,
+                  rotateGesturesEnabled: false,
+                  tiltGesturesEnabled: false,
+                ),
+                // Bounds instruction overlay
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  right: 8,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: (isDark ? Colors.black : Colors.white)
+                          .withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _selectedBounds != null
+                          ? 'Drag corners to resize · ~$_estimatedTiles tiles · $_estimatedSize'
+                          : 'Tap the map to place an area',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+                // Reset bounds button
+                if (_selectedBounds != null)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Material(
+                      type: MaterialType.circle,
+                      color: theme.colorScheme.primaryContainer,
+                      elevation: 2,
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _resetBounds,
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(Icons.restart_alt,
+                              size: 20,
+                              color: theme.colorScheme.onPrimaryContainer),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Existing regions toggle
+                Positioned(
+                  bottom: 8,
+                  left: 8,
+                  child: Material(
+                    borderRadius: BorderRadius.circular(16),
+                    color: (isDark ? Colors.black : Colors.white)
+                        .withValues(alpha: 0.85),
+                    elevation: 2,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(16),
+                      onTap: _toggleExistingRegions,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _showExisting
+                                  ? Icons.visibility
+                                  : Icons.visibility_off,
+                              size: 14,
+                              color: const Color(0xFFF59E0B),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${context.read<OfflineMapService>().regions.length} existing',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontSize: 11,
+                                color: _showExisting
+                                    ? const Color(0xFFF59E0B)
+                                    : Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Configuration panel
+          Expanded(
+            flex: 2,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Region name
+                  TextField(
+                    controller: _nameController,
+                    decoration: InputDecoration(
+                      labelText: 'Area Name',
+                      hintText: 'e.g. Downtown Vancouver',
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      isDense: true,
+                      prefixIcon: const Icon(Icons.label_outline, size: 20),
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Style selector
+                  Row(
+                    children: [
+                      const Text('Style: ',
+                          style: TextStyle(fontWeight: FontWeight.w500)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SegmentedButton<String>(
+                          segments: _downloadStyles.keys
+                              .map((s) => ButtonSegment<String>(
+                                    value: s,
+                                    label: Text(s,
+                                        style: const TextStyle(fontSize: 12)),
+                                  ))
+                              .toList(),
+                          selected: {_selectedStyle},
+                          onSelectionChanged: (selected) {
+                            setState(() => _selectedStyle = selected.first);
+                          },
+                          style: SegmentedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Zoom range
+                  Row(
+                    children: [
+                      Text(
+                        'Zoom: ${_minZoom.round()} – ${_maxZoom.round()}',
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '~$_estimatedTiles tiles',
+                        style: TextStyle(
+                            fontSize: 12, color: Colors.grey.shade500),
+                      ),
+                    ],
+                  ),
+                  RangeSlider(
+                    values: RangeValues(_minZoom, _maxZoom),
+                    // Min matches the app's MapLibreMap minMaxZoomPreference
+                    // floor (3) so users can't cache tiles the app won't
+                    // display. Max stays at 15: OpenFreeMap vector tiles max
+                    // out at z14, z15+ is pure overzoom (duplicate tile data),
+                    // so 15 leaves one overzoom step reachable without
+                    // blowing out storage.
+                    min: 3,
+                    max: 15,
+                    divisions: 12,
+                    labels: RangeLabels(
+                      _minZoom.round().toString(),
+                      _maxZoom.round().toString(),
+                    ),
+                    onChanged: (values) {
+                      setState(() {
+                        _minZoom = values.start;
+                        _maxZoom = values.end;
+                      });
+                    },
+                  ),
+
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Colors.red.withValues(alpha: 0.3)),
+                      ),
+                      child: Text(
+                        _error!,
+                        style: const TextStyle(color: Colors.red, fontSize: 12),
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 12),
+
+                  // Download button
+                  FilledButton.icon(
+                    onPressed: _canSubmit ? _startDownload : null,
+                    icon: _submitting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.download),
+                    label:
+                        Text(_submitting ? 'Starting...' : 'Download Area'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(44),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _onMapTap(Point<double> point, LatLng coordinates) async {
+    // Once a region exists, taps on the map do nothing — user resizes via
+    // the corner handles or resets to start over.
+    if (_boundsSW != null && _boundsNE != null) return;
+    if (_mapController == null) return;
+
+    // Size the default box to ~40% of the visible map area centered on the
+    // tap, so the result feels proportional regardless of zoom level.
+    LatLngBounds visible;
+    try {
+      visible = await _mapController!.getVisibleRegion();
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] getVisibleRegion failed: $e');
+      return;
+    }
+
+    final halfLat = (visible.northeast.latitude - visible.southwest.latitude)
+            .abs() *
+        0.2;
+    final halfLng = (visible.northeast.longitude - visible.southwest.longitude)
+            .abs() *
+        0.2;
+
+    final sw = LatLng(
+      coordinates.latitude - halfLat,
+      coordinates.longitude - halfLng,
+    );
+    final ne = LatLng(
+      coordinates.latitude + halfLat,
+      coordinates.longitude + halfLng,
+    );
+
+    if ((ne.longitude - sw.longitude).abs() > 180) {
+      setState(() {
+        _error = 'Visible area spans more than half the globe. '
+            'Zoom in before placing an area.';
+      });
+      return;
+    }
+
+    setState(() {
+      _boundsSW = sw;
+      _boundsNE = ne;
+      _error = null;
+    });
+    await _drawBoundsOverlay();
+    if (mounted) setState(() {});
+  }
+
+  void _resetBounds() {
+    _clearBoundsOverlay();
+    setState(() {
+      _boundsSW = null;
+      _boundsNE = null;
+    });
+  }
+
+  /// Draw outlines for all previously downloaded regions so the user
+  /// can see existing coverage while selecting a new area.
+  Future<void> _drawExistingRegions() async {
+    if (_mapController == null) return;
+    final service = context.read<OfflineMapService>();
+    for (final region in service.regions) {
+      try {
+        final sw = region.bounds.southwest;
+        final ne = region.bounds.northeast;
+        final nw = LatLng(ne.latitude, sw.longitude);
+        final se = LatLng(sw.latitude, ne.longitude);
+        final ring = [sw, se, ne, nw, sw];
+
+        final fill = await _mapController!.addFill(FillOptions(
+          geometry: [ring],
+          fillColor: '#F59E0B', // amber-500
+          fillOpacity: 0.10,
+        ));
+        final line = await _mapController!.addLine(LineOptions(
+          geometry: ring,
+          lineColor: '#F59E0B',
+          lineWidth: 1.5,
+          lineOpacity: 0.6,
+        ));
+        _existingFills.add(fill);
+        _existingLines.add(line);
+      } catch (e) {
+        debugWarn(
+            '[OFFLINE_MAP] Failed to draw existing region ${region.name}: $e');
+      }
+    }
+  }
+
+  Future<void> _clearExistingRegions() async {
+    if (_mapController == null) return;
+    for (final f in _existingFills) {
+      try {
+        await _mapController!.removeFill(f);
+      } catch (_) {}
+    }
+    for (final l in _existingLines) {
+      try {
+        await _mapController!.removeLine(l);
+      } catch (_) {}
+    }
+    _existingFills.clear();
+    _existingLines.clear();
+  }
+
+  void _toggleExistingRegions() {
+    setState(() => _showExisting = !_showExisting);
+    if (_showExisting) {
+      _drawExistingRegions();
+    } else {
+      _clearExistingRegions();
+    }
+  }
+
+  Future<void> _drawBoundsOverlay() async {
+    if (_mapController == null || _boundsSW == null || _boundsNE == null) {
+      return;
+    }
+
+    final corners = _cornerPositions();
+    final ring = [
+      corners['SW']!,
+      corners['SE']!,
+      corners['NE']!,
+      corners['NW']!,
+      corners['SW']!,
+    ];
+
+    try {
+      _boundsFill = await _mapController!.addFill(FillOptions(
+        geometry: [ring],
+        fillColor: '#4A90D9',
+        fillOpacity: 0.15,
+      ));
+      _boundsLine = await _mapController!.addLine(LineOptions(
+        geometry: ring,
+        lineColor: '#4A90D9',
+        lineWidth: 2.0,
+        lineOpacity: 0.8,
+      ));
+      for (final entry in corners.entries) {
+        // Halo first so it renders below the visible handle. ~44pt diameter
+        // gives the finger a comfortable touch target even after iOS's pan
+        // activation threshold eats ~10pt of travel before hit-testing.
+        final halo = await _mapController!.addCircle(CircleOptions(
+          geometry: entry.value,
+          circleRadius: 22,
+          circleColor: '#4A90D9',
+          circleOpacity: 0.18,
+          draggable: true,
+        ));
+        final handle = await _mapController!.addCircle(CircleOptions(
+          geometry: entry.value,
+          circleRadius: 7,
+          circleColor: '#FFFFFF',
+          circleStrokeColor: '#4A90D9',
+          circleStrokeWidth: 2.5,
+          draggable: true,
+        ));
+        _cornerHandles[entry.key] = [halo, handle];
+        _handleIdToCorner[halo.id] = entry.key;
+        _handleIdToCorner[handle.id] = entry.key;
+      }
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] Failed to draw bounds overlay: $e');
+    }
+  }
+
+  Future<void> _clearBoundsOverlay() async {
+    if (_mapController == null) return;
+    try {
+      if (_boundsFill != null) {
+        await _mapController!.removeFill(_boundsFill!);
+        _boundsFill = null;
+      }
+      if (_boundsLine != null) {
+        await _mapController!.removeLine(_boundsLine!);
+        _boundsLine = null;
+      }
+      for (final circles in _cornerHandles.values) {
+        for (final circle in circles) {
+          try {
+            await _mapController!.removeCircle(circle);
+          } catch (_) {}
+        }
+      }
+      _cornerHandles.clear();
+      _handleIdToCorner.clear();
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] Failed to clear bounds overlay: $e');
+    }
+  }
+
+  /// The four visual corner LatLngs derived from the stored SW/NE pair.
+  /// Uses raw (non-normalized) values so handle semantics stay stable
+  /// mid-drag; the polygon wraps correctly either way.
+  Map<String, LatLng> _cornerPositions() {
+    final sw = _boundsSW!;
+    final ne = _boundsNE!;
+    return {
+      'SW': sw,
+      'SE': LatLng(sw.latitude, ne.longitude),
+      'NE': ne,
+      'NW': LatLng(ne.latitude, sw.longitude),
+    };
+  }
+
+  Future<void> _refreshBoundsGeometry() async {
+    if (_mapController == null ||
+        _boundsFill == null ||
+        _boundsLine == null ||
+        _boundsSW == null ||
+        _boundsNE == null) {
+      return;
+    }
+    final corners = _cornerPositions();
+    final ring = [
+      corners['SW']!,
+      corners['SE']!,
+      corners['NE']!,
+      corners['NW']!,
+      corners['SW']!,
+    ];
+    try {
+      await _mapController!
+          .updateFill(_boundsFill!, FillOptions(geometry: [ring]));
+      await _mapController!
+          .updateLine(_boundsLine!, LineOptions(geometry: ring));
+    } catch (e) {
+      debugWarn('[OFFLINE_MAP] Failed to refresh bounds geometry: $e');
+    }
+  }
+
+  /// Repositions every handle circle except the one maplibre is already
+  /// dragging. Each corner has a halo + visible pair, and the non-dragged
+  /// circle in the dragged corner still needs to follow its partner.
+  Future<void> _refreshHandles({String? skipId}) async {
+    if (_mapController == null) return;
+    final corners = _cornerPositions();
+    for (final entry in corners.entries) {
+      final circles = _cornerHandles[entry.key];
+      if (circles == null) continue;
+      for (final circle in circles) {
+        if (circle.id == skipId) continue;
+        try {
+          await _mapController!
+              .updateCircle(circle, CircleOptions(geometry: entry.value));
+        } catch (e) {
+          debugWarn('[OFFLINE_MAP] Failed to update ${entry.key} handle: $e');
+        }
+      }
+    }
+  }
+
+  void _onFeatureDrag(
+    Point<double> point,
+    LatLng origin,
+    LatLng current,
+    LatLng delta,
+    String id,
+    Annotation? annotation,
+    DragEventType eventType,
+  ) {
+    final corner = _handleIdToCorner[id];
+    if (corner == null ||
+        _boundsSW == null ||
+        _boundsNE == null) {
+      return;
+    }
+
+    switch (corner) {
+      case 'SW':
+        _boundsSW = current;
+        break;
+      case 'NE':
+        _boundsNE = current;
+        break;
+      case 'NW':
+        _boundsSW = LatLng(_boundsSW!.latitude, current.longitude);
+        _boundsNE = LatLng(current.latitude, _boundsNE!.longitude);
+        break;
+      case 'SE':
+        _boundsSW = LatLng(current.latitude, _boundsSW!.longitude);
+        _boundsNE = LatLng(_boundsNE!.latitude, current.longitude);
+        break;
+    }
+
+    _refreshBoundsGeometry();
+    _refreshHandles(skipId: id);
+
+    if (eventType == DragEventType.end) {
+      // Snap stored SW/NE to normalized orientation and realign every
+      // handle (including the one just released) to its semantic corner.
+      final sw = LatLng(
+        min(_boundsSW!.latitude, _boundsNE!.latitude),
+        min(_boundsSW!.longitude, _boundsNE!.longitude),
+      );
+      final ne = LatLng(
+        max(_boundsSW!.latitude, _boundsNE!.latitude),
+        max(_boundsSW!.longitude, _boundsNE!.longitude),
+      );
+      _boundsSW = sw;
+      _boundsNE = ne;
+
+      if ((ne.longitude - sw.longitude).abs() > 180) {
+        _error = 'Selected area crosses the antimeridian. '
+            'Split into two areas (one per hemisphere).';
+      } else {
+        _error = null;
+      }
+
+      _refreshHandles();
+      _refreshBoundsGeometry();
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _startDownload() async {
+    final bounds = _selectedBounds;
+    if (bounds == null) return;
+
+    final name = _nameController.text.trim();
+    if (name.isEmpty) return;
+
+    final service = context.read<OfflineMapService>();
+    final styleUrl = _downloadStyles[_selectedStyle]!;
+
+    // Check storage limit
+    final estBytes = OfflineMapService.estimateSizeBytes(_estimatedTiles);
+    if (service.wouldExceedLimit(estBytes)) {
+      setState(() {
+        _error = 'This download would exceed your storage limit. '
+            'Free up space or increase the limit in storage settings.';
+      });
+      return;
+    }
+
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
+
+    // Kick off the download without awaiting the completer — that future
+    // resolves only on full completion (minutes later). We just need the
+    // download to reach the "active" state so we can pop back to the main
+    // screen where the progress card is visible.
+    unawaited(service.downloadRegion(
+      name: name,
+      bounds: bounds,
+      styleUrl: styleUrl,
+      styleName: _selectedStyle,
+      minZoom: _minZoom,
+      maxZoom: _maxZoom,
+    ));
+
+    // Wait briefly for the service to enter `isDownloading` or surface an
+    // early validation error (free-space, quota). The pre-download async
+    // checks complete in well under a second; cap at 2s to stay responsive.
+    final stopwatch = Stopwatch()..start();
+    while (mounted &&
+        stopwatch.elapsed < const Duration(seconds: 2) &&
+        !service.isDownloading &&
+        service.lastError == null) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+    if (!mounted) return;
+
+    if (service.lastError != null) {
+      setState(() {
+        _submitting = false;
+        _error = service.consumeLastError();
+      });
+      return;
+    }
+
+    // Either actively downloading, still starting, or queued behind another —
+    // in every case the user should see the main screen's progress card.
+    Navigator.pop(context, true);
+  }
+}

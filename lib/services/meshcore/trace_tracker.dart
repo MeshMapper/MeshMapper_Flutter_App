@@ -214,8 +214,12 @@ class TraceTracker {
     onWindowComplete?.call(result);
   }
 
-  /// Dispose of resources
+  /// Dispose of resources — fires onWindowComplete if a window was active
   void dispose() {
-    stopTracking();
+    if (isListening) {
+      _endWindow();
+    } else {
+      stopTracking();
+    }
   }
 }

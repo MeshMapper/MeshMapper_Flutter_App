@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -8,7 +9,7 @@ import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 
 /// Result of a batch upload attempt
-enum UploadResult { success, retryable, nonRetryable }
+enum UploadResult { success, retryable, sessionError, nonRetryable }
 
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
@@ -25,6 +26,7 @@ class ApiService {
   static const String wardriveEndpoint = '$baseUrl/wardrive-api.php/wardrive';
   static const String geoAuthStatusUrl = '$baseUrl/wardrive-api.php/status';
   static const String geoAuthUrl = '$baseUrl/wardrive-api.php/auth';
+  static const String borderUrl = '$baseUrl/wardrive-api.php/border';
 
   /// API key — injected at build time via --dart-define=API_KEY=...
   static const String apiKey = String.fromEnvironment('API_KEY');
@@ -38,6 +40,8 @@ class ApiService {
   bool _txAllowed = false;
   bool _rxAllowed = false;
   int? _sessionExpiresAt;
+  String? _wireKey; // TX wire-tag secret from /auth (null = un-keyed fallback)
+  int _pingCounter = 0; // per-session TX counter; resets on fresh /auth, not on heartbeat
   Timer? _heartbeatTimer;
   Timer? _heartbeatRetryTimer;
 
@@ -48,6 +52,7 @@ class ApiService {
   List<String> _scopes = [];
   bool _enforceHybrid = false;
   bool _enforceDiscDrop = false;
+  bool _floodDisabled = false;
   int _minModeInterval = 15;
   int _apiHopBytes = 1;
 
@@ -66,6 +71,9 @@ class ApiService {
 
   /// Whether discovery drop is enforced by regional admin
   bool get enforceDiscDrop => _enforceDiscDrop;
+
+  /// Whether flood traffic (Active/Hybrid modes) is disabled by regional admin
+  bool get floodDisabled => _floodDisabled;
 
   /// Minimum auto-ping interval enforced by regional admin (seconds)
   int get minModeInterval => _minModeInterval;
@@ -148,6 +156,18 @@ class ApiService {
   /// Get session ID
   String? get sessionId => _sessionId;
 
+  /// TX wire-tag secret delivered by /auth (null when the server didn't send one).
+  String? get wireKey => _wireKey;
+
+  /// Current per-session TX ping counter (peek without incrementing).
+  int get pingCounter => _pingCounter;
+
+  /// Increment and return the next per-session TX ping counter (1-based).
+  /// Hard-capped at 2047 (the wire tag's 11-bit counter field) so the packed
+  /// token can never overflow into the session#/region bits. Reaching the cap
+  /// needs an ~8.5h continuous session at 15s; a fresh /auth resets it.
+  int nextPingCounter() => _pingCounter >= 2047 ? 2047 : ++_pingCounter;
+
   /// Get session expiry timestamp
   int? get sessionExpiresAt => _sessionExpiresAt;
 
@@ -221,6 +241,79 @@ class ApiService {
     }
   }
 
+  /// Fetch regional boundary polygons from the MeshMapper API.
+  ///
+  /// Returns a list of `{code, polygon}` maps where `polygon` is a list of
+  /// `[lat, lon]` pairs (as sent by the server). Returns `null` on failure
+  /// or maintenance mode.
+  Future<List<Map<String, dynamic>>?> fetchBorderPolygons({
+    required double lat,
+    required double lon,
+    required String appVersion,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final payload = {
+        'lat': lat,
+        'lng': lon,
+        'ver': appVersion,
+        'timestamp': timestamp,
+        'key': apiKey,
+      };
+
+      final response = await _client
+          .post(
+            Uri.parse(borderUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(payload),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      stopwatch.stop();
+
+      if (response.statusCode != 200) {
+        debugError(
+            '[BORDER] /wardrive-api.php/border returned HTTP ${response.statusCode}');
+        debugError(
+            '[BORDER]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+
+      Map<String, dynamic>? data;
+      try {
+        data = json.decode(response.body) as Map<String, dynamic>;
+      } on FormatException {
+        debugError(
+            '[BORDER] Non-JSON response from /border (HTTP ${response.statusCode}): '
+            '${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
+      }
+
+      _logApiCall(
+        endpoint: '/wardrive-api.php/border',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: payload,
+        response: data,
+      );
+
+      if (data == null) return null;
+      if (_checkMaintenanceMode(data)) return null;
+
+      final polygons = data['polygons'];
+      if (polygons is! List) return null;
+
+      return polygons
+          .whereType<Map>()
+          .map((p) => Map<String, dynamic>.from(p))
+          .toList();
+    } catch (e) {
+      stopwatch.stop();
+      debugError('[BORDER] POST /wardrive-api.php/border failed: $e');
+      return null;
+    }
+  }
+
   /// Request authentication with MeshMapper geo-auth API
   /// Matches requestAuth() in wardrive.js
   ///
@@ -240,6 +333,7 @@ class ApiService {
     double? power,
     String? iataCode,
     String? model,
+    String? radioFreq,
     double? lat,
     double? lon,
     double? accuracyMeters,
@@ -281,6 +375,7 @@ class ApiService {
         }
         if (iataCode != null) payload['iata'] = iataCode;
         if (model != null) payload['model'] = model;
+        if (radioFreq != null) payload['radio_freq'] = radioFreq;
         payload['coords'] = {
           'lat': lat,
           'lng': lon, // Convert lon → lng for API
@@ -338,6 +433,23 @@ class ApiService {
           _rxAllowed = data['rx_allowed'] == true;
           _sessionExpiresAt = data['expires_at'] as int?;
 
+          // TX wire-tag key + per-session ping counter. The counter RESUMES from the server's
+          // resume_counter when our session was reused (force-close + reconnect): resetting to 0
+          // here would re-mint wire-tags identical to the pre-restart pings, which the subscriber
+          // + coverage dedup then silently drop. Absent (new session / old server) -> 0, the
+          // original behaviour. Log only receipt + length — NEVER the raw key (uploadable logs).
+          _wireKey = data['wire_key'] as String?;
+          final resumeCounter = (data['resume_counter'] as num?)?.toInt() ?? 0;
+          _pingCounter = resumeCounter;
+          if (resumeCounter > 0) {
+            debugLog('[AUTH] resumed ping counter at $resumeCounter (reused session)');
+          }
+          if (_wireKey != null) {
+            debugLog('[AUTH] wire-tag key received (len=${_wireKey!.length})');
+          } else {
+            debugLog('[AUTH] no wire-tag key in auth response (un-keyed tag)');
+          }
+
           // Parse channels array from auth response
           final channelsData = data['channels'];
           if (channelsData is List) {
@@ -366,6 +478,12 @@ class ApiService {
           _enforceDiscDrop = data['disc_drop'] == true;
           if (_enforceDiscDrop) {
             debugLog('[API] Regional admin enforces discovery drop');
+          }
+
+          // Parse flood_disabled flag from auth response
+          _floodDisabled = data['flood_disabled'] == true;
+          if (_floodDisabled) {
+            debugLog('[API] Regional admin has disabled flood traffic');
           }
 
           // Parse min_mode_interval from auth response
@@ -751,6 +869,8 @@ class ApiService {
   /// Clear session data and cancel all timers
   void _clearSession() {
     _sessionId = null;
+    _wireKey = null;
+    _pingCounter = 0;
     _txAllowed = false;
     _rxAllowed = false;
     _sessionExpiresAt = null;
@@ -758,6 +878,7 @@ class ApiService {
     _scopes = [];
     _enforceHybrid = false;
     _enforceDiscDrop = false;
+    _floodDisabled = false;
     _minModeInterval = 15;
     _apiHopBytes = 1;
     _heartbeatTimer?.cancel();
@@ -777,6 +898,51 @@ class ApiService {
 
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
+
+  /// Force-rebuild one vector coverage tile on the region server
+  /// (`vector_tile.php?...&fresh=1`, see VECTOR_TILES.md). Used by the
+  /// post-wardrive live refresh: it keeps the server cache hot AND hands the
+  /// fresh tile bytes back so the caller can patch the user's own cells onto
+  /// the map without touching the rest of the overlay.
+  ///
+  /// `changed`: true/false from the X-Tile-Changed header; null on network
+  /// failure, non-2xx, or a server that doesn't implement fresh=1 yet.
+  /// `body`: the uncompressed MVT bytes on a 200, null otherwise (204 = tile
+  /// is empty; package:http has already gunzipped the response).
+  Future<({bool? changed, Uint8List? body})> freshenVectorTile({
+    required String zone,
+    required int z,
+    required int x,
+    required int y,
+    int gsize = 300,
+  }) async {
+    final url = Uri.parse(
+        'https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
+        '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1');
+    final sw = Stopwatch()..start();
+    debugLog(
+        '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1 (zone ${zone.toLowerCase()})');
+    try {
+      final response =
+          await _client.get(url).timeout(const Duration(seconds: 8));
+      final changed = response.headers['x-tile-changed'];
+      debugLog(
+          '[API]   Tile $z/$x/$y response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
+          '${response.bodyBytes.length}B, X-Tile-Changed=${changed ?? 'absent'}');
+      if (response.statusCode != 200 && response.statusCode != 204) {
+        return (changed: null, body: null);
+      }
+      final body = response.statusCode == 200 ? response.bodyBytes : null;
+      return (
+        changed: changed == null ? null : changed == '1',
+        body: body,
+      );
+    } catch (e) {
+      debugWarn(
+          '[API]   Tile $z/$x/$y fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+      return (changed: null, body: null);
+    }
+  }
 
   /// Upload batch of wardrive data
   /// Returns UploadResult indicating success, retryable failure, or non-retryable failure
@@ -915,6 +1081,96 @@ class ApiService {
     }
   }
 
+  /// Fetch raw coverage points for a clicked map cell, for the tap-to-inspect
+  /// GRID SUMMARY. Posts to the region's app-facing endpoint
+  /// (`app_coverage.php` → `api.php` `map_data`); the app aggregates the points
+  /// client-side (see `coverage_summary.dart`). Returns `[]` on any failure.
+  Future<List<Map<String, dynamic>>> fetchMapData({
+    required String zone,
+    required double lat,
+    required double lon,
+    required double radiusMeters,
+  }) {
+    return _fetchCoveragePoints(
+      zone: zone,
+      label: 'map_data',
+      body: {
+        'request': 'map_data',
+        'lat': lat,
+        'lon': lon,
+        'radius': radiusMeters,
+      },
+    );
+  }
+
+  /// Fetch the coverage points referencing a repeater (a hex-prefix superset),
+  /// for the repeater detail sheet's BIDIR/TX/RX/DISC/DEAD totals + max range.
+  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`. Returns `[]`
+  /// on any failure.
+  Future<List<Map<String, dynamic>>> fetchRepeaterCoverage({
+    required String zone,
+    required String prefix,
+  }) {
+    return _fetchCoveragePoints(
+      zone: zone,
+      label: 'repeater_coverage',
+      body: {
+        'request': 'repeater_coverage',
+        'prefix': prefix,
+      },
+    );
+  }
+
+  /// Shared POST to `https://<zone>.meshmapper.net/app_coverage.php` with the app
+  /// key in the JSON body. Returns a list of point maps, or `[]` on any failure.
+  Future<List<Map<String, dynamic>>> _fetchCoveragePoints({
+    required String zone,
+    required String label,
+    required Map<String, dynamic> body,
+  }) async {
+    final z = zone.toLowerCase();
+    final url = Uri.parse('https://$z.meshmapper.net/app_coverage.php');
+    final sw = Stopwatch()..start();
+    debugLog('[COVERAGE] POST /app_coverage.php ($label, zone $z)');
+    try {
+      final response = await _client
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'key': apiKey, ...body}),
+          )
+          .timeout(const Duration(seconds: 15));
+      final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
+
+      if (response.statusCode != 200) {
+        final snippet = response.body.isEmpty
+            ? '(empty)'
+            : (response.body.length > 200
+                ? response.body.substring(0, 200)
+                : response.body);
+        debugWarn(
+            '[COVERAGE]   $label HTTP ${response.statusCode} in ${secs}s: $snippet');
+        return [];
+      }
+
+      final decoded = json.decode(response.body);
+      if (decoded is! List) {
+        debugWarn('[COVERAGE]   $label: unexpected response (not a JSON list)');
+        return [];
+      }
+      final points = decoded
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+      debugLog('[COVERAGE]   $label OK in ${secs}s: ${points.length} points');
+      return points;
+    } catch (e) {
+      debugWarn(
+          '[COVERAGE]   $label POST failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+      return [];
+    }
+  }
+
   /// Submit wardrive data using an explicit session ID (for offline uploads)
   /// Does NOT read/write shared _sessionId, _sessionExpiresAt, or heartbeat state
   Future<Map<String, dynamic>?> submitWardriveDataWithSessionId(
@@ -981,8 +1237,9 @@ class ApiService {
   /// Returns UploadResult only — does NOT call _clearSession(), onSessionError, or onMaintenanceMode
   Future<UploadResult> uploadBatchWithSessionId(
     List<Map<String, dynamic>> pings,
-    String sessionId,
-  ) async {
+    String sessionId, {
+    void Function(Map<String, dynamic> response)? onResponse,
+  }) async {
     if (pings.isEmpty) return UploadResult.success;
 
     try {
@@ -994,18 +1251,30 @@ class ApiService {
       }
 
       if (result['success'] == true) {
+        // Surface the server's per-batch placement_counts / too_far_region
+        // (offline routing) so the caller can accumulate an upload summary.
+        onResponse?.call(result);
         debugLog('[API] Offline upload batch SUCCESS: ${pings.length} items');
         return UploadResult.success;
       }
 
       final reason = result['reason'] as String?;
 
-      // For offline uploads, session/auth errors are non-retryable but do NOT cascade
-      const criticalErrors = {
+      // Session timing errors: session not yet propagated or expired.
+      // The pings are fine — retrying with a delay may succeed.
+      const sessionTimingErrors = {
+        'bad_session',
         'session_expired',
         'session_invalid',
         'session_revoked',
-        'bad_session',
+      };
+      if (sessionTimingErrors.contains(reason)) {
+        debugError('[API] Offline upload batch session timing error: $reason');
+        return UploadResult.sessionError;
+      }
+
+      // Permanent auth/zone errors: session will never work, abort upload.
+      const permanentSessionErrors = {
         'invalid_key',
         'unauthorized',
         'bad_key',
@@ -1013,8 +1282,8 @@ class ApiService {
         'zone_full',
         'zone_disabled',
       };
-      if (criticalErrors.contains(reason)) {
-        debugError('[API] Offline upload batch session error: $reason');
+      if (permanentSessionErrors.contains(reason)) {
+        debugError('[API] Offline upload batch permanent error: $reason');
         return UploadResult.nonRetryable;
       }
 
@@ -1027,7 +1296,7 @@ class ApiService {
       };
       if (nonRetryableErrors.contains(reason)) {
         debugWarn(
-            '[API] Offline upload batch non-retryable error: $reason - discarding batch');
+            '[API] Offline upload batch non-retryable error: $reason - stopping upload, pings preserved');
         return UploadResult.nonRetryable;
       }
 

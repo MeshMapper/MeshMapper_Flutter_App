@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../services/permission_disclosure_service.dart';
 import '../utils/debug_logger_io.dart';
@@ -27,6 +28,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
   bool _hasShownLocationSettingsPrompt = false;
+  bool _floodDisabledDialogOpen = false;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -133,6 +135,31 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
+  Future<void> _showFloodDisabledDialog() async {
+    final appState = context.read<AppStateProvider>();
+    debugLog('[APP] Showing flood-traffic-disabled-by-region alert');
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Flood Traffic Unavailable'),
+        content: const Text(
+          'Your regional MeshMapper admin has disabled flood traffic in this '
+          'area, so Active and Hybrid modes have been turned off for this '
+          'session. Passive Mode and Trace Mode remain available. Please '
+          'reach out to your regional admin if you have questions.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    appState.clearFloodDisabledAlert();
+    _floodDisabledDialogOpen = false;
+  }
+
   void _showLocationSettingsPrompt() {
     if (!mounted || _hasShownLocationSettingsPrompt) return;
     _hasShownLocationSettingsPrompt = true;
@@ -176,15 +203,13 @@ class _MainScaffoldState extends State<MainScaffold> {
       });
     }
 
-    // Listen for connection tab requests - switch to Connect tab (e.g. anonymous mode reconnect)
-    if (appState.requestConnectionTabSwitch && _selectedIndex != 3) {
+    // Listen for flood-traffic-disabled-by-region alert (user had it on,
+    // region forced it off on auth/zone-change)
+    if (appState.floodDisabledAlertPending && !_floodDisabledDialogOpen) {
+      _floodDisabledDialogOpen = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          setState(() {
-            _selectedIndex = 3; // Switch to Connect tab
-          });
-          appState.clearConnectionTabSwitchRequest();
-        }
+        if (!mounted) return;
+        _showFloodDisabledDialog();
       });
     }
 
@@ -192,13 +217,100 @@ class _MainScaffoldState extends State<MainScaffold> {
         MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: _screens,
+      body: Stack(
+        children: [
+          IndexedStack(
+            index: _selectedIndex,
+            children: _screens,
+          ),
+          if (appState.isAnonymousReconnectInProgress)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black54,
+                child: Center(
+                  child: _buildAnonymousReconnectOverlay(appState),
+                ),
+              ),
+            ),
+        ],
       ),
       bottomNavigationBar: isLandscape
           ? _buildCompactNavBar(appState)
           : _buildStandardNavBar(appState),
+    );
+  }
+
+  Widget _buildAnonymousReconnectOverlay(AppStateProvider appState) {
+    final enabling = appState.anonymousReconnectEnabling;
+    final step = appState.connectionStep;
+    final totalSteps = ConnectionStepExtension.totalSteps;
+    final progress = step.stepNumber > 0 ? step.stepNumber / totalSteps : 0.0;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 280),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(
+              color: Colors.orange.shade400,
+            ),
+            const SizedBox(height: 20),
+            Text(
+              enabling
+                  ? 'Enabling Anonymous Mode...'
+                  : 'Disabling Anonymous Mode...',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.grey.shade100,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progress,
+                backgroundColor: Colors.grey.shade800,
+                color: Colors.orange.shade400,
+                minHeight: 4,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              step.description,
+              style: TextStyle(
+                color: Colors.grey.shade400,
+                fontSize: 13,
+              ),
+            ),
+            if (step.stepNumber > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Step ${step.stepNumber} of $totalSteps',
+                  style: TextStyle(
+                    color: Colors.grey.shade600,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -230,8 +342,8 @@ class _MainScaffoldState extends State<MainScaffold> {
             showBadge: appState.errorLogEntries.isNotEmpty,
           ),
           _buildCompactNavItem(
-            icon: Icons.show_chart_outlined,
-            activeIcon: Icons.show_chart,
+            icon: Icons.history_outlined,
+            activeIcon: Icons.history,
             index: 2,
           ),
           _buildCompactNavItem(
@@ -321,9 +433,9 @@ class _MainScaffoldState extends State<MainScaffold> {
           label: 'Log',
         ),
         const BottomNavigationBarItem(
-          icon: Icon(Icons.show_chart_outlined),
-          activeIcon: Icon(Icons.show_chart),
-          label: 'Graph',
+          icon: Icon(Icons.history_outlined),
+          activeIcon: Icon(Icons.history),
+          label: 'History',
         ),
         BottomNavigationBarItem(
           icon: Icon(

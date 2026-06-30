@@ -5,7 +5,7 @@ class ProtocolConstants {
   ProtocolConstants._();
 
   /// Supported companion protocol version
-  static const int supportedCompanionProtocolVersion = 1;
+  static const int supportedCompanionProtocolVersion = 4;
 
   /// Serial frame types
   static const int serialFrameTypeIncoming = 0x3e; // ">"

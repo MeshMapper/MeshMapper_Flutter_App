@@ -55,10 +55,19 @@ MESHMAPPER_API_KEY=<your-key> ./Build.sh
 The app uses a layered service architecture with clear separation of concerns:
 
 **Bluetooth Abstraction Layer** (`lib/services/bluetooth/`):
-- `BluetoothService`: Abstract interface for BLE operations
+- `BluetoothService`: Abstract interface for BLE operations, implements `CompanionTransport`
 - `MobileBluetoothService`: Android/iOS implementation using `flutter_blue_plus`
 - `WebBluetoothService`: Web implementation using `flutter_web_bluetooth`
 - Platform selection happens at runtime in `main.dart` using `kIsWeb`
+
+**Transport Layer** (`lib/services/transport/`):
+- `CompanionTransport`: Transport-agnostic interface for MeshCore companion connections (BLE, TCP, USB Serial)
+- `StreamFrameCodec`: Framing codec for TCP/USB Serial (`[0x3C][len_lo][len_hi][payload]` out, `[0x3E][len_lo][len_hi][payload]` in)
+- `StreamTransportBase`: Abstract base for TCP and USB Serial transports, owns codec and connection lifecycle
+- `TcpService`: TCP socket transport with saved connections persistence (Android/iOS)
+- `AndroidSerialService`: USB Serial via USB OTG on Android using `usb_serial` package
+- `WebSerialService`: USB Serial via Web Serial API (Chrome/Edge) using `dart:js_interop`
+- Platform matrix: BLE (all platforms), TCP (Android/iOS), USB Serial (Android/Web)
 
 **MeshCore Protocol Layer** (`lib/services/meshcore/`):
 - `MeshCoreConnection`: Implements the 9-step connection workflow and MeshCore companion protocol
@@ -81,11 +90,54 @@ The app uses a layered service architecture with clear separation of concerns:
 - `AppStateProvider`: Single ChangeNotifier for all app state using Provider pattern
 - All UI updates happen via `notifyListeners()` after state mutations
 
+### Map Rebuild Isolation
+
+The MapLibre `MapWidget` is by far the most expensive subtree. It is therefore
+**not** subscribed to the whole provider — that previously made it rebuild on
+every `notifyListeners()` (including noise-floor/battery/stats every few seconds
+and the dense-mesh passive-RX pin storm at 10–20×/sec), which pinned the CPU/GPU
+and overheated the device during wardriving.
+
+Instead the map is isolated:
+- `AppStateProvider` exposes `mapRevision`, an integer bumped only when
+  **map-rendered** state changes (TX/RX/disc/trace markers, echoes, zone
+  repeater load, history view, marker/log clears, marker-style prefs).
+- Two helpers drive it: `_notifyMapNow()` (bump + immediate notify, for
+  low-frequency changes) and `_notifyMapThrottled()` (bump + ~250 ms
+  leading+trailing coalescing, for the high-frequency RX/echo storm — caps map
+  rebuilds at ~4/sec while pin data updates immediately).
+- `MapWidget` is wrapped in a `Selector` (`home_screen.dart` `_buildMapSelector`)
+  keyed on `(mapRevision, focus, history, padding, controls)` and uses
+  `context.read` internally, so it is cached across all UI-only notifies.
+- UI-only state (noise floor, battery, live stats) calls plain
+  `notifyListeners()` and leaves `mapRevision` untouched, so the status bar
+  updates without rebuilding the map.
+
+**GPS position does NOT bump `mapRevision`.** Position updates ~1–2×/sec while
+driving; rebuilding the map that often relayouts the iOS platform view (~24 ms
+each) — a dominant heat source. Instead, the GPS listener calls plain
+`notifyListeners()`, and `MapWidget` drives camera-follow, derived heading, and
+the GPS puck from a **direct provider listener** (`_onPositionNotify` →
+`_handleGpsPosition`) that calls the native controller (`animateCamera` /
+`updateSymbol`) every tick — real-time nav, no widget rebuild. The GPS-info
+overlay rebuilds only when the map itself does.
+
+**The Selector MUST be memoized (identity-stable).** `HomeScreen.build()` uses
+`context.watch`, so it rebuilds on every notify (incl. the 2 Hz GPS one).
+provider's `Selector` invalidates its cache whenever `oldWidget != widget`
+(`selector.dart:77`), so a fresh inline `Selector(...)` instance each build
+forces `MapWidget` to rebuild **before** the value comparison ever runs —
+silently defeating the isolation. `_buildMapSelector` therefore caches the
+`Selector` instance, keyed only on the State fields its closures capture
+(`isLandscape` / `_isControlsMinimized` / `_mapControlsExpanded`), so its
+identity survives parent rebuilds and the value comparison actually gates the
+map.
+
 ### 9-Step Connection Workflow
 
 Critical safety: The connection sequence MUST complete in order.
 
-1. **BLE GATT Connect**: Platform-specific BLE connection
+1. **Transport Connect**: Platform-specific transport connection (BLE GATT, TCP socket, or USB Serial port)
 2. **Protocol Handshake**: `deviceQuery()` with protocol version
 3. **Device Info**: `deviceQuery()` returns manufacturer string, then `getSelfInfo()` acquires device public key (required for geo-auth API authentication). If `getSelfInfo()` fails, the entire connection fails.
 4. **Device Identification**: Parse manufacturer string, match against `device-models.json` (does NOT modify radio settings)
@@ -281,7 +333,75 @@ Keeps the screen on during auto-ping to prevent device sleep during wardriving s
 - **Platform**: Android and iOS only (Web N/A — always requires active tab)
 - **File**: `lib/services/wakelock_service.dart`
 
-## Critical Protocol Details
+### Coverage Overlay (vector tiles)
+
+The MeshMapper coverage layer is rendered from the region server's vector tiles
+(`vector_tile.php`, z7–14, overzoom beyond) as a MapLibre source+layer pair. The app is
+vector-only — every region server must serve `vector_tile.php` (the legacy raster
+`tiles.php` overlay was removed from the app 2026-06). Contract reference:
+`MeshMapper_Server/docs/VECTOR_TILES.md`.
+
+- **Styling is client-side**: each cell carries an integer status category `st`; colours
+  come from `match` expressions built by `lib/utils/coverage_tile_palette.dart` (kept in
+  sync with the server's `dev/cvd_palettes.php`, including all colour-vision palettes).
+- **Coverage Grid preference (`prefs.coverageGridSize`)**: Simplified (300 m, default) or
+  Detailed (100 m + blob), mirroring the web's Grid Mode; baked into the tile URL. The
+  grid is locked to the chosen preset at every zoom — cells never resize.
+- **Post-wardrive live refresh**: on upload success the queue hands the uploaded items to
+  `AppStateProvider`; +7 s later the server re-renders the affected tiles at z11–14
+  (`fresh=1`, incl. neighbouring tiles within ~0.005° — blob/border spill lands in the
+  next tile over), and the user's own cells are decoded from the fresh z14 bodies
+  (`lib/utils/mvt_cells.dart`) into a session **patch layer**: a GeoJSON source updated
+  in place above the base layer, with the base layer's copies hidden via `setFilter`.
+  The base source is never swapped — nothing visibly changes except the changed cells.
+  A second check runs at +10 s only when the first found no changes. Logged under
+  `[COVERAGE]`.
+- **GOTCHA — never partial-update a fill layer**: `setLayerProperties` serializes with
+  `skipNulls: false`; any `FillLayerProperties` field left null is RESET to its
+  style-spec default on iOS/web (`fill-color` → black). Always resend the full colour
+  expressions with an opacity change (see `_applyCoverageOverlayOpacity`).
+- **GOTCHA — feature ids don't survive Android's filter bridge**: the platform converter
+  parses filter JSON numbers as float32, which rounds the 42-bit cell ids. Filter on the
+  small-int `i`/`j` properties (as an `"i_j"` string) instead — see
+  `_applyBasePatchFilter`.
+- **Files**: `lib/widgets/map_widget.dart` (`_addCoverageOverlay`, `_applyCoveragePatch`),
+  `lib/providers/app_state_provider.dart` (`_freshenAffectedVectorTiles`),
+  `lib/services/api_service.dart` (`freshenVectorTile`),
+  `lib/utils/coverage_tile_palette.dart`, `lib/utils/mvt_cells.dart`.
+
+### Coverage Connection Lines (tap-to-inspect)
+
+Tapping coverage data draws connection lines from points the tap flow ALREADY
+fetches (no extra network calls), matching the web client's exact matching +
+fan-out logic (`MeshMapper_Server/dev/index.php`):
+
+- **Tap a coverage tile (Feature A)**: fans out a theme-aware blue dashed line
+  from the cell centre to every UNIQUE repeater that heard the cell's pings (with
+  a distance pill per line) and hides the repeaters that didn't. Hooks the
+  blob-filtered points already computed in `_showCellSummary`. Port of
+  `updateAllActiveLines`/`updateActiveLinesInternal` via `heardEndpointsForCell`.
+- **Tap a repeater (Feature B)**: draws the repeater's matched coverage cells
+  (status/tile-coloured fills, deduped per grid cell with highest-priority status
+  winning, red/DROP hidden) plus a status-coloured dashed line from the repeater
+  to each cell centre. The base coverage tiles DIM and every OTHER repeater is
+  hidden so the focused repeater's cells/lines pop (web `setSoloCircle` +
+  tile-dim parity); both restored on close.
+  Reuses the points fetched in `_showRepeaterDetails`. Port of
+  `buildChartFromPoints` (`RepeaterStats.fromCoverageWithPoints`) +
+  `drawRepeaterCoverageFromCache` (`repeaterCoverageCells`).
+- **Volume cap**: both cap at the farthest 250 lines/cells (longest reach kept),
+  logged under `[COVERAGE]` when truncated.
+- **Layers** (`map_widget.dart`): `coverage-lines-layer` (shared A/B, per-feature
+  `color`) and `coverage-cells-layer` (per-feature fill) — install-once empty,
+  updated via `setGeoJsonSource`, kept separate from the focus-mode lines so the
+  two features never wipe each other. Imperative draws (no `mapRevision` bump).
+  Teardown funnels through `_clearCellHighlight` (A) and `_clearRepeaterIsolation`
+  (B), which also restore the dimmed backdrop and the hidden/all repeaters.
+- **Files**: `lib/widgets/map_widget.dart` (`_updateCoverageLines`,
+  `_updateCoverageCells`, `_drawRepeaterCoverage`, `_syncCoverageDistanceLabels`),
+  `lib/utils/coverage_summary.dart` (`heardEndpointsForCell`,
+  `repeaterCoverageCells`, `RepeaterStats.fromCoverageWithPoints`),
+  `lib/utils/coverage_tile_palette.dart` (`colorsForStatus`).
 
 ### BLE Service UUIDs (MeshCore Companion Protocol)
 - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
@@ -337,11 +457,39 @@ Key packages used in this project:
 - `flutter_blue_plus`: Mobile Bluetooth (Android/iOS)
 - `flutter_web_bluetooth`: Web Bluetooth (Chrome/Edge)
 - `geolocator`: GPS/Location
-- `flutter_map`: Map rendering
+- `maplibre_gl`: Map rendering (MapLibre GL vector tiles via OpenFreeMap) — **vendored & patched**, see below
 - `hive`: Local storage
 - `provider`: State management
 - `http`: API requests
 - `pointycastle`: Encryption (AES-ECB, SHA-256)
+- `usb_serial`: USB Serial communication on Android (USB OTG)
+
+### Vendored `maplibre_gl` (`third_party/maplibre_gl`)
+
+`maplibre_gl` is consumed from an in-repo copy of the pub.dev `0.25.0` release via
+`dependency_overrides` in `pubspec.yaml`, **not** from pub. The ONLY delta from upstream is a
+native camera-viewport guard.
+
+**Why:** MapLibre's transform unprojects against the live viewport. When the GL surface is
+degenerate/zero-sized (e.g. a launch where tiles never finish loading, so the surface never renders
+a real frame), the very first animated `flyTo`/`setCamera` makes `unproject` produce NaN, and
+`mbgl::LatLng`'s constructor throws an **uncaught C++ `std::domain_error` → SIGABRT**. That throw
+crosses the Obj-C++→Swift/JNI boundary and **cannot be caught from Dart**, so the only place it can
+be reliably stopped is inside the plugin's camera handlers.
+
+**The patch:** the `camera#animate` / `camera#move` / `camera#ease` cases in
+`MapLibreMapController.swift` (iOS) and `MapLibreMapController.java` (Android) bail (completing the
+method-channel result so the Dart `await` returns) when the map view has no usable size
+(`bounds.width/height < 1` / `getWidth()/getHeight() < 1`). Search the patch with the tag
+`MESHMAPPER GUARD`.
+
+The Dart side (`map_widget.dart`) is defense-in-depth: `_mapHasRenderedOnce` (set on the first
+`onMapIdle`) is folded into `_canAnimateCamera`, so no programmatic camera move is even attempted
+until the map has rendered once; the one-shot initial GPS zoom re-attempts on later ticks instead of
+burning. See the `_canAnimateCamera` getter and `_onMapIdle`.
+
+**On upgrade:** re-apply the `MESHMAPPER GUARD` blocks to the new plugin version (or drop the
+override if upstream gains an equivalent guard).
 
 ## Development Workflow Requirements
 
@@ -506,6 +654,12 @@ All API endpoints may return maintenance mode:
 - `lib/services/meshcore/tx_tracker.dart` - Repeater echo detection (7s window)
 - `lib/services/meshcore/disc_tracker.dart` - Discovery response tracking (7s window)
 - `lib/services/meshcore/rx_logger.dart` - Passive observation logging
+- `lib/services/transport/companion_transport.dart` - Transport-agnostic interface for companion connections
+- `lib/services/transport/stream_frame_codec.dart` - TCP/USB Serial framing codec
+- `lib/services/transport/stream_transport_base.dart` - Shared base for TCP/USB Serial transports
+- `lib/services/transport/tcp_service.dart` - TCP socket transport with saved connections
+- `lib/services/transport/android_serial_service.dart` - USB Serial transport for Android (USB OTG)
+- `lib/services/transport/web_serial_service.dart` - USB Serial transport for Web (Web Serial API)
 - `lib/services/ping_service.dart` - TX/RX/Discovery ping orchestration
 - `lib/services/gps_service.dart` - GPS tracking and geofencing
 - `lib/services/api_queue_service.dart` - Persistent upload queue

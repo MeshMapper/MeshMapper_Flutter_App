@@ -13,7 +13,14 @@ class OfflineSession {
   final String? devicePublicKey; // Device public key for auth during upload
   final String? deviceName; // Device name for display
   final String? contactUri; // Signed contact URI for registration during upload
+  final String? radioConfig; // Radio config captured at record time ("910.525,62.5,7,5")
+  final String? deviceModel; // Device model/manufacturer captured at record time
+  final double? powerLevel; // TX power level (watts) captured at record time
+  final String? appVersion; // App version captured at record time
   final bool uploaded; // Track upload status
+  final Map<String, int>?
+      placementCounts; // Per-IATA counts the server routed this upload into
+  final int? tooFarRegion; // Pings dropped for being >50km outside every region
 
   OfflineSession({
     required this.filename,
@@ -23,7 +30,13 @@ class OfflineSession {
     this.devicePublicKey,
     this.deviceName,
     this.contactUri,
+    this.radioConfig,
+    this.deviceModel,
+    this.powerLevel,
+    this.appVersion,
     this.uploaded = false,
+    this.placementCounts,
+    this.tooFarRegion,
   });
 
   /// Create from stored JSON
@@ -36,7 +49,14 @@ class OfflineSession {
       devicePublicKey: json['devicePublicKey'] as String?,
       deviceName: json['deviceName'] as String?,
       contactUri: json['contactUri'] as String?,
+      radioConfig: json['radioConfig'] as String?,
+      deviceModel: json['deviceModel'] as String?,
+      powerLevel: (json['powerLevel'] as num?)?.toDouble(),
+      appVersion: json['appVersion'] as String?,
       uploaded: json['uploaded'] as bool? ?? false,
+      placementCounts: (json['placementCounts'] as Map?)
+          ?.map((k, v) => MapEntry(k.toString(), (v as num).toInt())),
+      tooFarRegion: json['tooFarRegion'] as int?,
     );
   }
 
@@ -50,21 +70,39 @@ class OfflineSession {
       'devicePublicKey': devicePublicKey,
       'deviceName': deviceName,
       'contactUri': contactUri,
+      'radioConfig': radioConfig,
+      'deviceModel': deviceModel,
+      'powerLevel': powerLevel,
+      'appVersion': appVersion,
       'uploaded': uploaded,
+      'placementCounts': placementCounts,
+      'tooFarRegion': tooFarRegion,
     };
   }
 
-  /// Create a copy with uploaded status changed
-  OfflineSession copyWith({bool? uploaded}) {
+  /// Create a copy with updated fields
+  OfflineSession copyWith({
+    bool? uploaded,
+    Map<String, dynamic>? data,
+    int? pingCount,
+    Map<String, int>? placementCounts,
+    int? tooFarRegion,
+  }) {
     return OfflineSession(
       filename: filename,
       createdAt: createdAt,
-      pingCount: pingCount,
-      data: data,
+      pingCount: pingCount ?? this.pingCount,
+      data: data ?? this.data,
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
       contactUri: contactUri,
+      radioConfig: radioConfig,
+      deviceModel: deviceModel,
+      powerLevel: powerLevel,
+      appVersion: appVersion,
       uploaded: uploaded ?? this.uploaded,
+      placementCounts: placementCounts ?? this.placementCounts,
+      tooFarRegion: tooFarRegion ?? this.tooFarRegion,
     );
   }
 
@@ -157,6 +195,10 @@ class OfflineSessionService {
     String? devicePublicKey,
     String? deviceName,
     String? contactUri,
+    String? radioConfig,
+    String? deviceModel,
+    double? powerLevel,
+    String? appVersion,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to save, skipping session creation');
@@ -174,6 +216,10 @@ class OfflineSessionService {
       'pings': pings,
       if (devicePublicKey != null) 'device_public_key': devicePublicKey,
       if (deviceName != null) 'device_name': deviceName,
+      if (radioConfig != null) 'radio_config': radioConfig,
+      if (deviceModel != null) 'device_model': deviceModel,
+      if (powerLevel != null) 'power_level': powerLevel,
+      if (appVersion != null) 'app_version': appVersion,
     };
 
     final session = OfflineSession(
@@ -184,6 +230,10 @@ class OfflineSessionService {
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
       contactUri: contactUri,
+      radioConfig: radioConfig,
+      deviceModel: deviceModel,
+      powerLevel: powerLevel,
+      appVersion: appVersion,
     );
 
     _sessions.insert(0, session); // Add at beginning (newest first)
@@ -201,6 +251,10 @@ class OfflineSessionService {
     String? devicePublicKey,
     String? deviceName,
     String? contactUri,
+    String? radioConfig,
+    String? deviceModel,
+    double? powerLevel,
+    String? appVersion,
   }) async {
     if (pings.isEmpty) {
       debugLog('[OFFLINE] No pings to auto-save, skipping');
@@ -216,6 +270,22 @@ class OfflineSessionService {
         final updatedData = Map<String, dynamic>.from(existing.data);
         updatedData['pings'] = pings;
         updatedData['ping_count'] = pings.length;
+        final effectiveRadioConfig = radioConfig ?? existing.radioConfig;
+        if (effectiveRadioConfig != null) {
+          updatedData['radio_config'] = effectiveRadioConfig;
+        }
+        final effectiveDeviceModel = deviceModel ?? existing.deviceModel;
+        if (effectiveDeviceModel != null) {
+          updatedData['device_model'] = effectiveDeviceModel;
+        }
+        final effectivePowerLevel = powerLevel ?? existing.powerLevel;
+        if (effectivePowerLevel != null) {
+          updatedData['power_level'] = effectivePowerLevel;
+        }
+        final effectiveAppVersion = appVersion ?? existing.appVersion;
+        if (effectiveAppVersion != null) {
+          updatedData['app_version'] = effectiveAppVersion;
+        }
 
         _sessions[index] = OfflineSession(
           filename: existing.filename,
@@ -225,6 +295,10 @@ class OfflineSessionService {
           devicePublicKey: devicePublicKey ?? existing.devicePublicKey,
           deviceName: deviceName ?? existing.deviceName,
           contactUri: contactUri ?? existing.contactUri,
+          radioConfig: effectiveRadioConfig,
+          deviceModel: effectiveDeviceModel,
+          powerLevel: effectivePowerLevel,
+          appVersion: effectiveAppVersion,
         );
         await _saveSessions();
         debugLog(
@@ -243,6 +317,10 @@ class OfflineSessionService {
       devicePublicKey: devicePublicKey,
       deviceName: deviceName,
       contactUri: contactUri,
+      radioConfig: radioConfig,
+      deviceModel: deviceModel,
+      powerLevel: powerLevel,
+      appVersion: appVersion,
     );
     // saveSession inserts at index 0 (newest first)
     if (_sessions.isNotEmpty) {
@@ -261,17 +339,63 @@ class OfflineSessionService {
     }
   }
 
-  /// Mark a session as uploaded without deleting it
-  Future<void> markAsUploaded(String filename) async {
+  /// Mark a session as uploaded without deleting it. Optionally records the
+  /// per-region placement summary + too-far count returned by the server.
+  Future<void> markAsUploaded(
+    String filename, {
+    Map<String, int>? placementCounts,
+    int? tooFarRegion,
+  }) async {
     final index = _sessions.indexWhere((s) => s.filename == filename);
     if (index == -1) {
       debugLog('[OFFLINE] Session not found for marking uploaded: $filename');
       return;
     }
 
-    _sessions[index] = _sessions[index].copyWith(uploaded: true);
+    _sessions[index] = _sessions[index].copyWith(
+      uploaded: true,
+      placementCounts: placementCounts,
+      tooFarRegion: tooFarRegion,
+    );
     await _saveSessions();
     debugLog('[OFFLINE] Marked session as uploaded: $filename');
+  }
+
+  /// Remove the first [processedCount] pings from a session.
+  /// Called after partial upload so retries don't re-send already-processed data.
+  /// Returns the number of remaining pings, or null if session not found.
+  Future<int?> removeProcessedPings(
+      String filename, int processedCount) async {
+    final index = _sessions.indexWhere((s) => s.filename == filename);
+    if (index == -1) {
+      debugWarn('[OFFLINE] Session not found for ping removal: $filename');
+      return null;
+    }
+
+    final session = _sessions[index];
+    final pings = (session.data['pings'] as List<dynamic>?) ?? [];
+
+    if (processedCount >= pings.length) {
+      _sessions[index] = session.copyWith(uploaded: true);
+      await _saveSessions();
+      debugLog(
+          '[OFFLINE] All pings processed, marking session complete: $filename');
+      return 0;
+    }
+
+    final remaining = pings.sublist(processedCount);
+    final updatedData = Map<String, dynamic>.from(session.data);
+    updatedData['pings'] = remaining;
+    updatedData['ping_count'] = remaining.length;
+
+    _sessions[index] = session.copyWith(
+      data: updatedData,
+      pingCount: remaining.length,
+    );
+    await _saveSessions();
+    debugLog(
+        '[OFFLINE] Removed $processedCount processed pings from $filename, ${remaining.length} remain');
+    return remaining.length;
   }
 
   /// Get a session by filename

@@ -15,6 +15,7 @@ import 'meshcore/connection.dart';
 import 'meshcore/disc_tracker.dart';
 import 'meshcore/trace_tracker.dart';
 import 'meshcore/tx_tracker.dart';
+import 'meshcore/wire_tag_codec.dart';
 import 'meshcore/unified_rx_handler.dart';
 import 'wakelock_service.dart';
 
@@ -96,6 +97,8 @@ class PingService {
   // TX ping context for queueing after RX window ends
   int? _pendingTxTimestamp;
   int? _pendingTxNoiseFloor;
+  int? _pendingTxPingCounter; // wire-tag ping counter (null in coords mode)
+  String? _pendingTxWireTag; // wire-tag body sent on air (null in coords mode)
 
   // Ping in progress guard (prevents concurrent BLE GATT errors)
   // Reference: state.pingInProgress in wardrive.js
@@ -151,14 +154,31 @@ class PingService {
   /// Callback to check if TX is allowed by API (zone capacity check)
   bool Function()? checkTxAllowed;
 
+  /// Wire-tag composition (default privacy mode). Return the active session_id,
+  /// the wire-tag key from /auth, the next per-session ping counter, and whether
+  /// the user opted into broadcasting real coords on the air.
+  String? Function()? getSessionId;
+  String? Function()? getWireKey;
+  int Function()? getNextPingCounter;
+  bool Function()? getBroadcastCoords;
+
+  /// Peek the current per-session ping counter, and react when it is exhausted
+  /// (wire tag's 11-bit cap) — AppStateProvider disconnects with a session-limit message.
+  int Function()? getPingCounter;
+  Future<void> Function()? onSessionLimitReached;
+
   /// Callback for ping events
   void Function(TxPing)? onTxPing;
   void Function(RxPing)? onRxPing;
   void Function(PingStats)? onStatsUpdated;
 
-  /// Called in real-time when each echo is received during tracking window
+  /// Called in real-time when each direct echo is received during tracking window
   /// Parameters: (TxPing txPing, HeardRepeater repeater, bool isNew)
   void Function(TxPing, HeardRepeater, bool isNew)? onEchoReceived;
+
+  /// Called in real-time when each multi-hop echo is received during tracking window
+  void Function(TxPing txPing, String repeaterId, double? snr, int? rssi,
+      List<String> pathHops, bool isNew)? onMultiHopEchoReceived;
 
   /// Callback for discovery events (Passive Mode)
   /// Fires immediately when disc ping is created (like onTxPing)
@@ -170,8 +190,11 @@ class PingService {
       onDiscNodeDiscovered;
 
   /// Callback when TX window ends (for noise floor graph)
-  /// Parameters: (bool success) - true if any repeaters heard, false if none
-  void Function(bool success)? onTxWindowComplete;
+  /// Parameters: (bool directSuccess, List multiHopEchoes)
+  void Function(
+      bool directSuccess,
+      List<({String repeaterId, double? snr, int? rssi, List<String> pathHops})>
+          multiHopEchoes)? onTxWindowComplete;
 
   /// Callback when discovery window ends (for noise floor graph)
   /// Parameters: (bool success) - true if any nodes discovered, false if none
@@ -465,6 +488,11 @@ class PingService {
     return remaining.inSeconds.clamp(0, _autoPingCooldown.inSeconds);
   }
 
+  /// Clear the auto-ping cooldown (used during zone transfer to avoid blocking restart).
+  void clearCooldown() {
+    _lastTxTime = null;
+  }
+
   /// Check if currently in manual ping cooldown period
   bool isInManualCooldown() {
     return _manualPingCooldownTimer.remainingMs > 0;
@@ -566,11 +594,42 @@ class PingService {
       }
       final txPowerDbm = _connection.deviceModel?.txPower ?? 22;
 
-      // Build ping message (same format used for TxTracker correlation)
-      // Power is no longer included in the mesh message — sent per-ping in API payload
+      // Build the on-air body ONCE (same string is used for TxTracker echo
+      // correlation AND the actual transmission). Power is sent per-ping in the API.
+      //
+      // With a session: a keyed wire tag "MM:<tag>" (privacy default), or
+      // "MM:<tag>:lat,lon" when Broadcast My Coordinates is on (tag + plaintext coords).
+      // No session yet: plaintext "MM:lat,lon" (no tag can be computed).
       final coordsStr =
-          '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
-      final pingMessage = '@[MapperBot] $coordsStr';
+          '${position.latitude.toStringAsFixed(5)},${position.longitude.toStringAsFixed(5)}';
+      final broadcastCoords = getBroadcastCoords?.call() ?? false;
+      final sessionId = getSessionId?.call();
+      String pingMessage;
+      int? txPingCounter;
+      String? txWireTag;
+      final hasSession = sessionId != null && sessionId.isNotEmpty;
+      if (hasSession) {
+        // Session-limit guard: the wire tag's counter is 11 bits (max 2047). When it
+        // is exhausted, end the session cleanly rather than repeating/corrupting tags.
+        // Applies to BOTH privacy and broadcast-coords modes — a combined ping consumes
+        // a counter exactly like a privacy ping, so the session ends identically.
+        if ((getPingCounter?.call() ?? 0) >= 2047) {
+          debugError('[SESSION] Reached session ping limit (2047) — disconnecting');
+          _pingInProgress = false;
+          onSessionLimitReached?.call();
+          return false;
+        }
+        txPingCounter = getNextPingCounter?.call() ?? 1;
+        txWireTag =
+            WireTagCodec.encode(sessionId, txPingCounter, getWireKey?.call());
+        // Identical to privacy mode in every way EXCEPT broadcast-coords appends the
+        // plaintext coords to the on-air body. The bare tag still goes to the API
+        // (txWireTag → _pendingTxWireTag), so /wardrive validation + tx_pings are unchanged.
+        pingMessage = broadcastCoords ? '$txWireTag:$coordsStr' : txWireTag;
+      } else {
+        // No session yet → no tag can be computed; plaintext coords only (unchanged).
+        pingMessage = 'MM:$coordsStr';
+      }
 
       // Capture noise floor at ping time
       final noiseFloor = _connection.lastNoiseFloor;
@@ -645,6 +704,37 @@ class PingService {
           }
         };
 
+        txTracker.onMultiHopEchoReceived =
+            (repeaterId, snr, rssi, pathHops, isNew) {
+          debugLog(
+              '[PING] Multi-hop echo: $repeaterId, SNR=$snr, hops=${pathHops.length}, isNew=$isNew');
+          final txPing = _lastTxPing;
+          if (txPing != null) {
+            final repeater = HeardRepeater(
+              repeaterId: repeaterId,
+              snr: snr,
+              rssi: rssi,
+              seenCount:
+                  txTracker.multiHopRepeaters[repeaterId]?.seenCount ?? 1,
+              pathHops: pathHops,
+            );
+
+            if (isNew) {
+              txPing.heardRepeaters.add(repeater);
+            } else {
+              final idx = txPing.heardRepeaters
+                  .indexWhere((r) => r.repeaterId == repeaterId &&
+                      r.pathHops != null);
+              if (idx >= 0) {
+                txPing.heardRepeaters[idx] = repeater;
+              }
+            }
+
+            onMultiHopEchoReceived?.call(
+                txPing, repeaterId, snr, rssi, pathHops, isNew);
+          }
+        };
+
         txTracker.startTracking(
           payload: pingMessage,
           channelIdx: channelIndex,
@@ -660,8 +750,8 @@ class PingService {
       // Play transmit sound immediately before sending
       _audioService?.playTransmitSound();
 
-      // Send ping via BLE (coordinates only — power is in API payload)
-      await _connection.sendPing(position.latitude, position.longitude);
+      // Send ping via BLE (pre-composed body — wire tag or legacy coords)
+      await _connection.sendPing(pingMessage);
 
       // Mark ping time and position
       _lastTxTime = DateTime.now();
@@ -680,6 +770,8 @@ class PingService {
       // TX entry is queued AFTER RX window so heard_repeats can be populated
       _pendingTxTimestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       _pendingTxNoiseFloor = noiseFloor;
+      _pendingTxPingCounter = txPingCounter; // null in coords mode
+      _pendingTxWireTag = txWireTag; // null in coords mode
 
       // Start RX listening window (TX will be queued when window ends)
       _startRxListeningWindow(position);
@@ -753,11 +845,25 @@ class PingService {
       debugLog('[PING] No repeater echoes detected during listening window');
     }
 
+    // Collect multi-hop echo data for the onTxWindowComplete callback
+    final multiHopEchoes =
+        <({String repeaterId, double? snr, int? rssi, List<String> pathHops})>[];
+    if (txTracker != null && txTracker.multiHopRepeaters.isNotEmpty) {
+      for (final entry in txTracker.multiHopRepeaters.entries) {
+        final echo = entry.value;
+        multiHopEchoes.add((
+          repeaterId: echo.repeaterId,
+          snr: echo.snr,
+          rssi: echo.rssi,
+          pathHops: echo.pathHops,
+        ));
+      }
+    }
+
     // Notify about TX window completion for noise floor graph
-    onTxWindowComplete?.call(txSuccess);
+    onTxWindowComplete?.call(txSuccess, multiHopEchoes);
 
     // Queue TX entry with heard_repeats AFTER RX window ends
-    // Reference: enqueueTX() called after RX window in wardrive.js
     final txTimestamp = _pendingTxTimestamp;
     if (txTimestamp != null) {
       _apiQueue.enqueueTx(
@@ -768,8 +874,31 @@ class PingService {
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
         power: getPowerLevel?.call(),
+        pingCounter: _pendingTxPingCounter, // null in coords mode → server coords path
+        wireTag: _pendingTxWireTag, // null in coords mode → server coords path
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
+
+      // Queue multi-hop echoes as individual RX API entries
+      if (multiHopEchoes.isNotEmpty) {
+        for (final echo in multiHopEchoes) {
+          final rxHeardRepeats = echo.snr != null
+              ? '${echo.repeaterId}(${echo.snr!.toStringAsFixed(2)})'
+              : '${echo.repeaterId}(null)';
+          _apiQueue.enqueueRx(
+            latitude: txPosition.latitude,
+            longitude: txPosition.longitude,
+            heardRepeats: rxHeardRepeats,
+            timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            repeaterId: echo.repeaterId,
+            externalAntenna: getExternalAntenna?.call() ?? false,
+            noiseFloor: _pendingTxNoiseFloor,
+            power: getPowerLevel?.call(),
+          );
+        }
+        debugLog(
+            '[PING] Queued ${multiHopEchoes.length} multi-hop echoes as RX');
+      }
 
       // Clear pending TX context
       _pendingTxTimestamp = null;

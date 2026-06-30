@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../../models/connection_state.dart';
+import '../transport/companion_transport.dart';
 
 /// Exception thrown when BLE permissions are permanently denied
 /// User must enable permissions in device Settings
@@ -41,20 +42,24 @@ enum BluetoothAdapterState {
 
 /// Abstract Bluetooth service interface
 /// Platform implementations provided by MobileBluetoothService and WebBluetoothService
-abstract class BluetoothService {
+abstract class BluetoothService implements CompanionTransport {
   /// Stream of connection status changes
+  @override
   Stream<ConnectionStatus> get connectionStream;
 
   /// Stream of received data from device
+  @override
   Stream<Uint8List> get dataStream;
 
   /// Stream of Bluetooth adapter state changes (on/off)
   Stream<BluetoothAdapterState> get adapterStateStream;
 
   /// Current connection status
+  @override
   ConnectionStatus get connectionStatus;
 
   /// Currently connected device (null if not connected)
+  @override
   DiscoveredDevice? get connectedDevice;
 
   /// Check if Bluetooth is available on this platform
@@ -77,9 +82,11 @@ abstract class BluetoothService {
   Future<void> connect(String deviceId);
 
   /// Disconnect from current device
+  @override
   Future<void> disconnect();
 
   /// Write data to device
+  @override
   Future<void> write(Uint8List data);
 
   /// Pre-populate device cache with known device info
@@ -93,5 +100,6 @@ abstract class BluetoothService {
   Future<void> removeBond(String deviceId);
 
   /// Dispose of resources
+  @override
   void dispose();
 }

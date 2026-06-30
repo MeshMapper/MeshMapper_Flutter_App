@@ -7,6 +7,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/ping_colors.dart';
 import '../widgets/repeater_id_chip.dart';
+import '../widgets/rx_path_chain.dart';
 
 /// Log screen with two tabs: All Pings (unified TX+RX+DISC+TRC) and Errors
 class LogScreen extends StatefulWidget {
@@ -175,7 +176,7 @@ class _LogScreenState extends State<LogScreen>
     if (rx.isNotEmpty) {
       buffer.writeln('--- RX Log ---');
       buffer.writeln(
-          'timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude');
+          'timestamp,repeater_id,snr,rssi,path_length,header,latitude,longitude,path_hops');
       for (final entry in rx) {
         buffer.writeln(entry.toCsv());
       }
@@ -339,10 +340,6 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   }
 
   /// True if the query looks like a hex string (only 0-9, a-f).
-  static bool _isHexQuery(String query) {
-    return RegExp(r'^[0-9a-fA-F]+$').hasMatch(query);
-  }
-
   /// Whether an entry matches the current search query.
   bool _matchesSearch(UnifiedPingLogEntry entry, List<Repeater> repeaters) {
     if (_searchQuery.isEmpty) return true;
@@ -358,6 +355,13 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             return true;
           }
         }
+        for (final event in tx.multiHopEvents) {
+          if (event.repeaterId.toLowerCase().startsWith(query)) return true;
+          final resolved = _resolveRepeaterNames(event.repeaterId, repeaters);
+          if (resolved.names.any((n) => n.toLowerCase().contains(query))) {
+            return true;
+          }
+        }
         return false;
       case PingLogType.rx:
         final rx = entry.asRx;
@@ -367,9 +371,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
       case PingLogType.disc:
         final disc = entry.asDisc;
         for (final node in disc.discoveredNodes) {
-          if (node.repeaterId.toLowerCase().startsWith(query)) {
-            return true;
-          }
+          if (node.repeaterId.toLowerCase().startsWith(query)) return true;
           if (node.pubkeyHex != null &&
               node.pubkeyHex!.toLowerCase().startsWith(query)) {
             return true;
@@ -393,12 +395,12 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   /// Only shown when searching by name (non-hex query) and a repeater ID is ambiguous.
   bool _shouldShowAmbiguity(
       UnifiedPingLogEntry entry, List<Repeater> repeaters) {
-    if (_searchQuery.isEmpty || _isHexQuery(_searchQuery)) return false;
-
     switch (entry.type) {
       case PingLogType.tx:
         return entry.asTx.events
-            .any((e) => _isAmbiguousId(e.repeaterId, repeaters));
+                .any((e) => _isAmbiguousId(e.repeaterId, repeaters)) ||
+            entry.asTx.multiHopEvents
+                .any((e) => _isAmbiguousId(e.repeaterId, repeaters));
       case PingLogType.rx:
         return _isAmbiguousId(entry.asRx.repeaterId, repeaters);
       case PingLogType.disc:
@@ -678,6 +680,15 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   // TX Card
   // ---------------------------------------------------------------------------
 
+  /// Width of the "Node" column sized from the hex-ID length actually being
+  /// rendered. RX paths can carry longer IDs than the global TX hop-byte
+  /// setting, so we measure per-card instead of per-session.
+  double _nodeColumnWidthForLength(int idLength) {
+    if (idLength <= 2) return 60;
+    if (idLength <= 4) return 70;
+    return 80;
+  }
+
   Widget _buildTxCard(BuildContext context, TxLogEntry entry,
       {bool showAmbiguity = false}) {
     final appState = context.read<AppStateProvider>();
@@ -695,11 +706,29 @@ class _AllPingsTabState extends State<_AllPingsTab> {
               _buildCardHeader(context, PingLogType.tx, entry.timeString,
                   entry.locationString,
                   showAmbiguity: showAmbiguity),
-              // Repeaters table
+              // Direct echoes table
               if (entry.events.isNotEmpty) ...[
                 const SizedBox(height: 10),
-                _buildRepeaterTable(context, entry.events),
-              ] else ...[
+                _buildRepeaterTable(context, entry.events, widget.repeaters),
+              ] else if (entry.multiHopEvents.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'No direct repeats heard',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+              // Multi-hop echoes section
+              if (entry.multiHopEvents.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _buildMultiHopSection(
+                    context, entry.multiHopEvents, widget.repeaters),
+              ],
+              // No echoes at all
+              if (entry.events.isEmpty && entry.multiHopEvents.isEmpty) ...[
                 const SizedBox(height: 8),
                 Text(
                   'No repeaters heard',
@@ -717,7 +746,14 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildRepeaterTable(BuildContext context, List<RxEvent> events) {
+  Widget _buildRepeaterTable(
+      BuildContext context, List<RxEvent> events, List<Repeater> repeaters) {
+    var maxIdLen = 0;
+    for (final e in events) {
+      if (e.repeaterId.length > maxIdLen) maxIdLen = e.repeaterId.length;
+    }
+    final nodeWidth = _nodeColumnWidthForLength(maxIdLen);
+
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -732,22 +768,25 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                SizedBox(width: 60, child: _tableHeader(context, 'Node')),
+                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
                 Expanded(child: _tableHeader(context, 'SNR', center: true)),
                 Expanded(child: _tableHeader(context, 'RSSI', center: true)),
               ],
             ),
           ),
           Divider(height: 1, color: Theme.of(context).dividerColor),
-          ...events.map((event) => _buildTxRepeaterRow(context, event)),
+          ...events.map((event) =>
+              _buildTxRepeaterRow(context, event, nodeWidth, repeaters)),
         ],
       ),
     );
   }
 
-  Widget _buildTxRepeaterRow(BuildContext context, RxEvent event) {
+  Widget _buildTxRepeaterRow(BuildContext context, RxEvent event,
+      double nodeWidth, List<Repeater> repeaters) {
     final snrColor = _snrColor(event.severity);
     final rssiColor = _rssiColor(event.rssi);
+    final isAmbiguous = _isAmbiguousId(event.repeaterId, repeaters);
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, event.repeaterId),
       child: Padding(
@@ -755,7 +794,10 @@ class _AllPingsTabState extends State<_AllPingsTab> {
         child: Row(
           children: [
             RepeaterIdChip(
-                repeaterId: event.repeaterId, fontSize: 14, width: 60),
+                repeaterId: event.repeaterId,
+                fontSize: 14,
+                width: nodeWidth,
+                isAmbiguous: isAmbiguous),
             Expanded(
                 child: Center(
                     child: _buildChip(
@@ -772,6 +814,130 @@ class _AllPingsTabState extends State<_AllPingsTab> {
   }
 
   // ---------------------------------------------------------------------------
+  // Multi-hop Echo Section (inside TX Card)
+  // ---------------------------------------------------------------------------
+
+  Widget _buildMultiHopSection(BuildContext context,
+      List<MultiHopEchoEvent> events, List<Repeater> repeaters) {
+    var maxIdLen = 0;
+    for (final e in events) {
+      if (e.repeaterId.length > maxIdLen) maxIdLen = e.repeaterId.length;
+    }
+    final nodeWidth = _nodeColumnWidthForLength(maxIdLen);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                Icon(Icons.route, size: 14, color: PingColors.rx),
+                const SizedBox(width: 6),
+                Text(
+                  'Multi-hop Repeats',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          // Table header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
+                Expanded(child: _tableHeader(context, 'SNR', center: true)),
+                Expanded(child: _tableHeader(context, 'RSSI', center: true)),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: Theme.of(context).dividerColor),
+          ...events.map((event) {
+            final snrColor = _snrColor(event.severity);
+            final rssiColor = _rssiColor(event.rssi);
+            final isAmbiguous = _isAmbiguousId(event.repeaterId, repeaters);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                InkWell(
+                  onTap: () => RepeaterIdChip.showRepeaterPopup(
+                      context, event.repeaterId),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Row(
+                      children: [
+                        RepeaterIdChip(
+                            repeaterId: event.repeaterId,
+                            fontSize: 14,
+                            width: nodeWidth,
+                            isAmbiguous: isAmbiguous),
+                        Expanded(
+                            child: Center(
+                                child: _buildChip(
+                                    event.snr?.toStringAsFixed(1) ?? '-',
+                                    snrColor))),
+                        Expanded(
+                            child: Center(
+                                child: _buildChip(
+                                    event.rssi != null
+                                        ? '${event.rssi}'
+                                        : '-',
+                                    rssiColor))),
+                      ],
+                    ),
+                  ),
+                ),
+                if (event.pathHops.isNotEmpty)
+                  Padding(
+                    padding:
+                        const EdgeInsets.only(left: 10, right: 10, bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(
+                            Icons.route,
+                            size: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: RxPathChain(
+                            hops: event.pathHops,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // RX Card
   // ---------------------------------------------------------------------------
 
@@ -780,6 +946,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     final appState = context.read<AppStateProvider>();
     final snrColor = _snrColor(entry.severity);
     final rssiColor = _rssiColor(entry.rssi);
+    final nodeWidth = _nodeColumnWidthForLength(entry.repeaterId.length);
+    final isAmbiguous = _isAmbiguousId(entry.repeaterId, widget.repeaters);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -815,7 +983,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                       child: Row(
                         children: [
                           SizedBox(
-                              width: 60, child: _tableHeader(context, 'Node')),
+                              width: nodeWidth,
+                              child: _tableHeader(context, 'Node')),
                           Expanded(
                               child:
                                   _tableHeader(context, 'SNR', center: true)),
@@ -837,7 +1006,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                             RepeaterIdChip(
                                 repeaterId: entry.repeaterId,
                                 fontSize: 14,
-                                width: 60),
+                                width: nodeWidth,
+                                isAmbiguous: isAmbiguous),
                             Expanded(
                                 child: Center(
                                     child: _buildChip(
@@ -857,6 +1027,31 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                   ],
                 ),
               ),
+              if (entry.pathHops.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Icon(
+                        Icons.route,
+                        size: 14,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: RxPathChain(
+                        hops: entry.pathHops,
+                        fromLatLng:
+                            (lat: entry.latitude, lon: entry.longitude),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -923,8 +1118,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         ),
                       ),
                       Divider(height: 1, color: Theme.of(context).dividerColor),
-                      ...entry.discoveredNodes
-                          .map((node) => _buildDiscNodeRow(context, node)),
+                      ...entry.discoveredNodes.map((node) =>
+                          _buildDiscNodeRow(context, node, widget.repeaters)),
                     ],
                   ),
                 ),
@@ -946,10 +1141,12 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildDiscNodeRow(BuildContext context, DiscoveredNodeEntry node) {
+  Widget _buildDiscNodeRow(
+      BuildContext context, DiscoveredNodeEntry node, List<Repeater> repeaters) {
     final rxSnrColor = _snrColorFromValue(node.localSnr);
     final rssiColor = _rssiColor(node.localRssi);
     final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());
+    final isAmbiguous = _isAmbiguousId(node.repeaterId, repeaters);
 
     return InkWell(
       onTap: () => RepeaterIdChip.showRepeaterPopup(context, node.repeaterId,
@@ -964,7 +1161,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                 children: [
                   Flexible(
                       child: RepeaterIdChip(
-                          repeaterId: node.repeaterId, fontSize: 14)),
+                          repeaterId: node.repeaterId,
+                          fontSize: 14,
+                          isAmbiguous: isAmbiguous)),
                   Text(
                     node.nodeTypeLabel,
                     style: TextStyle(
@@ -1049,7 +1248,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         ),
                       ),
                       Divider(height: 1, color: Theme.of(context).dividerColor),
-                      _buildTraceNodeRow(context, entry),
+                      _buildTraceNodeRow(context, entry, widget.repeaters),
                     ],
                   ),
                 ),
@@ -1071,10 +1270,12 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildTraceNodeRow(BuildContext context, TraceLogEntry entry) {
+  Widget _buildTraceNodeRow(
+      BuildContext context, TraceLogEntry entry, List<Repeater> repeaters) {
     final rxSnrColor = _snrColorFromNullableValue(entry.localSnr);
     final rssiColor = _rssiColor(entry.localRssi);
     final txSnrColor = _snrColorFromNullableValue(entry.remoteSnr);
+    final isAmbiguous = _isAmbiguousId(entry.targetRepeaterId, repeaters);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1083,7 +1284,9 @@ class _AllPingsTabState extends State<_AllPingsTab> {
           SizedBox(
               width: 70,
               child: RepeaterIdChip(
-                  repeaterId: entry.targetRepeaterId, fontSize: 14)),
+                  repeaterId: entry.targetRepeaterId,
+                  fontSize: 14,
+                  isAmbiguous: isAmbiguous)),
           Expanded(
               child: Center(
                   child: _buildChip(

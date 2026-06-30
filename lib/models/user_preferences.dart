@@ -70,8 +70,17 @@ class UserPreferences {
   /// Anonymous mode: rename companion to "Anonymous" during wardriving
   final bool anonymousMode;
 
+  /// Broadcast coordinates: when true, TX pings put real GPS on the air (legacy
+  /// behavior). Default false = privacy-preserving wire tag; coords go via API only.
+  final bool broadcastCoords;
+
   /// Discovery drop: count failed discoveries as failed pings and report to API
   final bool discDropEnabled;
+
+  /// Flood traffic enabled — gates display of Send Ping + Active + Hybrid
+  /// controls. Default off; auto-flipped by the auth response's flood_disabled
+  /// flag when the region allows flooding.
+  final bool floodTrafficEnabled;
 
   /// Delete wardriving channel from radio on disconnect
   final bool deleteChannelOnDisconnect;
@@ -96,6 +105,17 @@ class UserPreferences {
 
   /// Download map tiles (base map + coverage overlay). When false, no tile network requests are made to save mobile data.
   final bool mapTilesEnabled;
+
+  /// MeshMapper coverage raster overlay opacity (0.0 = fully transparent,
+  /// 1.0 = fully opaque). Applied to the `meshmapper-overlay-layer` raster
+  /// layer so users can see the base map underneath the coverage squares.
+  final double coverageOverlayOpacity;
+
+
+  /// Coverage grid preset, matching the web UI's Grid Mode: 300 = Simplified
+  /// (300 m cells, the default), 100 = Detailed (100 m cells + 3×3 blob,
+  /// applied server-side). Only these two values are valid.
+  final int coverageGridSize;
 
   /// Disconnect alert: play audible alert when pinging stops unexpectedly (BLE disconnect, idle timeout, maintenance)
   final bool disconnectAlertEnabled;
@@ -129,7 +149,7 @@ class UserPreferences {
     this.iataCode,
     this.backgroundModeEnabled = false,
     this.developerModeEnabled = false,
-    this.mapStyle = 'dark',
+    this.mapStyle = 'liberty',
     this.closeAppAfterDisconnect = false,
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
@@ -139,7 +159,9 @@ class UserPreferences {
     this.mapRotationLocked = false,
     this.disableRssiFilter = false,
     this.anonymousMode = false,
+    this.broadcastCoords = false,
     this.discDropEnabled = false,
+    this.floodTrafficEnabled = false,
     this.deleteChannelOnDisconnect = true,
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
@@ -148,6 +170,8 @@ class UserPreferences {
     this.gpsMarkerStyle = 'arrow',
     this.colorVisionType = 'none',
     this.mapTilesEnabled = true,
+    this.coverageOverlayOpacity = 0.7,
+    this.coverageGridSize = 300,
     this.disconnectAlertEnabled = false,
     this.customApiEnabled = false,
     this.customApiUrl,
@@ -172,7 +196,7 @@ class UserPreferences {
       iataCode: json['iataCode'] as String?,
       backgroundModeEnabled: (json['backgroundModeEnabled'] as bool?) ?? false,
       developerModeEnabled: (json['developerModeEnabled'] as bool?) ?? false,
-      mapStyle: (json['mapStyle'] as String?) ?? 'dark',
+      mapStyle: (json['mapStyle'] as String?) ?? 'liberty',
       closeAppAfterDisconnect:
           (json['closeAppAfterDisconnect'] as bool?) ?? false,
       themeMode: (json['themeMode'] as String?) ?? 'dark',
@@ -183,7 +207,9 @@ class UserPreferences {
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
       disableRssiFilter: (json['disableRssiFilter'] as bool?) ?? false,
       anonymousMode: (json['anonymousMode'] as bool?) ?? false,
+      broadcastCoords: (json['broadcastCoords'] as bool?) ?? false,
       discDropEnabled: (json['discDropEnabled'] as bool?) ?? false,
+      floodTrafficEnabled: (json['floodTrafficEnabled'] as bool?) ?? false,
       deleteChannelOnDisconnect:
           (json['deleteChannelOnDisconnect'] as bool?) ?? true,
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
@@ -193,6 +219,12 @@ class UserPreferences {
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
       mapTilesEnabled: (json['mapTilesEnabled'] as bool?) ?? true,
+      coverageOverlayOpacity:
+          (json['coverageOverlayOpacity'] as num?)?.toDouble() ?? 0.7,
+      coverageGridSize: switch ((json['coverageGridSize'] as num?)?.toInt()) {
+        100 => 100,
+        _ => 300,
+      },
       disconnectAlertEnabled:
           (json['disconnectAlertEnabled'] as bool?) ?? false,
       customApiEnabled: (json['customApiEnabled'] as bool?) ?? false,
@@ -238,7 +270,9 @@ class UserPreferences {
       'mapRotationLocked': mapRotationLocked,
       'disableRssiFilter': disableRssiFilter,
       'anonymousMode': anonymousMode,
+      'broadcastCoords': broadcastCoords,
       'discDropEnabled': discDropEnabled,
+      'floodTrafficEnabled': floodTrafficEnabled,
       'deleteChannelOnDisconnect': deleteChannelOnDisconnect,
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
@@ -247,6 +281,8 @@ class UserPreferences {
       'gpsMarkerStyle': gpsMarkerStyle,
       'colorVisionType': colorVisionType,
       'mapTilesEnabled': mapTilesEnabled,
+      'coverageOverlayOpacity': coverageOverlayOpacity,
+      'coverageGridSize': coverageGridSize,
       'disconnectAlertEnabled': disconnectAlertEnabled,
       'customApiEnabled': customApiEnabled,
       'customApiUrl': customApiUrl,
@@ -281,7 +317,9 @@ class UserPreferences {
     bool? mapRotationLocked,
     bool? disableRssiFilter,
     bool? anonymousMode,
+    bool? broadcastCoords,
     bool? discDropEnabled,
+    bool? floodTrafficEnabled,
     bool? deleteChannelOnDisconnect,
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
@@ -290,6 +328,8 @@ class UserPreferences {
     String? gpsMarkerStyle,
     String? colorVisionType,
     bool? mapTilesEnabled,
+    double? coverageOverlayOpacity,
+    int? coverageGridSize,
     bool? disconnectAlertEnabled,
     bool? customApiEnabled,
     String? customApiUrl,
@@ -323,7 +363,9 @@ class UserPreferences {
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
       disableRssiFilter: disableRssiFilter ?? this.disableRssiFilter,
       anonymousMode: anonymousMode ?? this.anonymousMode,
+      broadcastCoords: broadcastCoords ?? this.broadcastCoords,
       discDropEnabled: discDropEnabled ?? this.discDropEnabled,
+      floodTrafficEnabled: floodTrafficEnabled ?? this.floodTrafficEnabled,
       deleteChannelOnDisconnect:
           deleteChannelOnDisconnect ?? this.deleteChannelOnDisconnect,
       minPingDistanceMeters:
@@ -334,6 +376,9 @@ class UserPreferences {
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
       colorVisionType: colorVisionType ?? this.colorVisionType,
       mapTilesEnabled: mapTilesEnabled ?? this.mapTilesEnabled,
+      coverageOverlayOpacity:
+          coverageOverlayOpacity ?? this.coverageOverlayOpacity,
+      coverageGridSize: coverageGridSize ?? this.coverageGridSize,
       disconnectAlertEnabled:
           disconnectAlertEnabled ?? this.disconnectAlertEnabled,
       customApiEnabled: customApiEnabled ?? this.customApiEnabled,
@@ -397,7 +442,9 @@ class UserPreferences {
         other.mapRotationLocked == mapRotationLocked &&
         other.disableRssiFilter == disableRssiFilter &&
         other.anonymousMode == anonymousMode &&
+        other.broadcastCoords == broadcastCoords &&
         other.discDropEnabled == discDropEnabled &&
+        other.floodTrafficEnabled == floodTrafficEnabled &&
         other.deleteChannelOnDisconnect == deleteChannelOnDisconnect &&
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
@@ -406,6 +453,7 @@ class UserPreferences {
         other.gpsMarkerStyle == gpsMarkerStyle &&
         other.colorVisionType == colorVisionType &&
         other.mapTilesEnabled == mapTilesEnabled &&
+        other.coverageOverlayOpacity == coverageOverlayOpacity &&
         other.disconnectAlertEnabled == disconnectAlertEnabled &&
         other.customApiEnabled == customApiEnabled &&
         other.customApiUrl == customApiUrl &&
@@ -439,7 +487,9 @@ class UserPreferences {
       mapRotationLocked,
       disableRssiFilter,
       anonymousMode,
+      broadcastCoords,
       discDropEnabled,
+      floodTrafficEnabled,
       deleteChannelOnDisconnect,
       minPingDistanceMeters,
       autoStopAfterIdle,
@@ -448,6 +498,7 @@ class UserPreferences {
       gpsMarkerStyle,
       colorVisionType,
       mapTilesEnabled,
+      coverageOverlayOpacity,
       disconnectAlertEnabled,
       customApiEnabled,
       customApiUrl,

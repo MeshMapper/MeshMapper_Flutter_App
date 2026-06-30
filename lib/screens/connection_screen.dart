@@ -13,6 +13,9 @@ import '../models/user_preferences.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/distance_formatter.dart';
 import '../services/bluetooth/bluetooth_service.dart';
+import '../services/transport/android_serial_service.dart';
+import '../services/transport/tcp_service.dart';
+import '../services/transport/web_serial_factory.dart';
 import '../widgets/offline_mode_toggle.dart';
 import '../widgets/regional_config_card.dart';
 
@@ -26,14 +29,23 @@ class ConnectionScreen extends StatefulWidget {
 
 class _ConnectionScreenState extends State<ConnectionScreen>
     with WidgetsBindingObserver {
+  final _tcpHostController = TextEditingController();
+  final _tcpPortController = TextEditingController(text: '5000');
+  bool _tcpConnecting = false;
+  Future<List<Map<String, dynamic>>>? _usbDevicesFuture;
+  Future<List<SavedTcpConnection>>? _savedTcpFuture;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _savedTcpFuture = TcpService.getSavedConnections();
   }
 
   @override
   void dispose() {
+    _tcpHostController.dispose();
+    _tcpPortController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -77,13 +89,17 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
 
-    return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 40,
-        title: const Text('Connection', style: TextStyle(fontSize: 18)),
-        automaticallyImplyLeading: false,
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: () => FocusScope.of(context).unfocus(),
+      child: Scaffold(
+        appBar: AppBar(
+          toolbarHeight: 40,
+          title: const Text('Connection', style: TextStyle(fontSize: 18)),
+          automaticallyImplyLeading: false,
+        ),
+        body: _buildBody(context, appState),
       ),
-      body: _buildBody(context, appState),
     );
   }
 
@@ -94,6 +110,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     }
     if (appState.connectionStep != ConnectionStep.disconnected &&
         appState.connectionStep != ConnectionStep.connected &&
+        appState.connectionStep != ConnectionStep.disconnecting &&
         appState.connectionStep != ConnectionStep.error) {
       return _buildConnectionProgress(context, appState);
     }
@@ -120,6 +137,20 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       return _buildZoneGraceView(context, appState);
     }
 
+    // Show disconnecting state
+    if (appState.connectionStep == ConnectionStep.disconnecting) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Disconnecting...'),
+          ],
+        ),
+      );
+    }
+
     // Show connected state
     if (appState.isConnected) {
       final pathWarning = appState.pendingPathHashWarning;
@@ -143,26 +174,43 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     return _buildDeviceList(context, appState);
   }
 
-  /// Persistent bottom action bar: offline toggle + scan/cancel/disconnect
+  /// Persistent bottom action bar: transport picker + offline toggle + action button
   Widget _buildBottomBar(BuildContext context, AppStateProvider appState) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Expanded(child: OfflineModeToggle()),
-          const SizedBox(width: 12),
-          Expanded(child: _buildActionButton(context, appState)),
+          Row(
+            children: [
+              const Expanded(child: OfflineModeToggle()),
+              const SizedBox(width: 12),
+              Expanded(child: _buildActionButton(context, appState)),
+            ],
+          ),
+          if (!appState.isConnected) ...[
+            const SizedBox(height: 8),
+            _buildTransportPicker(context, appState),
+          ],
         ],
       ),
     );
   }
 
-  /// The right-side action button: Scan, Cancel, or Disconnect
+  /// The right-side action button: Scan/Connect, Cancel, or Disconnect
   Widget _buildActionButton(BuildContext context, AppStateProvider appState) {
-    if (appState.isConnected) {
-      // Disconnect
+    if (appState.connectionStep == ConnectionStep.disconnecting) {
       return _buildBottomButton(
-        icon: Icons.bluetooth_disabled,
+        icon: Icons.hourglass_top,
+        label: 'Disconnecting',
+        color: Colors.grey,
+        onPressed: null,
+      );
+    }
+
+    if (appState.isConnected) {
+      return _buildBottomButton(
+        icon: Icons.link_off,
         label: 'Disconnect',
         color: Colors.red,
         onPressed: () async => await appState.disconnect(),
@@ -170,7 +218,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     }
 
     if (appState.isScanning) {
-      // Cancel scan
       return _buildBottomButton(
         icon: Icons.close,
         label: 'Cancel',
@@ -179,19 +226,54 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
-    // Scan — disabled when can't scan
-    final canScan = appState.connectionStep == ConnectionStep.disconnected &&
-        !appState.isAutoReconnecting &&
-        (!appState.maintenanceMode || appState.offlineMode) &&
-        !appState.isBluetoothOff &&
-        (appState.offlineMode || appState.inZone == true);
+    final canConnect =
+        appState.connectionStep == ConnectionStep.disconnected &&
+            !appState.isAutoReconnecting &&
+            (!appState.maintenanceMode || appState.offlineMode) &&
+            (appState.offlineMode || appState.inZone == true);
 
-    return _buildBottomButton(
-      icon: Icons.bluetooth_searching,
-      label: 'Scan',
-      color: Theme.of(context).colorScheme.primary,
-      onPressed: canScan ? () => appState.startScan() : null,
-    );
+    switch (appState.selectedTransport) {
+      case TransportType.ble:
+        return _buildBottomButton(
+          icon: Icons.bluetooth_searching,
+          label: 'Scan',
+          color: Theme.of(context).colorScheme.primary,
+          onPressed: canConnect && !appState.isBluetoothOff
+              ? () => appState.startScan()
+              : null,
+        );
+      case TransportType.tcp:
+        final hostFilled = _tcpHostController.text.trim().isNotEmpty;
+        return _buildBottomButton(
+          icon: Icons.lan,
+          label: _tcpConnecting ? 'Connecting' : 'Connect',
+          color: Theme.of(context).colorScheme.primary,
+          onPressed: canConnect && hostFilled && !_tcpConnecting
+              ? () => _connectTcp(appState)
+              : null,
+        );
+      case TransportType.usbSerial:
+        if (kIsWeb) {
+          return _buildBottomButton(
+            icon: Icons.usb,
+            label: 'Connect',
+            color: Theme.of(context).colorScheme.primary,
+            onPressed: canConnect
+                ? () => _connectWebSerial(appState)
+                : null,
+          );
+        }
+        return _buildBottomButton(
+          icon: Icons.refresh,
+          label: 'Refresh',
+          color: Theme.of(context).colorScheme.primary,
+          onPressed: canConnect
+              ? () => setState(() {
+                    _usbDevicesFuture = AndroidSerialService.getAvailablePorts();
+                  })
+              : null,
+        );
+    }
   }
 
   /// Styled button matching OfflineModeToggle shape
@@ -578,6 +660,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             const SizedBox(height: 4),
             _buildPowerRow(context, appState, isPowerSet, isAutoMode, prefs),
 
+            // Radio config row (freq/bandwidth/SF/CR), under Power Level
+            if (appState.radioConfigDisplay != null) ...[
+              const SizedBox(height: 4),
+              _buildRadioRow(context, appState.radioConfigDisplay!),
+            ],
+
             // Public key row
             if (appState.devicePublicKey != null) ...[
               const SizedBox(height: 8),
@@ -718,6 +806,46 @@ class _ConnectionScreenState extends State<ConnectionScreen>
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// Radio configuration row (frequency/bandwidth/SF/CR), shown under Power Level.
+  /// Read-only — the app only reports the device's radio settings, never changes them.
+  /// The value ("910.525 MHz · 62.5 kHz · SF7 · CR5") is split onto two tidy lines —
+  /// freq + bandwidth, then SF + CR — so it never wraps mid-value in the narrow card.
+  Widget _buildRadioRow(BuildContext context, String value) {
+    final parts = value.split(' · ');
+    final line1 = parts.length >= 2 ? parts.take(2).join(' · ') : value;
+    final line2 = parts.length > 2 ? parts.skip(2).join(' · ') : '';
+    const valueStyle = TextStyle(fontWeight: FontWeight.w500);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(
+              width: 120,
+              child: Text(
+                'Radio',
+                style: TextStyle(fontWeight: FontWeight.w500),
+              ),
+            ),
+            Icon(Icons.radio, size: 16, color: Colors.blue.shade400),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(line1, style: valueStyle),
+                  if (line2.isNotEmpty) Text(line2, style: valueStyle),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1569,8 +1697,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
-    // Show Bluetooth off message (takes priority over zone checks)
-    if (appState.isBluetoothOff) {
+    // Show Bluetooth off message (BLE transport only)
+    if (appState.selectedTransport == TransportType.ble &&
+        appState.isBluetoothOff) {
       return _buildMessageContent(
         context: context,
         icon: Icons.bluetooth_disabled,
@@ -1743,6 +1872,106 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
+    return _buildTransportContent(context, appState, canConnect);
+  }
+
+  /// Transport selector buttons styled like the bottom bar.
+  Widget _buildTransportPicker(
+      BuildContext context, AppStateProvider appState) {
+    final available = _availableTransports();
+    if (available.length <= 1) return const SizedBox.shrink();
+
+    final primary = Theme.of(context).colorScheme.primary;
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: primary.withValues(alpha: 0.3)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Row(
+        children: [
+          for (final transport in available)
+            Expanded(
+              child: _buildTransportSegment(
+                context, appState, transport,
+                isSelected: appState.selectedTransport == transport,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTransportSegment(
+      BuildContext context, AppStateProvider appState, TransportType type,
+      {required bool isSelected}) {
+    const meta = {
+      TransportType.ble: (Icons.bluetooth, 'BLE'),
+      TransportType.tcp: (Icons.lan, 'TCP'),
+      TransportType.usbSerial: (Icons.usb, 'USB'),
+    };
+    final (icon, label) = meta[type]!;
+    final primary = Theme.of(context).colorScheme.primary;
+    final color = isSelected ? primary : Colors.grey;
+
+    return Material(
+      color: isSelected ? primary.withValues(alpha: 0.2) : Colors.transparent,
+      child: InkWell(
+        onTap: () => appState.setSelectedTransport(type),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Available transports based on platform.
+  /// BLE: all platforms. TCP: mobile only. USB: Android and Web.
+  List<TransportType> _availableTransports() {
+    final transports = [TransportType.ble];
+    if (!kIsWeb) {
+      transports.add(TransportType.tcp);
+      if (Platform.isAndroid) {
+        transports.add(TransportType.usbSerial);
+      }
+    } else {
+      transports.add(TransportType.usbSerial);
+    }
+    return transports;
+  }
+
+  /// Routes to the correct transport-specific content.
+  Widget _buildTransportContent(
+      BuildContext context, AppStateProvider appState, bool canConnect) {
+    switch (appState.selectedTransport) {
+      case TransportType.ble:
+        return _buildBleContent(context, appState, canConnect);
+      case TransportType.tcp:
+        return _buildTcpContent(context, appState, canConnect);
+      case TransportType.usbSerial:
+        return _buildUsbContent(context, appState, canConnect);
+    }
+  }
+
+  /// BLE transport content — scanning, device list, remembered device.
+  Widget _buildBleContent(
+      BuildContext context, AppStateProvider appState, bool canConnect) {
     if (appState.isScanning) {
       return Column(
         children: [
@@ -1755,18 +1984,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     }
 
     if (appState.discoveredDevices.isEmpty) {
-      // Show remembered device option if available (mobile only)
       final remembered = appState.rememberedDevice;
-      if (!kIsWeb && remembered != null) {
+      if (!kIsWeb &&
+          remembered != null &&
+          remembered.transportType == TransportType.ble) {
         return _buildRememberedDeviceView(context, appState, remembered,
             canConnect: canConnect);
       }
 
-      // Show GPS disabled message when location services are off
       if (appState.gpsStatus == GpsStatus.disabled) {
-        // iOS doesn't allow opening Location Services directly, so no button on iOS
         final isIOS = !kIsWeb && Platform.isIOS;
-
         return _buildMessageContent(
           context: context,
           icon: Icons.gps_off,
@@ -1784,7 +2011,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         );
       }
 
-      // Show GPS permission required message when permissions are denied
       if (appState.gpsStatus == GpsStatus.permissionDenied) {
         return _buildMessageContent(
           context: context,
@@ -1811,6 +2037,259 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     }
 
     return _buildDeviceListView(context, appState, canConnect: canConnect);
+  }
+
+  /// TCP transport content — host/port entry + saved connections.
+  Widget _buildTcpContent(
+      BuildContext context, AppStateProvider appState, bool canConnect) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Host/port input
+          TextField(
+            controller: _tcpHostController,
+            decoration: const InputDecoration(
+              labelText: 'Host',
+              hintText: 'IP address or hostname',
+              prefixIcon: Icon(Icons.dns_outlined),
+              border: OutlineInputBorder(),
+            ),
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.next,
+            enabled: !_tcpConnecting,
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _tcpPortController,
+            decoration: const InputDecoration(
+              labelText: 'Port',
+              hintText: '5000',
+              prefixIcon: Icon(Icons.numbers),
+              border: OutlineInputBorder(),
+            ),
+            keyboardType: TextInputType.number,
+            textInputAction: TextInputAction.done,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            enabled: !_tcpConnecting,
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 16),
+          // Saved connections
+          FutureBuilder<List<SavedTcpConnection>>(
+            future: _savedTcpFuture ??= TcpService.getSavedConnections(),
+            builder: (context, snapshot) {
+              final saved = snapshot.data;
+              if (saved == null || saved.isEmpty) return const SizedBox.shrink();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Saved Connections',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: Colors.grey.shade600,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  ...saved.map((conn) => _buildSavedTcpTile(
+                      context, appState, conn, canConnect)),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _connectTcp(AppStateProvider appState) async {
+    final host = _tcpHostController.text.trim();
+    final portStr = _tcpPortController.text.trim();
+    if (host.isEmpty) return;
+    final port = int.tryParse(portStr) ?? 5000;
+
+    setState(() => _tcpConnecting = true);
+    try {
+      await appState.connectViaTcp(host, port);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _tcpConnecting = false;
+          _savedTcpFuture = TcpService.getSavedConnections();
+        });
+      }
+    }
+  }
+
+  Widget _buildSavedTcpTile(BuildContext context, AppStateProvider appState,
+      SavedTcpConnection conn, bool canConnect) {
+    final showName = !conn.name.startsWith('TCP ');
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    showName ? conn.name : conn.host,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${conn.host}:${conn.port}',
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              icon: const Icon(Icons.delete_outline, size: 20),
+              constraints: const BoxConstraints(),
+              padding: const EdgeInsets.all(8),
+              onPressed: () async {
+                await TcpService.deleteConnection(conn.id);
+                if (mounted) {
+                  final future = TcpService.getSavedConnections();
+                  setState(() { _savedTcpFuture = future; });
+                }
+              },
+            ),
+            const SizedBox(width: 4),
+            FilledButton(
+              onPressed: canConnect && !_tcpConnecting
+                  ? () {
+                      _tcpHostController.text = conn.host;
+                      _tcpPortController.text = conn.port.toString();
+                      _connectTcp(appState);
+                    }
+                  : null,
+              child: const Text('Reconnect'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// USB Serial transport content.
+  Widget _buildUsbContent(
+      BuildContext context, AppStateProvider appState, bool canConnect) {
+    if (kIsWeb) {
+      return _buildWebSerialContent(context, appState, canConnect);
+    }
+    return _buildAndroidSerialContent(context, appState, canConnect);
+  }
+
+  Widget _buildAndroidSerialContent(
+      BuildContext context, AppStateProvider appState, bool canConnect) {
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: _usbDevicesFuture ??= AndroidSerialService.getAvailablePorts(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final devices = snapshot.data ?? [];
+        if (devices.isEmpty) {
+          return _buildMessageContent(
+            context: context,
+            icon: Icons.usb_off,
+            iconColor: Colors.grey.withValues(alpha: 0.5),
+            title: 'No USB Devices',
+            message:
+                'Connect a MeshCore device via USB OTG and tap Refresh.',
+            action: FilledButton.icon(
+              onPressed: () => setState(() {
+                _usbDevicesFuture = AndroidSerialService.getAvailablePorts();
+              }),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Refresh'),
+            ),
+          );
+        }
+
+        return ListView.builder(
+          itemCount: devices.length,
+          itemBuilder: (context, index) {
+            final device = devices[index];
+            final vid = device['vid'] as int? ?? 0;
+            final pid = device['pid'] as int? ?? 0;
+            return ListTile(
+              leading: const Icon(Icons.usb),
+              title: Text(
+                  device['productName'] as String? ?? 'USB Device'),
+              subtitle: Text(
+                  'VID: ${vid.toRadixString(16)} PID: ${pid.toRadixString(16)}'),
+              enabled: canConnect,
+              onTap: canConnect
+                  ? () => appState.connectViaUsb(device)
+                  : null,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildWebSerialContent(
+      BuildContext context, AppStateProvider appState, bool canConnect) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.usb,
+              size: 64,
+              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'USB Serial',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Connect a MeshCore device via USB and tap Connect below. '
+              'Your browser will show a port picker.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _connectWebSerial(AppStateProvider appState) async {
+    try {
+      final transport = await openWebSerialTransport();
+      await appState.connectWithTransport(
+        transport,
+        deviceId: 'webserial',
+        deviceName: 'USB Serial (Web)',
+        serialPortPath: 'webserial',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('USB Serial error: $e')),
+        );
+      }
+    }
   }
 
   void _launchOnboardingUrl() async {
@@ -1997,7 +2476,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
               ),
               const SizedBox(height: 12),
               const Text(
-                'Your radio will remain in multi-byte mode until you change it.',
+                'On a normal disconnect, the app restores your radio to its '
+                'original path setting. If the connection drops unexpectedly, '
+                'you may need to switch it back yourself in Settings.',
                 style: TextStyle(fontSize: 13, color: Colors.amber),
               ),
             ],

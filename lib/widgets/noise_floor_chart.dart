@@ -6,6 +6,7 @@ import '../models/noise_floor_session.dart';
 import '../providers/app_state_provider.dart';
 import '../utils/ping_colors.dart';
 import 'repeater_id_chip.dart';
+import 'rx_path_chain.dart';
 
 /// Interactive noise floor chart with pinch-to-zoom and pan
 class InteractiveNoiseFloorChart extends StatefulWidget {
@@ -239,6 +240,7 @@ class InteractiveNoiseFloorChartState
     final eventTypeLabel = switch (marker.type) {
       PingEventType.txSuccess => 'TX Success',
       PingEventType.txFail => 'TX Failed',
+      PingEventType.txMultiHopOnly => 'TX Multi-hop',
       PingEventType.rx => 'RX Received',
       PingEventType.discSuccess => 'Discovery Success',
       PingEventType.discFail => 'Discovery Failed',
@@ -249,6 +251,8 @@ class InteractiveNoiseFloorChartState
     final eventDescription = switch (marker.type) {
       PingEventType.txSuccess => 'Ping was heard by repeater(s)',
       PingEventType.txFail => 'Ping was not heard by any repeater',
+      PingEventType.txMultiHopOnly =>
+        'Ping was heard via multi-hop only (no direct)',
       PingEventType.rx => 'Received passive observation',
       PingEventType.discSuccess => 'Discovery got response',
       PingEventType.discFail => 'Discovery got no response',
@@ -357,79 +361,10 @@ class InteractiveNoiseFloorChartState
                   ],
                 ),
 
-                // Repeaters section (table format like TX log)
+                // Repeaters section — split into direct and multi-hop
                 if (marker.repeaters != null &&
                     marker.repeaters!.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Container(
-                    decoration: BoxDecoration(
-                      color:
-                          Theme.of(context).colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 8),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: 50,
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(
-                            height: 1, color: Theme.of(context).dividerColor),
-                        // Data rows
-                        ...marker.repeaters!
-                            .map((r) => _buildRepeaterRow(context, r)),
-                      ],
-                    ),
-                  ),
+                  ..._buildMarkerRepeaterSections(context, marker.repeaters!),
                 ],
 
                 // View on Map button
@@ -523,6 +458,152 @@ class InteractiveNoiseFloorChartState
         ],
       ),
     );
+  }
+
+  /// Build direct and multi-hop repeater sections for the marker detail sheet
+  List<Widget> _buildMarkerRepeaterSections(
+      BuildContext context, List<MarkerRepeaterInfo> repeaters) {
+    final directRepeaters =
+        repeaters.where((r) => r.pathHops == null).toList();
+    final multiHopRepeaters =
+        repeaters.where((r) => r.pathHops != null).toList();
+
+    final widgets = <Widget>[];
+
+    Widget buildTableHeader() {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 50,
+              child: Text('Node',
+                  style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            ),
+            Expanded(
+              child: Text('SNR',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            ),
+            Expanded(
+              child: Text('RSSI',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Direct echoes table
+    if (directRepeaters.isNotEmpty) {
+      widgets.addAll([
+        const SizedBox(height: 16),
+        Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: Theme.of(context)
+                    .colorScheme
+                    .outline
+                    .withValues(alpha: 0.5)),
+          ),
+          child: Column(
+            children: [
+              buildTableHeader(),
+              Divider(height: 1, color: Theme.of(context).dividerColor),
+              ...directRepeaters.map((r) => _buildRepeaterRow(context, r)),
+            ],
+          ),
+        ),
+      ]);
+    }
+
+    // Multi-hop echoes section
+    if (multiHopRepeaters.isNotEmpty) {
+      widgets.addAll([
+        const SizedBox(height: 12),
+        Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: Theme.of(context)
+                    .colorScheme
+                    .outline
+                    .withValues(alpha: 0.5)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.route, size: 12, color: PingColors.rx),
+                    const SizedBox(width: 6),
+                    Text('Multi-hop Repeats',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant)),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: Theme.of(context).dividerColor),
+              buildTableHeader(),
+              Divider(height: 1, color: Theme.of(context).dividerColor),
+              ...multiHopRepeaters.map((r) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildRepeaterRow(context, r),
+                      if (r.pathHops != null && r.pathHops!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(
+                              left: 10, right: 10, bottom: 6),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Icon(Icons.route,
+                                    size: 10,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant),
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: RxPathChain(
+                                  hops: r.pathHops!,
+                                  fontSize: 9,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  )),
+            ],
+          ),
+        ),
+      ]);
+    }
+
+    return widgets;
   }
 
   /// Build a table row for a repeater (matching TX log style)

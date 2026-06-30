@@ -30,6 +30,7 @@ import '../widgets/bug_report_dialog.dart';
 import '../widgets/upload_logs_dialog.dart';
 import 'package:intl/intl.dart';
 import '../widgets/app_toast.dart';
+import 'offline_maps_screen.dart';
 
 /// Settings screen for user preferences and API configuration
 class SettingsScreen extends StatefulWidget {
@@ -155,26 +156,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             if (!kIsWeb) _BackgroundModeToggle(appState: appState),
             SwitchListTile(
-              secondary:
-                  Icon(prefs.mapTilesEnabled ? Icons.map : Icons.map_outlined),
-              title: const Text('Disable Map Tiles'),
-              subtitle: Text(prefs.mapTilesEnabled
-                  ? 'Map and coverage tiles load normally'
-                  : 'Disabled to save mobile data'),
-              value: !prefs.mapTilesEnabled,
-              onChanged: (value) {
-                appState
-                    .updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.visibility),
-              title: const Text('Color Vision'),
-              subtitle: Text(_colorVisionLabel(prefs.colorVisionType)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _showColorVisionSelector(context, appState),
-            ),
-            SwitchListTile(
               secondary: Icon(
                 prefs.isImperial ? Icons.square_foot : Icons.straighten,
               ),
@@ -185,31 +166,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (isImperial) {
                 appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
               },
-            ),
-            SwitchListTile(
-              secondary: const Icon(Icons.cell_tower),
-              title: const Text('Top Repeaters on Map'),
-              subtitle:
-                  const Text('Show top 3 repeaters by SNR from last ping'),
-              value: prefs.showTopRepeaters,
-              onChanged: (value) {
-                appState
-                    .updatePreferences(prefs.copyWith(showTopRepeaters: value));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.place),
-              title: const Text('Map Marker Style'),
-              subtitle: Text(_markerStyleLabel(prefs.markerStyle)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _showMarkerStyleSelector(context, appState),
-            ),
-            ListTile(
-              leading: const Icon(Icons.my_location),
-              title: const Text('GPS Marker'),
-              subtitle: Text(_gpsMarkerLabel(prefs.gpsMarkerStyle)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _showGpsMarkerSelector(context, appState),
             ),
             SwitchListTile(
               secondary: Icon(
@@ -247,6 +203,96 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ]),
 
+          // Map Management
+          _buildSection(context, 'Map Management', [
+            if (!kIsWeb)
+              ListTile(
+                leading: const Icon(Icons.download_for_offline),
+                title: const Text('Offline Maps'),
+                subtitle: const Text('Download map areas for offline use'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const OfflineMapsScreen(),
+                    ),
+                  );
+                },
+              ),
+            SwitchListTile(
+              secondary: Icon(
+                  prefs.mapTilesEnabled ? Icons.cloud : Icons.cloud_off),
+              title: const Text('Use Downloaded Tiles Only'),
+              subtitle: Text(prefs.mapTilesEnabled
+                  ? 'Online tiles load normally'
+                  : 'Only downloaded areas are shown · no network tile requests'),
+              value: !prefs.mapTilesEnabled,
+              onChanged: (value) {
+                appState.updatePreferences(
+                    prefs.copyWith(mapTilesEnabled: !value));
+              },
+            ),
+            if (prefs.mapTilesEnabled)
+              ListTile(
+                leading: const Icon(Icons.opacity),
+                title: const Text('Coverage Overlay Opacity'),
+                subtitle: Slider(
+                  value: prefs.coverageOverlayOpacity.clamp(0.3, 1.0),
+                  min: 0.3,
+                  max: 1.0,
+                  divisions: 7,
+                  label: '${(prefs.coverageOverlayOpacity * 100).round()}%',
+                  onChanged: (value) =>
+                      appState.setCoverageOverlayOpacity(value),
+                ),
+                trailing:
+                    Text('${(prefs.coverageOverlayOpacity * 100).round()}%'),
+              ),
+            if (prefs.mapTilesEnabled)
+              ListTile(
+                leading: const Icon(Icons.grid_on),
+                title: const Text('Grid Mode'),
+                subtitle: Text(prefs.coverageGridSize == 100
+                    ? 'Detailed (More detailed cells, non grouped repeaters)'
+                    : 'Simplified (Merged cells, grouped repeaters)'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _showCoverageGridSelector(context, appState),
+              ),
+            ListTile(
+              leading: const Icon(Icons.visibility),
+              title: const Text('Color Vision'),
+              subtitle: Text(_colorVisionLabel(prefs.colorVisionType)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showColorVisionSelector(context, appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.place),
+              title: const Text('Map Marker Style'),
+              subtitle: Text(_markerStyleLabel(prefs.markerStyle)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showMarkerStyleSelector(context, appState),
+            ),
+            ListTile(
+              leading: const Icon(Icons.my_location),
+              title: const Text('GPS Marker'),
+              subtitle: Text(_gpsMarkerLabel(prefs.gpsMarkerStyle)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _showGpsMarkerSelector(context, appState),
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.cell_tower),
+              title: const Text('Top Repeaters on Map'),
+              subtitle:
+                  const Text('Show top 3 repeaters by SNR from last ping'),
+              value: prefs.showTopRepeaters,
+              onChanged: (value) {
+                appState
+                    .updatePreferences(prefs.copyWith(showTopRepeaters: value));
+              },
+            ),
+          ]),
+
           // Ping Settings
           _buildSection(context, 'Ping Settings', [
             SwitchListTile(
@@ -270,6 +316,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         }
                       }
                     },
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.my_location),
+              title: const Text('Broadcast My Coordinates'),
+              subtitle: Text(prefs.broadcastCoords
+                  ? 'Real GPS is sent on the air'
+                  : 'Coordinates stay private (sent only to the server)'),
+              value: prefs.broadcastCoords,
+              onChanged: (value) => appState.setBroadcastCoords(value),
             ),
             ListTile(
               leading: const Icon(Icons.timer),
@@ -308,6 +363,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // Modes
           _buildSection(context, 'Modes', [
+            SwitchListTile(
+              secondary: const Icon(Icons.waves),
+              title: const Text('Flood Traffic'),
+              subtitle: appState.floodDisabled
+                  ? const Text(
+                      'Set by Regional Admin — flood traffic is disabled in this region. Active and Hybrid modes are unavailable here.',
+                      style: TextStyle(color: Colors.amber),
+                    )
+                  : const Text(
+                      'Show Active, Hybrid, and manual Send Ping controls'),
+              value: appState.floodDisabled ? false : prefs.floodTrafficEnabled,
+              onChanged: (isAutoMode || appState.floodDisabled)
+                  ? null
+                  : (value) {
+                      appState.updatePreferences(
+                          prefs.copyWith(floodTrafficEnabled: value));
+                    },
+            ),
             SwitchListTile(
               secondary: const Icon(Icons.compare_arrows),
               title: Row(
@@ -745,12 +818,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
               onTap: () => _launchUrl('https://ottawamesh.ca/'),
             ),
-            ListTile(
-              leading: const Icon(Icons.coffee),
-              title: const Text('Buy us a coffee'),
-              subtitle: const Text('Support MeshMapper development'),
-              onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
-            ),
+            // Buy Me a Coffee — external donation links are fine on Android/Web
+            // but violate Apple guideline 3.1.1 on iOS, so omit it on iOS.
+            if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS)
+              ListTile(
+                leading: const Icon(Icons.coffee),
+                title: const Text('Buy us a coffee'),
+                subtitle: const Text('Support MeshMapper development'),
+                onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
+              ),
           ]),
 
           // Exit Options (Android only)
@@ -1232,6 +1308,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
     };
   }
 
+  /// Grid Mode preset selector — mirrors the web UI's Grid Mode
+  /// (Simplified = 300 m, Detailed = 100 m + blob, applied server-side).
+  void _showCoverageGridSelector(
+      BuildContext context, AppStateProvider appState) {
+    final options = [
+      (300, 'Simplified', 'Merged cells, grouped repeaters'),
+      (100, 'Detailed', 'More detailed cells, non grouped repeaters'),
+    ];
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text('Grid Mode',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+            RadioGroup<int>(
+              groupValue: appState.preferences.coverageGridSize,
+              onChanged: (v) {
+                if (v != null) {
+                  appState.updatePreferences(
+                      appState.preferences.copyWith(coverageGridSize: v));
+                }
+                Navigator.pop(context);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final (value, label, subtitle) in options)
+                    RadioListTile<int>(
+                      secondary: const Icon(Icons.grid_on),
+                      title: Text(label),
+                      subtitle:
+                          Text(subtitle, style: const TextStyle(fontSize: 12)),
+                      value: value,
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showColorVisionSelector(
       BuildContext context, AppStateProvider appState) {
     final options = [
@@ -1400,7 +1528,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Clear Map Markers?'),
         content: const Text(
-          'This will remove all TX/RX markers from the map. This won\'t affect uploaded data.',
+          'This will remove all markers from the map. This won\'t affect uploaded data.',
         ),
         actions: [
           TextButton(
@@ -2134,7 +2262,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       switch (result) {
         case OfflineUploadResult.success:
-          message = 'Uploaded: $filename';
+          message = 'Upload Success';
           backgroundColor = Colors.green;
           break;
         case OfflineUploadResult.notFound:
@@ -2149,17 +2277,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
           message = 'Authentication failed - Advert your device on the mesh';
           backgroundColor = Colors.red;
           break;
+        case OfflineUploadResult.networkError:
+          message = 'Network error - tap again to retry';
+          backgroundColor = Colors.orange;
+          break;
         case OfflineUploadResult.gpsRequired:
           message = 'GPS required - enable location services to upload';
           backgroundColor = Colors.red;
           break;
         case OfflineUploadResult.partialFailure:
-          message = 'Partial upload - some pings failed';
+          message = 'Partial upload - tap again to retry remaining pings';
           backgroundColor = Colors.orange;
           break;
         case OfflineUploadResult.uploadInProgress:
           message = 'Another upload is already in progress';
           backgroundColor = Colors.orange;
+          break;
+        case OfflineUploadResult.zoneDisabled:
+          message = 'Upload failed - wardriving is disabled in this zone';
+          backgroundColor = Colors.red;
           break;
       }
 
@@ -2200,8 +2336,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _downloadOfflineSession(
-      BuildContext context, AppStateProvider appState, String filename) {
+  Future<void> _downloadOfflineSession(
+      BuildContext context, AppStateProvider appState, String filename) async {
     try {
       final sessionData =
           appState.offlineSessionService.getSessionData(filename);
@@ -2237,13 +2373,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         }
       } else {
-        // Mobile: Not yet implemented
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Mobile download coming soon - use web version'),
-            duration: Duration(seconds: 3),
-          ),
-        );
+        // Mobile: write the JSON to a temp file and open the native share
+        // sheet (Save to Files, Drive, email, …) — mirrors the debug-log share.
+        await appState.shareOfflineSession(filename);
       }
     } catch (e) {
       if (context.mounted) {
@@ -2744,11 +2876,83 @@ class _OfflineSessionTile extends StatelessWidget {
     required this.onDownload,
   });
 
+  bool get _hasSummary =>
+      (session.placementCounts?.isNotEmpty ?? false) ||
+      ((session.tooFarRegion ?? 0) > 0);
+
+  /// e.g. "DSA 88 · EMA 157 · too far 3"
+  String _placementSummary() {
+    final parts = <String>[];
+    final pc = session.placementCounts;
+    if (pc != null && pc.isNotEmpty) {
+      final entries = pc.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      parts.addAll(entries.map((e) => '${e.key} ${e.value}'));
+    }
+    final tf = session.tooFarRegion ?? 0;
+    if (tf > 0) parts.add('too far $tf');
+    return parts.join(' · ');
+  }
+
+  void _showSummaryDialog(BuildContext context) {
+    final pc = session.placementCounts ?? <String, int>{};
+    final tf = session.tooFarRegion ?? 0;
+    final entries = pc.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Upload Summary'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(session.filename,
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            if (entries.isEmpty)
+              const Text('No regional placement recorded.')
+            else
+              ...entries.map((e) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(e.key,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600)),
+                        Text('${e.value} pings'),
+                      ],
+                    ),
+                  )),
+            if (tf > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '$tf ping(s) dropped — more than 50 km outside every region',
+                  style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isUploaded = session.uploaded;
 
     return ListTile(
+      onTap: (isUploaded && _hasSummary)
+          ? () => _showSummaryDialog(context)
+          : null,
       leading: Icon(
         isUploaded ? Icons.cloud_done : Icons.cloud_off,
         color: isUploaded ? Colors.green : Colors.orange,
@@ -2759,9 +2963,9 @@ class _OfflineSessionTile extends StatelessWidget {
         children: [
           Text('${session.pingCount} pings • ${session.displayDate}'),
           if (isUploaded)
-            const Text(
-              'Uploaded',
-              style: TextStyle(
+            Text(
+              _hasSummary ? 'Uploaded · ${_placementSummary()}' : 'Uploaded',
+              style: const TextStyle(
                   color: Colors.green,
                   fontSize: 12,
                   fontWeight: FontWeight.w500),

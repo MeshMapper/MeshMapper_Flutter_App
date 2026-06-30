@@ -7,13 +7,93 @@ import '../services/ping_service.dart';
 import '../utils/debug_logger_io.dart';
 import 'repeater_picker_sheet.dart';
 
+/// Fields the ping-control widgets depend on for their enabled/label state.
+/// Used with `context.select` so the controls rebuild ONLY when one of these
+/// changes — not on every GPS / noise-floor / battery `notifyListeners()`
+/// (~1–2 Hz during wardriving). Timer (countdown) values are deliberately
+/// excluded; they update via the inner `ListenableBuilder(timerListenable)`
+/// in each widget. Keep this in sync with the `appState.*` reads in the build
+/// bodies below — a missing field means a button can go stale while idle.
+typedef _ControlsDeps = ({
+  PingValidation pingValidation,
+  PingValidation manualValidation,
+  PingValidation autoValidation,
+  bool autoPingEnabled,
+  AutoMode autoMode,
+  bool isTargetedModeRunning,
+  bool hybridModeEnabled,
+  bool isPendingDisable,
+  bool isPingSending,
+  bool isAutoPingStarting,
+  bool isPingInProgress,
+  bool isConnected,
+  bool offlineMode,
+  bool txAllowed,
+  bool externalAntenna,
+  bool externalAntennaSet,
+  bool isPowerSet,
+  bool floodTrafficEnabled,
+  bool hasTargetRepeaterId,
+});
+
+_ControlsDeps _controlsDepsOf(AppStateProvider s) {
+  final prefs = s.preferences;
+  final targetId = s.targetRepeaterId;
+  return (
+    pingValidation: s.pingValidation,
+    manualValidation: s.manualPingValidation,
+    autoValidation: s.autoModeValidation,
+    autoPingEnabled: s.autoPingEnabled,
+    autoMode: s.autoMode,
+    isTargetedModeRunning: s.isTargetedModeRunning,
+    hybridModeEnabled: prefs.hybridModeEnabled,
+    isPendingDisable: s.isPendingDisable,
+    isPingSending: s.isPingSending,
+    isAutoPingStarting: s.isAutoPingStarting,
+    isPingInProgress: s.isPingInProgress,
+    isConnected: s.isConnected,
+    offlineMode: s.offlineMode,
+    txAllowed: s.txAllowed,
+    externalAntenna: prefs.externalAntenna,
+    externalAntennaSet: prefs.externalAntennaSet,
+    isPowerSet:
+        prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
+    floodTrafficEnabled: s.floodTrafficEnabled,
+    hasTargetRepeaterId: targetId != null && targetId.isNotEmpty,
+  );
+}
+
+/// Subset of provider state the Trace Mode section depends on.
+typedef _TargetedDeps = ({
+  bool isTargetedModeRunning,
+  int traceHopBytes,
+  String? targetRepeaterId,
+  bool isConnected,
+  bool hasRepeaters,
+});
+
+_TargetedDeps _targetedDepsOf(AppStateProvider s) => (
+      isTargetedModeRunning: s.isTargetedModeRunning,
+      traceHopBytes: s.traceHopBytes,
+      targetRepeaterId: s.targetRepeaterId,
+      isConnected: s.isConnected,
+      hasRepeaters: s.repeaters.isNotEmpty,
+    );
+
 /// Modern ping control panel with icon-based buttons and animated status
 class PingControls extends StatelessWidget {
   const PingControls({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when control-relevant state changes — NOT on every GPS /
+    // noise-floor / battery notify. Countdown values update via the inner
+    // ListenableBuilder(timerListenable) below, so they're excluded here.
+    context.select<AppStateProvider, _ControlsDeps>(_controlsDepsOf);
+    final appState = context.read<AppStateProvider>();
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final validation = appState.pingValidation;
     final manualValidation = appState
         .manualPingValidation; // Manual ping validation (no distance check)
@@ -32,6 +112,8 @@ class PingControls extends StatelessWidget {
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState
         .isPendingDisable; // Disable pending, waiting for RX window to complete
+    final isAutoStarting = appState
+        .isAutoPingStarting; // True while an auto mode is starting (pre-first-notify)
     final cooldownActive = appState
         .cooldownTimer.isRunning; // Shared cooldown after disabling Active Mode
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
@@ -97,13 +179,15 @@ class PingControls extends StatelessWidget {
     }
     // Note: cooldown and tooClose are shown on button itself
 
+    final floodTrafficVisible = appState.floodTrafficEnabled;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         // Action buttons row
         Row(
           children: [
-            if (!txNotAllowed) ...[
+            if (!txNotAllowed && floodTrafficVisible) ...[
               // Send Ping button
               // State flow: "Send Ping" → "Sending..." → "Listening Xs" → "Cooldown Xs" → "Send Ping"
               // Manual pings use 15-second cooldown, no distance requirement
@@ -207,6 +291,7 @@ class PingControls extends StatelessWidget {
                           : const Color(0xFF6366F1), // indigo-500
                   enabled: !isPendingDisable &&
                       !isTargetedRunning &&
+                      !isAutoStarting &&
                       ((isTxModeRunning ||
                               (canStartAuto &&
                                   !isPassiveModeRunning &&
@@ -266,6 +351,7 @@ class PingControls extends StatelessWidget {
                         !isTxModeRunning &&
                         !isTargetedRunning &&
                         !isPendingDisable &&
+                        !isAutoStarting &&
                         !isPingSending &&
                         !rxWindowActive &&
                         !cooldownActive &&
@@ -312,6 +398,8 @@ class PingControls extends StatelessWidget {
           cooldownRemaining: cooldownRemaining,
         ),
       ],
+    );
+      },
     );
   }
 
@@ -373,45 +461,7 @@ class _ActionButton extends StatefulWidget {
   State<_ActionButton> createState() => _ActionButtonState();
 }
 
-class _ActionButtonState extends State<_ActionButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      duration: const Duration(milliseconds: 1200),
-      vsync: this,
-    );
-    // Pulse opacity from 0.3 to 0.6 for a subtle glow effect
-    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-
-    if (widget.isActive) {
-      _pulseController.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(_ActionButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isActive && !oldWidget.isActive) {
-      _pulseController.repeat(reverse: true);
-    } else if (!widget.isActive && oldWidget.isActive) {
-      _pulseController.stop();
-      _pulseController.reset();
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
+class _ActionButtonState extends State<_ActionButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -421,14 +471,13 @@ class _ActionButtonState extends State<_ActionButton>
     final effectiveColor =
         showColor ? widget.color : colorScheme.onSurfaceVariant;
     final borderOpacity = widget.isActive ? 0.6 : 0.3;
+    // Static active-state background opacity. This was a repeating pulse
+    // animation, removed because a .repeat() AnimationController kept the GPU
+    // rendering at the display refresh rate for the entire wardriving session.
+    // The button still reads as "active" via color, the dot, and the text.
+    final bgOpacity = widget.isActive ? 0.25 : 0.12;
 
-    return AnimatedBuilder(
-      animation: _pulseAnimation,
-      builder: (context, child) {
-        // Use animated opacity for active state background
-        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.12;
-
-        return Material(
+    return Material(
           color: Colors.transparent,
           child: InkWell(
             onTap: widget.enabled ? widget.onPressed : null,
@@ -527,8 +576,6 @@ class _ActionButtonState extends State<_ActionButton>
             ),
           ),
         );
-      },
-    );
   }
 }
 
@@ -591,10 +638,15 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when Trace-relevant state changes (not on GPS/noise/battery).
+    context.select<AppStateProvider, _TargetedDeps>(_targetedDepsOf);
+    final appState = context.read<AppStateProvider>();
+    final colorScheme = Theme.of(context).colorScheme;
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final isTargetedRunning = appState.isTargetedModeRunning;
     final maxLen = appState.traceHopBytes * 2;
-    final colorScheme = Theme.of(context).colorScheme;
 
     // Sync controller when provider clears target (e.g. trace bytes changed)
     if (appState.targetRepeaterId == null && _controller.text.isNotEmpty) {
@@ -767,6 +819,8 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
         ],
       ),
     );
+      },
+    );
   }
 }
 
@@ -803,7 +857,12 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when control-relevant state changes (not on GPS/noise/battery).
+    context.select<AppStateProvider, _ControlsDeps>(_controlsDepsOf);
+    final appState = context.read<AppStateProvider>();
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final manualValidation = appState
         .manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
@@ -820,6 +879,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     final isTargetedRunning = appState.isTargetedModeRunning;
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState.isPendingDisable;
+    final isAutoStarting = appState.isAutoPingStarting;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
     final manualCooldownActive = appState
@@ -906,6 +966,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
     final activeModeEnabled = !isPendingDisable &&
         !isTargetedRunning &&
+        !isAutoStarting &&
         ((isTxModeRunning ||
                 (canStartAuto &&
                     !isPassiveModeRunning &&
@@ -922,6 +983,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             !isTxModeRunning &&
             !isTargetedRunning &&
             !isPendingDisable &&
+            !isAutoStarting &&
             !isPingSending &&
             !rxWindowActive &&
             !cooldownActive &&
@@ -1100,13 +1162,15 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       },
     );
 
+    final floodTrafficVisible = appState.floodTrafficEnabled;
+
     // Layout logic:
     // - If button is expanded (including during cooldown): stays big
     // - If no button is expanded: all colored buttons share space equally
     // - Grey non-expanded buttons are icon-only
     return Row(
       children: [
-        if (!txNotAllowed) ...[
+        if (!txNotAllowed && floodTrafficVisible) ...[
           // Send Ping - expanded buttons stay big even when grey (cooldown)
           if (sendPingExpanded)
             Expanded(child: sendPingButton)
@@ -1145,6 +1209,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             traceModeButton,
         ],
       ],
+    );
+      },
     );
   }
 
@@ -1362,7 +1428,12 @@ class LandscapePingControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppStateProvider>();
+    // Rebuild only when control-relevant state changes (not on GPS/noise/battery).
+    context.select<AppStateProvider, _ControlsDeps>(_controlsDepsOf);
+    final appState = context.read<AppStateProvider>();
+    return ListenableBuilder(
+      listenable: appState.timerListenable,
+      builder: (_, __) {
     final manualValidation = appState
         .manualPingValidation; // Manual ping validation (no distance check)
     final autoValidation = appState.autoModeValidation;
@@ -1379,6 +1450,7 @@ class LandscapePingControls extends StatelessWidget {
     final isTargetedRunning = appState.isTargetedModeRunning;
     final hybridEnabled = appState.preferences.hybridModeEnabled;
     final isPendingDisable = appState.isPendingDisable;
+    final isAutoStarting = appState.isAutoPingStarting;
     final cooldownActive = appState.cooldownTimer.isRunning;
     final cooldownRemaining = appState.cooldownTimer.remainingSec;
     final manualCooldownActive = appState
@@ -1404,6 +1476,8 @@ class LandscapePingControls extends StatelessWidget {
         prefs.powerLevelSet ||
         appState.deviceModel != null;
 
+    final floodTrafficVisible = appState.floodTrafficEnabled;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1420,7 +1494,7 @@ class LandscapePingControls extends StatelessWidget {
         // Action buttons row (icon-only)
         Row(
           children: [
-            if (!txNotAllowed) ...[
+            if (!txNotAllowed && floodTrafficVisible) ...[
               // TX Ping button
               Expanded(
                 child: _LandscapeIconButton(
@@ -1471,6 +1545,7 @@ class LandscapePingControls extends StatelessWidget {
                           : const Color(0xFF6366F1), // indigo-500
                   enabled: !isPendingDisable &&
                       !isTargetedRunning &&
+                      !isAutoStarting &&
                       ((isTxModeRunning ||
                               (canStartAuto &&
                                   !isPassiveModeRunning &&
@@ -1515,6 +1590,7 @@ class LandscapePingControls extends StatelessWidget {
                         !isTxModeRunning &&
                         !isTargetedRunning &&
                         !isPendingDisable &&
+                        !isAutoStarting &&
                         !isPingSending &&
                         !rxWindowActive &&
                         !cooldownActive &&
@@ -1546,6 +1622,8 @@ class LandscapePingControls extends StatelessWidget {
           compact: true,
         ),
       ],
+    );
+      },
     );
   }
 
@@ -1743,57 +1821,22 @@ class _LandscapeIconButton extends StatefulWidget {
   State<_LandscapeIconButton> createState() => _LandscapeIconButtonState();
 }
 
-class _LandscapeIconButtonState extends State<_LandscapeIconButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      duration: const Duration(milliseconds: 1200),
-      vsync: this,
-    );
-    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-
-    if (widget.isActive) {
-      _pulseController.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(_LandscapeIconButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isActive && !oldWidget.isActive) {
-      _pulseController.repeat(reverse: true);
-    } else if (!widget.isActive && oldWidget.isActive) {
-      _pulseController.stop();
-      _pulseController.reset();
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
+class _LandscapeIconButtonState extends State<_LandscapeIconButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final showColor = widget.enabled || widget.isActive;
+    // Keep the button's color (not grey) whenever the countdown badge is shown,
+    // mirroring portrait's `_ActionButton` showCooldown handling. Otherwise the
+    // badge renders white text on grey (onSurfaceVariant) during cooldown.
+    final showColor =
+        widget.enabled || widget.isActive || widget.countdown != null;
     final effectiveColor =
         showColor ? widget.color : colorScheme.onSurfaceVariant;
+    // Static active-state opacity (continuous pulse animation removed — see
+    // _ActionButton; it kept the GPU rendering all session).
+    final bgOpacity = widget.isActive ? 0.25 : 0.10;
 
-    return AnimatedBuilder(
-      animation: _pulseAnimation,
-      builder: (context, child) {
-        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.10;
-
-        return Tooltip(
+    return Tooltip(
           message: widget.tooltip,
           child: Material(
             color: Colors.transparent,
@@ -1866,8 +1909,6 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton>
             ),
           ),
         );
-      },
-    );
   }
 }
 
@@ -1900,44 +1941,7 @@ class _CompactActionButton extends StatefulWidget {
   State<_CompactActionButton> createState() => _CompactActionButtonState();
 }
 
-class _CompactActionButtonState extends State<_CompactActionButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      duration: const Duration(milliseconds: 1200),
-      vsync: this,
-    );
-    _pulseAnimation = Tween<double>(begin: 0.15, end: 0.35).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-
-    if (widget.isActive) {
-      _pulseController.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(_CompactActionButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.isActive && !oldWidget.isActive) {
-      _pulseController.repeat(reverse: true);
-    } else if (!widget.isActive && oldWidget.isActive) {
-      _pulseController.stop();
-      _pulseController.reset();
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
+class _CompactActionButtonState extends State<_CompactActionButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -1946,13 +1950,11 @@ class _CompactActionButtonState extends State<_CompactActionButton>
         showColor ? widget.color : colorScheme.onSurfaceVariant;
     // Show label if colored OR if expanded (shows countdown on grey button during cooldown)
     final hasLabel = widget.label != null && (showColor || widget.isExpanded);
+    // Static active-state opacity (continuous pulse animation removed — see
+    // _ActionButton; it kept the GPU rendering all session).
+    final bgOpacity = widget.isActive ? 0.25 : 0.12;
 
-    return AnimatedBuilder(
-      animation: _pulseAnimation,
-      builder: (context, child) {
-        final bgOpacity = widget.isActive ? _pulseAnimation.value : 0.12;
-
-        return Material(
+    return Material(
           color: Colors.transparent,
           child: InkWell(
             onTap: widget.enabled ? widget.onPressed : null,
@@ -2043,7 +2045,5 @@ class _CompactActionButtonState extends State<_CompactActionButton>
             ),
           ),
         );
-      },
-    );
   }
 }

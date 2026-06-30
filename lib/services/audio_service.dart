@@ -68,7 +68,9 @@ class AudioService {
             // Android: transient focus allows other audio to continue
             androidAudioAttributes: AndroidAudioAttributes(
               contentType: AndroidAudioContentType.sonification,
-              usage: AndroidAudioUsage.notification,
+              // Route blips to the MEDIA stream so they follow the media
+              // volume slider (not the ringer/notification volume). See #88.
+              usage: AndroidAudioUsage.media,
             ),
             androidAudioFocusGainType:
                 AndroidAudioFocusGainType.gainTransientMayDuck,
@@ -130,6 +132,7 @@ class AudioService {
 
     try {
       await box.put(_enabledKey, _enabled);
+      await box.flush();
       debugLog('[AUDIO] Saved enabled state: $_enabled');
     } catch (e) {
       debugError('[AUDIO] Failed to save enabled state: $e');
@@ -266,7 +269,8 @@ class AudioService {
           avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
           androidAudioAttributes: AndroidAudioAttributes(
             contentType: AndroidAudioContentType.sonification,
-            usage: AndroidAudioUsage.notification,
+            // Route blips to the MEDIA stream (follows media volume). See #88.
+            usage: AndroidAudioUsage.media,
           ),
           androidAudioFocusGainType:
               AndroidAudioFocusGainType.gainTransientMayDuck,
@@ -345,6 +349,7 @@ class AudioService {
     if (box == null) return;
     try {
       await box.put(key, value);
+      await box.flush();
     } catch (e) {
       debugError('[AUDIO] Failed to save $key: $e');
     }
