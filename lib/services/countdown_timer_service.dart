@@ -14,6 +14,9 @@ import '../utils/debug_logger_io.dart';
 class CountdownTimerService extends ChangeNotifier {
   Timer? _timer;
   DateTime? _endTime;
+
+  /// Absolute deadline used by system surfaces such as iOS Live Activities.
+  DateTime? get endTime => _endTime;
   int? _durationMs;
 
   /// Check if timer is running

@@ -67,6 +67,7 @@ class IOSMapOfflineBridge {
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private let mapOfflineBridge = IOSMapOfflineBridge()
+  private let liveActivityManager = LiveActivityManager()
 
   override func application(
     _ application: UIApplication,
@@ -106,6 +107,21 @@ class IOSMapOfflineBridge {
         default:
           result(FlutterMethodNotImplemented)
         }
+      }
+
+      // Method channel: local ActivityKit status for active wardriving
+      // sessions. The widget extension renders the Lock Screen, Dynamic Island,
+      // and compact system/CarPlay presentations from these snapshots.
+      let liveActivityChannel = FlutterMethodChannel(
+        name: "meshmapper/live_activity",
+        binaryMessenger: controller.binaryMessenger
+      )
+      liveActivityChannel.setMethodCallHandler { [weak self] call, result in
+        guard let self = self else {
+          result(FlutterError(code: "unavailable", message: "bridge deallocated", details: nil))
+          return
+        }
+        self.liveActivityManager.handle(call, result: result)
       }
 
       // Method channel: MapLibre tile cache management. Mirrors the Android
