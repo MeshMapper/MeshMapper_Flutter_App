@@ -45,6 +45,8 @@ import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
+import '../services/live_activity/live_activity_models.dart';
+import '../services/live_activity/live_activity_service.dart';
 import '../services/custom_api_service.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
@@ -69,6 +71,8 @@ enum AutoMode {
 
 /// Ping type for the top-heard overlay dots
 enum OverlayPingType { tx, disc, trace, rx }
+
+enum _LiveActivityOperation { sending, discovering, tracing }
 
 /// Result of uploading an offline session
 enum OfflineUploadResult {
@@ -124,6 +128,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final DiscoveryWindowTimer
       _discoveryWindowTimer; // Discovery listening window (Passive Mode)
   late final Listenable _timerListenable;
+
+  final LiveActivityService _liveActivityService = LiveActivityService();
+  bool _liveActivitySessionActive = false;
+  bool _liveActivityManualSession = false;
+  String? _liveActivitySessionId;
+  DateTime? _liveActivityCycleStartedAt;
+  _LiveActivityOperation? _liveActivityOperation;
   MeshCoreConnection? _meshCoreConnection;
   PingService? _pingService;
   UnifiedRxHandler? _unifiedRxHandler;
@@ -221,6 +232,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _topRepeatersOverlay = [];
   ({String repeaterId, double snr})? _rxOverlaySlot;
   Timer? _rxOverlayWindowTimer;
+
+  // Live Activity repeater snapshot. Kept separate from the map overlay so the
+  // system presentation cannot change existing in-app overlay behaviour.
+  List<({String repeaterId, double snr})> _liveActivityRepeaters = [];
+  int _liveActivityRepeaterTotalCount = 0;
+  DateTime? _liveActivityRepeatersUpdatedAt;
+  DateTime? _liveActivityRxUpdatedAt;
 
   // Targeted mode state
   String? _targetRepeaterId;
@@ -349,6 +367,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _zoneGracePollingTimer; // 5-second zone polling
   Timer? _zoneGraceCountdownTimer; // 1-second UI countdown tick
   int _zoneGraceSecondsRemaining = 0;
+  DateTime? _zoneGraceEndsAt;
   bool _autoPingWasEnabledBeforeGrace = false;
   AutoMode _autoModeBeforeGrace = AutoMode.active;
   static const Duration _zoneGraceTimeout = Duration(minutes: 5);
@@ -598,15 +617,38 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _topRepeatersOverlay = fresh.take(3).toList();
   }
 
+  void _updateLiveActivityRepeaters(
+      Iterable<({String repeaterId, double snr})> current) {
+    final bestSnr = <String, double>{};
+    for (final repeater in current) {
+      if (!repeater.snr.isFinite) continue;
+      final id = repeater.repeaterId.toUpperCase();
+      final previous = bestSnr[id];
+      if (previous == null || repeater.snr > previous) {
+        bestSnr[id] = repeater.snr;
+      }
+    }
+
+    final sorted = bestSnr.entries
+        .map((entry) => (repeaterId: entry.key, snr: entry.value))
+        .toList()
+      ..sort((a, b) => b.snr.compareTo(a.snr));
+    _liveActivityRepeaters = sorted.take(3).toList(growable: false);
+    _liveActivityRepeaterTotalCount = sorted.length;
+    _liveActivityRepeatersUpdatedAt = DateTime.now();
+  }
+
   /// Update the RX overlay slot — window matches auto-ping interval (best SNR wins).
   void _updateRxOverlaySlot(String repeaterId, double snr) {
     final entry = (repeaterId: repeaterId.toUpperCase(), snr: snr);
     if (_rxOverlayWindowTimer?.isActive ?? false) {
       if (_rxOverlaySlot == null || snr > _rxOverlaySlot!.snr) {
         _rxOverlaySlot = entry;
+        _liveActivityRxUpdatedAt = DateTime.now();
       }
     } else {
       _rxOverlaySlot = entry;
+      _liveActivityRxUpdatedAt = DateTime.now();
       _rxOverlayWindowTimer =
           Timer(Duration(seconds: _preferences.autoPingInterval), () {
         // Window closed — slot stays until next RX or cleared
@@ -620,6 +662,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxOverlaySlot = null;
     _rxOverlayWindowTimer?.cancel();
     _rxOverlayWindowTimer = null;
+    _liveActivityRepeaters = [];
+    _liveActivityRepeaterTotalCount = 0;
+    _liveActivityRepeatersUpdatedAt = null;
+    _liveActivityRxUpdatedAt = null;
   }
 
   List<TxLogEntry> get txLogEntries => List.unmodifiable(_txLogEntries);
@@ -1072,6 +1118,420 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _discoveryWindowTimer; // Discovery listening window (Passive Mode)
   Listenable get timerListenable => _timerListenable;
 
+  void _handleLiveActivityTimerChange() {
+    if (_liveActivityManualSession &&
+        !_isPingSending &&
+        !_rxWindowTimer.isRunning &&
+        !_manualPingCooldownTimer.isRunning) {
+      _finishLiveActivitySession();
+      return;
+    }
+    _scheduleLiveActivitySync();
+  }
+
+  void _startLiveActivitySession({bool manual = false}) {
+    if (!_liveActivityService.isSupportedPlatform) return;
+    if (_liveActivitySessionActive) {
+      // Starting an automatic mode while a manual-ping activity is still in
+      // cooldown upgrades the existing activity instead of creating a second.
+      if (!manual && _liveActivityManualSession) {
+        _liveActivityManualSession = false;
+        _scheduleLiveActivitySync(immediate: true);
+      }
+      return;
+    }
+    _liveActivitySessionActive = true;
+    _liveActivityManualSession = manual;
+    _liveActivitySessionId = const Uuid().v4();
+    _liveActivityCycleStartedAt = _activeLiveActivityCycleStartedAt;
+    _liveActivityOperation = null;
+    _scheduleLiveActivitySync(immediate: true);
+  }
+
+  DateTime? get _activeLiveActivityCycleStartedAt {
+    if (_rxWindowTimer.isRunning && _txLogEntries.isNotEmpty) {
+      return _txLogEntries.last.timestamp;
+    }
+    if (!_discoveryWindowTimer.isRunning) return null;
+    if (_autoMode == AutoMode.targeted && _traceLogEntries.isNotEmpty) {
+      return _traceLogEntries.first.timestamp;
+    }
+    if (_discLogEntries.isNotEmpty) {
+      return _discLogEntries.first.timestamp;
+    }
+    return null;
+  }
+
+  void _finishLiveActivitySession() {
+    if (!_liveActivitySessionActive) return;
+    _liveActivitySessionActive = false;
+    _liveActivityManualSession = false;
+    _liveActivityOperation = null;
+    _liveActivityCycleStartedAt = null;
+    _scheduleLiveActivitySync(immediate: true);
+    _liveActivitySessionId = null;
+  }
+
+  void _markLiveActivityOperation(_LiveActivityOperation operation) {
+    if (!_liveActivitySessionActive ||
+        !_liveActivityService.isSupportedPlatform) {
+      return;
+    }
+    final now = DateTime.now();
+    _liveActivityOperation = operation;
+    _liveActivityCycleStartedAt = now;
+    _scheduleLiveActivitySync(immediate: true);
+  }
+
+  void _scheduleLiveActivitySync({bool immediate = false}) {
+    if (_isDisposed || !_liveActivityService.isSupportedPlatform) return;
+    _liveActivityService.schedule(
+      _buildLiveActivitySnapshot,
+      immediate: immediate,
+    );
+  }
+
+  LiveActivitySnapshot? _buildLiveActivitySnapshot() {
+    final sessionId = _liveActivitySessionId;
+    if (!_liveActivitySessionActive || sessionId == null) {
+      return null;
+    }
+
+    final phase = _resolveLiveActivityPhase();
+    final repeaterState = _buildLiveActivityRepeaters();
+
+    return LiveActivitySnapshot(
+      sessionId: sessionId,
+      mode: _liveActivityModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      isConnected: isConnected,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      txCount: _pingStats.txCount,
+      rxCount: _pingStats.rxCount,
+      discoveryCount: _pingStats.discCount,
+      traceCount: _pingStats.traceCount,
+      queueSize: _queueSize,
+      repeaters: repeaterState.repeaters,
+      totalHeardCount: repeaterState.totalCount,
+      repeatersAreCurrent: repeaterState.isCurrent,
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  ({
+    LiveActivityPhase phase,
+    String title,
+    String? detail,
+    DateTime? endsAt,
+  }) _resolveLiveActivityPhase() {
+    if (_isInZoneGracePeriod) {
+      return (
+        phase: LiveActivityPhase.pausedOutsideZone,
+        title: 'Outside service area',
+        detail: 'Searching for a nearby wardriving zone',
+        endsAt: _zoneGraceEndsAt,
+      );
+    }
+
+    if (_isZoneTransferInProgress) {
+      return (
+        phase: LiveActivityPhase.pausedOutsideZone,
+        title: 'Changing region…',
+        detail: [_zoneTransferFrom, _zoneTransferTo]
+            .whereType<String>()
+            .join(' → '),
+        endsAt: null,
+      );
+    }
+
+    if (_isAutoReconnecting || _connectionStep == ConnectionStep.reconnecting) {
+      return (
+        phase: LiveActivityPhase.disconnected,
+        title: 'Reconnecting…',
+        detail: 'Restoring MeshCore connection',
+        endsAt: null,
+      );
+    }
+
+    if (!isConnected) {
+      return (
+        phase: LiveActivityPhase.disconnected,
+        title: _connectionStep == ConnectionStep.disconnecting
+            ? 'Disconnecting…'
+            : 'Device disconnected',
+        detail: 'Open MeshMapper to reconnect',
+        endsAt: null,
+      );
+    }
+
+    if (isPendingDisable) {
+      return (
+        phase: LiveActivityPhase.stopping,
+        title: 'Stopping…',
+        detail: 'Finishing the current listening window',
+        endsAt: _rxWindowTimer.endTime ?? _discoveryWindowTimer.endTime,
+      );
+    }
+
+    if (_gpsStatus != GpsStatus.locked) {
+      return (
+        phase: LiveActivityPhase.waitingForGps,
+        title: 'Waiting for GPS',
+        detail: _liveActivityGpsLabel,
+        endsAt: null,
+      );
+    }
+
+    if ((_autoMode == AutoMode.active ||
+            _autoMode == AutoMode.hybrid ||
+            _autoMode == AutoMode.targeted) &&
+        !txAllowed) {
+      return (
+        phase: LiveActivityPhase.txBlocked,
+        title: 'TX unavailable',
+        detail: 'This zone is currently passive-only',
+        endsAt: null,
+      );
+    }
+
+    if (_liveActivityManualSession && _isPingSending) {
+      return (
+        phase: LiveActivityPhase.sending,
+        title: 'Sending ping…',
+        detail: null,
+        endsAt: null,
+      );
+    }
+
+    if (_discoveryWindowTimer.isRunning) {
+      final isTrace = _autoMode == AutoMode.targeted;
+      return (
+        phase: isTrace
+            ? LiveActivityPhase.listeningTrace
+            : LiveActivityPhase.listeningDiscovery,
+        title: isTrace ? 'Listening for trace…' : 'Listening…',
+        detail: isTrace ? _targetRepeaterDisplayName : 'Discovery responses',
+        endsAt: _discoveryWindowTimer.endTime,
+      );
+    }
+
+    if (_rxWindowTimer.isRunning) {
+      return (
+        phase: LiveActivityPhase.listening,
+        title: 'Listening…',
+        detail: 'Waiting for repeater echoes',
+        endsAt: _rxWindowTimer.endTime,
+      );
+    }
+
+    if (_liveActivityManualSession &&
+        _manualPingCooldownTimer.isRunning) {
+      return (
+        phase: LiveActivityPhase.cooldown,
+        title: 'Cooldown',
+        detail: 'Manual ping available when the timer ends',
+        endsAt: _manualPingCooldownTimer.endTime,
+      );
+    }
+
+    if (_autoPingTimer.isRunning) {
+      if (_autoPingTimer.skipReason != null) {
+        return (
+          phase: LiveActivityPhase.skipped,
+          title: 'Ping skipped',
+          detail: 'Move at least ${PingService.currentMinDistance} m',
+          endsAt: _autoPingTimer.endTime,
+        );
+      }
+
+      if (_autoMode == AutoMode.passive) {
+        return (
+          phase: LiveActivityPhase.waitingDiscovery,
+          title: 'Next discovery',
+          detail: null,
+          endsAt: _autoPingTimer.endTime,
+        );
+      }
+
+      if (_autoMode == AutoMode.targeted) {
+        return (
+          phase: LiveActivityPhase.waitingTrace,
+          title: 'Next trace',
+          detail: _targetRepeaterDisplayName,
+          endsAt: _autoPingTimer.endTime,
+        );
+      }
+
+      return (
+        phase: LiveActivityPhase.waiting,
+        title: 'Next ping',
+        detail: null,
+        endsAt: _autoPingTimer.endTime,
+      );
+    }
+
+    switch (_liveActivityOperation) {
+      case _LiveActivityOperation.sending:
+        return (
+          phase: LiveActivityPhase.sending,
+          title: 'Sending ping…',
+          detail: null,
+          endsAt: null,
+        );
+      case _LiveActivityOperation.discovering:
+        return (
+          phase: LiveActivityPhase.discovering,
+          title: 'Discovering…',
+          detail: 'Requesting nearby repeaters',
+          endsAt: null,
+        );
+      case _LiveActivityOperation.tracing:
+        return (
+          phase: LiveActivityPhase.tracing,
+          title: 'Tracing repeater…',
+          detail: _targetRepeaterDisplayName,
+          endsAt: null,
+        );
+      case null:
+        break;
+    }
+
+    if (_autoPingStarting || !_autoPingEnabled) {
+      return (
+        phase: LiveActivityPhase.starting,
+        title: 'Preparing session…',
+        detail: null,
+        endsAt: null,
+      );
+    }
+
+    return (
+      phase: LiveActivityPhase.active,
+      title: '${_liveActivityModeTitle} active',
+      detail: 'Waiting for the next cycle',
+      endsAt: null,
+    );
+  }
+
+  ({
+    List<LiveActivityRepeater> repeaters,
+    int totalCount,
+    bool isCurrent,
+  }) _buildLiveActivityRepeaters() {
+    final cycleStartedAt = _liveActivityCycleStartedAt;
+    final topIsCurrent = cycleStartedAt != null &&
+        _liveActivityRepeatersUpdatedAt != null &&
+        !_liveActivityRepeatersUpdatedAt!.isBefore(cycleStartedAt);
+    final rxIsCurrent = cycleStartedAt != null &&
+        _liveActivityRxUpdatedAt != null &&
+        !_liveActivityRxUpdatedAt!.isBefore(cycleStartedAt);
+    final hasCurrent = topIsCurrent || rxIsCurrent;
+
+    final includeTop = !hasCurrent || topIsCurrent;
+    final includeRx = !hasCurrent || rxIsCurrent;
+    final repeatersById = <String, LiveActivityRepeater>{};
+
+    if (includeTop) {
+      for (final repeater in _liveActivityRepeaters) {
+        if (!repeater.snr.isFinite) continue;
+        final id = repeater.repeaterId.toUpperCase();
+        repeatersById[id] = LiveActivityRepeater(
+          id: id,
+          name: _resolveRepeaterDisplayName(id),
+          snr: repeater.snr,
+        );
+      }
+    }
+
+    final rx = _rxOverlaySlot;
+    if (includeRx && rx != null && rx.snr.isFinite) {
+      final id = rx.repeaterId.toUpperCase();
+      final existing = repeatersById[id];
+      if (existing == null || rx.snr > existing.snr) {
+        repeatersById[id] = LiveActivityRepeater(
+          id: id,
+          name: _resolveRepeaterDisplayName(id),
+          snr: rx.snr,
+        );
+      }
+    }
+
+    final repeaters = repeatersById.values.toList()
+      ..sort((a, b) => b.snr.compareTo(a.snr));
+
+    var totalCount = includeTop ? _liveActivityRepeaterTotalCount : 0;
+    if (includeRx &&
+        rx != null &&
+        rx.snr.isFinite &&
+        !_liveActivityRepeaters.any(
+          (entry) =>
+              entry.repeaterId.toUpperCase() == rx.repeaterId.toUpperCase(),
+        )) {
+      totalCount++;
+    }
+    if (totalCount < repeaters.length) totalCount = repeaters.length;
+
+    return (
+      repeaters: repeaters.take(3).toList(growable: false),
+      totalCount: totalCount,
+      isCurrent: hasCurrent,
+    );
+  }
+
+  String get _liveActivityModeTitle {
+    if (_liveActivityManualSession) return 'Manual';
+    return switch (_autoMode) {
+      AutoMode.active => 'Active',
+      AutoMode.passive => 'Passive',
+      AutoMode.hybrid => 'Hybrid',
+      AutoMode.targeted => 'Trace',
+    };
+  }
+
+  String get _liveActivityGpsLabel => switch (_gpsStatus) {
+        GpsStatus.permissionDenied => 'Location permission required',
+        GpsStatus.disabled => 'Location services disabled',
+        GpsStatus.searching => 'Searching for GPS signal',
+        GpsStatus.locked => 'GPS locked',
+        GpsStatus.outsideGeofence => 'Outside service area',
+      };
+
+  String? get _targetRepeaterDisplayName {
+    final id = _targetRepeaterId;
+    if (id == null || id.isEmpty) return null;
+    return _resolveRepeaterDisplayName(id) ?? id.toUpperCase();
+  }
+
+  String? _resolveRepeaterDisplayName(String rawId) {
+    final id = rawId.toUpperCase();
+    final exactMatches = _repeaters.where((repeater) {
+      return repeater.id.toUpperCase() == id ||
+          repeater.hexId.toUpperCase() == id ||
+          repeater
+                  .displayHexId(overrideHopBytes: _hopBytes)
+                  .toUpperCase() ==
+              id;
+    }).toList(growable: false);
+
+    if (exactMatches.length == 1) {
+      final name = exactMatches.single.name;
+      return name == 'Unknown' ? null : name;
+    }
+    if (exactMatches.isNotEmpty || id.length < 2) return null;
+
+    final prefixMatches = _repeaters.where((repeater) {
+      final hexId = repeater.hexId.toUpperCase();
+      return hexId.startsWith(id) || id.startsWith(hexId);
+    }).toList(growable: false);
+    if (prefixMatches.length != 1) return null;
+
+    final name = prefixMatches.single.name;
+    return name == 'Unknown' ? null : name;
+  }
+
   // ============================================
   // Initialization
   // ============================================
@@ -1130,6 +1590,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _rxWindowTimer,
       _discoveryWindowTimer,
     ]);
+    if (_liveActivityService.isSupportedPlatform) {
+      _timerListenable.addListener(_handleLiveActivityTimerChange);
+    }
 
     // Initialize debug logging (enabled by default, respects user preference)
     await _initDebugLogs();
@@ -2513,6 +2976,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         () => handleSessionError('session_limit', null);
 
     _pingService!.onTxPing = (ping) {
+      _markLiveActivityOperation(_LiveActivityOperation.sending);
       _txPings.add(ping);
       if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
 
@@ -2614,13 +3078,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               '[APP] Updated TxLogEntry with ${existingEvents.length} direct, '
               '${lastEntry.multiHopEvents.length} multi-hop events (real-time)');
 
-          _updateTopRepeaters(
-              existingEvents
-                  .where((e) => e.snr != null)
-                  .map((e) =>
-                      (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
-                  .toList(),
-              OverlayPingType.tx);
+          final directRepeaters = existingEvents
+              .where((event) => event.snr != null)
+              .map((event) => (
+                    repeaterId: event.repeaterId.toUpperCase(),
+                    snr: event.snr!,
+                  ))
+              .toList(growable: false);
+          _updateTopRepeaters(directRepeaters, OverlayPingType.tx);
+          _updateLiveActivityRepeaters([
+            ...directRepeaters,
+            ...lastEntry.multiHopEvents
+                .where((event) => event.snr != null)
+                .map((event) => (
+                      repeaterId: event.repeaterId.toUpperCase(),
+                      snr: event.snr!,
+                    )),
+          ]);
 
           debugLog('[APP] Calling notifyListeners() to update UI');
           _notifyMapThrottled();
@@ -2675,6 +3149,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             multiHopEvents: multiHopEvents,
           );
 
+          _updateLiveActivityRepeaters([
+            ...lastEntry.events
+                .where((event) => event.snr != null)
+                .map((event) => (
+                      repeaterId: event.repeaterId.toUpperCase(),
+                      snr: event.snr!,
+                    )),
+            ...multiHopEvents
+                .where((event) => event.snr != null)
+                .map((event) => (
+                      repeaterId: event.repeaterId.toUpperCase(),
+                      snr: event.snr!,
+                    )),
+          ]);
+
           _notifyMapThrottled();
         }
       }
@@ -2683,6 +3172,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService!.onPingProgressChanged = notifyListeners;
 
     _pingService!.onAutoPingScheduled = (intervalMs, skipReason) {
+      _liveActivityOperation = null;
       _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
 
       if (skipReason != null) {
@@ -2700,6 +3190,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onDiscPing = (entry) {
+      _markLiveActivityOperation(_LiveActivityOperation.discovering);
       _addDiscLogEntry(entry);
     };
 
@@ -2710,20 +3201,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _audioService.playReceiveSound();
       }
 
-      _updateTopRepeaters(
-          discPing.discoveredNodes
-              .map((n) =>
-                  (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
-              .toList(),
-          OverlayPingType.disc);
+      final heardRepeaters = discPing.discoveredNodes
+          .map((node) => (
+                repeaterId: node.repeaterId.toUpperCase(),
+                snr: node.localSnr,
+              ))
+          .toList(growable: false);
+      _updateTopRepeaters(heardRepeaters, OverlayPingType.disc);
+      _updateLiveActivityRepeaters(heardRepeaters);
 
       _notifyMapThrottled();
     };
 
     _pingService!.onTxWindowComplete = (directSuccess, multiHopEchoes) {
+      _liveActivityOperation = null;
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? allRepeaters;
+      final heardRepeaters = <({String repeaterId, double snr})>[];
 
       if (_txLogEntries.isNotEmpty) {
         final lastTx = _txLogEntries.last;
@@ -2750,7 +3245,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (directRepeaters.isNotEmpty || multiHopRepeaters.isNotEmpty) {
           allRepeaters = [...directRepeaters, ...multiHopRepeaters];
         }
+
+        heardRepeaters.addAll(lastTx.events
+            .where((event) => event.snr?.isFinite ?? false)
+            .map((event) => (
+                  repeaterId: event.repeaterId.toUpperCase(),
+                  snr: event.snr!,
+                )));
+        heardRepeaters.addAll(multiHopEchoes
+            .where((event) => event.snr?.isFinite ?? false)
+            .map((event) => (
+                  repeaterId: event.repeaterId.toUpperCase(),
+                  snr: event.snr!,
+                )));
       }
+      _updateLiveActivityRepeaters(heardRepeaters);
 
       final PingEventType eventType;
       if (directSuccess) {
@@ -2770,9 +3279,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onDiscoveryWindowComplete = (success) {
+      _liveActivityOperation = null;
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? repeaters;
+      final heardRepeaters = <({String repeaterId, double snr})>[];
 
       if (_discLogEntries.isNotEmpty) {
         final lastDisc = _discLogEntries.first;
@@ -2788,7 +3299,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                   ))
               .toList();
         }
+        heardRepeaters.addAll(lastDisc.discoveredNodes
+            .where((node) => node.localSnr.isFinite)
+            .map((node) => (
+                  repeaterId: node.repeaterId.toUpperCase(),
+                  snr: node.localSnr,
+                )));
       }
+      _updateLiveActivityRepeaters(heardRepeaters);
 
       PingEventType eventType;
       if (success) {
@@ -2808,10 +3326,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onTracePing = (entry) {
+      _markLiveActivityOperation(_LiveActivityOperation.tracing);
       _addTraceLogEntry(entry);
     };
 
     _pingService!.onTraceWindowComplete = (result) {
+      _liveActivityOperation = null;
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? repeaters;
@@ -2842,6 +3362,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _notifyMapNow();
         }
       }
+
+      final traceSnr = result?.localSnr;
+      _updateLiveActivityRepeaters(
+        result != null && result.success && traceSnr != null
+            ? [(repeaterId: result.targetRepeaterId, snr: traceSnr)]
+            : const [],
+      );
 
       recordPingEvent(
         result != null && result.success
@@ -2881,6 +3408,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
+      _finishLiveActivitySession();
 
       debugLog('[APP] Pending disable cleanup complete, cooldown running');
       notifyListeners();
@@ -3433,6 +3961,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _fullDisconnectCleanup() async {
+    _finishLiveActivitySession();
     // Guard against double cleanup (e.g., reconnect timeout + BLE disconnect event)
     if (_connectionStep == ConnectionStep.disconnected) {
       debugLog('[CONN] Already disconnected, skipping duplicate cleanup');
@@ -3798,6 +4327,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Disconnect from current device
   Future<void> disconnect() async {
+    _finishLiveActivitySession();
     // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
     _userRequestedDisconnect = true;
 
@@ -4040,6 +4570,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isPingSending = true;
     notifyListeners();
 
+    var ownsLiveActivity = false;
+    var keepLiveActivity = false;
     try {
       // Check session validity before starting (skip in offline mode)
       if (!_preferences.offlineMode) {
@@ -4051,8 +4583,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _startIdleDisconnectTimer();
 
       debugLog('[PING] Sending manual TX ping');
-      return await _pingService!.sendTxPing(manual: true);
+      ownsLiveActivity = !_liveActivitySessionActive;
+      if (ownsLiveActivity) {
+        _startLiveActivitySession(manual: true);
+      }
+      final sent = await _pingService!.sendTxPing(manual: true);
+      keepLiveActivity = sent;
+      return sent;
     } finally {
+      if (ownsLiveActivity && !keepLiveActivity) {
+        _finishLiveActivitySession();
+      }
       // Clear sending state on every path: session-check failure, exception,
       // or success (RX window timer takes over showing the listening state)
       _isPingSending = false;
@@ -4153,6 +4694,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
+      _finishLiveActivitySession();
 
       // Clear top-heard overlay on stop
       _clearOverlayState();
@@ -4245,6 +4787,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _rxLogger?.startWardriving();
         _autoPingEnabled = true;
         _idleAutoStopReference = DateTime.now();
+        _startLiveActivitySession();
 
         // Start noise floor session for graph tracking
         final sessionLabel = isPassive
@@ -4773,6 +5316,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 9. Update state
     _autoPingEnabled = false;
     _idleAutoStopReference = null;
+    _finishLiveActivitySession();
     debugLog('[APP] Auto-ping mode stopped gracefully');
     notifyListeners();
   }
@@ -6143,6 +6687,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Cancel all zone grace period timers.
   void _cancelZoneGraceTimers() {
+    _zoneGraceEndsAt = null;
     _zoneGraceTimer?.cancel();
     _zoneGraceTimer = null;
     _zoneGracePollingTimer?.cancel();
@@ -6198,7 +6743,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Keep alive: BLE, _meshCoreConnection, _pingService, _unifiedRxHandler,
     // noise floor, and API session (backend auto-transfers on zone re-entry)
 
-    // Start 5-minute countdown
+    // Start 5-minute countdown. Keep an absolute deadline so ActivityKit can
+    // render the timer without receiving an update every second.
+    _zoneGraceEndsAt = DateTime.now().add(_zoneGraceTimeout);
     _zoneGraceSecondsRemaining = _zoneGraceTimeout.inSeconds;
 
     // Overall timeout — abandon grace period after 5 minutes
@@ -7799,12 +8346,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   @override
   @override
   void notifyListeners() {
-    if (!_isDisposed) super.notifyListeners();
+    if (_isDisposed) return;
+    super.notifyListeners();
+    _scheduleLiveActivitySync();
   }
 
   @override
   void dispose() {
     _isDisposed = true;
+    _timerListenable.removeListener(_handleLiveActivityTimerChange);
+    _liveActivityService.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();
     _connectionSubscription?.cancel();
