@@ -1410,7 +1410,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     return (
       phase: LiveActivityPhase.active,
-      title: '${_liveActivityModeTitle} active',
+      title: '$_liveActivityModeTitle active',
       detail: 'Waiting for the next cycle',
       endsAt: null,
     );
