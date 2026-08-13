@@ -594,18 +594,21 @@ struct MapPage: View {
   private func recenterIfFollowing(_ proxy: MapProxy, force: Bool = false) {
     guard !isLuminanceReduced, force || isFollowing, let fix else { return }
     let center = centerPlacing(fix, proxy: proxy)
-    let isInitialPlacement = programmaticCenter == nil
     programmaticCenter = center
     let region = MKCoordinateRegion(center: center, span: currentSpan)
-    if isInitialPlacement {
-      // Cutting to the first fix centres and zooms as one operation. Animating
-      // from `.automatic` would fly through unrelated tiles from MapKit's
-      // arbitrary opening location before reaching the wearer.
-      camera = .region(region)
-    } else {
+
+    if force {
+      // A tap is a rare, explicit request to move the map, so animation shows
+      // the wearer what their action changed. Automatic follow is different:
+      // the fix coordinate has already changed in this frame, and animating
+      // the camera after it makes the puck wander before the map catches up.
       withAnimation(.easeInOut(duration: 0.25)) {
         camera = .region(region)
       }
+    } else {
+      // First placement, GPS steps and placement corrections all cut so the
+      // puck stays visually fixed while the world moves beneath it.
+      camera = .region(region)
     }
   }
 
