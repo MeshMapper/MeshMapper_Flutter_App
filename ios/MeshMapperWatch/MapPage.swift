@@ -67,6 +67,8 @@ struct MapPage: View {
   /// The panel's frame in global coordinates, so the camera can keep the fix
   /// out from behind it.
   @State private var panelFrame: CGRect = .zero
+  @State private var latchedTopSafeAreaInset: CGFloat = 0
+  @State private var currentTopSafeAreaInset: CGFloat = 0
   @State private var bottomSafeAreaInset: CGFloat = 0
 
   /// Only one subtree sets this, but every *other* subtree still contributes
@@ -147,16 +149,37 @@ struct MapPage: View {
       .background(
         GeometryReader { geo in
           Color.clear
-            .onAppear { latchBottomSafeAreaInset(geo.safeAreaInsets.bottom) }
+            .onAppear {
+              noteTopSafeAreaInset(geo.safeAreaInsets.top)
+              latchBottomSafeAreaInset(geo.safeAreaInsets.bottom)
+            }
+            .onChange(of: geo.safeAreaInsets.top) { _, inset in
+              noteTopSafeAreaInset(inset)
+            }
             .onChange(of: geo.safeAreaInsets.bottom) { _, inset in
               latchBottomSafeAreaInset(inset)
             }
+            .onChange(of: isLuminanceReduced) { _, reduced in
+              // If the view first appeared while dimmed, returning to full
+              // luminance on the readout is the first valid opportunity to
+              // establish the reference even when the inset did not change.
+              if !reduced && !showsMap {
+                noteTopSafeAreaInset(geo.safeAreaInsets.top)
+              }
+            }
+            .onChange(of: showsMap) { _, mapIsShowing in
+              // Switching from the map supplies a readout reference even if
+              // both surfaces initially report the same transient inset.
+              if !mapIsShowing && !isLuminanceReduced {
+                noteTopSafeAreaInset(geo.safeAreaInsets.top)
+              }
+            }
         }
         // Plain is intentional: `.ignoresSafeArea()` makes this reader report
-        // the insets of its own expanded region, which are zero. The first
-        // nonzero value is latched before any dependent panel geometry can feed
-        // back into layout. The display's actual safe area is a device constant
-        // that cannot legitimately change when the selected content does.
+        // the insets of its own expanded region, which are zero. The bottom's
+        // first nonzero value is latched before its dependent panel geometry can
+        // feed back into layout; the top follows the separate visual-only rule
+        // in `noteTopSafeAreaInset`.
       )
       .sheet(isPresented: $showingNodes) {
         NavigationStack {
@@ -246,7 +269,19 @@ struct MapPage: View {
       // whatever container presents it.
       Color.black.ignoresSafeArea()
       readoutStatus
+        // Hardware may collapse the navigation bar in Always-On even though
+        // the simulator's force-dimmed path cannot. Restore only an inset that
+        // disappeared relative to the full-luminance reference: equal insets
+        // produce zero, while a missing measurement is deliberately a no-op.
+        // A visual offset keeps this correction out of the geometry proposal
+        // being measured above, closing the layout feedback loop.
+        .offset(y: readoutTopOffset)
     }
+  }
+
+  private var readoutTopOffset: CGFloat {
+    guard latchedTopSafeAreaInset > 0 else { return 0 }
+    return max(0, latchedTopSafeAreaInset - currentTopSafeAreaInset)
   }
 
   /// Map chrome remains an overlay so its measured frame can place the fix in
@@ -347,6 +382,20 @@ struct MapPage: View {
   private func latchBottomSafeAreaInset(_ inset: CGFloat) {
     guard bottomSafeAreaInset == 0, inset > 0 else { return }
     bottomSafeAreaInset = inset
+  }
+
+  private func noteTopSafeAreaInset(_ inset: CGFloat) {
+    guard inset.isFinite else { return }
+    currentTopSafeAreaInset = max(0, inset)
+
+    // Only the full-luminance readout is the approved reference; the map extends
+    // beneath top chrome and reports a different inset. Keep its largest value
+    // because the navigation bar settles upward after installing its toolbar.
+    // This intentionally differs from the bottom inset's first-nonzero latch:
+    // the bottom value drives padding and can feed back into its measurement,
+    // while this value drives a visual offset that cannot affect geometry.
+    guard !isLuminanceReduced, !showsMap, inset > 0 else { return }
+    latchedTopSafeAreaInset = max(latchedTopSafeAreaInset, inset)
   }
 
   /// Phase and Top Heard in one panel.
