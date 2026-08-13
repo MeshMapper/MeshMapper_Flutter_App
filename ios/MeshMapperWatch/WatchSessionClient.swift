@@ -18,6 +18,11 @@ final class WatchSessionClient: NSObject {
   /// Set when the phone refuses a command, so the wrist can say why.
   private(set) var lastRefusal: String?
 
+  /// A refusal explains one completed tap, not the current transport state.
+  /// Restarting its lifetime on replacement prevents an older expiry from
+  /// erasing newer feedback that happens to arrive near the same moment.
+  private var refusalExpiryTask: Task<Void, Never>?
+
   /// Wearer-initiated command awaiting the phone's answer. Automatic refreshes
   /// stay out of this state because they have no corresponding wrist action.
   private(set) var pendingCommand: WatchCommand.Kind?
@@ -81,7 +86,7 @@ final class WatchSessionClient: NSObject {
   /// attempted unconditionally and `errorHandler` is the source of truth.
   func send(_ kind: WatchCommand.Kind, silent: Bool = false) {
     guard let session, session.activationState == .activated else {
-      if !silent { lastRefusal = "Not connected to iPhone" }
+      if !silent { setLastRefusal("Not connected to iPhone") }
       return
     }
 
@@ -89,12 +94,12 @@ final class WatchSessionClient: NSObject {
     guard let data = try? MeshMapperWatchWire.encoder.encode(command),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
-      if !silent { lastRefusal = "Could not encode command" }
+      if !silent { setLastRefusal("Could not encode command") }
       return
     }
 
     if !silent {
-      lastRefusal = nil
+      setLastRefusal(nil)
       pendingCommand = kind
     }
 
@@ -112,9 +117,12 @@ final class WatchSessionClient: NSObject {
           guard !silent, isCurrent else { return }
           let accepted = reply["accepted"] as? Bool ?? false
           if accepted {
-            self?.lastRefusal = nil
+            self?.setLastRefusal(nil)
           } else {
-            self?.lastRefusal = reply["reason"] as? String ?? "Refused"
+            // The phone owns the policy and already phrases its refusals for
+            // people; preserving that text avoids replacing fact with a watch
+            // side guess about why the command was rejected.
+            self?.setLastRefusal(reply["reason"] as? String ?? "Refused")
           }
         }
       },
@@ -125,10 +133,44 @@ final class WatchSessionClient: NSObject {
           if isCurrent {
             self?.pendingCommand = nil
           }
-          if !silent, isCurrent { self?.lastRefusal = error.localizedDescription }
+          if !silent, isCurrent {
+            self?.setLastRefusal(Self.refusalMessage(for: error))
+          }
         }
       }
     )
+  }
+
+  private func setLastRefusal(_ refusal: String?) {
+    refusalExpiryTask?.cancel()
+    refusalExpiryTask = nil
+    lastRefusal = refusal
+
+    guard refusal != nil else { return }
+    refusalExpiryTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(6))
+      guard !Task.isCancelled else { return }
+      self?.lastRefusal = nil
+      self?.refusalExpiryTask = nil
+    }
+  }
+
+  private static func refusalMessage(for error: Error) -> String {
+    let nsError = error as NSError
+    guard nsError.domain == WCErrorDomain,
+          let code = WCError.Code(rawValue: nsError.code)
+    else {
+      return error.localizedDescription
+    }
+
+    switch code {
+      case .deliveryFailed, .notReachable:
+        // Delivery is uncertain in both cases. Give the wearer one useful next
+        // step, but never retry automatically: a duplicate could transmit.
+        return "iPhone didn't respond, try again"
+      default:
+        return error.localizedDescription
+    }
   }
 
   // MARK: - Ingest
