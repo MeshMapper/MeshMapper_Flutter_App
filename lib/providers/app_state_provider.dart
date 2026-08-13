@@ -1354,18 +1354,49 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   WatchControls _buildWatchControls() {
     final cooldownMs = _manualPingCooldownTimer.remainingMs;
+    // Keep this gate identical to the app's Send Ping button. The watch only
+    // reflects the phone's latest answer; command handling revalidates again.
+    final canPingManual = manualPingValidation == PingValidation.valid;
+    final isAutoStarting = isAutoPingStarting;
+    final isTxModeActive = isTxModeRunning;
+    final isTargetedRunning = isTargetedModeRunning;
+    final cooldownActive = cooldownTimer.isRunning;
+    final manualCooldownActive = manualPingCooldownTimer.isRunning;
+    final txBlockedByOffline = offlineMode && isConnected;
+    final txNotAllowed = isConnected && !txAllowed;
+    final rxWindowActive = rxWindowTimer.isRunning;
+    final pingSending = isPingSending;
+    final discoveryWindowActive = discoveryWindowTimer.isRunning;
+    final pendingDisable = isPendingDisable;
+    final canManualPing = canPingManual &&
+        !isAutoStarting &&
+        !isTxModeActive &&
+        !isTargetedRunning &&
+        !cooldownActive &&
+        !manualCooldownActive &&
+        !txBlockedByOffline &&
+        !txNotAllowed &&
+        !rxWindowActive &&
+        !pingSending &&
+        !discoveryWindowActive &&
+        !pendingDisable;
+
     final String? blockedReason;
     if (!isConnected) {
       blockedReason = 'Not connected';
     } else if (!hasGpsLock) {
       blockedReason = 'No GPS fix';
+    } else if (txBlockedByOffline) {
+      blockedReason = 'Offline Mode';
+    } else if (txNotAllowed) {
+      blockedReason = 'Passive Only';
     } else {
       blockedReason = null;
     }
 
     return WatchControls(
       canStartStop: isConnected,
-      canManualPing: canPing && cooldownMs <= 0,
+      canManualPing: canManualPing,
       isSessionActive: _autoPingEnabled,
       manualCooldownEndsAt: cooldownMs > 0
           ? DateTime.now().add(Duration(milliseconds: cooldownMs))
