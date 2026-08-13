@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mesh_mapper/models/log_entry.dart';
 import 'package:mesh_mapper/models/ping_data.dart';
 import 'package:mesh_mapper/models/repeater.dart';
 import 'package:mesh_mapper/providers/app_state_provider.dart' show OverlayPingType;
@@ -22,6 +23,31 @@ RxPing _rx(DateTime at) => RxPing(
       timestamp: at,
       snr: 5.0,
       rssi: -90,
+    );
+
+DiscLogEntry _disc(DateTime at, {required bool discovered}) => DiscLogEntry(
+      timestamp: at,
+      latitude: 47.62,
+      longitude: -122.32,
+      discoveredNodes: discovered
+          ? [
+              DiscoveredNodeEntry(
+                repeaterId: '7a',
+                nodeType: 'REPEATER',
+                localSnr: 7,
+                localRssi: -88,
+                remoteSnr: 5,
+              ),
+            ]
+          : [],
+    );
+
+TraceLogEntry _trace(DateTime at, {required bool success}) => TraceLogEntry(
+      timestamp: at,
+      latitude: 47.63,
+      longitude: -122.33,
+      targetRepeaterId: '8b',
+      success: success,
     );
 
 Repeater _repeater({
@@ -54,7 +80,12 @@ void main() {
       final tx = List.generate(40, (i) => _tx(base.add(Duration(minutes: i))));
       final rx = List.generate(40, (i) => _rx(base.add(Duration(seconds: i))));
 
-      final pings = WatchGeoBuilder.buildPings(txPings: tx, rxPings: rx);
+      final pings = WatchGeoBuilder.buildPings(
+        txPings: tx,
+        rxPings: rx,
+        discLogEntries: const [],
+        traceLogEntries: const [],
+      );
 
       expect(pings.length, WatchWire.maxPings);
       for (var i = 1; i < pings.length; i++) {
@@ -77,6 +108,8 @@ void main() {
       final pings = WatchGeoBuilder.buildPings(
         txPings: [answered, ignored],
         rxPings: const [],
+        discLogEntries: const [],
+        traceLogEntries: const [],
       );
 
       final byTime = {for (final p in pings) p.at: p};
@@ -88,6 +121,181 @@ void main() {
         byTime[ignored.timestamp]!.color,
         WatchColor.fromColor(PingColors.txFail),
       );
+    });
+
+    test('multi-hop-only TX is RX-coloured unless any echo is direct', () {
+      final multiHopOnly = _tx(
+        DateTime(2026, 8, 12, 10, 2),
+        heard: const [
+          HeardRepeater(
+            repeaterId: '4e',
+            snr: 6,
+            pathHops: ['7a', '4e'],
+          ),
+          HeardRepeater(
+            repeaterId: '5f',
+            snr: 3,
+            pathHops: ['8b', '5f'],
+          ),
+        ],
+      );
+      final includesDirect = _tx(
+        DateTime(2026, 8, 12, 10, 1),
+        heard: const [
+          HeardRepeater(
+            repeaterId: '4e',
+            snr: 6,
+            pathHops: ['7a', '4e'],
+          ),
+          HeardRepeater(repeaterId: '5f', snr: 3),
+        ],
+      );
+
+      final pings = WatchGeoBuilder.buildPings(
+        txPings: [multiHopOnly, includesDirect],
+        rxPings: const [],
+        discLogEntries: const [],
+        traceLogEntries: const [],
+      );
+
+      final byTime = {for (final ping in pings) ping.at: ping};
+      expect(byTime[multiHopOnly.timestamp]!.kind, 'tx');
+      expect(
+        byTime[multiHopOnly.timestamp]!.color,
+        WatchColor.fromColor(PingColors.rx),
+      );
+      expect(
+        byTime[includesDirect.timestamp]!.color,
+        WatchColor.fromColor(PingColors.txSuccess),
+      );
+    });
+
+    test('discovery markers use response success and failure colours', () {
+      final answered = _disc(
+        DateTime(2026, 8, 12, 10, 1),
+        discovered: true,
+      );
+      final unanswered = _disc(
+        DateTime(2026, 8, 12, 10),
+        discovered: false,
+      );
+
+      final pings = WatchGeoBuilder.buildPings(
+        txPings: const [],
+        rxPings: const [],
+        discLogEntries: [answered, unanswered],
+        traceLogEntries: const [],
+      );
+
+      final byTime = {for (final ping in pings) ping.at: ping};
+      expect(byTime[answered.timestamp]!.kind, 'disc');
+      expect(
+        byTime[answered.timestamp]!.color,
+        WatchColor.fromColor(PingColors.discSuccess),
+      );
+      expect(
+        byTime[unanswered.timestamp]!.color,
+        WatchColor.fromColor(PingColors.discFail),
+      );
+    });
+
+    test('trace markers use the trace result colours', () {
+      final answered = _trace(
+        DateTime(2026, 8, 12, 10, 1),
+        success: true,
+      );
+      final unanswered = _trace(
+        DateTime(2026, 8, 12, 10),
+        success: false,
+      );
+
+      final pings = WatchGeoBuilder.buildPings(
+        txPings: const [],
+        rxPings: const [],
+        discLogEntries: const [],
+        traceLogEntries: [answered, unanswered],
+      );
+
+      final byTime = {for (final ping in pings) ping.at: ping};
+      expect(byTime[answered.timestamp]!.kind, 'trace');
+      expect(
+        byTime[answered.timestamp]!.color,
+        WatchColor.fromColor(PingColors.traceSuccess),
+      );
+      expect(
+        byTime[unanswered.timestamp]!.color,
+        WatchColor.fromColor(PingColors.noResponse),
+      );
+    });
+
+    test('the cap keeps the newest markers across mixed sources', () {
+      final base = DateTime(2026, 8, 12, 10);
+      final oldTx = List.generate(
+        60,
+        (i) => _tx(base.subtract(Duration(minutes: i + 1))),
+      );
+      final latestTx = _tx(base.add(const Duration(seconds: 1)));
+      final latestRx = _rx(base.add(const Duration(seconds: 2)));
+      final latestDisc = _disc(
+        base.add(const Duration(seconds: 3)),
+        discovered: true,
+      );
+      final latestTrace = _trace(
+        base.add(const Duration(seconds: 4)),
+        success: true,
+      );
+
+      final pings = WatchGeoBuilder.buildPings(
+        txPings: [...oldTx, latestTx],
+        rxPings: [latestRx],
+        discLogEntries: [latestDisc],
+        traceLogEntries: [latestTrace],
+        cap: 4,
+      );
+
+      expect(pings.map((ping) => ping.kind), ['trace', 'disc', 'rx', 'tx']);
+      expect(pings.map((ping) => ping.at), [
+        latestTrace.timestamp,
+        latestDisc.timestamp,
+        latestRx.timestamp,
+        latestTx.timestamp,
+      ]);
+    });
+
+    test('all four marker types survive a realistic mixed history', () {
+      final base = DateTime(2026, 8, 12, 10);
+
+      final pings = WatchGeoBuilder.buildPings(
+        txPings: List.generate(
+          12,
+          (i) => _tx(base.add(Duration(minutes: i * 4))),
+        ),
+        rxPings: List.generate(
+          8,
+          (i) => _rx(base.add(Duration(minutes: i * 6 + 1))),
+        ),
+        discLogEntries: List.generate(
+          6,
+          (i) => _disc(
+            base.add(Duration(minutes: i * 8 + 2)),
+            discovered: i.isEven,
+          ),
+        ),
+        traceLogEntries: List.generate(
+          4,
+          (i) => _trace(
+            base.add(Duration(minutes: i * 12 + 3)),
+            success: i.isEven,
+          ),
+        ),
+      );
+
+      expect(pings.map((ping) => ping.kind).toSet(), {
+        'tx',
+        'rx',
+        'disc',
+        'trace',
+      });
     });
   });
 
