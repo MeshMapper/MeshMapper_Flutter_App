@@ -43,8 +43,19 @@ struct MapPage: View {
   /// `noteCameraChange`.
   @State private var hasConfirmedRequestedCenter = false
 
+  /// Span counterpart to the centre handshake: MapKit can report its old
+  /// `.automatic` fit after we assign a region, so assignment alone is not
+  /// evidence that a rendered zoom came from us.
+  @State private var hasConfirmedRequestedSpan = false
+
   /// Metres of disagreement before a camera change counts as a real pan.
   private static let panTolerance: CLLocationDistance = 40
+
+  /// Initial confirmation only needs to distinguish our request from the much
+  /// wider automatic annotation fit. MapKit may adjust a requested region for
+  /// display geometry, so a generous tolerance avoids quietly disabling Crown
+  /// persistence by waiting forever for an exact span.
+  private static let spanConfirmationTolerance = 0.25
 
   /// How long a pan pauses following before the map drifts back to the fix.
   private static let resumeFollowAfter: TimeInterval = 8
@@ -738,8 +749,9 @@ struct MapPage: View {
   }
 
   /// MapKit fits longitude to the watch's aspect ratio, so latitude is the one
-  /// independent zoom value. A fresh install starts at 0.0045 degrees, about
-  /// 500 m north-south, and later launches reuse the wearer's Crown setting.
+  /// independent zoom value. After the one-time defaults migration it starts
+  /// at 0.00225 degrees, about 250 m north-south, and later launches reuse the
+  /// wearer's Crown setting.
   private var currentSpan: MKCoordinateSpan {
     MKCoordinateSpan(
       latitudeDelta: settings.mapLatitudeDelta,
@@ -756,19 +768,29 @@ struct MapPage: View {
   /// starting point.
   private func noteRenderedRegion(_ region: MKCoordinateRegion) {
     renderedCenter = region.center
-    // Before our first camera update this region belongs to `.automatic`,
-    // which fits every annotation and can span a continent. It is not a wearer
-    // choice and must never become the remembered zoom. Once we have driven
-    // the camera, rendered spans include our requested value and later Digital
-    // Crown changes, both of which should persist.
+    // `.automatic` can report its annotation fit even after we assign our first
+    // region, so `programmaticCenter != nil` proves only that a request was
+    // made, not that MapKit rendered it. Persist nothing until the rendered
+    // span confirms the request; later deviations are Crown zooms and remain
+    // eligible for the normal write-back below.
     guard programmaticCenter != nil else { return }
+
+    let rendered = region.span.latitudeDelta
+    let requested = settings.mapLatitudeDelta
+    guard rendered.isFinite, requested.isFinite, requested > 0 else { return }
+
+    guard hasConfirmedRequestedSpan else {
+      let relativeDifference = abs(rendered - requested) / requested
+      if relativeDifference <= Self.spanConfirmationTolerance {
+        hasConfirmedRequestedSpan = true
+      }
+      return
+    }
 
     // Only on a real change. Every follow update produces a camera change, and
     // writing an identical value would persist and invalidate on each one,
     // re-rendering the map for nothing.
-    let rendered = region.span.latitudeDelta
-    let stored = settings.mapLatitudeDelta
-    guard stored > 0, abs(rendered - stored) / stored > 0.01 else { return }
+    guard abs(rendered - requested) / requested > 0.01 else { return }
     settings.mapLatitudeDelta = rendered
   }
 

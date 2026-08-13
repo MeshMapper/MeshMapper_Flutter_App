@@ -13,13 +13,15 @@ final class WatchSettings {
     static let showLinks = "map.showLinks"
     static let follow = "map.follow"
     static let mapLatitudeDelta = "map.latitudeDelta"
+    static let mapZoomDefaultsVersion = "map.zoomDefaultsVersion"
     static let mainPageContent = "layout.mainPageContent"
     static let nodeListPlacement = "layout.nodeListPlacement"
   }
 
-  /// Roughly 500 m north-south: one degree of latitude is about 111 km.
-  static let defaultMapLatitudeDelta = 0.0045
+  /// Roughly 250 m north-south: one degree of latitude is about 111,320 m.
+  static let defaultMapLatitudeDelta = 0.00225
   private static let mapLatitudeDeltaLimits = 0.0005...0.5
+  private static let mapZoomDefaultsVersion = 1
 
   /// Where the recently-responded list lives.
   ///
@@ -68,13 +70,23 @@ final class WatchSettings {
     // Following the fix is the useful default while driving; absent any
     // stored value `bool(forKey:)` returns false, so invert an explicit flag.
     follow = defaults.object(forKey: Key.follow) as? Bool ?? true
-    // `double(forKey:)` turns absence into zero, which would silently select
-    // the minimum zoom. Preserve the distinction so fresh installs get the
-    // deliberate ~500 m default instead.
-    mapLatitudeDelta = Self.clampedMapLatitudeDelta(
-      defaults.object(forKey: Key.mapLatitudeDelta) as? Double
-        ?? Self.defaultMapLatitudeDelta
-    )
+    // Rendered MapKit spans drift from the region requested, so an equality
+    // test cannot identify the old default reliably. A versioned migration
+    // deliberately resets every existing install once; after recording the
+    // version, ordinary Crown write-back owns the value again.
+    if defaults.integer(forKey: Key.mapZoomDefaultsVersion) < Self.mapZoomDefaultsVersion {
+      mapLatitudeDelta = Self.defaultMapLatitudeDelta
+      defaults.set(Self.defaultMapLatitudeDelta, forKey: Key.mapLatitudeDelta)
+      defaults.set(Self.mapZoomDefaultsVersion, forKey: Key.mapZoomDefaultsVersion)
+    } else {
+      // `double(forKey:)` turns absence into zero, which would silently select
+      // the minimum zoom. Preserve the distinction so an absent value gets the
+      // deliberate ~250 m default instead.
+      mapLatitudeDelta = Self.clampedMapLatitudeDelta(
+        defaults.object(forKey: Key.mapLatitudeDelta) as? Double
+          ?? Self.defaultMapLatitudeDelta
+      )
+    }
     mainPageContent = (defaults.string(forKey: Key.mainPageContent))
       .flatMap(MainPageContent.init(rawValue:)) ?? .map
     nodeListPlacement = (defaults.string(forKey: Key.nodeListPlacement))
