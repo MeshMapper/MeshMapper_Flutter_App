@@ -160,6 +160,10 @@ class WatchGeoBuilder {
         OverlayPingType.rx => WatchColor.fromColor(PingColors.rx),
       };
 
+  /// SNR quality colour shared by every native glance surface.
+  static WatchColor snrColor(double snr) =>
+      WatchColor.fromColor(PingColors.snrColor(snr));
+
   /// The "Top Heard" overlay rows: up to three top-SNR repeaters from the
   /// latest ping, then the current RX slot.
   ///
@@ -230,7 +234,7 @@ class WatchGeoBuilder {
       snr: snr,
       at: at,
       distanceM: distance,
-      snrColor: WatchColor.fromColor(PingColors.snrColor(snr)),
+      snrColor: snrColor(snr),
       typeColor: overlayTypeColor(type),
     );
   }

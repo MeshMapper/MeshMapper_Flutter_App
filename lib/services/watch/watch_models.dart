@@ -1,6 +1,7 @@
-import 'dart:ui' show Color;
-
 import '../live_activity/live_activity_models.dart';
+import 'watch_color.dart';
+
+export 'watch_color.dart';
 
 /// Wire contract for the watchOS companion.
 ///
@@ -34,33 +35,6 @@ class WatchWire {
   /// changes and new pings always go through; this only suppresses the
   /// jitter of a stationary GPS.
   static const double minMoveMeters = 15.0;
-}
-
-/// An sRGB colour resolved from the active colour-vision palette.
-///
-/// Resolving on the phone is deliberate: Dart owns [PingColors], so the watch
-/// renders accessibility palettes correctly without duplicating any of them.
-class WatchColor {
-  const WatchColor(this.r, this.g, this.b);
-
-  factory WatchColor.fromColor(Color color) => WatchColor(
-        (color.r * 255.0).roundToDouble() / 255.0,
-        (color.g * 255.0).roundToDouble() / 255.0,
-        (color.b * 255.0).roundToDouble() / 255.0,
-      );
-
-  final double r;
-  final double g;
-  final double b;
-
-  Map<String, Object?> toMap() => {'r': r, 'g': g, 'b': b};
-
-  @override
-  bool operator ==(Object other) =>
-      other is WatchColor && other.r == r && other.g == g && other.b == b;
-
-  @override
-  int get hashCode => Object.hash(r, g, b);
 }
 
 class WatchPosition {

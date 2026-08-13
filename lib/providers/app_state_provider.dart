@@ -249,7 +249,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Live Activity repeater snapshot. Kept separate from the map overlay so the
   // system presentation cannot change existing in-app overlay behaviour.
-  List<({String repeaterId, double snr})> _liveActivityRepeaters = [];
+  List<({String repeaterId, double snr, OverlayPingType type})>
+      _liveActivityRepeaters = [];
   int _liveActivityRepeaterTotalCount = 0;
   DateTime? _liveActivityRepeatersUpdatedAt;
   DateTime? _liveActivityRxUpdatedAt;
@@ -632,7 +633,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _updateLiveActivityRepeaters(
-      Iterable<({String repeaterId, double snr})> current) {
+      Iterable<({String repeaterId, double snr})> current,
+      OverlayPingType type) {
     final bestSnr = <String, double>{};
     for (final repeater in current) {
       if (!repeater.snr.isFinite) continue;
@@ -644,7 +646,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final sorted = bestSnr.entries
-        .map((entry) => (repeaterId: entry.key, snr: entry.value))
+        .map((entry) =>
+            (repeaterId: entry.key, snr: entry.value, type: type))
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
     _liveActivityRepeaters = sorted.take(3).toList(growable: false);
@@ -1225,6 +1228,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final phase = _resolveLiveActivityPhase();
     final repeaterState = _buildLiveActivityRepeaters();
     final now = DateTime.now();
+    final phaseDurationMs = _phaseDurationMsFor(phase.endsAt);
+    final pingColor = _resolveWatchPingColor();
 
     final core = LiveActivitySnapshot(
       sessionId: _liveActivitySessionId ?? 'idle',
@@ -1236,6 +1241,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phaseTitle: phase.title,
       phaseDetail: phase.detail,
       phaseEndsAt: phase.endsAt,
+      phaseDurationMs: phaseDurationMs,
+      pingColor: pingColor,
       isConnected: isConnected,
       zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       txCount: _pingStats.txCount,
@@ -1253,9 +1260,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       core: core,
       geo: _buildWatchGeo(now),
       controls: _buildWatchControls(),
-      pingColor: _resolveWatchPingColor(),
+      pingColor: pingColor,
       cue: _watchCue,
-      phaseDurationMs: _phaseDurationMsFor(phase.endsAt),
+      phaseDurationMs: phaseDurationMs,
       updatedAt: now,
     );
   }
@@ -1567,6 +1574,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     final phase = _resolveLiveActivityPhase();
     final repeaterState = _buildLiveActivityRepeaters();
+    final phaseDurationMs = _phaseDurationMsFor(phase.endsAt);
+    final pingColor = _resolveWatchPingColor();
 
     return LiveActivitySnapshot(
       sessionId: sessionId,
@@ -1575,6 +1584,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phaseTitle: phase.title,
       phaseDetail: phase.detail,
       phaseEndsAt: phase.endsAt,
+      phaseDurationMs: phaseDurationMs,
+      pingColor: pingColor,
       isConnected: isConnected,
       zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       txCount: _pingStats.txCount,
@@ -1810,6 +1821,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           id: id,
           name: _resolveRepeaterDisplayName(id),
           snr: repeater.snr,
+          typeColor: WatchGeoBuilder.overlayTypeColor(repeater.type),
+          snrColor: WatchGeoBuilder.snrColor(repeater.snr),
         );
       }
     }
@@ -1823,6 +1836,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           id: id,
           name: _resolveRepeaterDisplayName(id),
           snr: rx.snr,
+          typeColor: WatchGeoBuilder.overlayTypeColor(OverlayPingType.rx),
+          snrColor: WatchGeoBuilder.snrColor(rx.snr),
         );
       }
     }
@@ -3468,7 +3483,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                       repeaterId: event.repeaterId.toUpperCase(),
                       snr: event.snr!,
                     )),
-          ]);
+          ], OverlayPingType.tx);
 
           debugLog('[APP] Calling notifyListeners() to update UI');
           _notifyMapThrottled();
@@ -3536,7 +3551,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                       repeaterId: event.repeaterId.toUpperCase(),
                       snr: event.snr!,
                     )),
-          ]);
+          ], OverlayPingType.tx);
 
           _notifyMapThrottled();
         }
@@ -3582,7 +3597,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               ))
           .toList(growable: false);
       _updateTopRepeaters(heardRepeaters, OverlayPingType.disc);
-      _updateLiveActivityRepeaters(heardRepeaters);
+      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
 
       _notifyMapThrottled();
     };
@@ -3633,7 +3648,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                   snr: event.snr!,
                 )));
       }
-      _updateLiveActivityRepeaters(heardRepeaters);
+      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.tx);
 
       final PingEventType eventType;
       if (directSuccess) {
@@ -3680,7 +3695,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                   snr: node.localSnr,
                 )));
       }
-      _updateLiveActivityRepeaters(heardRepeaters);
+      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
 
       PingEventType eventType;
       if (success) {
@@ -3742,6 +3757,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         result != null && result.success && traceSnr != null
             ? [(repeaterId: result.targetRepeaterId, snr: traceSnr)]
             : const [],
+        OverlayPingType.trace,
       );
 
       recordPingEvent(

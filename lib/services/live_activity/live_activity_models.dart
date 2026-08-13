@@ -1,3 +1,5 @@
+import '../watch/watch_color.dart';
+
 /// High-level phase shown by the iOS Live Activity.
 enum LiveActivityPhase {
   active,
@@ -49,16 +51,22 @@ class LiveActivityRepeater {
     required this.id,
     required this.snr,
     this.name,
+    this.typeColor,
+    this.snrColor,
   });
 
   final String id;
   final String? name;
   final double snr;
+  final WatchColor? typeColor;
+  final WatchColor? snrColor;
 
   Map<String, Object?> toMap() => {
         'id': id,
         'name': name,
         'snr': snr.isFinite ? snr : 0.0,
+        if (typeColor != null) 'typeColor': typeColor!.toMap(),
+        if (snrColor != null) 'snrColor': snrColor!.toMap(),
       };
 }
 
@@ -81,6 +89,8 @@ class LiveActivitySnapshot {
     required this.updatedAt,
     this.phaseDetail,
     this.phaseEndsAt,
+    this.phaseDurationMs,
+    this.pingColor,
     this.zoneCode,
   });
 
@@ -90,6 +100,8 @@ class LiveActivitySnapshot {
   final String phaseTitle;
   final String? phaseDetail;
   final DateTime? phaseEndsAt;
+  final int? phaseDurationMs;
+  final WatchColor? pingColor;
   final bool isConnected;
   final String? zoneCode;
   final int txCount;
@@ -109,6 +121,8 @@ class LiveActivitySnapshot {
         'phaseTitle': phaseTitle,
         'phaseDetail': phaseDetail,
         'phaseEndsAt': phaseEndsAt?.millisecondsSinceEpoch,
+        if (phaseDurationMs != null) 'phaseDurationMs': phaseDurationMs,
+        if (pingColor != null) 'pingColor': pingColor!.toMap(),
         'isConnected': isConnected,
         'zoneCode': zoneCode,
         'txCount': txCount,
@@ -130,6 +144,10 @@ class LiveActivitySnapshot {
         phaseTitle,
         phaseDetail ?? '',
         phaseEndsAt?.millisecondsSinceEpoch ?? 0,
+        phaseDurationMs ?? 0,
+        pingColor?.r ?? '',
+        pingColor?.g ?? '',
+        pingColor?.b ?? '',
         isConnected,
         zoneCode ?? '',
       ].join('|');
