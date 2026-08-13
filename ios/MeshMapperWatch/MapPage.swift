@@ -38,15 +38,88 @@ struct MapPage: View {
     return true
   }
 
+  @State private var showingNodes = false
+
   var body: some View {
     ZStack(alignment: .top) {
       map
       chrome
+      if settings.nodeListPlacement == .sheet {
+        VStack {
+          Spacer()
+          nodeSummaryBar
+        }
+      }
+    }
+    .sheet(isPresented: $showingNodes) {
+      NavigationStack {
+        NodeListView()
+          .navigationTitle("Heard")
+          .navigationBarTitleDisplayMode(.inline)
+      }
     }
     .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
       recenterIfFollowing()
     }
-    .onAppear { recenterIfFollowing() }
+    .onAppear {
+      recenterIfFollowing()
+      #if DEBUG
+      // Lets the sheet layout be captured and iterated on headlessly; the
+      // simulator has no way to tap the bar.
+      if UserDefaults.standard.bool(forKey: "MeshMapperShowNodeSheet") {
+        showingNodes = true
+      }
+      #endif
+    }
+  }
+
+  /// Tap target for the node sheet.
+  ///
+  /// A tap rather than the swipe-up the plan first assumed: on watchOS a swipe
+  /// from the bottom edge is the Control Center gesture, so it would fight the
+  /// system. Surfacing the strongest node inline also means the common case —
+  /// "what just answered?" — needs no interaction at all.
+  private var nodeSummaryBar: some View {
+    Button {
+      showingNodes = true
+    } label: {
+      HStack(spacing: 5) {
+        if let top = snapshot?.geo.heard.first {
+          if let color = top.snrColor {
+            Circle().fill(Color(color)).frame(width: 6, height: 6)
+          }
+          Text(top.name)
+            .font(.caption2)
+            .lineLimit(1)
+          if let snr = top.snr {
+            Text(snr, format: .number.precision(.fractionLength(1)))
+              .font(.caption2.monospacedDigit())
+          }
+          Spacer(minLength: 2)
+          let extra = (snapshot?.geo.heard.count ?? 0) - 1
+          if extra > 0 {
+            Text("+\(extra)")
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
+        } else {
+          Text("Nothing heard")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+          Spacer(minLength: 2)
+        }
+        Image(systemName: "chevron.up")
+          .font(.system(size: 8))
+          .foregroundStyle(.secondary)
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 4)
+      .background(.black.opacity(0.6), in: Capsule())
+    }
+    .buttonStyle(.plain)
+    .padding(.horizontal, 6)
+    .padding(.bottom, 2)
+    .opacity(client.isStale ? 0.5 : 1.0)
   }
 
   // MARK: - Map
@@ -123,7 +196,22 @@ struct MapPage: View {
   private var chrome: some View {
     HStack(alignment: .top) {
       if let snapshot {
-        CountdownPill(snapshot: snapshot)
+        VStack(alignment: .leading, spacing: 2) {
+          CountdownPill(snapshot: snapshot)
+          if client.isStale, let receivedAt = client.receivedAt {
+            // Stale data must never read as live data.
+            HStack(spacing: 2) {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 7))
+              Text(receivedAt, style: .relative)
+                .font(.system(size: 9))
+            }
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(.black.opacity(0.6), in: Capsule())
+          }
+        }
       }
       Spacer()
       if !isFollowing, fix != nil {
