@@ -1,0 +1,320 @@
+import 'dart:ui' show Color;
+
+import '../live_activity/live_activity_models.dart';
+
+/// Wire contract for the watchOS companion.
+///
+/// The Swift mirror lives in `ios/Shared/MeshMapperWatchPayload.swift` and is
+/// compiled into both Runner and the watch target. This file and that one are
+/// a matched pair — change one, change the other, and update the golden
+/// fixtures in `test/services/watch/`.
+///
+/// [LiveActivitySnapshot] is reused verbatim for the session core rather than
+/// re-deriving phase/counter semantics, which is the expensive and bug-prone
+/// part. This snapshot composes it with the geography, controls, and haptic
+/// cue the Live Activity has no use for.
+class WatchWire {
+  WatchWire._();
+
+  /// Bump when a field changes meaning or is removed. The watch refuses
+  /// payloads it doesn't understand rather than rendering something wrong.
+  static const int version = 1;
+
+  static const int maxPings = 60;
+  static const int maxRepeaters = 20;
+  static const int maxHeard = 7;
+
+  /// Skip a geo-only update unless the fix moved at least this far. Phase
+  /// changes and new pings always go through; this only suppresses the
+  /// jitter of a stationary GPS.
+  static const double minMoveMeters = 15.0;
+}
+
+/// An sRGB colour resolved from the active colour-vision palette.
+///
+/// Resolving on the phone is deliberate: Dart owns [PingColors], so the watch
+/// renders accessibility palettes correctly without duplicating any of them.
+class WatchColor {
+  const WatchColor(this.r, this.g, this.b);
+
+  factory WatchColor.fromColor(Color color) => WatchColor(
+        (color.r * 255.0).roundToDouble() / 255.0,
+        (color.g * 255.0).roundToDouble() / 255.0,
+        (color.b * 255.0).roundToDouble() / 255.0,
+      );
+
+  final double r;
+  final double g;
+  final double b;
+
+  Map<String, Object?> toMap() => {'r': r, 'g': g, 'b': b};
+
+  @override
+  bool operator ==(Object other) =>
+      other is WatchColor && other.r == r && other.g == g && other.b == b;
+
+  @override
+  int get hashCode => Object.hash(r, g, b);
+}
+
+class WatchPosition {
+  const WatchPosition({
+    required this.lat,
+    required this.lon,
+    required this.fixedAt,
+    this.headingDeg,
+    this.accuracyM,
+  });
+
+  final double lat;
+  final double lon;
+  final double? headingDeg;
+  final double? accuracyM;
+  final DateTime fixedAt;
+
+  Map<String, Object?> toMap() => {
+        'lat': lat,
+        'lon': lon,
+        'headingDeg': headingDeg,
+        'accuracyM': accuracyM,
+        'fixedAtMs': fixedAt.millisecondsSinceEpoch.toDouble(),
+      };
+}
+
+class WatchPing {
+  const WatchPing({
+    required this.id,
+    required this.lat,
+    required this.lon,
+    required this.kind,
+    required this.color,
+    required this.at,
+  });
+
+  final String id;
+  final double lat;
+  final double lon;
+
+  /// 'tx' | 'rx' | 'disc' | 'trace' — drives glyph choice, not colour.
+  final String kind;
+  final WatchColor color;
+  final DateTime at;
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'lat': lat,
+        'lon': lon,
+        'kind': kind,
+        'color': color.toMap(),
+        'atMs': at.millisecondsSinceEpoch.toDouble(),
+      };
+}
+
+class WatchRepeater {
+  const WatchRepeater({
+    required this.id,
+    required this.name,
+    required this.lat,
+    required this.lon,
+    required this.color,
+    required this.heardThisCycle,
+  });
+
+  final String id;
+  final String name;
+  final double lat;
+  final double lon;
+  final WatchColor color;
+  final bool heardThisCycle;
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'name': name,
+        'lat': lat,
+        'lon': lon,
+        'color': color.toMap(),
+        'heardThisCycle': heardThisCycle,
+      };
+}
+
+class WatchHeardNode {
+  const WatchHeardNode({
+    required this.id,
+    required this.name,
+    required this.seenCount,
+    required this.at,
+    this.snr,
+    this.rssi,
+    this.hops,
+    this.distanceM,
+    this.snrColor,
+  });
+
+  final String id;
+  final String name;
+  final double? snr;
+  final int? rssi;
+
+  /// null = direct echo; otherwise the hop count.
+  final int? hops;
+  final int seenCount;
+  final DateTime at;
+  final double? distanceM;
+  final WatchColor? snrColor;
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'name': name,
+        'snr': snr,
+        'rssi': rssi,
+        'hops': hops,
+        'seenCount': seenCount,
+        'atMs': at.millisecondsSinceEpoch.toDouble(),
+        'distanceM': distanceM,
+        'snrColor': snrColor?.toMap(),
+      };
+}
+
+class WatchGeo {
+  const WatchGeo({
+    required this.pings,
+    required this.repeaters,
+    required this.heard,
+    required this.linkedRepeaterIds,
+    this.you,
+  });
+
+  final WatchPosition? you;
+  final List<WatchPing> pings;
+  final List<WatchRepeater> repeaters;
+  final List<WatchHeardNode> heard;
+  final List<String> linkedRepeaterIds;
+
+  Map<String, Object?> toMap() => {
+        'you': you?.toMap(),
+        'pings': pings.map((p) => p.toMap()).toList(),
+        'repeaters': repeaters.map((r) => r.toMap()).toList(),
+        'heard': heard.map((h) => h.toMap()).toList(),
+        'linkedRepeaterIds': linkedRepeaterIds,
+      };
+}
+
+/// What the wrist may do right now.
+///
+/// Drives button enablement only. The phone revalidates every command, so a
+/// stale payload can never talk it into an illegal transmit.
+class WatchControls {
+  const WatchControls({
+    required this.canStartStop,
+    required this.canManualPing,
+    required this.isSessionActive,
+    this.manualCooldownEndsAt,
+    this.blockedReason,
+  });
+
+  final bool canStartStop;
+  final bool canManualPing;
+  final bool isSessionActive;
+  final DateTime? manualCooldownEndsAt;
+  final String? blockedReason;
+
+  Map<String, Object?> toMap() => {
+        'canStartStop': canStartStop,
+        'canManualPing': canManualPing,
+        'isSessionActive': isSessionActive,
+        'manualCooldownEndsAtMs':
+            manualCooldownEndsAt?.millisecondsSinceEpoch.toDouble(),
+        'blockedReason': blockedReason,
+      };
+}
+
+/// A one-shot event the watch should feel.
+///
+/// Carries an [id] so the watch fires exactly once: diffing state would
+/// double-fire on redelivery, which WatchConnectivity does routinely.
+class WatchHapticCue {
+  const WatchHapticCue({required this.id, required this.kind});
+
+  final String id;
+
+  /// 'success' | 'failure' | 'notification'
+  final String kind;
+
+  Map<String, Object?> toMap() => {'id': id, 'kind': kind};
+}
+
+/// The complete state the watch renders.
+class WatchSnapshot {
+  const WatchSnapshot({
+    required this.core,
+    required this.geo,
+    required this.controls,
+    required this.updatedAt,
+    this.pingColor,
+    this.cue,
+  });
+
+  /// Session core, reused from the Live Activity so both surfaces agree.
+  final LiveActivitySnapshot core;
+  final WatchGeo geo;
+  final WatchControls controls;
+  final WatchColor? pingColor;
+  final WatchHapticCue? cue;
+  final DateTime updatedAt;
+
+  Map<String, Object?> toMap() => {
+        'wireVersion': WatchWire.version,
+        'sessionId': core.sessionId,
+        'mode': core.mode,
+        'phase': core.phase.wireValue,
+        'phaseTitle': core.phaseTitle,
+        'phaseDetail': core.phaseDetail,
+        'phaseEndsAtMs':
+            core.phaseEndsAt?.millisecondsSinceEpoch.toDouble(),
+        'isConnected': core.isConnected,
+        'zoneCode': core.zoneCode,
+        'txCount': core.txCount,
+        'rxCount': core.rxCount,
+        'discoveryCount': core.discoveryCount,
+        'traceCount': core.traceCount,
+        'queueSize': core.queueSize,
+        'pingColor': pingColor?.toMap(),
+        'geo': geo.toMap(),
+        'controls': controls.toMap(),
+        'cue': cue?.toMap(),
+        'updatedAtMs': updatedAt.millisecondsSinceEpoch.toDouble(),
+      };
+
+  /// Fields that must bypass the update throttle.
+  ///
+  /// Deliberately excludes geo: a moving GPS would otherwise mark every
+  /// update urgent and defeat the throttle entirely.
+  String get urgencyKey => [
+        core.sessionId,
+        core.mode,
+        core.phase.wireValue,
+        core.phaseTitle,
+        core.phaseDetail ?? '',
+        core.phaseEndsAt?.millisecondsSinceEpoch ?? 0,
+        core.isConnected,
+        controls.canStartStop,
+        controls.canManualPing,
+        controls.isSessionActive,
+        cue?.id ?? '',
+      ].join('|');
+}
+
+/// An intent from the wrist. Never state — the phone decides what happens.
+enum WatchCommandKind {
+  startSession,
+  stopSession,
+  manualPing,
+  requestSnapshot;
+
+  static WatchCommandKind? fromWire(String value) {
+    for (final kind in WatchCommandKind.values) {
+      if (kind.name == value) return kind;
+    }
+    return null;
+  }
+}

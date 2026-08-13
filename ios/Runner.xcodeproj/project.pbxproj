@@ -11,6 +11,7 @@
 		15EB8B11C186344E7D096C70 /* MeshMapperWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 74331FACF5FD72D49FF952AD /* MeshMapperWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
+		4FB810C0D8676DD8AB0B1B30 /* WatchSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DB902C46F9528E4D932613C /* WatchSessionManager.swift */; };
 		6AF9D4D984EEF729333DD5B5 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64AD2A4CC4FD28C0416F14D0 /* ContentView.swift */; };
 		73F9D344DD4B7EC7AC29CD86 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F799CC3DB45F3F5C30B5907D /* Pods_RunnerTests.framework */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
@@ -25,9 +26,12 @@
 		A10000000000000000000004 /* MeshMapperLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* MeshMapperLiveActivity.swift */; };
 		A10000000000000000000005 /* MeshMapperLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* MeshMapperLiveActivityBundle.swift */; };
 		A10000000000000000000006 /* MeshMapperLiveActivityExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* MeshMapperLiveActivityExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A40A14B14EA7033DDEF33B80 /* WatchSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178C77B846A00943CD881203 /* WatchSessionClient.swift */; };
+		B69988072090B261D65915C7 /* MeshMapperWatchPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */; };
 		CAF9ECAD9403CAB65D2DF448 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 92ADBADB6F5FE8E07CDC4600 /* Foundation.framework */; };
 		E6EDFA2E3EBEDBAFD72A5B9F /* MeshMapperWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87786D0E1C88A11BAB16DA95 /* MeshMapperWatchApp.swift */; };
 		E83718073D76FB741949ED05 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6CC8647C002484845F02D0CE /* Assets.xcassets */; };
+		F857D97D425B45AB76FD4B2F /* MeshMapperWatchPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -93,11 +97,14 @@
 		111B35B32FAB66FA2E78E0BE /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
+		178C77B846A00943CD881203 /* WatchSessionClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatchSessionClient.swift; sourceTree = "<group>"; };
 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
 		331C8081294A63A400263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
+		4DB902C46F9528E4D932613C /* WatchSessionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatchSessionManager.swift; sourceTree = "<group>"; };
 		6316620B3FF7A48DF8F886CA /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		64AD2A4CC4FD28C0416F14D0 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshMapperWatchPayload.swift; sourceTree = "<group>"; };
 		6CC8647C002484845F02D0CE /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		74331FACF5FD72D49FF952AD /* MeshMapperWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MeshMapperWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -182,6 +189,7 @@
 				64AD2A4CC4FD28C0416F14D0 /* ContentView.swift */,
 				111B35B32FAB66FA2E78E0BE /* Info.plist */,
 				6CC8647C002484845F02D0CE /* Assets.xcassets */,
+				178C77B846A00943CD881203 /* WatchSessionClient.swift */,
 			);
 			name = MeshMapperWatch;
 			path = MeshMapperWatch;
@@ -267,6 +275,7 @@
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				A20000000000000000000001 /* LiveActivityManager.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
+				4DB902C46F9528E4D932613C /* WatchSessionManager.swift */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -275,6 +284,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000002 /* MeshMapperActivityAttributes.swift */,
+				68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -587,6 +597,8 @@
 				A10000000000000000000001 /* LiveActivityManager.swift in Sources */,
 				A10000000000000000000002 /* MeshMapperActivityAttributes.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
+				F857D97D425B45AB76FD4B2F /* MeshMapperWatchPayload.swift in Sources */,
+				4FB810C0D8676DD8AB0B1B30 /* WatchSessionManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -606,6 +618,8 @@
 			files = (
 				E6EDFA2E3EBEDBAFD72A5B9F /* MeshMapperWatchApp.swift in Sources */,
 				6AF9D4D984EEF729333DD5B5 /* ContentView.swift in Sources */,
+				B69988072090B261D65915C7 /* MeshMapperWatchPayload.swift in Sources */,
+				A40A14B14EA7033DDEF33B80 /* WatchSessionClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
