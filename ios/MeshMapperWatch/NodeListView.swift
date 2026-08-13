@@ -55,34 +55,39 @@ struct NodeRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 1) {
       HStack(spacing: 5) {
-        if let color = node.snrColor {
-          Circle()
-            .fill(Color(color))
-            .frame(width: 7, height: 7)
-        }
-        Text(node.name)
-          .font(.body)
-          .lineLimit(1)
-          .truncationMode(.tail)
+        // Dot carries the ping type, matching the map overlay.
+        Circle()
+          .fill(Color(node.typeColor))
+          .frame(width: 7, height: 7)
+        // The hex path hash is the identity — it is always available and
+        // always unambiguous, which a resolved name is not.
+        Text(node.id)
+          .font(.body.monospaced())
         Spacer(minLength: 4)
         if let snr = node.snr {
           Text(snr, format: .number.precision(.fractionLength(1)))
             .font(.body.monospacedDigit())
+            .foregroundStyle(node.snrColor.map(Color.init) ?? .primary)
         }
       }
 
-      Text(subtitle)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
+      if let subtitle {
+        Text(subtitle)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
     }
     .padding(.vertical, 1)
   }
 
-  private var subtitle: String {
-    var parts: [String] = [node.hopLabel]
+  /// Name and distance are both optional: a short path hash may match several
+  /// repeaters, and a matched repeater may not have published a location.
+  private var subtitle: String? {
+    var parts: [String] = []
+    if let name = node.name { parts.append(name) }
     if let distance = node.distanceLabel { parts.append(distance) }
-    return parts.joined(separator: " · ")
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 }
 
@@ -93,23 +98,25 @@ struct NodeDetailView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 5) {
-          if let color = node.snrColor {
-            Circle().fill(Color(color)).frame(width: 9, height: 9)
-          }
-          Text(node.name)
-            .font(.headline)
-            .lineLimit(2)
+          Circle().fill(Color(node.typeColor)).frame(width: 9, height: 9)
+          Text(node.id)
+            .font(.headline.monospaced())
         }
 
-        detail("ID", node.id)
+        if let name = node.name {
+          Text(name)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+        } else {
+          Text("Name unresolved — short path hash")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+
         if let snr = node.snr {
           detail("SNR", snr.formatted(.number.precision(.fractionLength(1))) + " dB")
         }
-        if let rssi = node.rssi {
-          detail("RSSI", "\(rssi) dBm")
-        }
-        detail("Path", node.hopLabel)
-        detail("Seen", node.seenCount == 1 ? "once" : "\(node.seenCount)×")
         if let distance = node.distanceLabel {
           detail("Distance", distance)
         }
@@ -134,12 +141,6 @@ struct NodeDetailView: View {
 
 extension WatchHeardNode {
   var heardAt: Date { Date(timeIntervalSince1970: atMs / 1000) }
-
-  /// `nil` hops means a direct echo — the distinction the iOS map draws too.
-  var hopLabel: String {
-    guard let hops else { return "direct" }
-    return hops == 1 ? "1 hop" : "\(hops) hops"
-  }
 
   var distanceLabel: String? {
     guard let distanceM else { return nil }

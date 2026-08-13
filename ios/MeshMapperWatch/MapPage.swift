@@ -41,15 +41,33 @@ struct MapPage: View {
   @State private var showingNodes = false
 
   var body: some View {
-    ZStack(alignment: .top) {
+    ZStack {
       map
-      chrome
-      if settings.nodeListPlacement == .sheet {
-        VStack {
-          Spacer()
-          nodeSummaryBar
+
+      // Top Heard sits hard against the upper-left and the countdown against
+      // the lower-right, mirroring the phone's map so the two read the same
+      // way at a glance.
+      VStack(alignment: .leading, spacing: 0) {
+        HStack(alignment: .top) {
+          topHeardBox
+          Spacer(minLength: 0)
+          recenterButton
+        }
+        Spacer(minLength: 0)
+        HStack(alignment: .bottom) {
+          staleBadge
+          Spacer(minLength: 0)
+          if let snapshot {
+            CountdownPill(snapshot: snapshot)
+          }
         }
       }
+      .padding(.horizontal, 5)
+      .padding(.bottom, 3)
+      // Draw into the top safe area so Top Heard sits hard against the corner.
+      // Safe because the box is left-aligned and the system clock is right-
+      // aligned, so they occupy different halves of that strip.
+      .ignoresSafeArea(edges: .top)
     }
     .sheet(isPresented: $showingNodes) {
       NavigationStack {
@@ -73,53 +91,67 @@ struct MapPage: View {
     }
   }
 
-  /// Tap target for the node sheet.
+  /// "Top Heard" — the phone's map overlay, reproduced on the wrist.
   ///
-  /// A tap rather than the swipe-up the plan first assumed: on watchOS a swipe
-  /// from the bottom edge is the Control Center gesture, so it would fight the
-  /// system. Surfacing the strongest node inline also means the common case —
-  /// "what just answered?" — needs no interaction at all.
-  private var nodeSummaryBar: some View {
+  /// Rows are `[type dot] [hex ID] [SNR]`. The hex path hash is the identity,
+  /// because a 1-byte hash frequently cannot be resolved to a single repeater;
+  /// a name is appended only when the phone could resolve it unambiguously.
+  private var topHeardBox: some View {
     Button {
       showingNodes = true
     } label: {
-      HStack(spacing: 5) {
-        if let top = snapshot?.geo.heard.first {
-          if let color = top.snrColor {
-            Circle().fill(Color(color)).frame(width: 6, height: 6)
-          }
-          Text(top.name)
-            .font(.caption2)
-            .lineLimit(1)
-          if let snr = top.snr {
-            Text(snr, format: .number.precision(.fractionLength(1)))
-              .font(.caption2.monospacedDigit())
-          }
-          Spacer(minLength: 2)
-          let extra = (snapshot?.geo.heard.count ?? 0) - 1
-          if extra > 0 {
-            Text("+\(extra)")
-              .font(.caption2)
-              .foregroundStyle(.secondary)
-          }
+      VStack(alignment: .leading, spacing: 2) {
+        Text("TOP HEARD")
+          .font(.system(size: 8, weight: .medium))
+          .foregroundStyle(.white.opacity(0.55))
+          .kerning(0.5)
+
+        if heard.isEmpty {
+          Text("---")
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.4))
         } else {
-          Text("Nothing heard")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-          Spacer(minLength: 2)
+          ForEach(heard) { node in
+            HStack(spacing: 4) {
+              Circle()
+                .fill(Color(node.typeColor))
+                .frame(width: 6, height: 6)
+              Text(node.id)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+              if let snr = node.snr {
+                Text(snr, format: .number.precision(.fractionLength(1)))
+                  .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                  .foregroundStyle(node.snrColor.map(Color.init) ?? .white)
+              }
+            }
+          }
         }
-        Image(systemName: "chevron.up")
-          .font(.system(size: 8))
-          .foregroundStyle(.secondary)
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
-      .background(.black.opacity(0.6), in: Capsule())
+      .padding(.horizontal, 7)
+      .padding(.vertical, 5)
+      .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
     }
     .buttonStyle(.plain)
-    .padding(.horizontal, 6)
-    .padding(.bottom, 2)
     .opacity(client.isStale ? 0.5 : 1.0)
+  }
+
+  private var heard: [WatchHeardNode] { snapshot?.geo.heard ?? [] }
+
+  @ViewBuilder
+  private var recenterButton: some View {
+    if !isFollowing, fix != nil {
+      Button {
+        followSuspendedUntil = nil
+        recenterIfFollowing(force: true)
+      } label: {
+        Image(systemName: "location.fill")
+          .font(.system(size: 10))
+      }
+      .buttonStyle(.borderless)
+      .padding(4)
+      .background(.black.opacity(0.5), in: Circle())
+    }
   }
 
   // MARK: - Map
@@ -191,44 +223,21 @@ struct MapPage: View {
     }
   }
 
-  // MARK: - Chrome
-
-  private var chrome: some View {
-    HStack(alignment: .top) {
-      if let snapshot {
-        VStack(alignment: .leading, spacing: 2) {
-          CountdownPill(snapshot: snapshot)
-          if client.isStale, let receivedAt = client.receivedAt {
-            // Stale data must never read as live data.
-            HStack(spacing: 2) {
-              Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 7))
-              Text(receivedAt, style: .relative)
-                .font(.system(size: 9))
-            }
-            .foregroundStyle(.orange)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(.black.opacity(0.6), in: Capsule())
-          }
-        }
+  /// Stale data must never read as live data.
+  @ViewBuilder
+  private var staleBadge: some View {
+    if client.isStale, let receivedAt = client.receivedAt {
+      HStack(spacing: 2) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.system(size: 7))
+        Text(receivedAt, style: .relative)
+          .font(.system(size: 9))
       }
-      Spacer()
-      if !isFollowing, fix != nil {
-        Button {
-          followSuspendedUntil = nil
-          recenterIfFollowing(force: true)
-        } label: {
-          Image(systemName: "location.fill")
-            .font(.system(size: 10))
-        }
-        .buttonStyle(.borderless)
-        .padding(4)
-        .background(.black.opacity(0.5), in: Circle())
-      }
+      .foregroundStyle(.orange)
+      .padding(.horizontal, 5)
+      .padding(.vertical, 2)
+      .background(.black.opacity(0.65), in: Capsule())
     }
-    .padding(.horizontal, 6)
-    .opacity(client.isStale ? 0.5 : 1.0)
   }
 
   // MARK: - Camera

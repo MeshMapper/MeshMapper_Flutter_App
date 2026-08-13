@@ -1253,28 +1253,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final position = _resolveWatchPosition();
 
     // Repeaters heard during the current cycle get the highlight ring.
-    final heardIds = _liveActivityRepeaters
+    final heardIds = _topRepeatersOverlay
         .map((r) => r.repeaterId.toUpperCase())
         .toSet();
 
-    // "Recently responded" is the newest TX ping that actually got answers.
-    final answered = _txPings.lastWhere(
-      (p) => p.heardRepeaters.isNotEmpty,
-      orElse: () => TxPing(
-        latitude: 0,
-        longitude: 0,
-        power: 0,
-        timestamp: now,
-        deviceId: '',
-      ),
-    );
+    // The wrist mirrors the map's "Top Heard" overlay: the latest ping's top
+    // three by SNR plus the current RX slot. Same source, so the two surfaces
+    // can never disagree.
+    final top = _topRepeatersOverlay;
+    final rxSlot = _rxOverlaySlot;
 
-    final repeaterById = <String, Repeater>{
-      for (final repeater in _repeaters) ...{
-        repeater.id: repeater,
-        if (repeater.hexId.isNotEmpty) repeater.hexId.toUpperCase(): repeater,
-      }
-    };
+    // Overlay IDs are hex path hashes, so resolve names by prefix at whatever
+    // length this zone actually uses.
+    final hexLength = top.isNotEmpty
+        ? top.first.repeaterId.length
+        : (rxSlot?.repeaterId.length ?? 0);
+    final repeaterByHex = hexLength > 0
+        ? WatchGeoBuilder.indexByHexPrefix(_repeaters, hexLength)
+        : const <String, Repeater>{};
 
     return WatchGeo(
       you: position,
@@ -1286,14 +1282,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         lon: position?.lon,
       ),
       heard: WatchGeoBuilder.buildHeard(
-        heard: answered.heardRepeaters,
-        repeaterById: repeaterById,
-        at: answered.timestamp,
+        top: top,
+        rxSlot: rxSlot,
+        repeaterByHex: repeaterByHex,
+        at: now,
         lat: position?.lat,
         lon: position?.lon,
       ),
-      linkedRepeaterIds:
-          answered.heardRepeaters.map((r) => r.repeaterId).toList(),
+      linkedRepeaterIds: [
+        for (final entry in top) entry.repeaterId,
+        if (rxSlot != null) rxSlot.repeaterId,
+      ],
     );
   }
 

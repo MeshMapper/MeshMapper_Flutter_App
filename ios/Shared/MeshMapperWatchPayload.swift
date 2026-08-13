@@ -20,12 +20,18 @@ import Foundation
 enum MeshMapperWatchWire {
   /// Bump when a field changes meaning or is removed. The receiver refuses
   /// payloads it doesn't understand rather than rendering something wrong.
-  static let version = 1
+  ///
+  /// v2: heard nodes mirror the app's "Top Heard" map overlay — hex ID and
+  /// ping-type colour — instead of richer per-echo data. Hop counts are gone:
+  /// the overlay is fed direct repeaters only.
+  static let version = 2
 
   /// Caps, mirrored in Dart. Enforced on send *and* validated on receive.
   static let maxPings = 60
   static let maxRepeaters = 20
-  static let maxHeard = 7
+
+  /// Three top-SNR rows plus the RX slot.
+  static let maxHeard = 4
 }
 
 // MARK: - Colour
@@ -70,19 +76,28 @@ struct WatchRepeater: Codable, Hashable, Identifiable {
   let heardThisCycle: Bool
 }
 
-/// A row in the "recently responded" panel.
+/// One row of the "Top Heard" overlay.
+///
+/// Mirrors `_buildTopRepeatersOverlay` on the phone's map: a dot coloured by
+/// the kind of ping answered, the hex path-hash ID, and the SNR.
+///
+/// The **hex ID is the identity**. Path hashes are 1–3 bytes, so a short ID
+/// often maps to more than one repeater; `name` arrives only when the match is
+/// unambiguous and is shown as a secondary hint, never in place of the ID.
+///
+/// No hop count by design — the overlay is fed direct repeaters only.
 struct WatchHeardNode: Codable, Hashable, Identifiable {
+  /// Uppercase hex, 2/4/6 characters depending on the zone's hop bytes.
   let id: String
-  let name: String
+  let name: String?
   let snr: Double?
-  let rssi: Int?
-  /// nil = direct echo; otherwise the number of hops.
-  let hops: Int?
-  let seenCount: Int
   let atMs: Double
   let distanceM: Double?
   /// SNR traffic-light colour, resolved by Dart.
   let snrColor: WatchColor?
+  /// Ping type answered: green flood/active, teal discovery, cyan trace,
+  /// purple most-recent RX.
+  let typeColor: WatchColor
 }
 
 struct WatchGeo: Codable, Hashable {

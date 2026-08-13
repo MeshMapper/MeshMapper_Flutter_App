@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/models/ping_data.dart';
 import 'package:mesh_mapper/models/repeater.dart';
+import 'package:mesh_mapper/providers/app_state_provider.dart' show OverlayPingType;
 import 'package:mesh_mapper/services/watch/watch_geo_builder.dart';
 import 'package:mesh_mapper/services/watch/watch_models.dart';
 import 'package:mesh_mapper/utils/ping_colors.dart';
@@ -142,76 +143,114 @@ void main() {
     });
   });
 
-  group('buildHeard', () {
-    test('sorts by SNR descending and caps at the wire limit', () {
-      final heard = List.generate(
-        12,
-        (i) => HeardRepeater(repeaterId: 'r$i', snr: i.toDouble()),
+  group('buildHeard — mirrors the map\'s Top Heard overlay', () {
+    test('keeps the overlay order, with the RX slot trailing', () {
+      final built = WatchGeoBuilder.buildHeard(
+        top: const [
+          (repeaterId: '4E5D', snr: 8.5, type: OverlayPingType.tx),
+          (repeaterId: '77A1', snr: 2.25, type: OverlayPingType.disc),
+        ],
+        rxSlot: (repeaterId: 'B914', snr: 9.9),
+        repeaterByHex: const {},
+        at: DateTime(2026, 8, 12),
       );
 
+      // The RX slot trails even though its SNR is highest — it is a distinct
+      // row on the map, not a competitor for the top three.
+      expect(built.map((h) => h.id), ['4E5D', '77A1', 'B914']);
+    });
+
+    test('the RX row is purple and ping rows carry their own type colour', () {
       final built = WatchGeoBuilder.buildHeard(
-        heard: heard,
-        repeaterById: const {},
+        top: const [
+          (repeaterId: 'AA', snr: 1, type: OverlayPingType.tx),
+          (repeaterId: 'BB', snr: 1, type: OverlayPingType.disc),
+        ],
+        rxSlot: (repeaterId: 'CC', snr: 1),
+        repeaterByHex: const {},
+        at: DateTime(2026, 8, 12),
+      );
+
+      expect(built[0].typeColor, WatchColor.fromColor(PingColors.txSuccess));
+      expect(built[1].typeColor, WatchColor.fromColor(PingColors.discSuccess));
+      expect(built[2].typeColor, WatchColor.fromColor(PingColors.rx));
+    });
+
+    test('never exceeds the wire cap of three rows plus the RX slot', () {
+      final built = WatchGeoBuilder.buildHeard(
+        top: const [
+          (repeaterId: 'A', snr: 4, type: OverlayPingType.tx),
+          (repeaterId: 'B', snr: 3, type: OverlayPingType.tx),
+          (repeaterId: 'C', snr: 2, type: OverlayPingType.tx),
+          (repeaterId: 'D', snr: 1, type: OverlayPingType.tx),
+        ],
+        rxSlot: (repeaterId: 'E', snr: 0),
+        repeaterByHex: const {},
         at: DateTime(2026, 8, 12),
       );
 
       expect(built.length, WatchWire.maxHeard);
-      expect(built.first.snr, 11.0);
-      expect(built.last.snr, 5.0);
     });
 
-    test('a null SNR sorts last rather than crashing', () {
+    test('uppercases the hex id and resolves name plus distance', () {
       final built = WatchGeoBuilder.buildHeard(
-        heard: const [
-          HeardRepeater(repeaterId: 'quiet'),
-          HeardRepeater(repeaterId: 'loud', snr: 3),
-        ],
-        repeaterById: const {},
-        at: DateTime(2026, 8, 12),
-      );
-
-      expect(built.map((h) => h.id), ['loud', 'quiet']);
-      expect(built.last.snrColor, isNull);
-    });
-
-    test('resolves name and distance from the repeater directory', () {
-      final built = WatchGeoBuilder.buildHeard(
-        heard: const [HeardRepeater(repeaterId: '4e', snr: 6, rssi: -80)],
-        repeaterById: {
-          '4e': _repeater(id: '4e', name: 'Capitol Hill', lat: 47.61, lon: -122.3),
+        top: const [(repeaterId: '4e5d', snr: 6, type: OverlayPingType.tx)],
+        repeaterByHex: {
+          '4E5D': _repeater(
+              id: '01', hexId: '4E5D82', name: 'Capitol Hill', lat: 47.61, lon: -122.3),
         },
         at: DateTime(2026, 8, 12),
         lat: 47.6,
         lon: -122.3,
       );
 
+      expect(built.single.id, '4E5D');
       expect(built.single.name, 'Capitol Hill');
       expect(built.single.distanceM, closeTo(1112, 50));
     });
 
-    test('falls back to the uppercased id when the repeater is unknown', () {
+    test('leaves the name null when the hash resolves to nothing', () {
       final built = WatchGeoBuilder.buildHeard(
-        heard: const [HeardRepeater(repeaterId: 'ab')],
-        repeaterById: const {},
+        top: const [(repeaterId: 'AB', snr: 1, type: OverlayPingType.tx)],
+        repeaterByHex: const {},
         at: DateTime(2026, 8, 12),
       );
 
-      expect(built.single.name, 'AB');
+      expect(built.single.id, 'AB');
+      expect(built.single.name, isNull,
+          reason: 'a confidently wrong name is worse than none');
       expect(built.single.distanceM, isNull);
     });
+  });
 
-    test('direct echoes report no hop count', () {
-      final built = WatchGeoBuilder.buildHeard(
-        heard: const [
-          HeardRepeater(repeaterId: 'direct', snr: 9),
-          HeardRepeater(repeaterId: 'relayed', snr: 8, pathHops: ['aa', 'bb']),
-        ],
-        repeaterById: const {},
-        at: DateTime(2026, 8, 12),
-      );
+  group('indexByHexPrefix', () {
+    test('resolves a prefix owned by exactly one repeater', () {
+      final index = WatchGeoBuilder.indexByHexPrefix([
+        _repeater(id: '01', hexId: '4E5D82', lat: 47.6, lon: -122.3, name: 'A'),
+        _repeater(id: '02', hexId: '77A1B0', lat: 47.6, lon: -122.3, name: 'B'),
+      ], 4);
 
-      expect(built[0].hops, isNull);
-      expect(built[1].hops, 2);
+      expect(index['4E5D']?.name, 'A');
+      expect(index['77A1']?.name, 'B');
+    });
+
+    test('drops prefixes shared by more than one repeater', () {
+      // The exact collision a 1-byte path hash produces.
+      final index = WatchGeoBuilder.indexByHexPrefix([
+        _repeater(id: '01', hexId: '4E5D82', lat: 47.6, lon: -122.3, name: 'A'),
+        _repeater(id: '02', hexId: '4E99F1', lat: 47.6, lon: -122.3, name: 'B'),
+      ], 2);
+
+      expect(index['4E'], isNull,
+          reason: 'ambiguous prefixes must resolve to no name at all');
+    });
+
+    test('ignores repeaters whose hex is shorter than the prefix', () {
+      final index = WatchGeoBuilder.indexByHexPrefix([
+        _repeater(id: '01', hexId: '4E', lat: 47.6, lon: -122.3, name: 'A'),
+      ], 4);
+
+      expect(index, isEmpty);
     });
   });
 

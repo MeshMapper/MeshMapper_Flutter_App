@@ -18,11 +18,17 @@ class WatchWire {
 
   /// Bump when a field changes meaning or is removed. The watch refuses
   /// payloads it doesn't understand rather than rendering something wrong.
-  static const int version = 1;
+  ///
+  /// v2: heard nodes mirror the app's "Top Heard" map overlay — hex ID and
+  /// ping-type colour — instead of the richer per-echo data. Hop counts are
+  /// gone: the overlay is fed `directRepeaters` only.
+  static const int version = 2;
 
   static const int maxPings = 60;
   static const int maxRepeaters = 20;
-  static const int maxHeard = 7;
+
+  /// Three top-SNR rows plus the RX slot, matching `_buildTopRepeatersOverlay`.
+  static const int maxHeard = 4;
 
   /// Skip a geo-only update unless the fix moved at least this far. Phase
   /// changes and new pings always go through; this only suppresses the
@@ -137,41 +143,53 @@ class WatchRepeater {
       };
 }
 
+/// One row of the "Top Heard" overlay.
+///
+/// Mirrors `_buildTopRepeatersOverlay` in `map_widget.dart`: a dot coloured by
+/// which kind of ping the repeater answered, the hex path-hash ID, and the SNR.
+///
+/// The **ID is the identity**, not the name. Path hashes are 1–3 bytes, so a
+/// 2-character ID frequently cannot be resolved to a single repeater — [name]
+/// is sent only when the match is unambiguous, and the watch always shows the
+/// hex.
+///
+/// There is no hop count here by design: the overlay is fed `directRepeaters`,
+/// with multi-hop events deliberately excluded.
 class WatchHeardNode {
   const WatchHeardNode({
     required this.id,
-    required this.name,
-    required this.seenCount,
+    required this.typeColor,
     required this.at,
+    this.name,
     this.snr,
-    this.rssi,
-    this.hops,
     this.distanceM,
     this.snrColor,
   });
 
+  /// Uppercase hex path hash, 2/4/6 chars depending on the zone's hop bytes.
   final String id;
-  final String name;
-  final double? snr;
-  final int? rssi;
 
-  /// null = direct echo; otherwise the hop count.
-  final int? hops;
-  final int seenCount;
+  /// Resolved repeater name, when the hex maps to exactly one repeater.
+  final String? name;
+  final double? snr;
   final DateTime at;
   final double? distanceM;
+
+  /// SNR traffic-light colour.
   final WatchColor? snrColor;
+
+  /// Ping type the repeater answered — green flood/active, teal discovery,
+  /// cyan trace, purple most-recent RX.
+  final WatchColor typeColor;
 
   Map<String, Object?> toMap() => {
         'id': id,
         'name': name,
         'snr': snr,
-        'rssi': rssi,
-        'hops': hops,
-        'seenCount': seenCount,
         'atMs': at.millisecondsSinceEpoch.toDouble(),
         'distanceM': distanceM,
         'snrColor': snrColor?.toMap(),
+        'typeColor': typeColor.toMap(),
       };
 }
 
