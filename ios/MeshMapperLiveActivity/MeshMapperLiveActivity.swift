@@ -199,43 +199,98 @@ private struct MeshMapperPhaseBar: View {
   let countdownFont: Font
   let countdownWidth: CGFloat
 
+  @State private var remainingFraction: CGFloat
+  @State private var deadlineLapsed: Bool
+
+  init(
+    state: MeshMapperActivityAttributes.ContentState,
+    height: CGFloat,
+    titleFont: Font,
+    countdownFont: Font,
+    countdownWidth: CGFloat
+  ) {
+    self.state = state
+    self.height = height
+    self.titleFont = titleFont
+    self.countdownFont = countdownFont
+    self.countdownWidth = countdownWidth
+
+    let now = Date()
+    _remainingFraction = State(
+      initialValue: state.phaseRemainingFraction(at: now) ?? 0
+    )
+    _deadlineLapsed = State(
+      initialValue: state.phaseEndsAt.map { $0 <= now } ?? false
+    )
+  }
+
   var body: some View {
-    TimelineView(.periodic(from: .now, by: 1)) { context in
-      GeometryReader { geometry in
-        ZStack(alignment: .leading) {
-          Capsule().fill(.white.opacity(0.16))
-          Capsule()
-            // Progress says how much time remains. Outcome has quieter,
-            // dedicated dots elsewhere and must not recolour the whole track.
-            .fill(MeshMapperPalette.accent)
-            .frame(
-              width: geometry.size.width
-                * (state.phaseRemainingFraction(at: context.date) ?? 0)
-            )
+    GeometryReader { geometry in
+      ZStack(alignment: .leading) {
+        Capsule().fill(.white.opacity(0.16))
+        Capsule()
+          // Progress says how much time remains. Outcome has quieter,
+          // dedicated dots elsewhere and must not recolour the whole track.
+          .fill(MeshMapperPalette.accent)
+          .frame(width: geometry.size.width * remainingFraction)
+      }
+      .overlay {
+        HStack {
+          Text(state.phaseTitle)
+            .font(titleFont)
+            .foregroundStyle(.white.opacity(deadlineLapsed ? 0.45 : 1))
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 4)
+          MeshMapperCountdown(
+            state: state,
+            isActive: !deadlineLapsed,
+            font: countdownFont
+          )
+          .frame(width: countdownWidth, alignment: .trailing)
         }
-        .overlay {
-          HStack {
-            Text(state.phaseTitle)
-              .font(titleFont)
-              .foregroundStyle(
-                .white.opacity(state.deadlineLapsed(at: context.date) ? 0.45 : 1)
-              )
-              .lineLimit(1)
-              .truncationMode(.tail)
-            Spacer(minLength: 4)
-            MeshMapperCountdown(
-              state: state,
-              at: context.date,
-              font: countdownFont
-            )
-            .frame(width: countdownWidth, alignment: .trailing)
-          }
-          .padding(.horizontal, 7)
-          .shadow(color: .black.opacity(0.7), radius: 1.5)
-        }
+        .padding(.horizontal, 7)
+        .shadow(color: .black.opacity(0.7), radius: 1.5)
       }
     }
     .frame(height: height)
+    .task(id: state.phaseAnimationKey) {
+      await runPhaseAnimation()
+    }
+  }
+
+  @MainActor
+  private func runPhaseAnimation() async {
+    let now = Date()
+    let fraction = state.phaseRemainingFraction(at: now) ?? 0
+    let lapsed = state.phaseEndsAt.map { $0 <= now } ?? false
+
+    // ActivityKit may replace state midway through a phase. Snap to the
+    // absolute fraction before starting one compositor animation, so no timer
+    // tick or stale previous endpoint can distort the new bar.
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      remainingFraction = fraction
+      deadlineLapsed = lapsed
+    }
+
+    guard let endsAt = state.phaseEndsAt else { return }
+    let remaining = endsAt.timeIntervalSince(now)
+    guard remaining > 0 else { return }
+
+    await Task.yield()
+    withAnimation(.linear(duration: remaining)) {
+      remainingFraction = 0
+    }
+
+    do {
+      try await Task.sleep(for: .seconds(remaining))
+    } catch {
+      return
+    }
+    guard !Task.isCancelled else { return }
+    deadlineLapsed = true
   }
 }
 
@@ -427,12 +482,22 @@ private struct MeshMapperOutcomeDot: View {
 private struct MeshMapperCompactTrailing: View {
   let state: MeshMapperActivityAttributes.ContentState
 
+  @State private var deadlineLapsed: Bool
+
+  init(state: MeshMapperActivityAttributes.ContentState) {
+    self.state = state
+    let now = Date()
+    _deadlineLapsed = State(
+      initialValue: state.phaseEndsAt.map { $0 <= now } ?? false
+    )
+  }
+
   var body: some View {
-    TimelineView(.periodic(from: .now, by: 1)) { context in
-      if state.hasActiveCountdown(at: context.date) {
+    Group {
+      if !deadlineLapsed, state.activeCountdownRange != nil {
         MeshMapperCountdown(
           state: state,
-          at: context.date,
+          isActive: true,
           font: .caption2.monospacedDigit().weight(.bold)
         )
         .frame(minWidth: 28)
@@ -445,17 +510,31 @@ private struct MeshMapperCompactTrailing: View {
         MeshMapperOutcomeDot(state: state, diameter: 8)
       }
     }
+    .task(id: state.phaseAnimationKey) {
+      let now = Date()
+      deadlineLapsed = state.phaseEndsAt.map { $0 <= now } ?? false
+      guard let endsAt = state.phaseEndsAt else { return }
+      let remaining = endsAt.timeIntervalSince(now)
+      guard remaining > 0 else { return }
+      do {
+        try await Task.sleep(for: .seconds(remaining))
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      deadlineLapsed = true
+    }
   }
 }
 
 private struct MeshMapperCountdown: View {
   let state: MeshMapperActivityAttributes.ContentState
-  let at: Date
+  let isActive: Bool
   let font: Font
 
   var body: some View {
-    if let end = state.phaseEndsAt, end > at {
-      Text(timerInterval: at...end, countsDown: true, showsHours: false)
+    if isActive, let range = state.activeCountdownRange {
+      Text(timerInterval: range, countsDown: true, showsHours: false)
         .font(font)
         .lineLimit(1)
         .accessibilityLabel("Time remaining")
@@ -468,7 +547,29 @@ private enum MeshMapperPalette {
   static let accent = Color.accentColor
 }
 
+private struct MeshMapperPhaseAnimationKey: Hashable {
+  let phase: String
+  let title: String
+  let endsAt: Date?
+  let durationMs: Int?
+}
+
 extension MeshMapperActivityAttributes.ContentState {
+  fileprivate var phaseAnimationKey: MeshMapperPhaseAnimationKey {
+    MeshMapperPhaseAnimationKey(
+      phase: phase,
+      title: phaseTitle,
+      endsAt: phaseEndsAt,
+      durationMs: phaseDurationMs
+    )
+  }
+
+  fileprivate var activeCountdownRange: ClosedRange<Date>? {
+    let now = Date()
+    guard let phaseEndsAt, phaseEndsAt > now else { return nil }
+    return now...phaseEndsAt
+  }
+
   fileprivate var connectionLabel: String {
     isConnected ? "Connected" : "Disconnected"
   }
@@ -535,16 +636,6 @@ extension MeshMapperActivityAttributes.ContentState {
     case "stopped": return .gray
     default: return .white
     }
-  }
-
-  fileprivate func hasActiveCountdown(at date: Date) -> Bool {
-    guard let phaseEndsAt else { return false }
-    return phaseEndsAt > date
-  }
-
-  fileprivate func deadlineLapsed(at date: Date) -> Bool {
-    guard let phaseEndsAt else { return false }
-    return phaseEndsAt <= date
   }
 
   /// Fraction remaining in the current countdown, calculated locally so the
