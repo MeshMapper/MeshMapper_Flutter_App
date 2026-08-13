@@ -18,8 +18,9 @@ final class WatchSettings {
   /// Where the recently-responded list lives.
   ///
   /// Both layouts are built from one view model, so this is a presentation
-  /// toggle rather than two code paths. The default is unsettled until it has
-  /// been worn — see the plan.
+  /// toggle rather than two code paths. Its own page is the default — chosen
+  /// for the room it gives the rows — and the sheet stays for wearers who would
+  /// rather keep the map behind the list.
   enum NodeListPlacement: String, CaseIterable, Identifiable {
     case sheet
     case page
@@ -44,7 +45,7 @@ final class WatchSettings {
     // stored value `bool(forKey:)` returns false, so invert an explicit flag.
     follow = defaults.object(forKey: Key.follow) as? Bool ?? true
     nodeListPlacement = (defaults.string(forKey: Key.nodeListPlacement))
-      .flatMap(NodeListPlacement.init(rawValue:)) ?? .sheet
+      .flatMap(NodeListPlacement.init(rawValue:)) ?? .page
   }
 
   /// Apple imagery rather than the standard basemap. Mirrors the iOS app's
