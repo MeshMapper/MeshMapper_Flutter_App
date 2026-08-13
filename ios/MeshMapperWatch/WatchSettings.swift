@@ -16,6 +16,8 @@ final class WatchSettings {
     static let mapZoomDefaultsVersion = "map.zoomDefaultsVersion"
     static let mainPageContent = "layout.mainPageContent"
     static let nodeListPlacement = "layout.nodeListPlacement"
+    static let defaultStartMode = "controls.defaultStartMode"
+    static let showPingWhenAvailable = "controls.showPingWhenAvailable"
   }
 
   /// Roughly 250 m north-south: one degree of latitude is about 111,320 m.
@@ -61,6 +63,22 @@ final class WatchSettings {
     }
   }
 
+  /// The explicit mode a wrist Start will request. The phone remains the final
+  /// authority and can refuse Hybrid if zone policy changed after the snapshot.
+  enum DefaultStartMode: String, CaseIterable, Identifiable {
+    case passive
+    case hybrid
+
+    var id: String { rawValue }
+
+    var label: String {
+      switch self {
+      case .passive: return "Passive"
+      case .hybrid: return "Hybrid"
+      }
+    }
+  }
+
   private let defaults: UserDefaults
 
   init(defaults: UserDefaults = .standard) {
@@ -91,6 +109,11 @@ final class WatchSettings {
       .flatMap(MainPageContent.init(rawValue:)) ?? .map
     nodeListPlacement = (defaults.string(forKey: Key.nodeListPlacement))
       .flatMap(NodeListPlacement.init(rawValue:)) ?? .page
+    defaultStartMode = (defaults.string(forKey: Key.defaultStartMode))
+      .flatMap(DefaultStartMode.init(rawValue:)) ?? .passive
+    showPingWhenAvailable = defaults.object(
+      forKey: Key.showPingWhenAvailable
+    ) as? Bool ?? false
   }
 
   /// Apple imagery rather than the standard basemap. Mirrors the iOS app's
@@ -133,10 +156,34 @@ final class WatchSettings {
     didSet { defaults.set(nodeListPlacement.rawValue, forKey: Key.nodeListPlacement) }
   }
 
+  var defaultStartMode: DefaultStartMode {
+    didSet { defaults.set(defaultStartMode.rawValue, forKey: Key.defaultStartMode) }
+  }
+
+  var showPingWhenAvailable: Bool {
+    didSet { defaults.set(showPingWhenAvailable, forKey: Key.showPingWhenAvailable) }
+  }
+
   private static func clampedMapLatitudeDelta(_ value: Double) -> Double {
     guard value.isFinite else { return defaultMapLatitudeDelta }
     return min(max(value, mapLatitudeDeltaLimits.lowerBound), mapLatitudeDeltaLimits.upperBound)
   }
+}
+
+/// Shared control chrome, lifted from the phone rather than accumulating
+/// unrelated system tints across wrist surfaces. Ping and repeater data colours
+/// are different: those arrive resolved through the phone's colour-vision
+/// palette, while these action semantics remain fixed just as today's red and
+/// green buttons do. Revisit this boundary if watch controls become palette-aware.
+enum WatchPalette {
+  static let start = Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
+  static let stop = Color(red: 189 / 255, green: 33 / 255, blue: 48 / 255)
+  static let ping = Color(red: 99 / 255, green: 102 / 255, blue: 241 / 255)
+  static let armed = Color(red: 245 / 255, green: 158 / 255, blue: 11 / 255)
+  static let disabled = Color(red: 51 / 255, green: 65 / 255, blue: 85 / 255)
+  static let secondary = Color(red: 71 / 255, green: 85 / 255, blue: 105 / 255)
+  static let tertiary = Color(red: 148 / 255, green: 163 / 255, blue: 184 / 255)
+  static let cornerRadius: CGFloat = 12
 }
 
 extension Color {

@@ -6,18 +6,26 @@ import SwiftUI
 /// which owns the radio and the guards.
 struct SettingsPage: View {
   @Environment(WatchSettings.self) private var settings
+  @Environment(WatchSessionClient.self) private var client
+
+  private var availableStartModes: [WatchSettings.DefaultStartMode] {
+    let available = client.snapshot?.availableStartModes ?? ["passive"]
+    return WatchSettings.DefaultStartMode.allCases.filter {
+      $0 == .passive || available.contains($0.rawValue)
+    }
+  }
+
+  private var effectiveStartMode: WatchSettings.DefaultStartMode {
+    availableStartModes.contains(settings.defaultStartMode)
+      ? settings.defaultStartMode
+      : .passive
+  }
 
   var body: some View {
     @Bindable var settings = settings
 
     List {
-      Section("Map") {
-        Toggle("Satellite", isOn: $settings.satellite)
-        Toggle("Follow position", isOn: $settings.follow)
-        Toggle("Lines to repeaters", isOn: $settings.showLinks)
-      }
-
-      Section("Layout") {
+      Section("Display") {
         Picker("Main page", selection: $settings.mainPageContent) {
           ForEach(WatchSettings.MainPageContent.allCases) { content in
             Text(content.label).tag(content)
@@ -28,6 +36,36 @@ struct SettingsPage: View {
             Text(placement.label).tag(placement)
           }
         }
+      }
+
+      Section("Map") {
+        Toggle("Satellite", isOn: $settings.satellite)
+        Toggle("Follow position", isOn: $settings.follow)
+        Toggle("Lines to repeaters", isOn: $settings.showLinks)
+      }
+
+      Section("Controls") {
+        Picker(
+          "Default start mode",
+          selection: Binding(
+            get: { effectiveStartMode },
+            set: { settings.defaultStartMode = $0 }
+          )
+        ) {
+          ForEach(availableStartModes) { mode in
+            Text(mode.label).tag(mode)
+          }
+        }
+
+        if settings.defaultStartMode != effectiveStartMode {
+          Text("Hybrid unavailable here; Start uses Passive")
+            .foregroundStyle(WatchPalette.tertiary)
+        }
+
+        Toggle(
+          "When available, show ping option",
+          isOn: $settings.showPingWhenAvailable
+        )
       }
     }
     .font(.caption)

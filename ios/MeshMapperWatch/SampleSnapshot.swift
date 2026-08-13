@@ -12,8 +12,10 @@ import Foundation
 /// Pass `-MeshMapperSamplePhase listen|wait|lapsed` to exercise the live
 /// countdown, the between-cycle wait, or a deadline the phone did not replace.
 /// Listening is the default so existing capture commands keep their behaviour.
-/// Pass `-MeshMapperSampleControls active|idle|blocked|cooldown` to review each
-/// controls page state; active is the default.
+/// Pass
+/// `-MeshMapperSampleControls active|idle|blocked|cooldown|passiveOnly|txActive`
+/// to review Start, live Ping, disabled-but-stable Ping, and both reasons Stop
+/// keeps the slot; active is the default.
 ///
 /// DEBUG-only, and never reached unless that argument is passed, so it cannot
 /// leak into a shipping build or mask a real transport failure.
@@ -40,13 +42,17 @@ enum SampleSnapshot {
       samplePhase = ("listening", "Listening…", now + 42_000, 60_000)
     }
 
+    let sampleControlState = UserDefaults.standard.string(
+      forKey: "MeshMapperSampleControls"
+    )
     let sampleControls: WatchControls
-    switch UserDefaults.standard.string(forKey: "MeshMapperSampleControls") {
+    switch sampleControlState {
     case "idle":
       sampleControls = WatchControls(
         canStartStop: true,
         canManualPing: false,
         isSessionActive: false,
+        manualPingApplicable: true,
         manualCooldownEndsAtMs: nil,
         blockedReason: nil
       )
@@ -55,6 +61,7 @@ enum SampleSnapshot {
         canStartStop: false,
         canManualPing: false,
         isSessionActive: false,
+        manualPingApplicable: false,
         manualCooldownEndsAtMs: nil,
         blockedReason: "This zone is currently passive-only"
       )
@@ -64,7 +71,26 @@ enum SampleSnapshot {
         canStartStop: true,
         canManualPing: false,
         isSessionActive: true,
+        manualPingApplicable: true,
         manualCooldownEndsAtMs: now + 12_000,
+        blockedReason: nil
+      )
+    case "passiveOnly":
+      sampleControls = WatchControls(
+        canStartStop: true,
+        canManualPing: false,
+        isSessionActive: true,
+        manualPingApplicable: false,
+        manualCooldownEndsAtMs: nil,
+        blockedReason: "Passive Only"
+      )
+    case "txActive":
+      sampleControls = WatchControls(
+        canStartStop: true,
+        canManualPing: false,
+        isSessionActive: true,
+        manualPingApplicable: false,
+        manualCooldownEndsAtMs: nil,
         blockedReason: nil
       )
     default:
@@ -72,6 +98,7 @@ enum SampleSnapshot {
         canStartStop: true,
         canManualPing: true,
         isSessionActive: true,
+        manualPingApplicable: true,
         manualCooldownEndsAtMs: nil,
         blockedReason: nil
       )
@@ -144,7 +171,9 @@ enum SampleSnapshot {
     return WatchSnapshot(
       wireVersion: MeshMapperWatchWire.version,
       sessionId: "sample",
-      mode: "Active",
+      // Ping can own the active-session slot only during Passive monitoring;
+      // Active and Hybrid are TX modes and keep Stop reachable instead.
+      mode: sampleControlState == "txActive" ? "Hybrid" : "Passive",
       phase: samplePhase.name,
       phaseTitle: samplePhase.title,
       phaseDetail: "Waiting for echoes",
@@ -158,6 +187,9 @@ enum SampleSnapshot {
       traceCount: 0,
       queueSize: 2,
       pingColor: green,
+      availableStartModes: sampleControlState == "passiveOnly"
+        ? ["passive"]
+        : ["passive", "hybrid"],
       geo: WatchGeo(
         you: WatchPosition(
           lat: originLat + 0.006,

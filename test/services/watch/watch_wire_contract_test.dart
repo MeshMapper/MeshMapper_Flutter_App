@@ -18,6 +18,7 @@ WatchSnapshot _snapshot({
   String phaseTitle = 'Listening',
   bool isConnected = true,
   int? phaseDurationMs,
+  List<WatchStartMode> availableStartModes = const [WatchStartMode.passive],
 }) =>
     WatchSnapshot(
       core: LiveActivitySnapshot(
@@ -50,6 +51,7 @@ WatchSnapshot _snapshot({
         canManualPing: false,
         isSessionActive: true,
       ),
+      availableStartModes: availableStartModes,
       pingColor: const WatchColor(1, 0, 0),
       phaseDurationMs: phaseDurationMs,
       cue: cue,
@@ -80,6 +82,7 @@ void main() {
           'traceCount',
           'queueSize',
           'pingColor',
+          'availableStartModes',
           'geo',
           'controls',
           'cue',
@@ -101,6 +104,7 @@ void main() {
           'canStartStop',
           'canManualPing',
           'isSessionActive',
+          'manualPingApplicable',
           'manualCooldownEndsAtMs',
           'blockedReason',
         },
@@ -196,6 +200,40 @@ void main() {
       expect(_snapshot().toMap()['phaseDurationMs'], isNull);
     });
 
+    test('snapshot carries phone-resolved start modes', () {
+      expect(
+        _snapshot(
+          availableStartModes: const [
+            WatchStartMode.passive,
+            WatchStartMode.hybrid,
+          ],
+        ).toMap()['availableStartModes'],
+        ['passive', 'hybrid'],
+      );
+    });
+
+    test('old controls default manual ping slot ownership to false', () {
+      const controls = WatchControls(
+        canStartStop: true,
+        canManualPing: true,
+        isSessionActive: true,
+      );
+
+      expect(controls.manualPingApplicable, isFalse);
+      expect(controls.toMap()['manualPingApplicable'], isFalse);
+    });
+
+    test('controls serialize stable manual ping slot ownership', () {
+      const controls = WatchControls(
+        canStartStop: true,
+        canManualPing: false,
+        isSessionActive: true,
+        manualPingApplicable: true,
+      );
+
+      expect(controls.toMap()['manualPingApplicable'], isTrue);
+    });
+
     test('wire version is stamped so the watch can refuse unknown payloads',
         () {
       expect(_snapshot().toMap()['wireVersion'], WatchWire.version);
@@ -276,6 +314,27 @@ void main() {
         LiveActivityPhase.starting,
       );
     });
+
+    test('Hybrid is refused when current zone policy forbids TX', () {
+      final result = resolveWatchRequestedStartMode(
+        requestedMode: 'hybrid',
+        isConnected: true,
+        txAllowed: false,
+      );
+
+      expect(result.mode, isNull);
+      expect(result.refusal, 'Passive Only');
+    });
+
+    test('an omitted start mode preserves the established phone fallback', () {
+      final result = resolveWatchRequestedStartMode(
+        requestedMode: null,
+        isConnected: true,
+        txAllowed: false,
+      );
+
+      expect(result, (mode: null, refusal: null));
+    });
   });
 
   group('bridge command handling', () {
@@ -319,13 +378,21 @@ void main() {
           .setMockMethodCallHandler(channel, null);
     });
 
-    Future<Map<Object?, Object?>?> sendCommand(String id, String kind) async {
+    Future<Map<Object?, Object?>?> sendCommand(
+      String id,
+      String kind, {
+      String? mode,
+    }) async {
       final result = await TestDefaultBinaryMessengerBinding
           .instance.defaultBinaryMessenger
           .handlePlatformMessage(
         channel.name,
         channel.codec.encodeMethodCall(
-          MethodCall('command', {'id': id, 'kind': kind}),
+          MethodCall('command', {
+            'id': id,
+            'kind': kind,
+            if (mode != null) 'mode': mode,
+          }),
         ),
         null,
       );
@@ -477,8 +544,8 @@ void main() {
     });
 
     test('accepted commands reach the handler', () async {
-      bridge.attachCommandHandler((kind) async {
-        handled.add(kind);
+      bridge.attachCommandHandler((command) async {
+        handled.add(command.kind);
         return null;
       });
 
@@ -489,8 +556,8 @@ void main() {
     });
 
     test('a redelivered command does not transmit twice', () async {
-      bridge.attachCommandHandler((kind) async {
-        handled.add(kind);
+      bridge.attachCommandHandler((command) async {
+        handled.add(command.kind);
         return null;
       });
 
@@ -503,8 +570,8 @@ void main() {
 
     test('a refused command may be retried once conditions change', () async {
       var refuse = true;
-      bridge.attachCommandHandler((kind) async {
-        handled.add(kind);
+      bridge.attachCommandHandler((command) async {
+        handled.add(command.kind);
         return refuse ? 'Not connected' : null;
       });
 
@@ -520,8 +587,8 @@ void main() {
 
     test('an unknown command is refused without reaching the handler',
         () async {
-      bridge.attachCommandHandler((kind) async {
-        handled.add(kind);
+      bridge.attachCommandHandler((command) async {
+        handled.add(command.kind);
         return null;
       });
 
@@ -533,12 +600,49 @@ void main() {
 
     test('a handler that throws refuses rather than crashing the bridge',
         () async {
-      bridge.attachCommandHandler((kind) async => throw StateError('boom'));
+      bridge.attachCommandHandler((command) async => throw StateError('boom'));
 
       final reply = await sendCommand('cmd-4', 'manualPing');
 
       expect(reply?['accepted'], isFalse);
       expect(reply?['reason'], 'Command failed');
+    });
+
+    test('a start command carries its requested mode to admission', () async {
+      WatchCommand? received;
+      bridge.attachCommandHandler((command) {
+        received = command;
+        return null;
+      });
+
+      final reply = await sendCommand(
+        'cmd-mode',
+        'startSession',
+        mode: 'hybrid',
+      );
+
+      expect(reply?['accepted'], isTrue);
+      expect(received?.kind, WatchCommandKind.startSession);
+      expect(received?.mode, 'hybrid');
+    });
+
+    test('a forbidden requested mode returns the phone refusal', () async {
+      bridge.attachCommandHandler((command) {
+        return resolveWatchRequestedStartMode(
+          requestedMode: command.mode,
+          isConnected: true,
+          txAllowed: false,
+        ).refusal;
+      });
+
+      final reply = await sendCommand(
+        'cmd-forbidden-mode',
+        'startSession',
+        mode: 'hybrid',
+      );
+
+      expect(reply?['accepted'], isFalse);
+      expect(reply?['reason'], 'Passive Only');
     });
   });
 }

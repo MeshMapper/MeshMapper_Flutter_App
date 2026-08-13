@@ -1286,6 +1286,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       core: core,
       geo: _buildWatchGeo(),
       controls: _buildWatchControls(),
+      availableStartModes: _availableWatchStartModes,
       pingColor: pingColor,
       cue: _watchCue,
       phaseDurationMs: phaseDurationMs,
@@ -1473,6 +1474,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _autoMode;
   }
 
+  List<WatchStartMode> get _availableWatchStartModes => [
+        WatchStartMode.passive,
+        if (isConnected && txAllowed) WatchStartMode.hybrid,
+      ];
+
   String get _resolvedWatchSessionModeTitle =>
       switch (_resolvedWatchSessionMode) {
         AutoMode.active => 'Active',
@@ -1489,6 +1495,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       canStartStop: isConnected,
       canManualPing: manualPing.allowed,
       isSessionActive: _autoPingEnabled,
+      // Slot ownership must not follow the live manual-ping gate: cooldowns
+      // and receive windows would otherwise replace Ping with Stop beneath a
+      // thumb. TX sessions cannot manually ping for their entire lifetime, so
+      // they keep Stop available even in a region where TX is permitted.
+      manualPingApplicable: isConnected &&
+          txAllowed &&
+          !isTxModeRunning &&
+          !isTargetedModeRunning,
       manualCooldownEndsAt: cooldownMs > 0
           ? _manualPingCooldownTimer.endTime
           : null,
@@ -1519,8 +1533,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// WatchConnectivity cannot wait for BLE or server work. Successful outcomes
   /// already surface through session, phase, and ping-colour snapshots; a late
   /// failure gets its own cue so dropping completion from the ack loses nothing.
-  String? _handleWatchCommand(WatchCommandKind kind) {
+  String? _handleWatchCommand(WatchCommand command) {
     if (_isDisposed) return 'App closing';
+
+    final kind = command.kind;
 
     switch (kind) {
       case WatchCommandKind.requestSnapshot:
@@ -1536,7 +1552,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (admission.refusal != null) return admission.refusal;
         if (!admission.shouldRun) return null;
         if (!isConnected) return 'Not connected';
-        unawaited(_runWatchStartSession(_resolvedWatchSessionMode));
+        final requested = resolveWatchRequestedStartMode(
+          requestedMode: command.mode,
+          isConnected: isConnected,
+          txAllowed: txAllowed,
+        );
+        if (requested.refusal != null) return requested.refusal;
+        final mode = switch (requested.mode) {
+          WatchStartMode.passive => AutoMode.passive,
+          WatchStartMode.hybrid => AutoMode.hybrid,
+          null => _resolvedWatchSessionMode,
+        };
+        unawaited(_runWatchStartSession(mode));
         return null;
 
       case WatchCommandKind.stopSession:

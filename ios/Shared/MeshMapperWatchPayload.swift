@@ -24,6 +24,11 @@ enum MeshMapperWatchWire {
   /// v2: heard nodes mirror the app's "Top Heard" map overlay — hex ID and
   /// ping-type colour — instead of richer per-echo data. Hop counts are gone:
   /// the overlay is fed direct repeaters only.
+  ///
+  /// Additive optional fields stay on v2: this decoder defaults an older
+  /// phone's missing mode list to Passive and missing Ping applicability to
+  /// false, while an older phone safely ignores a command's new mode field.
+  /// Rejecting that pair would add no protection.
   static let version = 2
 
   /// Caps, mirrored in Dart. Enforced on send *and* validated on receive.
@@ -126,10 +131,51 @@ struct WatchControls: Codable, Hashable {
   let canStartStop: Bool
   let canManualPing: Bool
   let isSessionActive: Bool
+  /// Stable slot ownership, separate from transient ping enablement.
+  let manualPingApplicable: Bool
   /// Absolute deadline for the 15 s manual cooldown, if one is running.
   let manualCooldownEndsAtMs: Double?
   /// Human-readable reason a control is unavailable ("Not connected").
   let blockedReason: String?
+
+  init(
+    canStartStop: Bool,
+    canManualPing: Bool,
+    isSessionActive: Bool,
+    manualPingApplicable: Bool = false,
+    manualCooldownEndsAtMs: Double?,
+    blockedReason: String?
+  ) {
+    self.canStartStop = canStartStop
+    self.canManualPing = canManualPing
+    self.isSessionActive = isSessionActive
+    self.manualPingApplicable = manualPingApplicable
+    self.manualCooldownEndsAtMs = manualCooldownEndsAtMs
+    self.blockedReason = blockedReason
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case canStartStop, canManualPing, isSessionActive
+    case manualPingApplicable, manualCooldownEndsAtMs, blockedReason
+  }
+
+  init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    canStartStop = try values.decode(Bool.self, forKey: .canStartStop)
+    canManualPing = try values.decode(Bool.self, forKey: .canManualPing)
+    isSessionActive = try values.decode(Bool.self, forKey: .isSessionActive)
+    // Additive v2 field. An older phone cannot promise stable Ping ownership,
+    // so preserving the established Stop slot is the conservative default.
+    manualPingApplicable = try values.decodeIfPresent(
+      Bool.self,
+      forKey: .manualPingApplicable
+    ) ?? false
+    manualCooldownEndsAtMs = try values.decodeIfPresent(
+      Double.self,
+      forKey: .manualCooldownEndsAtMs
+    )
+    blockedReason = try values.decodeIfPresent(String.self, forKey: .blockedReason)
+  }
 }
 
 // MARK: - Haptics
@@ -181,10 +227,99 @@ struct WatchSnapshot: Codable, Hashable {
   /// Colour of the most recent completed ping result.
   let pingColor: WatchColor?
 
+  /// Lowercase mode names the phone currently permits for a wrist start.
+  /// This is policy resolved by the phone, not enough raw state for the watch
+  /// to derive policy independently.
+  let availableStartModes: [String]
+
   let geo: WatchGeo
   let controls: WatchControls
   let cue: WatchHapticCue?
   let updatedAtMs: Double
+
+  init(
+    wireVersion: Int,
+    sessionId: String,
+    mode: String,
+    phase: String,
+    phaseTitle: String,
+    phaseDetail: String?,
+    phaseEndsAtMs: Double?,
+    phaseDurationMs: Int?,
+    isConnected: Bool,
+    zoneCode: String?,
+    txCount: Int,
+    rxCount: Int,
+    discoveryCount: Int,
+    traceCount: Int,
+    queueSize: Int,
+    pingColor: WatchColor?,
+    availableStartModes: [String] = ["passive"],
+    geo: WatchGeo,
+    controls: WatchControls,
+    cue: WatchHapticCue?,
+    updatedAtMs: Double
+  ) {
+    self.wireVersion = wireVersion
+    self.sessionId = sessionId
+    self.mode = mode
+    self.phase = phase
+    self.phaseTitle = phaseTitle
+    self.phaseDetail = phaseDetail
+    self.phaseEndsAtMs = phaseEndsAtMs
+    self.phaseDurationMs = phaseDurationMs
+    self.isConnected = isConnected
+    self.zoneCode = zoneCode
+    self.txCount = txCount
+    self.rxCount = rxCount
+    self.discoveryCount = discoveryCount
+    self.traceCount = traceCount
+    self.queueSize = queueSize
+    self.pingColor = pingColor
+    self.availableStartModes = availableStartModes
+    self.geo = geo
+    self.controls = controls
+    self.cue = cue
+    self.updatedAtMs = updatedAtMs
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case wireVersion, sessionId, mode, phase, phaseTitle, phaseDetail
+    case phaseEndsAtMs, phaseDurationMs, isConnected, zoneCode
+    case txCount, rxCount, discoveryCount, traceCount, queueSize, pingColor
+    case availableStartModes, geo, controls, cue, updatedAtMs
+  }
+
+  init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    wireVersion = try values.decode(Int.self, forKey: .wireVersion)
+    sessionId = try values.decode(String.self, forKey: .sessionId)
+    mode = try values.decode(String.self, forKey: .mode)
+    phase = try values.decode(String.self, forKey: .phase)
+    phaseTitle = try values.decode(String.self, forKey: .phaseTitle)
+    phaseDetail = try values.decodeIfPresent(String.self, forKey: .phaseDetail)
+    phaseEndsAtMs = try values.decodeIfPresent(Double.self, forKey: .phaseEndsAtMs)
+    phaseDurationMs = try values.decodeIfPresent(Int.self, forKey: .phaseDurationMs)
+    isConnected = try values.decode(Bool.self, forKey: .isConnected)
+    zoneCode = try values.decodeIfPresent(String.self, forKey: .zoneCode)
+    txCount = try values.decode(Int.self, forKey: .txCount)
+    rxCount = try values.decode(Int.self, forKey: .rxCount)
+    discoveryCount = try values.decode(Int.self, forKey: .discoveryCount)
+    traceCount = try values.decode(Int.self, forKey: .traceCount)
+    queueSize = try values.decode(Int.self, forKey: .queueSize)
+    pingColor = try values.decodeIfPresent(WatchColor.self, forKey: .pingColor)
+    // Additive v2 field: an older phone omits it, and Passive is the only mode
+    // safe to promise without current phone-resolved zone policy. Keeping v2
+    // avoids stranding otherwise compatible phone/watch pairs.
+    availableStartModes = try values.decodeIfPresent(
+      [String].self,
+      forKey: .availableStartModes
+    ) ?? ["passive"]
+    geo = try values.decode(WatchGeo.self, forKey: .geo)
+    controls = try values.decode(WatchControls.self, forKey: .controls)
+    cue = try values.decodeIfPresent(WatchHapticCue.self, forKey: .cue)
+    updatedAtMs = try values.decode(Double.self, forKey: .updatedAtMs)
+  }
 
   /// True when this payload came from a wire version the app understands.
   var isSupportedVersion: Bool { wireVersion == MeshMapperWatchWire.version }
@@ -223,6 +358,9 @@ struct WatchCommand: Codable, Hashable {
   }
 
   let kind: Kind
+  /// Optional additive field. Older phones ignore it and retain their safe
+  /// mode resolver; new phones revalidate it instead of silently downgrading.
+  let mode: String?
   /// Client-generated, so the phone can dedupe redelivered commands.
   let id: String
   /// Queued delivery can outlive the place where a transmit was requested.
