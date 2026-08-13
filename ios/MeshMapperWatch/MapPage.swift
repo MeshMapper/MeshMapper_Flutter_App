@@ -273,9 +273,11 @@ struct MapPage: View {
         // the simulator's force-dimmed path cannot. Restore only an inset that
         // disappeared relative to the full-luminance reference: equal insets
         // produce zero, while a missing measurement is deliberately a no-op.
-        // A visual offset keeps this correction out of the geometry proposal
-        // being measured above, closing the layout feedback loop.
-        .offset(y: readoutTopOffset)
+        // Layout padding also consumes the height the collapsed bar returned,
+        // keeping the flexible middle spacer identical to the reference. The
+        // reader above receives its safe-area inset from the navigation host;
+        // padding this descendant cannot alter that system-supplied value.
+        .padding(.top, readoutTopOffset)
     }
   }
 
@@ -393,7 +395,8 @@ struct MapPage: View {
     // because the navigation bar settles upward after installing its toolbar.
     // This intentionally differs from the bottom inset's first-nonzero latch:
     // the bottom value drives padding and can feed back into its measurement,
-    // while this value drives a visual offset that cannot affect geometry.
+    // while the top value comes from the parent navigation host and drives
+    // padding only inside its readout child, which cannot change that inset.
     guard !isLuminanceReduced, !showsMap, inset > 0 else { return }
     latchedTopSafeAreaInset = max(latchedTopSafeAreaInset, inset)
   }
