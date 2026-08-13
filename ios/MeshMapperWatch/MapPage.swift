@@ -80,17 +80,12 @@ struct MapPage: View {
     return CGPoint(x: panelFrame.midX, y: panelFrame.minY / 2)
   }
 
-  /// Both gaps scale with the estimated corner radius, putting every watch at
-  /// the same relative positions on its curve. The 4/19 and 8/19 ratios are
-  /// calibrated from the 40 mm watch Adam signed off: at R=19 they reproduce
-  /// its current clearance and placement by construction. Changing either
-  /// constant therefore changes the one hardware size already known-good.
-  private static let curveClearanceGapRatio: CGFloat = 4.0 / 19.0
-  private static let panelBottomGapRatio: CGFloat = 8.0 / 19.0
-
-  private var curveClearanceGap: CGFloat {
-    bottomSafeAreaInset * Self.curveClearanceGapRatio
-  }
+  /// The placement scales with the estimated corner radius, putting every
+  /// watch at the same relative position on its curve. Ten points at R=19 is a
+  /// modest lift from the hardware-approved eight; unlike the earlier
+  /// deliberately narrow treatment, clearance is now evaluated at that real
+  /// position so the lift buys the glanceable width the wearer requested.
+  private static let panelBottomGapRatio: CGFloat = 10.0 / 19.0
 
   private var panelBottomGap: CGFloat {
     bottomSafeAreaInset * Self.panelBottomGapRatio
@@ -107,14 +102,14 @@ struct MapPage: View {
   /// watchOS exposes no screen corner radius, but its bottom safe-area inset is
   /// the clearance a full-width element needs at zero horizontal inset, making
   /// it a useful estimate of that radius. The circle/chord intersection gives
-  /// the inset at the scaled clearance gap. That radius estimate is a lower
-  /// bound on the glass curvature, so four extra points are cheap insurance
-  /// against another hardware clip. The rectangle test is conservative in the
-  /// other direction: the panel's own 12 pt radius pulls its visible corners
-  /// inward from the square corners protected by this equation.
+  /// the inset at the panel's actual placement gap. That radius estimate is a
+  /// lower bound on the glass curvature, so four extra points are cheap
+  /// insurance against another hardware clip. The rectangle test is
+  /// conservative in the other direction: the panel's own 12 pt radius pulls
+  /// its visible corners inward from the square corners protected here.
   private var curvedPanelHorizontalInset: CGFloat? {
     let radius = bottomSafeAreaInset
-    let gap = curveClearanceGap
+    let gap = panelBottomGap
     guard radius > 0, gap < radius else { return nil }
     let inset = radius - sqrt(max(0, 2 * radius * gap - gap * gap)) + 4
     guard inset.isFinite else { return nil }
@@ -467,13 +462,15 @@ struct MapPage: View {
     }
   }
 
-  /// Largest size allowed by the existing hash-length ladder. Width fitting
-  /// may make it smaller, but never larger than the familiar phone treatment.
+  /// Largest size allowed by the hash-length ladder. The watch now permits one
+  /// point more than the phone-derived sizes: it is read at arm's length in
+  /// motion, and the width solver still prevents that legibility gain from
+  /// making an intrinsic row overflow its column.
   private var rowFontSizeCap: CGFloat {
     let widest = heard.map(\.id.count).max() ?? 2
-    if widest > 4 { return 9 }
-    if widest > 2 { return 10 }
-    return 11
+    if widest > 4 { return 10 }
+    if widest > 2 { return 11 }
+    return 12
   }
 
   /// Font size that leaves two intrinsic rows safely inside their columns.
@@ -487,13 +484,14 @@ struct MapPage: View {
     return (columnWidth - 12) / (0.62 * idChars + 3.1)
   }
 
-  /// Seven points is the floor at which two columns remain readable. Falling
-  /// below it is the one reason to spend the extra height on a single column.
-  private var twoHeardColumnsFit: Bool { unconstrainedRowFontSize >= 7 }
+  /// Eight points is the new glanceability floor for two columns. Without it,
+  /// the extra width makes six-character IDs on 40 mm barely “fit” at about
+  /// seven points and regress from the clearer single-column treatment.
+  private var twoHeardColumnsFit: Bool { unconstrainedRowFontSize >= 8 }
 
   private var rowFontSize: CGFloat {
     guard twoHeardColumnsFit else { return rowFontSizeCap }
-    return min(unconstrainedRowFontSize.clamped(to: 7...11), rowFontSizeCap)
+    return min(unconstrainedRowFontSize.clamped(to: 8...12), rowFontSizeCap)
   }
 
   private var heard: [WatchHeardNode] { snapshot?.geo.heard ?? [] }
@@ -778,8 +776,6 @@ private struct WatchPhaseBar: View {
 
   private var phaseKey: PhaseAnimationKey {
     PhaseAnimationKey(
-      phase: snapshot.phase,
-      title: snapshot.phaseTitle,
       endsAtMs: snapshot.phaseEndsAtMs,
       durationMs: snapshot.phaseDurationMs
     )
@@ -867,8 +863,9 @@ private struct WatchPhaseBar: View {
   }
 
   private struct PhaseAnimationKey: Hashable {
-    let phase: String
-    let title: String
+    // The drain depicts time, not its caption. Skip mode can change the title
+    // against the same timer; including it here would cancel, snap and restart
+    // an otherwise continuous bar every time the label flips.
     let endsAtMs: Double?
     let durationMs: Int?
   }
