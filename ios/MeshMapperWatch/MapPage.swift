@@ -533,8 +533,7 @@ struct MapPage: View {
   @MapContentBuilder
   private var linkLines: some MapContent {
     if settings.showLinks, let fix, let snapshot {
-      let linked = Set(snapshot.geo.linkedRepeaterIds)
-      ForEach(snapshot.geo.repeaters.filter { linked.contains($0.id) }) { repeater in
+      ForEach(linkedRepeaters(in: snapshot.geo)) { repeater in
         MapPolyline(coordinates: [
           fix,
           CLLocationCoordinate2D(latitude: repeater.lat, longitude: repeater.lon),
@@ -542,6 +541,28 @@ struct MapPage: View {
         .stroke(Color(repeater.color).opacity(0.7), lineWidth: 1.5)
       }
     }
+  }
+
+  /// Heard identities are path-hash prefixes, not API database IDs. Resolve
+  /// against the full hex carried by each pin, and require one match per
+  /// prefix: a line asserts a real radio path, so an ambiguous line is worse
+  /// than drawing none. The phone performs the same check against the full
+  /// catalogue before sending; repeating it here keeps malformed or older
+  /// payloads from turning ambiguity into a visual claim.
+  private func linkedRepeaters(in geo: WatchGeo) -> [WatchRepeater] {
+    var resolved = [WatchRepeater]()
+    var seen = Set<String>()
+
+    for rawPrefix in geo.linkedRepeaterIds {
+      let prefix = rawPrefix.uppercased()
+      guard !prefix.isEmpty else { continue }
+      let matches = geo.repeaters.filter {
+        $0.hexId?.uppercased().hasPrefix(prefix) == true
+      }
+      guard matches.count == 1, seen.insert(matches[0].id).inserted else { continue }
+      resolved.append(matches[0])
+    }
+    return resolved
   }
 
   @MapContentBuilder

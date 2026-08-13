@@ -69,6 +69,12 @@ struct WatchPing: Codable, Hashable, Identifiable {
 /// A repeater pin. `heardThisCycle` drives the highlight ring.
 struct WatchRepeater: Codable, Hashable, Identifiable {
   let id: String
+  /// Full repeater hex. Heard path hashes are prefixes of this value; the API
+  /// database ID above belongs to a different identity domain.
+  // Optional only for one-version migration: a new watch can receive the
+  // phone's previously persisted v2 application context before the matching
+  // app update replaces it. New Dart payloads always provide this field.
+  let hexId: String?
   let name: String
   let lat: Double
   let lon: Double

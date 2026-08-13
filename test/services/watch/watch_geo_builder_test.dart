@@ -2,7 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/models/log_entry.dart';
 import 'package:mesh_mapper/models/ping_data.dart';
 import 'package:mesh_mapper/models/repeater.dart';
-import 'package:mesh_mapper/providers/app_state_provider.dart' show OverlayPingType;
+import 'package:mesh_mapper/providers/app_state_provider.dart'
+    show OverlayPingType;
 import 'package:mesh_mapper/services/watch/watch_geo_builder.dart';
 import 'package:mesh_mapper/services/watch/watch_models.dart';
 import 'package:mesh_mapper/utils/ping_colors.dart';
@@ -332,7 +333,7 @@ void main() {
       expect(built.map((r) => r.id), ['near', 'mid']);
     });
 
-    test('marks heard-this-cycle by either short id or hex id', () {
+    test('marks an RX-only repeater heard through its unique hex prefix', () {
       final repeaters = [
         _repeater(id: '01', hexId: 'AA11', lat: 47.6, lon: -122.3),
         _repeater(id: '02', hexId: 'BB22', lat: 47.6, lon: -122.3),
@@ -341,13 +342,27 @@ void main() {
 
       final built = WatchGeoBuilder.buildRepeaters(
         repeaters: repeaters,
-        heardThisCycle: {'01', 'BB22'},
+        // This is the RX slot's path hash; no Top Heard entry is needed for
+        // the repeater pin to receive its current-cycle ring.
+        heardThisCycle: {'BB'},
       );
 
       expect(
         {for (final r in built) r.id: r.heardThisCycle},
-        {'01': true, '02': true, '03': false},
+        {'01': false, '02': true, '03': false},
       );
+    });
+
+    test('carries the full hex identity separately from the API id', () {
+      final built = WatchGeoBuilder.buildRepeaters(
+        repeaters: [
+          _repeater(id: '01', hexId: '4E5D82', lat: 47.6, lon: -122.3),
+        ],
+        heardThisCycle: const {},
+      );
+
+      expect(built.single.id, '01');
+      expect(built.single.hexId, '4E5D82');
     });
   });
 
@@ -360,7 +375,8 @@ void main() {
         ],
         rxSlot: (repeaterId: 'B914', snr: 9.9),
         repeaterByHex: const {},
-        at: DateTime(2026, 8, 12),
+        topAt: DateTime(2026, 8, 12),
+        rxAt: DateTime(2026, 8, 12, 0, 1),
       );
 
       // The RX slot trails even though its SNR is highest — it is a distinct
@@ -376,7 +392,8 @@ void main() {
         ],
         rxSlot: (repeaterId: 'CC', snr: 1),
         repeaterByHex: const {},
-        at: DateTime(2026, 8, 12),
+        topAt: DateTime(2026, 8, 12),
+        rxAt: DateTime(2026, 8, 12),
       );
 
       expect(built[0].typeColor, WatchColor.fromColor(PingColors.txSuccess));
@@ -394,7 +411,8 @@ void main() {
         ],
         rxSlot: (repeaterId: 'E', snr: 0),
         repeaterByHex: const {},
-        at: DateTime(2026, 8, 12),
+        topAt: DateTime(2026, 8, 12),
+        rxAt: DateTime(2026, 8, 12),
       );
 
       expect(built.length, WatchWire.maxHeard);
@@ -405,9 +423,14 @@ void main() {
         top: const [(repeaterId: '4e5d', snr: 6, type: OverlayPingType.tx)],
         repeaterByHex: {
           '4E5D': _repeater(
-              id: '01', hexId: '4E5D82', name: 'Capitol Hill', lat: 47.61, lon: -122.3),
+              id: '01',
+              hexId: '4E5D82',
+              name: 'Capitol Hill',
+              lat: 47.61,
+              lon: -122.3),
         },
-        at: DateTime(2026, 8, 12),
+        topAt: DateTime(2026, 8, 12),
+        rxAt: null,
         lat: 47.6,
         lon: -122.3,
       );
@@ -421,7 +444,8 @@ void main() {
       final built = WatchGeoBuilder.buildHeard(
         top: const [(repeaterId: 'AB', snr: 1, type: OverlayPingType.tx)],
         repeaterByHex: const {},
-        at: DateTime(2026, 8, 12),
+        topAt: DateTime(2026, 8, 12),
+        rxAt: null,
       );
 
       expect(built.single.id, 'AB');
@@ -432,6 +456,31 @@ void main() {
   });
 
   group('indexByHexPrefix', () {
+    test('resolves a link from a path-hash prefix to the full hex', () {
+      final repeater =
+          _repeater(id: '01', hexId: '4E5D82', lat: 47.6, lon: -122.3);
+
+      final linked = WatchGeoBuilder.resolveUniqueHexPrefixes(
+        repeaters: [repeater],
+        prefixes: const ['4E5D'],
+      );
+
+      expect(linked['4E5D'], same(repeater));
+    });
+
+    test('an ambiguous link prefix resolves to nothing', () {
+      final linked = WatchGeoBuilder.resolveUniqueHexPrefixes(
+        repeaters: [
+          _repeater(id: '01', hexId: '4E5D82', lat: 47.6, lon: -122.3),
+          _repeater(id: '02', hexId: '4E99F1', lat: 47.7, lon: -122.3),
+        ],
+        prefixes: const ['4E'],
+      );
+
+      expect(linked, isEmpty,
+          reason: 'a line to the wrong repeater is worse than no line');
+    });
+
     test('resolves a prefix owned by exactly one repeater', () {
       final index = WatchGeoBuilder.indexByHexPrefix([
         _repeater(id: '01', hexId: '4E5D82', lat: 47.6, lon: -122.3, name: 'A'),

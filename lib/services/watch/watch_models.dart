@@ -93,6 +93,7 @@ class WatchPing {
 class WatchRepeater {
   const WatchRepeater({
     required this.id,
+    required this.hexId,
     required this.name,
     required this.lat,
     required this.lon,
@@ -101,6 +102,7 @@ class WatchRepeater {
   });
 
   final String id;
+  final String hexId;
   final String name;
   final double lat;
   final double lon;
@@ -109,6 +111,7 @@ class WatchRepeater {
 
   Map<String, Object?> toMap() => {
         'id': id,
+        'hexId': hexId,
         'name': name,
         'lat': lat,
         'lon': lon,
@@ -298,14 +301,37 @@ class WatchSnapshot {
   ///
   /// Deliberately excludes geo: a moving GPS would otherwise mark every
   /// update urgent and defeat the throttle entirely.
-  String get urgencyKey => [
-        core.sessionId,
-        core.mode,
-        core.phase.wireValue,
-        core.phaseTitle,
-        core.phaseDetail ?? '',
-        core.phaseEndsAt?.millisecondsSinceEpoch ?? 0,
-        core.isConnected,
+  String get urgencyKey => buildUrgencyKey(
+        sessionId: core.sessionId,
+        mode: core.mode,
+        phase: core.phase,
+        phaseTitle: core.phaseTitle,
+        phaseDetail: core.phaseDetail,
+        phaseEndsAt: core.phaseEndsAt,
+        isConnected: core.isConnected,
+        controls: controls,
+        cue: cue,
+      );
+
+  static String buildUrgencyKey({
+    required String sessionId,
+    required String mode,
+    required LiveActivityPhase phase,
+    required String phaseTitle,
+    required String? phaseDetail,
+    required DateTime? phaseEndsAt,
+    required bool isConnected,
+    required WatchControls controls,
+    required WatchHapticCue? cue,
+  }) =>
+      [
+        sessionId,
+        mode,
+        phase.wireValue,
+        phaseTitle,
+        phaseDetail ?? '',
+        phaseEndsAt?.millisecondsSinceEpoch ?? 0,
+        isConnected,
         controls.canStartStop,
         controls.canManualPing,
         controls.isSessionActive,
