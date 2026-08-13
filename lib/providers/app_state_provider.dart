@@ -1228,7 +1228,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     final core = LiveActivitySnapshot(
       sessionId: _liveActivitySessionId ?? 'idle',
-      mode: _liveActivityModeTitle,
+      // On the watch this field is also the Start button's promise, so it must
+      // describe the resolver the command will use rather than the ambient
+      // default that only becomes meaningful after a phone button is pressed.
+      mode: _resolvedWatchSessionModeTitle,
       phase: phase.phase,
       phaseTitle: phase.title,
       phaseDetail: phase.detail,
@@ -1417,6 +1420,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return (allowed: allowed, reason: reason);
   }
 
+  AutoMode get _resolvedWatchSessionMode {
+    // Phone buttons each carry an explicit mode, but the wrist has one generic
+    // Start button and `_autoMode` begins as Active before any phone choice has
+    // established intent. In a passive-only region inheriting that default
+    // silently selects the one forbidden mode. Once running, preserve the
+    // actual mode so the same resolver always stops what it started.
+    if (_autoPingEnabled) return _autoMode;
+    if (isConnected && !txAllowed) return AutoMode.passive;
+    return _autoMode;
+  }
+
+  String get _resolvedWatchSessionModeTitle =>
+      switch (_resolvedWatchSessionMode) {
+        AutoMode.active => 'Active',
+        AutoMode.passive => 'Passive',
+        AutoMode.hybrid => 'Hybrid',
+        AutoMode.targeted => 'Trace',
+      };
+
   WatchControls _buildWatchControls() {
     final cooldownMs = _manualPingCooldownTimer.remainingMs;
     final manualPing = _manualPingAvailability;
@@ -1464,12 +1486,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case WatchCommandKind.startSession:
         if (!isConnected) return 'Not connected';
         if (_autoPingEnabled) return null; // Already running.
-        unawaited(_runWatchStartSession());
+        unawaited(_runWatchStartSession(_resolvedWatchSessionMode));
         return null;
 
       case WatchCommandKind.stopSession:
         if (!_autoPingEnabled) return null; // Already stopped.
-        unawaited(_runWatchStopSession());
+        unawaited(_runWatchStopSession(_resolvedWatchSessionMode));
         return null;
 
       case WatchCommandKind.manualPing:
@@ -1482,27 +1504,36 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _runWatchStartSession() async {
+  Future<void> _runWatchStartSession(AutoMode mode) async {
     _lastSessionCheckFailureReason = null;
     try {
-      final started = await toggleAutoPing(_autoMode);
+      final started = await toggleAutoPing(mode);
       if (!started) {
-        _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Could not start');
+        _emitWatchFailure(_watchStartFailureReason(mode));
       }
     } catch (error) {
       debugError('[WATCH] startSession failed after admission: $error');
-      _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Could not start');
+      _emitWatchFailure(_watchStartFailureReason(mode));
     }
   }
 
-  Future<void> _runWatchStopSession() async {
+  Future<void> _runWatchStopSession(AutoMode mode) async {
     try {
-      final stopped = await toggleAutoPing(_autoMode);
+      final stopped = await toggleAutoPing(mode);
       if (!stopped) _emitWatchFailure('Could not stop');
     } catch (error) {
       debugError('[WATCH] stopSession failed after admission: $error');
       _emitWatchFailure('Could not stop');
     }
+  }
+
+  String _watchStartFailureReason(AutoMode mode) {
+    final sessionReason = _lastSessionCheckFailureReason;
+    if (sessionReason != null) return sessionReason;
+    if (mode != AutoMode.passive && _cooldownTimer.isRunning) {
+      return 'Cooling down';
+    }
+    return 'Could not start';
   }
 
   Future<void> _runWatchManualPing() async {
