@@ -1314,7 +1314,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     return WatchGeo(
       you: position,
-      pings: WatchGeoBuilder.buildPings(txPings: _txPings, rxPings: _rxPings),
+      pings: WatchGeoBuilder.buildPings(
+        txPings: _txPings,
+        rxPings: _rxPings,
+        discLogEntries: _discLogEntries,
+        traceLogEntries: _traceLogEntries,
+      ),
       repeaters: WatchGeoBuilder.buildRepeaters(
         repeaters: _repeaters,
         heardThisCycle: heardIds,

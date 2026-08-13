@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import '../../models/log_entry.dart';
 import '../../models/ping_data.dart';
 import '../../models/repeater.dart';
 import '../../providers/app_state_provider.dart' show OverlayPingType;
@@ -68,11 +69,16 @@ class WatchGeoBuilder {
 
   /// Most recent pings, newest first, capped at [WatchWire.maxPings].
   ///
-  /// TX and RX are merged into one time-ordered stream because the watch map
-  /// shows them together; a TX that nobody answered is drawn as a failure.
+  /// Every coverage source is merged before the recency cap is applied.
+  ///
+  /// Applying the cap to source-ordered batches could let a busy TX history
+  /// erase discovery or trace markers. Sorting the complete candidate set
+  /// first makes the wire carry the latest drive history regardless of type.
   static List<WatchPing> buildPings({
     required List<TxPing> txPings,
     required List<RxPing> rxPings,
+    required List<DiscLogEntry> discLogEntries,
+    required List<TraceLogEntry> traceLogEntries,
     int cap = WatchWire.maxPings,
   }) {
     final pings = <WatchPing>[];
@@ -80,12 +86,20 @@ class WatchGeoBuilder {
     for (var i = 0; i < txPings.length; i++) {
       final tx = txPings[i];
       final success = tx.heardRepeaters.isNotEmpty;
+      final hasDirectEcho =
+          tx.heardRepeaters.any((repeater) => repeater.pathHops == null);
+      final hasMultiHopOnly = !hasDirectEcho && success;
       pings.add(WatchPing(
         id: 'tx-${tx.timestamp.millisecondsSinceEpoch}-$i',
         lat: tx.latitude,
         lon: tx.longitude,
         kind: 'tx',
-        color: pingColor('tx', success),
+        // The phone draws a multi-hop-only return as RX: it proves the packet
+        // came back through the mesh, but not that any repeater heard us
+        // directly. Keep the TX identity and mirror that evidence colour.
+        color: hasMultiHopOnly
+            ? pingColor('rx', true)
+            : pingColor('tx', success),
         at: tx.timestamp,
       ));
     }
@@ -99,6 +113,30 @@ class WatchGeoBuilder {
         kind: 'rx',
         color: pingColor('rx', true),
         at: rx.timestamp,
+      ));
+    }
+
+    for (var i = 0; i < discLogEntries.length; i++) {
+      final entry = discLogEntries[i];
+      pings.add(WatchPing(
+        id: 'disc-${entry.timestamp.millisecondsSinceEpoch}-$i',
+        lat: entry.latitude,
+        lon: entry.longitude,
+        kind: 'disc',
+        color: pingColor('disc', entry.discoveredNodes.isNotEmpty),
+        at: entry.timestamp,
+      ));
+    }
+
+    for (var i = 0; i < traceLogEntries.length; i++) {
+      final entry = traceLogEntries[i];
+      pings.add(WatchPing(
+        id: 'trace-${entry.timestamp.millisecondsSinceEpoch}-$i',
+        lat: entry.latitude,
+        lon: entry.longitude,
+        kind: 'trace',
+        color: pingColor('trace', entry.success),
+        at: entry.timestamp,
       ));
     }
 
