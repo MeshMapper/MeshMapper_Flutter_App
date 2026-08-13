@@ -1931,7 +1931,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _timerListenable.addListener(_handleLiveActivityTimerChange);
     }
     if (_watchBridge.isSupportedPlatform) {
-      _watchBridge.attachCommandHandler(_handleWatchCommand);
+      _watchBridge.attachCommandHandler(
+        _handleWatchCommand,
+        onRefusal: _emitWatchFailure,
+      );
     }
 
     // Initialize debug logging (enabled by default, respects user preference)
