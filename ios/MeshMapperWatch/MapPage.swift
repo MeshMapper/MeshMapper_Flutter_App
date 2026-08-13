@@ -20,6 +20,11 @@ struct MapPage: View {
   @State private var programmaticCenter: CLLocationCoordinate2D?
   @State private var followSuspendedUntil: Date?
 
+  /// Whether MapKit has ever reported back a centre we asked for. Until it has,
+  /// a disagreeing centre is `.automatic` settling, not the wearer — see
+  /// `noteCameraChange`.
+  @State private var hasConfirmedRequestedCenter = false
+
   /// Metres of disagreement before a camera change counts as a real pan.
   private static let panTolerance: CLLocationDistance = 40
 
@@ -461,10 +466,16 @@ struct MapPage: View {
     if let snapshot {
       ForEach(snapshot.geo.pings) { ping in
         Annotation("", coordinate: CLLocationCoordinate2D(latitude: ping.lat, longitude: ping.lon)) {
-          // Squares, matching the iOS map's ping markers.
-          Rectangle()
+          // The phone's marker style is a user preference the watch does not
+          // receive, so mirror its default dot: a filled circle with a soft
+          // white border. The phone's shadow is omitted at this wrist scale.
+          Circle()
             .fill(Color(ping.color))
-            .frame(width: 5, height: 5)
+            .frame(width: 6, height: 6)
+            .overlay(
+              Circle()
+                .strokeBorder(.white.opacity(0.6), lineWidth: 0.75)
+            )
         }
         .annotationTitles(.hidden)
       }
@@ -500,9 +511,18 @@ struct MapPage: View {
   private func recenterIfFollowing(_ proxy: MapProxy, force: Bool = false) {
     guard force || isFollowing, let fix else { return }
     let center = centerPlacing(fix, proxy: proxy)
+    let isInitialPlacement = programmaticCenter == nil
     programmaticCenter = center
-    withAnimation(.easeInOut(duration: 0.25)) {
-      camera = .region(MKCoordinateRegion(center: center, span: currentSpan))
+    let region = MKCoordinateRegion(center: center, span: currentSpan)
+    if isInitialPlacement {
+      // Cutting to the first fix centres and zooms as one operation. Animating
+      // from `.automatic` would fly through unrelated tiles from MapKit's
+      // arbitrary opening location before reaching the wearer.
+      camera = .region(region)
+    } else {
+      withAnimation(.easeInOut(duration: 0.25)) {
+        camera = .region(region)
+      }
     }
   }
 
@@ -592,7 +612,21 @@ struct MapPage: View {
       // before the first fix even arrives.
       return
     }
-    guard distance(center, expected) > Self.panTolerance else {
+
+    let drift = distance(center, expected)
+
+    // `.automatic` settles *after* our first request, centred on the annotation
+    // cloud — measured 372 m from the fix — and that disagreement is not a pan.
+    // Reading it as one suspended following for eight seconds at every launch,
+    // and overwrote the expectation, so our own region landing then looked like
+    // a second pan. Nothing counts as a pan until MapKit has confirmed a centre
+    // we actually asked for.
+    guard hasConfirmedRequestedCenter else {
+      if drift <= Self.panTolerance { hasConfirmedRequestedCenter = true }
+      return
+    }
+
+    guard drift > Self.panTolerance else {
       // Our own follow update landing.
       return
     }
