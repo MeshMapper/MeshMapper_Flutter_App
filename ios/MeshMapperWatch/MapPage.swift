@@ -1,6 +1,7 @@
 import CoreLocation
 import MapKit
 import SwiftUI
+import WatchKit
 
 /// The map, drawn on Apple's basemap.
 ///
@@ -43,7 +44,7 @@ struct MapPage: View {
   /// The panel's frame in global coordinates, so the camera can keep the fix
   /// out from behind it.
   @State private var panelFrame: CGRect = .zero
-  @State private var viewWidth: CGFloat = 0
+  @State private var bottomSafeAreaInset: CGFloat = 0
 
   /// Only one subtree sets this, but every *other* subtree still contributes
   /// the default. Taking `nextValue()` unconditionally would let a later
@@ -63,18 +64,44 @@ struct MapPage: View {
     return CGPoint(x: panelFrame.midX, y: panelFrame.minY / 2)
   }
 
-  /// Width the panel's content actually gets: the display minus the overlay's
-  /// horizontal padding (4 a side) and the panel's own (8 a side).
-  private var panelContentWidth: CGFloat { max(0, viewWidth - 24) }
+  private static let panelBottomGap: CGFloat = 4
 
-  /// Whether there is room to set the phase title and the countdown *beside*
-  /// the bar rather than on top of it.
+  /// Panel geometry is about the physical display, not this view's proposal.
+  /// Reading the device avoids a feedback loop where panel padding changes the
+  /// container width that is then used to recompute that same padding.
+  private var screenWidth: CGFloat { WKInterfaceDevice.current().screenBounds.width }
+
+  /// Horizontal clearance that lets the panel descend into the bottom safe
+  /// area without putting its corners outside the curved display.
   ///
-  /// Budget: ~52 pt for the longest phase title, ~38 for the countdown, two
-  /// 6 pt gaps, and ~64 left for the bar so it still reads as a gauge. A 46 mm
-  /// screen has 184 pt to spend and a 40 mm one has 138, so the two sizes get
-  /// genuinely different treatments instead of the small one being squeezed.
-  private var labelsFitBesideBar: Bool { panelContentWidth >= 160 }
+  /// watchOS exposes no screen corner radius, but its bottom safe-area inset is
+  /// the clearance a full-width element needs at zero horizontal inset, making
+  /// it a useful estimate of that radius. The circle/chord intersection gives
+  /// the inset at our chosen bottom gap. That estimate is a lower bound on the
+  /// glass curvature, so four extra points are cheap insurance against another
+  /// hardware clip. The rectangle test is conservative in the other direction:
+  /// the panel's own 12 pt radius pulls its visible corners inward from the
+  /// square corners protected by this equation.
+  private var curvedPanelHorizontalInset: CGFloat? {
+    let radius = bottomSafeAreaInset
+    let gap = Self.panelBottomGap
+    guard radius > 0, gap < radius else { return nil }
+    let inset = radius - sqrt(max(0, 2 * radius * gap - gap * gap)) + 4
+    guard inset.isFinite else { return nil }
+    return inset
+  }
+
+  /// A missing safe-area measurement is not permission to draw to the edge:
+  /// retaining the old four-point inset and safe-area placement is the only
+  /// fallback that is known not to clip on hardware.
+  private var panelHorizontalInset: CGFloat { curvedPanelHorizontalInset ?? 4 }
+
+  /// Width left after the curvature clearance and the panel's own 8 pt inset
+  /// on each side. Row sizing uses this same budget as the rendered content,
+  /// so its two-column decision does not depend on a nominal watch size.
+  private var panelContentWidth: CGFloat {
+    max(0, screenWidth - 2 * panelHorizontalInset - 16)
+  }
 
   var body: some View {
     // The proxy is the only reliable way to relate a coordinate to a point on
@@ -92,13 +119,13 @@ struct MapPage: View {
     ZStack {
       map(proxy)
 
-      // One panel in the top-leading corner carrying phase and Top Heard.
+      // One panel carrying phase and Top Heard.
       //
       // Earlier versions floated the countdown in the opposite corner and drew
-      // into the safe areas to reach the edges. On real hardware both got
-      // clipped by the display curvature — the simulator renders a flat
-      // rectangle and never shows it. The safe area is honoured now, and
-      // merging the two overlays means there is no second corner to lose.
+      // full-width into the safe areas. On real hardware both got clipped by
+      // the display curvature — the simulator renders a flat rectangle and
+      // never shows it. This panel enters only the bottom safe area, and only
+      // after the measured curvature has bought enough horizontal clearance.
       VStack(spacing: 0) {
         HStack {
           Spacer(minLength: 0)
@@ -112,15 +139,24 @@ struct MapPage: View {
             }
           )
       }
-      .padding(.horizontal, 4)
+      .padding(.horizontal, panelHorizontalInset)
       .padding(.top, 2)
+      .padding(.bottom, curvedPanelHorizontalInset == nil ? 0 : Self.panelBottomGap)
+      .ignoresSafeArea(edges: curvedPanelHorizontalInset == nil ? [] : .bottom)
     }
     .background(
       GeometryReader { geo in
         Color.clear
-          .onAppear { viewWidth = geo.size.width }
-          .onChange(of: geo.size.width) { _, width in viewWidth = width }
+          .onAppear { latchBottomSafeAreaInset(geo.safeAreaInsets.bottom) }
+          .onChange(of: geo.safeAreaInsets.bottom) { _, inset in
+            latchBottomSafeAreaInset(inset)
+          }
       }
+      // Plain is intentional: `.ignoresSafeArea()` makes this reader report
+      // the insets of its own expanded region, which are zero. The first
+      // nonzero value is latched while the panel is still in its safe fallback
+      // placement; later panel geometry depends on it, while the display's
+      // actual safe area is a device constant that cannot legitimately change.
     )
     .onPreferenceChange(PanelFrameKey.self) { frame in
       guard abs(frame.minY - panelFrame.minY) > 0.5 || panelFrame.height == 0 else { return }
@@ -154,6 +190,11 @@ struct MapPage: View {
     }
   }
 
+  private func latchBottomSafeAreaInset(_ inset: CGFloat) {
+    guard bottomSafeAreaInset == 0, inset > 0 else { return }
+    bottomSafeAreaInset = inset
+  }
+
   /// Phase and Top Heard in one panel.
   ///
   /// Rows are `[type dot] [hex ID] [SNR]`. The hex path hash is the identity,
@@ -172,21 +213,21 @@ struct MapPage: View {
             .foregroundStyle(.white.opacity(0.45))
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-          // Two columns when they fit, one when they don't. A 3-byte zone's
-          // six-character hashes plus SNR will not fit two columns on a 40 mm
-          // screen, and truncating the ID is not an option — it is the
-          // repeater's identity. ViewThatFits picks by measurement rather than
-          // by a guess about screen size.
-          ViewThatFits(in: .horizontal) {
+          // Two columns are the useful glance layout even on 40 mm, so type
+          // shrinks against the same width model as the actual row. Only a
+          // six-character zone that would cross the 7 pt legibility floor gets
+          // one column; truncating the ID is not an option because it is the
+          // repeater's identity.
+          if twoHeardColumnsFit {
             HStack(alignment: .top, spacing: columnGap) {
               heardColumn(Array(heard.prefix(2)))
               heardColumn(Array(heard.dropFirst(2)))
             }
+          } else {
             VStack(alignment: .leading, spacing: 2) {
               ForEach(heard) { heardRow($0) }
             }
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
       .padding(.horizontal, 8)
@@ -209,11 +250,10 @@ struct MapPage: View {
     .opacity(client.isStale ? 0.5 : 1.0)
   }
 
-  /// Gutter between the two heard columns. Wider where there is room, so they
-  /// read as columns rather than one run-on block hugging the left edge.
-  /// Widening it also feeds `ViewThatFits`, which will drop to one column if
-  /// the roomier pair no longer fits.
-  private var columnGap: CGFloat { labelsFitBesideBar ? 18 : 10 }
+  /// A stable gutter keeps the width equation and the rendered columns in
+  /// agreement; changing it by device size would silently spend the room the
+  /// font calculation just recovered on the smallest watch.
+  private var columnGap: CGFloat { 8 }
 
   /// One column of heard rows.
   private func heardColumn(_ nodes: [WatchHeardNode]) -> some View {
@@ -224,8 +264,8 @@ struct MapPage: View {
 
   /// `[type dot] [hex ID] [SNR]`, sized to its content.
   ///
-  /// Content-sized on purpose: a greedy row always "fits", which would stop
-  /// `ViewThatFits` from ever rejecting the two-column layout.
+  /// Content-sized on purpose so the row's intrinsic measurement stays equal
+  /// to the width model that chooses the font and column count.
   private func heardRow(_ node: WatchHeardNode) -> some View {
     HStack(spacing: 3) {
       Circle()
@@ -269,41 +309,25 @@ struct MapPage: View {
       .lineLimit(1)
     } else if let snapshot {
       TimelineView(.periodic(from: .now, by: 1)) { context in
-        if labelsFitBesideBar {
-          // Big screens have width to spare, so spend it on legibility: phase
-          // name and remaining time both stand clear of the track, and the bar
-          // is left as a pure gauge.
-          HStack(spacing: 6) {
-            phaseTitle(snapshot)
-            track(snapshot, at: context.date)
-            countdown(snapshot, at: context.date)
-          }
-        } else {
-          // Small screens cannot afford two label columns, so the one label
-          // that matters rides on the bar. Countdown when a phase is running,
-          // otherwise its name.
-          track(snapshot, at: context.date)
-            .overlay(alignment: .trailing) {
-              Group {
-                if snapshot.phaseEndsAt.map({ $0 > context.date }) == true {
-                  countdown(snapshot, at: context.date)
-                } else {
-                  phaseTitle(snapshot)
-                }
-              }
-              // The fill slides under the label, so a shadow keeps it readable
-              // against both the filled and empty parts of the track.
-              .shadow(color: .black.opacity(0.7), radius: 1.5)
-              .padding(.trailing, 6)
+        track(snapshot, at: context.date)
+          .overlay {
+            HStack {
+              phaseTitle(snapshot)
+              Spacer(minLength: 4)
+              countdown(snapshot, at: context.date)
             }
-        }
+            // The fill slides under both labels, so a shadow keeps them
+            // readable against the filled and empty parts of the track.
+            .shadow(color: .black.opacity(0.7), radius: 1.5)
+            .padding(.horizontal, 6)
+          }
       }
       .frame(height: 15)
     }
   }
 
-  /// The depleting track. Greedy on purpose — it takes whatever width the
-  /// labels beside it leave.
+  /// The depleting track. Greedy on purpose: the labels overlay it, leaving the
+  /// whole panel width available to show phase progress.
   private func track(_ snapshot: WatchSnapshot, at date: Date) -> some View {
     GeometryReader { geo in
       ZStack(alignment: .leading) {
@@ -335,14 +359,33 @@ struct MapPage: View {
     }
   }
 
-  /// Shrink the rows for longer path hashes, the same way `RepeaterIdChip`
-  /// does on the phone. A 3-byte zone yields 6-character IDs, which at full
-  /// size would run the box across a 40 mm screen.
-  private var rowFontSize: CGFloat {
+  /// Largest size allowed by the existing hash-length ladder. Width fitting
+  /// may make it smaller, but never larger than the familiar phone treatment.
+  private var rowFontSizeCap: CGFloat {
     let widest = heard.map(\.id.count).max() ?? 2
     if widest > 4 { return 9 }
     if widest > 2 { return 10 }
     return 11
+  }
+
+  /// Font size that leaves two intrinsic rows safely inside their columns.
+  /// The constants mirror `heardRow`: dot and gaps consume 12 pt, semibold
+  /// monospaced IDs advance closer to 0.62 em than the nominal 0.6, and the
+  /// aligned SNR owns 3.1 em. Two points of slack make measurement error land
+  /// on smaller type rather than a wider panel that defeats its edge clearance.
+  private var unconstrainedRowFontSize: CGFloat {
+    let idChars = CGFloat(heard.map(\.id.count).max() ?? 2)
+    let columnWidth = (panelContentWidth - columnGap) / 2 - 2
+    return (columnWidth - 12) / (0.62 * idChars + 3.1)
+  }
+
+  /// Seven points is the floor at which two columns remain readable. Falling
+  /// below it is the one reason to spend the extra height on a single column.
+  private var twoHeardColumnsFit: Bool { unconstrainedRowFontSize >= 7 }
+
+  private var rowFontSize: CGFloat {
+    guard twoHeardColumnsFit else { return rowFontSizeCap }
+    return min(unconstrainedRowFontSize.clamped(to: 7...11), rowFontSizeCap)
   }
 
   private var heard: [WatchHeardNode] { snapshot?.geo.heard ?? [] }
