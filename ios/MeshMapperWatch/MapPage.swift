@@ -63,11 +63,12 @@ struct MapPage: View {
         }
       }
       .padding(.horizontal, 5)
-      .padding(.bottom, 3)
-      // Draw into the top safe area so Top Heard sits hard against the corner.
-      // Safe because the box is left-aligned and the system clock is right-
-      // aligned, so they occupy different halves of that strip.
-      .ignoresSafeArea(edges: .top)
+      .padding(.bottom, 4)
+      // Draw into both safe areas so the two corners are actually corners.
+      // The top strip is free because the box is left-aligned and the system
+      // clock is right-aligned; the bottom strip is otherwise dead space that
+      // was pushing the countdown well clear of the edge.
+      .ignoresSafeArea(edges: [.top, .bottom])
     }
     .sheet(isPresented: $showingNodes) {
       NavigationStack {
@@ -108,7 +109,7 @@ struct MapPage: View {
 
         if heard.isEmpty {
           Text("---")
-            .font(.system(size: 11, design: .monospaced))
+            .font(.system(size: rowFontSize, design: .monospaced))
             .foregroundStyle(.white.opacity(0.4))
         } else {
           ForEach(heard) { node in
@@ -117,23 +118,46 @@ struct MapPage: View {
                 .fill(Color(node.typeColor))
                 .frame(width: 6, height: 6)
               Text(node.id)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: rowFontSize, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.white)
               if let snr = node.snr {
                 Text(snr, format: .number.precision(.fractionLength(1)))
-                  .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                  .font(.system(size: rowFontSize, weight: .semibold, design: .monospaced))
                   .foregroundStyle(node.snrColor.map(Color.init) ?? .white)
               }
             }
+            .lineLimit(1)
+            .fixedSize()
           }
         }
       }
       .padding(.horizontal, 7)
       .padding(.vertical, 5)
-      .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+      // Blurred material rather than flat translucency: a 70% black panel
+      // lets bright basemap labels bleed through and fight the SNR digits.
+      // Blurring the map behind the box removes the competing detail entirely.
+      .background(.ultraThinMaterial, in: .rect(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
+      )
     }
     .buttonStyle(.plain)
+    // A HUD, not body copy: fixed sizes keep it from swallowing the map at
+    // large accessibility text sizes. The scrollable detail list is where the
+    // wearer's text-size setting is honoured.
+    .dynamicTypeSize(.small ... .large)
     .opacity(client.isStale ? 0.5 : 1.0)
+  }
+
+  /// Shrink the rows for longer path hashes, the same way `RepeaterIdChip`
+  /// does on the phone. A 3-byte zone yields 6-character IDs, which at full
+  /// size would run the box across a 40 mm screen.
+  private var rowFontSize: CGFloat {
+    let widest = heard.map(\.id.count).max() ?? 2
+    if widest > 4 { return 9 }
+    if widest > 2 { return 10 }
+    return 11
   }
 
   private var heard: [WatchHeardNode] { snapshot?.geo.heard ?? [] }
@@ -376,8 +400,9 @@ private struct CountdownPill: View {
           .lineLimit(1)
       }
     }
-    .padding(.horizontal, 6)
+    .padding(.horizontal, 7)
     .padding(.vertical, 3)
-    .background(.black.opacity(0.55), in: Capsule())
+    .background(.ultraThinMaterial, in: Capsule())
+    .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
   }
 }
