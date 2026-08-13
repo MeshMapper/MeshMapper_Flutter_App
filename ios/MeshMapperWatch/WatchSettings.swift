@@ -12,8 +12,13 @@ final class WatchSettings {
     static let satellite = "map.satellite"
     static let showLinks = "map.showLinks"
     static let follow = "map.follow"
+    static let mapLatitudeDelta = "map.latitudeDelta"
     static let nodeListPlacement = "layout.nodeListPlacement"
   }
+
+  /// Roughly 500 m north-south: one degree of latitude is about 111 km.
+  static let defaultMapLatitudeDelta = 0.0045
+  private static let mapLatitudeDeltaLimits = 0.0005...0.5
 
   /// Where the recently-responded list lives.
   ///
@@ -44,6 +49,13 @@ final class WatchSettings {
     // Following the fix is the useful default while driving; absent any
     // stored value `bool(forKey:)` returns false, so invert an explicit flag.
     follow = defaults.object(forKey: Key.follow) as? Bool ?? true
+    // `double(forKey:)` turns absence into zero, which would silently select
+    // the minimum zoom. Preserve the distinction so fresh installs get the
+    // deliberate ~500 m default instead.
+    mapLatitudeDelta = Self.clampedMapLatitudeDelta(
+      defaults.object(forKey: Key.mapLatitudeDelta) as? Double
+        ?? Self.defaultMapLatitudeDelta
+    )
     nodeListPlacement = (defaults.string(forKey: Key.nodeListPlacement))
       .flatMap(NodeListPlacement.init(rawValue:)) ?? .page
   }
@@ -64,8 +76,29 @@ final class WatchSettings {
     didSet { defaults.set(follow, forKey: Key.follow) }
   }
 
+  /// Only latitude is persisted. MapKit fits longitude to the watch's aspect
+  /// ratio, so storing both would preserve two values that are not independent.
+  /// Normalising before persistence keeps a bad Crown result from becoming a
+  /// sticky launch state.
+  var mapLatitudeDelta: Double {
+    didSet {
+      let clamped = Self.clampedMapLatitudeDelta(mapLatitudeDelta)
+      if clamped != mapLatitudeDelta {
+        mapLatitudeDelta = clamped
+      }
+      // Persist the normalised value explicitly rather than relying on an
+      // assignment inside `didSet` to invoke the observer a second time.
+      defaults.set(clamped, forKey: Key.mapLatitudeDelta)
+    }
+  }
+
   var nodeListPlacement: NodeListPlacement {
     didSet { defaults.set(nodeListPlacement.rawValue, forKey: Key.nodeListPlacement) }
+  }
+
+  private static func clampedMapLatitudeDelta(_ value: Double) -> Double {
+    guard value.isFinite else { return defaultMapLatitudeDelta }
+    return min(max(value, mapLatitudeDeltaLimits.lowerBound), mapLatitudeDeltaLimits.upperBound)
   }
 }
 
