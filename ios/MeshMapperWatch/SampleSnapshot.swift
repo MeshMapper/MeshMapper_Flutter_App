@@ -63,11 +63,14 @@ enum SampleSnapshot {
     // the RX slot in purple. Names are deliberately mixed — a 4-char hash
     // resolves, a 2-char one often cannot.
     let teal = WatchColor(r: 0.32, g: 0.83, b: 0.91)
+    // Pass -MeshMapperLongIds YES to render the 3-byte-zone worst case: six
+    // hex characters per row, which is what the box has to survive on 40 mm.
+    let long = UserDefaults.standard.bool(forKey: "MeshMapperLongIds")
     let heard: [WatchHeardNode] = [
-      ("4E5D", "Capitol Hill", 8.5, 1420.0, green),
-      ("77A1", nil, 2.25, 2310.0, teal),
-      ("A2", nil, -4.0, nil, green),
-      ("B914", "Magnolia", 5.75, 2870.0, purple),
+      (long ? "4E5D82" : "4E5D", "Capitol Hill", 8.5, 1420.0, green),
+      (long ? "77A1B0" : "77A1", nil, 2.25, 2310.0, teal),
+      (long ? "A2FF31" : "A2", nil, -14.5, nil, green),
+      (long ? "B914C2" : "B914", "Magnolia", 5.75, 2870.0, purple),
     ].map { id, name, snr, distance, typeColor in
       WatchHeardNode(
         id: id,
