@@ -15,6 +15,7 @@ WatchSnapshot _snapshot({
   WatchHapticCue? cue,
   String phaseTitle = 'Listening',
   bool isConnected = true,
+  int? phaseDurationMs,
 }) =>
     WatchSnapshot(
       core: LiveActivitySnapshot(
@@ -48,6 +49,7 @@ WatchSnapshot _snapshot({
         isSessionActive: true,
       ),
       pingColor: const WatchColor(1, 0, 0),
+      phaseDurationMs: phaseDurationMs,
       cue: cue,
       updatedAt: DateTime.fromMillisecondsSinceEpoch(1759999999000),
     );
@@ -67,6 +69,7 @@ void main() {
           'phaseTitle',
           'phaseDetail',
           'phaseEndsAtMs',
+          'phaseDurationMs',
           'isConnected',
           'zoneCode',
           'txCount',
@@ -107,6 +110,13 @@ void main() {
       final map = _snapshot().toMap();
       expect(map['updatedAtMs'], isA<double>());
       expect(map['phaseEndsAtMs'], 1760000000000.0);
+    });
+
+    test('phase duration rides along so the watch can draw its own bar', () {
+      // Deadline plus duration is everything needed to compute the remaining
+      // fraction locally, which is why the bar needs no per-second updates.
+      expect(_snapshot(phaseDurationMs: 45000).toMap()['phaseDurationMs'], 45000);
+      expect(_snapshot().toMap()['phaseDurationMs'], isNull);
     });
 
     test('wire version is stamped so the watch can refuse unknown payloads', () {
