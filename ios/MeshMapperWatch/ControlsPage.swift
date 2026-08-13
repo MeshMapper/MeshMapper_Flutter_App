@@ -65,12 +65,18 @@ struct ControlsPage: View {
     let kind: WatchCommand.Kind = isActive ? .stopSession : .startSession
     let isPending = client.pendingCommand == kind
     let isEnabled = controls?.canStartStop == true && !isPending
+    let startTitle = "Start \(client.snapshot?.mode ?? "Session")"
+    let buttonTitle = isPending
+      ? (isActive ? "Stopping…" : "Starting…")
+      : (isActive ? "Stop" : startTitle)
 
     return Button {
       client.send(kind)
     } label: {
-      Text(isPending ? (isActive ? "Stopping…" : "Starting…") : (isActive ? "Stop" : "Start"))
+      Text(buttonTitle)
         .font(.headline)
+        .lineLimit(1)
+        .truncationMode(.tail)
         .frame(maxWidth: .infinity, minHeight: 44)
         // A ProgressView accepts the horizontal slack offered by a stack. As
         // an overlay it can appear without participating in the label's
