@@ -2,18 +2,34 @@ import SwiftUI
 
 /// Root shell.
 ///
-/// The map is always page one and full-bleed. Where the heard-node list lives
-/// is a presentation choice — a sheet over the map, or its own page — driven by
-/// `WatchSettings.nodeListPlacement`. Both read the same `NodeListView`, so
-/// this is a toggle rather than two implementations.
+/// The map is always page one and full-bleed, with controls immediately after
+/// it. Where the heard-node list lives is a presentation choice — a sheet over
+/// the map, or its own page — driven by `WatchSettings.nodeListPlacement`.
+/// Both read the same `NodeListView`, so this is a toggle rather than two
+/// implementations.
 struct ContentView: View {
   @Environment(WatchSettings.self) private var settings
 
-  @State private var selection = 0
+  @State private var selection = Self.requestedInitialPage
+
+  /// Page to open on, so one can be captured headlessly for design review —
+  /// the simulator offers no way to swipe.
+  ///
+  /// Supplied as the state's initial value rather than assigned in `onAppear`.
+  /// A `.verticalPage` `TabView` ignores a selection change made that late, so
+  /// the assignment silently did nothing and every capture landed on the map.
+  private static var requestedInitialPage: Int {
+    #if DEBUG
+    return max(0, UserDefaults.standard.integer(forKey: "MeshMapperInitialPage"))
+    #else
+    return 0
+    #endif
+  }
 
   var body: some View {
     TabView(selection: $selection) {
       MapPage().tag(0)
+      ControlsPage().tag(1)
 
       if settings.nodeListPlacement == .page {
         NavigationStack {
@@ -21,19 +37,12 @@ struct ContentView: View {
             .navigationTitle("Heard")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .tag(1)
+        .tag(2)
       }
 
-      DebugPage().tag(2)
-      SettingsPage().tag(3)
+      DebugPage().tag(3)
+      SettingsPage().tag(4)
     }
     .tabViewStyle(.verticalPage)
-    .onAppear {
-      #if DEBUG
-      // Lets a specific page be captured headlessly for design review.
-      let requested = UserDefaults.standard.integer(forKey: "MeshMapperInitialPage")
-      if requested > 0 { selection = requested }
-      #endif
-    }
   }
 }

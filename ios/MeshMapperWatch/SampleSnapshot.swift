@@ -12,6 +12,8 @@ import Foundation
 /// Pass `-MeshMapperSamplePhase listen|wait|lapsed` to exercise the live
 /// countdown, the between-cycle wait, or a deadline the phone did not replace.
 /// Listening is the default so existing capture commands keep their behaviour.
+/// Pass `-MeshMapperSampleControls active|idle|blocked|cooldown` to review each
+/// controls page state; active is the default.
 ///
 /// DEBUG-only, and never reached unless that argument is passed, so it cannot
 /// leak into a shipping build or mask a real transport failure.
@@ -36,6 +38,43 @@ enum SampleSnapshot {
       samplePhase = ("listening", "Listening…", now - 5_000, 60_000)
     default:
       samplePhase = ("listening", "Listening…", now + 42_000, 60_000)
+    }
+
+    let sampleControls: WatchControls
+    switch UserDefaults.standard.string(forKey: "MeshMapperSampleControls") {
+    case "idle":
+      sampleControls = WatchControls(
+        canStartStop: true,
+        canManualPing: false,
+        isSessionActive: false,
+        manualCooldownEndsAtMs: nil,
+        blockedReason: nil
+      )
+    case "blocked":
+      sampleControls = WatchControls(
+        canStartStop: false,
+        canManualPing: false,
+        isSessionActive: false,
+        manualCooldownEndsAtMs: nil,
+        blockedReason: "This zone is currently passive-only"
+      )
+    case "cooldown":
+      // The one unavailability the phone reports with no `blockedReason`.
+      sampleControls = WatchControls(
+        canStartStop: true,
+        canManualPing: false,
+        isSessionActive: true,
+        manualCooldownEndsAtMs: now + 12_000,
+        blockedReason: nil
+      )
+    default:
+      sampleControls = WatchControls(
+        canStartStop: true,
+        canManualPing: true,
+        isSessionActive: true,
+        manualCooldownEndsAtMs: nil,
+        blockedReason: nil
+      )
     }
 
     let green = WatchColor(r: 0.30, g: 0.69, b: 0.31)
@@ -131,13 +170,7 @@ enum SampleSnapshot {
         heard: heard,
         linkedRepeaterIds: ["4E", "77"]
       ),
-      controls: WatchControls(
-        canStartStop: true,
-        canManualPing: true,
-        isSessionActive: true,
-        manualCooldownEndsAtMs: nil,
-        blockedReason: nil
-      ),
+      controls: sampleControls,
       cue: nil,
       updatedAtMs: now
     )

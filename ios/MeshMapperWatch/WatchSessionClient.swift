@@ -18,6 +18,10 @@ final class WatchSessionClient: NSObject {
   /// Set when the phone refuses a command, so the wrist can say why.
   private(set) var lastRefusal: String?
 
+  /// Wearer-initiated command awaiting the phone's answer. Automatic refreshes
+  /// stay out of this state because they have no corresponding wrist action.
+  private(set) var pendingCommand: WatchCommand.Kind?
+
   /// Set when a payload arrives from a wire version this build predates.
   private(set) var versionMismatch = false
 
@@ -89,15 +93,27 @@ final class WatchSessionClient: NSObject {
       return
     }
 
+    if !silent {
+      lastRefusal = nil
+      pendingCommand = kind
+    }
+
     session.sendMessage(
       [MeshMapperWatchWire.commandKey: dict],
       replyHandler: { [weak self] reply in
         NSLog("[WATCH] reply for \(kind.rawValue): \(reply)")
         Task { @MainActor in
+          let isCurrent = self?.pendingCommand == kind
+          if isCurrent {
+            self?.pendingCommand = nil
+          }
+          // A newer tap owns both the spinner and its feedback. Letting an
+          // older reply rewrite either would put the wrong answer under it.
+          guard !silent, isCurrent else { return }
           let accepted = reply["accepted"] as? Bool ?? false
           if accepted {
             self?.lastRefusal = nil
-          } else if !silent {
+          } else {
             self?.lastRefusal = reply["reason"] as? String ?? "Refused"
           }
         }
@@ -105,7 +121,11 @@ final class WatchSessionClient: NSObject {
       errorHandler: { [weak self] error in
         NSLog("[WATCH] sendMessage(\(kind.rawValue)) failed: \(error.localizedDescription)")
         Task { @MainActor in
-          if !silent { self?.lastRefusal = error.localizedDescription }
+          let isCurrent = self?.pendingCommand == kind
+          if isCurrent {
+            self?.pendingCommand = nil
+          }
+          if !silent, isCurrent { self?.lastRefusal = error.localizedDescription }
         }
       }
     )
