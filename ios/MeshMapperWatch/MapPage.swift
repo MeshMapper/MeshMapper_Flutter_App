@@ -40,6 +40,26 @@ struct MapPage: View {
 
   @State private var showingNodes = false
 
+  /// Height of the bottom panel and of the whole view, so the camera can put
+  /// the fix in the middle of the *visible* map rather than the middle of the
+  /// display — otherwise the puck sits behind the panel.
+  @State private var panelHeight: CGFloat = 0
+  @State private var viewHeight: CGFloat = 0
+
+  private struct PanelHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+      value = max(value, nextValue())
+    }
+  }
+
+  /// Fraction of the view the panel covers, clamped so a pathological layout
+  /// can never push the camera somewhere absurd.
+  private var obscuredFraction: CGFloat {
+    guard viewHeight > 0 else { return 0 }
+    return min(0.55, max(0, panelHeight / viewHeight))
+  }
+
   var body: some View {
     ZStack {
       map
@@ -58,9 +78,26 @@ struct MapPage: View {
         }
         Spacer(minLength: 0)
         statusPanel
+          .background(
+            GeometryReader { geo in
+              Color.clear.preference(key: PanelHeightKey.self, value: geo.size.height)
+            }
+          )
       }
       .padding(.horizontal, 4)
       .padding(.top, 2)
+    }
+    .background(
+      GeometryReader { geo in
+        Color.clear
+          .onAppear { viewHeight = geo.size.height }
+          .onChange(of: geo.size.height) { _, height in viewHeight = height }
+      }
+    )
+    .onPreferenceChange(PanelHeightKey.self) { height in
+      guard abs(height - panelHeight) > 0.5 else { return }
+      panelHeight = height
+      recenterIfFollowing()
     }
     .sheet(isPresented: $showingNodes) {
       NavigationStack {
@@ -93,7 +130,7 @@ struct MapPage: View {
     Button {
       showingNodes = true
     } label: {
-      VStack(alignment: .leading, spacing: 4) {
+      VStack(alignment: .leading, spacing: 3) {
         timerBar
 
         if heard.isEmpty {
@@ -120,7 +157,7 @@ struct MapPage: View {
         }
       }
       .padding(.horizontal, 8)
-      .padding(.vertical, 6)
+      .padding(.vertical, 5)
       .frame(maxWidth: .infinity, alignment: .leading)
       // Blurred material rather than flat translucency: a 70% black panel
       // lets bright basemap labels bleed through and fight the SNR digits.
@@ -193,37 +230,40 @@ struct MapPage: View {
       .lineLimit(1)
     } else if let snapshot {
       TimelineView(.periodic(from: .now, by: 1)) { context in
-        HStack(spacing: 6) {
-          GeometryReader { geo in
-            ZStack(alignment: .leading) {
-              Capsule()
-                .fill(.white.opacity(0.18))
-              Capsule()
-                .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
-                .frame(
-                  width: geo.size.width
-                    * (snapshot.phaseRemainingFraction(at: context.date) ?? 0)
-                )
-            }
+        GeometryReader { geo in
+          ZStack(alignment: .leading) {
+            Capsule().fill(.white.opacity(0.16))
+            Capsule()
+              .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
+              .frame(
+                width: geo.size.width
+                  * (snapshot.phaseRemainingFraction(at: context.date) ?? 0)
+              )
           }
-          .frame(height: 4)
-
-          if let endsAt = snapshot.phaseEndsAt, endsAt > context.date {
-            Text(timerInterval: context.date...endsAt, countsDown: true)
-              .font(.system(size: 12, weight: .semibold).monospacedDigit())
-              .foregroundStyle(.white)
-              .frame(width: 42, alignment: .trailing)
-          } else {
-            Text(snapshot.phaseTitle)
-              .font(.system(size: 10, weight: .medium))
-              .foregroundStyle(.white)
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .layoutPriority(1)
+          // Label rides on the bar rather than beside it: a separate column
+          // costs width permanently, and the phase title needs the room.
+          .overlay(alignment: .trailing) {
+            Group {
+              if let endsAt = snapshot.phaseEndsAt, endsAt > context.date {
+                Text(timerInterval: context.date...endsAt, countsDown: true)
+                  .font(.system(size: 11, weight: .bold).monospacedDigit())
+                  .frame(width: 38, alignment: .trailing)
+              } else {
+                Text(snapshot.phaseTitle)
+                  .font(.system(size: 10, weight: .semibold))
+                  .lineLimit(1)
+                  .truncationMode(.tail)
+              }
+            }
+            .foregroundStyle(.white)
+            // The fill slides under the label, so a shadow keeps it readable
+            // against both the filled and empty parts of the track.
+            .shadow(color: .black.opacity(0.7), radius: 1.5)
+            .padding(.trailing, 6)
           }
         }
       }
-      .frame(height: 14)
+      .frame(height: 15)
     }
   }
 
@@ -266,6 +306,7 @@ struct MapPage: View {
     }
     .mapStyle(settings.satellite ? .imagery : .standard)
     .onMapCameraChange(frequency: .onEnd) { context in
+      noteRenderedRegion(context.region)
       noteCameraChange(context.region.center)
     }
     .ignoresSafeArea(edges: .bottom)
@@ -328,15 +369,26 @@ struct MapPage: View {
 
   private func recenterIfFollowing(force: Bool = false) {
     guard force || isFollowing, let fix else { return }
-    programmaticCenter = fix
+    let center = centerPlacing(fix)
+    programmaticCenter = center
     withAnimation(.easeInOut(duration: 0.25)) {
-      camera = .region(
-        MKCoordinateRegion(
-          center: fix,
-          span: currentSpan
-        )
-      )
+      camera = .region(MKCoordinateRegion(center: center, span: currentSpan))
     }
+  }
+
+  /// Region centre that puts [fix] in the middle of the band between the top
+  /// of the display and the top of the panel.
+  ///
+  /// MapKit centres the region in the whole view, so with a panel covering the
+  /// lower third the fix would sit low and partly behind it. Shifting the
+  /// region centre south by half the obscured height lifts the fix by the same
+  /// amount on screen.
+  private func centerPlacing(_ fix: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+    let shift = currentSpan.latitudeDelta * Double(obscuredFraction) / 2
+    return CLLocationCoordinate2D(
+      latitude: fix.latitude - shift,
+      longitude: fix.longitude
+    )
   }
 
   /// Preserve whatever zoom the wearer picked with the Digital Crown.
@@ -348,6 +400,27 @@ struct MapPage: View {
     latitudeDelta: 0.03,
     longitudeDelta: 0.03
   )
+
+  /// Track the region MapKit actually rendered.
+  ///
+  /// Two reasons this matters. MapKit fits a requested span to the view's
+  /// aspect ratio, so the rendered latitude delta differs from the requested
+  /// one — computing the panel offset against the request under-shifts the
+  /// camera. And without this, a Digital Crown zoom would be thrown away on
+  /// the next follow update.
+  private func noteRenderedRegion(_ region: MKCoordinateRegion) {
+    let previous = currentSpan.latitudeDelta
+    currentSpan = region.span
+
+    // The first render is what reveals the aspect-corrected span, so re-place
+    // the fix once against it. This converges: the follow-up request carries
+    // the rendered span, so the next change reports no material difference.
+    guard previous > 0 else { return }
+    let drift = abs(region.span.latitudeDelta - previous) / previous
+    if drift > 0.05 {
+      recenterIfFollowing()
+    }
+  }
 
   private func noteCameraChange(_ center: CLLocationCoordinate2D) {
     guard let expected = programmaticCenter else {
