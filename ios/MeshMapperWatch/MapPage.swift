@@ -44,31 +44,23 @@ struct MapPage: View {
     ZStack {
       map
 
-      // Top Heard sits hard against the upper-left and the countdown against
-      // the lower-right, mirroring the phone's map so the two read the same
-      // way at a glance.
-      VStack(alignment: .leading, spacing: 0) {
-        HStack(alignment: .top) {
-          topHeardBox
+      // One panel in the top-leading corner carrying phase and Top Heard.
+      //
+      // Earlier versions floated the countdown in the opposite corner and drew
+      // into the safe areas to reach the edges. On real hardware both got
+      // clipped by the display curvature — the simulator renders a flat
+      // rectangle and never shows it. The safe area is honoured now, and
+      // merging the two overlays means there is no second corner to lose.
+      VStack(spacing: 0) {
+        HStack {
           Spacer(minLength: 0)
           recenterButton
         }
         Spacer(minLength: 0)
-        HStack(alignment: .bottom) {
-          staleBadge
-          Spacer(minLength: 0)
-          if let snapshot {
-            CountdownPill(snapshot: snapshot)
-          }
-        }
+        statusPanel
       }
-      .padding(.horizontal, 5)
-      .padding(.bottom, 4)
-      // Draw into both safe areas so the two corners are actually corners.
-      // The top strip is free because the box is left-aligned and the system
-      // clock is right-aligned; the bottom strip is otherwise dead space that
-      // was pushing the countdown well clear of the edge.
-      .ignoresSafeArea(edges: [.top, .bottom])
+      .padding(.horizontal, 4)
+      .padding(.top, 2)
     }
     .sheet(isPresented: $showingNodes) {
       NavigationStack {
@@ -92,53 +84,50 @@ struct MapPage: View {
     }
   }
 
-  /// "Top Heard" — the phone's map overlay, reproduced on the wrist.
+  /// Phase and Top Heard in one panel.
   ///
   /// Rows are `[type dot] [hex ID] [SNR]`. The hex path hash is the identity,
   /// because a 1-byte hash frequently cannot be resolved to a single repeater;
   /// a name is appended only when the phone could resolve it unambiguously.
-  private var topHeardBox: some View {
+  private var statusPanel: some View {
     Button {
       showingNodes = true
     } label: {
-      VStack(alignment: .leading, spacing: 2) {
-        Text("TOP HEARD")
-          .font(.system(size: 8, weight: .medium))
-          .foregroundStyle(.white.opacity(0.55))
-          .kerning(0.5)
+      VStack(alignment: .leading, spacing: 4) {
+        timerBar
 
         if heard.isEmpty {
-          Text("---")
-            .font(.system(size: rowFontSize, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.4))
+          Text("Nothing heard")
+            .font(.system(size: 10))
+            .foregroundStyle(.white.opacity(0.45))
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-          ForEach(heard) { node in
-            HStack(spacing: 4) {
-              Circle()
-                .fill(Color(node.typeColor))
-                .frame(width: 6, height: 6)
-              Text(node.id)
-                .font(.system(size: rowFontSize, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.white)
-              if let snr = node.snr {
-                Text(snr, format: .number.precision(.fractionLength(1)))
-                  .font(.system(size: rowFontSize, weight: .semibold, design: .monospaced))
-                  .foregroundStyle(node.snrColor.map(Color.init) ?? .white)
-              }
+          // Two columns when they fit, one when they don't. A 3-byte zone's
+          // six-character hashes plus SNR will not fit two columns on a 40 mm
+          // screen, and truncating the ID is not an option — it is the
+          // repeater's identity. ViewThatFits picks by measurement rather than
+          // by a guess about screen size.
+          ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 10) {
+              heardColumn(Array(heard.prefix(2)))
+              heardColumn(Array(heard.dropFirst(2)))
             }
-            .lineLimit(1)
-            .fixedSize()
+            VStack(alignment: .leading, spacing: 2) {
+              ForEach(heard) { heardRow($0) }
+            }
           }
+          .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
-      .padding(.horizontal, 7)
-      .padding(.vertical, 5)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 6)
+      .frame(maxWidth: .infinity, alignment: .leading)
       // Blurred material rather than flat translucency: a 70% black panel
       // lets bright basemap labels bleed through and fight the SNR digits.
-      // Blurring the map behind the box removes the competing detail entirely.
-      .background(.ultraThinMaterial, in: .rect(cornerRadius: 10, style: .continuous))
+      // Blurring the map behind the panel removes the competing detail.
+      .background(.ultraThinMaterial, in: .rect(cornerRadius: 12, style: .continuous))
       .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
           .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
       )
     }
@@ -148,6 +137,94 @@ struct MapPage: View {
     // wearer's text-size setting is honoured.
     .dynamicTypeSize(.small ... .large)
     .opacity(client.isStale ? 0.5 : 1.0)
+  }
+
+  /// One column of heard rows.
+  private func heardColumn(_ nodes: [WatchHeardNode]) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      ForEach(nodes) { heardRow($0) }
+    }
+  }
+
+  /// `[type dot] [hex ID] [SNR]`, sized to its content.
+  ///
+  /// Content-sized on purpose: a greedy row always "fits", which would stop
+  /// `ViewThatFits` from ever rejecting the two-column layout.
+  private func heardRow(_ node: WatchHeardNode) -> some View {
+    HStack(spacing: 3) {
+      Circle()
+        .fill(Color(node.typeColor))
+        .frame(width: 6, height: 6)
+      Text(node.id)
+        .font(.system(size: rowFontSize, weight: .semibold, design: .monospaced))
+        .foregroundStyle(.white)
+      if let snr = node.snr {
+        Text(snr, format: .number.precision(.fractionLength(1)))
+          .font(.system(size: rowFontSize, weight: .semibold, design: .monospaced))
+          .foregroundStyle(node.snrColor.map(Color.init) ?? .white)
+          // Fixed width so SNRs line up down a column despite varying digits.
+          .frame(width: rowFontSize * 3.1, alignment: .trailing)
+      }
+    }
+    .lineLimit(1)
+    .fixedSize()
+  }
+
+  /// The phase as a depleting bar with its remaining time.
+  ///
+  /// The bar drains right to left from `phaseEndsAt` and `phaseDurationMs`,
+  /// both absolute, so it is correct without per-second updates and correct
+  /// when the app opens midway through a phase. A stale payload replaces the
+  /// whole row: a bar that keeps draining against a deadline the phone has
+  /// stopped confirming is worse than no bar.
+  @ViewBuilder
+  private var timerBar: some View {
+    if client.isStale, let receivedAt = client.receivedAt {
+      HStack(spacing: 3) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.system(size: 8))
+        Text(receivedAt, style: .relative)
+          .font(.system(size: 10, weight: .medium))
+        Text("old")
+          .font(.system(size: 10))
+        Spacer(minLength: 0)
+      }
+      .foregroundStyle(.orange)
+      .lineLimit(1)
+    } else if let snapshot {
+      TimelineView(.periodic(from: .now, by: 1)) { context in
+        HStack(spacing: 6) {
+          GeometryReader { geo in
+            ZStack(alignment: .leading) {
+              Capsule()
+                .fill(.white.opacity(0.18))
+              Capsule()
+                .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
+                .frame(
+                  width: geo.size.width
+                    * (snapshot.phaseRemainingFraction(at: context.date) ?? 0)
+                )
+            }
+          }
+          .frame(height: 4)
+
+          if let endsAt = snapshot.phaseEndsAt, endsAt > context.date {
+            Text(timerInterval: context.date...endsAt, countsDown: true)
+              .font(.system(size: 12, weight: .semibold).monospacedDigit())
+              .foregroundStyle(.white)
+              .frame(width: 42, alignment: .trailing)
+          } else {
+            Text(snapshot.phaseTitle)
+              .font(.system(size: 10, weight: .medium))
+              .foregroundStyle(.white)
+              .lineLimit(1)
+              .truncationMode(.tail)
+              .layoutPriority(1)
+          }
+        }
+      }
+      .frame(height: 14)
+    }
   }
 
   /// Shrink the rows for longer path hashes, the same way `RepeaterIdChip`
@@ -244,23 +321,6 @@ struct MapPage: View {
         FixPuck(headingDeg: you.headingDeg)
       }
       .annotationTitles(.hidden)
-    }
-  }
-
-  /// Stale data must never read as live data.
-  @ViewBuilder
-  private var staleBadge: some View {
-    if client.isStale, let receivedAt = client.receivedAt {
-      HStack(spacing: 2) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .font(.system(size: 7))
-        Text(receivedAt, style: .relative)
-          .font(.system(size: 9))
-      }
-      .foregroundStyle(.orange)
-      .padding(.horizontal, 5)
-      .padding(.vertical, 2)
-      .background(.black.opacity(0.65), in: Capsule())
     }
   }
 
@@ -377,32 +437,5 @@ private struct RepeaterPin: View {
         .frame(width: 7, height: 7)
         .overlay(Circle().stroke(.black.opacity(0.6), lineWidth: 0.5))
     }
-  }
-}
-
-private struct CountdownPill: View {
-  let snapshot: WatchSnapshot
-
-  var body: some View {
-    HStack(spacing: 3) {
-      if let color = snapshot.pingColor {
-        Circle()
-          .fill(Color(color))
-          .frame(width: 6, height: 6)
-      }
-      // Absolute deadline rendered by the system — no per-second traffic.
-      if let endsAt = snapshot.phaseEndsAt, endsAt > Date() {
-        Text(timerInterval: Date()...endsAt, countsDown: true)
-          .font(.system(size: 12, weight: .medium).monospacedDigit())
-      } else {
-        Text(snapshot.phaseTitle)
-          .font(.system(size: 11, weight: .medium))
-          .lineLimit(1)
-      }
-    }
-    .padding(.horizontal, 7)
-    .padding(.vertical, 3)
-    .background(.ultraThinMaterial, in: Capsule())
-    .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
   }
 }

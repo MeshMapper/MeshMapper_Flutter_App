@@ -95,6 +95,7 @@ enum SampleSnapshot {
       phaseTitle: "Listening",
       phaseDetail: "Waiting for echoes",
       phaseEndsAtMs: now + 42_000,
+      phaseDurationMs: 60_000,
       isConnected: true,
       zoneCode: "SEA",
       txCount: 27,

@@ -270,6 +270,7 @@ class WatchSnapshot {
     required this.updatedAt,
     this.pingColor,
     this.cue,
+    this.phaseDurationMs,
   });
 
   /// Session core, reused from the Live Activity so both surfaces agree.
@@ -280,6 +281,13 @@ class WatchSnapshot {
   final WatchHapticCue? cue;
   final DateTime updatedAt;
 
+  /// Total length of the current phase.
+  ///
+  /// With [LiveActivitySnapshot.phaseEndsAt] this is everything the watch needs
+  /// to draw a depleting progress bar locally — no per-second traffic, and the
+  /// bar stays correct even if the app opens midway through a phase.
+  final int? phaseDurationMs;
+
   Map<String, Object?> toMap() => {
         'wireVersion': WatchWire.version,
         'sessionId': core.sessionId,
@@ -289,6 +297,7 @@ class WatchSnapshot {
         'phaseDetail': core.phaseDetail,
         'phaseEndsAtMs':
             core.phaseEndsAt?.millisecondsSinceEpoch.toDouble(),
+        'phaseDurationMs': phaseDurationMs,
         'isConnected': core.isConnected,
         'zoneCode': core.zoneCode,
         'txCount': core.txCount,

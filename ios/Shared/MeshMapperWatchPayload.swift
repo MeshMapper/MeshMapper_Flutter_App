@@ -151,6 +151,9 @@ struct WatchSnapshot: Codable, Hashable {
   let phaseTitle: String
   let phaseDetail: String?
   let phaseEndsAtMs: Double?
+  /// Total length of the current phase, so the watch can draw a depleting bar
+  /// locally. Absent when no countdown owns the deadline.
+  let phaseDurationMs: Int?
   let isConnected: Bool
   let zoneCode: String?
   let txCount: Int
@@ -176,6 +179,18 @@ struct WatchSnapshot: Codable, Hashable {
 
   var phaseEndsAt: Date? {
     phaseEndsAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
+  }
+
+  /// Fraction of the current phase still to run, 0...1.
+  ///
+  /// Computed from absolute values at render time, so it stays correct between
+  /// updates and when the app opens midway through a phase. Nil when no
+  /// countdown owns the deadline, in which case no bar is drawn.
+  func phaseRemainingFraction(at now: Date = Date()) -> Double? {
+    guard let phaseEndsAt, let phaseDurationMs, phaseDurationMs > 0 else { return nil }
+    let remaining = phaseEndsAt.timeIntervalSince(now)
+    guard remaining > 0 else { return 0 }
+    return min(1, remaining / (Double(phaseDurationMs) / 1000))
   }
 }
 

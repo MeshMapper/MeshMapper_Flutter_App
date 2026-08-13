@@ -1245,8 +1245,31 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       geo: _buildWatchGeo(now),
       controls: _buildWatchControls(),
       pingColor: _resolveWatchPingColor(),
+      phaseDurationMs: _phaseDurationMsFor(phase.endsAt),
       updatedAt: now,
     );
+  }
+
+  /// Total length of the countdown that owns [endsAt].
+  ///
+  /// The phase resolver returns a deadline without saying which timer produced
+  /// it, so the owner is identified by matching end times. Returns null for
+  /// deadlines no countdown owns (the zone grace period), in which case the
+  /// watch shows the remaining time without a progress bar.
+  int? _phaseDurationMsFor(DateTime? endsAt) {
+    if (endsAt == null) return null;
+    for (final timer in <CountdownTimerService>[
+      _autoPingTimer,
+      _rxWindowTimer,
+      _discoveryWindowTimer,
+      _manualPingCooldownTimer,
+      _cooldownTimer,
+    ]) {
+      if (timer.isRunning && timer.endTime == endsAt) {
+        return timer.durationMs;
+      }
+    }
+    return null;
   }
 
   WatchGeo _buildWatchGeo(DateTime now) {
