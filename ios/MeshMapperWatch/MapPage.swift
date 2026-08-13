@@ -12,6 +12,17 @@ import WatchKit
 struct MapPage: View {
   @Environment(WatchSessionClient.self) private var client
   @Environment(WatchSettings.self) private var settings
+  @Environment(\.isLuminanceReduced) private var environmentLuminanceReduced
+
+  /// Always-On cannot be entered in the simulator, and on hardware it needs a
+  /// wrist-down device — so the dimmed layout was unreviewable. This lets it be
+  /// captured headlessly, like the sample-data affordances.
+  private var isLuminanceReduced: Bool {
+    #if DEBUG
+    if UserDefaults.standard.bool(forKey: "MeshMapperForceDimmed") { return true }
+    #endif
+    return environmentLuminanceReduced
+  }
 
   @State private var camera: MapCameraPosition = .automatic
 
@@ -136,32 +147,17 @@ struct MapPage: View {
 
   private func content(_ proxy: MapProxy) -> some View {
     ZStack {
-      map(proxy)
-
-      // One panel carrying phase and Top Heard.
-      //
-      // Earlier versions floated the countdown in the opposite corner and drew
-      // full-width into the safe areas. On real hardware both got clipped by
-      // the display curvature — the simulator renders a flat rectangle and
-      // never shows it. This panel enters only the bottom safe area, and only
-      // after the measured curvature has bought enough horizontal clearance.
-      VStack(spacing: 0) {
-        HStack {
-          Spacer(minLength: 0)
-          recenterButton(proxy)
-        }
-        Spacer(minLength: 0)
-        statusPanel
-          .background(
-            GeometryReader { geo in
-              Color.clear.preference(key: PanelFrameKey.self, value: geo.frame(in: .global))
-            }
-          )
+      if isLuminanceReduced {
+        // Always-On spends most of a long session with the wrist down. A live
+        // MapKit renderer and its annotations buy no useful glance information
+        // at reduced luminance, so remove that subtree rather than merely
+        // covering it.
+        Color.black.ignoresSafeArea()
+        dimmedStatus
+      } else {
+        map(proxy)
+        mapOverlay(proxy)
       }
-      .padding(.horizontal, panelHorizontalInset)
-      .padding(.top, 2)
-      .padding(.bottom, curvedPanelHorizontalInset == nil ? 0 : panelBottomGap)
-      .ignoresSafeArea(edges: curvedPanelHorizontalInset == nil ? [] : .bottom)
     }
     .background(
       GeometryReader { geo in
@@ -197,6 +193,12 @@ struct MapPage: View {
     .onChange(of: followSuspendedUntil) { _, until in
       if until == nil { recenterIfFollowing(proxy) }
     }
+    .onChange(of: isLuminanceReduced) { _, reduced in
+      // Camera work is forbidden while dimmed. Returning to full luminance is
+      // itself a state change, so following can resume immediately even if the
+      // phone has not produced another GPS fix yet.
+      if !reduced { recenterIfFollowing(proxy) }
+    }
     .onAppear {
       recenterIfFollowing(proxy)
       #if DEBUG
@@ -207,6 +209,140 @@ struct MapPage: View {
       }
       #endif
     }
+  }
+
+  /// Map chrome remains an overlay so its measured frame can place the fix in
+  /// the visible band above it. Always-On has its own hierarchy and therefore
+  /// cannot accidentally inherit this bottom-pinned card again.
+  private func mapOverlay(_ proxy: MapProxy) -> some View {
+    VStack(spacing: 0) {
+      HStack {
+        Spacer(minLength: 0)
+        recenterButton(proxy)
+      }
+      Spacer(minLength: 0)
+      statusPanel
+        .background(
+          GeometryReader { geo in
+            Color.clear.preference(key: PanelFrameKey.self, value: geo.frame(in: .global))
+          }
+        )
+    }
+    // Earlier full-width versions clipped on curved hardware even though the
+    // simulator looked sound. Enter the bottom safe area only after the circle
+    // model has bought the matching horizontal clearance.
+    .padding(.horizontal, panelHorizontalInset)
+    .padding(.top, 2)
+    .padding(.bottom, curvedPanelHorizontalInset == nil ? 0 : panelBottomGap)
+    .ignoresSafeArea(edges: curvedPanelHorizontalInset == nil ? [] : .bottom)
+  }
+
+  /// A full-screen glance surface for Always-On, not a map card without a map.
+  ///
+  /// Its content remains inside the system safe area and also keeps the
+  /// hardware-tested horizontal clearance. That is intentionally redundant at
+  /// the bottom corners: two earlier layouts passed in the simulator and
+  /// clipped on glass, while spare black pixels cost no compositing work.
+  private var dimmedStatus: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if let snapshot {
+        dimmedPhase(snapshot)
+      } else {
+        Text("Waiting for iPhone")
+          .font(.system(size: 17, weight: .bold))
+          .foregroundStyle(.white.opacity(0.55))
+          .lineLimit(1)
+      }
+
+      Spacer(minLength: 6)
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text("TOP HEARD")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.white.opacity(0.55))
+
+        if heard.isEmpty {
+          Text("Nothing heard")
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.white.opacity(0.45))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+          ForEach(Array(heard.prefix(4))) { node in
+            dimmedHeardRow(node)
+          }
+        }
+      }
+    }
+    .padding(.horizontal, panelHorizontalInset)
+    .padding(.vertical, 4)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .dynamicTypeSize(.small ... .large)
+    .opacity(client.isStale ? 0.5 : 1.0)
+    // Snapshot replacement may arrive with an animated transaction from an
+    // ancestor. Always-On changes in discrete steps; it never interpolates.
+    .transaction { $0.animation = nil }
+  }
+
+  /// The two readings an Always-On glance exists to answer, each with its own
+  /// line instead of competing inside the map overlay's narrow bar.
+  ///
+  /// A seconds figure can be nearly a minute wrong while watchOS throttles an
+  /// Always-On screen. Showing whole minutes (or “<1 min”) makes that cadence
+  /// honest, while the isolated minute schedule avoids waking the rest of the
+  /// hierarchy. A static progress fill would repeat that number less precisely
+  /// and spend both pixels and compositing work, so the dimmed surface omits it.
+  private func dimmedPhase(_ snapshot: WatchSnapshot) -> some View {
+    TimelineView(.periodic(from: .now, by: 60)) { context in
+      let lapsed = snapshot.phaseEndsAt.map { $0 <= context.date } ?? false
+
+      VStack(alignment: .leading, spacing: 2) {
+        // Wrapping is intentional. The longest real phase names need two lines
+        // on 40 mm, and preserving every word matters more than uniform height.
+        Text(snapshot.phaseTitle)
+          .font(.system(size: 18, weight: .bold))
+          .foregroundStyle(.white.opacity(lapsed ? 0.45 : 1))
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        if let countdown = dimmedCountdown(snapshot, at: context.date) {
+          Text(countdown)
+            .font(.system(size: 24, weight: .bold).monospacedDigit())
+            .foregroundStyle(.white)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+  }
+
+  private func dimmedCountdown(_ snapshot: WatchSnapshot, at date: Date) -> String? {
+    guard let endsAt = snapshot.phaseEndsAt else { return nil }
+    let remaining = endsAt.timeIntervalSince(date)
+    guard remaining > 0 else { return nil }
+    if remaining < 60 { return "<1 min" }
+    return "\(Int(ceil(remaining / 60))) min"
+  }
+
+  /// One full-width row is affordable without a basemap and gives the settled
+  /// type dot, hex identity and quality figure enough size for arm's-length
+  /// reading even when a six-character hash forces the overlay into one column.
+  private func dimmedHeardRow(_ node: WatchHeardNode) -> some View {
+    HStack(spacing: 5) {
+      Circle()
+        .fill(Color(node.typeColor))
+        .frame(width: 8, height: 8)
+      Text(node.id)
+        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+        .foregroundStyle(.white)
+      Spacer(minLength: 6)
+      if let snr = node.snr {
+        Text(snr, format: .number.precision(.fractionLength(1)))
+          .font(.system(size: 13, weight: .semibold, design: .monospaced))
+          .foregroundStyle(node.snrColor.map(Color.init) ?? .white)
+          .frame(width: 42, alignment: .trailing)
+      }
+    }
+    .lineLimit(1)
   }
 
   private func latchBottomSafeAreaInset(_ inset: CGFloat) {
@@ -252,9 +388,8 @@ struct MapPage: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 5)
       .frame(maxWidth: .infinity, alignment: .leading)
-      // Blurred material rather than flat translucency: a 70% black panel
-      // lets bright basemap labels bleed through and fight the SNR digits.
-      // Blurring the map behind the panel removes the competing detail.
+      // Bright basemap labels bleed through flat translucency and fight the
+      // SNR digits; material removes that competing detail on the map only.
       .background(.ultraThinMaterial, in: .rect(cornerRadius: 12, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -327,58 +462,8 @@ struct MapPage: View {
       .foregroundStyle(.orange)
       .lineLimit(1)
     } else if let snapshot {
-      TimelineView(.periodic(from: .now, by: 1)) { context in
-        track(snapshot, at: context.date)
-          .overlay {
-            HStack {
-              phaseTitle(snapshot, at: context.date)
-              Spacer(minLength: 4)
-              countdown(snapshot, at: context.date)
-            }
-            // The fill slides under both labels, so a shadow keeps them
-            // readable against the filled and empty parts of the track.
-            .shadow(color: .black.opacity(0.7), radius: 1.5)
-            .padding(.horizontal, 6)
-          }
-      }
+      WatchPhaseBar(snapshot: snapshot)
       .frame(height: 15)
-    }
-  }
-
-  /// The depleting track. Greedy on purpose: the labels overlay it, leaving the
-  /// whole panel width available to show phase progress.
-  private func track(_ snapshot: WatchSnapshot, at date: Date) -> some View {
-    GeometryReader { geo in
-      ZStack(alignment: .leading) {
-        Capsule().fill(.white.opacity(0.16))
-        Capsule()
-          .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
-          .frame(width: geo.size.width * (snapshot.phaseRemainingFraction(at: date) ?? 0))
-      }
-    }
-  }
-
-  private func phaseTitle(_ snapshot: WatchSnapshot, at date: Date) -> some View {
-    // A missing deadline describes a durable state. A passed one describes
-    // only what the phone last reported, so dimming avoids presenting it as a
-    // live claim while still preserving the useful last-known phase.
-    let deadlineLapsed = snapshot.phaseEndsAt.map { $0 <= date } ?? false
-    return Text(snapshot.phaseTitle)
-      .font(.system(size: 10, weight: .semibold))
-      .foregroundStyle(.white.opacity(deadlineLapsed ? 0.45 : 1))
-      .lineLimit(1)
-      .truncationMode(.tail)
-  }
-
-  /// Fixed width because `Text(timerInterval:)` otherwise reserves room for the
-  /// widest value it might ever show, which would starve the track.
-  @ViewBuilder
-  private func countdown(_ snapshot: WatchSnapshot, at date: Date) -> some View {
-    if let endsAt = snapshot.phaseEndsAt, endsAt > date {
-      Text(timerInterval: date...endsAt, countsDown: true)
-        .font(.system(size: 11, weight: .bold).monospacedDigit())
-        .foregroundStyle(.white)
-        .frame(width: 38, alignment: .trailing)
     }
   }
 
@@ -509,7 +594,7 @@ struct MapPage: View {
   // MARK: - Camera
 
   private func recenterIfFollowing(_ proxy: MapProxy, force: Bool = false) {
-    guard force || isFollowing, let fix else { return }
+    guard !isLuminanceReduced, force || isFollowing, let fix else { return }
     let center = centerPlacing(fix, proxy: proxy)
     let isInitialPlacement = programmaticCenter == nil
     programmaticCenter = center
@@ -563,7 +648,7 @@ struct MapPage: View {
   /// The deadband is what stops it: each pass lands within a couple of points,
   /// the next sees no error worth fixing, and it settles.
   private func correctPlacement(_ proxy: MapProxy) {
-    guard isFollowing, let fix, let targetPoint,
+    guard !isLuminanceReduced, isFollowing, let fix, let targetPoint,
       let point = proxy.convert(fix, to: .global)
     else { return }
     guard abs(point.y - targetPoint.y) > 6 else { return }
@@ -665,6 +750,127 @@ struct MapPage: View {
   ) -> CLLocationDistance {
     CLLocation(latitude: a.latitude, longitude: a.longitude)
       .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+  }
+}
+
+/// A phase-scoped progress animation rather than a one-second render clock.
+///
+/// `Text(timerInterval:)` owns its countdown without invalidating this view.
+/// The fill is set once from the absolute deadline and animated to zero by the
+/// compositor; one sleeping task wakes at the deadline solely to retire the
+/// countdown and dim a claim the phone has not refreshed.
+private struct WatchPhaseBar: View {
+  let snapshot: WatchSnapshot
+
+  @State private var remainingFraction: CGFloat
+  @State private var deadlineLapsed: Bool
+
+  init(snapshot: WatchSnapshot) {
+    self.snapshot = snapshot
+    let now = Date()
+    _remainingFraction = State(
+      initialValue: CGFloat(snapshot.phaseRemainingFraction(at: now) ?? 0)
+    )
+    _deadlineLapsed = State(
+      initialValue: snapshot.phaseEndsAt.map { $0 <= now } ?? false
+    )
+  }
+
+  private var phaseKey: PhaseAnimationKey {
+    PhaseAnimationKey(
+      phase: snapshot.phase,
+      title: snapshot.phaseTitle,
+      endsAtMs: snapshot.phaseEndsAtMs,
+      durationMs: snapshot.phaseDurationMs
+    )
+  }
+
+  /// Build the native timer's range at render time so a deadline crossing
+  /// between the sleeping task and a body update can never form `now...past`.
+  private var activeCountdownRange: ClosedRange<Date>? {
+    let now = Date()
+    guard !deadlineLapsed, let endsAt = snapshot.phaseEndsAt, endsAt > now else {
+      return nil
+    }
+    return now...endsAt
+  }
+
+  var body: some View {
+    GeometryReader { geo in
+      ZStack(alignment: .leading) {
+        Capsule().fill(.white.opacity(0.16))
+        Capsule()
+          .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
+          .frame(width: geo.size.width * remainingFraction)
+      }
+      .overlay {
+        HStack {
+          // A missing deadline describes a durable state. A passed one is only
+          // the phone's last claim, so keep it visible but no longer assert it.
+          Text(snapshot.phaseTitle)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.white.opacity(deadlineLapsed ? 0.45 : 1))
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 4)
+          if let range = activeCountdownRange {
+            // Fixed width because the native timer otherwise reserves room for
+            // its widest possible value and starves the title.
+            Text(timerInterval: range, countsDown: true)
+              .font(.system(size: 11, weight: .bold).monospacedDigit())
+              .foregroundStyle(.white)
+              .frame(width: 38, alignment: .trailing)
+          }
+        }
+        // The fill slides under both labels, so a shadow keeps them readable
+        // against the filled and empty parts of the track.
+        .shadow(color: .black.opacity(0.7), radius: 1.5)
+        .padding(.horizontal, 6)
+      }
+    }
+    .task(id: phaseKey) {
+      await runPhaseAnimation()
+    }
+  }
+
+  @MainActor
+  private func runPhaseAnimation() async {
+    let now = Date()
+    let fraction = CGFloat(snapshot.phaseRemainingFraction(at: now) ?? 0)
+    let lapsed = snapshot.phaseEndsAt.map { $0 <= now } ?? false
+
+    // A replacement phase must start at its true current fraction, not animate
+    // from the previous phase's endpoint before beginning its own drain.
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      remainingFraction = fraction
+      deadlineLapsed = lapsed
+    }
+
+    guard let endsAt = snapshot.phaseEndsAt else { return }
+    let remaining = endsAt.timeIntervalSince(now)
+    guard remaining > 0 else { return }
+
+    await Task.yield()
+    withAnimation(.linear(duration: remaining)) {
+      remainingFraction = 0
+    }
+
+    do {
+      try await Task.sleep(for: .seconds(remaining))
+    } catch {
+      return
+    }
+    guard !Task.isCancelled else { return }
+    deadlineLapsed = true
+  }
+
+  private struct PhaseAnimationKey: Hashable {
+    let phase: String
+    let title: String
+    let endsAtMs: Double?
+    let durationMs: Int?
   }
 }
 
