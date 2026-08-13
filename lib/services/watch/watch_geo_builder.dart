@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import '../../models/ping_data.dart';
 import '../../models/repeater.dart';
+import '../../providers/app_state_provider.dart' show OverlayPingType;
 import '../../utils/ping_colors.dart';
 import 'watch_models.dart';
 
@@ -151,49 +152,110 @@ class WatchGeoBuilder {
         .toList();
   }
 
-  /// Recently-responded rows, strongest SNR first, capped at
-  /// [WatchWire.maxHeard].
+  /// Dot colour for an overlay row, mirroring `_overlayTypeColor` on the map.
+  static WatchColor overlayTypeColor(OverlayPingType type) => switch (type) {
+        OverlayPingType.tx => WatchColor.fromColor(PingColors.txSuccess),
+        OverlayPingType.disc => WatchColor.fromColor(PingColors.discSuccess),
+        OverlayPingType.trace => WatchColor.fromColor(PingColors.traceSuccess),
+        OverlayPingType.rx => WatchColor.fromColor(PingColors.rx),
+      };
+
+  /// The "Top Heard" overlay rows: up to three top-SNR repeaters from the
+  /// latest ping, then the current RX slot.
   ///
-  /// The cap is what the payload carries, not what the watch displays — the
-  /// view renders as many as fit legibly at the wearer's text size and
-  /// scrolls for the rest.
+  /// Order is deliberate rather than a global SNR sort — it matches the map
+  /// overlay, where the RX slot is a distinct trailing row rather than a
+  /// competitor for the top three.
   static List<WatchHeardNode> buildHeard({
-    required List<HeardRepeater> heard,
-    required Map<String, Repeater> repeaterById,
+    required List<({String repeaterId, double snr, OverlayPingType type})> top,
+    ({String repeaterId, double snr})? rxSlot,
+    required Map<String, Repeater> repeaterByHex,
     required DateTime at,
     double? lat,
     double? lon,
-    int cap = WatchWire.maxHeard,
   }) {
-    final sorted = List<HeardRepeater>.from(heard)
-      ..sort((a, b) => (b.snr ?? -999).compareTo(a.snr ?? -999));
+    final rows = <WatchHeardNode>[];
 
-    final limited = sorted.length > cap ? sorted.sublist(0, cap) : sorted;
-
-    return limited.map((h) {
-      final repeater = repeaterById[h.repeaterId];
-      double? distance;
-      if (lat != null &&
-          lon != null &&
-          repeater != null &&
-          repeater.hasLocation) {
-        distance = distanceMeters(lat, lon, repeater.lat, repeater.lon);
-      }
-
-      return WatchHeardNode(
-        id: h.repeaterId,
-        name: repeater?.name ?? h.repeaterId.toUpperCase(),
-        snr: h.snr,
-        rssi: h.rssi,
-        hops: h.pathHops?.length,
-        seenCount: h.seenCount,
+    for (final entry in top) {
+      rows.add(_row(
+        id: entry.repeaterId,
+        snr: entry.snr,
+        type: entry.type,
+        repeaterByHex: repeaterByHex,
         at: at,
-        distanceM: distance,
-        snrColor: h.snr == null
-            ? null
-            : WatchColor.fromColor(PingColors.snrColor(h.snr!)),
-      );
-    }).toList();
+        lat: lat,
+        lon: lon,
+      ));
+    }
+
+    if (rxSlot != null) {
+      rows.add(_row(
+        id: rxSlot.repeaterId,
+        snr: rxSlot.snr,
+        type: OverlayPingType.rx,
+        repeaterByHex: repeaterByHex,
+        at: at,
+        lat: lat,
+        lon: lon,
+      ));
+    }
+
+    return rows.length > WatchWire.maxHeard
+        ? rows.sublist(0, WatchWire.maxHeard)
+        : rows;
+  }
+
+  static WatchHeardNode _row({
+    required String id,
+    required double snr,
+    required OverlayPingType type,
+    required Map<String, Repeater> repeaterByHex,
+    required DateTime at,
+    double? lat,
+    double? lon,
+  }) {
+    final hex = id.toUpperCase();
+    final repeater = repeaterByHex[hex];
+
+    double? distance;
+    if (lat != null && lon != null && repeater != null && repeater.hasLocation) {
+      distance = distanceMeters(lat, lon, repeater.lat, repeater.lon);
+    }
+
+    return WatchHeardNode(
+      id: hex,
+      // Null rather than a guess: a short path hash can match several
+      // repeaters, and a confidently wrong name is worse than none.
+      name: repeater?.name,
+      snr: snr,
+      at: at,
+      distanceM: distance,
+      snrColor: WatchColor.fromColor(PingColors.snrColor(snr)),
+      typeColor: overlayTypeColor(type),
+    );
+  }
+
+  /// Index repeaters by the hex prefix an overlay row would carry.
+  ///
+  /// Only unambiguous prefixes are kept: if two repeaters share the leading
+  /// hex at that length, neither is resolvable, which is exactly the condition
+  /// the app flags as ambiguous rather than papering over.
+  static Map<String, Repeater> indexByHexPrefix(
+    List<Repeater> repeaters,
+    int length,
+  ) {
+    final counts = <String, int>{};
+    final index = <String, Repeater>{};
+
+    for (final repeater in repeaters) {
+      if (repeater.hexId.length < length) continue;
+      final prefix = repeater.hexId.substring(0, length).toUpperCase();
+      counts[prefix] = (counts[prefix] ?? 0) + 1;
+      index[prefix] = repeater;
+    }
+
+    index.removeWhere((prefix, _) => (counts[prefix] ?? 0) > 1);
+    return index;
   }
 
   /// True when the fix moved far enough to be worth an update.

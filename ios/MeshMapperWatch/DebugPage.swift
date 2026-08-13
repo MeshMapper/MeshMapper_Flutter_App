@@ -98,10 +98,15 @@ struct DebugPage: View {
 
       ForEach(s.geo.heard) { node in
         HStack(spacing: 4) {
-          if let c = node.snrColor {
-            Circle().fill(Color(c)).frame(width: 5, height: 5)
+          Circle().fill(Color(node.typeColor)).frame(width: 5, height: 5)
+          Text(node.id)
+            .font(.system(size: 10, design: .monospaced))
+          if let name = node.name {
+            Text(name)
+              .font(.system(size: 10))
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
           }
-          Text(node.name).font(.system(size: 10)).lineLimit(1)
           Spacer()
           if let snr = node.snr {
             Text(String(format: "%.1f", snr))

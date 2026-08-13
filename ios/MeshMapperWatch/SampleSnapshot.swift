@@ -59,25 +59,28 @@ enum SampleSnapshot {
       )
     }
 
+    // Mirrors the phone's "Top Heard": three rows from the latest ping, then
+    // the RX slot in purple. Names are deliberately mixed — a 4-char hash
+    // resolves, a 2-char one often cannot.
+    let teal = WatchColor(r: 0.32, g: 0.83, b: 0.91)
     let heard: [WatchHeardNode] = [
-      ("4E", "Capitol Hill", 8.5, -71, nil, 3, 1420.0),
-      ("77", "Queen Anne", 2.25, -94, 1, 2, 2310.0),
-      ("A2", "Beacon Hill", -4.0, -112, 2, 1, 3050.0),
-    ].map { id, name, snr, rssi, hops, seen, distance in
+      ("4E5D", "Capitol Hill", 8.5, 1420.0, green),
+      ("77A1", nil, 2.25, 2310.0, teal),
+      ("A2", nil, -4.0, nil, green),
+      ("B914", "Magnolia", 5.75, 2870.0, purple),
+    ].map { id, name, snr, distance, typeColor in
       WatchHeardNode(
         id: id,
         name: name,
         snr: snr,
-        rssi: rssi,
-        hops: hops,
-        seenCount: seen,
         atMs: now - 30_000,
         distanceM: distance,
         snrColor: snr > 5
           ? WatchColor(r: 0.30, g: 0.69, b: 0.31)
           : (snr > -1
             ? WatchColor(r: 1.0, g: 0.60, b: 0.0)
-            : WatchColor(r: 0.96, g: 0.26, b: 0.21))
+            : WatchColor(r: 0.96, g: 0.26, b: 0.21)),
+        typeColor: typeColor
       )
     }
 
