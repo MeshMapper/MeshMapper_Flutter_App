@@ -36,7 +36,7 @@ struct MeshMapperLiveActivity: Widget {
           systemName: context.isStale
             ? "exclamationmark.triangle.fill" : context.state.phaseSymbol
         )
-        .foregroundStyle(context.isStale ? Color.orange : context.state.displayColor)
+        .foregroundStyle(context.isStale ? Color.orange : context.state.phaseColor)
         .accessibilityLabel(context.isStale ? "Update delayed" : context.state.phaseTitle)
       } compactTrailing: {
         MeshMapperCompactTrailing(state: context.state)
@@ -51,7 +51,9 @@ struct MeshMapperLiveActivity: Widget {
           MeshMapperOutcomeDot(state: context.state, diameter: 9)
         }
       }
-      .keylineTint(context.state.displayColor)
+      // The keyline is container chrome, not a second outcome indicator. A
+      // failed ping is routine and should not turn the whole island red.
+      .keylineTint(MeshMapperPalette.accent)
     }
     .meshMapperSupplementalActivityFamilies()
   }
@@ -203,7 +205,9 @@ private struct MeshMapperPhaseBar: View {
         ZStack(alignment: .leading) {
           Capsule().fill(.white.opacity(0.16))
           Capsule()
-            .fill(state.displayColor)
+            // Progress says how much time remains. Outcome has quieter,
+            // dedicated dots elsewhere and must not recolour the whole track.
+            .fill(MeshMapperPalette.accent)
             .frame(
               width: geometry.size.width
                 * (state.phaseRemainingFraction(at: context.date) ?? 0)
@@ -287,7 +291,7 @@ private struct MeshMapperRepeaterSummary: View {
         ForEach(state.repeaters.prefix(limit)) { repeater in
           MeshMapperRepeaterRow(
             repeater: repeater,
-            fallbackColor: state.displayColor,
+            fallbackColor: state.outcomeColor,
             showsName: showsNames,
             font: rowFont
           )
@@ -414,7 +418,7 @@ private struct MeshMapperOutcomeDot: View {
 
   var body: some View {
     Circle()
-      .fill(state.displayColor)
+      .fill(state.outcomeColor)
       .frame(width: diameter, height: diameter)
       .accessibilityLabel("Latest ping result")
   }
@@ -461,6 +465,7 @@ private struct MeshMapperCountdown: View {
 
 private enum MeshMapperPalette {
   static let background = Color(red: 0.055, green: 0.075, blue: 0.105)
+  static let accent = Color.accentColor
 }
 
 extension MeshMapperActivityAttributes.ContentState {
@@ -511,10 +516,16 @@ extension MeshMapperActivityAttributes.ContentState {
     }
   }
 
-  /// Phone-resolved outcome colour wins whenever one exists. System colours
-  /// are only a fallback before a session has produced a ping result.
-  fileprivate var displayColor: Color {
+  /// Phone-resolved outcome colour wins whenever one exists. The phase colour
+  /// is only a fallback before a session has produced a ping result.
+  fileprivate var outcomeColor: Color {
     if let pingColor { return Color(pingColor) }
+    return phaseColor
+  }
+
+  /// Colour for an element that describes the current phase rather than the
+  /// result of the most recent ping.
+  fileprivate var phaseColor: Color {
     switch phase {
     case "sending", "discovering", "tracing": return .blue
     case "listening", "listening_discovery", "listening_trace": return .teal
