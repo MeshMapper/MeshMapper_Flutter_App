@@ -40,29 +40,57 @@ struct MapPage: View {
 
   @State private var showingNodes = false
 
-  /// Height of the bottom panel and of the whole view, so the camera can put
-  /// the fix in the middle of the *visible* map rather than the middle of the
-  /// display — otherwise the puck sits behind the panel.
-  @State private var panelHeight: CGFloat = 0
-  @State private var viewHeight: CGFloat = 0
+  /// The panel's frame in global coordinates, so the camera can keep the fix
+  /// out from behind it.
+  @State private var panelFrame: CGRect = .zero
+  @State private var viewWidth: CGFloat = 0
 
-  private struct PanelHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-      value = max(value, nextValue())
+  /// Only one subtree sets this, but every *other* subtree still contributes
+  /// the default. Taking `nextValue()` unconditionally would let a later
+  /// sibling's `.zero` overwrite the real measurement, so empties are ignored.
+  private struct PanelFrameKey: PreferenceKey {
+    static let defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+      let next = nextValue()
+      if next != .zero { value = next }
     }
   }
 
-  /// Fraction of the view the panel covers, clamped so a pathological layout
-  /// can never push the camera somewhere absurd.
-  private var obscuredFraction: CGFloat {
-    guard viewHeight > 0 else { return 0 }
-    return min(0.55, max(0, panelHeight / viewHeight))
+  /// Where the fix belongs on screen: midway between the top of the display and
+  /// the top of the panel.
+  private var targetPoint: CGPoint? {
+    guard panelFrame.height > 0 else { return nil }
+    return CGPoint(x: panelFrame.midX, y: panelFrame.minY / 2)
   }
 
+  /// Width the panel's content actually gets: the display minus the overlay's
+  /// horizontal padding (4 a side) and the panel's own (8 a side).
+  private var panelContentWidth: CGFloat { max(0, viewWidth - 24) }
+
+  /// Whether there is room to set the phase title and the countdown *beside*
+  /// the bar rather than on top of it.
+  ///
+  /// Budget: ~52 pt for the longest phase title, ~38 for the countdown, two
+  /// 6 pt gaps, and ~64 left for the bar so it still reads as a gauge. A 46 mm
+  /// screen has 184 pt to spend and a 40 mm one has 138, so the two sizes get
+  /// genuinely different treatments instead of the small one being squeezed.
+  private var labelsFitBesideBar: Bool { panelContentWidth >= 160 }
+
   var body: some View {
+    // The proxy is the only reliable way to relate a coordinate to a point on
+    // screen. The map draws outside its own layout frame — it ignores the
+    // bottom safe area, and on a 46 mm watch the frame SwiftUI reports is
+    // 159 pt tall against a 248 pt display — so no measurement of the view
+    // hierarchy predicts where a coordinate will actually land. Asking the map
+    // sidesteps the whole question.
+    MapReader { proxy in
+      content(proxy)
+    }
+  }
+
+  private func content(_ proxy: MapProxy) -> some View {
     ZStack {
-      map
+      map(proxy)
 
       // One panel in the top-leading corner carrying phase and Top Heard.
       //
@@ -74,13 +102,13 @@ struct MapPage: View {
       VStack(spacing: 0) {
         HStack {
           Spacer(minLength: 0)
-          recenterButton
+          recenterButton(proxy)
         }
         Spacer(minLength: 0)
         statusPanel
           .background(
             GeometryReader { geo in
-              Color.clear.preference(key: PanelHeightKey.self, value: geo.size.height)
+              Color.clear.preference(key: PanelFrameKey.self, value: geo.frame(in: .global))
             }
           )
       }
@@ -90,14 +118,14 @@ struct MapPage: View {
     .background(
       GeometryReader { geo in
         Color.clear
-          .onAppear { viewHeight = geo.size.height }
-          .onChange(of: geo.size.height) { _, height in viewHeight = height }
+          .onAppear { viewWidth = geo.size.width }
+          .onChange(of: geo.size.width) { _, width in viewWidth = width }
       }
     )
-    .onPreferenceChange(PanelHeightKey.self) { height in
-      guard abs(height - panelHeight) > 0.5 else { return }
-      panelHeight = height
-      recenterIfFollowing()
+    .onPreferenceChange(PanelFrameKey.self) { frame in
+      guard abs(frame.minY - panelFrame.minY) > 0.5 || panelFrame.height == 0 else { return }
+      panelFrame = frame
+      recenterIfFollowing(proxy)
     }
     .sheet(isPresented: $showingNodes) {
       NavigationStack {
@@ -107,10 +135,15 @@ struct MapPage: View {
       }
     }
     .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
-      recenterIfFollowing()
+      recenterIfFollowing(proxy)
+    }
+    // The delayed resume in `scheduleFollowResume` only clears the suspension;
+    // recentring happens here, where a live proxy is in scope.
+    .onChange(of: followSuspendedUntil) { _, until in
+      if until == nil { recenterIfFollowing(proxy) }
     }
     .onAppear {
-      recenterIfFollowing()
+      recenterIfFollowing(proxy)
       #if DEBUG
       // Lets the sheet layout be captured and iterated on headlessly; the
       // simulator has no way to tap the bar.
@@ -145,7 +178,7 @@ struct MapPage: View {
           // repeater's identity. ViewThatFits picks by measurement rather than
           // by a guess about screen size.
           ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: columnGap) {
               heardColumn(Array(heard.prefix(2)))
               heardColumn(Array(heard.dropFirst(2)))
             }
@@ -175,6 +208,12 @@ struct MapPage: View {
     .dynamicTypeSize(.small ... .large)
     .opacity(client.isStale ? 0.5 : 1.0)
   }
+
+  /// Gutter between the two heard columns. Wider where there is room, so they
+  /// read as columns rather than one run-on block hugging the left edge.
+  /// Widening it also feeds `ViewThatFits`, which will drop to one column if
+  /// the roomier pair no longer fits.
+  private var columnGap: CGFloat { labelsFitBesideBar ? 18 : 10 }
 
   /// One column of heard rows.
   private func heardColumn(_ nodes: [WatchHeardNode]) -> some View {
@@ -230,40 +269,69 @@ struct MapPage: View {
       .lineLimit(1)
     } else if let snapshot {
       TimelineView(.periodic(from: .now, by: 1)) { context in
-        GeometryReader { geo in
-          ZStack(alignment: .leading) {
-            Capsule().fill(.white.opacity(0.16))
-            Capsule()
-              .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
-              .frame(
-                width: geo.size.width
-                  * (snapshot.phaseRemainingFraction(at: context.date) ?? 0)
-              )
+        if labelsFitBesideBar {
+          // Big screens have width to spare, so spend it on legibility: phase
+          // name and remaining time both stand clear of the track, and the bar
+          // is left as a pure gauge.
+          HStack(spacing: 6) {
+            phaseTitle(snapshot)
+            track(snapshot, at: context.date)
+            countdown(snapshot, at: context.date)
           }
-          // Label rides on the bar rather than beside it: a separate column
-          // costs width permanently, and the phase title needs the room.
-          .overlay(alignment: .trailing) {
-            Group {
-              if let endsAt = snapshot.phaseEndsAt, endsAt > context.date {
-                Text(timerInterval: context.date...endsAt, countsDown: true)
-                  .font(.system(size: 11, weight: .bold).monospacedDigit())
-                  .frame(width: 38, alignment: .trailing)
-              } else {
-                Text(snapshot.phaseTitle)
-                  .font(.system(size: 10, weight: .semibold))
-                  .lineLimit(1)
-                  .truncationMode(.tail)
+        } else {
+          // Small screens cannot afford two label columns, so the one label
+          // that matters rides on the bar. Countdown when a phase is running,
+          // otherwise its name.
+          track(snapshot, at: context.date)
+            .overlay(alignment: .trailing) {
+              Group {
+                if snapshot.phaseEndsAt.map({ $0 > context.date }) == true {
+                  countdown(snapshot, at: context.date)
+                } else {
+                  phaseTitle(snapshot)
+                }
               }
+              // The fill slides under the label, so a shadow keeps it readable
+              // against both the filled and empty parts of the track.
+              .shadow(color: .black.opacity(0.7), radius: 1.5)
+              .padding(.trailing, 6)
             }
-            .foregroundStyle(.white)
-            // The fill slides under the label, so a shadow keeps it readable
-            // against both the filled and empty parts of the track.
-            .shadow(color: .black.opacity(0.7), radius: 1.5)
-            .padding(.trailing, 6)
-          }
         }
       }
       .frame(height: 15)
+    }
+  }
+
+  /// The depleting track. Greedy on purpose — it takes whatever width the
+  /// labels beside it leave.
+  private func track(_ snapshot: WatchSnapshot, at date: Date) -> some View {
+    GeometryReader { geo in
+      ZStack(alignment: .leading) {
+        Capsule().fill(.white.opacity(0.16))
+        Capsule()
+          .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
+          .frame(width: geo.size.width * (snapshot.phaseRemainingFraction(at: date) ?? 0))
+      }
+    }
+  }
+
+  private func phaseTitle(_ snapshot: WatchSnapshot) -> some View {
+    Text(snapshot.phaseTitle)
+      .font(.system(size: 10, weight: .semibold))
+      .foregroundStyle(.white)
+      .lineLimit(1)
+      .truncationMode(.tail)
+  }
+
+  /// Fixed width because `Text(timerInterval:)` otherwise reserves room for the
+  /// widest value it might ever show, which would starve the track.
+  @ViewBuilder
+  private func countdown(_ snapshot: WatchSnapshot, at date: Date) -> some View {
+    if let endsAt = snapshot.phaseEndsAt, endsAt > date {
+      Text(timerInterval: date...endsAt, countsDown: true)
+        .font(.system(size: 11, weight: .bold).monospacedDigit())
+        .foregroundStyle(.white)
+        .frame(width: 38, alignment: .trailing)
     }
   }
 
@@ -280,11 +348,11 @@ struct MapPage: View {
   private var heard: [WatchHeardNode] { snapshot?.geo.heard ?? [] }
 
   @ViewBuilder
-  private var recenterButton: some View {
+  private func recenterButton(_ proxy: MapProxy) -> some View {
     if !isFollowing, fix != nil {
       Button {
         followSuspendedUntil = nil
-        recenterIfFollowing(force: true)
+        recenterIfFollowing(proxy, force: true)
       } label: {
         Image(systemName: "location.fill")
           .font(.system(size: 10))
@@ -297,7 +365,7 @@ struct MapPage: View {
 
   // MARK: - Map
 
-  private var map: some View {
+  private func map(_ proxy: MapProxy) -> some View {
     Map(position: $camera, interactionModes: [.pan, .zoom]) {
       linkLines
       pingMarkers
@@ -308,6 +376,7 @@ struct MapPage: View {
     .onMapCameraChange(frequency: .onEnd) { context in
       noteRenderedRegion(context.region)
       noteCameraChange(context.region.center)
+      correctPlacement(proxy)
     }
     .ignoresSafeArea(edges: .bottom)
   }
@@ -367,28 +436,57 @@ struct MapPage: View {
 
   // MARK: - Camera
 
-  private func recenterIfFollowing(force: Bool = false) {
+  private func recenterIfFollowing(_ proxy: MapProxy, force: Bool = false) {
     guard force || isFollowing, let fix else { return }
-    let center = centerPlacing(fix)
+    let center = centerPlacing(fix, proxy: proxy)
     programmaticCenter = center
     withAnimation(.easeInOut(duration: 0.25)) {
       camera = .region(MKCoordinateRegion(center: center, span: currentSpan))
     }
   }
 
-  /// Region centre that puts [fix] in the middle of the band between the top
-  /// of the display and the top of the panel.
+  /// Region centre that puts [fix] midway between the top of the display and
+  /// the top of the panel.
   ///
-  /// MapKit centres the region in the whole view, so with a panel covering the
-  /// lower third the fix would sit low and partly behind it. Shifting the
-  /// region centre south by half the obscured height lifts the fix by the same
-  /// amount on screen.
-  private func centerPlacing(_ fix: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
-    let shift = currentSpan.latitudeDelta * Double(obscuredFraction) / 2
+  /// MapKit centres the region in the map, so with a panel over the lower third
+  /// the fix would sit low and partly behind it. Rather than predict how far to
+  /// shift, this asks the map which coordinate is at the target point today and
+  /// translates the camera by the difference — exact whatever the projection,
+  /// the zoom, or the latitude.
+  private func centerPlacing(
+    _ fix: CLLocationCoordinate2D,
+    proxy: MapProxy
+  ) -> CLLocationCoordinate2D {
+    // Before the first render there is nothing to translate against; centring
+    // on the fix is the right opening move, and `correctPlacement` lifts it as
+    // soon as the map reports back.
+    guard let targetPoint,
+      let renderedCenter,
+      let atTarget = proxy.convert(targetPoint, from: .global)
+    else { return fix }
+
+    // Clamped so a bad conversion — an off-map point, a mid-animation read —
+    // can never fling the camera somewhere the wearer has to chase.
+    let lift = (fix.latitude - atTarget.latitude)
+      .clamped(to: -currentSpan.latitudeDelta...currentSpan.latitudeDelta)
     return CLLocationCoordinate2D(
-      latitude: fix.latitude - shift,
+      latitude: renderedCenter.latitude + lift,
       longitude: fix.longitude
     )
+  }
+
+  /// Nudge the camera once the map reports where things really landed.
+  ///
+  /// The first placement runs before any render, and a zoom changes the scale
+  /// underneath us, so placement is a feedback loop rather than a calculation.
+  /// The deadband is what stops it: each pass lands within a couple of points,
+  /// the next sees no error worth fixing, and it settles.
+  private func correctPlacement(_ proxy: MapProxy) {
+    guard isFollowing, let fix, let targetPoint,
+      let point = proxy.convert(fix, to: .global)
+    else { return }
+    guard abs(point.y - targetPoint.y) > 6 else { return }
+    recenterIfFollowing(proxy)
   }
 
   /// Preserve whatever zoom the wearer picked with the Digital Crown.
@@ -401,25 +499,16 @@ struct MapPage: View {
     longitudeDelta: 0.03
   )
 
-  /// Track the region MapKit actually rendered.
-  ///
-  /// Two reasons this matters. MapKit fits a requested span to the view's
-  /// aspect ratio, so the rendered latitude delta differs from the requested
-  /// one — computing the panel offset against the request under-shifts the
-  /// camera. And without this, a Digital Crown zoom would be thrown away on
-  /// the next follow update.
-  private func noteRenderedRegion(_ region: MKCoordinateRegion) {
-    let previous = currentSpan.latitudeDelta
-    currentSpan = region.span
+  /// Centre of the region MapKit last rendered — the fixed point every
+  /// placement is measured against.
+  @State private var renderedCenter: CLLocationCoordinate2D?
 
-    // The first render is what reveals the aspect-corrected span, so re-place
-    // the fix once against it. This converges: the follow-up request carries
-    // the rendered span, so the next change reports no material difference.
-    guard previous > 0 else { return }
-    let drift = abs(region.span.latitudeDelta - previous) / previous
-    if drift > 0.05 {
-      recenterIfFollowing()
-    }
+  /// Track the region MapKit actually rendered, so a Digital Crown zoom is not
+  /// thrown away on the next follow update and so placement has a known
+  /// starting point.
+  private func noteRenderedRegion(_ region: MKCoordinateRegion) {
+    currentSpan = region.span
+    renderedCenter = region.center
   }
 
   private func noteCameraChange(_ center: CLLocationCoordinate2D) {
@@ -454,8 +543,9 @@ struct MapPage: View {
         try? await Task.sleep(for: .seconds(seconds))
       }
       guard !Task.isCancelled, followSuspendedUntil == deadline else { return }
+      // Clearing this drives the recentre, via `onChange` where a proxy is in
+      // scope.
       followSuspendedUntil = nil
-      recenterIfFollowing()
     }
   }
 
@@ -467,6 +557,12 @@ struct MapPage: View {
   ) -> CLLocationDistance {
     CLLocation(latitude: a.latitude, longitude: a.longitude)
       .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+  }
+}
+
+extension Comparable {
+  fileprivate func clamped(to limits: ClosedRange<Self>) -> Self {
+    min(max(self, limits.lowerBound), limits.upperBound)
   }
 }
 
