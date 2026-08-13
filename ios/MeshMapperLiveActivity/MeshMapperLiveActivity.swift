@@ -253,7 +253,13 @@ private struct MeshMapperPhaseBar: View {
           )
           .frame(width: countdownWidth, alignment: .trailing)
         }
-        .padding(.horizontal, 7)
+        // The native timer keeps a small amount of reserved space beyond the
+        // visible glyphs even inside its trailing-aligned fixed frame. Leaving
+        // the title at seven points but tucking that reservation toward the
+        // rounded cap puts the visible digits about four points from the end;
+        // 2.5 points still clears the curve on the shortest 18 pt track.
+        .padding(.leading, 7)
+        .padding(.trailing, 2.5)
         .shadow(color: .black.opacity(0.7), radius: 1.5)
       }
     }
