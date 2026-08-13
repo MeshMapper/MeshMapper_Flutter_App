@@ -15,6 +15,11 @@ final class WatchSessionClient: NSObject {
   /// When the last snapshot arrived — drives the stale badge.
   private(set) var receivedAt: Date?
 
+  /// Stored rather than derived from `Date()`: time passing does not invalidate
+  /// a SwiftUI observation by itself, so the boundary has to become an event.
+  private(set) var isStale = true
+  private var staleBoundaryTask: Task<Void, Never>?
+
   /// The phone's explanation for a refused admission or a later failed action.
   /// Both belong to one short-lived presentation path on the controls page.
   private(set) var lastRefusal: String?
@@ -48,11 +53,8 @@ final class WatchSessionClient: NSObject {
   /// only sends on real change, so silence is normal — this threshold is
   /// about "the phone has probably gone away", not "no update recently".
   static let staleAfter: TimeInterval = 90
-
-  var isStale: Bool {
-    guard let receivedAt else { return true }
-    return Date().timeIntervalSince(receivedAt) > Self.staleAfter
-  }
+  private static let cueFreshFor: TimeInterval = 30
+  private static let cueClockTolerance: TimeInterval = 5
 
   /// Bring the session up and pull a current snapshot.
   ///
@@ -62,7 +64,7 @@ final class WatchSessionClient: NSObject {
     #if DEBUG
     if SampleSnapshot.isEnabled {
       snapshot = SampleSnapshot.make()
-      receivedAt = Date()
+      markSnapshotReceived()
       return
     }
     #endif
@@ -149,6 +151,29 @@ final class WatchSessionClient: NSObject {
     }
   }
 
+  private func markSnapshotReceived(at arrival: Date = Date()) {
+    staleBoundaryTask?.cancel()
+    receivedAt = arrival
+    isStale = false
+
+    // One task per delivery makes the 90-second boundary observable without a
+    // polling timer. A newer snapshot cancels this task and owns the next one.
+    staleBoundaryTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(Self.staleAfter))
+      guard !Task.isCancelled, self?.receivedAt == arrival else { return }
+      self?.isStale = true
+      self?.staleBoundaryTask = nil
+    }
+  }
+
+  private static func isFresh(_ cue: WatchHapticCue, at arrival: Date) -> Bool {
+    guard let issuedAt = cue.issuedAt else { return false }
+    let age = arrival.timeIntervalSince(issuedAt)
+    // Phone and watch clocks normally agree, but a few seconds of skew must
+    // not suppress a real failure that has just crossed the radio.
+    return age >= -cueClockTolerance && age <= cueFreshFor
+  }
+
   // MARK: - Ingest
 
   private func ingest(context: [String: Any]) {
@@ -170,15 +195,17 @@ final class WatchSessionClient: NSObject {
     }
 
     Task { @MainActor in
+      let arrival = Date()
       self.versionMismatch = false
       self.snapshot = decoded
-      self.receivedAt = Date()
+      self.markSnapshotReceived(at: arrival)
       // A queued command has no ack. Any subsequent snapshot proves the phone
       // has resumed communicating; a separate timeout covers the case where
       // state dedupe means no snapshot follows.
       self.clearPendingCommand()
 
       if let cue = decoded.cue,
+         Self.isFresh(cue, at: arrival),
          self.presentedCueIDs.insert(cue.id).inserted
       {
         self.presentedCueIDOrder.append(cue.id)

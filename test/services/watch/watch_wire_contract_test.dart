@@ -171,6 +171,23 @@ void main() {
       });
     });
 
+    test('failure cues carry their creation time for restart filtering', () {
+      final issuedAt = DateTime.utc(2026, 8, 12, 10);
+      final cue = WatchHapticCue(
+        id: 'failure-1',
+        kind: 'failure',
+        issuedAt: issuedAt,
+        message: 'Could not start',
+      );
+
+      expect(cue.toMap(), {
+        'id': 'failure-1',
+        'kind': 'failure',
+        'issuedAtMs': issuedAt.millisecondsSinceEpoch.toDouble(),
+        'message': 'Could not start',
+      });
+    });
+
     test('phase duration rides along so the watch can draw its own bar', () {
       // Deadline plus duration is everything needed to compute the remaining
       // fraction locally, which is why the bar needs no per-second updates.
@@ -197,8 +214,13 @@ void main() {
         isNot(base.urgencyKey),
       );
       expect(
-        _snapshot(cue: const WatchHapticCue(id: 'c1', kind: 'success'))
-            .urgencyKey,
+        _snapshot(
+          cue: WatchHapticCue(
+            id: 'c1',
+            kind: 'success',
+            issuedAt: DateTime.utc(2026, 8, 12),
+          ),
+        ).urgencyKey,
         isNot(base.urgencyKey),
       );
     });
@@ -213,6 +235,46 @@ void main() {
 
     test('an unknown command is rejected rather than guessed at', () {
       expect(WatchCommandKind.fromWire('selfDestruct'), isNull);
+    });
+
+    test('Start is idempotent while starting but Stop tells the truth', () {
+      final start = resolveWatchSessionCommandAdmission(
+        kind: WatchCommandKind.startSession,
+        isSessionActive: false,
+        isSessionStarting: true,
+      );
+      final stop = resolveWatchSessionCommandAdmission(
+        kind: WatchCommandKind.stopSession,
+        isSessionActive: false,
+        isSessionStarting: true,
+      );
+
+      expect(start, (shouldRun: false, refusal: null));
+      expect(stop.shouldRun, isFalse);
+      expect(stop.refusal, 'Still starting — try Stop again');
+    });
+
+    test('only the always-present watch projects shared Starting to idle', () {
+      const sharedLiveActivityPhase = LiveActivityPhase.starting;
+
+      expect(
+        resolveWatchSurfacePhase(
+          sharedPhase: sharedLiveActivityPhase,
+          isSessionActive: false,
+          isSessionStarting: false,
+        ),
+        LiveActivityPhase.idle,
+      );
+      expect(sharedLiveActivityPhase, LiveActivityPhase.starting,
+          reason: 'the Live Activity consumes the shared resolver directly');
+      expect(
+        resolveWatchSurfacePhase(
+          sharedPhase: sharedLiveActivityPhase,
+          isSessionActive: false,
+          isSessionStarting: true,
+        ),
+        LiveActivityPhase.starting,
+      );
     });
   });
 
@@ -390,6 +452,27 @@ void main() {
 
       expect(builds, 1,
           reason: 'geo construction waits until the throttle window opens');
+      expect(syncCalls, 1);
+    });
+
+    test('successful native delivery reports the exact snapshot once',
+        () async {
+      WatchSnapshot? delivered;
+      bridge.attachCommandHandler(
+        (_) => null,
+        onSnapshotDelivered: (snapshot) => delivered = snapshot,
+      );
+      await Future<void>.delayed(Duration.zero);
+      final snapshot = _snapshot();
+
+      bridge.schedule(
+        () => snapshot,
+        urgencyKeyBuilder: () => snapshot.urgencyKey,
+        immediate: true,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(delivered, same(snapshot));
       expect(syncCalls, 1);
     });
 

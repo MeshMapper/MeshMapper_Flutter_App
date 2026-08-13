@@ -228,12 +228,21 @@ class WatchControls {
 /// Carries an [id] so the watch fires exactly once: diffing state would
 /// double-fire on redelivery, which WatchConnectivity does routinely.
 class WatchHapticCue {
-  const WatchHapticCue({required this.id, required this.kind, this.message});
+  const WatchHapticCue({
+    required this.id,
+    required this.kind,
+    required this.issuedAt,
+    this.message,
+  });
 
   final String id;
 
   /// 'success' | 'failure' | 'notification'
   final String kind;
+
+  /// Creation time lets a restarted watch distinguish a current failure from
+  /// an old cue retained in WatchConnectivity's application context.
+  final DateTime issuedAt;
 
   /// Human-readable detail for an event whose outcome arrived after command
   /// admission. This additive field is optional, so v2 remains decodable; no
@@ -243,6 +252,7 @@ class WatchHapticCue {
   Map<String, Object?> toMap() => {
         'id': id,
         'kind': kind,
+        'issuedAtMs': issuedAt.millisecondsSinceEpoch.toDouble(),
         'message': message,
       };
 }
@@ -352,4 +362,51 @@ enum WatchCommandKind {
     }
     return null;
   }
+}
+
+typedef WatchCommandAdmission = ({bool shouldRun, String? refusal});
+
+/// Resolve the wrist's single Start/Stop control without racing the phone's
+/// asynchronous start transaction. A second Start is the same intent and can
+/// disappear harmlessly; Stop is the opposite intent, so claiming success
+/// before there is a running session would lie to the wearer.
+WatchCommandAdmission resolveWatchSessionCommandAdmission({
+  required WatchCommandKind kind,
+  required bool isSessionActive,
+  required bool isSessionStarting,
+}) {
+  switch (kind) {
+    case WatchCommandKind.startSession:
+      return (
+        shouldRun: !isSessionActive && !isSessionStarting,
+        refusal: null,
+      );
+    case WatchCommandKind.stopSession:
+      if (isSessionStarting && !isSessionActive) {
+        return (
+          shouldRun: false,
+          refusal: 'Still starting — try Stop again',
+        );
+      }
+      return (shouldRun: isSessionActive, refusal: null);
+    case WatchCommandKind.manualPing:
+    case WatchCommandKind.requestSnapshot:
+      throw ArgumentError.value(kind, 'kind', 'Expected Start or Stop');
+  }
+}
+
+/// The shared resolver's Starting fallback is correct for a Live Activity,
+/// which only exists for a session, but the watch also renders while idle.
+/// Only the watch calls this projection, keeping the phone surface unchanged.
+LiveActivityPhase resolveWatchSurfacePhase({
+  required LiveActivityPhase sharedPhase,
+  required bool isSessionActive,
+  required bool isSessionStarting,
+}) {
+  if (sharedPhase == LiveActivityPhase.starting &&
+      !isSessionActive &&
+      !isSessionStarting) {
+    return LiveActivityPhase.idle;
+  }
+  return sharedPhase;
 }

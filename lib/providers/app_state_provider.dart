@@ -1228,7 +1228,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// geographic payload. Keep this in the wire model's shared formatter so the
   /// cheap preflight and the eventual snapshot cannot drift on what is urgent.
   String _buildWatchUrgencyKey() {
-    final phase = _resolveLiveActivityPhase();
+    final phase = _resolveWatchPhase();
     final controls = _buildWatchControls();
     return WatchSnapshot.buildUrgencyKey(
       sessionId: _liveActivitySessionId ?? 'idle',
@@ -1251,7 +1251,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   WatchSnapshot? _buildWatchSnapshot() {
     if (_isDisposed) return null;
 
-    final phase = _resolveLiveActivityPhase();
+    final phase = _resolveWatchPhase();
     final repeaterState = _buildLiveActivityRepeaters();
     final now = DateTime.now();
     final phaseDurationMs = _phaseDurationMsFor(phase.endsAt);
@@ -1500,12 +1500,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  /// Colour of the most recent completed ping, matching the map's markers.
-  WatchColor? _resolveWatchPingColor() {
-    if (_txPings.isEmpty) return null;
-    final latest = _txPings.last;
-    return WatchGeoBuilder.pingColor('tx', latest.heardRepeaters.isNotEmpty);
-  }
+  /// Colour of the most recent completed coverage event, matching the marker
+  /// beside it rather than leaving Passive mode stuck on an old TX result.
+  WatchColor? _resolveWatchPingColor() => WatchGeoBuilder.latestPingColor(
+        txPings: _txPings,
+        rxPings: _rxPings,
+        discLogEntries: _discLogEntries,
+        traceLogEntries: _traceLogEntries,
+      );
 
   /// Decides whether an intent from the wrist may begin.
   ///
@@ -1526,13 +1528,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return null;
 
       case WatchCommandKind.startSession:
+        final admission = resolveWatchSessionCommandAdmission(
+          kind: kind,
+          isSessionActive: _autoPingEnabled,
+          isSessionStarting: _autoPingStarting,
+        );
+        if (admission.refusal != null) return admission.refusal;
+        if (!admission.shouldRun) return null;
         if (!isConnected) return 'Not connected';
-        if (_autoPingEnabled) return null; // Already running.
         unawaited(_runWatchStartSession(_resolvedWatchSessionMode));
         return null;
 
       case WatchCommandKind.stopSession:
-        if (!_autoPingEnabled) return null; // Already stopped.
+        final admission = resolveWatchSessionCommandAdmission(
+          kind: kind,
+          isSessionActive: _autoPingEnabled,
+          isSessionStarting: _autoPingStarting,
+        );
+        if (admission.refusal != null) return admission.refusal;
+        if (!admission.shouldRun) return null;
         unawaited(_runWatchStopSession(_resolvedWatchSessionMode));
         return null;
 
@@ -1596,9 +1610,42 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _watchCue = WatchHapticCue(
       id: const Uuid().v4(),
       kind: 'failure',
+      issuedAt: DateTime.now(),
       message: message,
     );
     _scheduleWatchSync(immediate: true);
+  }
+
+  void _handleWatchSnapshotDelivered(WatchSnapshot snapshot) {
+    final deliveredCue = snapshot.cue;
+    if (deliveredCue != null && _watchCue?.id == deliveredCue.id) {
+      // Delivery means future snapshots must stop carrying this event. The
+      // watch independently age-checks the retained application context, so a
+      // process restart cannot turn it back into a new failure.
+      _watchCue = null;
+    }
+  }
+
+  ({
+    LiveActivityPhase phase,
+    String title,
+    String? detail,
+    DateTime? endsAt,
+  }) _resolveWatchPhase() {
+    final shared = _resolveLiveActivityPhase();
+    final watchPhase = resolveWatchSurfacePhase(
+      sharedPhase: shared.phase,
+      isSessionActive: _autoPingEnabled,
+      isSessionStarting: _autoPingStarting,
+    );
+    if (watchPhase == shared.phase) return shared;
+
+    return (
+      phase: LiveActivityPhase.idle,
+      title: 'Ready',
+      detail: 'No session running',
+      endsAt: null,
+    );
   }
 
   LiveActivitySnapshot? _buildLiveActivitySnapshot() {
@@ -2015,6 +2062,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _watchBridge.attachCommandHandler(
         _handleWatchCommand,
         onRefusal: _emitWatchFailure,
+        onSnapshotDelivered: _handleWatchSnapshotDelivered,
         // Availability can become true long after provider startup when a
         // watch is paired or its app is installed. Push the current state then
         // rather than waiting for an unrelated phone-side notification.

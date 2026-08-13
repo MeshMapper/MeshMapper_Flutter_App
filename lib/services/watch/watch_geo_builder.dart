@@ -60,6 +60,54 @@ class WatchGeoBuilder {
     }
   }
 
+  static WatchColor _txPingColor(TxPing ping) {
+    final success = ping.heardRepeaters.isNotEmpty;
+    final hasDirectEcho =
+        ping.heardRepeaters.any((repeater) => repeater.pathHops == null);
+    final hasMultiHopOnly = !hasDirectEcho && success;
+    // A multi-hop-only return is RX evidence, not proof that a repeater heard
+    // the transmitter directly. This is the phone map's marker rule.
+    return hasMultiHopOnly ? pingColor('rx', true) : pingColor('tx', success);
+  }
+
+  /// Outcome colour for the newest coverage event of any kind.
+  ///
+  /// Scanning the four bounded histories avoids constructing and sorting the
+  /// map-marker list a second time merely to colour one dot.
+  static WatchColor? latestPingColor({
+    required List<TxPing> txPings,
+    required List<RxPing> rxPings,
+    required List<DiscLogEntry> discLogEntries,
+    required List<TraceLogEntry> traceLogEntries,
+  }) {
+    DateTime? latestAt;
+    WatchColor? latestColor;
+
+    void consider(DateTime at, WatchColor color) {
+      if (latestAt == null || at.isAfter(latestAt!)) {
+        latestAt = at;
+        latestColor = color;
+      }
+    }
+
+    for (final ping in txPings) {
+      consider(ping.timestamp, _txPingColor(ping));
+    }
+    for (final ping in rxPings) {
+      consider(ping.timestamp, pingColor('rx', true));
+    }
+    for (final entry in discLogEntries) {
+      consider(
+        entry.timestamp,
+        pingColor('disc', entry.discoveredNodes.isNotEmpty),
+      );
+    }
+    for (final entry in traceLogEntries) {
+      consider(entry.timestamp, pingColor('trace', entry.success));
+    }
+    return latestColor;
+  }
+
   /// Colour for a repeater pin, matching the iOS map's `_repeaterStatusColor`.
   static WatchColor repeaterColor(Repeater repeater) {
     if (repeater.isDead) return WatchColor.fromColor(PingColors.repeaterDead);
@@ -85,20 +133,12 @@ class WatchGeoBuilder {
 
     for (var i = 0; i < txPings.length; i++) {
       final tx = txPings[i];
-      final success = tx.heardRepeaters.isNotEmpty;
-      final hasDirectEcho =
-          tx.heardRepeaters.any((repeater) => repeater.pathHops == null);
-      final hasMultiHopOnly = !hasDirectEcho && success;
       pings.add(WatchPing(
         id: 'tx-${tx.timestamp.millisecondsSinceEpoch}-$i',
         lat: tx.latitude,
         lon: tx.longitude,
         kind: 'tx',
-        // The phone draws a multi-hop-only return as RX: it proves the packet
-        // came back through the mesh, but not that any repeater heard us
-        // directly. Keep the TX identity and mirror that evidence colour.
-        color:
-            hasMultiHopOnly ? pingColor('rx', true) : pingColor('tx', success),
+        color: _txPingColor(tx),
         at: tx.timestamp,
       ));
     }
