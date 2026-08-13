@@ -136,7 +136,48 @@ struct MapPage: View {
   }
 
   var body: some View {
-    Group {
+    pageContent
+      .toolbar {
+        if !isLuminanceReduced {
+          ToolbarItem(placement: .topBarLeading) {
+            mainPageToggle
+          }
+        }
+      }
+      .background(
+        GeometryReader { geo in
+          Color.clear
+            .onAppear { latchBottomSafeAreaInset(geo.safeAreaInsets.bottom) }
+            .onChange(of: geo.safeAreaInsets.bottom) { _, inset in
+              latchBottomSafeAreaInset(inset)
+            }
+        }
+        // Plain is intentional: `.ignoresSafeArea()` makes this reader report
+        // the insets of its own expanded region, which are zero. The first
+        // nonzero value is latched before any dependent panel geometry can feed
+        // back into layout. The display's actual safe area is a device constant
+        // that cannot legitimately change when the selected content does.
+      )
+      .sheet(isPresented: $showingNodes) {
+        NavigationStack {
+          NodeListView()
+            .navigationTitle("Heard")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+      }
+      .onAppear {
+        #if DEBUG
+        // Lets the sheet layout be captured and iterated on headlessly; the
+        // simulator has no way to tap the bar.
+        if UserDefaults.standard.bool(forKey: "MeshMapperShowNodeSheet") {
+          showingNodes = true
+        }
+        #endif
+      }
+  }
+
+  private var pageContent: some View {
+    ZStack {
       if showsMap {
         // The proxy is the only reliable way to relate a coordinate to a point
         // on screen. Keep the reader inside this branch: constructing even map
@@ -148,36 +189,24 @@ struct MapPage: View {
         readoutContent
       }
     }
-    .background(
-      GeometryReader { geo in
-        Color.clear
-          .onAppear { latchBottomSafeAreaInset(geo.safeAreaInsets.bottom) }
-          .onChange(of: geo.safeAreaInsets.bottom) { _, inset in
-            latchBottomSafeAreaInset(inset)
-          }
-      }
-      // Plain is intentional: `.ignoresSafeArea()` makes this reader report
-      // the insets of its own expanded region, which are zero. The first
-      // nonzero value is latched before any dependent panel geometry can feed
-      // back into layout. The display's actual safe area is a device constant
-      // that cannot legitimately change when the selected content does.
-    )
-    .sheet(isPresented: $showingNodes) {
-      NavigationStack {
-        NodeListView()
-          .navigationTitle("Heard")
-          .navigationBarTitleDisplayMode(.inline)
-      }
+  }
+
+  private var mainPageToggle: some View {
+    Button {
+      settings.mainPageContent = settings.mainPageContent == .map
+        ? .readout
+        : .map
+    } label: {
+      // The glyph names the destination, following the convention for a
+      // two-state corner control. The framed list survives toolbar scaling on
+      // 40 mm better than bare bullets and still reads as the full readout.
+      Image(systemName: settings.mainPageContent == .map
+        ? "list.bullet.rectangle"
+        : "map.fill")
     }
-    .onAppear {
-      #if DEBUG
-      // Lets the sheet layout be captured and iterated on headlessly; the
-      // simulator has no way to tap the bar.
-      if UserDefaults.standard.bool(forKey: "MeshMapperShowNodeSheet") {
-        showingNodes = true
-      }
-      #endif
-    }
+    .accessibilityLabel(settings.mainPageContent == .map
+      ? "Show readout"
+      : "Show map")
   }
 
   private func mapContent(_ proxy: MapProxy) -> some View {
@@ -502,7 +531,11 @@ struct MapPage: View {
       noteCameraChange(context.region.center)
       correctPlacement(proxy)
     }
-    .ignoresSafeArea(edges: .bottom)
+    // The shell's navigation host supplies the system toolbar placement but
+    // must not buy it by shortening the basemap. Only MapKit extends under that
+    // top chrome; the overlay remains in the safe content region, keeping its
+    // transient trailing recentre button away from the leading toolbar control.
+    .ignoresSafeArea(edges: [.top, .bottom])
   }
 
   @MapContentBuilder
