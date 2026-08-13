@@ -64,7 +64,13 @@ struct MapPage: View {
     return CGPoint(x: panelFrame.midX, y: panelFrame.minY / 2)
   }
 
-  private static let panelBottomGap: CGFloat = 4
+  /// Placement and clearance gaps deliberately differ. The panel sits higher,
+  /// but its inset is evaluated as if it still sat four points from the edge;
+  /// otherwise raising it would spend the recovered curvature room on width.
+  /// Keeping the lower position as a clearance floor is the conservative
+  /// direction for hardware curvature the simulator cannot reveal.
+  private static let panelBottomGap: CGFloat = 8
+  private static let curveClearanceGap: CGFloat = 4
 
   /// Panel geometry is about the physical display, not this view's proposal.
   /// Reading the device avoids a feedback loop where panel padding changes the
@@ -77,14 +83,15 @@ struct MapPage: View {
   /// watchOS exposes no screen corner radius, but its bottom safe-area inset is
   /// the clearance a full-width element needs at zero horizontal inset, making
   /// it a useful estimate of that radius. The circle/chord intersection gives
-  /// the inset at our chosen bottom gap. That estimate is a lower bound on the
-  /// glass curvature, so four extra points are cheap insurance against another
-  /// hardware clip. The rectangle test is conservative in the other direction:
-  /// the panel's own 12 pt radius pulls its visible corners inward from the
-  /// square corners protected by this equation.
+  /// the inset at the more conservative of the placement and clearance gaps.
+  /// That radius estimate is a lower bound on the glass curvature, so four
+  /// extra points are cheap insurance against another hardware clip. The
+  /// rectangle test is conservative in the other direction: the panel's own
+  /// 12 pt radius pulls its visible corners inward from the square corners
+  /// protected by this equation.
   private var curvedPanelHorizontalInset: CGFloat? {
     let radius = bottomSafeAreaInset
-    let gap = Self.panelBottomGap
+    let gap = min(Self.panelBottomGap, Self.curveClearanceGap)
     guard radius > 0, gap < radius else { return nil }
     let inset = radius - sqrt(max(0, 2 * radius * gap - gap * gap)) + 4
     guard inset.isFinite else { return nil }
