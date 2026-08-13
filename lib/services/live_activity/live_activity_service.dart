@@ -14,10 +14,18 @@ typedef LiveActivitySnapshotBuilder = LiveActivitySnapshot? Function();
 /// Timer ticks are represented by absolute phase deadlines, allowing SwiftUI to
 /// render the countdown locally without an ActivityKit update every second.
 class LiveActivityService {
-  static const MethodChannel _channel =
-      MethodChannel('meshmapper/live_activity');
+  LiveActivityService({
+    @visibleForTesting MethodChannel? channel,
+    @visibleForTesting
+    Duration unavailableRetryDelay = const Duration(seconds: 30),
+  })  : _channel = channel ?? const MethodChannel('meshmapper/live_activity'),
+        _unavailableRetryDelay = unavailableRetryDelay;
+
   static const Duration _debounceDelay = Duration(milliseconds: 200);
   static const Duration _minimumNonUrgentInterval = Duration(seconds: 2);
+
+  final MethodChannel _channel;
+  final Duration _unavailableRetryDelay;
 
   Timer? _scheduledUpdate;
   LiveActivitySnapshotBuilder? _pendingSnapshotBuilder;
@@ -25,6 +33,7 @@ class LiveActivityService {
   String? _lastUrgencyKey;
   DateTime? _lastSentAt;
   String? _unavailableSessionId;
+  DateTime? _unavailableRetryAt;
   bool _disposed = false;
   bool _didReconcileNativeState = false;
   Future<void> _operationChain = Future<void>.value();
@@ -70,9 +79,21 @@ class LiveActivityService {
       return;
     }
 
-    if (_unavailableSessionId == snapshot.sessionId) return;
-    if (_unavailableSessionId != null) {
+    if (_unavailableSessionId == snapshot.sessionId) {
+      final retryAt = _unavailableRetryAt;
+      final now = DateTime.now();
+      if (retryAt != null && now.isBefore(retryAt)) {
+        // Authorization can be enabled in Settings while this session is
+        // running. One scheduled retry makes that recover without asking
+        // ActivityKit on every high-frequency provider notification.
+        _scheduledUpdate = Timer(retryAt.difference(now), _enqueueFlush);
+        return;
+      }
       _unavailableSessionId = null;
+      _unavailableRetryAt = null;
+    } else if (_unavailableSessionId != null) {
+      _unavailableSessionId = null;
+      _unavailableRetryAt = null;
     }
 
     final payload = snapshot.toMap();
@@ -103,9 +124,13 @@ class LiveActivityService {
       _didReconcileNativeState = true;
       if (result == false) {
         _unavailableSessionId = snapshot.sessionId;
+        _unavailableRetryAt = DateTime.now().add(_unavailableRetryDelay);
+        _scheduledUpdate = Timer(_unavailableRetryDelay, _enqueueFlush);
         debugLog('[LIVE ACTIVITY] Live Activities are unavailable or disabled');
         return;
       }
+      _unavailableSessionId = null;
+      _unavailableRetryAt = null;
       _lastPayload = encoded;
       _lastUrgencyKey = snapshot.urgencyKey;
       _lastSentAt = DateTime.now();
@@ -142,6 +167,7 @@ class LiveActivityService {
       _lastUrgencyKey = null;
       _lastSentAt = null;
       _unavailableSessionId = null;
+      _unavailableRetryAt = null;
     }
   }
 
@@ -150,5 +176,6 @@ class LiveActivityService {
     _scheduledUpdate?.cancel();
     _scheduledUpdate = null;
     _pendingSnapshotBuilder = null;
+    _unavailableRetryAt = null;
   }
 }
