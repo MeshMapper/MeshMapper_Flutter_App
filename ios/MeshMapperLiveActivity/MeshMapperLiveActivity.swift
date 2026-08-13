@@ -193,6 +193,8 @@ private struct MeshMapperSmallActivityContent: View {
 /// updates. The title and countdown ride over the fill so neither consumes
 /// track width, and their shadow keeps them legible on both halves.
 private struct MeshMapperPhaseBar: View {
+  @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
   let state: MeshMapperActivityAttributes.ContentState
   let height: CGFloat
   let titleFont: Font
@@ -228,11 +230,13 @@ private struct MeshMapperPhaseBar: View {
     GeometryReader { geometry in
       ZStack(alignment: .leading) {
         Capsule().fill(.white.opacity(0.16))
-        Capsule()
-          // Progress says how much time remains. Outcome has quieter,
-          // dedicated dots elsewhere and must not recolour the whole track.
-          .fill(MeshMapperPalette.accent)
-          .frame(width: geometry.size.width * remainingFraction)
+        if !isLuminanceReduced {
+          Capsule()
+            // Progress says how much time remains. Outcome has quieter,
+            // dedicated dots elsewhere and must not recolour the whole track.
+            .fill(MeshMapperPalette.accent)
+            .frame(width: geometry.size.width * remainingFraction)
+        }
       }
       .overlay {
         HStack {
@@ -254,13 +258,24 @@ private struct MeshMapperPhaseBar: View {
       }
     }
     .frame(height: height)
-    .task(id: state.phaseAnimationKey) {
-      await runPhaseAnimation()
+    // An element that implies continuous motion must not be drawn where the
+    // refresh rate cannot deliver it. Luminance participates only to stop and
+    // resume rendering; among payload fields, deadline and duration alone
+    // identify the drain, so a caption change cannot restart it.
+    .task(id: animationTaskKey) {
+      await runPhaseAnimation(animateFill: !isLuminanceReduced)
     }
   }
 
+  private var animationTaskKey: MeshMapperPhaseAnimationTaskKey {
+    MeshMapperPhaseAnimationTaskKey(
+      drain: state.phaseAnimationKey,
+      canRenderContinuously: !isLuminanceReduced
+    )
+  }
+
   @MainActor
-  private func runPhaseAnimation() async {
+  private func runPhaseAnimation(animateFill: Bool) async {
     let now = Date()
     let fraction = state.phaseRemainingFraction(at: now) ?? 0
     let lapsed = state.phaseEndsAt.map { $0 <= now } ?? false
@@ -275,6 +290,7 @@ private struct MeshMapperPhaseBar: View {
       deadlineLapsed = lapsed
     }
 
+    guard animateFill else { return }
     guard let endsAt = state.phaseEndsAt else { return }
     let remaining = endsAt.timeIntervalSince(now)
     guard remaining > 0 else { return }
@@ -548,17 +564,18 @@ private enum MeshMapperPalette {
 }
 
 private struct MeshMapperPhaseAnimationKey: Hashable {
-  let phase: String
-  let title: String
   let endsAt: Date?
   let durationMs: Int?
+}
+
+private struct MeshMapperPhaseAnimationTaskKey: Hashable {
+  let drain: MeshMapperPhaseAnimationKey
+  let canRenderContinuously: Bool
 }
 
 extension MeshMapperActivityAttributes.ContentState {
   fileprivate var phaseAnimationKey: MeshMapperPhaseAnimationKey {
     MeshMapperPhaseAnimationKey(
-      phase: phase,
-      title: phaseTitle,
       endsAt: phaseEndsAt,
       durationMs: phaseDurationMs
     )
