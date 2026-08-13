@@ -9,9 +9,11 @@ import 'watch_models.dart';
 
 typedef WatchSnapshotBuilder = WatchSnapshot? Function();
 
-/// Handles a command from the wrist. Returns null when accepted, or a reason
-/// string when refused — the reason is shown on the watch.
-typedef WatchCommandHandler = Future<String?> Function(WatchCommandKind kind);
+/// Decides whether a wrist command may begin. Returns null when admitted, or a
+/// reason when refused; admitted work continues independently of this reply.
+/// Production handlers must decide synchronously; FutureOr keeps existing
+/// bridge fakes source-compatible without putting the real path behind a wait.
+typedef WatchCommandHandler = FutureOr<String?> Function(WatchCommandKind kind);
 
 /// Owns the Flutter↔WatchConnectivity bridge and coalesces noisy app state.
 ///
@@ -85,7 +87,13 @@ class WatchBridgeService {
     _rememberCommandId(id);
 
     try {
-      final refusal = await handler(kind);
+      // This is admission, not completion. Keeping the handler synchronous is
+      // what makes the MethodChannel response fit inside WatchConnectivity's
+      // short reply window; the admitted action reports its later outcome via
+      // normal snapshots and one-shot cues.
+      final admission = handler(kind);
+      final refusal =
+          admission is Future<String?> ? await admission : admission;
       // A refused command may legitimately be retried once conditions change.
       if (refusal != null) _handledCommandIds.remove(id);
       return {'id': id, 'accepted': refusal == null, 'reason': refusal};
