@@ -550,15 +550,15 @@ struct MapPage: View {
     recenterIfFollowing(proxy)
   }
 
-  /// Preserve whatever zoom the wearer picked with the Digital Crown.
-  ///
-  /// The initial span is deliberately wide (~3 km): wardriving is about what
-  /// is around you, and a tighter default opens with every nearby repeater
-  /// off-screen.
-  @State private var currentSpan = MKCoordinateSpan(
-    latitudeDelta: 0.03,
-    longitudeDelta: 0.03
-  )
+  /// MapKit fits longitude to the watch's aspect ratio, so latitude is the one
+  /// independent zoom value. A fresh install starts at 0.0045 degrees, about
+  /// 500 m north-south, and later launches reuse the wearer's Crown setting.
+  private var currentSpan: MKCoordinateSpan {
+    MKCoordinateSpan(
+      latitudeDelta: settings.mapLatitudeDelta,
+      longitudeDelta: settings.mapLatitudeDelta
+    )
+  }
 
   /// Centre of the region MapKit last rendered — the fixed point every
   /// placement is measured against.
@@ -568,8 +568,21 @@ struct MapPage: View {
   /// thrown away on the next follow update and so placement has a known
   /// starting point.
   private func noteRenderedRegion(_ region: MKCoordinateRegion) {
-    currentSpan = region.span
     renderedCenter = region.center
+    // Before our first camera update this region belongs to `.automatic`,
+    // which fits every annotation and can span a continent. It is not a wearer
+    // choice and must never become the remembered zoom. Once we have driven
+    // the camera, rendered spans include our requested value and later Digital
+    // Crown changes, both of which should persist.
+    guard programmaticCenter != nil else { return }
+
+    // Only on a real change. Every follow update produces a camera change, and
+    // writing an identical value would persist and invalidate on each one,
+    // re-rendering the map for nothing.
+    let rendered = region.span.latitudeDelta
+    let stored = settings.mapLatitudeDelta
+    guard stored > 0, abs(rendered - stored) / stored > 0.01 else { return }
+    settings.mapLatitudeDelta = rendered
   }
 
   private func noteCameraChange(_ center: CLLocationCoordinate2D) {
