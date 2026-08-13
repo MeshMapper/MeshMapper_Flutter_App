@@ -18,6 +18,11 @@ struct SettingsPage: View {
       }
 
       Section("Layout") {
+        Picker("Main page", selection: $settings.mainPageContent) {
+          ForEach(WatchSettings.MainPageContent.allCases) { content in
+            Text(content.label).tag(content)
+          }
+        }
         Picker("Node list", selection: $settings.nodeListPlacement) {
           ForEach(WatchSettings.NodeListPlacement.allCases) { placement in
             Text(placement.label).tag(placement)

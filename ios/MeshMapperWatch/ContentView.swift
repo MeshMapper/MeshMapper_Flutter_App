@@ -31,7 +31,11 @@ struct ContentView: View {
       MapPage().tag(0)
       ControlsPage().tag(1)
 
-      if settings.nodeListPlacement == .page {
+      // The sheet placement is opened by tapping the map's status panel, which
+      // the readout does not have — so with Readout selected, honouring "sheet"
+      // would leave the heard list with no way in at all. A choice of main page
+      // must not make a feature unreachable, so the page appears regardless.
+      if settings.nodeListPlacement == .page || settings.mainPageContent == .readout {
         NavigationStack {
           NodeListView()
             .navigationTitle("Heard")
