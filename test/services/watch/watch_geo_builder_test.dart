@@ -171,6 +171,66 @@ void main() {
       );
     });
 
+    test('outcome colour follows the newest event across every history', () {
+      final base = DateTime(2026, 8, 12, 10);
+      final tx = _tx(
+        base,
+        heard: const [HeardRepeater(repeaterId: '4e', snr: 6)],
+      );
+      final discovery = _disc(
+        base.add(const Duration(seconds: 1)),
+        discovered: true,
+      );
+      final trace = _trace(
+        base.add(const Duration(seconds: 2)),
+        success: false,
+      );
+      final rx = _rx(base.add(const Duration(seconds: 3)));
+
+      WatchColor? latest({
+        List<RxPing> rxPings = const [],
+        List<TraceLogEntry> traces = const [],
+      }) =>
+          WatchGeoBuilder.latestPingColor(
+            txPings: [tx],
+            rxPings: rxPings,
+            discLogEntries: [discovery],
+            traceLogEntries: traces,
+          );
+
+      expect(latest(), WatchColor.fromColor(PingColors.discSuccess));
+      expect(
+        latest(traces: [trace]),
+        WatchColor.fromColor(PingColors.noResponse),
+      );
+      expect(
+        latest(rxPings: [rx], traces: [trace]),
+        WatchColor.fromColor(PingColors.rx),
+      );
+    });
+
+    test('latest outcome uses the marker rule for multi-hop-only TX', () {
+      final multiHop = _tx(
+        DateTime(2026, 8, 12, 10),
+        heard: const [
+          HeardRepeater(
+            repeaterId: '4e',
+            snr: 6,
+            pathHops: ['7a', '4e'],
+          ),
+        ],
+      );
+
+      final color = WatchGeoBuilder.latestPingColor(
+        txPings: [multiHop],
+        rxPings: const [],
+        discLogEntries: const [],
+        traceLogEntries: const [],
+      );
+
+      expect(color, WatchColor.fromColor(PingColors.rx));
+    });
+
     test('discovery markers use response success and failure colours', () {
       final answered = _disc(
         DateTime(2026, 8, 12, 10, 1),

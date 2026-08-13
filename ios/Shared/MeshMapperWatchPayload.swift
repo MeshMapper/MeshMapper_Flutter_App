@@ -142,9 +142,16 @@ struct WatchHapticCue: Codable, Hashable {
   let id: String
   /// "success" | "failure" | "notification"
   let kind: String
+  /// Optional for migration, but new phones always send it. A watch must not
+  /// replay an undated cue retained by an older application context.
+  let issuedAtMs: Double?
   /// Optional is an additive wire change: v2 payloads without it still decode,
   /// and the matched phone and watch targets ship the new field together.
   let message: String?
+
+  var issuedAt: Date? {
+    issuedAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
+  }
 }
 
 // MARK: - Snapshot

@@ -1,7 +1,12 @@
 import '../watch/watch_color.dart';
 
-/// High-level phase shown by the iOS Live Activity.
+/// High-level phase shared by native glance surfaces.
+///
+/// [idle] is watch-only: the Live Activity builder still uses its session-only
+/// resolver directly, while the always-present watch projects that resolver's
+/// no-session fallback to this value.
 enum LiveActivityPhase {
+  idle,
   active,
   starting,
   sending,
@@ -24,6 +29,7 @@ enum LiveActivityPhase {
 
 extension LiveActivityPhaseWireValue on LiveActivityPhase {
   String get wireValue => switch (this) {
+        LiveActivityPhase.idle => 'idle',
         LiveActivityPhase.active => 'active',
         LiveActivityPhase.starting => 'starting',
         LiveActivityPhase.sending => 'sending',
