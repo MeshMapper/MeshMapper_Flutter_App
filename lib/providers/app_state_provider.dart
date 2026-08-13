@@ -244,6 +244,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Top repeaters overlay — updated live on each ping event
   List<({String repeaterId, double snr, OverlayPingType type})>
       _topRepeatersOverlay = [];
+  DateTime? _topRepeatersOverlayUpdatedAt;
   ({String repeaterId, double snr})? _rxOverlaySlot;
   Timer? _rxOverlayWindowTimer;
 
@@ -630,6 +631,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
     _topRepeatersOverlay = fresh.take(3).toList();
+    _topRepeatersOverlayUpdatedAt = DateTime.now();
   }
 
   void _updateLiveActivityRepeaters(
@@ -676,6 +678,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Clear all overlay state (top 3 + RX slot).
   void _clearOverlayState() {
     _topRepeatersOverlay = [];
+    _topRepeatersOverlayUpdatedAt = null;
     _rxOverlaySlot = null;
     _rxOverlayWindowTimer?.cancel();
     _rxOverlayWindowTimer = null;
@@ -1213,8 +1216,31 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _scheduleWatchSync({bool immediate = false}) {
-    if (_isDisposed || !_watchBridge.isSupportedPlatform) return;
-    _watchBridge.schedule(_buildWatchSnapshot, immediate: immediate);
+    if (_isDisposed || !_watchBridge.canSync) return;
+    _watchBridge.schedule(
+      _buildWatchSnapshot,
+      urgencyKeyBuilder: _buildWatchUrgencyKey,
+      immediate: immediate,
+    );
+  }
+
+  /// The bridge needs to decide whether a flush can wait before it builds the
+  /// geographic payload. Keep this in the wire model's shared formatter so the
+  /// cheap preflight and the eventual snapshot cannot drift on what is urgent.
+  String _buildWatchUrgencyKey() {
+    final phase = _resolveLiveActivityPhase();
+    final controls = _buildWatchControls();
+    return WatchSnapshot.buildUrgencyKey(
+      sessionId: _liveActivitySessionId ?? 'idle',
+      mode: _resolvedWatchSessionModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      isConnected: isConnected,
+      controls: controls,
+      cue: _watchCue,
+    );
   }
 
   /// Builds the watch payload.
@@ -1258,7 +1284,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     return WatchSnapshot(
       core: core,
-      geo: _buildWatchGeo(now),
+      geo: _buildWatchGeo(),
       controls: _buildWatchControls(),
       pingColor: pingColor,
       cue: _watchCue,
@@ -1289,7 +1315,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
-  WatchGeo _buildWatchGeo(DateTime now) {
+  WatchGeo _buildWatchGeo() {
     final position = _resolveWatchPosition();
 
     // Repeaters heard during the current cycle get the highlight ring.
@@ -1302,6 +1328,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // can never disagree.
     final top = _topRepeatersOverlay;
     final rxSlot = _rxOverlaySlot;
+    if (rxSlot != null) heardIds.add(rxSlot.repeaterId.toUpperCase());
 
     // Overlay IDs are hex path hashes, so resolve names by prefix at whatever
     // length this zone actually uses.
@@ -1330,13 +1357,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         top: top,
         rxSlot: rxSlot,
         repeaterByHex: repeaterByHex,
-        at: now,
+        topAt: _topRepeatersOverlayUpdatedAt,
+        rxAt: _liveActivityRxUpdatedAt,
         lat: position?.lat,
         lon: position?.lon,
       ),
       linkedRepeaterIds: [
-        for (final entry in top) entry.repeaterId,
-        if (rxSlot != null) rxSlot.repeaterId,
+        ...WatchGeoBuilder.resolveUniqueHexPrefixes(
+          repeaters: _repeaters,
+          prefixes: heardIds,
+        ).keys,
       ],
     );
   }
@@ -1460,7 +1490,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       canManualPing: manualPing.allowed,
       isSessionActive: _autoPingEnabled,
       manualCooldownEndsAt: cooldownMs > 0
-          ? DateTime.now().add(Duration(milliseconds: cooldownMs))
+          ? _manualPingCooldownTimer.endTime
           : null,
       // The button already renders its cooldown deadline. The handler still
       // returns this refusal to a stale tap, but duplicating it as a status
@@ -1985,6 +2015,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _watchBridge.attachCommandHandler(
         _handleWatchCommand,
         onRefusal: _emitWatchFailure,
+        // Availability can become true long after provider startup when a
+        // watch is paired or its app is installed. Push the current state then
+        // rather than waiting for an unrelated phone-side notification.
+        onAvailabilityChanged: (available) {
+          if (available) _scheduleWatchSync(immediate: true);
+        },
       );
     }
 

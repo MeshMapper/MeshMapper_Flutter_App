@@ -104,6 +104,7 @@ enum SampleSnapshot {
     ].map { id, name, dLat, dLon, color, heard in
       WatchRepeater(
         id: id,
+        hexId: id,
         name: name,
         lat: originLat + dLat,
         lon: originLon + dLon,

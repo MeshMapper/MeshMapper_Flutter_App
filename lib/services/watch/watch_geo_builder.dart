@@ -97,9 +97,8 @@ class WatchGeoBuilder {
         // The phone draws a multi-hop-only return as RX: it proves the packet
         // came back through the mesh, but not that any repeater heard us
         // directly. Keep the TX identity and mirror that evidence colour.
-        color: hasMultiHopOnly
-            ? pingColor('rx', true)
-            : pingColor('tx', success),
+        color:
+            hasMultiHopOnly ? pingColor('rx', true) : pingColor('tx', success),
         at: tx.timestamp,
       ));
     }
@@ -157,6 +156,10 @@ class WatchGeoBuilder {
     int cap = WatchWire.maxRepeaters,
   }) {
     final located = repeaters.where((r) => r.hasLocation).toList();
+    final heardRepeaters = resolveUniqueHexPrefixes(
+      repeaters: repeaters,
+      prefixes: heardThisCycle,
+    ).values.map((repeater) => repeater.id).toSet();
 
     if (lat != null && lon != null) {
       // Distance is computed once per repeater rather than inside the
@@ -179,15 +182,39 @@ class WatchGeoBuilder {
     return limited
         .map((r) => WatchRepeater(
               id: r.id,
+              hexId: r.hexId,
               name: r.name,
               lat: r.lat,
               lon: r.lon,
               color: repeaterColor(r),
-              heardThisCycle:
-                  heardThisCycle.contains(r.id) ||
-                      heardThisCycle.contains(r.hexId),
+              heardThisCycle: heardRepeaters.contains(r.id),
             ))
         .toList();
+  }
+
+  /// Resolve path-hash prefixes only when the full repeater catalogue proves
+  /// the match unique. Applying this before the wrist's nearest-20 cap matters:
+  /// a second matching repeater outside that cap still makes a line or ring a
+  /// guess, and a confidently wrong relationship is worse than none.
+  static Map<String, Repeater> resolveUniqueHexPrefixes({
+    required List<Repeater> repeaters,
+    required Iterable<String> prefixes,
+  }) {
+    final normalized = prefixes
+        .map((prefix) => prefix.toUpperCase())
+        .where((prefix) => prefix.isNotEmpty)
+        .toSet();
+    final resolved = <String, Repeater>{};
+
+    for (final length in normalized.map((prefix) => prefix.length).toSet()) {
+      final index = indexByHexPrefix(repeaters, length);
+      for (final prefix
+          in normalized.where((prefix) => prefix.length == length)) {
+        final repeater = index[prefix];
+        if (repeater != null) resolved[prefix] = repeater;
+      }
+    }
+    return resolved;
   }
 
   /// Dot colour for an overlay row, mirroring `_overlayTypeColor` on the map.
@@ -212,31 +239,35 @@ class WatchGeoBuilder {
     required List<({String repeaterId, double snr, OverlayPingType type})> top,
     ({String repeaterId, double snr})? rxSlot,
     required Map<String, Repeater> repeaterByHex,
-    required DateTime at,
+    required DateTime? topAt,
+    required DateTime? rxAt,
     double? lat,
     double? lon,
   }) {
     final rows = <WatchHeardNode>[];
 
-    for (final entry in top) {
+    // Missing time means the provider cannot truthfully say when this set was
+    // heard. Omitting such a row is safer than presenting a plausible lie in
+    // Node Detail; every production mutation records its timestamp atomically.
+    for (final entry in top.where((_) => topAt != null)) {
       rows.add(_row(
         id: entry.repeaterId,
         snr: entry.snr,
         type: entry.type,
         repeaterByHex: repeaterByHex,
-        at: at,
+        at: topAt!,
         lat: lat,
         lon: lon,
       ));
     }
 
-    if (rxSlot != null) {
+    if (rxSlot != null && rxAt != null) {
       rows.add(_row(
         id: rxSlot.repeaterId,
         snr: rxSlot.snr,
         type: OverlayPingType.rx,
         repeaterByHex: repeaterByHex,
-        at: at,
+        at: rxAt,
         lat: lat,
         lon: lon,
       ));
@@ -260,7 +291,10 @@ class WatchGeoBuilder {
     final repeater = repeaterByHex[hex];
 
     double? distance;
-    if (lat != null && lon != null && repeater != null && repeater.hasLocation) {
+    if (lat != null &&
+        lon != null &&
+        repeater != null &&
+        repeater.hasLocation) {
       distance = distanceMeters(lat, lon, repeater.lat, repeater.lon);
     }
 

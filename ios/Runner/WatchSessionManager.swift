@@ -139,6 +139,17 @@ final class WatchSessionManager: NSObject {
     ]
   }
 
+  /// Dart performs the expensive geo build only while a real destination
+  /// exists. Push changes as well as answering its startup query: pairing and
+  /// app installation can happen after Flutter has been alive for hours, and
+  /// a launch-time false must never become a permanent gate.
+  private func publishStatus() {
+    guard let channel else { return }
+    DispatchQueue.main.async {
+      channel.invokeMethod("availabilityChanged", arguments: self.statusDictionary())
+    }
+  }
+
   private func flutterError(_ error: Error, code: String) -> FlutterError {
     FlutterError(
       code: code,
@@ -189,6 +200,7 @@ extension WatchSessionManager: WCSessionDelegate {
     if let error {
       NSLog("[WATCH] Activation failed: \(error.localizedDescription)")
     }
+    publishStatus()
   }
 
   func sessionDidBecomeInactive(_ session: WCSession) {}
@@ -201,6 +213,7 @@ extension WatchSessionManager: WCSessionDelegate {
   func sessionWatchStateDidChange(_ session: WCSession) {
     // A newly installed or newly paired watch has no context yet.
     lastContextData = nil
+    publishStatus()
   }
 
   func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
