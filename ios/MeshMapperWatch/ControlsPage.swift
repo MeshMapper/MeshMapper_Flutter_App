@@ -69,15 +69,20 @@ struct ControlsPage: View {
     return Button {
       client.send(kind)
     } label: {
-      HStack(spacing: 6) {
-        if isPending {
-          ProgressView()
-            .controlSize(.small)
+      Text(isPending ? (isActive ? "Stopping…" : "Starting…") : (isActive ? "Stop" : "Start"))
+        .font(.headline)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        // A ProgressView accepts the horizontal slack offered by a stack. As
+        // an overlay it can appear without participating in the label's
+        // centring, so feedback never makes the action jump under a thumb.
+        .overlay(alignment: .leading) {
+          if isPending {
+            ProgressView()
+              .controlSize(.small)
+              .frame(width: 16, height: 16)
+              .padding(.leading, 6)
+          }
         }
-        Text(isPending ? (isActive ? "Stopping…" : "Starting…") : (isActive ? "Stop" : "Start"))
-          .font(.headline)
-      }
-      .frame(maxWidth: .infinity, minHeight: 44)
     }
     .buttonStyle(.borderedProminent)
     // Grey when unavailable rather than a desaturated tint: a disabled green
@@ -98,31 +103,49 @@ struct ControlsPage: View {
         armPing()
       }
     } label: {
-      HStack(spacing: 6) {
+      pingLabel(isPending: isPending)
+        .frame(maxWidth: .infinity, minHeight: 44)
+      // Keep this identical to Start/Stop: pending feedback belongs at the
+      // edge of the target, not in the row that determines its label's centre.
+      .overlay(alignment: .leading) {
         if isPending {
           ProgressView()
             .controlSize(.small)
-        }
-        if let endsAt = cooldownEndsAt {
-          // A cooldown is the one unavailability the phone reports without a
-          // `blockedReason`, so without this the button would sit dead and
-          // unexplained. The deadline is absolute, so the countdown is right
-          // even if no further snapshot arrives.
-          Text("Ping in")
-            .font(.headline)
-          Text(timerInterval: Date()...endsAt, countsDown: true)
-            .font(.headline.monospacedDigit())
-            .frame(width: 38, alignment: .leading)
-        } else {
-          Text(isPending ? "Sending…" : (pingArmed ? "Send ping?" : "Manual ping"))
-            .font(.headline)
+            .frame(width: 16, height: 16)
+            .padding(.leading, 6)
         }
       }
-      .frame(maxWidth: .infinity, minHeight: 44)
     }
     .buttonStyle(.borderedProminent)
     .tint(isEnabled ? (pingArmed ? .orange : .accentColor) : .gray)
     .disabled(!isEnabled)
+  }
+
+  /// The ping button's label, as exactly one view.
+  ///
+  /// A `Group` will not do here: with two children it applies each modifier to
+  /// both, so `maxWidth: .infinity` went to the words *and* the timer and threw
+  /// them to opposite ends of the button. The pair has to be its own stack to
+  /// read as one centred label.
+  ///
+  /// A cooldown is the one unavailability the phone reports without a
+  /// `blockedReason`, so without this the button would sit dead and unexplained.
+  /// The deadline is absolute, so the countdown stays right even if no further
+  /// snapshot arrives.
+  @ViewBuilder
+  private func pingLabel(isPending: Bool) -> some View {
+    if let endsAt = cooldownEndsAt {
+      HStack(spacing: 5) {
+        Text("Ping in")
+        Text(timerInterval: Date()...endsAt, countsDown: true)
+          .monospacedDigit()
+          .frame(width: 38, alignment: .leading)
+      }
+      .font(.headline)
+    } else {
+      Text(isPending ? "Sending…" : (pingArmed ? "Send ping?" : "Manual ping"))
+        .font(.headline)
+    }
   }
 
   /// The first tap buys a short confirmation window; expiry returns the button

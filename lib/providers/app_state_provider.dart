@@ -1352,10 +1352,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return resolved;
   }
 
-  WatchControls _buildWatchControls() {
-    final cooldownMs = _manualPingCooldownTimer.remainingMs;
-    // Keep this gate identical to the app's Send Ping button. The watch only
-    // reflects the phone's latest answer; command handling revalidates again.
+  ({bool allowed, String? reason}) get _manualPingAvailability {
+    // This must remain the sole copy of the app button's gate. One caller says
+    // what the wrist may offer while the other decides whether the radio may
+    // transmit; letting those answers drift makes a stale watch payload unsafe.
     final canPingManual = manualPingValidation == PingValidation.valid;
     final isAutoStarting = isAutoPingStarting;
     final isTxModeActive = isTxModeRunning;
@@ -1368,7 +1368,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final pingSending = isPingSending;
     final discoveryWindowActive = discoveryWindowTimer.isRunning;
     final pendingDisable = isPendingDisable;
-    final canManualPing = canPingManual &&
+    final allowed = canPingManual &&
         !isAutoStarting &&
         !isTxModeActive &&
         !isTargetedRunning &&
@@ -1381,27 +1381,51 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         !discoveryWindowActive &&
         !pendingDisable;
 
-    final String? blockedReason;
-    if (!isConnected) {
-      blockedReason = 'Not connected';
+    // Only describe a refusal that is actually happening. A reason computed
+    // alongside an allowed ping would surface on the wrist as a status line
+    // under two working buttons.
+    final String? reason;
+    if (allowed) {
+      reason = null;
+    } else if (!isConnected) {
+      reason = 'Not connected';
     } else if (!hasGpsLock) {
-      blockedReason = 'No GPS fix';
+      reason = 'No GPS fix';
     } else if (txBlockedByOffline) {
-      blockedReason = 'Offline Mode';
+      reason = 'Offline Mode';
     } else if (txNotAllowed) {
-      blockedReason = 'Passive Only';
+      reason = 'Passive Only';
+    } else if (manualPingValidation == PingValidation.manualCooldownActive ||
+        cooldownActive ||
+        manualCooldownActive ||
+        rxWindowActive ||
+        discoveryWindowActive) {
+      reason = 'Cooling down';
+    } else if (!canPingManual) {
+      reason = manualPingValidation.message;
     } else {
-      blockedReason = null;
+      reason = 'Another operation is in progress';
     }
+
+    return (allowed: allowed, reason: reason);
+  }
+
+  WatchControls _buildWatchControls() {
+    final cooldownMs = _manualPingCooldownTimer.remainingMs;
+    final manualPing = _manualPingAvailability;
 
     return WatchControls(
       canStartStop: isConnected,
-      canManualPing: canManualPing,
+      canManualPing: manualPing.allowed,
       isSessionActive: _autoPingEnabled,
       manualCooldownEndsAt: cooldownMs > 0
           ? DateTime.now().add(Duration(milliseconds: cooldownMs))
           : null,
-      blockedReason: blockedReason,
+      // The button already renders its cooldown deadline. The handler still
+      // returns this refusal to a stale tap, but duplicating it as a status
+      // line would spend wrist space without adding an explanation.
+      blockedReason:
+          manualPing.reason == 'Cooling down' ? null : manualPing.reason,
     );
   }
 
@@ -1437,9 +1461,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return null;
 
       case WatchCommandKind.manualPing:
-        if (!isConnected) return 'Not connected';
-        if (!hasGpsLock) return 'No GPS fix';
-        if (_manualPingCooldownTimer.remainingMs > 0) return 'Cooling down';
+        final availability = _manualPingAvailability;
+        if (!availability.allowed) {
+          return availability.reason ?? 'Ping unavailable';
+        }
         final sent = await sendPing();
         return sent ? null : 'Ping failed';
     }
