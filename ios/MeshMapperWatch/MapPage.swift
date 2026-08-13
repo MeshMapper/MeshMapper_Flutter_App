@@ -960,6 +960,13 @@ private struct ReadoutPhase: View {
     guard let endsAt = snapshot.phaseEndsAt else { return nil }
     let remaining = endsAt.timeIntervalSince(date)
     guard remaining > 0 else { return nil }
+    // These are upper bounds, not estimates. Remaining time only decreases,
+    // so a tight statement rendered just before Always-On stops refreshing
+    // stays true afterward. Resolve it from this phase's live deadline on each
+    // render; retaining a previous phase's bound could make that guarantee
+    // false when a new, longer countdown begins.
+    if remaining < 15 { return "<15 sec" }
+    if remaining < 30 { return "<30 sec" }
     if remaining < 60 { return "<1 min" }
     return "\(Int(ceil(remaining / 60))) min"
   }
