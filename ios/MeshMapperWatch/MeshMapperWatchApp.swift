@@ -6,13 +6,17 @@ import SwiftUI
 /// holds the BLE link to the MeshCore device and the GPS fix, and pushes
 /// snapshots over WatchConnectivity. Nothing here drives a session on its own.
 ///
-/// Phase 1 ships the target skeleton only — the WatchConnectivity client, map,
-/// node list, and controls arrive in later phases.
+/// Phase 2 ships the transport and a raw debug dump; the map, node list, and
+/// real controls arrive in later phases.
 @main
 struct MeshMapperWatchApp: App {
+  @State private var client = WatchSessionClient()
+
   var body: some Scene {
     WindowGroup {
       ContentView()
+        .environment(client)
+        .onAppear { client.refresh() }
     }
   }
 }

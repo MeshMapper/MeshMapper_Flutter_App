@@ -47,6 +47,9 @@ import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
 import '../services/live_activity/live_activity_models.dart';
 import '../services/live_activity/live_activity_service.dart';
+import '../services/watch/watch_bridge_service.dart';
+import '../services/watch/watch_geo_builder.dart';
+import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
@@ -130,6 +133,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final Listenable _timerListenable;
 
   final LiveActivityService _liveActivityService = LiveActivityService();
+  final WatchBridgeService _watchBridge = WatchBridgeService();
+
+  /// Last position sent to the watch, held until the fix moves far enough to
+  /// be worth an update. See [_resolveWatchPosition].
+  WatchPosition? _lastWatchPosition;
   bool _liveActivitySessionActive = false;
   bool _liveActivityManualSession = false;
   String? _liveActivitySessionId;
@@ -1184,11 +1192,204 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _scheduleLiveActivitySync({bool immediate = false}) {
-    if (_isDisposed || !_liveActivityService.isSupportedPlatform) return;
+    if (_isDisposed) return;
+    // The watch mirrors state even with no session running — otherwise you
+    // could never start one from the wrist.
+    _scheduleWatchSync(immediate: immediate);
+    if (!_liveActivityService.isSupportedPlatform) return;
     _liveActivityService.schedule(
       _buildLiveActivitySnapshot,
       immediate: immediate,
     );
+  }
+
+  void _scheduleWatchSync({bool immediate = false}) {
+    if (_isDisposed || !_watchBridge.isSupportedPlatform) return;
+    _watchBridge.schedule(_buildWatchSnapshot, immediate: immediate);
+  }
+
+  /// Builds the watch payload.
+  ///
+  /// Unlike the Live Activity, this is never null while the app is alive: the
+  /// wrist shows idle and disconnected states too, and the start button has to
+  /// be reachable before a session exists.
+  WatchSnapshot? _buildWatchSnapshot() {
+    if (_isDisposed) return null;
+
+    final phase = _resolveLiveActivityPhase();
+    final repeaterState = _buildLiveActivityRepeaters();
+    final now = DateTime.now();
+
+    final core = LiveActivitySnapshot(
+      sessionId: _liveActivitySessionId ?? 'idle',
+      mode: _liveActivityModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      isConnected: isConnected,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      txCount: _pingStats.txCount,
+      rxCount: _pingStats.rxCount,
+      discoveryCount: _pingStats.discCount,
+      traceCount: _pingStats.traceCount,
+      queueSize: _queueSize,
+      repeaters: repeaterState.repeaters,
+      totalHeardCount: repeaterState.totalCount,
+      repeatersAreCurrent: repeaterState.isCurrent,
+      updatedAt: now,
+    );
+
+    return WatchSnapshot(
+      core: core,
+      geo: _buildWatchGeo(now),
+      controls: _buildWatchControls(),
+      pingColor: _resolveWatchPingColor(),
+      updatedAt: now,
+    );
+  }
+
+  WatchGeo _buildWatchGeo(DateTime now) {
+    final position = _resolveWatchPosition();
+
+    // Repeaters heard during the current cycle get the highlight ring.
+    final heardIds = _liveActivityRepeaters
+        .map((r) => r.repeaterId.toUpperCase())
+        .toSet();
+
+    // "Recently responded" is the newest TX ping that actually got answers.
+    final answered = _txPings.lastWhere(
+      (p) => p.heardRepeaters.isNotEmpty,
+      orElse: () => TxPing(
+        latitude: 0,
+        longitude: 0,
+        power: 0,
+        timestamp: now,
+        deviceId: '',
+      ),
+    );
+
+    final repeaterById = <String, Repeater>{
+      for (final repeater in _repeaters) ...{
+        repeater.id: repeater,
+        if (repeater.hexId.isNotEmpty) repeater.hexId.toUpperCase(): repeater,
+      }
+    };
+
+    return WatchGeo(
+      you: position,
+      pings: WatchGeoBuilder.buildPings(txPings: _txPings, rxPings: _rxPings),
+      repeaters: WatchGeoBuilder.buildRepeaters(
+        repeaters: _repeaters,
+        heardThisCycle: heardIds,
+        lat: position?.lat,
+        lon: position?.lon,
+      ),
+      heard: WatchGeoBuilder.buildHeard(
+        heard: answered.heardRepeaters,
+        repeaterById: repeaterById,
+        at: answered.timestamp,
+        lat: position?.lat,
+        lon: position?.lon,
+      ),
+      linkedRepeaterIds:
+          answered.heardRepeaters.map((r) => r.repeaterId).toList(),
+    );
+  }
+
+  /// Current fix, held still until it moves meaningfully.
+  ///
+  /// Returning the previous position leaves the payload fingerprint unchanged,
+  /// so the bridge's dedupe suppresses the send. A parked phone therefore
+  /// stops talking to the watch instead of streaming GPS jitter at it.
+  WatchPosition? _resolveWatchPosition() {
+    final position = _currentPosition;
+    if (position == null) return _lastWatchPosition;
+
+    final previous = _lastWatchPosition;
+    if (previous != null &&
+        !WatchGeoBuilder.movedEnough(
+          lastLat: previous.lat,
+          lastLon: previous.lon,
+          lat: position.latitude,
+          lon: position.longitude,
+        )) {
+      return previous;
+    }
+
+    final resolved = WatchPosition(
+      lat: position.latitude,
+      lon: position.longitude,
+      headingDeg: position.heading.isFinite && position.heading >= 0
+          ? position.heading
+          : null,
+      accuracyM: position.accuracy.isFinite ? position.accuracy : null,
+      fixedAt: position.timestamp,
+    );
+    _lastWatchPosition = resolved;
+    return resolved;
+  }
+
+  WatchControls _buildWatchControls() {
+    final cooldownMs = _manualPingCooldownTimer.remainingMs;
+    final String? blockedReason;
+    if (!isConnected) {
+      blockedReason = 'Not connected';
+    } else if (!hasGpsLock) {
+      blockedReason = 'No GPS fix';
+    } else {
+      blockedReason = null;
+    }
+
+    return WatchControls(
+      canStartStop: isConnected,
+      canManualPing: canPing && cooldownMs <= 0,
+      isSessionActive: _autoPingEnabled,
+      manualCooldownEndsAt: cooldownMs > 0
+          ? DateTime.now().add(Duration(milliseconds: cooldownMs))
+          : null,
+      blockedReason: blockedReason,
+    );
+  }
+
+  /// Colour of the most recent completed ping, matching the map's markers.
+  WatchColor? _resolveWatchPingColor() {
+    if (_txPings.isEmpty) return null;
+    final latest = _txPings.last;
+    return WatchGeoBuilder.pingColor('tx', latest.heardRepeaters.isNotEmpty);
+  }
+
+  /// Applies an intent from the wrist.
+  ///
+  /// Returns null when accepted, or a reason to show on the watch. Every guard
+  /// is re-evaluated here: the watch's view of what's permitted may be stale,
+  /// and a stale payload must never be able to cause a transmit.
+  Future<String?> _handleWatchCommand(WatchCommandKind kind) async {
+    if (_isDisposed) return 'App closing';
+
+    switch (kind) {
+      case WatchCommandKind.requestSnapshot:
+        _scheduleWatchSync(immediate: true);
+        return null;
+
+      case WatchCommandKind.startSession:
+        if (!isConnected) return 'Not connected';
+        if (_autoPingEnabled) return null; // Already running.
+        final started = await toggleAutoPing(_autoMode);
+        return started ? null : 'Could not start';
+
+      case WatchCommandKind.stopSession:
+        if (!_autoPingEnabled) return null; // Already stopped.
+        await toggleAutoPing(_autoMode);
+        return null;
+
+      case WatchCommandKind.manualPing:
+        if (!isConnected) return 'Not connected';
+        if (!hasGpsLock) return 'No GPS fix';
+        if (_manualPingCooldownTimer.remainingMs > 0) return 'Cooling down';
+        final sent = await sendPing();
+        return sent ? null : 'Ping failed';
+    }
   }
 
   LiveActivitySnapshot? _buildLiveActivitySnapshot() {
@@ -1592,6 +1793,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     ]);
     if (_liveActivityService.isSupportedPlatform) {
       _timerListenable.addListener(_handleLiveActivityTimerChange);
+    }
+    if (_watchBridge.isSupportedPlatform) {
+      _watchBridge.attachCommandHandler(_handleWatchCommand);
     }
 
     // Initialize debug logging (enabled by default, respects user preference)
@@ -8356,6 +8560,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isDisposed = true;
     _timerListenable.removeListener(_handleLiveActivityTimerChange);
     _liveActivityService.dispose();
+    _watchBridge.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();
     _connectionSubscription?.cancel();

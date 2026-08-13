@@ -1,0 +1,159 @@
+import Foundation
+import SwiftUI
+import WatchConnectivity
+
+/// Receives snapshots from the iPhone and sends intents back.
+///
+/// The watch never decides anything: it renders what the phone sent and asks
+/// for what the wearer tapped. The phone owns the BLE link, the GPS fix, and
+/// every guard around transmitting.
+@Observable
+final class WatchSessionClient: NSObject {
+  /// Latest state from the phone, or nil before the first delivery.
+  private(set) var snapshot: WatchSnapshot?
+
+  /// When the last snapshot arrived — drives the stale badge.
+  private(set) var receivedAt: Date?
+
+  /// Set when the phone refuses a command, so the wrist can say why.
+  private(set) var lastRefusal: String?
+
+  /// Set when a payload arrives from a wire version this build predates.
+  private(set) var versionMismatch = false
+
+  private var session: WCSession? {
+    WCSession.isSupported() ? WCSession.default : nil
+  }
+
+  var isReachable: Bool { session?.isReachable ?? false }
+
+  /// A snapshot older than this is shown greyed with an age badge. The phone
+  /// only sends on real change, so silence is normal — this threshold is
+  /// about "the phone has probably gone away", not "no update recently".
+  static let staleAfter: TimeInterval = 90
+
+  var isStale: Bool {
+    guard let receivedAt else { return true }
+    return Date().timeIntervalSince(receivedAt) > Self.staleAfter
+  }
+
+  /// Bring the session up and pull a current snapshot.
+  ///
+  /// Activation is asynchronous, so a refresh requested before it completes is
+  /// deferred to the activation callback rather than failing as "unreachable".
+  func refresh() {
+    guard let session else { return }
+    session.delegate = self
+
+    if session.activationState == .activated {
+      ingest(context: session.receivedApplicationContext)
+      send(.requestSnapshot, silent: true)
+      return
+    }
+
+    pendingRefresh = true
+    session.activate()
+  }
+
+  private var pendingRefresh = false
+
+  // MARK: - Commands
+
+  /// - Parameter silent: suppress the refusal banner. Used for the automatic
+  ///   refresh, which the wearer never asked for and shouldn't see fail.
+  /// Sends without pre-checking `isReachable`.
+  ///
+  /// That flag lags reality — during testing the simulator reported
+  /// unreachable while messages were still being delivered a second or two
+  /// later. Gating on it turns a stale flag into a refused tap, so the send is
+  /// attempted unconditionally and `errorHandler` is the source of truth.
+  func send(_ kind: WatchCommand.Kind, silent: Bool = false) {
+    guard let session, session.activationState == .activated else {
+      if !silent { lastRefusal = "Not connected to iPhone" }
+      return
+    }
+
+    let command = WatchCommand(kind: kind, id: UUID().uuidString)
+    guard let data = try? MeshMapperWatchWire.encoder.encode(command),
+          let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      if !silent { lastRefusal = "Could not encode command" }
+      return
+    }
+
+    session.sendMessage(
+      [MeshMapperWatchWire.commandKey: dict],
+      replyHandler: { [weak self] reply in
+        NSLog("[WATCH] reply for \(kind.rawValue): \(reply)")
+        Task { @MainActor in
+          let accepted = reply["accepted"] as? Bool ?? false
+          if accepted {
+            self?.lastRefusal = nil
+          } else if !silent {
+            self?.lastRefusal = reply["reason"] as? String ?? "Refused"
+          }
+        }
+      },
+      errorHandler: { [weak self] error in
+        NSLog("[WATCH] sendMessage(\(kind.rawValue)) failed: \(error.localizedDescription)")
+        Task { @MainActor in
+          if !silent { self?.lastRefusal = error.localizedDescription }
+        }
+      }
+    )
+  }
+
+  // MARK: - Ingest
+
+  private func ingest(context: [String: Any]) {
+    guard let data = context[MeshMapperWatchWire.payloadKey] as? Data else { return }
+    ingest(data: data)
+  }
+
+  private func ingest(data: Data) {
+    guard let decoded = try? MeshMapperWatchWire.decoder.decode(WatchSnapshot.self, from: data)
+    else {
+      return
+    }
+
+    // Refuse rather than render a payload whose fields may have changed
+    // meaning — a wrong reading on the wrist is worse than a blank one.
+    guard decoded.isSupportedVersion else {
+      Task { @MainActor in self.versionMismatch = true }
+      return
+    }
+
+    Task { @MainActor in
+      self.versionMismatch = false
+      self.snapshot = decoded
+      self.receivedAt = Date()
+    }
+  }
+}
+
+// MARK: - WCSessionDelegate
+
+extension WatchSessionClient: WCSessionDelegate {
+  func session(
+    _ session: WCSession,
+    activationDidCompleteWith activationState: WCSessionActivationState,
+    error: Error?
+  ) {
+    if activationState == .activated {
+      ingest(context: session.receivedApplicationContext)
+      if pendingRefresh {
+        pendingRefresh = false
+        send(.requestSnapshot, silent: true)
+      }
+    }
+  }
+
+  func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+    ingest(context: applicationContext)
+  }
+
+  func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+    guard let data = message[MeshMapperWatchWire.payloadKey] as? Data else { return }
+    ingest(data: data)
+  }
+}
