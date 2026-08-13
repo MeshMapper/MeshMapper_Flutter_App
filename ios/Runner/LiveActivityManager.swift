@@ -98,7 +98,9 @@ final class LiveActivityManager {
       return MeshMapperActivityAttributes.HeardRepeater(
         id: id,
         name: boundedString(item["name"], maxLength: 36),
-        snr: min(max(snr, -200), 200)
+        snr: min(max(snr, -200), 200),
+        typeColor: resolvedColor(item["typeColor"]),
+        snrColor: resolvedColor(item["snrColor"])
       )
     }
 
@@ -109,6 +111,8 @@ final class LiveActivityManager {
       phaseTitle: phaseTitle,
       phaseDetail: boundedString(payload["phaseDetail"], maxLength: 80),
       phaseEndsAt: date(payload["phaseEndsAt"]),
+      phaseDurationMs: positiveInteger(payload["phaseDurationMs"]),
+      pingColor: resolvedColor(payload["pingColor"]),
       isConnected: payload["isConnected"] as? Bool ?? false,
       zoneCode: boundedString(payload["zoneCode"], maxLength: 12),
       txCount: nonnegativeInteger(payload["txCount"]),
@@ -200,6 +204,7 @@ final class LiveActivityManager {
     finalState.phaseTitle = "Session ended"
     finalState.phaseDetail = summary(for: finalState)
     finalState.phaseEndsAt = nil
+    finalState.phaseDurationMs = nil
     finalState.repeatersAreCurrent = false
     finalState.updatedAt = Date()
 
@@ -254,5 +259,30 @@ final class LiveActivityManager {
     if let number = value as? NSNumber { return max(number.intValue, 0) }
     if let value = value as? Int { return max(value, 0) }
     return 0
+  }
+
+  private func positiveInteger(_ value: Any?) -> Int? {
+    guard let value = finiteNumber(value), value > 0 else { return nil }
+    return Int(min(value, Double(24 * 60 * 60 * 1000)))
+  }
+
+  /// Guarded like every other member that names the attributes type: the
+  /// deployment target predates ActivityKit, so mentioning it unguarded fails
+  /// to compile even in a helper that never runs on an older OS.
+  @available(iOS 16.2, *)
+  private func resolvedColor(
+    _ value: Any?
+  ) -> MeshMapperActivityAttributes.ResolvedColor? {
+    guard let value = value as? [String: Any],
+      let r = finiteNumber(value["r"]),
+      let g = finiteNumber(value["g"]),
+      let b = finiteNumber(value["b"])
+    else { return nil }
+
+    return MeshMapperActivityAttributes.ResolvedColor(
+      r: min(max(r, 0), 1),
+      g: min(max(g, 0), 1),
+      b: min(max(b, 0), 1)
+    )
   }
 }
