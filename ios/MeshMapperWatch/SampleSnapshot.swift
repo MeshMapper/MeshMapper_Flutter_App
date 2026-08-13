@@ -9,6 +9,10 @@ import Foundation
 ///
 ///     xcrun simctl launch <watch> net.meshmapper.app.watchkitapp -MeshMapperSampleData YES
 ///
+/// Pass `-MeshMapperSamplePhase listen|wait|lapsed` to exercise the live
+/// countdown, the between-cycle wait, or a deadline the phone did not replace.
+/// Listening is the default so existing capture commands keep their behaviour.
+///
 /// DEBUG-only, and never reached unless that argument is passed, so it cannot
 /// leak into a shipping build or mask a real transport failure.
 enum SampleSnapshot {
@@ -23,6 +27,16 @@ enum SampleSnapshot {
 
   static func make() -> WatchSnapshot {
     let now = Date().timeIntervalSince1970 * 1000
+
+    let samplePhase: (name: String, title: String, endsAtMs: Double, durationMs: Int)
+    switch UserDefaults.standard.string(forKey: "MeshMapperSamplePhase") {
+    case "wait":
+      samplePhase = ("waiting", "Next ping", now + 25_000, 30_000)
+    case "lapsed":
+      samplePhase = ("listening", "Listening…", now - 5_000, 60_000)
+    default:
+      samplePhase = ("listening", "Listening…", now + 42_000, 60_000)
+    }
 
     let green = WatchColor(r: 0.30, g: 0.69, b: 0.31)
     let red = WatchColor(r: 0.96, g: 0.26, b: 0.21)
@@ -91,11 +105,11 @@ enum SampleSnapshot {
       wireVersion: MeshMapperWatchWire.version,
       sessionId: "sample",
       mode: "Active",
-      phase: "listening",
-      phaseTitle: "Listening",
+      phase: samplePhase.name,
+      phaseTitle: samplePhase.title,
       phaseDetail: "Waiting for echoes",
-      phaseEndsAtMs: now + 42_000,
-      phaseDurationMs: 60_000,
+      phaseEndsAtMs: samplePhase.endsAtMs,
+      phaseDurationMs: samplePhase.durationMs,
       isConnected: true,
       zoneCode: "SEA",
       txCount: 27,
