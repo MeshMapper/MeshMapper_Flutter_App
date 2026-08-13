@@ -203,6 +203,16 @@ extension WatchSessionManager: WCSessionDelegate {
     lastContextData = nil
   }
 
+  func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+    guard let command = userInfo[MeshMapperWatchWire.commandKey] as? [String: Any] else {
+      NSLog("[WATCH] Malformed queued command payload: \(Array(userInfo.keys))")
+      return
+    }
+    relayCommand(command) { _ in }
+  }
+
+  /// Retained for commands already sent by watch builds that predate the
+  /// queued transport; removing it would strand an in-flight wrist action.
   func session(
     _ session: WCSession,
     didReceiveMessage message: [String: Any],
@@ -216,6 +226,8 @@ extension WatchSessionManager: WCSessionDelegate {
     relayCommand(command, reply: replyHandler)
   }
 
+  /// The no-reply legacy overload is retained for the same compatibility
+  /// window. New watches use `transferUserInfo` exclusively.
   func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
     guard let command = message[MeshMapperWatchWire.commandKey] as? [String: Any] else {
       NSLog("[WATCH] Malformed command payload: \(Array(message.keys))")

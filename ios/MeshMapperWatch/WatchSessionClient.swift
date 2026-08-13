@@ -29,9 +29,11 @@ final class WatchSessionClient: NSObject {
   private var presentedCueIDs = Set<String>()
   private var presentedCueIDOrder = [String]()
 
-  /// Wearer-initiated command awaiting the phone's answer. Automatic refreshes
-  /// stay out of this state because they have no corresponding wrist action.
+  /// Wearer-initiated command awaiting evidence of phone-side progress.
+  /// Automatic refreshes stay out because they have no corresponding wrist
+  /// action, and queued delivery has no acknowledgement to wait for.
   private(set) var pendingCommand: WatchCommand.Kind?
+  private var pendingCommandTimeoutTask: Task<Void, Never>?
 
   /// Set when a payload arrives from a wire version this build predates.
   private(set) var versionMismatch = false
@@ -84,19 +86,23 @@ final class WatchSessionClient: NSObject {
 
   /// - Parameter silent: suppress the refusal banner. Used for the automatic
   ///   refresh, which the wearer never asked for and shouldn't see fail.
-  /// Sends without pre-checking `isReachable`.
+  /// Queues without pre-checking `isReachable`.
   ///
-  /// That flag lags reality — during testing the simulator reported
-  /// unreachable while messages were still being delivered a second or two
-  /// later. Gating on it turns a stale flag into a refused tap, so the send is
-  /// attempted unconditionally and `errorHandler` is the source of truth.
+  /// Wrist controls normally run while the phone app is not foregrounded,
+  /// where `sendMessage` can execute the command yet fail its reply as
+  /// undeliverable. One queued path avoids both that false failure and the
+  /// duplicate-transmit risk of retrying an ambiguously delivered message.
   func send(_ kind: WatchCommand.Kind, silent: Bool = false) {
     guard let session, session.activationState == .activated else {
       if !silent { setLastRefusal("Not connected to iPhone") }
       return
     }
 
-    let command = WatchCommand(kind: kind, id: UUID().uuidString)
+    let command = WatchCommand(
+      kind: kind,
+      id: UUID().uuidString,
+      issuedAtMs: Date().timeIntervalSince1970 * 1000
+    )
     guard let data = try? MeshMapperWatchWire.encoder.encode(command),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
@@ -106,46 +112,27 @@ final class WatchSessionClient: NSObject {
 
     if !silent {
       setLastRefusal(nil)
-      pendingCommand = kind
+      beginPending(kind)
     }
 
-    session.sendMessage(
-      [MeshMapperWatchWire.commandKey: dict],
-      replyHandler: { [weak self] reply in
-        NSLog("[WATCH] reply for \(kind.rawValue): \(reply)")
-        Task { @MainActor in
-          let isCurrent = self?.pendingCommand == kind
-          if isCurrent {
-            self?.pendingCommand = nil
-          }
-          // A newer tap owns both the spinner and its feedback. Letting an
-          // older reply rewrite either would put the wrong answer under it.
-          guard !silent, isCurrent else { return }
-          let accepted = reply["accepted"] as? Bool ?? false
-          if !accepted {
-            // The phone owns the policy and already phrases its refusals for
-            // people; preserving that text avoids replacing fact with a watch
-            // side guess about why the command was rejected.
-            self?.setLastRefusal(reply["reason"] as? String ?? "Refused")
-          }
-          // Admission is not completion. The dispatch already cleared older
-          // text, and clearing again here could erase a fast failure cue that
-          // crossed this acknowledgement on WatchConnectivity's other path.
-        }
-      },
-      errorHandler: { [weak self] error in
-        NSLog("[WATCH] sendMessage(\(kind.rawValue)) failed: \(error.localizedDescription)")
-        Task { @MainActor in
-          let isCurrent = self?.pendingCommand == kind
-          if isCurrent {
-            self?.pendingCommand = nil
-          }
-          if !silent, isCurrent {
-            self?.setLastRefusal(Self.refusalMessage(for: error))
-          }
-        }
-      }
-    )
+    session.transferUserInfo([MeshMapperWatchWire.commandKey: dict])
+  }
+
+  private func beginPending(_ kind: WatchCommand.Kind) {
+    pendingCommandTimeoutTask?.cancel()
+    pendingCommand = kind
+    pendingCommandTimeoutTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(10))
+      guard !Task.isCancelled, self?.pendingCommand == kind else { return }
+      self?.pendingCommand = nil
+      self?.pendingCommandTimeoutTask = nil
+    }
+  }
+
+  private func clearPendingCommand() {
+    pendingCommandTimeoutTask?.cancel()
+    pendingCommandTimeoutTask = nil
+    pendingCommand = nil
   }
 
   private func setLastRefusal(_ refusal: String?) {
@@ -159,24 +146,6 @@ final class WatchSessionClient: NSObject {
       guard !Task.isCancelled else { return }
       self?.lastRefusal = nil
       self?.refusalExpiryTask = nil
-    }
-  }
-
-  private static func refusalMessage(for error: Error) -> String {
-    let nsError = error as NSError
-    guard nsError.domain == WCErrorDomain,
-          let code = WCError.Code(rawValue: nsError.code)
-    else {
-      return error.localizedDescription
-    }
-
-    switch code {
-      case .deliveryFailed, .notReachable:
-        // Delivery is uncertain in both cases. Give the wearer one useful next
-        // step, but never retry automatically: a duplicate could transmit.
-        return "iPhone didn't respond, try again"
-      default:
-        return error.localizedDescription
     }
   }
 
@@ -204,6 +173,10 @@ final class WatchSessionClient: NSObject {
       self.versionMismatch = false
       self.snapshot = decoded
       self.receivedAt = Date()
+      // A queued command has no ack. Any subsequent snapshot proves the phone
+      // has resumed communicating; a separate timeout covers the case where
+      // state dedupe means no snapshot follows.
+      self.clearPendingCommand()
 
       if let cue = decoded.cue,
          self.presentedCueIDs.insert(cue.id).inserted

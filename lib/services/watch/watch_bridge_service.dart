@@ -14,6 +14,7 @@ typedef WatchSnapshotBuilder = WatchSnapshot? Function();
 /// Production handlers must decide synchronously; FutureOr keeps existing
 /// bridge fakes source-compatible without putting the real path behind a wait.
 typedef WatchCommandHandler = FutureOr<String?> Function(WatchCommandKind kind);
+typedef WatchCommandRefusalHandler = void Function(String reason);
 
 /// Owns the Flutter↔WatchConnectivity bridge and coalesces noisy app state.
 ///
@@ -30,12 +31,14 @@ class WatchBridgeService {
 
   static const Duration _debounceDelay = Duration(milliseconds: 200);
   static const Duration _minimumNonUrgentInterval = Duration(seconds: 2);
+  static const Duration _maximumCommandAge = Duration(seconds: 30);
 
   final MethodChannel _channel;
 
   Timer? _scheduledUpdate;
   WatchSnapshotBuilder? _pendingSnapshotBuilder;
   WatchCommandHandler? _commandHandler;
+  WatchCommandRefusalHandler? _commandRefusalHandler;
 
   String? _lastPayload;
   String? _lastUrgencyKey;
@@ -51,8 +54,12 @@ class WatchBridgeService {
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
   /// Wire up the inbound command path. Safe to call more than once.
-  void attachCommandHandler(WatchCommandHandler handler) {
+  void attachCommandHandler(
+    WatchCommandHandler handler, {
+    WatchCommandRefusalHandler? onRefusal,
+  }) {
     _commandHandler = handler;
+    _commandRefusalHandler = onRefusal;
     if (!isSupportedPlatform) return;
     _channel.setMethodCallHandler(_handleNativeCall);
   }
@@ -86,6 +93,20 @@ class WatchBridgeService {
 
     _rememberCommandId(id);
 
+    final rawIssuedAtMs = args['issuedAtMs'];
+    final issuedAtMs = rawIssuedAtMs is num ? rawIssuedAtMs.toDouble() : null;
+    if (kind != WatchCommandKind.requestSnapshot && issuedAtMs != null) {
+      final ageMs = DateTime.now().millisecondsSinceEpoch - issuedAtMs;
+      if (ageMs > _maximumCommandAge.inMilliseconds) {
+        const reason = 'Took too long to reach iPhone';
+        // This window is about correctness, not queue housekeeping: executing
+        // a transmit after the vehicle has moved attributes it to the wrong
+        // place. Missing timestamps remain accepted for older watch builds.
+        _commandRefusalHandler?.call(reason);
+        return {'id': id, 'accepted': false, 'reason': reason};
+      }
+    }
+
     try {
       // This is admission, not completion. Keeping the handler synchronous is
       // what makes the MethodChannel response fit inside WatchConnectivity's
@@ -94,13 +115,19 @@ class WatchBridgeService {
       final admission = handler(kind);
       final refusal =
           admission is Future<String?> ? await admission : admission;
-      // A refused command may legitimately be retried once conditions change.
-      if (refusal != null) _handledCommandIds.remove(id);
+      if (refusal != null) {
+        _commandRefusalHandler?.call(refusal);
+        // Reply-capable legacy watches could retry an admission refusal with
+        // the same ID. Queued commands must stay remembered: redelivery after
+        // conditions change must never turn yesterday's tap into a transmit.
+        if (issuedAtMs == null) _handledCommandIds.remove(id);
+      }
       return {'id': id, 'accepted': refusal == null, 'reason': refusal};
     } catch (error) {
-      _handledCommandIds.remove(id);
       debugError('[WATCH] Command $rawKind failed: $error');
-      return {'id': id, 'accepted': false, 'reason': 'Command failed'};
+      const reason = 'Command failed';
+      _commandRefusalHandler?.call(reason);
+      return {'id': id, 'accepted': false, 'reason': reason};
     }
   }
 
@@ -214,5 +241,6 @@ class WatchBridgeService {
     _scheduledUpdate = null;
     _pendingSnapshotBuilder = null;
     _commandHandler = null;
+    _commandRefusalHandler = null;
   }
 }

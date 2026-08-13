@@ -212,15 +212,13 @@ struct WatchCommand: Codable, Hashable {
   let kind: Kind
   /// Client-generated, so the phone can dedupe redelivered commands.
   let id: String
+  /// Queued delivery can outlive the place where a transmit was requested.
+  /// The phone uses this to reject stale actions before admission.
+  let issuedAtMs: Double
 }
 
-/// The phone's answer to a command.
-struct WatchCommandAck: Codable, Hashable {
-  let id: String
-  let accepted: Bool
-  /// Why it was refused, for display on the wrist.
-  let reason: String?
-}
+// There is deliberately no acknowledgement model: queued commands have no
+// reply channel; state snapshots and failure cues carry every outcome.
 
 // MARK: - Coding helpers
 
