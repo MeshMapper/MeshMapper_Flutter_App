@@ -11,11 +11,13 @@ import SwiftUI
 @main
 struct MeshMapperWatchApp: App {
   @State private var client = WatchSessionClient()
+  @State private var settings = WatchSettings()
 
   var body: some Scene {
     WindowGroup {
       ContentView()
         .environment(client)
+        .environment(settings)
         .onAppear { client.refresh() }
     }
   }

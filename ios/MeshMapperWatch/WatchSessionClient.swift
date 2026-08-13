@@ -42,6 +42,14 @@ final class WatchSessionClient: NSObject {
   /// Activation is asynchronous, so a refresh requested before it completes is
   /// deferred to the activation callback rather than failing as "unreachable".
   func refresh() {
+    #if DEBUG
+    if SampleSnapshot.isEnabled {
+      snapshot = SampleSnapshot.make()
+      receivedAt = Date()
+      return
+    }
+    #endif
+
     guard let session else { return }
     session.delegate = self
 
