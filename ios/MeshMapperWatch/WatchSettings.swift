@@ -13,6 +13,7 @@ final class WatchSettings {
     static let showLinks = "map.showLinks"
     static let follow = "map.follow"
     static let mapLatitudeDelta = "map.latitudeDelta"
+    static let mainPageContent = "layout.mainPageContent"
     static let nodeListPlacement = "layout.nodeListPlacement"
   }
 
@@ -40,6 +41,24 @@ final class WatchSettings {
     }
   }
 
+  /// What occupies the app's first page at full luminance.
+  ///
+  /// Reduced luminance remains a separate system condition: either choice can
+  /// still enter the power-frugal readout when the wrist drops.
+  enum MainPageContent: String, CaseIterable, Identifiable {
+    case map
+    case readout
+
+    var id: String { rawValue }
+
+    var label: String {
+      switch self {
+      case .map: return "Map"
+      case .readout: return "Readout"
+      }
+    }
+  }
+
   private let defaults: UserDefaults
 
   init(defaults: UserDefaults = .standard) {
@@ -56,6 +75,8 @@ final class WatchSettings {
       defaults.object(forKey: Key.mapLatitudeDelta) as? Double
         ?? Self.defaultMapLatitudeDelta
     )
+    mainPageContent = (defaults.string(forKey: Key.mainPageContent))
+      .flatMap(MainPageContent.init(rawValue:)) ?? .map
     nodeListPlacement = (defaults.string(forKey: Key.nodeListPlacement))
       .flatMap(NodeListPlacement.init(rawValue:)) ?? .page
   }
@@ -90,6 +111,10 @@ final class WatchSettings {
       // assignment inside `didSet` to invoke the observer a second time.
       defaults.set(clamped, forKey: Key.mapLatitudeDelta)
     }
+  }
+
+  var mainPageContent: MainPageContent {
+    didSet { defaults.set(mainPageContent.rawValue, forKey: Key.mainPageContent) }
   }
 
   var nodeListPlacement: NodeListPlacement {

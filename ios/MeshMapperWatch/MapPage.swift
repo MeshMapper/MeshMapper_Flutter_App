@@ -24,6 +24,13 @@ struct MapPage: View {
     return environmentLuminanceReduced
   }
 
+  /// Content choice and display cadence are independent. A chosen readout can
+  /// run at full luminance with a precise timer; reduced luminance selects the
+  /// same approved surface because MapKit is not worth its Always-On cost.
+  private var showsMap: Bool {
+    settings.mainPageContent == .map && !isLuminanceReduced
+  }
+
   @State private var camera: MapCameraPosition = .automatic
 
   /// Centre we last drove the camera to, so a camera change can be attributed
@@ -129,29 +136,16 @@ struct MapPage: View {
   }
 
   var body: some View {
-    // The proxy is the only reliable way to relate a coordinate to a point on
-    // screen. The map draws outside its own layout frame — it ignores the
-    // bottom safe area, and on a 46 mm watch the frame SwiftUI reports is
-    // 159 pt tall against a 248 pt display — so no measurement of the view
-    // hierarchy predicts where a coordinate will actually land. Asking the map
-    // sidesteps the whole question.
-    MapReader { proxy in
-      content(proxy)
-    }
-  }
-
-  private func content(_ proxy: MapProxy) -> some View {
-    ZStack {
-      if isLuminanceReduced {
-        // Always-On spends most of a long session with the wrist down. A live
-        // MapKit renderer and its annotations buy no useful glance information
-        // at reduced luminance, so remove that subtree rather than merely
-        // covering it.
-        Color.black.ignoresSafeArea()
-        dimmedStatus
+    Group {
+      if showsMap {
+        // The proxy is the only reliable way to relate a coordinate to a point
+        // on screen. Keep the reader inside this branch: constructing even map
+        // infrastructure behind the readout would defeat its battery purpose.
+        MapReader { proxy in
+          mapContent(proxy)
+        }
       } else {
-        map(proxy)
-        mapOverlay(proxy)
+        readoutContent
       }
     }
     .background(
@@ -164,15 +158,10 @@ struct MapPage: View {
       }
       // Plain is intentional: `.ignoresSafeArea()` makes this reader report
       // the insets of its own expanded region, which are zero. The first
-      // nonzero value is latched while the panel is still in its safe fallback
-      // placement; later panel geometry depends on it, while the display's
-      // actual safe area is a device constant that cannot legitimately change.
+      // nonzero value is latched before any dependent panel geometry can feed
+      // back into layout. The display's actual safe area is a device constant
+      // that cannot legitimately change when the selected content does.
     )
-    .onPreferenceChange(PanelFrameKey.self) { frame in
-      guard abs(frame.minY - panelFrame.minY) > 0.5 || panelFrame.height == 0 else { return }
-      panelFrame = frame
-      recenterIfFollowing(proxy)
-    }
     .sheet(isPresented: $showingNodes) {
       NavigationStack {
         NodeListView()
@@ -180,22 +169,7 @@ struct MapPage: View {
           .navigationBarTitleDisplayMode(.inline)
       }
     }
-    .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
-      recenterIfFollowing(proxy)
-    }
-    // The delayed resume in `scheduleFollowResume` only clears the suspension;
-    // recentring happens here, where a live proxy is in scope.
-    .onChange(of: followSuspendedUntil) { _, until in
-      if until == nil { recenterIfFollowing(proxy) }
-    }
-    .onChange(of: isLuminanceReduced) { _, reduced in
-      // Camera work is forbidden while dimmed. Returning to full luminance is
-      // itself a state change, so following can resume immediately even if the
-      // phone has not produced another GPS fix yet.
-      if !reduced { recenterIfFollowing(proxy) }
-    }
     .onAppear {
-      recenterIfFollowing(proxy)
       #if DEBUG
       // Lets the sheet layout be captured and iterated on headlessly; the
       // simulator has no way to tap the bar.
@@ -206,8 +180,48 @@ struct MapPage: View {
     }
   }
 
+  private func mapContent(_ proxy: MapProxy) -> some View {
+    ZStack {
+      map(proxy)
+      mapOverlay(proxy)
+    }
+    .onPreferenceChange(PanelFrameKey.self) { frame in
+      guard abs(frame.minY - panelFrame.minY) > 0.5 || panelFrame.height == 0 else { return }
+      panelFrame = frame
+      recenterIfFollowing(proxy)
+    }
+    .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
+      recenterIfFollowing(proxy)
+    }
+    // The delayed resume in `scheduleFollowResume` only clears the suspension;
+    // recentring happens here, where a live proxy is in scope.
+    .onChange(of: followSuspendedUntil) { _, until in
+      if until == nil { recenterIfFollowing(proxy) }
+    }
+    .onAppear {
+      recenterIfFollowing(proxy)
+    }
+    .onDisappear {
+      // A pan's delayed resume belongs to the map. Leaving for either the
+      // chosen readout or Always-On must not leave map work pending off-screen.
+      resumeTask?.cancel()
+      resumeTask = nil
+    }
+  }
+
+  private var readoutContent: some View {
+    ZStack {
+      // Always-On spends most of a long session with the wrist down, while a
+      // wearer may also choose this as the full-luminance main page. In both
+      // cases a black backing keeps the approved flat layout independent of
+      // whatever container presents it.
+      Color.black.ignoresSafeArea()
+      readoutStatus
+    }
+  }
+
   /// Map chrome remains an overlay so its measured frame can place the fix in
-  /// the visible band above it. Always-On has its own hierarchy and therefore
+  /// the visible band above it. The readout has its own hierarchy and therefore
   /// cannot accidentally inherit this bottom-pinned card again.
   private func mapOverlay(_ proxy: MapProxy) -> some View {
     VStack(spacing: 0) {
@@ -232,16 +246,16 @@ struct MapPage: View {
     .ignoresSafeArea(edges: curvedPanelHorizontalInset == nil ? [] : .bottom)
   }
 
-  /// A full-screen glance surface for Always-On, not a map card without a map.
+  /// A full-screen glance surface, not a map card without a map.
   ///
   /// Its content remains inside the system safe area and also keeps the
   /// hardware-tested horizontal clearance. That is intentionally redundant at
   /// the bottom corners: two earlier layouts passed in the simulator and
   /// clipped on glass, while spare black pixels cost no compositing work.
-  private var dimmedStatus: some View {
+  private var readoutStatus: some View {
     VStack(alignment: .leading, spacing: 0) {
       if let snapshot {
-        dimmedPhase(snapshot)
+        ReadoutPhase(snapshot: snapshot, isLuminanceReduced: isLuminanceReduced)
       } else {
         Text("Waiting for iPhone")
           .font(.system(size: 17, weight: .bold))
@@ -263,7 +277,7 @@ struct MapPage: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
           ForEach(Array(heard.prefix(4))) { node in
-            dimmedHeardRow(node)
+            readoutHeardRow(node)
           }
         }
       }
@@ -274,54 +288,15 @@ struct MapPage: View {
     .dynamicTypeSize(.small ... .large)
     .opacity(client.isStale ? 0.5 : 1.0)
     // Snapshot replacement may arrive with an animated transaction from an
-    // ancestor. Always-On changes in discrete steps; it never interpolates.
+    // ancestor. Readout state changes are discrete; only the native precise
+    // countdown updates between them at full luminance.
     .transaction { $0.animation = nil }
-  }
-
-  /// The two readings an Always-On glance exists to answer, each with its own
-  /// line instead of competing inside the map overlay's narrow bar.
-  ///
-  /// A seconds figure can be nearly a minute wrong while watchOS throttles an
-  /// Always-On screen. Showing whole minutes (or “<1 min”) makes that cadence
-  /// honest, while the isolated minute schedule avoids waking the rest of the
-  /// hierarchy. A static progress fill would repeat that number less precisely
-  /// and spend both pixels and compositing work, so the dimmed surface omits it.
-  private func dimmedPhase(_ snapshot: WatchSnapshot) -> some View {
-    TimelineView(.periodic(from: .now, by: 60)) { context in
-      let lapsed = snapshot.phaseEndsAt.map { $0 <= context.date } ?? false
-
-      VStack(alignment: .leading, spacing: 2) {
-        // Wrapping is intentional. The longest real phase names need two lines
-        // on 40 mm, and preserving every word matters more than uniform height.
-        Text(snapshot.phaseTitle)
-          .font(.system(size: 18, weight: .bold))
-          .foregroundStyle(.white.opacity(lapsed ? 0.45 : 1))
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-
-        if let countdown = dimmedCountdown(snapshot, at: context.date) {
-          Text(countdown)
-            .font(.system(size: 24, weight: .bold).monospacedDigit())
-            .foregroundStyle(.white)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-      }
-    }
-  }
-
-  private func dimmedCountdown(_ snapshot: WatchSnapshot, at date: Date) -> String? {
-    guard let endsAt = snapshot.phaseEndsAt else { return nil }
-    let remaining = endsAt.timeIntervalSince(date)
-    guard remaining > 0 else { return nil }
-    if remaining < 60 { return "<1 min" }
-    return "\(Int(ceil(remaining / 60))) min"
   }
 
   /// One full-width row is affordable without a basemap and gives the settled
   /// type dot, hex identity and quality figure enough size for arm's-length
   /// reading even when a six-character hash forces the overlay into one column.
-  private func dimmedHeardRow(_ node: WatchHeardNode) -> some View {
+  private func readoutHeardRow(_ node: WatchHeardNode) -> some View {
     HStack(spacing: 5) {
       Circle()
         .fill(Color(node.typeColor))
@@ -613,7 +588,7 @@ struct MapPage: View {
   // MARK: - Camera
 
   private func recenterIfFollowing(_ proxy: MapProxy, force: Bool = false) {
-    guard !isLuminanceReduced, force || isFollowing, let fix else { return }
+    guard showsMap, force || isFollowing, let fix else { return }
     let center = centerPlacing(fix, proxy: proxy)
     programmaticCenter = center
     let region = MKCoordinateRegion(center: center, span: currentSpan)
@@ -670,7 +645,7 @@ struct MapPage: View {
   /// The deadband is what stops it: each pass lands within a couple of points,
   /// the next sees no error worth fixing, and it settles.
   private func correctPlacement(_ proxy: MapProxy) {
-    guard !isLuminanceReduced, isFollowing, let fix, let targetPoint,
+    guard showsMap, isFollowing, let fix, let targetPoint,
       let point = proxy.convert(fix, to: .global)
     else { return }
     guard abs(point.y - targetPoint.y) > 6 else { return }
@@ -898,6 +873,123 @@ private struct WatchPhaseBar: View {
 extension Comparable {
   fileprivate func clamped(to limits: ClosedRange<Self>) -> Self {
     min(max(self, limits.lowerBound), limits.upperBound)
+  }
+}
+
+/// The approved full-screen phase treatment with cadence chosen independently
+/// from its layout. Always-On updates too slowly to promise seconds, while a
+/// wearer-selected readout at full luminance can let the native timer provide
+/// a precise countdown without a one-second SwiftUI timeline.
+private struct ReadoutPhase: View {
+  let snapshot: WatchSnapshot
+  let isLuminanceReduced: Bool
+
+  @State private var deadlineLapsed: Bool
+
+  init(snapshot: WatchSnapshot, isLuminanceReduced: Bool) {
+    self.snapshot = snapshot
+    self.isLuminanceReduced = isLuminanceReduced
+    _deadlineLapsed = State(
+      initialValue: snapshot.phaseEndsAt.map { $0 <= Date() } ?? false
+    )
+  }
+
+  private var phaseKey: PhaseKey {
+    PhaseKey(
+      endsAtMs: snapshot.phaseEndsAtMs,
+      isLuminanceReduced: isLuminanceReduced
+    )
+  }
+
+  var body: some View {
+    Group {
+      if isLuminanceReduced {
+        // A seconds figure can be nearly a minute wrong while watchOS throttles
+        // Always-On. Match that cadence explicitly instead of showing false
+        // precision, and isolate the minute wake-up to this small subtree.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+          phase(at: context.date, usesCoarseCountdown: true)
+        }
+      } else {
+        phase(at: Date(), usesCoarseCountdown: false)
+      }
+    }
+    .task(id: phaseKey) {
+      await trackDeadline()
+    }
+  }
+
+  @ViewBuilder
+  private func phase(at date: Date, usesCoarseCountdown: Bool) -> some View {
+    let lapsed = usesCoarseCountdown
+      ? snapshot.phaseEndsAt.map { $0 <= date } ?? false
+      : deadlineLapsed
+
+    VStack(alignment: .leading, spacing: 2) {
+      // Wrapping is intentional. The longest real phase names need two lines
+      // on 40 mm, and preserving every word matters more than uniform height.
+      Text(snapshot.phaseTitle)
+        .font(.system(size: 18, weight: .bold))
+        .foregroundStyle(.white.opacity(lapsed ? 0.45 : 1))
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+      if usesCoarseCountdown {
+        if let countdown = coarseCountdown(at: date) {
+          countdownText(countdown)
+        }
+      } else if !lapsed, let endsAt = snapshot.phaseEndsAt, endsAt > date {
+        Text(timerInterval: date...endsAt, countsDown: true)
+          .font(.system(size: 24, weight: .bold).monospacedDigit())
+          .foregroundStyle(.white)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+  }
+
+  private func countdownText(_ value: String) -> some View {
+    Text(value)
+      .font(.system(size: 24, weight: .bold).monospacedDigit())
+      .foregroundStyle(.white)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func coarseCountdown(at date: Date) -> String? {
+    guard let endsAt = snapshot.phaseEndsAt else { return nil }
+    let remaining = endsAt.timeIntervalSince(date)
+    guard remaining > 0 else { return nil }
+    if remaining < 60 { return "<1 min" }
+    return "\(Int(ceil(remaining / 60))) min"
+  }
+
+  @MainActor
+  private func trackDeadline() async {
+    let now = Date()
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      deadlineLapsed = snapshot.phaseEndsAt.map { $0 <= now } ?? false
+    }
+
+    // The minute timeline owns this boundary under Always-On. Sleeping for an
+    // exact second there would imply precision the display cannot present.
+    guard !isLuminanceReduced, let endsAt = snapshot.phaseEndsAt else { return }
+    let remaining = endsAt.timeIntervalSince(now)
+    guard remaining > 0 else { return }
+    do {
+      try await Task.sleep(for: .seconds(remaining))
+    } catch {
+      return
+    }
+    guard !Task.isCancelled else { return }
+    deadlineLapsed = true
+  }
+
+  private struct PhaseKey: Hashable {
+    let endsAtMs: Double?
+    let isLuminanceReduced: Bool
   }
 }
 
