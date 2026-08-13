@@ -74,6 +74,22 @@ struct MapPage: View {
   }
 
   @State private var showingNodes = false
+  @State private var armedToolbarControl: TrailingToolbarControl?
+  @State private var disarmToolbarTask: Task<Void, Never>?
+
+  private enum TrailingToolbarControl: Equatable {
+    case start
+    case stop
+    case ping
+
+    var command: WatchCommand.Kind {
+      switch self {
+      case .start: return .startSession
+      case .stop: return .stopSession
+      case .ping: return .manualPing
+      }
+    }
+  }
 
   /// The panel's frame in global coordinates, so the camera can keep the fix
   /// out from behind it.
@@ -155,6 +171,9 @@ struct MapPage: View {
           ToolbarItem(placement: .topBarLeading) {
             mainPageToggle
           }
+          ToolbarItem(placement: .topBarTrailing) {
+            trailingToolbarButton
+          }
         }
       }
       .background(
@@ -208,6 +227,18 @@ struct MapPage: View {
         }
         #endif
       }
+      .onChange(of: trailingToolbarControl) { _, _ in
+        // Stable facts own the slot, but a session transition still changes
+        // its meaning. Never carry an armed confirmation into a new action.
+        disarmToolbarControl()
+      }
+      .onChange(of: trailingToolbarControlIsEnabled) { _, enabled in
+        if !enabled { disarmToolbarControl() }
+      }
+      .onChange(of: isLuminanceReduced) { _, reduced in
+        if reduced { disarmToolbarControl() }
+      }
+      .onDisappear { disarmToolbarControl() }
   }
 
   private var pageContent: some View {
@@ -241,6 +272,127 @@ struct MapPage: View {
     .accessibilityLabel(settings.mainPageContent == .map
       ? "Show readout"
       : "Show map")
+  }
+
+  /// Slot identity follows stable session and regional facts, never the live
+  /// ping gate. A cooldown may disable Ping, but cannot replace it with Stop
+  /// while a finger is already moving toward the corner.
+  private var trailingToolbarControl: TrailingToolbarControl {
+    guard client.snapshot?.controls.isSessionActive == true else { return .start }
+    if settings.showPingWhenAvailable,
+       client.snapshot?.controls.manualPingApplicable == true
+    {
+      return .ping
+    }
+    return .stop
+  }
+
+  private var trailingToolbarControlIsEnabled: Bool {
+    guard client.pendingCommand != trailingToolbarControl.command else { return false }
+    switch trailingToolbarControl {
+    case .start, .stop:
+      return client.snapshot?.controls.canStartStop == true
+    case .ping:
+      return client.snapshot?.controls.canManualPing == true
+    }
+  }
+
+  private var effectiveStartMode: WatchSettings.DefaultStartMode {
+    let available = client.snapshot?.availableStartModes ?? ["passive"]
+    return available.contains(settings.defaultStartMode.rawValue)
+      ? settings.defaultStartMode
+      : .passive
+  }
+
+  private var trailingToolbarButton: some View {
+    let control = trailingToolbarControl
+    let pending = client.pendingCommand == control.command
+    let armed = armedToolbarControl == control
+
+    return Button {
+      handleToolbarControl(control)
+    } label: {
+      ZStack {
+        if pending {
+          ProgressView()
+            .controlSize(.mini)
+        } else {
+          Image(systemName: toolbarIcon(for: control, armed: armed))
+        }
+      }
+      .frame(width: 18, height: 18)
+    }
+    .tint(toolbarTint(for: control, armed: armed))
+    .disabled(!trailingToolbarControlIsEnabled)
+    .accessibilityLabel(toolbarAccessibilityLabel(for: control, armed: armed))
+  }
+
+  private func handleToolbarControl(_ control: TrailingToolbarControl) {
+    switch control {
+    case .start:
+      disarmToolbarControl()
+      client.send(.startSession, mode: effectiveStartMode.rawValue)
+    case .stop, .ping:
+      guard armedToolbarControl == control else {
+        armToolbarControl(control)
+        return
+      }
+      disarmToolbarControl()
+      client.send(control.command)
+    }
+  }
+
+  private func toolbarIcon(
+    for control: TrailingToolbarControl,
+    armed: Bool
+  ) -> String {
+    if armed { return "checkmark" }
+    switch control {
+    case .start: return "play.fill"
+    case .stop: return "stop.fill"
+    case .ping: return "dot.radiowaves.left.and.right"
+    }
+  }
+
+  private func toolbarTint(
+    for control: TrailingToolbarControl,
+    armed: Bool
+  ) -> Color {
+    guard trailingToolbarControlIsEnabled else { return WatchPalette.disabled }
+    if armed { return WatchPalette.armed }
+    switch control {
+    case .start: return WatchPalette.start
+    case .stop: return WatchPalette.stop
+    case .ping: return WatchPalette.ping
+    }
+  }
+
+  private func toolbarAccessibilityLabel(
+    for control: TrailingToolbarControl,
+    armed: Bool
+  ) -> String {
+    switch control {
+    case .start: return "Start \(effectiveStartMode.label) session"
+    case .stop: return armed ? "Confirm stop session" : "Stop session"
+    case .ping: return armed ? "Confirm manual ping" : "Manual ping"
+    }
+  }
+
+  private func armToolbarControl(_ control: TrailingToolbarControl) {
+    disarmToolbarTask?.cancel()
+    armedToolbarControl = control
+    disarmToolbarTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(3))
+      guard !Task.isCancelled, armedToolbarControl == control else { return }
+      armedToolbarControl = nil
+      disarmToolbarTask = nil
+    }
+  }
+
+  private func disarmToolbarControl() {
+    disarmToolbarTask?.cancel()
+    disarmToolbarTask = nil
+    armedToolbarControl = nil
   }
 
   private func mapContent(_ proxy: MapProxy) -> some View {

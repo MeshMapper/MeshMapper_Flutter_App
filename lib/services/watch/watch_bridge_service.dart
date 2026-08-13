@@ -14,7 +14,7 @@ typedef WatchUrgencyKeyBuilder = String Function();
 /// reason when refused; admitted work continues independently of this reply.
 /// Production handlers must decide synchronously; FutureOr keeps existing
 /// bridge fakes source-compatible without putting the real path behind a wait.
-typedef WatchCommandHandler = FutureOr<String?> Function(WatchCommandKind kind);
+typedef WatchCommandHandler = FutureOr<String?> Function(WatchCommand command);
 typedef WatchCommandRefusalHandler = void Function(String reason);
 typedef WatchAvailabilityHandler = void Function(bool available);
 typedef WatchSnapshotDeliveryHandler = void Function(WatchSnapshot snapshot);
@@ -130,7 +130,10 @@ class WatchBridgeService {
       // what makes the MethodChannel response fit inside WatchConnectivity's
       // short reply window; the admitted action reports its later outcome via
       // normal snapshots and one-shot cues.
-      final admission = handler(kind);
+      final admission = handler(WatchCommand(
+        kind: kind,
+        mode: args['mode'] as String?,
+      ));
       final refusal =
           admission is Future<String?> ? await admission : admission;
       if (refusal != null) {

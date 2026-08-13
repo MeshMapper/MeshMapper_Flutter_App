@@ -23,6 +23,12 @@ class WatchWire {
   /// v2: heard nodes mirror the app's "Top Heard" map overlay — hex ID and
   /// ping-type colour — instead of the richer per-echo data. Hop counts are
   /// gone: the overlay is fed `directRepeaters` only.
+  ///
+  /// Additive optional fields do not bump this version. A new watch defaults
+  /// an absent start-mode list to Passive and absent Ping applicability to
+  /// false, while an older phone ignores the optional mode on a command and
+  /// retains its existing safe resolver. A bump would therefore strand
+  /// compatible pairs without preventing a bad decode.
   static const int version = 2;
 
   static const int maxPings = 60;
@@ -35,6 +41,23 @@ class WatchWire {
   /// changes and new pings always go through; this only suppresses the
   /// jitter of a stationary GPS.
   static const double minMoveMeters = 15.0;
+}
+
+/// Start modes the phone may explicitly offer to the wrist.
+///
+/// Active remains a phone-only choice. The wrist setting deliberately stays
+/// small: Passive is safe everywhere, while Hybrid is advertised only when
+/// current zone policy permits transmission.
+enum WatchStartMode {
+  passive,
+  hybrid;
+
+  static WatchStartMode? fromWire(String value) {
+    for (final mode in WatchStartMode.values) {
+      if (mode.name == value) return mode;
+    }
+    return null;
+  }
 }
 
 class WatchPosition {
@@ -203,6 +226,7 @@ class WatchControls {
     required this.canStartStop,
     required this.canManualPing,
     required this.isSessionActive,
+    this.manualPingApplicable = false,
     this.manualCooldownEndsAt,
     this.blockedReason,
   });
@@ -210,6 +234,11 @@ class WatchControls {
   final bool canStartStop;
   final bool canManualPing;
   final bool isSessionActive;
+
+  /// Stable ownership for the corner slot. Unlike [canManualPing], this does
+  /// not flicker during cooldowns or receive windows; those only disable the
+  /// ping control that already owns the slot.
+  final bool manualPingApplicable;
   final DateTime? manualCooldownEndsAt;
   final String? blockedReason;
 
@@ -217,6 +246,7 @@ class WatchControls {
         'canStartStop': canStartStop,
         'canManualPing': canManualPing,
         'isSessionActive': isSessionActive,
+        'manualPingApplicable': manualPingApplicable,
         'manualCooldownEndsAtMs':
             manualCooldownEndsAt?.millisecondsSinceEpoch.toDouble(),
         'blockedReason': blockedReason,
@@ -264,6 +294,7 @@ class WatchSnapshot {
     required this.geo,
     required this.controls,
     required this.updatedAt,
+    this.availableStartModes = const [WatchStartMode.passive],
     this.pingColor,
     this.cue,
     this.phaseDurationMs,
@@ -273,6 +304,7 @@ class WatchSnapshot {
   final LiveActivitySnapshot core;
   final WatchGeo geo;
   final WatchControls controls;
+  final List<WatchStartMode> availableStartModes;
   final WatchColor? pingColor;
   final WatchHapticCue? cue;
   final DateTime updatedAt;
@@ -301,6 +333,8 @@ class WatchSnapshot {
         'traceCount': core.traceCount,
         'queueSize': core.queueSize,
         'pingColor': pingColor?.toMap(),
+        'availableStartModes':
+            availableStartModes.map((mode) => mode.name).toList(),
         'geo': geo.toMap(),
         'controls': controls.toMap(),
         'cue': cue?.toMap(),
@@ -345,6 +379,7 @@ class WatchSnapshot {
         controls.canStartStop,
         controls.canManualPing,
         controls.isSessionActive,
+        controls.manualPingApplicable,
         cue?.id ?? '',
       ].join('|');
 }
@@ -362,6 +397,43 @@ enum WatchCommandKind {
     }
     return null;
   }
+}
+
+/// Decoded wrist intent. [mode] stays raw until phone-side admission so an
+/// unknown value can be refused rather than mistaken for an omitted mode.
+class WatchCommand {
+  const WatchCommand({required this.kind, this.mode});
+
+  final WatchCommandKind kind;
+  final String? mode;
+}
+
+typedef WatchRequestedStartModeResolution = ({
+  WatchStartMode? mode,
+  String? refusal,
+});
+
+/// Revalidate an explicit wrist mode against current phone state.
+///
+/// A null result means an older watch omitted the field and the provider must
+/// retain its established `_resolvedWatchSessionMode` fallback. An unsupported
+/// or newly-forbidden request is never downgraded silently.
+WatchRequestedStartModeResolution resolveWatchRequestedStartMode({
+  required String? requestedMode,
+  required bool isConnected,
+  required bool txAllowed,
+}) {
+  if (requestedMode == null) return (mode: null, refusal: null);
+
+  final mode = WatchStartMode.fromWire(requestedMode);
+  if (mode == null) return (mode: null, refusal: 'Unsupported start mode');
+  if (mode == WatchStartMode.hybrid && !isConnected) {
+    return (mode: null, refusal: 'Not connected');
+  }
+  if (mode == WatchStartMode.hybrid && !txAllowed) {
+    return (mode: null, refusal: 'Passive Only');
+  }
+  return (mode: mode, refusal: null);
 }
 
 typedef WatchCommandAdmission = ({bool shouldRun, String? refusal});

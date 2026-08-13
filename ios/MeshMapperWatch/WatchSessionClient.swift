@@ -94,7 +94,7 @@ final class WatchSessionClient: NSObject {
   /// where `sendMessage` can execute the command yet fail its reply as
   /// undeliverable. One queued path avoids both that false failure and the
   /// duplicate-transmit risk of retrying an ambiguously delivered message.
-  func send(_ kind: WatchCommand.Kind, silent: Bool = false) {
+  func send(_ kind: WatchCommand.Kind, mode: String? = nil, silent: Bool = false) {
     guard let session, session.activationState == .activated else {
       if !silent { setLastRefusal("Not connected to iPhone") }
       return
@@ -102,6 +102,7 @@ final class WatchSessionClient: NSObject {
 
     let command = WatchCommand(
       kind: kind,
+      mode: mode,
       id: UUID().uuidString,
       issuedAtMs: Date().timeIntervalSince1970 * 1000
     )
