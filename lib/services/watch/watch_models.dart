@@ -251,14 +251,23 @@ class WatchControls {
 /// Carries an [id] so the watch fires exactly once: diffing state would
 /// double-fire on redelivery, which WatchConnectivity does routinely.
 class WatchHapticCue {
-  const WatchHapticCue({required this.id, required this.kind});
+  const WatchHapticCue({required this.id, required this.kind, this.message});
 
   final String id;
 
   /// 'success' | 'failure' | 'notification'
   final String kind;
 
-  Map<String, Object?> toMap() => {'id': id, 'kind': kind};
+  /// Human-readable detail for an event whose outcome arrived after command
+  /// admission. This additive field is optional, so v2 remains decodable; no
+  /// wire bump is needed while the matched phone and watch targets ship it.
+  final String? message;
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'kind': kind,
+        'message': message,
+      };
 }
 
 /// The complete state the watch renders.
@@ -295,8 +304,7 @@ class WatchSnapshot {
         'phase': core.phase.wireValue,
         'phaseTitle': core.phaseTitle,
         'phaseDetail': core.phaseDetail,
-        'phaseEndsAtMs':
-            core.phaseEndsAt?.millisecondsSinceEpoch.toDouble(),
+        'phaseEndsAtMs': core.phaseEndsAt?.millisecondsSinceEpoch.toDouble(),
         'phaseDurationMs': phaseDurationMs,
         'isConnected': core.isConnected,
         'zoneCode': core.zoneCode,

@@ -149,8 +149,9 @@ final class WatchSessionManager: NSObject {
 
   // MARK: - watch → Flutter
 
-  /// Relays a command to Dart and returns the ack. Dart owns the decision;
-  /// this side never evaluates whether a transmit is legal.
+  /// Relays a command to Dart and returns its admission ack. Dart owns the
+  /// synchronous decision and starts accepted work separately; this side never
+  /// evaluates whether a transmit is legal or waits for BLE/network completion.
   private func relayCommand(_ payload: [String: Any], reply: @escaping ([String: Any]) -> Void) {
     guard let channel else {
       NSLog("[WATCH] Command dropped: no method channel")

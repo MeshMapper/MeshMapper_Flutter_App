@@ -15,13 +15,19 @@ final class WatchSessionClient: NSObject {
   /// When the last snapshot arrived — drives the stale badge.
   private(set) var receivedAt: Date?
 
-  /// Set when the phone refuses a command, so the wrist can say why.
+  /// The phone's explanation for a refused admission or a later failed action.
+  /// Both belong to one short-lived presentation path on the controls page.
   private(set) var lastRefusal: String?
 
   /// A refusal explains one completed tap, not the current transport state.
   /// Restarting its lifetime on replacement prevents an older expiry from
   /// erasing newer feedback that happens to arrive near the same moment.
   private var refusalExpiryTask: Task<Void, Never>?
+
+  /// Immediate messages and application context can deliver the same cue in
+  /// either order. IDs make that transport redelivery one visible event.
+  private var presentedCueIDs = Set<String>()
+  private var presentedCueIDOrder = [String]()
 
   /// Wearer-initiated command awaiting the phone's answer. Automatic refreshes
   /// stay out of this state because they have no corresponding wrist action.
@@ -116,14 +122,15 @@ final class WatchSessionClient: NSObject {
           // older reply rewrite either would put the wrong answer under it.
           guard !silent, isCurrent else { return }
           let accepted = reply["accepted"] as? Bool ?? false
-          if accepted {
-            self?.setLastRefusal(nil)
-          } else {
+          if !accepted {
             // The phone owns the policy and already phrases its refusals for
             // people; preserving that text avoids replacing fact with a watch
             // side guess about why the command was rejected.
             self?.setLastRefusal(reply["reason"] as? String ?? "Refused")
           }
+          // Admission is not completion. The dispatch already cleared older
+          // text, and clearing again here could erase a fast failure cue that
+          // crossed this acknowledgement on WatchConnectivity's other path.
         }
       },
       errorHandler: { [weak self] error in
@@ -197,6 +204,20 @@ final class WatchSessionClient: NSObject {
       self.versionMismatch = false
       self.snapshot = decoded
       self.receivedAt = Date()
+
+      if let cue = decoded.cue,
+         self.presentedCueIDs.insert(cue.id).inserted
+      {
+        self.presentedCueIDOrder.append(cue.id)
+        // The phone bounds its command-ID cache for the same reason: a watch
+        // process can live for days, while only recent redelivery matters.
+        if self.presentedCueIDOrder.count > 64 {
+          self.presentedCueIDs.remove(self.presentedCueIDOrder.removeFirst())
+        }
+        if let message = cue.message, !message.isEmpty {
+          self.setLastRefusal(message)
+        }
+      }
     }
   }
 }

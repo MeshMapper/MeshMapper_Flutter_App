@@ -136,6 +136,9 @@ struct WatchHapticCue: Codable, Hashable {
   let id: String
   /// "success" | "failure" | "notification"
   let kind: String
+  /// Optional is an additive wire change: v2 payloads without it still decode,
+  /// and the matched phone and watch targets ship the new field together.
+  let message: String?
 }
 
 // MARK: - Snapshot

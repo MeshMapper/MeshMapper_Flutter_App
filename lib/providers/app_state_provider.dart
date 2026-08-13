@@ -138,6 +138,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Last position sent to the watch, held until the fix moves far enough to
   /// be worth an update. See [_resolveWatchPosition].
   WatchPosition? _lastWatchPosition;
+  WatchHapticCue? _watchCue;
+
+  /// Human-readable failure from the most recent server-side session check.
+  /// The bool returned by that check controls the action; this preserves the
+  /// discarded explanation for a wrist action's later failure cue.
+  String? _lastSessionCheckFailureReason;
   bool _liveActivitySessionActive = false;
   bool _liveActivityManualSession = false;
   String? _liveActivitySessionId;
@@ -1245,6 +1251,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       geo: _buildWatchGeo(now),
       controls: _buildWatchControls(),
       pingColor: _resolveWatchPingColor(),
+      cue: _watchCue,
       phaseDurationMs: _phaseDurationMsFor(phase.endsAt),
       updatedAt: now,
     );
@@ -1436,12 +1443,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return WatchGeoBuilder.pingColor('tx', latest.heardRepeaters.isNotEmpty);
   }
 
-  /// Applies an intent from the wrist.
+  /// Decides whether an intent from the wrist may begin.
   ///
   /// Returns null when accepted, or a reason to show on the watch. Every guard
   /// is re-evaluated here: the watch's view of what's permitted may be stale,
   /// and a stale payload must never be able to cause a transmit.
-  Future<String?> _handleWatchCommand(WatchCommandKind kind) async {
+  ///
+  /// Once admitted, the action deliberately outlives this synchronous reply:
+  /// WatchConnectivity cannot wait for BLE or server work. Successful outcomes
+  /// already surface through session, phase, and ping-colour snapshots; a late
+  /// failure gets its own cue so dropping completion from the ack loses nothing.
+  String? _handleWatchCommand(WatchCommandKind kind) {
     if (_isDisposed) return 'App closing';
 
     switch (kind) {
@@ -1452,12 +1464,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case WatchCommandKind.startSession:
         if (!isConnected) return 'Not connected';
         if (_autoPingEnabled) return null; // Already running.
-        final started = await toggleAutoPing(_autoMode);
-        return started ? null : 'Could not start';
+        unawaited(_runWatchStartSession());
+        return null;
 
       case WatchCommandKind.stopSession:
         if (!_autoPingEnabled) return null; // Already stopped.
-        await toggleAutoPing(_autoMode);
+        unawaited(_runWatchStopSession());
         return null;
 
       case WatchCommandKind.manualPing:
@@ -1465,9 +1477,55 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!availability.allowed) {
           return availability.reason ?? 'Ping unavailable';
         }
-        final sent = await sendPing();
-        return sent ? null : 'Ping failed';
+        unawaited(_runWatchManualPing());
+        return null;
     }
+  }
+
+  Future<void> _runWatchStartSession() async {
+    _lastSessionCheckFailureReason = null;
+    try {
+      final started = await toggleAutoPing(_autoMode);
+      if (!started) {
+        _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Could not start');
+      }
+    } catch (error) {
+      debugError('[WATCH] startSession failed after admission: $error');
+      _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Could not start');
+    }
+  }
+
+  Future<void> _runWatchStopSession() async {
+    try {
+      final stopped = await toggleAutoPing(_autoMode);
+      if (!stopped) _emitWatchFailure('Could not stop');
+    } catch (error) {
+      debugError('[WATCH] stopSession failed after admission: $error');
+      _emitWatchFailure('Could not stop');
+    }
+  }
+
+  Future<void> _runWatchManualPing() async {
+    _lastSessionCheckFailureReason = null;
+    try {
+      final sent = await sendPing();
+      if (!sent) {
+        _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
+      }
+    } catch (error) {
+      debugError('[WATCH] manualPing failed after admission: $error');
+      _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
+    }
+  }
+
+  void _emitWatchFailure(String message) {
+    if (_isDisposed) return;
+    _watchCue = WatchHapticCue(
+      id: const Uuid().v4(),
+      kind: 'failure',
+      message: message,
+    );
+    _scheduleWatchSync(immediate: true);
   }
 
   LiveActivitySnapshot? _buildLiveActivitySnapshot() {
@@ -4886,6 +4944,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Check session validity before starting a wardrive action
   /// Returns true if session is valid, false if expired (triggers disconnect)
   Future<bool> _checkSessionBeforeAction() async {
+    _lastSessionCheckFailureReason = null;
     final pos = _gpsService.lastPosition;
     final result = await _apiService.checkSessionValid(
       lat: pos?.latitude,
@@ -4893,12 +4952,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
 
     if (!result.isValid) {
+      _lastSessionCheckFailureReason = _sessionCheckFailureMessage(
+        result.reason,
+        result.message,
+      );
       debugWarn(
           '[API] Session check failed: ${result.reason} - ${result.message ?? "Session expired"}');
       // Note: onSessionError callback will trigger disconnect for critical errors
       return false;
     }
     return true;
+  }
+
+  String _sessionCheckFailureMessage(String? reason, String? message) {
+    // `zone_full` is the server-side form of the same TX prohibition already
+    // named "Passive Only" by watch controls. Reusing it avoids three wrist
+    // phrasings for one condition; other presentable server text stays intact.
+    if (reason == 'zone_full') return 'Passive Only';
+
+    final serverMessage = message?.trim();
+    if (serverMessage != null && serverMessage.isNotEmpty) {
+      return serverMessage;
+    }
+    return _getErrorMessage(reason, null);
   }
 
   /// Set the target repeater ID for targeted mode
