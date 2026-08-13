@@ -64,13 +64,21 @@ struct MapPage: View {
     return CGPoint(x: panelFrame.midX, y: panelFrame.minY / 2)
   }
 
-  /// Placement and clearance gaps deliberately differ. The panel sits higher,
-  /// but its inset is evaluated as if it still sat four points from the edge;
-  /// otherwise raising it would spend the recovered curvature room on width.
-  /// Keeping the lower position as a clearance floor is the conservative
-  /// direction for hardware curvature the simulator cannot reveal.
-  private static let panelBottomGap: CGFloat = 8
-  private static let curveClearanceGap: CGFloat = 4
+  /// Both gaps scale with the estimated corner radius, putting every watch at
+  /// the same relative positions on its curve. The 4/19 and 8/19 ratios are
+  /// calibrated from the 40 mm watch Adam signed off: at R=19 they reproduce
+  /// its current clearance and placement by construction. Changing either
+  /// constant therefore changes the one hardware size already known-good.
+  private static let curveClearanceGapRatio: CGFloat = 4.0 / 19.0
+  private static let panelBottomGapRatio: CGFloat = 8.0 / 19.0
+
+  private var curveClearanceGap: CGFloat {
+    bottomSafeAreaInset * Self.curveClearanceGapRatio
+  }
+
+  private var panelBottomGap: CGFloat {
+    bottomSafeAreaInset * Self.panelBottomGapRatio
+  }
 
   /// Panel geometry is about the physical display, not this view's proposal.
   /// Reading the device avoids a feedback loop where panel padding changes the
@@ -83,15 +91,14 @@ struct MapPage: View {
   /// watchOS exposes no screen corner radius, but its bottom safe-area inset is
   /// the clearance a full-width element needs at zero horizontal inset, making
   /// it a useful estimate of that radius. The circle/chord intersection gives
-  /// the inset at the more conservative of the placement and clearance gaps.
-  /// That radius estimate is a lower bound on the glass curvature, so four
-  /// extra points are cheap insurance against another hardware clip. The
-  /// rectangle test is conservative in the other direction: the panel's own
-  /// 12 pt radius pulls its visible corners inward from the square corners
-  /// protected by this equation.
+  /// the inset at the scaled clearance gap. That radius estimate is a lower
+  /// bound on the glass curvature, so four extra points are cheap insurance
+  /// against another hardware clip. The rectangle test is conservative in the
+  /// other direction: the panel's own 12 pt radius pulls its visible corners
+  /// inward from the square corners protected by this equation.
   private var curvedPanelHorizontalInset: CGFloat? {
     let radius = bottomSafeAreaInset
-    let gap = min(Self.panelBottomGap, Self.curveClearanceGap)
+    let gap = curveClearanceGap
     guard radius > 0, gap < radius else { return nil }
     let inset = radius - sqrt(max(0, 2 * radius * gap - gap * gap)) + 4
     guard inset.isFinite else { return nil }
@@ -148,7 +155,7 @@ struct MapPage: View {
       }
       .padding(.horizontal, panelHorizontalInset)
       .padding(.top, 2)
-      .padding(.bottom, curvedPanelHorizontalInset == nil ? 0 : Self.panelBottomGap)
+      .padding(.bottom, curvedPanelHorizontalInset == nil ? 0 : panelBottomGap)
       .ignoresSafeArea(edges: curvedPanelHorizontalInset == nil ? [] : .bottom)
     }
     .background(
@@ -319,7 +326,7 @@ struct MapPage: View {
         track(snapshot, at: context.date)
           .overlay {
             HStack {
-              phaseTitle(snapshot)
+              phaseTitle(snapshot, at: context.date)
               Spacer(minLength: 4)
               countdown(snapshot, at: context.date)
             }
@@ -346,10 +353,14 @@ struct MapPage: View {
     }
   }
 
-  private func phaseTitle(_ snapshot: WatchSnapshot) -> some View {
-    Text(snapshot.phaseTitle)
+  private func phaseTitle(_ snapshot: WatchSnapshot, at date: Date) -> some View {
+    // A missing deadline describes a durable state. A passed one describes
+    // only what the phone last reported, so dimming avoids presenting it as a
+    // live claim while still preserving the useful last-known phase.
+    let deadlineLapsed = snapshot.phaseEndsAt.map { $0 <= date } ?? false
+    return Text(snapshot.phaseTitle)
       .font(.system(size: 10, weight: .semibold))
-      .foregroundStyle(.white)
+      .foregroundStyle(.white.opacity(deadlineLapsed ? 0.45 : 1))
       .lineLimit(1)
       .truncationMode(.tail)
   }
