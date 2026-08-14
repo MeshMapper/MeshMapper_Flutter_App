@@ -1,5 +1,6 @@
 import SwiftUI
 
+#if DEBUG
 /// Raw state dump and command buttons.
 ///
 /// Kept from Phase 2 as a development surface while the real UI is built out.
@@ -7,6 +8,10 @@ import SwiftUI
 /// away once the node list and controls carry their own verification.
 struct DebugPage: View {
   @Environment(WatchSessionClient.self) private var client
+  @Environment(WatchSettings.self) private var settings
+
+  @State private var pingArmed = false
+  @State private var disarmPingTask: Task<Void, Never>?
 
   var body: some View {
     ScrollView {
@@ -41,6 +46,7 @@ struct DebugPage: View {
       .padding(.horizontal, 4)
       .opacity(client.isStale ? 0.45 : 1.0)
     }
+    .onDisappear { disarmPing() }
   }
 
   private var header: some View {
@@ -130,12 +136,23 @@ struct DebugPage: View {
 
   private var commandButtons: some View {
     VStack(spacing: 4) {
-      Button(sessionActive ? "Stop" : "Start") {
-        client.send(sessionActive ? .stopSession : .startSession)
+      Button(sessionActive ? "Stop" : "Start \(effectiveStartMode.label)") {
+        if sessionActive {
+          client.send(.stopSession)
+        } else {
+          client.send(.startSession, mode: effectiveStartMode.rawValue)
+        }
       }
       .disabled(!(client.snapshot?.controls.canStartStop ?? false))
 
-      Button("Manual ping") { client.send(.manualPing) }
+      Button(pingArmed ? "Send ping?" : "Manual ping") {
+        if pingArmed {
+          disarmPing()
+          client.send(.manualPing)
+        } else {
+          armPing()
+        }
+      }
         .disabled(!(client.snapshot?.controls.canManualPing ?? false))
 
       Button("Refresh") { client.send(.requestSnapshot) }
@@ -147,4 +164,30 @@ struct DebugPage: View {
   private var sessionActive: Bool {
     client.snapshot?.controls.isSessionActive ?? false
   }
+
+  private var effectiveStartMode: WatchSettings.DefaultStartMode {
+    settings.effectiveStartMode(
+      availableStartModes: client.snapshot?.availableStartModes
+    )
+  }
+
+  /// DEBUG still reaches physical development watches, so its raw-state page
+  /// keeps the same deliberate second tap as every shipping ping surface.
+  private func armPing() {
+    disarmPingTask?.cancel()
+    pingArmed = true
+    disarmPingTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(3))
+      guard !Task.isCancelled else { return }
+      pingArmed = false
+      disarmPingTask = nil
+    }
+  }
+
+  private func disarmPing() {
+    disarmPingTask?.cancel()
+    disarmPingTask = nil
+    pingArmed = false
+  }
 }
+#endif

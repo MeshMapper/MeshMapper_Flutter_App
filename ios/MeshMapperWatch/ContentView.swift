@@ -48,7 +48,11 @@ struct ContentView: View {
             .tag(2)
         }
 
+        #if DEBUG
+        // This page exposes raw, low-friction verification controls. Keeping
+        // it out of Release is a transmit-safety boundary, not page polish.
         DebugPage().tag(3)
+        #endif
         SettingsPage().tag(4)
       }
       .tabViewStyle(.verticalPage)

@@ -112,6 +112,7 @@ struct MapPage: View {
   /// deliberately narrow treatment, clearance is now evaluated at that real
   /// position so the lift buys the glanceable width the wearer requested.
   private static let panelBottomGapRatio: CGFloat = 10.0 / 19.0
+  private static let readoutFailureBannerBottomGap: CGFloat = 3
 
   private var panelBottomGap: CGFloat {
     bottomSafeAreaInset * Self.panelBottomGapRatio
@@ -152,6 +153,17 @@ struct MapPage: View {
   /// so its two-column decision does not depend on a nominal watch size.
   private var panelContentWidth: CGFloat {
     max(0, screenWidth - 2 * panelHorizontalInset - 16)
+  }
+
+  /// A centred toast with one radius of margin on each side is entirely
+  /// inboard of the bottom curve, so its vertical position no longer needs the
+  /// panel's chord calculation. Absence remains distinct from zero: without a
+  /// measured radius the banner must stay in the safe area.
+  private var readoutFailureBannerMaxWidth: CGFloat? {
+    guard bottomSafeAreaInset > 0 else { return nil }
+    let width = screenWidth - 2 * bottomSafeAreaInset
+    guard width.isFinite, width > 0 else { return nil }
+    return width
   }
 
   var body: some View {
@@ -215,6 +227,12 @@ struct MapPage: View {
         if UserDefaults.standard.bool(forKey: "MeshMapperShowNodeSheet") {
           showingNodes = true
         }
+        // A refusal normally needs a real command round-trip, which makes this
+        // transient impossible to capture headlessly. It still expires through
+        // the production six-second path, so screenshots must be prompt.
+        if let forced = UserDefaults.standard.string(forKey: "MeshMapperForceRefusal") {
+          client.debugForceRefusal(forced)
+        }
         #endif
       }
       .onChange(of: trailingToolbarControl) { _, _ in
@@ -243,6 +261,63 @@ struct MapPage: View {
       } else {
         readoutContent
       }
+    }
+  }
+
+  private var commandFailure: String? {
+    guard !isLuminanceReduced, let refusal = client.lastRefusal else {
+      return nil
+    }
+    switch client.lastRefusalCommand {
+    case nil, .startSession, .stopSession, .manualPing:
+      return refusal
+    case .requestSnapshot:
+      return nil
+    }
+  }
+
+  @ViewBuilder
+  private var commandFailureBanner: some View {
+    failureBanner(fillsAvailableWidth: true)
+  }
+
+  @ViewBuilder
+  private var compactCommandFailureBanner: some View {
+    failureBanner(fillsAvailableWidth: false)
+  }
+
+  @ViewBuilder
+  private func failureBanner(fillsAvailableWidth: Bool) -> some View {
+    if let commandFailure {
+      HStack(alignment: .firstTextBaseline, spacing: 4) {
+        Image(systemName: "exclamationmark.circle.fill")
+        Text(commandFailure)
+          .lineLimit(2)
+      }
+      .font(.system(size: 10, weight: .semibold))
+      .foregroundStyle(WatchPalette.armed)
+      .multilineTextAlignment(.leading)
+      .frame(
+        maxWidth: fillsAvailableWidth ? .infinity : nil,
+        alignment: .leading
+      )
+      .padding(.horizontal, 7)
+      .padding(.vertical, 4)
+      .background(
+        .ultraThinMaterial,
+        in: .rect(cornerRadius: WatchPalette.cornerRadius, style: .continuous)
+      )
+      .overlay(
+        RoundedRectangle(
+          cornerRadius: WatchPalette.cornerRadius,
+          style: .continuous
+        )
+          .stroke(.white.opacity(0.12), lineWidth: 0.5)
+      )
+      // Placement belongs to each surface's overlay. The banner itself owns no
+      // layout lifetime or geometry; the client still expires it after six
+      // seconds, and reduced luminance suppresses it in `commandFailure`.
+      .allowsHitTesting(false)
     }
   }
 
@@ -448,6 +523,38 @@ struct MapPage: View {
         // reader above receives its safe-area inset from the navigation host;
         // padding this descendant cannot alter that system-supplied value.
         .padding(.top, readoutTopOffset)
+        // Anchor to this safe-area-respecting child, not `readoutContent`.
+        // Its black sibling ignores the safe area and expands the enclosing
+        // ZStack past the display bottom, which would place a bottom-aligned
+        // banner off-screen — the same zero-inset trap this file has hit when
+        // geometry was read from an expanded region.
+        .overlay {
+          if let maxWidth = readoutFailureBannerMaxWidth {
+            VStack(spacing: 0) {
+              Spacer(minLength: 0)
+              compactCommandFailureBanner
+                // The transparent frame supplies a wrapping proposal and
+                // centres the toast; its material background remains on the
+                // intrinsic content rather than expanding permanent-looking
+                // chrome to the cap.
+                .frame(maxWidth: maxWidth)
+            }
+            // Three points keep the capsule's antialiasing visibly off the
+            // physical edge. Curvature needs no further allowance once both
+            // horizontal margins are at least the measured radius.
+            .padding(.bottom, Self.readoutFailureBannerBottomGap)
+            .ignoresSafeArea(edges: .bottom)
+          } else {
+            VStack(spacing: 0) {
+              Spacer(minLength: 0)
+              commandFailureBanner
+            }
+            // No measured radius means no permission to enter the bottom safe
+            // area; preserve the last known-safe placement exactly.
+            .padding(.horizontal, panelHorizontalInset)
+            .padding(.bottom, 4)
+          }
+        }
     }
   }
 
@@ -467,6 +574,17 @@ struct MapPage: View {
       }
       Spacer(minLength: 0)
       statusPanel
+        .overlay(alignment: .top) {
+          commandFailureBanner
+            .padding(.horizontal, 4)
+            // Aligning a guide below the banner with the panel's top puts the
+            // transient immediately above the measured card. Unlike adding a
+            // VStack row, an overlay contributes no size, so neither the
+            // panel's signed-off placement nor PanelFrameKey can move.
+            .alignmentGuide(.top) { dimensions in
+              dimensions[.bottom] + 3
+            }
+        }
         .background(
           GeometryReader { geo in
             Color.clear.preference(key: PanelFrameKey.self, value: geo.frame(in: .global))

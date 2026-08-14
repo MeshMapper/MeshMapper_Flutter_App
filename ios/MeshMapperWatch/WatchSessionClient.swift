@@ -147,6 +147,19 @@ final class WatchSessionClient: NSObject {
     pendingCommand = nil
   }
 
+  #if DEBUG
+  /// Seed a refusal so the failure banner can be captured headlessly.
+  ///
+  /// The banner is otherwise unreachable in the simulator: producing one needs
+  /// a command to be refused, and there is no way to tap a control there. It
+  /// expires on the usual six-second schedule, so a capture must be taken
+  /// inside that window — a screenshot at eight seconds shows an empty screen
+  /// and reads exactly like a broken banner.
+  func debugForceRefusal(_ message: String) {
+    setLastRefusal(message, from: .startSession)
+  }
+  #endif
+
   private func setLastRefusal(
     _ refusal: String?,
     from command: WatchCommand.Kind?
