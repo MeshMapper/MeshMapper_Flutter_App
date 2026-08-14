@@ -1240,6 +1240,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       isConnected: isConnected,
       controls: controls,
       cue: _watchCue,
+      mapGeoIncluded: _watchBridge.shouldIncludeMapGeo,
     );
   }
 
@@ -1256,6 +1257,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final phaseDurationMs = _phaseDurationMsFor(phase.endsAt);
     final pingColor = _resolveWatchPingColor();
+    final includeMapGeo = _watchBridge.shouldIncludeMapGeo;
 
     final core = LiveActivitySnapshot(
       sessionId: _liveActivitySessionId ?? 'idle',
@@ -1284,8 +1286,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     return WatchSnapshot(
       core: core,
-      geo: _buildWatchGeo(),
+      geo: _buildWatchGeo(includeMapGeo: includeMapGeo),
       controls: _buildWatchControls(),
+      mapGeoIncluded: includeMapGeo,
       availableStartModes: _availableWatchStartModes,
       pingColor: pingColor,
       cue: _watchCue,
@@ -1316,20 +1319,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
-  WatchGeo _buildWatchGeo() {
+  WatchGeo _buildWatchGeo({required bool includeMapGeo}) {
     final position = _resolveWatchPosition();
-
-    // Repeaters heard during the current cycle get the highlight ring.
-    final heardIds = _topRepeatersOverlay
-        .map((r) => r.repeaterId.toUpperCase())
-        .toSet();
 
     // The wrist mirrors the map's "Top Heard" overlay: the latest ping's top
     // three by SNR plus the current RX slot. Same source, so the two surfaces
     // can never disagree.
     final top = _topRepeatersOverlay;
     final rxSlot = _rxOverlaySlot;
-    if (rxSlot != null) heardIds.add(rxSlot.repeaterId.toUpperCase());
 
     // Overlay IDs are hex path hashes, so resolve names by prefix at whatever
     // length this zone actually uses.
@@ -1339,6 +1336,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final repeaterByHex = hexLength > 0
         ? WatchGeoBuilder.indexByHexPrefix(_repeaters, hexLength)
         : const <String, Repeater>{};
+    final heard = WatchGeoBuilder.buildHeard(
+      top: top,
+      rxSlot: rxSlot,
+      repeaterByHex: repeaterByHex,
+      topAt: _topRepeatersOverlayUpdatedAt,
+      rxAt: _liveActivityRxUpdatedAt,
+      lat: position?.lat,
+      lon: position?.lon,
+    );
+
+    // The readout still needs the fix and Top Heard, but none of the arrays
+    // below. Return before merging and sorting four ping histories or sorting
+    // the repeater catalogue: suppression is meant to save phone work as well
+    // as radio bytes.
+    if (!includeMapGeo) {
+      return WatchGeo(
+        you: position,
+        pings: const [],
+        repeaters: const [],
+        heard: heard,
+        linkedRepeaterIds: const [],
+      );
+    }
+
+    // Repeaters heard during the current cycle get the highlight ring.
+    final heardIds = top.map((r) => r.repeaterId.toUpperCase()).toSet();
+    if (rxSlot != null) heardIds.add(rxSlot.repeaterId.toUpperCase());
 
     return WatchGeo(
       you: position,
@@ -1354,15 +1378,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         lat: position?.lat,
         lon: position?.lon,
       ),
-      heard: WatchGeoBuilder.buildHeard(
-        top: top,
-        rxSlot: rxSlot,
-        repeaterByHex: repeaterByHex,
-        topAt: _topRepeatersOverlayUpdatedAt,
-        rxAt: _liveActivityRxUpdatedAt,
-        lat: position?.lat,
-        lon: position?.lon,
-      ),
+      heard: heard,
       linkedRepeaterIds: [
         ...WatchGeoBuilder.resolveUniqueHexPrefixes(
           repeaters: _repeaters,

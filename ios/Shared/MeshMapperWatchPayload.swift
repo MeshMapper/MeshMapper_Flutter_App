@@ -232,6 +232,9 @@ struct WatchSnapshot: Codable, Hashable {
   /// to derive policy independently.
   let availableStartModes: [String]
 
+  /// False means the map-only arrays were intentionally cleared. Missing on
+  /// older additive-v2 payloads means full geography, the fail-safe default.
+  let mapGeoIncluded: Bool
   let geo: WatchGeo
   let controls: WatchControls
   let cue: WatchHapticCue?
@@ -255,6 +258,7 @@ struct WatchSnapshot: Codable, Hashable {
     queueSize: Int,
     pingColor: WatchColor?,
     availableStartModes: [String] = ["passive"],
+    mapGeoIncluded: Bool = true,
     geo: WatchGeo,
     controls: WatchControls,
     cue: WatchHapticCue?,
@@ -277,6 +281,7 @@ struct WatchSnapshot: Codable, Hashable {
     self.queueSize = queueSize
     self.pingColor = pingColor
     self.availableStartModes = availableStartModes
+    self.mapGeoIncluded = mapGeoIncluded
     self.geo = geo
     self.controls = controls
     self.cue = cue
@@ -287,7 +292,7 @@ struct WatchSnapshot: Codable, Hashable {
     case wireVersion, sessionId, mode, phase, phaseTitle, phaseDetail
     case phaseEndsAtMs, phaseDurationMs, isConnected, zoneCode
     case txCount, rxCount, discoveryCount, traceCount, queueSize, pingColor
-    case availableStartModes, geo, controls, cue, updatedAtMs
+    case availableStartModes, mapGeoIncluded, geo, controls, cue, updatedAtMs
   }
 
   init(from decoder: Decoder) throws {
@@ -315,6 +320,12 @@ struct WatchSnapshot: Codable, Hashable {
       [String].self,
       forKey: .availableStartModes
     ) ?? ["passive"]
+    // Additive v2 field. An old phone always sends full geography, so absence
+    // must mean included; treating it as suppressed could blank a real map.
+    mapGeoIncluded = try values.decodeIfPresent(
+      Bool.self,
+      forKey: .mapGeoIncluded
+    ) ?? true
     geo = try values.decode(WatchGeo.self, forKey: .geo)
     controls = try values.decode(WatchControls.self, forKey: .controls)
     cue = try values.decodeIfPresent(WatchHapticCue.self, forKey: .cue)
@@ -361,6 +372,9 @@ struct WatchCommand: Codable, Hashable {
   /// Optional additive field. Older phones ignore it and retain their safe
   /// mode resolver; new phones revalidate it instead of silently downgrading.
   let mode: String?
+  /// Optional map-demand state carried only by requestSnapshot. An old phone
+  /// ignores it and keeps sending full geography, so wire v2 remains safe.
+  let mapGeoNeeded: Bool?
   /// Client-generated, so the phone can dedupe redelivered commands.
   let id: String
   /// Queued delivery can outlive the place where a transmit was requested.

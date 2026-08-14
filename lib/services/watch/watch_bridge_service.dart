@@ -35,6 +35,8 @@ class WatchBridgeService {
   static const Duration _debounceDelay = Duration(milliseconds: 200);
   static const Duration _minimumNonUrgentInterval = Duration(seconds: 2);
   static const Duration _maximumCommandAge = Duration(seconds: 30);
+  static const Duration _mapGeoClaimFreshFor = Duration(minutes: 10);
+  static const Duration _clockTolerance = Duration(seconds: 5);
 
   final MethodChannel _channel;
 
@@ -53,6 +55,8 @@ class WatchBridgeService {
   bool _disposed = false;
   bool _didReconcileNativeState = false;
   bool _canSync = false;
+  DateTime? _mapGeoSuppressedAt;
+  double? _lastMapGeoClaimIssuedAtMs;
   Future<void> _operationChain = Future<void>.value();
 
   /// Commands already handled, so redelivery can't fire a second transmit.
@@ -61,6 +65,17 @@ class WatchBridgeService {
   bool get isSupportedPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
   bool get canSync => isSupportedPlatform && _canSync;
+
+  /// Whether the next payload must carry map-only geography.
+  ///
+  /// Suppression is leased rather than latched. If the wrist stops renewing
+  /// its claim, the phone returns to full geo on the next build; excess bytes
+  /// are safer than leaving a newly-visible map blank.
+  bool get shouldIncludeMapGeo {
+    final suppressedAt = _mapGeoSuppressedAt;
+    if (suppressedAt == null) return true;
+    return DateTime.now().difference(suppressedAt) >= _mapGeoClaimFreshFor;
+  }
 
   /// Wire up the inbound command path. Safe to call more than once.
   void attachCommandHandler(
@@ -113,9 +128,35 @@ class WatchBridgeService {
 
     final rawIssuedAtMs = args['issuedAtMs'];
     final issuedAtMs = rawIssuedAtMs is num ? rawIssuedAtMs.toDouble() : null;
+    final ageMs = issuedAtMs == null
+        ? null
+        : DateTime.now().millisecondsSinceEpoch - issuedAtMs;
+    final requestedMapGeo = args['mapGeoNeeded'];
+    final mapGeoNeeded = requestedMapGeo is bool ? requestedMapGeo : null;
+    final freshMapGeoSuppression = ageMs != null &&
+        ageMs >= -_clockTolerance.inMilliseconds &&
+        ageMs <= _maximumCommandAge.inMilliseconds;
+    final latestMapGeoClaim = _lastMapGeoClaimIssuedAtMs;
+    final suppressionIsNewest = issuedAtMs != null &&
+        (latestMapGeoClaim == null || issuedAtMs >= latestMapGeoClaim);
+    final effectiveMapGeoNeeded = mapGeoNeeded == false &&
+            (!freshMapGeoSuppression || !suppressionIsNewest)
+        ? null
+        : mapGeoNeeded;
+    if (kind == WatchCommandKind.requestSnapshot &&
+        effectiveMapGeoNeeded != null) {
+      // A stale or out-of-order false could arrive after the wrist returned to
+      // the map. Ignore it silently; true is always safe because it only
+      // restores detail. Never move the ordering watermark backwards when an
+      // older true is accepted for that conservative reason.
+      _mapGeoSuppressedAt = effectiveMapGeoNeeded ? null : DateTime.now();
+      if (issuedAtMs != null &&
+          (latestMapGeoClaim == null || issuedAtMs >= latestMapGeoClaim)) {
+        _lastMapGeoClaimIssuedAtMs = issuedAtMs;
+      }
+    }
     if (kind != WatchCommandKind.requestSnapshot && issuedAtMs != null) {
-      final ageMs = DateTime.now().millisecondsSinceEpoch - issuedAtMs;
-      if (ageMs > _maximumCommandAge.inMilliseconds) {
+      if (ageMs! > _maximumCommandAge.inMilliseconds) {
         const reason = 'Took too long to reach iPhone';
         // This window is about correctness, not queue housekeeping: executing
         // a transmit after the vehicle has moved attributes it to the wrong
@@ -133,6 +174,7 @@ class WatchBridgeService {
       final admission = handler(WatchCommand(
         kind: kind,
         mode: args['mode'] as String?,
+        mapGeoNeeded: effectiveMapGeoNeeded,
       ));
       final refusal =
           admission is Future<String?> ? await admission : admission;
@@ -178,6 +220,8 @@ class WatchBridgeService {
     // availability remains true, or an installed replacement watch could wait
     // forever for state whose fingerprint Dart still considers delivered.
     if (!available || refreshNativeState) {
+      _mapGeoSuppressedAt = null;
+      _lastMapGeoClaimIssuedAtMs = null;
       _lastPayload = null;
       _lastUrgencyKey = null;
       _lastSentAt = null;
@@ -331,5 +375,7 @@ class WatchBridgeService {
     _commandRefusalHandler = null;
     _availabilityHandler = null;
     _snapshotDeliveryHandler = null;
+    _mapGeoSuppressedAt = null;
+    _lastMapGeoClaimIssuedAtMs = null;
   }
 }

@@ -34,7 +34,7 @@ struct ContentView: View {
     // without making any individual page create a second one.
     NavigationStack {
       TabView(selection: $selection) {
-        MapPage().tag(0)
+        MapPage(isSelected: selection == 0).tag(0)
         ControlsPage().tag(1)
 
         // The sheet placement is opened by tapping the map's status panel, which
