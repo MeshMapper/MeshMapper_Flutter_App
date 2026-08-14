@@ -298,33 +298,44 @@ struct MapPage: View {
   }
 
   private var effectiveStartMode: WatchSettings.DefaultStartMode {
-    let available = client.snapshot?.availableStartModes ?? ["passive"]
-    return available.contains(settings.defaultStartMode.rawValue)
-      ? settings.defaultStartMode
-      : .passive
+    settings.effectiveStartMode(
+      availableStartModes: client.snapshot?.availableStartModes
+    )
   }
 
+  @ViewBuilder
   private var trailingToolbarButton: some View {
     let control = trailingToolbarControl
     let pending = client.pendingCommand == control.command
     let armed = armedToolbarControl == control
 
-    return Button {
+    let button = Button {
       handleToolbarControl(control)
     } label: {
       ZStack {
         if pending {
           ProgressView()
             .controlSize(.mini)
+            .tint(toolbarActionColor(for: control))
         } else {
           Image(systemName: toolbarIcon(for: control, armed: armed))
+            .foregroundStyle(toolbarGlyphColor(for: control, armed: armed))
         }
       }
       .frame(width: 18, height: 18)
     }
-    .tint(toolbarTint(for: control, armed: armed))
     .disabled(!trailingToolbarControlIsEnabled)
     .accessibilityLabel(toolbarAccessibilityLabel(for: control, armed: armed))
+
+    if armed {
+      // Resting actions use the same quiet glass container as the display
+      // toggle. The three-second confirmation window is deliberately the only
+      // filled state: its amber capsule signals that the next tap has a
+      // consequence, rather than merely decorating a persistent control.
+      button.tint(WatchPalette.armed)
+    } else {
+      button
+    }
   }
 
   private func handleToolbarControl(_ control: TrailingToolbarControl) {
@@ -354,17 +365,23 @@ struct MapPage: View {
     }
   }
 
-  private func toolbarTint(
-    for control: TrailingToolbarControl,
-    armed: Bool
+  private func toolbarActionColor(
+    for control: TrailingToolbarControl
   ) -> Color {
-    guard trailingToolbarControlIsEnabled else { return WatchPalette.disabled }
-    if armed { return WatchPalette.armed }
     switch control {
     case .start: return WatchPalette.start
     case .stop: return WatchPalette.stop
     case .ping: return WatchPalette.ping
     }
+  }
+
+  private func toolbarGlyphColor(
+    for control: TrailingToolbarControl,
+    armed: Bool
+  ) -> Color {
+    guard trailingToolbarControlIsEnabled else { return WatchPalette.disabled }
+    if armed { return .white }
+    return toolbarActionColor(for: control)
   }
 
   private func toolbarAccessibilityLabel(

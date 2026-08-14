@@ -11,6 +11,9 @@ struct ControlsPage: View {
   @State private var pingArmed = false
   @State private var disarmPingTask: Task<Void, Never>?
 
+  private static let minimumTapHeight: CGFloat = 44
+  private static let compactLabelHeight: CGFloat = 24
+
   private var controls: WatchControls? { client.snapshot?.controls }
 
   /// Manual-ping cooldown deadline, if one is still ahead of us.
@@ -24,27 +27,37 @@ struct ControlsPage: View {
     ScrollView {
       // No page title. The buttons name themselves, and on a 40 mm screen a
       // header pushed `blockedReason` — the one thing that explains a dead
-      // button — below the fold, which is the opposite of what it is for.
-      VStack(spacing: 10) {
-        startStopButton
-        manualPingButton
+      // button — below the fold, which is the opposite of what it is for. The
+      // compact in-card context adds meaning without spending a navigation row.
+      VStack(spacing: 5) {
+        sessionHeader
+        startStopControl
+        manualPingControl
 
-        if let reason = controls?.blockedReason {
-          Text(reason)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-        }
-
-        if let refusal = client.lastRefusal {
-          Text(refusal)
-            .font(.caption2)
-            .foregroundStyle(.orange)
-            .multilineTextAlignment(.center)
+        // A fresh cue retained across a watch-process restart has no local tap
+        // to name. Keep that rare but valid feedback visible without guessing
+        // which control owns it.
+        if client.lastRefusalCommand == nil,
+           let refusal = client.lastRefusal
+        {
+          refusalMessage(refusal)
         }
       }
-      .padding(.horizontal, 8)
-      .padding(.top, 4)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 5)
+      .background(
+        .ultraThinMaterial,
+        in: .rect(cornerRadius: WatchPalette.cornerRadius, style: .continuous)
+      )
+      .overlay(
+        RoundedRectangle(
+          cornerRadius: WatchPalette.cornerRadius,
+          style: .continuous
+        )
+          .stroke(.white.opacity(0.12), lineWidth: 0.5)
+      )
+      .padding(.horizontal, 6)
+      .padding(.top, 2)
       // The last line must not finish against the bottom edge: the display
       // curves there, and the simulator's flat rectangle has hidden exactly
       // this twice before.
@@ -58,6 +71,97 @@ struct ControlsPage: View {
       if canManualPing != true { disarmPing() }
     }
     .onDisappear { disarmPing() }
+  }
+
+  private var sessionHeader: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 0) {
+      // The mode doubles as the compact section label. A separate "SESSION"
+      // row would spend the exact vertical space that keeps a two-line blocked
+      // reason visible on the 40 mm display.
+      Text(controls?.isSessionActive == true
+        ? (client.snapshot?.mode.uppercased() ?? "SESSION")
+        : "IDLE")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.white.opacity(0.55))
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+
+      Spacer(minLength: 4)
+
+      Text(client.snapshot?.phaseTitle ?? "Waiting for iPhone")
+        // Phase titles are prose, not an identity or numeric value. The
+        // proportional face plus bounded scaling keeps even "Device
+        // disconnected" and "Listening for trace…" intact on 40 mm without
+        // buying that width by pushing the blocked reason below the fold.
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(.white)
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
+        .allowsTightening(true)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var startStopControl: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      startStopButton
+      if controls?.canStartStop != true,
+         let reason = controls?.blockedReason
+      {
+        controlReason(reason)
+      }
+      if let refusal = startStopRefusal {
+        refusalMessage(refusal)
+      }
+    }
+  }
+
+  private var manualPingControl: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      manualPingButton
+      // When Start/Stop is also unavailable, its action owns the shared reason
+      // above. Otherwise keep the explanation immediately under Manual ping.
+      if controls?.canStartStop == true,
+         controls?.canManualPing != true,
+         let reason = controls?.blockedReason
+      {
+        controlReason(reason)
+      }
+      if client.lastRefusalCommand == .manualPing,
+         let refusal = client.lastRefusal
+      {
+        refusalMessage(refusal)
+      }
+    }
+  }
+
+  private var startStopRefusal: String? {
+    switch client.lastRefusalCommand {
+    case .startSession, .stopSession:
+      return client.lastRefusal
+    default:
+      return nil
+    }
+  }
+
+  private func controlReason(_ reason: String) -> some View {
+    Text(reason)
+      .font(.system(size: 10, weight: .medium))
+      .foregroundStyle(.white.opacity(0.45))
+      .multilineTextAlignment(.leading)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 4)
+  }
+
+  private func refusalMessage(_ refusal: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 4) {
+      Image(systemName: "exclamationmark.circle.fill")
+      Text(refusal)
+    }
+    .font(.system(size: 10, weight: .medium))
+    .foregroundStyle(WatchPalette.armed)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, 4)
   }
 
   private var startStopButton: some View {
@@ -74,10 +178,10 @@ struct ControlsPage: View {
       client.send(kind)
     } label: {
       Text(buttonTitle)
-        .font(.headline)
+        .font(.system(size: 13, weight: .semibold))
         .lineLimit(1)
         .truncationMode(.tail)
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: Self.compactLabelHeight)
         // A ProgressView accepts the horizontal slack offered by a stack. As
         // an overlay it can appear without participating in the label's
         // centring, so feedback never makes the action jump under a thumb.
@@ -91,9 +195,15 @@ struct ControlsPage: View {
         }
     }
     .buttonStyle(.borderedProminent)
-    // Grey when unavailable rather than a desaturated tint: a disabled green
-    // renders pale enough to read as a live button worth tapping.
-    .tint(isEnabled ? (isActive ? .red : .green) : .gray)
+    // The prominent watch style supplies substantial chrome outside its
+    // label. Giving the label the full ergonomic floor made the finished
+    // target 69.5 pt tall; applying that floor to the styled Button preserves
+    // the moving-vehicle tap target without paying for it twice.
+    .frame(minHeight: Self.minimumTapHeight)
+    .buttonBorderShape(.roundedRectangle(radius: WatchPalette.cornerRadius))
+    .tint(isEnabled
+      ? (isActive ? WatchPalette.stop : WatchPalette.start)
+      : WatchPalette.disabled)
     .disabled(!isEnabled)
   }
 
@@ -110,7 +220,7 @@ struct ControlsPage: View {
       }
     } label: {
       pingLabel(isPending: isPending)
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: Self.compactLabelHeight)
       // Keep this identical to Start/Stop: pending feedback belongs at the
       // edge of the target, not in the row that determines its label's centre.
       .overlay(alignment: .leading) {
@@ -123,7 +233,11 @@ struct ControlsPage: View {
       }
     }
     .buttonStyle(.borderedProminent)
-    .tint(isEnabled ? (pingArmed ? .orange : .accentColor) : .gray)
+    .frame(minHeight: Self.minimumTapHeight)
+    .buttonBorderShape(.roundedRectangle(radius: WatchPalette.cornerRadius))
+    .tint(isEnabled
+      ? (pingArmed ? WatchPalette.armed : WatchPalette.ping)
+      : WatchPalette.disabled)
     .disabled(!isEnabled)
   }
 
@@ -147,10 +261,10 @@ struct ControlsPage: View {
           .monospacedDigit()
           .frame(width: 38, alignment: .leading)
       }
-      .font(.headline)
+      .font(.system(size: 13, weight: .semibold))
     } else {
       Text(isPending ? "Sending…" : (pingArmed ? "Send ping?" : "Manual ping"))
-        .font(.headline)
+        .font(.system(size: 13, weight: .semibold))
     }
   }
 

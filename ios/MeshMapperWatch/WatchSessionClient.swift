@@ -24,6 +24,11 @@ final class WatchSessionClient: NSObject {
   /// Both belong to one short-lived presentation path on the controls page.
   private(set) var lastRefusal: String?
 
+  /// Explicit attribution lets Controls place feedback beside the action it
+  /// explains without guessing that an unrelated phone event belongs to the
+  /// last thing tapped. It never affects admission, transport, or the command.
+  private(set) var lastRefusalCommand: WatchCommand.Kind?
+
   /// A refusal explains one completed tap, not the current transport state.
   /// Restarting its lifetime on replacement prevents an older expiry from
   /// erasing newer feedback that happens to arrive near the same moment.
@@ -96,7 +101,9 @@ final class WatchSessionClient: NSObject {
   /// duplicate-transmit risk of retrying an ambiguously delivered message.
   func send(_ kind: WatchCommand.Kind, mode: String? = nil, silent: Bool = false) {
     guard let session, session.activationState == .activated else {
-      if !silent { setLastRefusal("Not connected to iPhone") }
+      if !silent {
+        setLastRefusal("Not connected to iPhone", from: kind)
+      }
       return
     }
 
@@ -109,12 +116,14 @@ final class WatchSessionClient: NSObject {
     guard let data = try? MeshMapperWatchWire.encoder.encode(command),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
-      if !silent { setLastRefusal("Could not encode command") }
+      if !silent {
+        setLastRefusal("Could not encode command", from: kind)
+      }
       return
     }
 
     if !silent {
-      setLastRefusal(nil)
+      setLastRefusal(nil, from: kind)
       beginPending(kind)
     }
 
@@ -138,16 +147,21 @@ final class WatchSessionClient: NSObject {
     pendingCommand = nil
   }
 
-  private func setLastRefusal(_ refusal: String?) {
+  private func setLastRefusal(
+    _ refusal: String?,
+    from command: WatchCommand.Kind?
+  ) {
     refusalExpiryTask?.cancel()
     refusalExpiryTask = nil
     lastRefusal = refusal
+    lastRefusalCommand = refusal == nil ? nil : command
 
     guard refusal != nil else { return }
     refusalExpiryTask = Task { @MainActor [weak self] in
       try? await Task.sleep(for: .seconds(6))
       guard !Task.isCancelled else { return }
       self?.lastRefusal = nil
+      self?.lastRefusalCommand = nil
       self?.refusalExpiryTask = nil
     }
   }
@@ -216,7 +230,11 @@ final class WatchSessionClient: NSObject {
           self.presentedCueIDs.remove(self.presentedCueIDOrder.removeFirst())
         }
         if let message = cue.message, !message.isEmpty {
-          self.setLastRefusal(message)
+          // A cue may be a late wrist-command failure or an unrelated phone
+          // event; the current wire cannot distinguish them, so attribution
+          // here would be a guess. Correlating it later requires carrying the
+          // originating command on `WatchHapticCue` across the wire.
+          self.setLastRefusal(message, from: nil)
         }
       }
     }
