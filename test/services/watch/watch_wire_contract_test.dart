@@ -940,12 +940,12 @@ void main() {
     late MethodChannel channel;
     late List<Map<Object?, Object?>> sent;
 
-    /// Long enough for the 2 s non-urgent throttle to clear and for the
-    /// bridge's own retry timer to run, so "no send" means suppressed rather
-    /// than merely deferred. A fresh bridge has no throttle history at all, so
-    /// its first push needs neither.
-    const settle = Duration(milliseconds: 2500);
-    const firstPush = Duration(milliseconds: 100);
+    /// Waiting out the 2 s non-urgent throttle is only necessary when the
+    /// assertion is that nothing was sent. A fixed wait tuned near that
+    /// boundary flakes on a loaded machine — this suite has already seen it —
+    /// so the positive cases poll instead and only "no send" pays a fixed cost.
+    const suppressionWindow = Duration(seconds: 3);
+    const sendTimeout = Duration(seconds: 8);
 
     setUp(() {
       TestWidgetsFlutterBinding.ensureInitialized();
@@ -998,14 +998,33 @@ void main() {
           linkedRepeaterIds: const [],
         );
 
-    Future<void> push(WatchGeo geo, {Duration wait = settle}) async {
+    void schedule(WatchGeo geo) {
       final snapshot = _snapshot(geo: geo);
       bridge.schedule(
         () => snapshot,
         urgencyKeyBuilder: () => snapshot.urgencyKey,
         immediate: true,
       );
-      await Future<void>.delayed(wait);
+    }
+
+    /// Polls for the send rather than sleeping a fixed interval. The bridge
+    /// reschedules instead of sending while the throttle is closed, so the
+    /// delay is real but its exact length is not the thing under test.
+    Future<void> pushExpectingSend(WatchGeo geo, int total) async {
+      schedule(geo);
+      final deadline = DateTime.now().add(sendTimeout);
+      while (sent.length < total && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+      expect(sent, hasLength(total));
+    }
+
+    /// There is nothing to poll for, so this waits past the throttle *and* the
+    /// retry it schedules: "no send" has to mean suppressed, not deferred.
+    Future<void> pushExpectingSuppression(WatchGeo geo, int total) async {
+      schedule(geo);
+      await Future<void>.delayed(suppressionWindow);
+      expect(sent, hasLength(total));
     }
 
     double sentLat(int index) {
@@ -1018,40 +1037,39 @@ void main() {
         () async {
       // 1e-5 degrees of latitude is about 1.11 m here, so 47.60002 is roughly
       // 2 m from the baseline and 47.6003 is roughly 33 m.
-      await push(geoAt(47.6, fixedAtMs: 1760000000000), wait: firstPush);
-      expect(sent, hasLength(1), reason: 'the first fix always goes');
+      await pushExpectingSend(geoAt(47.6, fixedAtMs: 1760000000000), 1);
 
       // A newer fix time and a couple of metres. This is a stationary phone,
       // and it must not reach the radio — including on the retry the throttle
       // scheduled, which `settle` has already allowed to fire.
-      await push(geoAt(47.60002, fixedAtMs: 1760000030000));
-      expect(sent, hasLength(1));
+      await pushExpectingSuppression(geoAt(47.60002, fixedAtMs: 1760000030000), 1);
 
       // The same two metres, now travelling with a ping. The ping alone
       // defeats the dedupe, so this send happens either way; the assertion is
       // that it carries the *current* fix rather than the last one sent.
-      await push(geoAt(
-        47.60002,
-        fixedAtMs: 1760000060000,
-        pings: [
-          WatchPing(
-            id: 'rx-1760000060000',
-            lat: 47.60002,
-            lon: -122.3,
-            kind: 'rx',
-            color: const WatchColor(0, 0, 255),
-            at: DateTime.fromMillisecondsSinceEpoch(1760000060000),
-          ),
-        ],
-      ));
-      expect(sent, hasLength(2));
+      await pushExpectingSend(
+        geoAt(
+          47.60002,
+          fixedAtMs: 1760000060000,
+          pings: [
+            WatchPing(
+              id: 'rx-1760000060000',
+              lat: 47.60002,
+              lon: -122.3,
+              kind: 'rx',
+              color: const WatchColor(0, 0, 255),
+              at: DateTime.fromMillisecondsSinceEpoch(1760000060000),
+            ),
+          ],
+        ),
+        2,
+      );
       expect(sentLat(1), 47.60002,
           reason: 'the puck must not lag the ping beside it');
 
       // And the gate still opens on its own once the wearer has actually
       // moved, with nothing else in the payload changing.
-      await push(geoAt(47.6003, fixedAtMs: 1760000090000));
-      expect(sent, hasLength(3));
+      await pushExpectingSend(geoAt(47.6003, fixedAtMs: 1760000090000), 3);
       expect(sentLat(2), 47.6003);
     });
 
@@ -1082,27 +1100,21 @@ void main() {
             linkedRepeaterIds: const [],
           );
 
-      await push(geoWith(47.6, 1423.5), wait: firstPush);
-      expect(sent, hasLength(1));
+      await pushExpectingSend(geoWith(47.6, 1423.5), 1);
 
       // Two metres of jitter, with the distance readout recomputed from it.
-      await push(geoWith(47.60002, 1421.3));
-      expect(sent, hasLength(2),
-          reason: 'a moved distanceM is indistinguishable from real news');
+      await pushExpectingSend(geoWith(47.60002, 1421.3), 2);
     });
 
     test('measures from the last fix the watch received', () async {
-      await push(geoAt(47.6, fixedAtMs: 1760000000000), wait: firstPush);
-      expect(sent, hasLength(1));
+      await pushExpectingSend(geoAt(47.6, fixedAtMs: 1760000000000), 1);
 
       // Two ~11 m steps in the same direction. Each is short of the threshold
       // on its own, but the second lands ~22 m from the fix the watch actually
       // holds, so it goes. Anchoring on the previous *computed* fix instead
       // would suppress a wearer walking away one short step at a time.
-      await push(geoAt(47.6001, fixedAtMs: 1760000030000));
-      expect(sent, hasLength(1));
-      await push(geoAt(47.6002, fixedAtMs: 1760000060000));
-      expect(sent, hasLength(2), reason: '~22 m from the delivered fix');
+      await pushExpectingSuppression(geoAt(47.6001, fixedAtMs: 1760000030000), 1);
+      await pushExpectingSend(geoAt(47.6002, fixedAtMs: 1760000060000), 2);
       expect(sentLat(1), 47.6002);
     });
   });
