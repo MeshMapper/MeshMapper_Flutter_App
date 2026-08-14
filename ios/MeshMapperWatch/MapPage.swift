@@ -88,9 +88,9 @@ struct MapPage: View {
     }
   }
 
-  /// The panel's frame in global coordinates, so the camera can keep the fix
-  /// out from behind it.
-  @State private var panelFrame: CGRect = .zero
+  /// The panel's measured height, which is what the camera inset needs and,
+  /// unlike its position, does not change while a page transition is animating.
+  @State private var panelHeight: CGFloat = 0
   @State private var latchedTopSafeAreaInset: CGFloat = 0
   @State private var currentTopSafeAreaInset: CGFloat = 0
   @State private var bottomSafeAreaInset: CGFloat = 0
@@ -98,25 +98,42 @@ struct MapPage: View {
   /// Only one subtree sets this, but every *other* subtree still contributes
   /// the default. Taking `nextValue()` unconditionally would let a later
   /// sibling's `.zero` overwrite the real measurement, so empties are ignored.
-  private struct PanelFrameKey: PreferenceKey {
-    static let defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+  ///
+  /// This carries the panel's **height**, never its position. Position was a
+  /// runaway loop: an interactive page swipe translates the page, so a global
+  /// frame changes every frame, which changed the camera inset, which
+  /// re-framed the map, which invalidated layout, which re-measured. The watch
+  /// wedged with a blurred half-finished transition — 21,611 MapKit
+  /// reconfigurations and 4,300 body evaluations per second, main thread never
+  /// free. Height does not change when the page moves, so the cycle cannot
+  /// close. A programmatic selection change never exposes those intermediate
+  /// positions, which is why only a real swipe reproduced it.
+  private struct PanelHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
       let next = nextValue()
-      if next != .zero { value = next }
+      if next > 0 { value = next }
     }
   }
 
   /// How much of the display the status panel is covering, handed to MapKit so
   /// it frames the camera in the band that remains visible.
   ///
-  /// Measured rather than assumed: the panel's height changes with its content
-  /// — one column or two, with or without heard rows — and a stale constant
-  /// would drift the fix off centre exactly when the panel grew. Before the
-  /// first measurement this is zero, which simply centres on the full display
-  /// for a frame.
+  /// Derived from the panel's height plus the gap it leaves beneath itself,
+  /// which reconstructs exactly what a bottom-anchored panel occupies without
+  /// asking where it currently is. Measured rather than assumed because the
+  /// height changes with content — one column or two, with or without heard
+  /// rows — and a stale constant would drift the fix off centre precisely when
+  /// the panel grew.
   private var panelCameraInset: CGFloat {
-    guard panelFrame.height > 0 else { return 0 }
-    return max(0, WKInterfaceDevice.current().screenBounds.height - panelFrame.minY)
+    guard panelHeight > 0 else { return 0 }
+    let gapBeneath = curvedPanelHorizontalInset == nil
+      ? bottomSafeAreaInset
+      : panelBottomGap
+    // Clamped: an inset approaching the display height would leave MapKit no
+    // band to frame, and nothing about a status panel justifies that.
+    let limit = WKInterfaceDevice.current().screenBounds.height * 0.75
+    return min(max(0, panelHeight + gapBeneath), limit)
   }
 
   /// The placement scales with the estimated corner radius, putting every
@@ -523,9 +540,9 @@ struct MapPage: View {
       map(proxy)
       mapOverlay(proxy)
     }
-    .onPreferenceChange(PanelFrameKey.self) { frame in
-      guard abs(frame.minY - panelFrame.minY) > 0.5 || panelFrame.height == 0 else { return }
-      panelFrame = frame
+    .onPreferenceChange(PanelHeightKey.self) { height in
+      guard abs(height - panelHeight) > 0.5 else { return }
+      panelHeight = height
       recenterIfFollowing(proxy)
     }
     .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
@@ -610,14 +627,16 @@ struct MapPage: View {
             // Aligning a guide below the banner with the panel's top puts the
             // transient immediately above the measured card. Unlike adding a
             // VStack row, an overlay contributes no size, so neither the
-            // panel's signed-off placement nor PanelFrameKey can move.
+            // panel's signed-off placement nor its measured height can move.
             .alignmentGuide(.top) { dimensions in
               dimensions[.bottom] + 3
             }
         }
         .background(
           GeometryReader { geo in
-            Color.clear.preference(key: PanelFrameKey.self, value: geo.frame(in: .global))
+            // Size, not frame: a global position moves with the page during
+            // an interactive swipe and closes a layout feedback loop.
+            Color.clear.preference(key: PanelHeightKey.self, value: geo.size.height)
           }
         )
     }
