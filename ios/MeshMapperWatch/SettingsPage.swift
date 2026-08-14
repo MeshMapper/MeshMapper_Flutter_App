@@ -66,6 +66,14 @@ struct SettingsPage: View {
           isOn: $settings.showPingWhenAvailable
         )
       }
+
+      #if DEBUG
+      // Not a preference — an A/B switch for an Instruments trace, so it never
+      // reaches Release. Takes effect from the next phase rather than mid-drain.
+      Section("Instruments") {
+        Toggle("Freeze timer bar", isOn: $settings.freezesTimerBar)
+      }
+      #endif
     }
     .font(.caption)
   }

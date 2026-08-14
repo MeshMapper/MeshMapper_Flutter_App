@@ -164,6 +164,23 @@ final class WatchSettings {
     didSet { defaults.set(showPingWhenAvailable, forKey: Key.showPingWhenAvailable) }
   }
 
+  #if DEBUG
+  /// Freeze the countdown bar's drain, for measuring what that animation costs.
+  ///
+  /// Read statically rather than through an instance so the animation path does
+  /// not take an observation dependency on it: flipping this must change the
+  /// next phase, not invalidate the view mid-drain and perturb the very trace
+  /// it exists to produce.
+  static var debugFreezesTimerBar: Bool {
+    UserDefaults.standard.bool(forKey: "MeshMapperFreezeTimerBar")
+  }
+
+  var freezesTimerBar: Bool {
+    get { Self.debugFreezesTimerBar }
+    set { defaults.set(newValue, forKey: "MeshMapperFreezeTimerBar") }
+  }
+  #endif
+
   /// One promise shared by Settings and the explicit-mode Start control. If
   /// these surfaces resolve independently, Settings can claim Hybrid while a
   /// tap silently requests Passive — precisely the kind of mode ambiguity the

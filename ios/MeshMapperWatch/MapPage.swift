@@ -1158,9 +1158,20 @@ private struct WatchPhaseBar: View {
     guard remaining > 0 else { return }
 
     await Task.yield()
+    #if DEBUG
+    // A/B harness for the drain's energy cost. The fill is an animated *layout*
+    // width, so SwiftUI re-runs layout every frame for the whole phase rather
+    // than handing a transform to the render server. Freezing it leaves every
+    // other cost in place — same snapshots, same markers, same timer text — so
+    // an Instruments trace of the two states isolates this animation alone.
+    if !WatchSettings.debugFreezesTimerBar {
+      withAnimation(.linear(duration: remaining)) { remainingFraction = 0 }
+    }
+    #else
     withAnimation(.linear(duration: remaining)) {
       remainingFraction = 0
     }
+    #endif
 
     do {
       try await Task.sleep(for: .seconds(remaining))
