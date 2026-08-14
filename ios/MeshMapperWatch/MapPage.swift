@@ -46,11 +46,50 @@ struct MapPage: View {
   /// Non-nil once we have driven the camera. Assignment is not proof that
   /// MapKit rendered the request, but it is the first half of the span
   /// handshake that keeps `.automatic` from becoming the remembered zoom.
+  ///
+  /// It doubles as the in-memory half of the centre seed: it is by definition
+  /// the last place we drove the camera to, so a rebuilt map can be restored
+  /// from it without waiting on a fix.
   @State private var programmaticCenter: CLLocationCoordinate2D?
+
+  /// Whether *this* native map has been given a region of ours.
+  ///
+  /// Scoped to the map's lifetime like `hasConfirmedRequestedSpan`, and for the
+  /// same reason: `MapPage` survives a wrist drop while the `Map` inside it does
+  /// not, so a flag scoped to the page would claim a freshly built map was
+  /// already anchored. Cleared in `mapContent`'s `onAppear`.
+  ///
+  /// This is what makes the anchor idempotent. Follow re-asserts on every geo
+  /// update and that is fine; the anchor must fire exactly once per map, or a
+  /// wearer with Follow off would have their Crown zoom overwritten by a
+  /// re-assert on every panel resize.
+  @State private var hasAssertedRegion = false
 
   /// Span counterpart to the centre handshake: MapKit can report its old
   /// `.automatic` fit after we assign a region, so assignment alone is not
   /// evidence that a rendered zoom came from us.
+  ///
+  /// Scoped to the *native map's* lifetime, not the page's. Dimming tears the
+  /// map subtree down while `MapPage` — and therefore this `@State` — survives,
+  /// so a confirmation earned before a wrist drop would otherwise still be
+  /// standing when a freshly built `Map` emits its first region. Nothing proves
+  /// that region is ours, and with the handshake already satisfied
+  /// `noteRenderedRegion` would bank it as a Crown zoom and overwrite the
+  /// wearer's saved span. `mapContent` clears it on appear so every native map
+  /// re-earns the confirmation.
+  ///
+  /// **Load-bearing, and measured so.** The simulator gave no support for this
+  /// at all — three teardown cycles, 0.0% drift every time — and it was written
+  /// as speculative hardening. Hardware disagreed immediately. Once the camera
+  /// falls into `.automatic` it reports a continental fit on *every* subsequent
+  /// rebuild: twenty consecutive callbacks at 34.364390 degrees, ~3,800 km,
+  /// against a requested 0.000500. Each one arrives at a freshly built map with
+  /// this flag cleared, so the 25% gate rejects it and the wearer's saved zoom
+  /// survives a completely broken camera. Without the reset, the first of those
+  /// twenty would have been banked as a Crown zoom and persisted.
+  ///
+  /// This protects the *setting*, not the view. The camera getting stuck is a
+  /// separate defect — see `recenterIfFollowing`.
   @State private var hasConfirmedRequestedSpan = false
 
   /// Initial confirmation only needs to distinguish our request from the much
@@ -263,6 +302,19 @@ struct MapPage: View {
         if let forced = UserDefaults.standard.string(forKey: "MeshMapperForceRefusal") {
           client.debugForceRefusal(forced)
         }
+        // Time the readout->map switch, which rebuilds the same MapKit tree a
+        // wrist raise does — the one thing about a raise that is reproducible
+        // without a wrist, since Always-On cannot be entered here. Pair it with
+        // `-layout.mainPageContent readout` or the flip is a no-op against a
+        // map that is already showing, which reads as a suspiciously fast
+        // result rather than as no measurement at all.
+        if UserDefaults.standard.bool(forKey: "MeshMapperTimeSwitchToMap") {
+          Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            NSLog("[switch] requesting map at %f", Date().timeIntervalSince1970)
+            settings.mainPageContent = .map
+          }
+        }
         #endif
         client.setMapGeoNeeded(needsMapGeo)
       }
@@ -286,25 +338,45 @@ struct MapPage: View {
       }
       .onChange(of: isLuminanceReduced) { _, reduced in
         if reduced { disarmToolbarControl() }
+        #if DEBUG
+        // The reference timestamp for a wrist-raise measurement. Nothing else
+        // marks the moment the wrist came up, so without this the `map` and
+        // `span` lines have no zero to be measured against.
+        WakeLog.note(reduced ? "wrist-down" : "wrist-up")
+        #endif
       }
       .onDisappear { disarmToolbarControl() }
+      // A main-actor "hitch" detector lived here — a 250 ms tick that logged
+      // whenever it lost more than a second — meant to decide whether the 6.1 s
+      // wake stall was the app being descheduled or SwiftUI deferring the
+      // rebuild. It was removed because it cannot tell those apart from the one
+      // thing that always happens: watchOS suspends this app while the wrist is
+      // down, so the tick simply stops. Measured, it fired on every single wake
+      // at almost exactly the wrist-down duration — 7.42 s against 8.20 s,
+      // 12.89 against 13.63, 23.01 against 23.99. It reports suspension and
+      // calls it a stall.
+      //
+      // Its silence was equally worthless, and had already been cited as
+      // evidence that the stall "did not recur". Anything replacing it must
+      // establish the app was actually scheduled — a suspension-aware signal
+      // such as `scenePhase`, not a timer that cannot observe its own absence.
   }
 
   private var pageContent: some View {
     ZStack {
       if showsMap {
-        // Keep the reader inside this branch: constructing even map
+        // Keep the map inside this branch: constructing even map
         // infrastructure behind the readout would defeat its battery purpose.
         //
-        // DECIDE BEFORE OPENING A PR: this reader is now vestigial. Camera
-        // placement moved to safe-area insets, so nothing calls
-        // `proxy.convert` and the proxy is threaded through five functions
-        // unused. Removing it is a hierarchy change around a map whose launch
-        // and framing behaviour was verified by measurement, so it wants its
-        // own change and its own A/B — not a quiet tidy-up inside another one.
-        MapReader { proxy in
-          mapContent(proxy)
-        }
+        // There is deliberately no `MapReader` here. One wrapped this content
+        // while `centerPlacing` and `correctPlacement` translated the camera
+        // through `proxy.convert`; camera placement is now `.safeAreaPadding`,
+        // which insets MapKit's own framing, so no coordinate conversion
+        // happens anywhere in this file. The proxy was threaded through six
+        // functions unread. Do not reintroduce a reader to place the camera —
+        // see the handoff: the map's SwiftUI frame is not the map, and any
+        // offset computed from view geometry under-shoots.
+        mapContent
       } else {
         readoutContent
       }
@@ -535,22 +607,57 @@ struct MapPage: View {
     armedToolbarControl = nil
   }
 
-  private func mapContent(_ proxy: MapProxy) -> some View {
+  private var mapContent: some View {
     ZStack {
-      map(proxy)
-      mapOverlay(proxy)
+      map
+      mapOverlay
     }
     .onPreferenceChange(PanelHeightKey.self) { height in
       guard abs(height - panelHeight) > 0.5 else { return }
       panelHeight = height
-      recenterIfFollowing(proxy)
+      recenterIfFollowing()
     }
     .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
-      recenterIfFollowing(proxy)
+      recenterIfFollowing()
+      // A first fix is the moment a map that had nothing to anchor to becomes
+      // placeable. Idempotent, so this is a no-op on every later update.
+      anchorCameraIfNeeded()
     }
     .onAppear {
-      recenterIfFollowing(proxy)
+      // A new native map has to re-earn the span handshake, and holds no region
+      // of ours until one is asserted below.
+      hasConfirmedRequestedSpan = false
+      hasAssertedRegion = false
+      #if DEBUG
+      // Marks the MapKit subtree being rebuilt. This is the SwiftUI half of a
+      // wrist raise only — the basemap paints later, with no callback of any
+      // kind, so the gap from here to visible pixels needs a camera or an eye.
+      WakeLog.note("map-subtree-appeared")
+      // Read as a pair with `camera-after`. The span log cannot separate "we
+      // never asserted a region" from "we asserted one and MapKit rendered its
+      // own anyway", and those want different fixes:
+      //
+      //   before automatic=true,  after automatic=false, span still continental
+      //     -> we asserted and were ignored; the assignment is not the lever
+      //   before automatic=true,  after automatic=true
+      //     -> `anchorCenter` was nil, so nothing was available to anchor to
+      //   before automatic=false, after automatic=false, span continental
+      //     -> the camera holds a region but MapKit is not honouring it
+      WakeLog.note("camera-before \(cameraStateDescription)")
+      #endif
+      recenterIfFollowing()
+      anchorCameraIfNeeded()
+      #if DEBUG
+      WakeLog.note("camera-after \(cameraStateDescription)")
+      #endif
     }
+    #if DEBUG
+    // Separates "built twice" from "built, torn down, rebuilt". Every device
+    // wake logs two appearances 50-70 ms apart and the simulator logs one, so
+    // the shape of the pair decides where to look: an interleaved disappear
+    // means a genuine teardown, two bare appearances mean two live instances.
+    .onDisappear { WakeLog.note("map-subtree-disappeared") }
+    #endif
   }
 
   private var readoutContent: some View {
@@ -613,11 +720,11 @@ struct MapPage: View {
   /// Map chrome remains an overlay so its measured frame can place the fix in
   /// the visible band above it. The readout has its own hierarchy and therefore
   /// cannot accidentally inherit this bottom-pinned card again.
-  private func mapOverlay(_ proxy: MapProxy) -> some View {
+  private var mapOverlay: some View {
     VStack(spacing: 0) {
       HStack {
         Spacer(minLength: 0)
-        recenterButton(proxy)
+        recenterButton
       }
       Spacer(minLength: 0)
       statusPanel
@@ -896,10 +1003,10 @@ struct MapPage: View {
   private var heard: [WatchHeardNode] { snapshot?.geo.heard ?? [] }
 
   @ViewBuilder
-  private func recenterButton(_ proxy: MapProxy) -> some View {
+  private var recenterButton: some View {
     if !isFollowing, fix != nil {
       Button {
-        recenterIfFollowing(proxy, force: true)
+        recenterIfFollowing(force: true)
       } label: {
         Image(systemName: "location.fill")
           .font(.system(size: 10))
@@ -912,7 +1019,7 @@ struct MapPage: View {
 
   // MARK: - Map
 
-  private func map(_ proxy: MapProxy) -> some View {
+  private var map: some View {
     // Pan consumes the vertical gesture the page shell needs, while the Crown
     // remains the deliberate zoom control. Once drag input is absent, centre
     // drift cannot honestly identify a pan — MapKit and Crown zoom can both
@@ -927,7 +1034,11 @@ struct MapPage: View {
     // Tell MapKit what is covering the map, rather than hand-shifting the
     // camera to compensate. Its own centre then *is* the centre of the band
     // the wearer can actually see, so the fix lands there without a correction
-    // pass and a Crown zoom anchors on it instead of sliding it across.
+    // pass. A Crown zoom holds it there across the useful range — measured
+    // drift is 0.000000 degrees from 0.0002 up to about 21 degrees of span —
+    // but *not* past roughly 22 degrees, where MapKit shifts the centre north
+    // and leaves it there. `recentreAfterUserZoom` repairs that; the framing
+    // here is not what breaks.
     //
     // Both edges matter. Insetting only the bottom centres the fix in
     // `0...panelTop`, which still includes the toolbar strip, and the puck then
@@ -936,7 +1047,9 @@ struct MapPage: View {
     .safeAreaPadding(.top, currentTopSafeAreaInset)
     .safeAreaPadding(.bottom, panelCameraInset)
     .onMapCameraChange(frequency: .onEnd) { context in
-      noteRenderedRegion(context.region)
+      // `.onEnd` matters: the correction below must never run mid-gesture, or
+      // it would fight the Crown while the wearer is still turning it.
+      noteRenderedRegion(context.region, cameraCentre: context.camera.centerCoordinate)
     }
     // The shell's navigation host supplies the system toolbar placement but
     // must not buy it by shortening the basemap. Only MapKit extends under that
@@ -1027,19 +1140,100 @@ struct MapPage: View {
 
   // MARK: - Camera
 
-  private func recenterIfFollowing(_ proxy: MapProxy, force: Bool = false) {
+  private func recenterIfFollowing(force: Bool = false) {
+    // Every early return here leaves `camera` untouched, and an untouched
+    // camera can still be `.automatic` — which fits every annotation and has
+    // been measured rendering 34.4 degrees, about 3,800 km. Log which clause
+    // bailed: "no fix" and "follow off" are indistinguishable in the span log
+    // and want different fixes.
+    #if DEBUG
+    if !(showsMap && (force || isFollowing) && fix != nil) {
+      WakeLog.note(
+        "recenter-skipped showsMap \(showsMap) following \(isFollowing) "
+          + "fix \(fix == nil ? "nil" : "yes") force \(force)"
+      )
+    }
+    #endif
     guard showsMap, force || isFollowing, let fix else { return }
     // Centre on the fix itself. The camera inset already accounts for the
     // panel, so no compensating shift is needed and nothing has to be
     // corrected after the map reports back.
-    programmaticCenter = fix
-    let region = MKCoordinateRegion(center: fix, span: currentSpan)
+    //
+    // A tap is a rare, explicit request to move the map, so animation shows the
+    // wearer what their action changed. Automatic follow is different: the fix
+    // coordinate has already changed in this frame, and animating the camera
+    // after it makes the puck wander before the map catches up.
+    applyRegion(center: fix, animated: force)
+  }
 
-    if force {
-      // A tap is a rare, explicit request to move the map, so animation shows
-      // the wearer what their action changed. Automatic follow is different:
-      // the fix coordinate has already changed in this frame, and animating
-      // the camera after it makes the puck wander before the map catches up.
+  /// Guarantee this native map has a region of ours, whatever `recenterIfFollowing`
+  /// decided.
+  ///
+  /// **`.automatic` is a terminal state, and this is what ends it.** Every early
+  /// return in `recenterIfFollowing` leaves `camera` untouched, and an untouched
+  /// camera can still be `.automatic` — which fits every annotation and was
+  /// measured on a Series 9 rendering 34.364390 degrees of latitude, about
+  /// 3,800 km. Nothing else in this file assigns a region, so once the camera
+  /// landed there only a manual Crown zoom escaped it: twenty consecutive
+  /// callbacks at that span, across five separate wrist raises.
+  ///
+  /// The wake log is specific about when it happens. Wakes preceded only by
+  /// follow updates restored perfectly — first callback `drift 0.0%`, every
+  /// time. The one wake that came back continental was the one preceded by a
+  /// burst of Crown zooming, which suggests the interaction leaves `camera` in a
+  /// state that does not survive the subtree teardown. This does not depend on
+  /// that being the mechanism: it asserts a region regardless of how the camera
+  /// got where it is.
+  ///
+  /// Follow governs *tracking*, not whether a region is ever asserted. Turning
+  /// Follow off must not be able to strand the map at a continental span.
+  private func anchorCameraIfNeeded() {
+    guard showsMap, !hasAssertedRegion, let center = anchorCenter else { return }
+    applyRegion(center: center, animated: false)
+  }
+
+  /// Where a map with no follow-driven centre should open.
+  ///
+  /// Ordered by how well each source reflects what the wearer last saw. With
+  /// Follow off a *recent* centre wins over the live fix on purpose — restoring
+  /// the view they left is the whole point, and jumping to the fix is precisely
+  /// the tracking they turned off.
+  ///
+  /// The live fix outranks a stale one because this map cannot pan
+  /// (`interactionModes: [.zoom]`), so opening on a centre the wearer has since
+  /// travelled away from strands them somewhere they can only zoom. A stale
+  /// centre is still preferred over nothing: it is a real place the wearer once
+  /// was, which beats `.automatic` fitting every annotation at 3,800 km.
+  private var anchorCenter: CLLocationCoordinate2D? {
+    if isFollowing, let fix { return fix }
+    if let programmaticCenter { return programmaticCenter }
+    return settings.freshMapCenter ?? fix ?? settings.lastMapCenter
+  }
+
+  /// The one place `camera` is assigned, so every path records the centre and
+  /// marks the map anchored.
+  ///
+  /// `span` defaults to the persisted zoom, which is right for every caller
+  /// except the post-zoom correction: that one has to carry the span MapKit
+  /// just rendered, or correcting the centre would also undo the wearer's zoom.
+  private func applyRegion(
+    center: CLLocationCoordinate2D,
+    span: MKCoordinateSpan? = nil,
+    animated: Bool
+  ) {
+    programmaticCenter = center
+    hasAssertedRegion = true
+    settings.noteMapCenter(center)
+    let region = MKCoordinateRegion(center: center, span: span ?? currentSpan)
+
+    // DO NOT re-add a "skip when the region is unchanged" guard here. One was
+    // tried and reverted: it bought no measurable wake latency (0.43/0.46/0.47 s
+    // against a 0.15 s sampling floor) and it removed a repair. This assignment
+    // is not merely redundant — it is the only thing that re-asserts our region
+    // over whatever the camera drifted to, including `.automatic`, whose
+    // annotation fit spans a continent. Adam raised his wrist to a map showing
+    // the whole United States while that guard was installed.
+    if animated {
       withAnimation(.easeInOut(duration: 0.25)) {
         camera = .region(region)
       }
@@ -1049,6 +1243,17 @@ struct MapPage: View {
       camera = .region(region)
     }
   }
+
+  #if DEBUG
+  /// `positionedByUser` is included because a Crown zoom is the one interaction
+  /// that precedes the stuck camera in the wake log, and it is the only public
+  /// signal that MapKit rather than we last moved the camera.
+  private var cameraStateDescription: String {
+    "automatic \(camera == .automatic) byUser \(camera.positionedByUser) "
+      + "anchored \(hasAssertedRegion) fix \(fix == nil ? "nil" : "yes") "
+      + "following \(isFollowing)"
+  }
+  #endif
 
   /// MapKit fits longitude to the watch's aspect ratio, so latitude is the one
   /// independent zoom value. After the one-time defaults migration it starts
@@ -1063,7 +1268,50 @@ struct MapPage: View {
 
   /// Track the region MapKit actually rendered, so a Digital Crown zoom is not
   /// thrown away on the next follow update.
-  private func noteRenderedRegion(_ region: MKCoordinateRegion) {
+  private func noteRenderedRegion(
+    _ region: MKCoordinateRegion,
+    cameraCentre: CLLocationCoordinate2D
+  ) {
+    // Latched before anything below can assign the camera and clear it.
+    let wasPositionedByUser = camera.positionedByUser
+
+    // Deferred because the span write-back below has four early returns and the
+    // centre needs repairing on every one of them — the northward shift arrives
+    // on a zoom-out large enough that the write-back may well bail.
+    defer {
+      recentreAfterUserZoom(
+        wasPositionedByUser: wasPositionedByUser,
+        renderedSpan: region.span
+      )
+    }
+
+    // A wearer who works the Crown on a map we never anchored has stated a
+    // camera preference, and it outranks our seed. Without this, the sequence
+    // "launch with no fix -> wearer zooms -> first fix arrives" ends with
+    // `anchorCameraIfNeeded` replacing their zoom with the persisted span,
+    // because `hasAssertedRegion` was still false. Marking it here retires the
+    // anchor without asserting anything, which is exactly the intent: the map
+    // is positioned, just not by us.
+    if wasPositionedByUser {
+      hasAssertedRegion = true
+    }
+
+    #if DEBUG
+    if wasPositionedByUser, let fix {
+      // Quantifies the zoom-anchor drift. The wearer reported that zooming in
+      // loses the centre faster than zooming out; this is the number behind it,
+      // and it should read near zero once the correction below has run.
+      WakeLog.note(
+        String(
+          format: "user-zoom drift lat %.6f lon %.6f span %.6f",
+          cameraCentre.latitude - fix.latitude,
+          cameraCentre.longitude - fix.longitude,
+          region.span.latitudeDelta
+        )
+      )
+    }
+    #endif
+
     // `.automatic` can report its annotation fit even after we assign our first
     // region, so `programmaticCenter != nil` proves only that a request was
     // made, not that MapKit rendered it. Persist nothing until the rendered
@@ -1074,6 +1322,16 @@ struct MapPage: View {
     let rendered = region.span.latitudeDelta
     let requested = settings.mapLatitudeDelta
     guard rendered.isFinite, requested.isFinite, requested > 0 else { return }
+
+    #if DEBUG
+    WakeLog.note(
+      String(
+        format: "span rendered %.6f requested %.6f confirmed %@ drift %.1f%%",
+        rendered, requested, hasConfirmedRequestedSpan ? "Y" : "N",
+        abs(rendered - requested) / requested * 100
+      )
+    )
+    #endif
 
     guard hasConfirmedRequestedSpan else {
       let relativeDifference = abs(rendered - requested) / requested
@@ -1088,6 +1346,48 @@ struct MapPage: View {
     // re-rendering the map for nothing.
     guard abs(rendered - requested) / requested > 0.01 else { return }
     settings.mapLatitudeDelta = rendered
+  }
+
+  /// Put the fix back at the centre after the wearer has zoomed.
+  ///
+  /// **What actually drifts, measured on a Series 9.** A Crown zoom holds the
+  /// camera centre exactly — drift is 0.000000 degrees through spans of 0.0002
+  /// up to about 21 degrees. Past roughly 22 degrees MapKit moves the centre
+  /// *north* and does not put it back: measured jumps of 0.074080 degrees
+  /// (8.2 km) at a 24.5-degree span and 0.126004 degrees (14.0 km) at a
+  /// 25.0-degree span. The shift is **sticky** — it survives every later zoom,
+  /// including a zoom all the way back in to 0.000229, so the wearer ends up
+  /// looking at a point 8-14 km north of themselves at street level. Only a
+  /// wrist drop, which rebuilds the map, cleared it.
+  ///
+  /// That is exactly what was reported: "zoom out seems to stay centered
+  /// initially, but zoom didn't stay centered (missed to the north,
+  /// significantly). Re-centered after drop/raise."
+  ///
+  /// **This function was once deleted, and the deletion was a mistake worth
+  /// recording.** An earlier reading of the same probe showed drift pinned at
+  /// zero and concluded there was nothing to repair. That run had this
+  /// correction installed: the probe samples at the start of the *next* camera
+  /// change, so it was reading a centre this function had just repaired. The
+  /// zero was the repair working. Before removing it again, remove it *first*
+  /// and re-measure — a metric taken through a repair cannot evaluate it.
+  ///
+  /// **The span is preserved, not re-asserted.** Using `currentSpan` here would
+  /// pull the zoom back to the persisted (and clamped) value on every turn of
+  /// the Crown, which reads as the map refusing to zoom. Only the centre moves.
+  ///
+  /// **Termination.** Gated on `positionedByUser`, which MapKit sets for an
+  /// interactive change and our own assignment clears, so this can trigger
+  /// exactly one more camera change and that one does not re-enter. Confirmed
+  /// on device: `byUser true` appears only after a real Crown zoom.
+  ///
+  /// Following only — with Follow off the camera is the wearer's.
+  private func recentreAfterUserZoom(wasPositionedByUser: Bool, renderedSpan: MKCoordinateSpan) {
+    guard wasPositionedByUser, isFollowing, let fix else { return }
+    // Unconditional, like every other assertion in this file. When the centre
+    // has not drifted this re-asserts the same region, which is the cheap case;
+    // see `applyRegion` for what a "skip when unchanged" guard cost last time.
+    applyRegion(center: fix, span: renderedSpan, animated: false)
   }
 
 }
@@ -1395,3 +1695,54 @@ private struct RepeaterPin: View {
     }
   }
 }
+
+#if DEBUG
+/// Wrist-raise timings, written to a file rather than only to the system log.
+///
+/// Two failures pushed this out of `NSLog` alone. `log collect --device-udid`
+/// **cannot reach an Apple Watch** — the watch connects over `localNetwork` and
+/// that path wants a USB-attached device, so it fails with `Device not
+/// configured (6)`. Console.app can stream it, but only live, so a run is lost
+/// if streaming was not already started, and the operator has to copy text back
+/// by hand. A file survives the app being suspended, terminated and relaunched,
+/// and comes back whole:
+///
+///     xcrun devicectl device copy from --device <id> \
+///       --domain-type appDataContainer \
+///       --domain-identifier dev.agessaman.meshmapper.watchkitapp \
+///       --source Documents/wake-timings.log --destination .
+///
+/// Lines still go to `NSLog` as well, so Console.app keeps working for anyone
+/// who prefers watching it live.
+enum WakeLog {
+  private static let name = "wake-timings.log"
+
+  private static var url: URL? {
+    FileManager.default
+      .urls(for: .documentDirectory, in: .userDomainMask)
+      .first?
+      .appendingPathComponent(name)
+  }
+
+  /// Appends one timestamped line. Opened and closed per write on purpose: a
+  /// held handle would not be flushed if watchOS killed the app mid-test, which
+  /// is the one moment this log exists to describe.
+  static func note(_ message: String) {
+    guard WatchSettings.debugLogsWakeTiming else { return }
+    let stamp = Date().timeIntervalSince1970
+    NSLog("[wake-log] %@ at %f", message, stamp)
+
+    guard let url else { return }
+    let line = String(format: "%.4f %@\n", stamp, message)
+    guard let data = line.data(using: .utf8) else { return }
+
+    if let handle = try? FileHandle(forWritingTo: url) {
+      defer { try? handle.close() }
+      _ = try? handle.seekToEnd()
+      try? handle.write(contentsOf: data)
+    } else {
+      try? data.write(to: url)
+    }
+  }
+}
+#endif
