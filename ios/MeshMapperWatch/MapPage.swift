@@ -9,6 +9,9 @@ import WatchKit
 /// `API_UNAVAILABLE(watchos)`, so the OpenFreeMap styles, the ArcGIS satellite
 /// raster, and the coverage vector tiles have no route onto the wrist. Only
 /// the data layer — ping colours, repeater pins, the fix — is MeshMapper's.
+/// Apple's `.imagery` also renders pixel-identically to `.standard` here,
+/// verified by pixel diff on device and simulator, so the watch exposes no
+/// satellite mode.
 struct MapPage: View {
   @Environment(WatchSessionClient.self) private var client
   @Environment(WatchSettings.self) private var settings
@@ -33,32 +36,21 @@ struct MapPage: View {
 
   @State private var camera: MapCameraPosition = .automatic
 
-  /// Centre we last drove the camera to, so a camera change can be attributed
-  /// to the wearer rather than to our own follow updates.
+  /// Non-nil once we have driven the camera. Assignment is not proof that
+  /// MapKit rendered the request, but it is the first half of the span
+  /// handshake that keeps `.automatic` from becoming the remembered zoom.
   @State private var programmaticCenter: CLLocationCoordinate2D?
-  @State private var followSuspendedUntil: Date?
-
-  /// Whether MapKit has ever reported back a centre we asked for. Until it has,
-  /// a disagreeing centre is `.automatic` settling, not the wearer — see
-  /// `noteCameraChange`.
-  @State private var hasConfirmedRequestedCenter = false
 
   /// Span counterpart to the centre handshake: MapKit can report its old
   /// `.automatic` fit after we assign a region, so assignment alone is not
   /// evidence that a rendered zoom came from us.
   @State private var hasConfirmedRequestedSpan = false
 
-  /// Metres of disagreement before a camera change counts as a real pan.
-  private static let panTolerance: CLLocationDistance = 40
-
   /// Initial confirmation only needs to distinguish our request from the much
   /// wider automatic annotation fit. MapKit may adjust a requested region for
   /// display geometry, so a generous tolerance avoids quietly disabling Crown
   /// persistence by waiting forever for an exact span.
   private static let spanConfirmationTolerance = 0.25
-
-  /// How long a pan pauses following before the map drifts back to the fix.
-  private static let resumeFollowAfter: TimeInterval = 8
 
   private var snapshot: WatchSnapshot? { client.snapshot }
 
@@ -68,9 +60,7 @@ struct MapPage: View {
   }
 
   private var isFollowing: Bool {
-    guard settings.follow else { return false }
-    if let until = followSuspendedUntil, until > Date() { return false }
-    return true
+    settings.follow
   }
 
   @State private var showingNodes = false
@@ -357,6 +347,12 @@ struct MapPage: View {
     for control: TrailingToolbarControl,
     armed: Bool
   ) -> String {
+    // With no usable connection, a dim play symbol falsely suggests that the
+    // empty-looking glass control is a Start affordance. Name the unavailable
+    // prerequisite instead; enablement remains entirely phone-owned.
+    if snapshot?.isConnected != true {
+      return "antenna.radiowaves.left.and.right.slash"
+    }
     if armed { return "checkmark" }
     switch control {
     case .start: return "play.fill"
@@ -379,7 +375,10 @@ struct MapPage: View {
     for control: TrailingToolbarControl,
     armed: Bool
   ) -> Color {
-    guard trailingToolbarControlIsEnabled else { return WatchPalette.disabled }
+    // The darker disabled slate vanished against Apple's darkest basemap.
+    // System disabled dimming still distinguishes this brighter slate from an
+    // enabled action without making the glass circle look empty.
+    guard trailingToolbarControlIsEnabled else { return WatchPalette.tertiary }
     if armed { return .white }
     return toolbarActionColor(for: control)
   }
@@ -388,6 +387,8 @@ struct MapPage: View {
     for control: TrailingToolbarControl,
     armed: Bool
   ) -> String {
+    guard let snapshot else { return "Waiting for iPhone" }
+    guard snapshot.isConnected else { return "Device disconnected" }
     switch control {
     case .start: return "Start \(effectiveStartMode.label) session"
     case .stop: return armed ? "Confirm stop session" : "Stop session"
@@ -425,19 +426,8 @@ struct MapPage: View {
     .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
       recenterIfFollowing(proxy)
     }
-    // The delayed resume in `scheduleFollowResume` only clears the suspension;
-    // recentring happens here, where a live proxy is in scope.
-    .onChange(of: followSuspendedUntil) { _, until in
-      if until == nil { recenterIfFollowing(proxy) }
-    }
     .onAppear {
       recenterIfFollowing(proxy)
-    }
-    .onDisappear {
-      // A pan's delayed resume belongs to the map. Leaving for either the
-      // chosen readout or Always-On must not leave map work pending off-screen.
-      resumeTask?.cancel()
-      resumeTask = nil
     }
   }
 
@@ -736,7 +726,6 @@ struct MapPage: View {
   private func recenterButton(_ proxy: MapProxy) -> some View {
     if !isFollowing, fix != nil {
       Button {
-        followSuspendedUntil = nil
         recenterIfFollowing(proxy, force: true)
       } label: {
         Image(systemName: "location.fill")
@@ -751,22 +740,25 @@ struct MapPage: View {
   // MARK: - Map
 
   private func map(_ proxy: MapProxy) -> some View {
-    Map(position: $camera, interactionModes: [.pan, .zoom]) {
+    // Pan consumes the vertical gesture the page shell needs, while the Crown
+    // remains the deliberate zoom control. Once drag input is absent, centre
+    // drift cannot honestly identify a pan — MapKit and Crown zoom can both
+    // produce it — so follow has no distance-based suspension path to misfire.
+    Map(position: $camera, interactionModes: [.zoom]) {
       linkLines
       pingMarkers
       repeaterPins
       fixMarker
     }
-    .mapStyle(settings.satellite ? .imagery : .standard)
+    .mapStyle(.standard)
     .onMapCameraChange(frequency: .onEnd) { context in
       noteRenderedRegion(context.region)
-      noteCameraChange(context.region.center)
       correctPlacement(proxy)
     }
     // The shell's navigation host supplies the system toolbar placement but
     // must not buy it by shortening the basemap. Only MapKit extends under that
     // top chrome; the overlay remains in the safe content region, keeping its
-    // transient trailing recentre button away from the leading toolbar control.
+    // inset recentre button below the system toolbar controls.
     .ignoresSafeArea(edges: [.top, .bottom])
   }
 
@@ -963,67 +955,6 @@ struct MapPage: View {
     settings.mapLatitudeDelta = rendered
   }
 
-  private func noteCameraChange(_ center: CLLocationCoordinate2D) {
-    guard let expected = programmaticCenter else {
-      // We have never driven the camera, so this is `.automatic` settling on
-      // launch rather than a pan. Treating it as one would suspend following
-      // before the first fix even arrives.
-      return
-    }
-
-    let drift = distance(center, expected)
-
-    // `.automatic` settles *after* our first request, centred on the annotation
-    // cloud — measured 372 m from the fix — and that disagreement is not a pan.
-    // Reading it as one suspended following for eight seconds at every launch,
-    // and overwrote the expectation, so our own region landing then looked like
-    // a second pan. Nothing counts as a pan until MapKit has confirmed a centre
-    // we actually asked for.
-    guard hasConfirmedRequestedCenter else {
-      if drift <= Self.panTolerance { hasConfirmedRequestedCenter = true }
-      return
-    }
-
-    guard drift > Self.panTolerance else {
-      // Our own follow update landing.
-      return
-    }
-
-    // The wearer moved the map. Stop fighting them, and drift back shortly.
-    programmaticCenter = center
-    let deadline = Date().addingTimeInterval(Self.resumeFollowAfter)
-    followSuspendedUntil = deadline
-    scheduleFollowResume(at: deadline)
-  }
-
-  /// Re-evaluate when the suspension lapses.
-  ///
-  /// `followSuspendedUntil` is only read during a render, and a stationary
-  /// phone sends no updates to trigger one — without this the map would stay
-  /// unfollowed indefinitely after a single pan.
-  private func scheduleFollowResume(at deadline: Date) {
-    resumeTask?.cancel()
-    resumeTask = Task { @MainActor in
-      let seconds = deadline.timeIntervalSinceNow
-      if seconds > 0 {
-        try? await Task.sleep(for: .seconds(seconds))
-      }
-      guard !Task.isCancelled, followSuspendedUntil == deadline else { return }
-      // Clearing this drives the recentre, via `onChange` where a proxy is in
-      // scope.
-      followSuspendedUntil = nil
-    }
-  }
-
-  @State private var resumeTask: Task<Void, Never>?
-
-  private func distance(
-    _ a: CLLocationCoordinate2D,
-    _ b: CLLocationCoordinate2D
-  ) -> CLLocationDistance {
-    CLLocation(latitude: a.latitude, longitude: a.longitude)
-      .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
-  }
 }
 
 /// A phase-scoped progress animation rather than a one-second render clock.

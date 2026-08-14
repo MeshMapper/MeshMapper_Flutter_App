@@ -39,7 +39,6 @@ struct SettingsPage: View {
       }
 
       Section("Map") {
-        Toggle("Satellite", isOn: $settings.satellite)
         Toggle("Follow position", isOn: $settings.follow)
         Toggle("Lines to repeaters", isOn: $settings.showLinks)
       }
