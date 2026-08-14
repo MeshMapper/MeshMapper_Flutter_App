@@ -86,6 +86,12 @@ class WatchBridgeService {
   WatchSnapshotDeliveryHandler? _snapshotDeliveryHandler;
 
   String? _lastPayload;
+
+  /// The delivered payload with the fix removed, plus the fix that went with
+  /// it. Together they answer "did anything but our position change?", which is
+  /// what the movement gate needs and the whole-payload fingerprint cannot say.
+  String? _lastPayloadWithoutFix;
+  ({double lat, double lon})? _lastSentFix;
   String? _lastUrgencyKey;
   DateTime? _lastSentAt;
   DateTime? _lastBuiltAt;
@@ -290,6 +296,8 @@ class WatchBridgeService {
       _mapGeoSuppressedAt = null;
       _lastMapGeoClaimIssuedAtMs = null;
       _lastPayload = null;
+      _lastPayloadWithoutFix = null;
+      _lastSentFix = null;
       _lastUrgencyKey = null;
       _lastSentAt = null;
       _lastBuiltAt = null;
@@ -390,6 +398,20 @@ class WatchBridgeService {
     final encoded = jsonEncode(fingerprint);
     if (encoded == _lastPayload) return;
 
+    // The movement gate. A stationary GPS jitters by a few metres for as long
+    // as the phone is switched on, and forwarding that would keep the watch
+    // radio busy for a puck that never visibly moves.
+    //
+    // It is deliberately expressed as "nothing but the fix changed, and the fix
+    // did not move far enough" rather than as a stale position in the payload,
+    // which is where it used to live. Those are the same suppression and a very
+    // different packet: a new ping defeats the dedupe by itself, and the older
+    // arrangement then sent that ping alongside a puck up to 15 m behind it —
+    // visibly so once the watch's zoom floor reached ~22 m of latitude.
+    final fix = _fixOf(fingerprint);
+    final withoutFix = _encodeWithoutFix(fingerprint);
+    if (withoutFix == _lastPayloadWithoutFix && !_fixMovedEnough(fix)) return;
+
     final urgent = snapshot.urgencyKey != _lastUrgencyKey;
     final sentAt = _lastSentAt;
     if (!urgent && sentAt != null) {
@@ -420,6 +442,10 @@ class WatchBridgeService {
       }
       _didReconcileNativeState = true;
       _lastPayload = encoded;
+      // Anchored to what the watch actually received, so a refused or dropped
+      // send cannot quietly consume the wearer's next 15 m of movement.
+      _lastPayloadWithoutFix = withoutFix;
+      _lastSentFix = fix;
       _lastUrgencyKey = snapshot.urgencyKey;
       final sentAt = DateTime.now();
       _lastSentAt = sentAt;
@@ -448,10 +474,56 @@ class WatchBridgeService {
     } finally {
       _didReconcileNativeState = true;
       _lastPayload = null;
+      _lastPayloadWithoutFix = null;
+      _lastSentFix = null;
       _lastUrgencyKey = null;
       _lastSentAt = null;
       _lastBuiltAt = null;
     }
+  }
+
+  /// Whether the fix has moved far enough to be worth a send on its own.
+  ///
+  /// Measured against the fix the watch last *received*, not the last one the
+  /// phone computed, so a parked phone's jitter can never accumulate its way
+  /// past the threshold one sub-threshold step at a time.
+  bool _fixMovedEnough(({double lat, double lon})? fix) {
+    final last = _lastSentFix;
+    if (fix == null || last == null) return true;
+    return WatchWire.movedEnough(
+      lastLat: last.lat,
+      lastLon: last.lon,
+      lat: fix.lat,
+      lon: fix.lon,
+    );
+  }
+
+  static Map<String, Object?>? _geoOf(Map<String, Object?> fingerprint) {
+    final geo = fingerprint['geo'];
+    return geo is Map ? Map<String, Object?>.from(geo) : null;
+  }
+
+  static ({double lat, double lon})? _fixOf(Map<String, Object?> fingerprint) {
+    final you = _geoOf(fingerprint)?['you'];
+    if (you is! Map) return null;
+    final lat = you['lat'];
+    final lon = you['lon'];
+    if (lat is! num || lon is! num) return null;
+    return (lat: lat.toDouble(), lon: lon.toDouble());
+  }
+
+  /// The payload with the wearer's position taken out, so two of them can be
+  /// compared for "did anything else change?".
+  ///
+  /// The whole `you` object goes, not just its coordinates: heading, accuracy
+  /// and fix time all drift on a phone that has not moved, and treating any of
+  /// them as a reason to send would defeat the gate they are travelling with.
+  static String _encodeWithoutFix(Map<String, Object?> fingerprint) {
+    final geo = _geoOf(fingerprint);
+    if (geo == null) return jsonEncode(fingerprint);
+    return jsonEncode(
+      Map<String, Object?>.from(fingerprint)..['geo'] = (geo..remove('you')),
+    );
   }
 
   void dispose() {

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../live_activity/live_activity_models.dart';
 import 'watch_color.dart';
 
@@ -41,6 +43,45 @@ class WatchWire {
   /// changes and new pings always go through; this only suppresses the
   /// jitter of a stationary GPS.
   static const double minMoveMeters = 15.0;
+
+  /// True when the fix moved far enough to be worth an update on its own.
+  ///
+  /// Lives here beside [minMoveMeters], and not with the rest of the geography
+  /// helpers, so the transport can apply the gate without importing anything
+  /// that knows what a ping is.
+  static bool movedEnough({
+    required double? lastLat,
+    required double? lastLon,
+    required double lat,
+    required double lon,
+    double thresholdMeters = minMoveMeters,
+  }) {
+    if (lastLat == null || lastLon == null) return true;
+    return distanceMeters(lastLat, lastLon, lat, lon) >= thresholdMeters;
+  }
+
+  /// Great-circle distance in metres.
+  ///
+  /// Local rather than `Geolocator.distanceBetween` to keep this file free of
+  /// plugin imports; the maths is identical.
+  static double distanceMeters(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
+    const earthRadius = 6371000.0;
+    final dLat = _toRadians(lat2 - lat1);
+    final dLon = _toRadians(lon2 - lon1);
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_toRadians(lat1)) *
+            math.cos(_toRadians(lat2)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    return earthRadius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+  }
+
+  static double _toRadians(double degrees) => degrees * math.pi / 180.0;
 }
 
 /// Start modes the phone may explicitly offer to the wrist.

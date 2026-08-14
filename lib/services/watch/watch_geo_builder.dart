@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import '../../models/log_entry.dart';
 import '../../models/ping_data.dart';
 import '../../models/repeater.dart';
@@ -14,29 +12,6 @@ import 'watch_models.dart';
 /// rules that would otherwise only fail on a wrist, in a car, at speed.
 class WatchGeoBuilder {
   WatchGeoBuilder._();
-
-  /// Great-circle distance in metres.
-  ///
-  /// Local rather than `Geolocator.distanceBetween` to keep this file free of
-  /// plugin imports; the maths is identical.
-  static double distanceMeters(
-    double lat1,
-    double lon1,
-    double lat2,
-    double lon2,
-  ) {
-    const earthRadius = 6371000.0;
-    final dLat = _toRadians(lat2 - lat1);
-    final dLon = _toRadians(lon2 - lon1);
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(_toRadians(lat1)) *
-            math.cos(_toRadians(lat2)) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    return earthRadius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
-  }
-
-  static double _toRadians(double degrees) => degrees * math.pi / 180.0;
 
   /// Colour for a ping marker, matching the iOS map's `_coverageStatusColor`.
   static WatchColor pingColor(String kind, bool success) {
@@ -219,7 +194,7 @@ class WatchGeoBuilder {
       final ranked = located
           .map((r) => (
                 repeater: r,
-                distance: distanceMeters(lat, lon, r.lat, r.lon),
+                distance: WatchWire.distanceMeters(lat, lon, r.lat, r.lon),
               ))
           .toList()
         ..sort((a, b) => a.distance.compareTo(b.distance));
@@ -346,7 +321,7 @@ class WatchGeoBuilder {
         lon != null &&
         repeater != null &&
         repeater.hasLocation) {
-      distance = distanceMeters(lat, lon, repeater.lat, repeater.lon);
+      distance = WatchWire.distanceMeters(lat, lon, repeater.lat, repeater.lon);
     }
 
     return WatchHeardNode(
@@ -385,18 +360,4 @@ class WatchGeoBuilder {
     return index;
   }
 
-  /// True when the fix moved far enough to be worth an update.
-  ///
-  /// A stationary GPS jitters by a few metres indefinitely; without this gate
-  /// a parked phone would keep the watch radio busy for no visible change.
-  static bool movedEnough({
-    required double? lastLat,
-    required double? lastLon,
-    required double lat,
-    required double lon,
-    double thresholdMeters = WatchWire.minMoveMeters,
-  }) {
-    if (lastLat == null || lastLon == null) return true;
-    return distanceMeters(lastLat, lastLon, lat, lon) >= thresholdMeters;
-  }
 }
