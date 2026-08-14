@@ -20,6 +20,10 @@ import Foundation
 /// - `-MeshMapperForceDimmed YES` renders the reduced-luminance readout.
 /// - `-MeshMapperForceRefusal <message>` presents the failure banner; capture
 ///   within six seconds because it deliberately uses the production expiry.
+/// - `-MeshMapperAutoPageTo <tag>` switches pages five seconds after launch.
+///   The simulator cannot swipe, and page transitions are a real defect
+///   surface: a sheet raised from the map once survived onto the next page,
+///   blurring it and swallowing every swipe, which reads exactly like a crash.
 ///
 /// Listening and active remain the defaults so existing capture commands keep
 /// their behaviour.
