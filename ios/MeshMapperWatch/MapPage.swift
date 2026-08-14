@@ -269,9 +269,15 @@ struct MapPage: View {
   private var pageContent: some View {
     ZStack {
       if showsMap {
-        // The proxy is the only reliable way to relate a coordinate to a point
-        // on screen. Keep the reader inside this branch: constructing even map
+        // Keep the reader inside this branch: constructing even map
         // infrastructure behind the readout would defeat its battery purpose.
+        //
+        // DECIDE BEFORE OPENING A PR: this reader is now vestigial. Camera
+        // placement moved to safe-area insets, so nothing calls
+        // `proxy.convert` and the proxy is threaded through five functions
+        // unused. Removing it is a hierarchy change around a map whose launch
+        // and framing behaviour was verified by measurement, so it wants its
+        // own change and its own A/B — not a quiet tidy-up inside another one.
         MapReader { proxy in
           mapContent(proxy)
         }
