@@ -164,6 +164,19 @@ final class WatchSettings {
     didSet { defaults.set(showPingWhenAvailable, forKey: Key.showPingWhenAvailable) }
   }
 
+  /// One promise shared by Settings and the explicit-mode Start control. If
+  /// these surfaces resolve independently, Settings can claim Hybrid while a
+  /// tap silently requests Passive — precisely the kind of mode ambiguity the
+  /// explicit command field exists to prevent.
+  func effectiveStartMode(
+    availableStartModes: [String]?
+  ) -> DefaultStartMode {
+    let advertised = availableStartModes ?? [DefaultStartMode.passive.rawValue]
+    return advertised.contains(defaultStartMode.rawValue)
+      ? defaultStartMode
+      : .passive
+  }
+
   private static func clampedMapLatitudeDelta(_ value: Double) -> Double {
     guard value.isFinite else { return defaultMapLatitudeDelta }
     return min(max(value, mapLatitudeDeltaLimits.lowerBound), mapLatitudeDeltaLimits.upperBound)

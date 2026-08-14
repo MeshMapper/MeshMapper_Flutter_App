@@ -16,9 +16,9 @@ struct SettingsPage: View {
   }
 
   private var effectiveStartMode: WatchSettings.DefaultStartMode {
-    availableStartModes.contains(settings.defaultStartMode)
-      ? settings.defaultStartMode
-      : .passive
+    settings.effectiveStartMode(
+      availableStartModes: client.snapshot?.availableStartModes
+    )
   }
 
   var body: some View {
