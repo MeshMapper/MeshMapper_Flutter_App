@@ -24,6 +24,15 @@ import Foundation
 ///   The simulator cannot swipe, and page transitions are a real defect
 ///   surface: a sheet raised from the map once survived onto the next page,
 ///   blurring it and swallowing every swipe, which reads exactly like a crash.
+/// - `-MeshMapperTimeSwitchToMap YES` flips the main page to the map five
+///   seconds after launch and logs `[switch] requesting map at <epoch>`, so the
+///   MapKit rebuild a wrist raise pays can be timed against screenshot mtimes.
+///   Always pass `-layout.mainPageContent readout` with it: starting on the map
+///   makes the flip a no-op that still logs, which looks like a fast result.
+///   It also logs `[span] rendered … requested … confirmed …` on every camera
+///   callback, which is how to check on hardware whether a rebuilt map ever
+///   reports a region that is not the one we asked for. In the simulator it
+///   never does — three teardown cycles, 0.0% drift every time.
 ///
 /// Listening and active remain the defaults so existing capture commands keep
 /// their behaviour.

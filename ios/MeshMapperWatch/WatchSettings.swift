@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import SwiftUI
 
@@ -14,6 +15,7 @@ final class WatchSettings {
     static let follow = "map.follow"
     static let mapLatitudeDelta = "map.latitudeDelta"
     static let mapZoomDefaultsVersion = "map.zoomDefaultsVersion"
+    static let mapLastCenter = "map.lastCenter"
     static let mainPageContent = "layout.mainPageContent"
     static let nodeListPlacement = "layout.nodeListPlacement"
     static let defaultStartMode = "controls.defaultStartMode"
@@ -22,7 +24,23 @@ final class WatchSettings {
 
   /// Roughly 250 m north-south: one degree of latitude is about 111,320 m.
   static let defaultMapLatitudeDelta = 0.00225
-  private static let mapLatitudeDeltaLimits = 0.0005...0.5
+  /// The Crown's own range is wider than this at both ends, and the two bounds
+  /// are set for different reasons.
+  ///
+  /// **The floor tracks the hardware.** Measured on a Series 9, MapKit's
+  /// tightest Crown zoom is about 0.000230 degrees (~26 m); the floor used to
+  /// be 0.0005 (~56 m), so zooming in past that was clamped and the next
+  /// re-assert snapped the map back out. The wearer reported it as the map not
+  /// holding position. 0.0002 sits just below the observed limit so the Crown
+  /// is never fought on the way in.
+  ///
+  /// **The ceiling is a policy, not a measurement.** The Crown reaches about
+  /// 25 degrees (~2,800 km), and persisting that would let the app open showing
+  /// a continent — visually indistinguishable from the `.automatic` bug this
+  /// file exists to prevent, just chosen rather than inflicted. 0.5 (~56 km)
+  /// keeps a stray flick from becoming a sticky state. Zooming out past it
+  /// still works; only the persisted value is capped.
+  private static let mapLatitudeDeltaLimits = 0.0002...0.5
   private static let mapZoomDefaultsVersion = 1
 
   /// Where the recently-responded list lives.
@@ -148,6 +166,113 @@ final class WatchSettings {
     }
   }
 
+  /// Where the camera last rested, so a map with no live fix opens on the last
+  /// place the wearer actually saw rather than on MapKit's annotation fit.
+  ///
+  /// `.automatic` is not a neutral starting state: measured on a Series 9 it
+  /// renders 34.4 degrees of latitude, about 3,800 km, and once the camera
+  /// lands there nothing in `MapPage` moves it back. This value is the seed
+  /// that keeps that from being reachable — see `anchorCameraIfNeeded`.
+  ///
+  /// Deliberately *not* `@Observable`-backed state: nothing renders from it, it
+  /// is read once per native-map lifetime, and making it observable would
+  /// invalidate the map on every GPS step it records.
+  ///
+  /// Absence is distinguished from zero the same way the span is. `0, 0` is a
+  /// real coordinate in the Gulf of Guinea, so treating a missing key as zero
+  /// would open a fresh install in the Atlantic rather than falling through to
+  /// the live fix.
+  ///
+  /// Stored as one array rather than a latitude key, a longitude key and a
+  /// timestamp key. Separate writes can be torn apart by the app being killed
+  /// between them — watchOS terminates this app freely, which is the whole
+  /// reason the value is persisted — and half a coordinate is a
+  /// plausible-looking centre somewhere on the equator or the prime meridian.
+  /// One key cannot tear.
+  var lastMapCenter: CLLocationCoordinate2D? {
+    storedMapCenter?.center
+  }
+
+  /// The stored centre only while it still plausibly describes where the wearer
+  /// is, which is what lets a live fix outrank it.
+  ///
+  /// Without an age, a centre saved in another city wins over a real fix
+  /// forever once Follow is off. That matters more here than it would on the
+  /// phone, because `interactionModes` is `[.zoom]` — the wearer cannot pan out
+  /// of a wrong place, only zoom within it.
+  ///
+  /// Twelve hours is chosen to survive a full session and a break, while not
+  /// surviving a night's travel. Note that a fresh centre and a live fix agree
+  /// whenever the wearer has not moved, so this threshold only decides the case
+  /// where they *have* — which is exactly the case the live fix answers better.
+  var freshMapCenter: CLLocationCoordinate2D? {
+    guard let stored = storedMapCenter,
+      let savedAt = stored.savedAt,
+      Date().timeIntervalSince1970 - savedAt < Self.mapCenterFreshnessSeconds
+    else { return nil }
+    return stored.center
+  }
+
+  private static let mapCenterFreshnessSeconds: TimeInterval = 12 * 60 * 60
+
+  /// A missing timestamp is treated as unknown age rather than as fresh, so an
+  /// older two-element value can never masquerade as current.
+  private var storedMapCenter: (center: CLLocationCoordinate2D, savedAt: TimeInterval?)? {
+    guard
+      let stored = defaults.array(forKey: Key.mapLastCenter) as? [Double],
+      stored.count >= 2
+    else { return nil }
+    let (lat, lon) = (stored[0], stored[1])
+    guard
+      lat.isFinite, lon.isFinite,
+      (-90...90).contains(lat), (-180...180).contains(lon)
+    else { return nil }
+    let savedAt = stored.count >= 3 && stored[2].isFinite ? stored[2] : nil
+    return (CLLocationCoordinate2D(latitude: lat, longitude: lon), savedAt)
+  }
+
+  /// Record a centre the camera was actually driven to.
+  ///
+  /// Throttled because follow asserts a region on every geo update, and the
+  /// phone's own `minMoveMeters` filter (15 m) is *finer* than anything this
+  /// value needs — left unthrottled at walking pace this would write roughly
+  /// once every 11 seconds for the life of a session, against active battery
+  /// work.
+  ///
+  /// A coarse threshold is affordable because this is only ever read at app
+  /// launch: within a session `MapPage` holds the live centre in memory and
+  /// never consults this. So the stored value only has to be good enough to
+  /// open the map in the right place, and it is competing against `.automatic`
+  /// at 3,800 km — not against a perfect restore.
+  func noteMapCenter(_ center: CLLocationCoordinate2D) {
+    guard
+      center.latitude.isFinite, center.longitude.isFinite,
+      (-90...90).contains(center.latitude),
+      (-180...180).contains(center.longitude)
+    else { return }
+
+    // Freshness is part of the skip test, not just position. A wearer who stays
+    // put would otherwise match the stored coordinates forever, never rewrite
+    // the entry, and so let its timestamp expire under an accurate centre —
+    // the map would then decline to use a position that never stopped being
+    // correct. Requiring freshness here costs one write per expiry window.
+    if let stored = lastMapCenter, freshMapCenter != nil,
+      abs(stored.latitude - center.latitude) < Self.mapCenterWriteThreshold,
+      abs(stored.longitude - center.longitude) < Self.mapCenterWriteThreshold
+    {
+      return
+    }
+    defaults.set(
+      [center.latitude, center.longitude, Date().timeIntervalSince1970],
+      forKey: Key.mapLastCenter
+    )
+  }
+
+  /// About 110 m of latitude. Degrees, not metres: longitude convergence is
+  /// irrelevant to a write throttle, and treating it as a distance would imply
+  /// a precision this value does not need.
+  private static let mapCenterWriteThreshold = 0.001
+
   var mainPageContent: MainPageContent {
     didSet { defaults.set(mainPageContent.rawValue, forKey: Key.mainPageContent) }
   }
@@ -178,6 +303,26 @@ final class WatchSettings {
   var freezesTimerBar: Bool {
     get { Self.debugFreezesTimerBar }
     set { defaults.set(newValue, forKey: "MeshMapperFreezeTimerBar") }
+  }
+
+  /// Record wrist-raise timings to `WakeLog`.
+  ///
+  /// **Persisted deliberately, and this is the whole point.** The same job was
+  /// first done by a `-MeshMapperTimeSwitchToMap` launch argument, which cannot
+  /// work here: launch arguments live in `NSArgumentDomain` and evaporate the
+  /// moment watchOS terminates and relaunches the app — which is exactly what a
+  /// wrist-down test provokes. The gate closed silently and the run produced an
+  /// empty log with nothing to indicate why. A measurement switch that outlives
+  /// process death has to be persisted, and being on the wrist means it can be
+  /// flipped without a reinstall.
+  static var debugLogsWakeTiming: Bool {
+    UserDefaults.standard.bool(forKey: "MeshMapperLogWakeTiming")
+      || UserDefaults.standard.bool(forKey: "MeshMapperTimeSwitchToMap")
+  }
+
+  var logsWakeTiming: Bool {
+    get { Self.debugLogsWakeTiming }
+    set { defaults.set(newValue, forKey: "MeshMapperLogWakeTiming") }
   }
   #endif
 

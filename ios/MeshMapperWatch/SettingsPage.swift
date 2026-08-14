@@ -72,6 +72,10 @@ struct SettingsPage: View {
       // reaches Release. Takes effect from the next phase rather than mid-drain.
       Section("Instruments") {
         Toggle("Freeze timer bar", isOn: $settings.freezesTimerBar)
+        // Persisted, unlike the launch argument this replaced — a wrist-down
+        // test invites watchOS to relaunch the app, which silently emptied
+        // `NSArgumentDomain` and produced an empty log with no clue why.
+        Toggle("Log wake timing", isOn: $settings.logsWakeTiming)
       }
       #endif
     }
