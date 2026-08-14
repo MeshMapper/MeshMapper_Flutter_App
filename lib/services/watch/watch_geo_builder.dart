@@ -131,10 +131,24 @@ class WatchGeoBuilder {
   }) {
     final pings = <WatchPing>[];
 
-    for (var i = 0; i < txPings.length; i++) {
-      final tx = txPings[i];
+    // Identity must not depend on a marker's position in its source list.
+    // These histories insert at the front and trim from the back, so a
+    // positional id renames every surviving marker whenever one arrives, and
+    // SwiftUI then tears down and rebuilds all sixty annotations to show one
+    // new dot. Timestamps are intrinsic to the event and survive both.
+    final seen = <String, int>{};
+    String stableId(String kind, DateTime at) {
+      final base = '$kind-${at.millisecondsSinceEpoch}';
+      final n = seen.update(base, (v) => v + 1, ifAbsent: () => 0);
+      // Two events of one kind inside the same millisecond are the only case
+      // needing a discriminator, and it stays put because it counts within the
+      // colliding group rather than across the whole list.
+      return n == 0 ? base : '$base~$n';
+    }
+
+    for (final tx in txPings) {
       pings.add(WatchPing(
-        id: 'tx-${tx.timestamp.millisecondsSinceEpoch}-$i',
+        id: stableId('tx', tx.timestamp),
         lat: tx.latitude,
         lon: tx.longitude,
         kind: 'tx',
@@ -143,10 +157,9 @@ class WatchGeoBuilder {
       ));
     }
 
-    for (var i = 0; i < rxPings.length; i++) {
-      final rx = rxPings[i];
+    for (final rx in rxPings) {
       pings.add(WatchPing(
-        id: 'rx-${rx.timestamp.millisecondsSinceEpoch}-$i',
+        id: stableId('rx', rx.timestamp),
         lat: rx.latitude,
         lon: rx.longitude,
         kind: 'rx',
@@ -155,10 +168,9 @@ class WatchGeoBuilder {
       ));
     }
 
-    for (var i = 0; i < discLogEntries.length; i++) {
-      final entry = discLogEntries[i];
+    for (final entry in discLogEntries) {
       pings.add(WatchPing(
-        id: 'disc-${entry.timestamp.millisecondsSinceEpoch}-$i',
+        id: stableId('disc', entry.timestamp),
         lat: entry.latitude,
         lon: entry.longitude,
         kind: 'disc',
@@ -167,10 +179,9 @@ class WatchGeoBuilder {
       ));
     }
 
-    for (var i = 0; i < traceLogEntries.length; i++) {
-      final entry = traceLogEntries[i];
+    for (final entry in traceLogEntries) {
       pings.add(WatchPing(
-        id: 'trace-${entry.timestamp.millisecondsSinceEpoch}-$i',
+        id: stableId('trace', entry.timestamp),
         lat: entry.latitude,
         lon: entry.longitude,
         kind: 'trace',

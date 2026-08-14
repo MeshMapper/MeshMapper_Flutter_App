@@ -76,6 +76,43 @@ void main() {
   setUp(() => PingColors.setColorVisionType(ColorVisionType.none));
 
   group('buildPings', () {
+    test('marker identity survives a new event arriving at the front', () {
+      // These histories insert newest-first. A positional id renumbered every
+      // surviving marker whenever one arrived, so SwiftUI rebuilt all sixty
+      // annotations to show one new dot.
+      final base = DateTime(2026, 8, 12, 10);
+      final older = List.generate(5, (i) => _disc(base.add(Duration(minutes: i)), discovered: true));
+
+      List<String> idsFor(List<DiscLogEntry> entries) => WatchGeoBuilder.buildPings(
+            txPings: const [],
+            rxPings: const [],
+            discLogEntries: entries,
+            traceLogEntries: const [],
+          ).map((p) => p.id).toList();
+
+      final before = idsFor(older.reversed.toList());
+      final arrival = _disc(base.add(const Duration(minutes: 9)), discovered: true);
+      final after = idsFor([arrival, ...older.reversed]);
+
+      expect(after.length, before.length + 1);
+      expect(
+        after.toSet().containsAll(before),
+        isTrue,
+        reason: 'every pre-existing marker must keep its id',
+      );
+    });
+
+    test('two events of one kind in the same millisecond stay distinct', () {
+      final at = DateTime(2026, 8, 12, 10);
+      final pings = WatchGeoBuilder.buildPings(
+        txPings: const [],
+        rxPings: const [],
+        discLogEntries: [_disc(at, discovered: true), _disc(at, discovered: false)],
+        traceLogEntries: const [],
+      );
+      expect(pings.map((p) => p.id).toSet().length, 2);
+    });
+
     test('merges TX and RX newest-first and caps the list', () {
       final base = DateTime(2026, 8, 12, 10);
       final tx = List.generate(40, (i) => _tx(base.add(Duration(minutes: i))));
