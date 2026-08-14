@@ -926,4 +926,184 @@ void main() {
       expect(reply?['reason'], 'Passive Only');
     });
   });
+
+  /// The gate that stops a parked phone streaming GPS jitter at the watch, and
+  /// the reason it lives in the transport rather than in the payload builder.
+  ///
+  /// It used to be applied by handing the watch a *stale* position until the
+  /// fix had moved 15 m, which suppressed the send by making the payload
+  /// identical. A new ping defeats that dedupe by itself, so the packet went
+  /// out anyway carrying a puck up to 15 m behind the ping beside it. Adam saw
+  /// it on a walk: "the pings appear ahead of the current location and center".
+  group('movement gate', () {
+    late WatchBridgeService bridge;
+    late MethodChannel channel;
+    late List<Map<Object?, Object?>> sent;
+
+    /// Long enough for the 2 s non-urgent throttle to clear and for the
+    /// bridge's own retry timer to run, so "no send" means suppressed rather
+    /// than merely deferred. A fresh bridge has no throttle history at all, so
+    /// its first push needs neither.
+    const settle = Duration(milliseconds: 2500);
+    const firstPush = Duration(milliseconds: 100);
+
+    setUp(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      channel = const MethodChannel('meshmapper/watch_move_test');
+      bridge = WatchBridgeService(channel: channel);
+      sent = [];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'status') {
+          return {
+            'supported': true,
+            'activated': true,
+            'paired': true,
+            'installed': true,
+            'reachable': true,
+          };
+        }
+        if (call.method == 'sync') {
+          final args = call.arguments as Map<Object?, Object?>;
+          sent.add(args['payload'] as Map<Object?, Object?>);
+          return true;
+        }
+        return null;
+      });
+      bridge.attachCommandHandler((_) => null);
+    });
+
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      bridge.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    WatchGeo geoAt(
+      double lat, {
+      required int fixedAtMs,
+      List<WatchPing> pings = const [],
+    }) =>
+        WatchGeo(
+          you: WatchPosition(
+            lat: lat,
+            lon: -122.3,
+            fixedAt: DateTime.fromMillisecondsSinceEpoch(fixedAtMs),
+          ),
+          pings: pings,
+          repeaters: const [],
+          heard: const [],
+          linkedRepeaterIds: const [],
+        );
+
+    Future<void> push(WatchGeo geo, {Duration wait = settle}) async {
+      final snapshot = _snapshot(geo: geo);
+      bridge.schedule(
+        () => snapshot,
+        urgencyKeyBuilder: () => snapshot.urgencyKey,
+        immediate: true,
+      );
+      await Future<void>.delayed(wait);
+    }
+
+    double sentLat(int index) {
+      final geo = sent[index]['geo'] as Map<Object?, Object?>;
+      final you = geo['you'] as Map<Object?, Object?>;
+      return you['lat'] as double;
+    }
+
+    test('suppresses jitter, but never a payload that is going out anyway',
+        () async {
+      // 1e-5 degrees of latitude is about 1.11 m here, so 47.60002 is roughly
+      // 2 m from the baseline and 47.6003 is roughly 33 m.
+      await push(geoAt(47.6, fixedAtMs: 1760000000000), wait: firstPush);
+      expect(sent, hasLength(1), reason: 'the first fix always goes');
+
+      // A newer fix time and a couple of metres. This is a stationary phone,
+      // and it must not reach the radio — including on the retry the throttle
+      // scheduled, which `settle` has already allowed to fire.
+      await push(geoAt(47.60002, fixedAtMs: 1760000030000));
+      expect(sent, hasLength(1));
+
+      // The same two metres, now travelling with a ping. The ping alone
+      // defeats the dedupe, so this send happens either way; the assertion is
+      // that it carries the *current* fix rather than the last one sent.
+      await push(geoAt(
+        47.60002,
+        fixedAtMs: 1760000060000,
+        pings: [
+          WatchPing(
+            id: 'rx-1760000060000',
+            lat: 47.60002,
+            lon: -122.3,
+            kind: 'rx',
+            color: const WatchColor(0, 0, 255),
+            at: DateTime.fromMillisecondsSinceEpoch(1760000060000),
+          ),
+        ],
+      ));
+      expect(sent, hasLength(2));
+      expect(sentLat(1), 47.60002,
+          reason: 'the puck must not lag the ping beside it');
+
+      // And the gate still opens on its own once the wearer has actually
+      // moved, with nothing else in the payload changing.
+      await push(geoAt(47.6003, fixedAtMs: 1760000090000));
+      expect(sent, hasLength(3));
+      expect(sentLat(2), 47.6003);
+    });
+
+    /// The gate can only recognise a change confined to the fix itself, which
+    /// is why `AppStateProvider._resolveRankingPosition` still holds a lagging
+    /// position behind every *derived* field. `WatchHeardNode.distanceM` is a
+    /// full-precision double, so feeding it the live fix would move the payload
+    /// on every GPS jitter and walk straight past this gate — one send per
+    /// throttle interval, from a phone sitting on a table.
+    test('cannot see through a derived field, so derived fields must not move',
+        () async {
+      WatchGeo geoWith(double lat, double distanceM) => WatchGeo(
+            you: WatchPosition(
+              lat: lat,
+              lon: -122.3,
+              fixedAt: DateTime.fromMillisecondsSinceEpoch(1760000000000),
+            ),
+            pings: const [],
+            repeaters: const [],
+            heard: [
+              WatchHeardNode(
+                id: '4E5D',
+                typeColor: const WatchColor(0, 1, 0),
+                at: DateTime.fromMillisecondsSinceEpoch(1760000000000),
+                distanceM: distanceM,
+              ),
+            ],
+            linkedRepeaterIds: const [],
+          );
+
+      await push(geoWith(47.6, 1423.5), wait: firstPush);
+      expect(sent, hasLength(1));
+
+      // Two metres of jitter, with the distance readout recomputed from it.
+      await push(geoWith(47.60002, 1421.3));
+      expect(sent, hasLength(2),
+          reason: 'a moved distanceM is indistinguishable from real news');
+    });
+
+    test('measures from the last fix the watch received', () async {
+      await push(geoAt(47.6, fixedAtMs: 1760000000000), wait: firstPush);
+      expect(sent, hasLength(1));
+
+      // Two ~11 m steps in the same direction. Each is short of the threshold
+      // on its own, but the second lands ~22 m from the fix the watch actually
+      // holds, so it goes. Anchoring on the previous *computed* fix instead
+      // would suppress a wearer walking away one short step at a time.
+      await push(geoAt(47.6001, fixedAtMs: 1760000030000));
+      expect(sent, hasLength(1));
+      await push(geoAt(47.6002, fixedAtMs: 1760000060000));
+      expect(sent, hasLength(2), reason: '~22 m from the delivered fix');
+      expect(sentLat(1), 47.6002);
+    });
+  });
 }

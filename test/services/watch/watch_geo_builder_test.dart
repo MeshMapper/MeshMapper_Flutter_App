@@ -611,7 +611,7 @@ void main() {
   group('movedEnough', () {
     test('always sends the first fix', () {
       expect(
-        WatchGeoBuilder.movedEnough(
+        WatchWire.movedEnough(
           lastLat: null,
           lastLon: null,
           lat: 47.6,
@@ -623,7 +623,7 @@ void main() {
 
     test('suppresses stationary GPS jitter', () {
       expect(
-        WatchGeoBuilder.movedEnough(
+        WatchWire.movedEnough(
           lastLat: 47.6,
           lastLon: -122.3,
           lat: 47.60002,
@@ -635,7 +635,7 @@ void main() {
 
     test('passes once the fix moves past the threshold', () {
       expect(
-        WatchGeoBuilder.movedEnough(
+        WatchWire.movedEnough(
           lastLat: 47.6,
           lastLon: -122.3,
           lat: 47.6005,

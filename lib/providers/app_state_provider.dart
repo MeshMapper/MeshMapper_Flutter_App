@@ -136,9 +136,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final WatchBridgeService _watchBridge = WatchBridgeService();
   bool _hasEverPairedWatch = false;
 
-  /// Last position sent to the watch, held until the fix moves far enough to
-  /// be worth an update. See [_resolveWatchPosition].
+  /// Last position handed to the watch, kept so a dropped GPS fix leaves the
+  /// puck where it was rather than removing it. See [_resolveWatchPosition].
   WatchPosition? _lastWatchPosition;
+
+  /// Held position behind every distance and ordering decision in the payload.
+  /// See [_resolveRankingPosition] for why this one still lags on purpose.
+  ({double lat, double lon})? _rankingPosition;
   WatchHapticCue? _watchCue;
 
   /// Human-readable failure from the most recent server-side session check.
@@ -1326,6 +1330,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   WatchGeo _buildWatchGeo({required bool includeMapGeo}) {
     final position = _resolveWatchPosition();
+    final ranking = _resolveRankingPosition();
 
     // The wrist mirrors the map's "Top Heard" overlay: the latest ping's top
     // three by SNR plus the current RX slot. Same source, so the two surfaces
@@ -1347,8 +1352,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       repeaterByHex: repeaterByHex,
       topAt: _topRepeatersOverlayUpdatedAt,
       rxAt: _liveActivityRxUpdatedAt,
-      lat: position?.lat,
-      lon: position?.lon,
+      lat: ranking?.lat,
+      lon: ranking?.lon,
     );
 
     // The readout still needs the fix and Top Heard, but none of the arrays
@@ -1380,8 +1385,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       repeaters: WatchGeoBuilder.buildRepeaters(
         repeaters: _repeaters,
         heardThisCycle: heardIds,
-        lat: position?.lat,
-        lon: position?.lon,
+        lat: ranking?.lat,
+        lon: ranking?.lon,
       ),
       heard: heard,
       linkedRepeaterIds: [
@@ -1393,25 +1398,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  /// Current fix, held still until it moves meaningfully.
+  /// The current fix, reported as it is.
   ///
-  /// Returning the previous position leaves the payload fingerprint unchanged,
-  /// so the bridge's dedupe suppresses the send. A parked phone therefore
-  /// stops talking to the watch instead of streaming GPS jitter at it.
+  /// **The movement gate used to live here and deliberately does not any
+  /// more.** It returned the *previous* position until the fix had moved
+  /// [WatchWire.minMoveMeters], which left the payload fingerprint unchanged so
+  /// the bridge's dedupe suppressed the send — that is how a parked phone stops
+  /// streaming GPS jitter at the watch, and it is still how it works. But
+  /// suppressing a *send* by degrading the *content* also degrades every send
+  /// that happens for some other reason. A new ping changes the payload
+  /// regardless, so the packet goes out carrying a puck up to 15 m stale while
+  /// the ping beside it carries its own transmit-time GPS. The wearer sees the
+  /// pings leading them in the direction of travel.
+  ///
+  /// The gate now sits in [WatchBridgeService], which asks "is this change
+  /// worth a send?" without touching what gets sent — and in
+  /// [_resolveRankingPosition], which keeps every *derived* field as still as
+  /// it was before. Only the puck moved.
   WatchPosition? _resolveWatchPosition() {
     final position = _currentPosition;
     if (position == null) return _lastWatchPosition;
-
-    final previous = _lastWatchPosition;
-    if (previous != null &&
-        !WatchGeoBuilder.movedEnough(
-          lastLat: previous.lat,
-          lastLon: previous.lon,
-          lat: position.latitude,
-          lon: position.longitude,
-        )) {
-      return previous;
-    }
 
     final resolved = WatchPosition(
       lat: position.latitude,
@@ -1423,6 +1429,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       fixedAt: position.timestamp,
     );
     _lastWatchPosition = resolved;
+    return resolved;
+  }
+
+  /// Position used to rank repeaters and to measure Top Heard distances, held
+  /// still until the fix moves [WatchWire.minMoveMeters].
+  ///
+  /// **This is the old gate, kept exactly where it still belongs.** It was
+  /// removed from the puck because a stale puck is visibly wrong beside a ping
+  /// carrying its own GPS. Everything derived from position has the opposite
+  /// requirement: `WatchHeardNode.distanceM` is a full-precision double over a
+  /// distance measured in kilometres, and the nearest-first repeater order can
+  /// swap on a metre. Feeding those the live fix would make a parked phone's
+  /// GPS jitter change the payload every time, which is precisely the send the
+  /// bridge's gate exists to suppress — and it would slip past that gate,
+  /// because the gate can only recognise a change confined to the fix itself.
+  ///
+  /// Fifteen metres of staleness is invisible in a distance readout and cannot
+  /// meaningfully reorder repeaters. The puck is the only place it showed.
+  ({double lat, double lon})? _resolveRankingPosition() {
+    final position = _currentPosition;
+    if (position == null) return _rankingPosition;
+
+    final previous = _rankingPosition;
+    if (previous != null &&
+        !WatchWire.movedEnough(
+          lastLat: previous.lat,
+          lastLon: previous.lon,
+          lat: position.latitude,
+          lon: position.longitude,
+        )) {
+      return previous;
+    }
+
+    final resolved = (lat: position.latitude, lon: position.longitude);
+    _rankingPosition = resolved;
     return resolved;
   }
 
