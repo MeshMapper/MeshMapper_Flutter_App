@@ -19,6 +19,43 @@ typedef WatchCommandRefusalHandler = void Function(String reason);
 typedef WatchAvailabilityHandler = void Function(bool available);
 typedef WatchSnapshotDeliveryHandler = void Function(WatchSnapshot snapshot);
 
+/// Read-only evidence from both sides of the phone-to-watch bridge.
+///
+/// These timestamps intentionally do not share the transport's throttle and
+/// dedupe fields. Those fields are cleared when WatchConnectivity changes
+/// state, while a diagnostic must retain the last known-good send across the
+/// exact outage that caused the state change.
+@immutable
+class WatchDiagnosticStatus {
+  const WatchDiagnosticStatus({
+    this.supported = false,
+    this.paired = false,
+    this.installed = false,
+    this.reachable = false,
+    this.activated = false,
+    this.canSync = false,
+    this.lastSuccessfulSendAt,
+    this.lastAvailabilityChangedAt,
+    this.lastSendDelivered,
+  });
+
+  final bool supported;
+  final bool paired;
+  final bool installed;
+  final bool reachable;
+  final bool activated;
+  final bool canSync;
+  final DateTime? lastSuccessfulSendAt;
+  final DateTime? lastAvailabilityChangedAt;
+  final bool? lastSendDelivered;
+
+  List<String> get failingSyncConditions => [
+        if (!activated) 'activated',
+        if (!paired) 'paired',
+        if (!installed) 'installed',
+      ];
+}
+
 /// Owns the Flutter↔WatchConnectivity bridge and coalesces noisy app state.
 ///
 /// Deliberately mirrors [LiveActivityService]'s shape — fingerprint dedupe,
@@ -55,6 +92,12 @@ class WatchBridgeService {
   bool _disposed = false;
   bool _didReconcileNativeState = false;
   bool _canSync = false;
+  Map<String, bool>? _lastNativeStatus;
+  DateTime? _lastSuccessfulSendAt;
+  DateTime? _lastAvailabilityChangedAt;
+  bool? _lastSendDelivered;
+  final ValueNotifier<WatchDiagnosticStatus> _diagnostics =
+      ValueNotifier(const WatchDiagnosticStatus());
   DateTime? _mapGeoSuppressedAt;
   double? _lastMapGeoClaimIssuedAtMs;
   Future<void> _operationChain = Future<void>.value();
@@ -65,6 +108,7 @@ class WatchBridgeService {
   bool get isSupportedPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
   bool get canSync => isSupportedPlatform && _canSync;
+  ValueListenable<WatchDiagnosticStatus> get diagnostics => _diagnostics;
 
   /// Whether the next payload must carry map-only geography.
   ///
@@ -204,16 +248,39 @@ class WatchBridgeService {
     }
   }
 
+  /// Re-reads the local WCSession properties for the diagnostic surface.
+  /// This does not send a snapshot or bypass the existing availability gate.
+  Future<void> refreshAvailability() => _refreshAvailability();
+
   void _applyAvailability(
     Object? raw, {
     bool refreshNativeState = false,
   }) {
     if (raw is! Map) return;
-    final available = raw['activated'] == true &&
-        raw['paired'] == true &&
-        raw['installed'] == true;
-    if (available == _canSync && !refreshNativeState) return;
-    _canSync = available;
+    final status = <String, bool>{
+      'supported': raw['supported'] == true,
+      'paired': raw['paired'] == true,
+      'installed': raw['installed'] == true,
+      'reachable': raw['reachable'] == true,
+      'activated': raw['activated'] == true,
+    };
+    final available =
+        status['activated']! && status['paired']! && status['installed']!;
+    final availabilityChanged = available != _canSync;
+    final statusChanged = !mapEquals(_lastNativeStatus, status);
+
+    if (availabilityChanged || refreshNativeState) _canSync = available;
+    if (statusChanged) {
+      _lastNativeStatus = Map.unmodifiable(status);
+      _lastAvailabilityChangedAt = DateTime.now();
+      _publishDiagnostics();
+      // This is deliberately tied to a changed native status map. Snapshot
+      // scheduling and explicit refreshes can call this path frequently, but
+      // repeated state adds no evidence and would hide the useful transition.
+      debugLog(
+          '[WATCH] Availability changed: status=$status canSync=$_canSync');
+    }
+    if (!availabilityChanged && !refreshNativeState) return;
 
     // Native forgets its application-context cache whenever WatchConnectivity
     // reports a state change. Forget ours on the same notification even when
@@ -228,6 +295,22 @@ class WatchBridgeService {
       _lastBuiltAt = null;
     }
     _availabilityHandler?.call(available);
+  }
+
+  void _publishDiagnostics() {
+    if (_disposed) return;
+    final status = _lastNativeStatus;
+    _diagnostics.value = WatchDiagnosticStatus(
+      supported: status?['supported'] ?? false,
+      paired: status?['paired'] ?? false,
+      installed: status?['installed'] ?? false,
+      reachable: status?['reachable'] ?? false,
+      activated: status?['activated'] ?? false,
+      canSync: canSync,
+      lastSuccessfulSendAt: _lastSuccessfulSendAt,
+      lastAvailabilityChangedAt: _lastAvailabilityChangedAt,
+      lastSendDelivered: _lastSendDelivered,
+    );
   }
 
   void _rememberCommandId(String id) {
@@ -326,6 +409,8 @@ class WatchBridgeService {
         'urgent': urgent,
       });
       if (delivered != true) {
+        _lastSendDelivered = false;
+        _publishDiagnostics();
         // Native can lose availability between status and send. Do not cache
         // a payload it refused. Re-query rather than guessing which condition
         // failed, so a transient context error cannot permanently close the
@@ -336,7 +421,11 @@ class WatchBridgeService {
       _didReconcileNativeState = true;
       _lastPayload = encoded;
       _lastUrgencyKey = snapshot.urgencyKey;
-      _lastSentAt = DateTime.now();
+      final sentAt = DateTime.now();
+      _lastSentAt = sentAt;
+      _lastSuccessfulSendAt = sentAt;
+      _lastSendDelivered = true;
+      _publishDiagnostics();
       _snapshotDeliveryHandler?.call(snapshot);
     } on MissingPluginException {
       // Expected on non-iOS hosts and in tests.
@@ -377,5 +466,6 @@ class WatchBridgeService {
     _snapshotDeliveryHandler = null;
     _mapGeoSuppressedAt = null;
     _lastMapGeoClaimIssuedAtMs = null;
+    _diagnostics.dispose();
   }
 }

@@ -530,9 +530,11 @@ void main() {
           .setMockMethodCallHandler(channel, (call) async {
         if (call.method == 'status') {
           return {
+            'supported': true,
             'activated': nativeAvailable,
             'paired': nativeAvailable,
             'installed': nativeAvailable,
+            'reachable': nativeAvailable,
           };
         }
         if (call.method == 'sync') {
@@ -604,13 +606,49 @@ void main() {
         channel.name,
         channel.codec.encodeMethodCall(const MethodCall(
           'availabilityChanged',
-          {'activated': true, 'paired': true, 'installed': true},
+          {
+            'supported': true,
+            'activated': true,
+            'paired': true,
+            'installed': true,
+            'reachable': true,
+          },
         )),
         null,
       );
       expect(result, isNotNull);
       expect(bridge.canSync, isTrue);
       expect(changes, [true]);
+    });
+
+    test('diagnostics identify the exact condition closing the sync gate',
+        () async {
+      bridge.attachCommandHandler((_) => null);
+      await Future<void>.delayed(Duration.zero);
+
+      final result = await TestDefaultBinaryMessengerBinding
+          .instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+        channel.name,
+        channel.codec.encodeMethodCall(const MethodCall(
+          'availabilityChanged',
+          {
+            'supported': true,
+            'activated': true,
+            'paired': true,
+            'installed': false,
+            'reachable': true,
+          },
+        )),
+        null,
+      );
+
+      expect(result, isNotNull);
+      expect(bridge.canSync, isFalse);
+      expect(bridge.diagnostics.value.supported, isTrue);
+      expect(bridge.diagnostics.value.reachable, isTrue);
+      expect(bridge.diagnostics.value.failingSyncConditions, ['installed']);
+      expect(bridge.diagnostics.value.lastAvailabilityChangedAt, isNotNull);
     });
 
     test('a native false is not cached as a delivered snapshot', () async {
@@ -636,6 +674,8 @@ void main() {
       expect(builds, 2);
       expect(syncCalls, 2,
           reason: 'native refused both; neither payload was delivered');
+      expect(bridge.diagnostics.value.lastSendDelivered, isFalse);
+      expect(bridge.diagnostics.value.lastSuccessfulSendAt, isNull);
     });
 
     test('a watch state change resends even when availability stays true',
@@ -662,7 +702,13 @@ void main() {
         channel.name,
         channel.codec.encodeMethodCall(const MethodCall(
           'availabilityChanged',
-          {'activated': true, 'paired': true, 'installed': true},
+          {
+            'supported': true,
+            'activated': true,
+            'paired': true,
+            'installed': true,
+            'reachable': true,
+          },
         )),
         null,
       );
@@ -717,6 +763,8 @@ void main() {
 
       expect(delivered, same(snapshot));
       expect(syncCalls, 1);
+      expect(bridge.diagnostics.value.lastSendDelivered, isTrue);
+      expect(bridge.diagnostics.value.lastSuccessfulSendAt, isNotNull);
     });
 
     test('accepted commands reach the handler', () async {

@@ -134,6 +134,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   final LiveActivityService _liveActivityService = LiveActivityService();
   final WatchBridgeService _watchBridge = WatchBridgeService();
+  bool _hasEverPairedWatch = false;
 
   /// Last position sent to the watch, held until the fix moves far enough to
   /// be worth an update. See [_resolveWatchPosition].
@@ -555,6 +556,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String get deviceId => _deviceId;
   bool get preferencesLoaded => _preferencesLoaded;
+  WatchBridgeService get watchBridge => _watchBridge;
+  bool get shouldShowWatchDiagnostics =>
+      _watchBridge.isSupportedPlatform &&
+      (_watchBridge.diagnostics.value.paired || _hasEverPairedWatch);
   TransportType get selectedTransport => _selectedTransport;
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;
@@ -1713,6 +1718,38 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  void _handleWatchDiagnosticsChanged() {
+    if (_watchBridge.diagnostics.value.paired) {
+      unawaited(_rememberWatchPairing());
+    }
+  }
+
+  Future<void> _rememberWatchPairing() async {
+    if (_hasEverPairedWatch) return;
+
+    // Pairing history is intentionally one-way. An unpaired watch is the most
+    // important time to keep this diagnostic reachable, so no later native
+    // false is allowed to erase the evidence that the feature once existed.
+    _hasEverPairedWatch = true;
+    _notifyWatchDiagnosticVisibilityChanged();
+
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      await box.put('watch_has_ever_been_paired', true);
+    } catch (error) {
+      debugError('[WATCH] Failed to persist pairing history: $error');
+    }
+  }
+
+  void _notifyWatchDiagnosticVisibilityChanged() {
+    if (_isDisposed) return;
+    // The provider's normal notifier also schedules a watch snapshot. This
+    // flag only controls Settings visibility, so bypass that transport side
+    // effect and keep pairing persistence strictly observational.
+    super.notifyListeners();
+  }
+
   ({
     LiveActivityPhase phase,
     String title,
@@ -2146,6 +2183,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _timerListenable.addListener(_handleLiveActivityTimerChange);
     }
     if (_watchBridge.isSupportedPlatform) {
+      _watchBridge.diagnostics.addListener(_handleWatchDiagnosticsChanged);
       _watchBridge.attachCommandHandler(
         _handleWatchCommand,
         onRefusal: _emitWatchFailure,
@@ -2240,6 +2278,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Load user preferences
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
+    await _loadWatchPairingPreference();
     await _loadDeviceAntennaPreferences();
     await _loadDevicePowerOverrides();
     await _loadDeviceRealNames();
@@ -8435,6 +8474,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  Future<void> _loadWatchPairingPreference() async {
+    if (!_watchBridge.isSupportedPlatform) return;
+
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      // OR with the in-memory observation because WCSession may report a
+      // pairing while startup persistence is still loading. That race must
+      // never turn the one-way flag back off.
+      final wasPaired = box.get('watch_has_ever_been_paired') == true;
+      if (wasPaired && !_hasEverPairedWatch) {
+        _hasEverPairedWatch = true;
+        _notifyWatchDiagnosticVisibilityChanged();
+      }
+    } catch (error) {
+      debugError('[WATCH] Failed to load pairing history: $error');
+    }
+  }
+
   /// Save user preferences to Hive storage
   Future<void> _savePreferences() async {
     final box = await _openBoxSafely(_preferencesBoxName);
@@ -8940,6 +8998,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isDisposed = true;
     _timerListenable.removeListener(_handleLiveActivityTimerChange);
     _liveActivityService.dispose();
+    _watchBridge.diagnostics.removeListener(_handleWatchDiagnosticsChanged);
     _watchBridge.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();

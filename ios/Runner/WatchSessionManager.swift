@@ -128,7 +128,13 @@ final class WatchSessionManager: NSObject {
 
   private func statusDictionary() -> [String: Any] {
     guard let session else {
-      return ["supported": false, "paired": false, "installed": false, "reachable": false]
+      return [
+        "supported": false,
+        "paired": false,
+        "installed": false,
+        "reachable": false,
+        "activated": false,
+      ]
     }
     return [
       "supported": true,
