@@ -27,19 +27,142 @@ struct MapPage: View {
   /// captured headlessly, like the sample-data affordances.
   private var isLuminanceReduced: Bool {
     #if DEBUG
+    if debugForcedDim { return true }
     if UserDefaults.standard.bool(forKey: "MeshMapperForceDimmed") { return true }
     #endif
     return environmentLuminanceReduced
   }
 
+  #if DEBUG
+  /// Drives a real full-luminance -> dimmed *transition* in the simulator,
+  /// which `MeshMapperForceDimmed` alone cannot do: that flag only sets the
+  /// state the page is born into, so it exercises the cold-dimmed path and
+  /// never the glance path. Everything about the dim hold lives in the
+  /// transition, so without this the only way to test it is Adam's wrist.
+  ///
+  /// Launch with `-MeshMapperAutoDimAfter <seconds>`.
+  @State private var debugForcedDim = false
+  #endif
+
   /// Content choice and display cadence are independent. A chosen readout can
-  /// run at full luminance with a precise timer; reduced luminance selects the
-  /// same approved surface because MapKit is not worth its Always-On cost.
+  /// run at full luminance with a precise timer, and reduced luminance settles
+  /// on that same approved surface because MapKit is not worth holding through
+  /// a wrist-down.
+  ///
+  /// It settles there *after* the hold, not at the dim — see `dimmedMapHold`.
   private var showsMap: Bool {
-    settings.mainPageContent == .map && !isLuminanceReduced
+    settings.mainPageContent == .map
+      && (!isLuminanceReduced || isWithinDimmedMapHold)
   }
 
-  private var needsMapGeo: Bool { showsMap && isSelected }
+  /// Whether the phone should keep sending map geography.
+  ///
+  /// **Deliberately not `showsMap && isSelected`.** The hold below keeps
+  /// drawing the pings the watch already has; it must not also keep the
+  /// phone's geo claim open. `WatchBridgeService` only schedules suppression
+  /// 15 s out, so a glance already costs about 21 s of geo — 5.9 s of map plus
+  /// that delay — and holding the claim for the hold's duration as well would
+  /// roughly double it, for a map the wearer was looking at either way.
+  private var needsMapGeo: Bool {
+    settings.mainPageContent == .map && !isLuminanceReduced && isSelected
+  }
+
+  /// How long the map keeps drawing after the display dims.
+  ///
+  /// **The dim is not the wrist coming down.** watchOS drops to reduced
+  /// luminance about 5.9 seconds into a glance — 33 lifts measured, 14 of them
+  /// inside a 0.49 s band, seven between 5.88 and 5.91 s — and the *clock face*
+  /// dims in about the same time, so this is the platform's full-brightness
+  /// window rather than anything this app can hold on to. The display stays
+  /// legible: "the screen does get a bit dimmer but the level is relatively
+  /// high still."
+  ///
+  /// `showsMap` treated that as nobody looking and tore the whole MapKit
+  /// subtree down mid-glance. The wearer's report: "the watch often falls back
+  /// to the always on state very rapidly despite still being in the lifted
+  /// position. This can make the map flicker on and disappear while a user is
+  /// looking at it."
+  ///
+  /// Twenty seconds covers a deliberate glance. It leaves the *radio* alone —
+  /// `needsMapGeo` above is untouched by the hold — but it is not free: MapKit
+  /// stays constructed and rendering for the duration, which is the cost the
+  /// Always-On readout was introduced to avoid. Twenty seconds of it per
+  /// glance is the trade; a wrist-down's worth would not be.
+  private static let dimmedMapHold: TimeInterval = 20
+
+
+  /// When the display last dimmed, or nil at full luminance.
+  @State private var dimmedAt: Date?
+
+  /// Exists to make a render happen at the end of the hold, not to decide when
+  /// the hold ends — see `isWithinDimmedMapHold` for why that distinction is
+  /// load-bearing.
+  @State private var dimmedMapHoldTask: Task<Void, Never>?
+
+  /// Whether the dim is recent enough that the wearer is plausibly still
+  /// reading the map.
+  ///
+  /// **A missing timestamp means hold — but only if this page has been seen at
+  /// full luminance.** `dimmedAt` is written by `onChange`, which runs *after*
+  /// the body evaluation that first sees reduced luminance. Defaulting to "not
+  /// holding" would therefore give that first frame `showsMap == false` and
+  /// only restore the map on the update the callback provokes — turning the
+  /// flicker this fixes into a teardown and a full rebuild, complete with a
+  /// fresh camera anchor, at the exact moment the wearer is looking at it.
+  ///
+  /// `hasBeenBright` is what keeps that default from swallowing the Always-On
+  /// design. A page that *appeared* already dimmed was never mid-glance, and
+  /// without this it opened straight onto MapKit — measured, not theorised: a
+  /// force-dimmed cold launch built the map subtree until this guard existed.
+  ///
+  /// **Past that, read the clock rather than a flag the expiry task cleared.**
+  /// watchOS suspends this app within about a second of the dim — measured by
+  /// the removed hitch detector, which lost 7.42 s of an 8.20 s wrist-down,
+  /// 12.89 of 13.63, 23.01 of 23.99 — so `dimmedMapHoldTask` cannot be relied
+  /// on to fire on time, and a boolean it owns would sit `true` for a whole
+  /// wrist-down. Evaluating the timestamp means every render that actually
+  /// happens gets the right answer, whenever it happens.
+  ///
+  /// That still needs a render to happen at all, which is what
+  /// `dimmedMapHoldTicker` is for.
+  /// Whether a dim arriving right now could hold anything.
+  ///
+  /// The same conditions `isWithinDimmedMapHold` applies, minus the ones that
+  /// only make sense once a hold exists. Kept separate so arming can be
+  /// skipped entirely rather than armed and then rejected on every render.
+  private var canHoldMapThroughDim: Bool {
+    settings.mainPageContent == .map && isSelected && hasBeenBright
+  }
+
+  private var isWithinDimmedMapHold: Bool {
+    guard isSelected, isLuminanceReduced, hasBeenBright, !isDimmedMapHoldExpired
+    else {
+      return false
+    }
+    guard let dimmedAt else { return true }
+    return Date().timeIntervalSince(dimmedAt) < Self.dimmedMapHold
+  }
+
+  /// Latched by the expiry task or the ticker, so a hold that has ended cannot
+  /// be revived by `dimmedAt` being cleared out from under it.
+  @State private var isDimmedMapHoldExpired = false
+
+  /// Whether this page has been *watched* — selected and at full luminance —
+  /// at some point since its state was created.
+  ///
+  /// Only then can a dim be part of a glance rather than the state the page was
+  /// born into. It is deliberately not cleared by the view lifecycle: doing so
+  /// broke the feature on hardware, because watchOS re-hosts the page at the
+  /// dim and the reset landed mid-glance. Fresh `@State` already covers the
+  /// case it was meant to, since a page SwiftUI genuinely rebuilds starts
+  /// `false`.
+  ///
+  /// What it guards is narrower than an earlier comment here claimed. An
+  /// off-screen page is already excluded — `isWithinDimmedMapHold` checks
+  /// `isSelected` directly. This covers the two cases that check cannot see: a
+  /// page that appeared already dimmed, and one selected for the first time
+  /// while dimmed. Neither is a glance in progress.
+  @State private var hasBeenBright = false
 
   @State private var camera: MapCameraPosition = .automatic
 
@@ -237,14 +360,30 @@ struct MapPage: View {
 
   var body: some View {
     pageContent
+      // **Both items stay in the toolbar at all times.** They used to be wrapped
+      // in `if !isLuminanceReduced`, and removing them at the dim changes the
+      // toolbar's structure, which re-hosts this page and rebuilds the entire
+      // MapKit subtree underneath it. Measured on a Series 9: a
+      // `map-subtree-appeared` 0.13 s after every single `hold-armed`, with the
+      // old subtree discarded 0.09 s later — a full teardown, fresh camera
+      // anchor and basemap repaint, right under the wearer's eye. Adam saw it
+      // as the map jumping as the display faded. With the items always present
+      // the dim rebuilds nothing at all.
+      //
+      // Hidden by value rather than by presence, and hidden *properly*:
+      // `.opacity(0)` alone leaves a live button, and `.allowsHitTesting`
+      // covers ordinary touch but neither disables the action nor takes it out
+      // of the accessibility tree. Start transmits on a single tap with no
+      // confirmation, so a VoiceOver focus carried across the dim could fire
+      // it on an invisible control. `hiddenWhileDimmed` disables and
+      // accessibility-hides as well; all three are value changes, so the
+      // toolbar's structure stays fixed.
       .toolbar {
-        if !isLuminanceReduced {
-          ToolbarItem(placement: .topBarLeading) {
-            mainPageToggle
-          }
-          ToolbarItem(placement: .topBarTrailing) {
-            trailingToolbarButton
-          }
+        ToolbarItem(placement: .topBarLeading) {
+          mainPageToggle.hiddenWhileDimmed(isLuminanceReduced)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+          trailingToolbarButton.hiddenWhileDimmed(isLuminanceReduced)
         }
       }
       .background(
@@ -308,6 +447,14 @@ struct MapPage: View {
         // `-layout.mainPageContent readout` or the flip is a no-op against a
         // map that is already showing, which reads as a suspiciously fast
         // result rather than as no measurement at all.
+        let autoDim = UserDefaults.standard.integer(forKey: "MeshMapperAutoDimAfter")
+        if autoDim > 0 {
+          Task { @MainActor in
+            try? await Task.sleep(for: .seconds(autoDim))
+            WakeLog.note("debug-forcing-dim")
+            debugForcedDim = true
+          }
+        }
         if UserDefaults.standard.bool(forKey: "MeshMapperTimeSwitchToMap") {
           Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
@@ -317,6 +464,10 @@ struct MapPage: View {
         }
         #endif
         client.setMapGeoNeeded(needsMapGeo)
+        // A page that opens selected and bright is a glance in progress; one
+        // that opens dimmed or behind another page is not, and must not hold a
+        // map it never showed.
+        armGlanceIfWatched()
       }
       .onChange(of: needsMapGeo) { _, needed in
         client.setMapGeoNeeded(needed)
@@ -327,6 +478,7 @@ struct MapPage: View {
         // where it blurs that page and swallows every swipe and Crown turn —
         // the app looks crashed while it is merely holding a stuck sheet.
         if !selected { showingNodes = false }
+        noteSelection(selected)
       }
       .onChange(of: trailingToolbarControl) { _, _ in
         // Stable facts own the slot, but a session transition still changes
@@ -337,6 +489,7 @@ struct MapPage: View {
         if !enabled { disarmToolbarControl() }
       }
       .onChange(of: isLuminanceReduced) { _, reduced in
+        noteLuminance(reduced: reduced)
         if reduced { disarmToolbarControl() }
         #if DEBUG
         // The reference timestamp for a wrist-raise measurement. Nothing else
@@ -345,6 +498,14 @@ struct MapPage: View {
         WakeLog.note(reduced ? "wrist-down" : "wrist-up")
         #endif
       }
+      // Deliberately does NOT touch the hold. Apple's guidance is that Always On
+      // keeps views in the hierarchy, but hardware also collapses the
+      // navigation bar at the dim where the simulator does not — and the
+      // re-host that causes fired this handler mid-glance, which destroyed the
+      // hold about a second in and put the wearer straight back on the readout.
+      // `@State` already gives the right answer for free: if SwiftUI really
+      // destroys this page, `hasBeenBright` goes with it and a page rebuilt
+      // while dimmed starts unarmed. If it survives, so should the glance.
       .onDisappear { disarmToolbarControl() }
       // A main-actor "hitch" detector lived here — a 250 ms tick that logged
       // whenever it lost more than a second — meant to decide whether the 6.1 s
@@ -379,6 +540,64 @@ struct MapPage: View {
         mapContent
       } else {
         readoutContent
+      }
+    }
+    // Attached as a background rather than as a sibling in the ZStack. As a
+    // sibling it enters the stack exactly when luminance drops, which
+    // re-identifies the branch beside it and rebuilt the whole MapKit subtree
+    // at the dim — measured on hardware as `map-subtree-appeared` 0.13 s after
+    // every `hold-armed`, and visible on the wrist as the map jumping right
+    // as it dims. A background cannot change the identity of the content it
+    // decorates.
+    .background(dimmedMapHoldTicker)
+  }
+
+  /// Asks watchOS to render this page again when the hold ends.
+  ///
+  /// **Without this the hold could not end during a real wrist-down at all.**
+  /// The clock in `isWithinDimmedMapHold` only decides the answer for renders
+  /// that happen, and a suspended app renders nothing: the last frame drawn
+  /// stays on the Always-On display until something asks for another. Hold the
+  /// map and then suspend, and the map — not the approved readout — would be
+  /// the Always-On surface for the whole time the wrist was down.
+  ///
+  /// A timeline entry is the supported way to ask for that render — the same
+  /// mechanism the readout's coarse countdown uses while dimmed, though not
+  /// literally the same wake, since that countdown is not in the tree while the
+  /// map is held. watchOS may still coalesce them into one cadence. The
+  /// schedule repeats rather than naming the single boundary: a two-entry
+  /// `.explicit` schedule can be exhausted by an early re-query and then never
+  /// ask for another render at all, which would strand the map on the display.
+  /// Repeating entries cannot run out, and the ticker leaves the tree entirely
+  /// once the hold is expired, so nothing keeps asking.
+  ///
+  /// Always-On throttles these updates to roughly one a minute, so the readout
+  /// may return somewhat after twenty seconds. Nobody is looking by then — the
+  /// point is that it returns without needing the wrist.
+  @ViewBuilder
+  private var dimmedMapHoldTicker: some View {
+    if isLuminanceReduced, !isDimmedMapHoldExpired, let dimmedAt {
+      TimelineView(.periodic(from: dimmedAt, by: Self.dimmedMapHold)) { context in
+        Color.clear
+          .frame(width: 0, height: 0)
+          .onChange(of: context.date) { _, _ in
+            // **A schedule entry arriving is not proof its deadline arrived.**
+            // Entering Always On changes the timeline's cadence, which
+            // re-queries the schedule, and SwiftUI can hand over the next entry
+            // there and then. An earlier version treated the date changing as
+            // the boundary and called this directly: on a Series 9 it expired
+            // the hold 0.82, 0.85, 0.94 and 1.05 s after the dim, four glances
+            // out of four, while the simulator — which never enters Always On,
+            // so never changes cadence — passed every time.
+            //
+            // The clock is the authority, exactly as it is in
+            // `isWithinDimmedMapHold`. This callback only decides whether the
+            // render that just happened is the one that ends the hold.
+            guard Date().timeIntervalSince(dimmedAt) >= Self.dimmedMapHold else {
+              return
+            }
+            expireDimmedMapHold()
+          }
       }
     }
   }
@@ -607,6 +826,82 @@ struct MapPage: View {
     armedToolbarControl = nil
   }
 
+  private func noteLuminance(reduced: Bool) {
+    guard reduced else {
+      armGlanceIfWatched()
+      resetDimmedMapHold()
+      return
+    }
+    // Nothing to hold means nothing to arm. `isWithinDimmedMapHold` rejects
+    // all of these anyway, but arming would still start a task and put a
+    // timeline in the tree, asking watchOS for an Always-On render that can
+    // only ever decide there was no hold.
+    guard canHoldMapThroughDim else { return }
+    dimmedMapHoldTask?.cancel()
+    dimmedAt = Date()
+    isDimmedMapHoldExpired = false
+    #if DEBUG
+    WakeLog.note("hold-armed bright \(hasBeenBright) selected \(isSelected)")
+    #endif
+    // Fires only while the app happens to still be scheduled, which is roughly
+    // the first second after the dim. `dimmedMapHoldTicker` is what covers the
+    // rest; this is here so a glance that keeps the app alive ends the hold at
+    // exactly the right moment rather than at the next system update.
+    dimmedMapHoldTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(Self.dimmedMapHold))
+      guard !Task.isCancelled else { return }
+      expireDimmedMapHold()
+    }
+  }
+
+  private func expireDimmedMapHold() {
+    dimmedMapHoldTask?.cancel()
+    dimmedMapHoldTask = nil
+    guard !isDimmedMapHoldExpired else { return }
+    isDimmedMapHoldExpired = true
+    #if DEBUG
+    WakeLog.note("hold-expired")
+    #endif
+  }
+
+  private func resetDimmedMapHold(_ reason: String = "luminance") {
+    #if DEBUG
+    if dimmedAt != nil || isDimmedMapHoldExpired {
+      WakeLog.note("hold-reset \(reason)")
+    }
+    #endif
+    dimmedMapHoldTask?.cancel()
+    dimmedMapHoldTask = nil
+    dimmedAt = nil
+    isDimmedMapHoldExpired = false
+  }
+
+  /// Ends both the hold and the glance that earned it. Only deselection does
+  /// this: it is an explicit statement that the wearer is looking elsewhere,
+  /// unlike a view-lifecycle callback, which on watchOS can fire for reasons
+  /// that have nothing to do with whether anyone is looking.
+  private func endDimmedMapHoldLifetime(_ reason: String) {
+    resetDimmedMapHold(reason)
+    #if DEBUG
+    if hasBeenBright { WakeLog.note("hold-disarmed \(reason)") }
+    #endif
+    hasBeenBright = false
+  }
+
+  private func armGlanceIfWatched() {
+    if isSelected, !isLuminanceReduced { hasBeenBright = true }
+  }
+
+  private func noteSelection(_ selected: Bool) {
+    // A hold belongs to a glance at *this* page. Swiping away ends the glance,
+    // whatever the display is doing.
+    guard selected else {
+      endDimmedMapHoldLifetime("deselected")
+      return
+    }
+    armGlanceIfWatched()
+  }
+
   private var mapContent: some View {
     ZStack {
       map
@@ -653,9 +948,20 @@ struct MapPage: View {
     }
     #if DEBUG
     // Separates "built twice" from "built, torn down, rebuilt". Every device
-    // wake logs two appearances 50-70 ms apart and the simulator logs one, so
-    // the shape of the pair decides where to look: an interleaved disappear
-    // means a genuine teardown, two bare appearances mean two live instances.
+    // wake logs two appearances 50-70 ms apart, and the shape of the pair
+    // decides where to look: an interleaved disappear means a genuine teardown,
+    // two bare appearances mean two live instances.
+    //
+    // **The pair is settled, and it is not ours.** It is construct → construct
+    // → discard the first, netting one live subtree. A probe placed as a bare
+    // sibling above `pageContent`'s `if showsMap` doubled identically, and so
+    // did one inside `readoutContent` on a launch with no MapKit anywhere —
+    // so this is the whole page being built twice, not anything about the map.
+    // Probes on the `NavigationStack` and the `TabView` each fired once, and
+    // it survived both removing the hoisted stack entirely and making the
+    // conditional Heard page unconditional. What remains is the vertical pager
+    // building its selected page twice at launch. Nothing here can prevent it;
+    // the cost is one discarded construction against a 0.104 s rebuild.
     .onDisappear { WakeLog.note("map-subtree-disappeared") }
     #endif
   }
@@ -1526,6 +1832,27 @@ private struct WatchPhaseBar: View {
 extension Comparable {
   fileprivate func clamped(to limits: ClosedRange<Self>) -> Self {
     min(max(self, limits.lowerBound), limits.upperBound)
+  }
+}
+
+extension View {
+  /// Take a control out of service while the display is dimmed, without taking
+  /// it out of the view tree.
+  ///
+  /// Presence is what must not change: wrapping toolbar items in an `if` alters
+  /// the toolbar's structure, which re-hosts the page and rebuilds everything
+  /// under it — measured on hardware as a full MapKit teardown 0.13 s into
+  /// every dim. Every modifier here is a value change instead.
+  ///
+  /// All three are needed. Opacity hides it, hit testing stops a touch, and
+  /// `disabled` plus `accessibilityHidden` stop an assistive technology
+  /// activating a control nobody can see. The trailing toolbar control can be
+  /// Start, which transmits on one tap with no confirmation step.
+  fileprivate func hiddenWhileDimmed(_ dimmed: Bool) -> some View {
+    opacity(dimmed ? 0 : 1)
+      .allowsHitTesting(!dimmed)
+      .disabled(dimmed)
+      .accessibilityHidden(dimmed)
   }
 }
 
