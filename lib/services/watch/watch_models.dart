@@ -438,6 +438,58 @@ WatchRequestedStartModeResolution resolveWatchRequestedStartMode({
 
 typedef WatchCommandAdmission = ({bool shouldRun, String? refusal});
 
+typedef SessionStartAvailability = ({bool allowed, String? reason});
+
+/// One start-admission rule shared by the wrist snapshot and command handler.
+///
+/// Passive monitoring does not transmit, so a manual TX, its receive window,
+/// TX cooldown, offline TX policy, and zone TX policy must not block it. The
+/// setup and transition guards still apply to every mode. Keeping that split
+/// here prevents the offered button and the radio admission from drifting back
+/// into separate policy copies.
+SessionStartAvailability resolveSessionStartAvailability({
+  required bool isTransmitMode,
+  required bool isConnected,
+  required bool antennaConfigured,
+  required bool powerConfigured,
+  required bool isPendingDisable,
+  required bool isTargetedRunning,
+  required bool isAutoStarting,
+  required bool cooldownActive,
+  required bool isPingSending,
+  required bool rxWindowActive,
+  required bool txBlockedByOffline,
+  required bool txNotAllowed,
+  required String? transmitValidationReason,
+}) {
+  if (!isConnected) return (allowed: false, reason: 'Not connected');
+  if (isPendingDisable) return (allowed: false, reason: 'Still stopping');
+  if (isTargetedRunning) {
+    return (allowed: false, reason: 'Trace session active');
+  }
+  if (isAutoStarting) return (allowed: false, reason: 'Already starting');
+  if (!antennaConfigured) {
+    return (allowed: false, reason: 'Select antenna option');
+  }
+  if (!powerConfigured) {
+    return (allowed: false, reason: 'Select power level');
+  }
+
+  if (!isTransmitMode) return (allowed: true, reason: null);
+
+  if (txBlockedByOffline) return (allowed: false, reason: 'Offline Mode');
+  if (txNotAllowed) return (allowed: false, reason: 'Passive Only');
+  if (cooldownActive) return (allowed: false, reason: 'Cooling down');
+  if (isPingSending) return (allowed: false, reason: 'Ping in progress');
+  if (rxWindowActive) {
+    return (allowed: false, reason: 'Listening for ping response');
+  }
+  if (transmitValidationReason != null) {
+    return (allowed: false, reason: transmitValidationReason);
+  }
+  return (allowed: true, reason: null);
+}
+
 /// Resolve the wrist's single Start/Stop control without racing the phone's
 /// asynchronous start transaction. A second Start is the same intent and can
 /// disappear harmlessly; Stop is the opposite intent, so claiming success

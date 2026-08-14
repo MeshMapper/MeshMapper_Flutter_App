@@ -7,6 +7,7 @@ import SwiftUI
 /// to the phone, which revalidates it and returns the reason when refused.
 struct ControlsPage: View {
   @Environment(WatchSessionClient.self) private var client
+  @Environment(WatchSettings.self) private var settings
 
   @State private var pingArmed = false
   @State private var disarmPingTask: Task<Void, Never>?
@@ -15,6 +16,12 @@ struct ControlsPage: View {
   private static let compactLabelHeight: CGFloat = 24
 
   private var controls: WatchControls? { client.snapshot?.controls }
+
+  private var effectiveStartMode: WatchSettings.DefaultStartMode {
+    settings.effectiveStartMode(
+      availableStartModes: client.snapshot?.availableStartModes
+    )
+  }
 
   /// Manual-ping cooldown deadline, if one is still ahead of us.
   private var cooldownEndsAt: Date? {
@@ -169,13 +176,17 @@ struct ControlsPage: View {
     let kind: WatchCommand.Kind = isActive ? .stopSession : .startSession
     let isPending = client.pendingCommand == kind
     let isEnabled = controls?.canStartStop == true && !isPending
-    let startTitle = "Start \(client.snapshot?.mode ?? "Session")"
+    let startTitle = "Start \(effectiveStartMode.label)"
     let buttonTitle = isPending
       ? (isActive ? "Stopping…" : "Starting…")
       : (isActive ? "Stop" : startTitle)
 
     return Button {
-      client.send(kind)
+      if kind == .startSession {
+        client.send(kind, mode: effectiveStartMode.rawValue)
+      } else {
+        client.send(kind)
+      }
     } label: {
       Text(buttonTitle)
         .font(.system(size: 13, weight: .semibold))

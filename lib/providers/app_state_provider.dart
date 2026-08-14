@@ -1490,9 +1490,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   WatchControls _buildWatchControls() {
     final cooldownMs = _manualPingCooldownTimer.remainingMs;
     final manualPing = _manualPingAvailability;
+    final passiveStart = sessionStartAvailability(AutoMode.passive);
+    // The wire has one Start/Stop bit while the preferred start mode lives on
+    // the watch. Passive is always advertised and is the safe fallback, so this
+    // bit answers whether at least that start is currently possible; the
+    // command handler applies the same rule again to the mode actually asked
+    // for. An active session uses the bit for Stop instead.
+    final canStartOrStop =
+        _autoPingEnabled ? isConnected : passiveStart.allowed;
 
     return WatchControls(
-      canStartStop: isConnected,
+      canStartStop: canStartOrStop,
       canManualPing: manualPing.allowed,
       isSessionActive: _autoPingEnabled,
       // Slot ownership must not follow the live manual-ping gate: cooldowns
@@ -1509,8 +1517,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // The button already renders its cooldown deadline. The handler still
       // returns this refusal to a stale tap, but duplicating it as a status
       // line would spend wrist space without adding an explanation.
-      blockedReason:
-          manualPing.reason == 'Cooling down' ? null : manualPing.reason,
+      blockedReason: !_autoPingEnabled && !passiveStart.allowed
+          ? passiveStart.reason
+          : (manualPing.reason == 'Cooling down' ? null : manualPing.reason),
     );
   }
 
@@ -1522,6 +1531,38 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         discLogEntries: _discLogEntries,
         traceLogEntries: _traceLogEntries,
       );
+
+  /// Whether [mode] may begin now, with the reason the wearer should see.
+  ///
+  /// This is the sole provider-side start gate. One caller publishes wrist
+  /// enablement and the other admits the command that mutates session state;
+  /// separate copies let a stale or racing wrist action enter a state the phone
+  /// button itself would never offer.
+  SessionStartAvailability sessionStartAvailability(AutoMode mode) {
+    final isTransmitMode = mode != AutoMode.passive;
+    final validation =
+        isTransmitMode ? autoModeValidation : PingValidation.valid;
+    final powerConfigured = _preferences.autoPowerSet ||
+        _preferences.powerLevelSet ||
+        _deviceModel != null;
+
+    return resolveSessionStartAvailability(
+      isTransmitMode: isTransmitMode,
+      isConnected: isConnected,
+      antennaConfigured: _preferences.externalAntennaSet,
+      powerConfigured: powerConfigured,
+      isPendingDisable: isPendingDisable,
+      isTargetedRunning: isTargetedModeRunning,
+      isAutoStarting: isAutoPingStarting,
+      cooldownActive: _cooldownTimer.isRunning,
+      isPingSending: isPingSending,
+      rxWindowActive: _rxWindowTimer.isRunning,
+      txBlockedByOffline: offlineMode && isConnected,
+      txNotAllowed: isConnected && !txAllowed,
+      transmitValidationReason:
+          validation == PingValidation.valid ? null : validation.message,
+    );
+  }
 
   /// Decides whether an intent from the wrist may begin.
   ///
@@ -1551,7 +1592,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
         if (admission.refusal != null) return admission.refusal;
         if (!admission.shouldRun) return null;
-        if (!isConnected) return 'Not connected';
         final requested = resolveWatchRequestedStartMode(
           requestedMode: command.mode,
           isConnected: isConnected,
@@ -1563,6 +1603,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           WatchStartMode.hybrid => AutoMode.hybrid,
           null => _resolvedWatchSessionMode,
         };
+        final availability = sessionStartAvailability(mode);
+        if (!availability.allowed) {
+          return availability.reason ?? 'Could not start';
+        }
         unawaited(_runWatchStartSession(mode));
         return null;
 

@@ -265,6 +265,37 @@ void main() {
   });
 
   group('command kinds', () {
+    SessionStartAvailability startAvailability({
+      bool isTransmitMode = true,
+      bool isConnected = true,
+      bool antennaConfigured = true,
+      bool powerConfigured = true,
+      bool isPendingDisable = false,
+      bool isTargetedRunning = false,
+      bool isAutoStarting = false,
+      bool cooldownActive = false,
+      bool isPingSending = false,
+      bool rxWindowActive = false,
+      bool txBlockedByOffline = false,
+      bool txNotAllowed = false,
+      String? transmitValidationReason,
+    }) =>
+        resolveSessionStartAvailability(
+          isTransmitMode: isTransmitMode,
+          isConnected: isConnected,
+          antennaConfigured: antennaConfigured,
+          powerConfigured: powerConfigured,
+          isPendingDisable: isPendingDisable,
+          isTargetedRunning: isTargetedRunning,
+          isAutoStarting: isAutoStarting,
+          cooldownActive: cooldownActive,
+          isPingSending: isPingSending,
+          rxWindowActive: rxWindowActive,
+          txBlockedByOffline: txBlockedByOffline,
+          txNotAllowed: txNotAllowed,
+          transmitValidationReason: transmitValidationReason,
+        );
+
     test('round-trip through the wire names Swift sends', () {
       for (final kind in WatchCommandKind.values) {
         expect(WatchCommandKind.fromWire(kind.name), kind);
@@ -334,6 +365,45 @@ void main() {
       );
 
       expect(result, (mode: null, refusal: null));
+    });
+
+    test('start admission names every shared blocked precondition', () {
+      final blocked = <String, SessionStartAvailability>{
+        'Not connected': startAvailability(isConnected: false),
+        'Still stopping': startAvailability(isPendingDisable: true),
+        'Trace session active': startAvailability(isTargetedRunning: true),
+        'Already starting': startAvailability(isAutoStarting: true),
+        'Select antenna option': startAvailability(antennaConfigured: false),
+        'Select power level': startAvailability(powerConfigured: false),
+        'Offline Mode': startAvailability(txBlockedByOffline: true),
+        'Passive Only': startAvailability(txNotAllowed: true),
+        'Cooling down': startAvailability(cooldownActive: true),
+        'Ping in progress': startAvailability(isPingSending: true),
+        'Listening for ping response': startAvailability(rxWindowActive: true),
+        'Waiting for GPS lock': startAvailability(
+          transmitValidationReason: 'Waiting for GPS lock',
+        ),
+      };
+
+      for (final entry in blocked.entries) {
+        expect(entry.value.allowed, isFalse, reason: entry.key);
+        expect(entry.value.reason, entry.key);
+      }
+    });
+
+    test('Passive ignores blockers that only constrain a transmitting start',
+        () {
+      final passive = startAvailability(
+        isTransmitMode: false,
+        cooldownActive: true,
+        isPingSending: true,
+        rxWindowActive: true,
+        txBlockedByOffline: true,
+        txNotAllowed: true,
+        transmitValidationReason: 'Waiting for GPS lock',
+      );
+
+      expect(passive, (allowed: true, reason: null));
     });
   });
 

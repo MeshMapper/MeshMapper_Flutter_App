@@ -9,16 +9,23 @@ import Foundation
 ///
 ///     xcrun simctl launch <watch> net.meshmapper.app.watchkitapp -MeshMapperSampleData YES
 ///
-/// Pass `-MeshMapperSamplePhase listen|wait|lapsed` to exercise the live
-/// countdown, the between-cycle wait, or a deadline the phone did not replace.
-/// Listening is the default so existing capture commands keep their behaviour.
-/// Pass
-/// `-MeshMapperSampleControls active|idle|blocked|cooldown|passiveOnly|txActive`
-/// to review Start, live Ping, disabled-but-stable Ping, and both reasons Stop
-/// keeps the slot; active is the default.
+/// Other DEBUG launch arguments used by the capture harness:
 ///
-/// DEBUG-only, and never reached unless that argument is passed, so it cannot
-/// leak into a shipping build or mask a real transport failure.
+/// - `-MeshMapperSamplePhase listen|wait|lapsed` exercises phase timing.
+/// - `-MeshMapperSampleControls active|idle|blocked|cooldown|passiveOnly|txActive`
+///   exercises every toolbar slot state.
+/// - `-MeshMapperLongIds YES` exercises six-character path hashes.
+/// - `-MeshMapperShowNodeSheet YES` opens the heard-node sheet.
+/// - `-MeshMapperInitialPage <tag>` opens a specific vertical page.
+/// - `-MeshMapperForceDimmed YES` renders the reduced-luminance readout.
+/// - `-MeshMapperForceRefusal <message>` presents the failure banner; capture
+///   within six seconds because it deliberately uses the production expiry.
+///
+/// Listening and active remain the defaults so existing capture commands keep
+/// their behaviour.
+///
+/// Every affordance is DEBUG-only and requires its explicit argument, so none
+/// can leak into a shipping build or mask a real transport failure.
 enum SampleSnapshot {
   static var isEnabled: Bool {
     UserDefaults.standard.bool(forKey: "MeshMapperSampleData")
