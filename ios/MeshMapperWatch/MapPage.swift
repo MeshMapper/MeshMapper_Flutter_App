@@ -252,6 +252,13 @@ struct MapPage: View {
       .onChange(of: needsMapGeo) { _, needed in
         client.setMapGeoNeeded(needed)
       }
+      .onChange(of: isSelected) { _, selected in
+        // A sheet belongs to the page that raised it. Leaving one presented
+        // while the pager moves on strands a modal over a different page,
+        // where it blurs that page and swallows every swipe and Crown turn —
+        // the app looks crashed while it is merely holding a stuck sheet.
+        if !selected { showingNodes = false }
+      }
       .onChange(of: trailingToolbarControl) { _, _ in
         // Stable facts own the slot, but a session transition still changes
         // its meaning. Never carry an armed confirmation into a new action.
@@ -719,6 +726,12 @@ struct MapPage: View {
   /// a name is appended only when the phone could resolve it unambiguously.
   private var statusPanel: some View {
     Button {
+      // Only a sheet placement has anything to open. With the list on its own
+      // page this was presenting a duplicate of a page that already exists —
+      // and because the panel sits across the bottom of the map, where an
+      // upward page swipe begins, it fired on swipes the wearer meant for the
+      // pager and stranded a modal over the next page.
+      guard settings.nodeListPlacement == .sheet else { return }
       showingNodes = true
     } label: {
       VStack(alignment: .leading, spacing: 3) {

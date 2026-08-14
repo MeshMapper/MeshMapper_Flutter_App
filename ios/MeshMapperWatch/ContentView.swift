@@ -56,6 +56,20 @@ struct ContentView: View {
         SettingsPage().tag(4)
       }
       .tabViewStyle(.verticalPage)
+      #if DEBUG
+      /// Drive a page change, because the simulator offers no way to swipe.
+      ///
+      /// Page transitions are a real defect surface here — a sheet raised from
+      /// the map once survived onto the next page, where it blurred that page
+      /// and swallowed all input, which reads exactly like a crash. This makes
+      /// that class reproducible without a wrist.
+      .task {
+        let target = UserDefaults.standard.integer(forKey: "MeshMapperAutoPageTo")
+        guard target > 0 else { return }
+        try? await Task.sleep(for: .seconds(5))
+        selection = target
+      }
+      #endif
     }
   }
 }
