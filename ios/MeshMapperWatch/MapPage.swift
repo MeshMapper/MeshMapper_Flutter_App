@@ -106,11 +106,17 @@ struct MapPage: View {
     }
   }
 
-  /// Where the fix belongs on screen: midway between the top of the display and
-  /// the top of the panel.
-  private var targetPoint: CGPoint? {
-    guard panelFrame.height > 0 else { return nil }
-    return CGPoint(x: panelFrame.midX, y: panelFrame.minY / 2)
+  /// How much of the display the status panel is covering, handed to MapKit so
+  /// it frames the camera in the band that remains visible.
+  ///
+  /// Measured rather than assumed: the panel's height changes with its content
+  /// — one column or two, with or without heard rows — and a stale constant
+  /// would drift the fix off centre exactly when the panel grew. Before the
+  /// first measurement this is zero, which simply centres on the full display
+  /// for a frame.
+  private var panelCameraInset: CGFloat {
+    guard panelFrame.height > 0 else { return 0 }
+    return max(0, WKInterfaceDevice.current().screenBounds.height - panelFrame.minY)
   }
 
   /// The placement scales with the estimated corner radius, putting every
@@ -880,9 +886,19 @@ struct MapPage: View {
       fixMarker
     }
     .mapStyle(.standard)
+    // Tell MapKit what is covering the map, rather than hand-shifting the
+    // camera to compensate. Its own centre then *is* the centre of the band
+    // the wearer can actually see, so the fix lands there without a correction
+    // pass and a Crown zoom anchors on it instead of sliding it across.
+    //
+    // Both edges matter. Insetting only the bottom centres the fix in
+    // `0...panelTop`, which still includes the toolbar strip, and the puck then
+    // reads high — obviously so on 46 mm, where the chrome is a smaller
+    // fraction of the display.
+    .safeAreaPadding(.top, currentTopSafeAreaInset)
+    .safeAreaPadding(.bottom, panelCameraInset)
     .onMapCameraChange(frequency: .onEnd) { context in
       noteRenderedRegion(context.region)
-      correctPlacement(proxy)
     }
     // The shell's navigation host supplies the system toolbar placement but
     // must not buy it by shortening the basemap. Only MapKit extends under that
@@ -975,9 +991,11 @@ struct MapPage: View {
 
   private func recenterIfFollowing(_ proxy: MapProxy, force: Bool = false) {
     guard showsMap, force || isFollowing, let fix else { return }
-    let center = centerPlacing(fix, proxy: proxy)
-    programmaticCenter = center
-    let region = MKCoordinateRegion(center: center, span: currentSpan)
+    // Centre on the fix itself. The camera inset already accounts for the
+    // panel, so no compensating shift is needed and nothing has to be
+    // corrected after the map reports back.
+    programmaticCenter = fix
+    let region = MKCoordinateRegion(center: fix, span: currentSpan)
 
     if force {
       // A tap is a rare, explicit request to move the map, so animation shows
@@ -988,54 +1006,10 @@ struct MapPage: View {
         camera = .region(region)
       }
     } else {
-      // First placement, GPS steps and placement corrections all cut so the
-      // puck stays visually fixed while the world moves beneath it.
+      // First placement and GPS steps cut, so the puck stays visually fixed
+      // while the world moves beneath it.
       camera = .region(region)
     }
-  }
-
-  /// Region centre that puts [fix] midway between the top of the display and
-  /// the top of the panel.
-  ///
-  /// MapKit centres the region in the map, so with a panel over the lower third
-  /// the fix would sit low and partly behind it. Rather than predict how far to
-  /// shift, this asks the map which coordinate is at the target point today and
-  /// translates the camera by the difference — exact whatever the projection,
-  /// the zoom, or the latitude.
-  private func centerPlacing(
-    _ fix: CLLocationCoordinate2D,
-    proxy: MapProxy
-  ) -> CLLocationCoordinate2D {
-    // Before the first render there is nothing to translate against; centring
-    // on the fix is the right opening move, and `correctPlacement` lifts it as
-    // soon as the map reports back.
-    guard let targetPoint,
-      let renderedCenter,
-      let atTarget = proxy.convert(targetPoint, from: .global)
-    else { return fix }
-
-    // Clamped so a bad conversion — an off-map point, a mid-animation read —
-    // can never fling the camera somewhere the wearer has to chase.
-    let lift = (fix.latitude - atTarget.latitude)
-      .clamped(to: -currentSpan.latitudeDelta...currentSpan.latitudeDelta)
-    return CLLocationCoordinate2D(
-      latitude: renderedCenter.latitude + lift,
-      longitude: fix.longitude
-    )
-  }
-
-  /// Nudge the camera once the map reports where things really landed.
-  ///
-  /// The first placement runs before any render, and a zoom changes the scale
-  /// underneath us, so placement is a feedback loop rather than a calculation.
-  /// The deadband is what stops it: each pass lands within a couple of points,
-  /// the next sees no error worth fixing, and it settles.
-  private func correctPlacement(_ proxy: MapProxy) {
-    guard showsMap, isFollowing, let fix, let targetPoint,
-      let point = proxy.convert(fix, to: .global)
-    else { return }
-    guard abs(point.y - targetPoint.y) > 6 else { return }
-    recenterIfFollowing(proxy)
   }
 
   /// MapKit fits longitude to the watch's aspect ratio, so latitude is the one
@@ -1049,15 +1023,9 @@ struct MapPage: View {
     )
   }
 
-  /// Centre of the region MapKit last rendered — the fixed point every
-  /// placement is measured against.
-  @State private var renderedCenter: CLLocationCoordinate2D?
-
   /// Track the region MapKit actually rendered, so a Digital Crown zoom is not
-  /// thrown away on the next follow update and so placement has a known
-  /// starting point.
+  /// thrown away on the next follow update.
   private func noteRenderedRegion(_ region: MKCoordinateRegion) {
-    renderedCenter = region.center
     // `.automatic` can report its annotation fit even after we assign our first
     // region, so `programmaticCenter != nil` proves only that a request was
     // made, not that MapKit rendered it. Persist nothing until the rendered
