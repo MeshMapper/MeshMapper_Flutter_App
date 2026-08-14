@@ -31,6 +31,7 @@ import '../widgets/upload_logs_dialog.dart';
 import 'package:intl/intl.dart';
 import '../widgets/app_toast.dart';
 import 'offline_maps_screen.dart';
+import 'watch_diagnostics_screen.dart';
 
 /// Settings screen for user preferences and API configuration
 class SettingsScreen extends StatefulWidget {
@@ -1159,6 +1160,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     );
                   }),
               ],
+            ]),
+
+          // Pairing history is one-way: after an unpair this remains at the
+          // bottom of Settings because that failure is when it is most useful.
+          if (appState.shouldShowWatchDiagnostics)
+            _buildSection(context, 'Apple Watch', [
+              ListTile(
+                leading: const Icon(Icons.watch_outlined),
+                title: const Text('Watch Connectivity'),
+                subtitle: const Text('Inspect pairing and delivery state'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        WatchDiagnosticsScreen(bridge: appState.watchBridge),
+                  ),
+                ),
+              ),
             ]),
         ],
       ),
