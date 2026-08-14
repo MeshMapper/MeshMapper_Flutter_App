@@ -48,6 +48,15 @@ final class WatchSessionClient: NSObject {
   /// Set when a payload arrives from a wire version this build predates.
   private(set) var versionMismatch = false
 
+  /// Whether the currently rendered surface needs map-only geography.
+  /// Launches begin true: an unnecessary full payload is preferable to a map
+  /// that opens blank before this process has described its current surface.
+  private var mapGeoNeeded = true
+  private var lastSentMapGeoNeeded: Bool?
+  private var mapGeoSuppressionTask: Task<Void, Never>?
+  private var mapGeoRenewalTask: Task<Void, Never>?
+  private var lastMapGeoRecoveryRequestAt: Date?
+
   private var session: WCSession? {
     WCSession.isSupported() ? WCSession.default : nil
   }
@@ -60,6 +69,9 @@ final class WatchSessionClient: NSObject {
   static let staleAfter: TimeInterval = 90
   private static let cueFreshFor: TimeInterval = 30
   private static let cueClockTolerance: TimeInterval = 5
+  private static let mapGeoSuppressionDelay: TimeInterval = 15
+  private static let mapGeoRenewalInterval: TimeInterval = 5 * 60
+  private static let mapGeoRecoveryThrottle: TimeInterval = 3
 
   /// Bring the session up and pull a current snapshot.
   ///
@@ -79,7 +91,8 @@ final class WatchSessionClient: NSObject {
 
     if session.activationState == .activated {
       ingest(context: session.receivedApplicationContext)
-      send(.requestSnapshot, silent: true)
+      requestFullSnapshot()
+      if !mapGeoNeeded { scheduleMapGeoSuppression() }
       return
     }
 
@@ -99,7 +112,12 @@ final class WatchSessionClient: NSObject {
   /// where `sendMessage` can execute the command yet fail its reply as
   /// undeliverable. One queued path avoids both that false failure and the
   /// duplicate-transmit risk of retrying an ambiguously delivered message.
-  func send(_ kind: WatchCommand.Kind, mode: String? = nil, silent: Bool = false) {
+  func send(
+    _ kind: WatchCommand.Kind,
+    mode: String? = nil,
+    mapGeoNeeded: Bool? = nil,
+    silent: Bool = false
+  ) {
     guard let session, session.activationState == .activated else {
       if !silent {
         setLastRefusal("Not connected to iPhone", from: kind)
@@ -110,6 +128,7 @@ final class WatchSessionClient: NSObject {
     let command = WatchCommand(
       kind: kind,
       mode: mode,
+      mapGeoNeeded: mapGeoNeeded,
       id: UUID().uuidString,
       issuedAtMs: Date().timeIntervalSince1970 * 1000
     )
@@ -128,6 +147,61 @@ final class WatchSessionClient: NSObject {
     }
 
     session.transferUserInfo([MeshMapperWatchWire.commandKey: dict])
+  }
+
+  /// Report whether the current surface needs its expensive marker payload.
+  /// Returning to the map is immediate; suppression waits out short wrist-down
+  /// transitions so ordinary glances do not enqueue a false/true pair.
+  func setMapGeoNeeded(_ needed: Bool) {
+    mapGeoNeeded = needed
+    mapGeoSuppressionTask?.cancel()
+    mapGeoSuppressionTask = nil
+
+    if needed {
+      mapGeoRenewalTask?.cancel()
+      mapGeoRenewalTask = nil
+      sendMapGeoPreference(true)
+    } else {
+      scheduleMapGeoSuppression()
+    }
+  }
+
+  private func scheduleMapGeoSuppression() {
+    mapGeoSuppressionTask?.cancel()
+    mapGeoSuppressionTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(Self.mapGeoSuppressionDelay))
+      guard !Task.isCancelled, let self, !self.mapGeoNeeded else { return }
+      self.mapGeoSuppressionTask = nil
+      self.sendMapGeoPreference(false)
+      self.scheduleMapGeoRenewal()
+    }
+  }
+
+  private func scheduleMapGeoRenewal() {
+    mapGeoRenewalTask?.cancel()
+    mapGeoRenewalTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(Self.mapGeoRenewalInterval))
+      guard !Task.isCancelled, let self, !self.mapGeoNeeded else { return }
+      self.mapGeoRenewalTask = nil
+      // The phone treats suppression as a lease. Renewal keeps a long
+      // Always-On session cheap; if this task stops, the lease expires back
+      // to full geography rather than leaving a future map blank.
+      self.sendMapGeoPreference(false, force: true)
+      self.scheduleMapGeoRenewal()
+    }
+  }
+
+  private func sendMapGeoPreference(_ needed: Bool, force: Bool = false) {
+    guard force || lastSentMapGeoNeeded != needed else { return }
+    guard let session, session.activationState == .activated else { return }
+    lastSentMapGeoNeeded = needed
+    send(.requestSnapshot, mapGeoNeeded: needed, silent: true)
+  }
+
+  private func requestFullSnapshot() {
+    // Activation always starts from the safe assumption even if a retained
+    // application context says the previous process had suppressed its map.
+    sendMapGeoPreference(true, force: true)
   }
 
   private func beginPending(_ kind: WatchCommand.Kind) {
@@ -232,6 +306,21 @@ final class WatchSessionClient: NSObject {
       // state dedupe means no snapshot follows.
       self.clearPendingCommand()
 
+      if self.mapGeoNeeded && !decoded.mapGeoIncluded {
+        // updateApplicationContext is latest-state-wins, but a context sent
+        // just before the map reappeared may still win the delivery race. The
+        // empty arrays are rendered honestly, then a full replacement is
+        // requested immediately rather than mixing old markers with new state.
+        let lastRequest = self.lastMapGeoRecoveryRequestAt
+        if lastRequest == nil ||
+            arrival.timeIntervalSince(lastRequest ?? .distantPast) >=
+              Self.mapGeoRecoveryThrottle
+        {
+          self.lastMapGeoRecoveryRequestAt = arrival
+          self.sendMapGeoPreference(true, force: true)
+        }
+      }
+
       if let cue = decoded.cue,
          Self.isFresh(cue, at: arrival),
          self.presentedCueIDs.insert(cue.id).inserted
@@ -266,7 +355,8 @@ extension WatchSessionClient: WCSessionDelegate {
       ingest(context: session.receivedApplicationContext)
       if pendingRefresh {
         pendingRefresh = false
-        send(.requestSnapshot, silent: true)
+        requestFullSnapshot()
+        if !mapGeoNeeded { scheduleMapGeoSuppression() }
       }
     }
   }

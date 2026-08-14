@@ -13,6 +13,11 @@ import WatchKit
 /// verified by pixel diff on device and simulator, so the watch exposes no
 /// satellite mode.
 struct MapPage: View {
+  /// TabView may retain neighbouring pages. The selected tag is the reliable
+  /// signal that this page is actually visible; view lifecycle alone cannot
+  /// tell the phone whether its marker payload is useful.
+  let isSelected: Bool
+
   @Environment(WatchSessionClient.self) private var client
   @Environment(WatchSettings.self) private var settings
   @Environment(\.isLuminanceReduced) private var environmentLuminanceReduced
@@ -33,6 +38,8 @@ struct MapPage: View {
   private var showsMap: Bool {
     settings.mainPageContent == .map && !isLuminanceReduced
   }
+
+  private var needsMapGeo: Bool { showsMap && isSelected }
 
   @State private var camera: MapCameraPosition = .automatic
 
@@ -234,6 +241,10 @@ struct MapPage: View {
           client.debugForceRefusal(forced)
         }
         #endif
+        client.setMapGeoNeeded(needsMapGeo)
+      }
+      .onChange(of: needsMapGeo) { _, needed in
+        client.setMapGeoNeeded(needed)
       }
       .onChange(of: trailingToolbarControl) { _, _ in
         // Stable facts own the slot, but a session transition still changes

@@ -18,6 +18,8 @@ WatchSnapshot _snapshot({
   String phaseTitle = 'Listening',
   bool isConnected = true,
   int? phaseDurationMs,
+  WatchGeo? geo,
+  bool mapGeoIncluded = true,
   List<WatchStartMode> availableStartModes = const [WatchStartMode.passive],
 }) =>
     WatchSnapshot(
@@ -40,17 +42,19 @@ WatchSnapshot _snapshot({
         repeatersAreCurrent: true,
         updatedAt: DateTime.fromMillisecondsSinceEpoch(1759999999000),
       ),
-      geo: const WatchGeo(
-        pings: [],
-        repeaters: [],
-        heard: [],
-        linkedRepeaterIds: [],
-      ),
+      geo: geo ??
+          const WatchGeo(
+            pings: [],
+            repeaters: [],
+            heard: [],
+            linkedRepeaterIds: [],
+          ),
       controls: const WatchControls(
         canStartStop: true,
         canManualPing: false,
         isSessionActive: true,
       ),
+      mapGeoIncluded: mapGeoIncluded,
       availableStartModes: availableStartModes,
       pingColor: const WatchColor(1, 0, 0),
       phaseDurationMs: phaseDurationMs,
@@ -82,6 +86,7 @@ void main() {
           'traceCount',
           'queueSize',
           'pingColor',
+          'mapGeoIncluded',
           'availableStartModes',
           'geo',
           'controls',
@@ -110,6 +115,103 @@ void main() {
         },
       );
       expect((map['pingColor']! as Map).keys.toSet(), {'r', 'g', 'b'});
+    });
+
+    test('full snapshots retain every geography field', () {
+      final at = DateTime.fromMillisecondsSinceEpoch(1759999980000);
+      final geo = WatchGeo(
+        you: WatchPosition(lat: 47.6, lon: -122.3, fixedAt: at),
+        pings: [
+          WatchPing(
+            id: 'ping-1',
+            lat: 47.61,
+            lon: -122.31,
+            kind: 'tx',
+            color: const WatchColor(0, 1, 0),
+            at: at,
+          ),
+        ],
+        repeaters: const [
+          WatchRepeater(
+            id: 'database-1',
+            hexId: '4E5D82',
+            name: 'Capitol Hill',
+            lat: 47.62,
+            lon: -122.32,
+            color: WatchColor(1, 0, 1),
+            heardThisCycle: true,
+          ),
+        ],
+        heard: [
+          WatchHeardNode(
+            id: '4E5D',
+            typeColor: const WatchColor(0, 1, 0),
+            at: at,
+          ),
+        ],
+        linkedRepeaterIds: const ['database-1'],
+      );
+      final map = _snapshot(geo: geo).toMap();
+      final encodedGeo = map['geo']! as Map;
+
+      expect(map['mapGeoIncluded'], isTrue);
+      expect(encodedGeo['you'], isNotNull);
+      expect(encodedGeo['pings'], hasLength(1));
+      expect(encodedGeo['repeaters'], hasLength(1));
+      expect(encodedGeo['heard'], hasLength(1));
+      expect(encodedGeo['linkedRepeaterIds'], ['database-1']);
+    });
+
+    test('suppressed snapshots clear only map detail', () {
+      final at = DateTime.fromMillisecondsSinceEpoch(1759999980000);
+      final geo = WatchGeo(
+        you: WatchPosition(lat: 47.6, lon: -122.3, fixedAt: at),
+        pings: [
+          WatchPing(
+            id: 'ping-1',
+            lat: 47.61,
+            lon: -122.31,
+            kind: 'tx',
+            color: const WatchColor(0, 1, 0),
+            at: at,
+          ),
+        ],
+        repeaters: const [
+          WatchRepeater(
+            id: 'database-1',
+            hexId: '4E5D82',
+            name: 'Capitol Hill',
+            lat: 47.62,
+            lon: -122.32,
+            color: WatchColor(1, 0, 1),
+            heardThisCycle: true,
+          ),
+        ],
+        heard: [
+          WatchHeardNode(
+            id: '4E5D',
+            typeColor: const WatchColor(0, 1, 0),
+            at: at,
+          ),
+        ],
+        linkedRepeaterIds: const ['database-1'],
+      );
+      final map = _snapshot(geo: geo, mapGeoIncluded: false).toMap();
+      final encodedGeo = map['geo']! as Map;
+
+      expect(map['mapGeoIncluded'], isFalse);
+      expect(encodedGeo['you'], isNotNull,
+          reason: 'the fix is cheap and remains useful state');
+      expect(encodedGeo['heard'], hasLength(1),
+          reason: 'the readout consumes Top Heard');
+      expect(encodedGeo['pings'], isEmpty);
+      expect(encodedGeo['repeaters'], isEmpty);
+      expect(encodedGeo['linkedRepeaterIds'], isEmpty);
+    });
+
+    test('old payload semantics default map geography to included', () {
+      expect(_snapshot().mapGeoIncluded, isTrue);
+      expect(_snapshot().toMap()['mapGeoIncluded'], isTrue);
     });
 
     test('timestamps are epoch milliseconds as doubles', () {
@@ -452,6 +554,8 @@ void main() {
       String id,
       String kind, {
       String? mode,
+      bool? mapGeoNeeded,
+      double? issuedAtMs,
     }) async {
       final result = await TestDefaultBinaryMessengerBinding
           .instance.defaultBinaryMessenger
@@ -462,6 +566,8 @@ void main() {
             'id': id,
             'kind': kind,
             if (mode != null) 'mode': mode,
+            if (mapGeoNeeded != null) 'mapGeoNeeded': mapGeoNeeded,
+            if (issuedAtMs != null) 'issuedAtMs': issuedAtMs,
           }),
         ),
         null,
@@ -623,6 +729,63 @@ void main() {
 
       expect(handled, [WatchCommandKind.manualPing]);
       expect(reply?['accepted'], isTrue);
+    });
+
+    test('fresh map demand suppresses and restores geography', () async {
+      bridge.attachCommandHandler((_) => null);
+      final nowMs = DateTime.now().millisecondsSinceEpoch.toDouble();
+
+      await sendCommand(
+        'geo-off',
+        'requestSnapshot',
+        mapGeoNeeded: false,
+        issuedAtMs: nowMs,
+      );
+      expect(bridge.shouldIncludeMapGeo, isFalse);
+
+      await sendCommand(
+        'geo-on',
+        'requestSnapshot',
+        mapGeoNeeded: true,
+      );
+      expect(bridge.shouldIncludeMapGeo, isTrue);
+    });
+
+    test('stale suppression cannot blank a newly visible map', () async {
+      bridge.attachCommandHandler((_) => null);
+      final staleMs = DateTime.now()
+          .subtract(const Duration(seconds: 45))
+          .millisecondsSinceEpoch
+          .toDouble();
+
+      await sendCommand(
+        'stale-geo-off',
+        'requestSnapshot',
+        mapGeoNeeded: false,
+        issuedAtMs: staleMs,
+      );
+
+      expect(bridge.shouldIncludeMapGeo, isTrue);
+    });
+
+    test('an older queued suppression cannot overtake map demand', () async {
+      bridge.attachCommandHandler((_) => null);
+      final nowMs = DateTime.now().millisecondsSinceEpoch.toDouble();
+
+      await sendCommand(
+        'new-geo-on',
+        'requestSnapshot',
+        mapGeoNeeded: true,
+        issuedAtMs: nowMs,
+      );
+      await sendCommand(
+        'old-geo-off',
+        'requestSnapshot',
+        mapGeoNeeded: false,
+        issuedAtMs: nowMs - 1000,
+      );
+
+      expect(bridge.shouldIncludeMapGeo, isTrue);
     });
 
     test('a redelivered command does not transmit twice', () async {

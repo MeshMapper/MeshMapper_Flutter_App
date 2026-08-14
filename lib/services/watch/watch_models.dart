@@ -25,10 +25,10 @@ class WatchWire {
   /// gone: the overlay is fed `directRepeaters` only.
   ///
   /// Additive optional fields do not bump this version. A new watch defaults
-  /// an absent start-mode list to Passive and absent Ping applicability to
-  /// false, while an older phone ignores the optional mode on a command and
-  /// retains its existing safe resolver. A bump would therefore strand
-  /// compatible pairs without preventing a bad decode.
+  /// an absent start-mode list to Passive, absent Ping applicability to false,
+  /// and absent map-geo state to included. An older phone ignores optional
+  /// command fields and keeps sending full geography. A bump would therefore
+  /// strand compatible pairs without preventing a bad decode.
   static const int version = 2;
 
   static const int maxPings = 60;
@@ -208,12 +208,15 @@ class WatchGeo {
   final List<WatchHeardNode> heard;
   final List<String> linkedRepeaterIds;
 
-  Map<String, Object?> toMap() => {
+  Map<String, Object?> toMap({bool includeMapDetail = true}) => {
         'you': you?.toMap(),
-        'pings': pings.map((p) => p.toMap()).toList(),
-        'repeaters': repeaters.map((r) => r.toMap()).toList(),
+        'pings':
+            includeMapDetail ? pings.map((p) => p.toMap()).toList() : const [],
+        'repeaters': includeMapDetail
+            ? repeaters.map((r) => r.toMap()).toList()
+            : const [],
         'heard': heard.map((h) => h.toMap()).toList(),
-        'linkedRepeaterIds': linkedRepeaterIds,
+        'linkedRepeaterIds': includeMapDetail ? linkedRepeaterIds : const [],
       };
 }
 
@@ -294,6 +297,7 @@ class WatchSnapshot {
     required this.geo,
     required this.controls,
     required this.updatedAt,
+    this.mapGeoIncluded = true,
     this.availableStartModes = const [WatchStartMode.passive],
     this.pingColor,
     this.cue,
@@ -304,6 +308,11 @@ class WatchSnapshot {
   final LiveActivitySnapshot core;
   final WatchGeo geo;
   final WatchControls controls;
+
+  /// False means map-only arrays were deliberately cleared, not that the
+  /// current area simply has no markers. The wrist uses this to recover from
+  /// an out-of-order suppressed context when the map is already visible.
+  final bool mapGeoIncluded;
   final List<WatchStartMode> availableStartModes;
   final WatchColor? pingColor;
   final WatchHapticCue? cue;
@@ -333,9 +342,13 @@ class WatchSnapshot {
         'traceCount': core.traceCount,
         'queueSize': core.queueSize,
         'pingColor': pingColor?.toMap(),
+        'mapGeoIncluded': mapGeoIncluded,
         'availableStartModes':
             availableStartModes.map((mode) => mode.name).toList(),
-        'geo': geo.toMap(),
+        // Keep the geo object and its keys for older v2 watches, but clear the
+        // map-only arrays when the wrist has leased suppression. The provider
+        // also avoids constructing them; this is the last-line wire invariant.
+        'geo': geo.toMap(includeMapDetail: mapGeoIncluded),
         'controls': controls.toMap(),
         'cue': cue?.toMap(),
         'updatedAtMs': updatedAt.millisecondsSinceEpoch.toDouble(),
@@ -355,6 +368,7 @@ class WatchSnapshot {
         isConnected: core.isConnected,
         controls: controls,
         cue: cue,
+        mapGeoIncluded: mapGeoIncluded,
       );
 
   static String buildUrgencyKey({
@@ -367,6 +381,7 @@ class WatchSnapshot {
     required bool isConnected,
     required WatchControls controls,
     required WatchHapticCue? cue,
+    bool mapGeoIncluded = true,
   }) =>
       [
         sessionId,
@@ -380,6 +395,7 @@ class WatchSnapshot {
         controls.canManualPing,
         controls.isSessionActive,
         controls.manualPingApplicable,
+        mapGeoIncluded,
         cue?.id ?? '',
       ].join('|');
 }
@@ -402,10 +418,15 @@ enum WatchCommandKind {
 /// Decoded wrist intent. [mode] stays raw until phone-side admission so an
 /// unknown value can be refused rather than mistaken for an omitted mode.
 class WatchCommand {
-  const WatchCommand({required this.kind, this.mode});
+  const WatchCommand({required this.kind, this.mode, this.mapGeoNeeded});
 
   final WatchCommandKind kind;
   final String? mode;
+
+  /// Optional state piggybacked on requestSnapshot. Old phones ignore it and
+  /// keep the fail-safe full payload; new phones suppress only after a fresh
+  /// false claim.
+  final bool? mapGeoNeeded;
 }
 
 typedef WatchRequestedStartModeResolution = ({
