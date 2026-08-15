@@ -1644,10 +1644,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     switch (kind) {
       case WatchCommandKind.requestSnapshot:
-        // The watch only asks after a relaunch or a return to the foreground,
-        // when what it holds is a retained context of unknown age. Dedupe would
-        // answer an unchanged session with silence and leave it stale.
-        _scheduleWatchSync(immediate: true, forceDelivery: true);
+        // This command carries two intents. A genuine plea for state — after a
+        // relaunch or a resume onto a retained context of unknown age — must
+        // not be answered with dedupe's silence. A change of map demand is not
+        // that, and the lease behind it renews every five minutes for as long
+        // as the map stays hidden, so forcing those would spend the radio
+        // exactly where the lease exists to save it.
+        _scheduleWatchSync(
+          immediate: true,
+          forceDelivery: command.forceRefresh,
+        );
         return null;
 
       case WatchCommandKind.startSession:
