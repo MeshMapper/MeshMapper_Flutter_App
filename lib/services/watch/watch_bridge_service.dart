@@ -244,6 +244,7 @@ class WatchBridgeService {
         kind: kind,
         mode: args['mode'] as String?,
         mapGeoNeeded: effectiveMapGeoNeeded,
+        forceRefresh: args['forceRefresh'] == true,
       ));
       final refusal =
           admission is Future<String?> ? await admission : admission;

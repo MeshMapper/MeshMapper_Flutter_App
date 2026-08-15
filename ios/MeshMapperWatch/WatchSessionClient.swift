@@ -103,6 +103,42 @@ final class WatchSessionClient: NSObject {
     session.activate()
   }
 
+  /// Reconcile after the scene becomes active again.
+  ///
+  /// `onAppear` is not a resume callback — it fires once — and watchOS suspends
+  /// this app for essentially the whole wrist-down interval, measured here at
+  /// 7.42 s of suspension against 8.20 s of wrist-down. So without this a
+  /// wearer could raise their wrist onto state the UI itself calls stale and
+  /// have nothing ask the phone to prove otherwise.
+  ///
+  /// Deliberately not `refresh()`. That always requests, which would put a
+  /// WatchConnectivity round trip behind every glance — the opposite of what
+  /// this transport is built for. Ingesting the retained context is free, so
+  /// do it always; spend the radio only when what we hold is stale or missing,
+  /// which is exactly when a request can change what the wearer sees.
+  func resume() {
+    #if DEBUG
+    if SampleSnapshot.isEnabled { return }
+    #endif
+
+    guard let session else { return }
+    session.delegate = self
+
+    guard session.activationState == .activated else {
+      pendingRefresh = true
+      session.activate()
+      return
+    }
+
+    ingest(context: session.receivedApplicationContext)
+
+    if snapshot == nil || isStale {
+      requestFullSnapshot()
+    }
+
+    if !mapGeoNeeded { scheduleMapGeoSuppression() }
+  }
+
   private var pendingRefresh = false
 
   // MARK: - Commands
@@ -119,6 +155,7 @@ final class WatchSessionClient: NSObject {
     _ kind: WatchCommand.Kind,
     mode: String? = nil,
     mapGeoNeeded: Bool? = nil,
+    forceRefresh: Bool = false,
     silent: Bool = false
   ) {
     guard let session, session.activationState == .activated else {
@@ -132,6 +169,7 @@ final class WatchSessionClient: NSObject {
       kind: kind,
       mode: mode,
       mapGeoNeeded: mapGeoNeeded,
+      forceRefresh: forceRefresh ? true : nil,
       id: UUID().uuidString,
       issuedAtMs: Date().timeIntervalSince1970 * 1000
     )
@@ -194,17 +232,34 @@ final class WatchSessionClient: NSObject {
     }
   }
 
-  private func sendMapGeoPreference(_ needed: Bool, force: Bool = false) {
+  /// - Parameter force: resend even when the phone was already told this value,
+  ///   which is what renews the lease.
+  /// - Parameter refresh: additionally demand a snapshot back. Lease traffic
+  ///   leaves this false so an unchanged session stays silent.
+  private func sendMapGeoPreference(
+    _ needed: Bool,
+    force: Bool = false,
+    refresh: Bool = false
+  ) {
     guard force || lastSentMapGeoNeeded != needed else { return }
     guard let session, session.activationState == .activated else { return }
     lastSentMapGeoNeeded = needed
-    send(.requestSnapshot, mapGeoNeeded: needed, silent: true)
+    send(
+      .requestSnapshot,
+      mapGeoNeeded: needed,
+      forceRefresh: refresh,
+      silent: true
+    )
   }
 
   private func requestFullSnapshot() {
     // Activation always starts from the safe assumption even if a retained
     // application context says the previous process had suppressed its map.
-    sendMapGeoPreference(true, force: true)
+    //
+    // This is the one caller that genuinely needs state back: whatever the
+    // watch holds came from a retained context of unknown age, so an unchanged
+    // session must still answer rather than dedupe into silence.
+    sendMapGeoPreference(true, force: true, refresh: true)
   }
 
   private func beginPending(_ kind: WatchCommand.Kind) {

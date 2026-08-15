@@ -459,7 +459,12 @@ enum WatchCommandKind {
 /// Decoded wrist intent. [mode] stays raw until phone-side admission so an
 /// unknown value can be refused rather than mistaken for an omitted mode.
 class WatchCommand {
-  const WatchCommand({required this.kind, this.mode, this.mapGeoNeeded});
+  const WatchCommand({
+    required this.kind,
+    this.mode,
+    this.mapGeoNeeded,
+    this.forceRefresh = false,
+  });
 
   final WatchCommandKind kind;
   final String? mode;
@@ -468,6 +473,13 @@ class WatchCommand {
   /// keep the fail-safe full payload; new phones suppress only after a fresh
   /// false claim.
   final bool? mapGeoNeeded;
+
+  /// Whether the wrist is asking for state, rather than changing what future
+  /// snapshots contain. Only the former may defeat unchanged-state dedupe;
+  /// map-geo lease renewals travel as the same command every five minutes and
+  /// must stay deduplicatable. Absent on the wire means false, so an older
+  /// watch build behaves as it always did.
+  final bool forceRefresh;
 }
 
 typedef WatchRequestedStartModeResolution = ({

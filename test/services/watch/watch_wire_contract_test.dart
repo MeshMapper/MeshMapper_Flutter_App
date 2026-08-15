@@ -559,6 +559,7 @@ void main() {
       String? mode,
       bool? mapGeoNeeded,
       double? issuedAtMs,
+      bool? forceRefresh,
     }) async {
       final result = await TestDefaultBinaryMessengerBinding
           .instance.defaultBinaryMessenger
@@ -571,6 +572,7 @@ void main() {
             if (mode != null) 'mode': mode,
             if (mapGeoNeeded != null) 'mapGeoNeeded': mapGeoNeeded,
             if (issuedAtMs != null) 'issuedAtMs': issuedAtMs,
+            if (forceRefresh != null) 'forceRefresh': forceRefresh,
           }),
         ),
         null,
@@ -804,6 +806,34 @@ void main() {
 
         expect(syncCalls, 2,
             reason: 'the obligation must survive its own deferral');
+      });
+
+      test('a native refusal does not consume the obligation', () async {
+        bridge.attachCommandHandler((_) => null);
+        await Future<void>.delayed(Duration.zero);
+
+        await deliver();
+        expect(syncCalls, 1);
+
+        // Native refuses. The fingerprint is deliberately not updated, so an
+        // obligation dropped here would dedupe against that same payload on
+        // every later flush and strand the watch exactly as before the fix.
+        syncSucceeds = false;
+        await deliver(
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000600000),
+          forceDelivery: true,
+        );
+        expect(syncCalls, 2, reason: 'the refused attempt still reached native');
+
+        syncSucceeds = true;
+        // Note the absent forceDelivery: the obligation has to be the thing
+        // carrying this through, not a fresh request.
+        await deliver(
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000700000),
+        );
+
+        expect(syncCalls, 3,
+            reason: 'a refusal must leave the refresh still owed');
       });
 
       test('the obligation is spent, not standing', () async {
@@ -1072,6 +1102,55 @@ void main() {
         expect(reply?['accepted'], isTrue,
             reason: 'asking for state transmits nothing and cannot go stale');
         expect(handled, [WatchCommandKind.requestSnapshot]);
+      });
+    });
+
+    // requestSnapshot carries two intents down one wire. Only a genuine plea
+    // for state may defeat dedupe; the map-geo lease renews as the same command
+    // every five minutes while the map stays hidden, and forcing those would
+    // spend the radio exactly where the lease exists to save it. The intent is
+    // stated rather than inferred from mapGeoNeeded, which the bridge may
+    // resolve to null when a suppression claim is stale or out of order.
+    group('refresh intent is explicit', () {
+      late List<WatchCommand> received;
+
+      setUp(() {
+        received = <WatchCommand>[];
+        bridge.attachCommandHandler((command) {
+          received.add(command);
+          return null;
+        });
+      });
+
+      test('a stated refresh asks for delivery', () async {
+        await sendCommand('r-1', 'requestSnapshot',
+            mapGeoNeeded: true, forceRefresh: true);
+
+        expect(received.single.forceRefresh, isTrue);
+      });
+
+      test('a lease renewal does not', () async {
+        await sendCommand('r-2', 'requestSnapshot',
+            mapGeoNeeded: false, forceRefresh: false);
+
+        expect(received.single.forceRefresh, isFalse,
+            reason: 'renewals repeat every five minutes and must stay cheap');
+      });
+
+      test('returning to the map does not force on its own', () async {
+        // Restoring geography changes the payload by itself, so dedupe is
+        // already defeated where it matters. Forcing here would only add a
+        // guaranteed send to a page transition the wearer makes constantly.
+        await sendCommand('r-3', 'requestSnapshot', mapGeoNeeded: true);
+
+        expect(received.single.forceRefresh, isFalse);
+      });
+
+      test('an older watch build without the field never forces', () async {
+        await sendCommand('r-4', 'requestSnapshot');
+
+        expect(received.single.forceRefresh, isFalse,
+            reason: 'absent must mean false, not "assume the expensive thing"');
       });
     });
 

@@ -375,6 +375,20 @@ struct WatchCommand: Codable, Hashable {
   /// Optional map-demand state carried only by requestSnapshot. An old phone
   /// ignores it and keeps sending full geography, so wire v2 remains safe.
   let mapGeoNeeded: Bool?
+  /// Whether this is a genuine plea for current state, rather than a change of
+  /// map demand that happens to travel as the same command.
+  ///
+  /// `requestSnapshot` carries both intents. Only the first should defeat the
+  /// phone's unchanged-state dedupe: the map-geo lease renews every five
+  /// minutes for as long as the map stays hidden, and forcing an identical
+  /// snapshot each time would spend the radio precisely where the lease exists
+  /// to save it. The distinction is stated rather than inferred from
+  /// `mapGeoNeeded`, which the phone may legitimately resolve to nil when a
+  /// suppression claim arrives stale or out of order.
+  ///
+  /// Optional for the usual reason: absent means false, so a phone paired with
+  /// an older watch build behaves exactly as it did before.
+  let forceRefresh: Bool?
   /// Client-generated, so the phone can dedupe redelivered commands.
   let id: String
   /// Queued delivery can outlive the place where a transmit was requested.
