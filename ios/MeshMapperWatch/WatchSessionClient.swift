@@ -132,9 +132,16 @@ final class WatchSessionClient: NSObject {
 
     ingest(context: session.receivedApplicationContext)
 
-    if snapshot == nil || isStale {
-      requestFullSnapshot()
-    }
+    // Read after ingesting: a context retained while the wrist was down may
+    // have just answered the question, and then the radio is not needed.
+    let needsPhone = snapshot == nil || isStale
+    #if DEBUG
+    // The whole claim of this method in one line per glance. A wrist-raise run
+    // should show `resume-local` for fresh glances and exactly one
+    // `resume-request` for the first glance past the stale boundary.
+    WakeLog.note(needsPhone ? "resume-request" : "resume-local")
+    #endif
+    if needsPhone { requestFullSnapshot() }
 
     if !mapGeoNeeded { scheduleMapGeoSuppression() }
   }
