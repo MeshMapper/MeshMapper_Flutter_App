@@ -866,6 +866,109 @@ void main() {
       expect(handled, hasLength(2));
     });
 
+    // transferUserInfo keeps a tapped command alive until the phone is
+    // reachable again, so the admission window is the only thing stopping a
+    // queued transmit from firing long after the wearer asked for it. Both
+    // bounds are load-bearing: "too old" is the queue sitting on it, and "too
+    // far in the future" is a skewed watch clock buying the same command extra
+    // life. requestSnapshot is deliberately exempt — it transmits nothing.
+    group('queued command age', () {
+      const transmitting = ['startSession', 'stopSession', 'manualPing'];
+
+      double nowMs() => DateTime.now().millisecondsSinceEpoch.toDouble();
+
+      for (final kind in transmitting) {
+        test('$kind older than 30 seconds is refused', () async {
+          final refusals = <String>[];
+          bridge.attachCommandHandler(
+            (command) async {
+              handled.add(command.kind);
+              return null;
+            },
+            onRefusal: refusals.add,
+          );
+
+          final reply = await sendCommand(
+            'aged-$kind',
+            kind,
+            issuedAtMs: nowMs() - const Duration(seconds: 31).inMilliseconds,
+          );
+
+          expect(reply?['accepted'], isFalse);
+          expect(reply?['reason'], 'Took too long to reach iPhone');
+          expect(handled, isEmpty,
+              reason: 'an expired command must never reach admission');
+          expect(refusals, ['Took too long to reach iPhone'],
+              reason: 'the wearer is told why the tap did nothing');
+        });
+
+        test('$kind dated far into the future is refused', () async {
+          bridge.attachCommandHandler((command) async {
+            handled.add(command.kind);
+            return null;
+          });
+
+          final reply = await sendCommand(
+            'future-$kind',
+            kind,
+            issuedAtMs: nowMs() + const Duration(minutes: 10).inMilliseconds,
+          );
+
+          expect(reply?['accepted'], isFalse,
+              reason: 'a fast watch clock must not extend the 30s window');
+          expect(handled, isEmpty);
+        });
+
+        test('$kind within the clock tolerance is accepted', () async {
+          bridge.attachCommandHandler((command) async {
+            handled.add(command.kind);
+            return null;
+          });
+
+          final reply = await sendCommand(
+            'skewed-$kind',
+            kind,
+            issuedAtMs: nowMs() + const Duration(seconds: 2).inMilliseconds,
+          );
+
+          expect(reply?['accepted'], isTrue,
+              reason: 'ordinary skew must not refuse a live tap');
+          expect(handled, hasLength(1));
+        });
+      }
+
+      test('an untimestamped command is still accepted', () async {
+        bridge.attachCommandHandler((command) async {
+          handled.add(command.kind);
+          return null;
+        });
+
+        final reply = await sendCommand('legacy-1', 'manualPing');
+
+        expect(reply?['accepted'], isTrue,
+            reason: 'older watch builds send no issuedAtMs');
+        expect(handled, hasLength(1));
+      });
+
+      test('an aged requestSnapshot is exempt from the transmit window',
+          () async {
+        bridge.attachCommandHandler((command) async {
+          handled.add(command.kind);
+          return null;
+        });
+
+        final reply = await sendCommand(
+          'aged-snapshot',
+          'requestSnapshot',
+          issuedAtMs: nowMs() - const Duration(minutes: 5).inMilliseconds,
+        );
+
+        expect(reply?['accepted'], isTrue,
+            reason: 'asking for state transmits nothing and cannot go stale');
+        expect(handled, [WatchCommandKind.requestSnapshot]);
+      });
+    });
+
     test('an unknown command is refused without reaching the handler',
         () async {
       bridge.attachCommandHandler((command) async {
