@@ -10,7 +10,6 @@ import SwiftUI
 @Observable
 final class WatchSettings {
   private enum Key {
-    static let satellite = "map.satellite"
     static let showLinks = "map.showLinks"
     static let follow = "map.follow"
     static let mapLatitudeDelta = "map.latitudeDelta"
@@ -101,7 +100,6 @@ final class WatchSettings {
 
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
-    satellite = defaults.bool(forKey: Key.satellite)
     showLinks = defaults.bool(forKey: Key.showLinks)
     // Following the fix is the useful default while driving; absent any
     // stored value `bool(forKey:)` returns false, so invert an explicit flag.
@@ -132,12 +130,6 @@ final class WatchSettings {
     showPingWhenAvailable = defaults.object(
       forKey: Key.showPingWhenAvailable
     ) as? Bool ?? false
-  }
-
-  /// Apple imagery rather than the standard basemap. Mirrors the iOS app's
-  /// satellite option, though the imagery is Apple's, not ArcGIS.
-  var satellite: Bool {
-    didSet { defaults.set(satellite, forKey: Key.satellite) }
   }
 
   /// Draw a line from the fix to each repeater that answered the last ping.
