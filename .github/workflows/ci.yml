@@ -23,5 +23,4 @@ jobs:
       - run: dart run build_runner build --delete-conflicting-outputs
       - run: dart format --output=none --set-exit-if-changed .
       - run: flutter analyze
-      #- run: flutter test
-      # no tests yet, fails without ./test directory
+      - run: flutter test
