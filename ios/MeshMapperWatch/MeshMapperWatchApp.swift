@@ -12,6 +12,7 @@ import SwiftUI
 struct MeshMapperWatchApp: App {
   @State private var client = WatchSessionClient()
   @State private var settings = WatchSettings()
+  @Environment(\.scenePhase) private var scenePhase
 
   var body: some Scene {
     WindowGroup {
@@ -19,6 +20,15 @@ struct MeshMapperWatchApp: App {
         .environment(client)
         .environment(settings)
         .onAppear { client.refresh() }
+        // `onAppear` fires once, and watchOS suspends this app for the whole
+        // wrist-down interval, so it cannot speak for a resume. Reconciling
+        // here is what stops a glance landing on state the UI calls stale
+        // while the phone is available; `resume` decides on its own whether
+        // that costs a request.
+        .onChange(of: scenePhase) { previous, phase in
+          guard phase == .active, previous != .active else { return }
+          client.resume()
+        }
     }
   }
 }
