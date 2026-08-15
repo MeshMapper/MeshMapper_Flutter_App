@@ -35,7 +35,6 @@
 		A10000000000000000000006 /* MeshMapperLiveActivityExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* MeshMapperLiveActivityExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A40A14B14EA7033DDEF33B80 /* WatchSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178C77B846A00943CD881203 /* WatchSessionClient.swift */; };
 		B69988072090B261D65915C7 /* MeshMapperWatchPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */; };
-		CAF9ECAD9403CAB65D2DF448 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 92ADBADB6F5FE8E07CDC4600 /* Foundation.framework */; };
 		E6EDFA2E3EBEDBAFD72A5B9F /* MeshMapperWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87786D0E1C88A11BAB16DA95 /* MeshMapperWatchApp.swift */; };
 		E83718073D76FB741949ED05 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6CC8647C002484845F02D0CE /* Assets.xcassets */; };
 		F857D97D425B45AB76FD4B2F /* MeshMapperWatchPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */; };
@@ -128,7 +127,6 @@
 		87786D0E1C88A11BAB16DA95 /* MeshMapperWatchApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MeshMapperWatchApp.swift; sourceTree = "<group>"; };
 		8BA04B67488852DCDA49C863 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		8CAA1E3000FEC19EE9ED5CFE /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		92ADBADB6F5FE8E07CDC4600 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/WatchOS.platform/Developer/SDKs/WatchOS11.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
 		9740EEB31CF90195004384FC /* Generated.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Generated.xcconfig; path = Flutter/Generated.xcconfig; sourceTree = "<group>"; };
 		97C146EE1CF9000F007C117D /* Runner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Runner.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -155,7 +153,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				CAF9ECAD9403CAB65D2DF448 /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,7 +216,6 @@
 		321ECD9614BDCAFCF545D162 /* watchOS */ = {
 			isa = PBXGroup;
 			children = (
-				92ADBADB6F5FE8E07CDC4600 /* Foundation.framework */,
 			);
 			name = watchOS;
 			sourceTree = "<group>";
@@ -848,7 +844,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				VALIDATE_PRODUCT = YES;
-				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
 			};
 			name = Profile;
 		};
@@ -1041,7 +1037,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				VALIDATE_PRODUCT = YES;
-				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
 			};
 			name = Release;
 		};
@@ -1156,7 +1152,7 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
 			};
 			name = Debug;
 		};
