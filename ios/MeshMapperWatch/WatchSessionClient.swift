@@ -68,7 +68,10 @@ final class WatchSessionClient: NSObject {
   /// about "the phone has probably gone away", not "no update recently".
   static let staleAfter: TimeInterval = 90
   private static let cueFreshFor: TimeInterval = 30
-  private static let cueClockTolerance: TimeInterval = 5
+  /// Phone and watch clocks normally agree to well under a second. This is the
+  /// slack allowed anywhere a phone-stamped time is compared against watch
+  /// "now", and mirrors the tolerance the phone applies to watch commands.
+  private static let clockTolerance: TimeInterval = 5
   private static let mapGeoSuppressionDelay: TimeInterval = 15
   private static let mapGeoRenewalInterval: TimeInterval = 5 * 60
   private static let mapGeoRecoveryThrottle: TimeInterval = 3
@@ -253,16 +256,36 @@ final class WatchSessionClient: NSObject {
     }
   }
 
-  private func markSnapshotReceived(at arrival: Date = Date()) {
+  /// - Parameter producedAt: when the phone built the payload. Absent for the
+  ///   debug sample, which is generated on the wrist.
+  private func markSnapshotReceived(at arrival: Date = Date(), producedAt: Date? = nil) {
     staleBoundaryTask?.cancel()
-    receivedAt = arrival
+    staleBoundaryTask = nil
+
+    // Age from when the phone built the payload rather than when it reached the
+    // wrist. Launch ingests whatever application context WatchConnectivity
+    // retained, which can be hours old, and stamping arrival there would
+    // present long-dead state as fresh for a full 90 seconds.
+    //
+    // Clamped to `arrival` so a phone clock running fast cannot date a snapshot
+    // into the future and extend its life, with a few seconds of slack so
+    // ordinary skew does not age a genuinely live payload early.
+    let origin =
+      producedAt.map { min(arrival, $0.addingTimeInterval(Self.clockTolerance)) } ?? arrival
+    receivedAt = origin
+
+    let remaining = Self.staleAfter - arrival.timeIntervalSince(origin)
+    guard remaining > 0 else {
+      isStale = true
+      return
+    }
     isStale = false
 
     // One task per delivery makes the 90-second boundary observable without a
     // polling timer. A newer snapshot cancels this task and owns the next one.
     staleBoundaryTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(for: .seconds(Self.staleAfter))
-      guard !Task.isCancelled, self?.receivedAt == arrival else { return }
+      try? await Task.sleep(for: .seconds(remaining))
+      guard !Task.isCancelled, self?.receivedAt == origin else { return }
       self?.isStale = true
       self?.staleBoundaryTask = nil
     }
@@ -271,9 +294,9 @@ final class WatchSessionClient: NSObject {
   private static func isFresh(_ cue: WatchHapticCue, at arrival: Date) -> Bool {
     guard let issuedAt = cue.issuedAt else { return false }
     let age = arrival.timeIntervalSince(issuedAt)
-    // Phone and watch clocks normally agree, but a few seconds of skew must
-    // not suppress a real failure that has just crossed the radio.
-    return age >= -cueClockTolerance && age <= cueFreshFor
+    // A few seconds of skew must not suppress a real failure that has just
+    // crossed the radio.
+    return age >= -clockTolerance && age <= cueFreshFor
   }
 
   // MARK: - Ingest
@@ -300,7 +323,7 @@ final class WatchSessionClient: NSObject {
       let arrival = Date()
       self.versionMismatch = false
       self.snapshot = decoded
-      self.markSnapshotReceived(at: arrival)
+      self.markSnapshotReceived(at: arrival, producedAt: decoded.updatedAt)
       // A queued command has no ack. Any subsequent snapshot proves the phone
       // has resumed communicating; a separate timeout covers the case where
       // state dedupe means no snapshot follows.
