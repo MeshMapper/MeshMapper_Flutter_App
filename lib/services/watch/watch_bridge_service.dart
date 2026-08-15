@@ -206,7 +206,12 @@ class WatchBridgeService {
       }
     }
     if (kind != WatchCommandKind.requestSnapshot && issuedAtMs != null) {
-      if (ageMs! > _maximumCommandAge.inMilliseconds) {
+      // Both bounds matter. Too old is the obvious case; too far in the future
+      // is the same bug wearing a disguise, because a watch clock running fast
+      // makes `ageMs` negative and would otherwise extend the window by however
+      // far the clocks disagree. The tolerance matches the map-geo check above.
+      if (ageMs! > _maximumCommandAge.inMilliseconds ||
+          ageMs < -_clockTolerance.inMilliseconds) {
         const reason = 'Took too long to reach iPhone';
         // This window is about correctness, not queue housekeeping: executing
         // a transmit after the vehicle has moved attributes it to the wrong
