@@ -21,6 +21,7 @@ WatchSnapshot _snapshot({
   WatchGeo? geo,
   bool mapGeoIncluded = true,
   List<WatchStartMode> availableStartModes = const [WatchStartMode.passive],
+  DateTime? updatedAt,
 }) =>
     WatchSnapshot(
       core: LiveActivitySnapshot(
@@ -59,7 +60,7 @@ WatchSnapshot _snapshot({
       pingColor: const WatchColor(1, 0, 0),
       phaseDurationMs: phaseDurationMs,
       cue: cue,
-      updatedAt: DateTime.fromMillisecondsSinceEpoch(1759999999000),
+      updatedAt: updatedAt ?? DateTime.fromMillisecondsSinceEpoch(1759999999000),
     );
 
 void main() {
@@ -718,6 +719,111 @@ void main() {
       expect(builds, 2);
       expect(syncCalls, 2,
           reason: 'native cleared its context cache on the state change');
+    });
+
+    // The watch asks for a snapshot after a relaunch, holding a retained
+    // context it now ages honestly. The phone forgets its delivered fingerprint
+    // only on a WatchConnectivity state change, and a watch app restart is not
+    // one — pairing and installation never changed. Without a force path an
+    // unchanged session answers that request with silence, and the wearer keeps
+    // looking at state marked stale while the phone is alive and listening.
+    group('a requested refresh defeats dedupe', () {
+      // Long enough to clear the non-urgent radio interval. A forced refresh is
+      // deliberately still subject to it, so anything shorter would only prove
+      // the throttle deferred the flush, not what the flush decided.
+      const settle = Duration(milliseconds: 2300);
+
+      Future<void> deliver({
+        DateTime? updatedAt,
+        bool forceDelivery = false,
+        Duration wait = settle,
+      }) async {
+        bridge.schedule(
+          () => _snapshot(updatedAt: updatedAt),
+          urgencyKeyBuilder: () => _snapshot(updatedAt: updatedAt).urgencyKey,
+          immediate: true,
+          forceDelivery: forceDelivery,
+        );
+        await Future<void>.delayed(wait);
+      }
+
+      test('an identical payload is still deduplicated without one', () async {
+        bridge.attachCommandHandler((_) => null);
+        await Future<void>.delayed(Duration.zero);
+
+        await deliver();
+        expect(syncCalls, 1);
+
+        await deliver(
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000600000),
+        );
+
+        expect(syncCalls, 1,
+            reason: 'a newer updatedAt alone must not spend the radio');
+      });
+
+      test('a forced refresh sends the unchanged payload again', () async {
+        bridge.attachCommandHandler((_) => null);
+        await Future<void>.delayed(Duration.zero);
+
+        await deliver();
+        expect(syncCalls, 1);
+
+        // Semantically identical to what the watch already holds. Only
+        // updatedAt moved, which is exactly what proves the phone is alive.
+        await deliver(
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000600000),
+          forceDelivery: true,
+        );
+
+        expect(syncCalls, 2,
+            reason: 'a refresh the watch asked for must reach it');
+      });
+
+      test('the throttle delays a forced refresh but cannot cancel it',
+          () async {
+        bridge.attachCommandHandler((_) => null);
+        await Future<void>.delayed(Duration.zero);
+
+        // The first delivery is unthrottled — nothing has been built yet — so
+        // the forced one has to follow it closely enough to land inside the
+        // interval it opens.
+        await deliver(wait: const Duration(milliseconds: 10));
+        expect(syncCalls, 1);
+
+        await deliver(
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000600000),
+          forceDelivery: true,
+          wait: const Duration(milliseconds: 10),
+        );
+
+        expect(syncCalls, 1,
+            reason: 'the radio interval still governs when it goes out');
+
+        await Future<void>.delayed(settle);
+
+        expect(syncCalls, 2,
+            reason: 'the obligation must survive its own deferral');
+      });
+
+      test('the obligation is spent, not standing', () async {
+        bridge.attachCommandHandler((_) => null);
+        await Future<void>.delayed(Duration.zero);
+
+        await deliver();
+        await deliver(
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000600000),
+          forceDelivery: true,
+        );
+        expect(syncCalls, 2);
+
+        await deliver(
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000700000),
+        );
+
+        expect(syncCalls, 2,
+            reason: 'one request buys one delivery, not a permanent bypass');
+      });
     });
 
     test('the nonurgent throttle runs before the snapshot builder', () async {

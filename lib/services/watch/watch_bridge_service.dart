@@ -97,6 +97,20 @@ class WatchBridgeService {
   DateTime? _lastBuiltAt;
   bool _disposed = false;
   bool _didReconcileNativeState = false;
+
+  /// A refresh the watch asked for, which dedupe must not answer with silence.
+  ///
+  /// The phone only forgets its delivered-payload fingerprint when
+  /// WatchConnectivity reports a state change, and relaunching the watch app is
+  /// not one: pairing and installation are unchanged, so the phone still
+  /// believes the watch holds this exact payload. It does — but only as a
+  /// retained context whose age is now shown honestly, which is precisely the
+  /// state the wearer is asking to be rid of. Answering "nothing changed" with
+  /// nothing at all leaves that state stale until something unrelated moves.
+  ///
+  /// Survives a deferred flush so the radio throttle can still delay the
+  /// refresh, and is cleared only once a payload is actually delivered.
+  bool _forceDelivery = false;
   bool _canSync = false;
   Map<String, bool>? _lastNativeStatus;
   DateTime? _lastSuccessfulSendAt;
@@ -334,15 +348,21 @@ class WatchBridgeService {
     }
   }
 
+  /// - Parameter forceDelivery: send even when the payload is byte-identical to
+  ///   the last delivered one. Reserved for a refresh the watch explicitly
+  ///   asked for; ordinary immediate updates stay deduplicatable, because most
+  ///   of them are urgent precisely because something did change.
   void schedule(
     WatchSnapshotBuilder snapshotBuilder, {
     required WatchUrgencyKeyBuilder urgencyKeyBuilder,
     bool immediate = false,
+    bool forceDelivery = false,
   }) {
     if (_disposed || !canSync) return;
 
     _pendingSnapshotBuilder = snapshotBuilder;
     _pendingUrgencyKeyBuilder = urgencyKeyBuilder;
+    if (forceDelivery) _forceDelivery = true;
     _scheduledUpdate?.cancel();
 
     if (immediate) {
@@ -401,7 +421,11 @@ class WatchBridgeService {
     final fingerprint = Map<String, Object?>.from(payload)
       ..remove('updatedAtMs');
     final encoded = jsonEncode(fingerprint);
-    if (encoded == _lastPayload) return;
+    // A forced refresh is answered with the payload as it stands, identical or
+    // not. Only the fresher updatedAt distinguishes it, and that is the whole
+    // point: it is what proves the phone is still there.
+    final force = _forceDelivery;
+    if (!force && encoded == _lastPayload) return;
 
     // The movement gate. A stationary GPS jitters by a few metres for as long
     // as the phone is switched on, and forwarding that would keep the watch
@@ -415,8 +439,16 @@ class WatchBridgeService {
     // visibly so once the watch's zoom floor reached ~22 m of latitude.
     final fix = _fixOf(fingerprint);
     final withoutFix = _encodeWithoutFix(fingerprint);
-    if (withoutFix == _lastPayloadWithoutFix && !_fixMovedEnough(fix)) return;
+    if (!force &&
+        withoutFix == _lastPayloadWithoutFix &&
+        !_fixMovedEnough(fix)) {
+      return;
+    }
 
+    // The throttle still applies. It delays a forced refresh by at most the
+    // non-urgent interval and `_forceDelivery` outlives the deferral, so the
+    // refresh still arrives — while a watch asking repeatedly cannot turn this
+    // into an unmetered path to the radio.
     final urgent = snapshot.urgencyKey != _lastUrgencyKey;
     final sentAt = _lastSentAt;
     if (!urgent && sentAt != null) {
@@ -446,6 +478,11 @@ class WatchBridgeService {
         return;
       }
       _didReconcileNativeState = true;
+      // Cleared here rather than at the dedupe check: a send the native side
+      // refused leaves the fingerprint in place, so an obligation dropped
+      // earlier would dedupe against that same payload and strand the wearer
+      // exactly as before.
+      _forceDelivery = false;
       _lastPayload = encoded;
       // Anchored to what the watch actually received, so a refused or dropped
       // send cannot quietly consume the wearer's next 15 m of movement.

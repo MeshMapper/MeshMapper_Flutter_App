@@ -1224,12 +1224,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  void _scheduleWatchSync({bool immediate = false}) {
+  void _scheduleWatchSync({bool immediate = false, bool forceDelivery = false}) {
     if (_isDisposed || !_watchBridge.canSync) return;
     _watchBridge.schedule(
       _buildWatchSnapshot,
       urgencyKeyBuilder: _buildWatchUrgencyKey,
       immediate: immediate,
+      forceDelivery: forceDelivery,
     );
   }
 
@@ -1643,7 +1644,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     switch (kind) {
       case WatchCommandKind.requestSnapshot:
-        _scheduleWatchSync(immediate: true);
+        // The watch only asks after a relaunch or a return to the foreground,
+        // when what it holds is a retained context of unknown age. Dedupe would
+        // answer an unchanged session with silence and leave it stale.
+        _scheduleWatchSync(immediate: true, forceDelivery: true);
         return null;
 
       case WatchCommandKind.startSession:
