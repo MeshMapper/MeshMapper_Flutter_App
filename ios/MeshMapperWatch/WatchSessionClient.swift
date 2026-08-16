@@ -114,6 +114,7 @@ final class WatchSessionClient: NSObject {
     if SampleSnapshot.isEnabled {
       snapshot = SampleSnapshot.make()
       markSnapshotReceived()
+      startSampleWalkIfRequested()
       return
     }
     #endif
@@ -408,6 +409,38 @@ final class WatchSessionClient: NSObject {
     guard isReachable != reachable else { return }
     isReachable = reachable
   }
+
+  #if DEBUG
+  /// Advance the sample fix so the follow camera has something to track.
+  ///
+  /// The stationary sample snapshot can show that the map *renders*, never that
+  /// it moves well — and motion is the one thing the follow animation exists
+  /// for. This walks the fix at the real wire's step size and cadence rather
+  /// than smoothly, because a continuous feed would hide exactly the jump being
+  /// smoothed.
+  ///
+  /// Idempotent: `refresh()` runs on every scene activation and must not leave
+  /// a second walker behind, which would double the pace.
+  private func startSampleWalkIfRequested() {
+    guard sampleWalkTask == nil, SampleSnapshot.isWalking else { return }
+
+    let interval = SampleSnapshot.walkStepInterval
+    sampleWalkTask = Task { @MainActor [weak self] in
+      var steps = 0
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(interval))
+        guard !Task.isCancelled, let self else { return }
+        steps += 1
+        self.snapshot = SampleSnapshot.make(stepsWalked: steps)
+        self.markSnapshotReceived()
+      }
+    }
+  }
+
+  /// Not observed: nothing renders the walker, and letting it invalidate views
+  /// would make the harness a source of the redraws it is meant to measure.
+  @ObservationIgnored private var sampleWalkTask: Task<Void, Never>?
+  #endif
 
   /// Let the wearer feel a cue the phone raised.
   ///

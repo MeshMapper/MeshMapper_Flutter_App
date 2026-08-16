@@ -20,6 +20,13 @@ import Foundation
 /// - `-MeshMapperForceDimmed YES` renders the reduced-luminance readout.
 /// - `-MeshMapperForceRefusal <message>` presents the failure banner; capture
 ///   within six seconds because it deliberately uses the production expiry.
+/// - `-MeshMapperSampleWalk YES` advances the sample fix by 15 m every 11 s,
+///   which is what the phone's movement gate and walking pace actually deliver.
+///   Without it the fix never moves and the follow camera has nothing to
+///   animate, so this is the only way to review that motion off a wrist.
+///   Pass a number instead of `YES` to set the interval — the simulator stops
+///   redrawing a few seconds after launch, so a capture run needs steps far
+///   closer together than a walk delivers. See `walkStepInterval`.
 /// - `-MeshMapperAutoPageTo <tag>` switches pages five seconds after launch.
 ///   The simulator cannot swipe, and page transitions are a real defect
 ///   surface: a sheet raised from the map once survived onto the next page,
@@ -49,8 +56,52 @@ enum SampleSnapshot {
   private static let originLat = 47.6062
   private static let originLon = -122.3321
 
-  static func make() -> WatchSnapshot {
+  /// Metres travelled per emitted step, matching the phone's movement gate.
+  ///
+  /// `WatchWire.minMoveMeters` is 15, so a walking wearer's fix advances in 15 m
+  /// jumps rather than continuously. Reproducing the *step size* is the whole
+  /// point of this harness: a smaller one would make the follow animation look
+  /// fine for reasons the real wire does not provide.
+  static let walkStepMeters: Double = 15
+
+  /// Seconds between steps. Defaults to 15 m at an ordinary walking pace
+  /// (~1.4 m/s); `-MeshMapperSampleWalk <seconds>` overrides it.
+  ///
+  /// **The override exists because the simulator's display stops updating a few
+  /// seconds after launch** — measured at ~4.5 s, after which every screenshot
+  /// is the same frame and even a `Text(timerInterval:)` sits frozen. That is
+  /// the screen sleeping, not the app dimming: the readout never replaces the
+  /// map, so the dim hold plainly did not run. A capture run therefore has only
+  /// a few seconds of live rendering, and a real 11 s cadence puts zero steps
+  /// inside it. Step size is what the follow animation actually has to smooth,
+  /// so shortening the interval costs the review nothing.
+  static var walkStepInterval: TimeInterval {
+    let override = UserDefaults.standard.double(forKey: "MeshMapperSampleWalk")
+    return override > 0 ? override : 11
+  }
+
+  /// Whether to walk at all. The interval override doubles as the switch, so
+  /// `YES` reads as "walk at the real cadence" and a number as "walk this fast".
+  static var isWalking: Bool {
+    UserDefaults.standard.double(forKey: "MeshMapperSampleWalk") > 0
+      || UserDefaults.standard.bool(forKey: "MeshMapperSampleWalk")
+  }
+
+  /// Course held while walking, in degrees clockwise from north. Matches the
+  /// stationary sample's `headingDeg` so the puck glyph does not swing when the
+  /// harness is switched on.
+  private static let walkBearingDeg: Double = 72
+
+  static func make(stepsWalked: Int = 0) -> WatchSnapshot {
     let now = Date().timeIntervalSince1970 * 1000
+
+    // Flat-earth offset, which at these distances is exact to well under a
+    // metre and keeps the harness free of a projection.
+    let travelled = Double(stepsWalked) * walkStepMeters
+    let bearing = walkBearingDeg * .pi / 180
+    let walkLat = travelled * cos(bearing) / 111_320
+    let walkLon = travelled * sin(bearing)
+      / (111_320 * cos((originLat + 0.006) * .pi / 180))
 
     let samplePhase: (name: String, title: String, endsAtMs: Double, durationMs: Int)
     switch UserDefaults.standard.string(forKey: "MeshMapperSamplePhase") {
@@ -212,9 +263,9 @@ enum SampleSnapshot {
         : ["passive", "hybrid"],
       geo: WatchGeo(
         you: WatchPosition(
-          lat: originLat + 0.006,
-          lon: originLon + 0.014,
-          headingDeg: 72,
+          lat: originLat + 0.006 + walkLat,
+          lon: originLon + 0.014 + walkLon,
+          headingDeg: walkBearingDeg,
           accuracyM: 8,
           fixedAtMs: now
         ),
