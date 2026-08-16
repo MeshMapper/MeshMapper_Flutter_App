@@ -1269,8 +1269,8 @@ struct MapPage: View {
       .foregroundStyle(.orange)
       .lineLimit(1)
     } else if let snapshot {
-      WatchPhaseBar(snapshot: snapshot)
-      .frame(height: 15)
+      WatchPhaseBar(snapshot: snapshot, isLuminanceReduced: isLuminanceReduced)
+        .frame(height: 15)
     }
   }
 
@@ -1701,17 +1701,22 @@ struct MapPage: View {
 /// A phase-scoped progress animation rather than a one-second render clock.
 ///
 /// `Text(timerInterval:)` owns its countdown without invalidating this view.
-/// The fill is set once from the absolute deadline and animated to zero by the
-/// compositor; one sleeping task wakes at the deadline solely to retire the
-/// countdown and dim a claim the phone has not refreshed.
+/// The fill is set once from the absolute deadline and driven to zero by a
+/// single transform animation; one sleeping task wakes at the deadline solely
+/// to retire the countdown and dim a claim the phone has not refreshed.
 private struct WatchPhaseBar: View {
   let snapshot: WatchSnapshot
+  /// Passed in rather than read from the environment so the DEBUG dim
+  /// overrides on `MapPage` reach it — the whole panel is captured through
+  /// them, and a bar that kept animating would be the one thing that did not.
+  let isLuminanceReduced: Bool
 
   @State private var remainingFraction: CGFloat
   @State private var deadlineLapsed: Bool
 
-  init(snapshot: WatchSnapshot) {
+  init(snapshot: WatchSnapshot, isLuminanceReduced: Bool) {
     self.snapshot = snapshot
+    self.isLuminanceReduced = isLuminanceReduced
     let now = Date()
     _remainingFraction = State(
       initialValue: CGFloat(snapshot.phaseRemainingFraction(at: now) ?? 0)
@@ -1721,10 +1726,29 @@ private struct WatchPhaseBar: View {
     )
   }
 
+  /// Whether the fill should be animated at all, as opposed to snapped to the
+  /// deadline's current truth and left there.
+  ///
+  /// **Reduced luminance stops it.** Always-On updates the screen at roughly
+  /// one frame a minute, so a drain animation there buys no visible motion and
+  /// spends energy anyway; Apple's Always-On guidance is to pause animations
+  /// and drop subsecond work while the app is inactive. The map now stays
+  /// constructed for up to `dimmedMapHold` seconds past the dim, which is
+  /// exactly when this bar would otherwise keep animating over a screen nobody
+  /// can see move.
+  private var drainsFill: Bool {
+    #if DEBUG
+    // A/B harness for the drain's energy cost, under Settings -> Instruments.
+    if WatchSettings.debugFreezesTimerBar { return false }
+    #endif
+    return !isLuminanceReduced
+  }
+
   private var phaseKey: PhaseAnimationKey {
     PhaseAnimationKey(
       endsAtMs: snapshot.phaseEndsAtMs,
-      durationMs: snapshot.phaseDurationMs
+      durationMs: snapshot.phaseDurationMs,
+      drainsFill: drainsFill
     )
   }
 
@@ -1739,37 +1763,50 @@ private struct WatchPhaseBar: View {
   }
 
   var body: some View {
-    GeometryReader { geo in
-      ZStack(alignment: .leading) {
-        Capsule().fill(.white.opacity(0.16))
-        Capsule()
-          .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
-          .frame(width: geo.size.width * remainingFraction)
-      }
-      .overlay {
-        HStack {
-          // A missing deadline describes a durable state. A passed one is only
-          // the phone's last claim, so keep it visible but no longer assert it.
-          Text(snapshot.phaseTitle)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.white.opacity(deadlineLapsed ? 0.45 : 1))
-            .lineLimit(1)
-            .truncationMode(.tail)
-          Spacer(minLength: 4)
-          if let range = activeCountdownRange {
-            // Fixed width because the native timer otherwise reserves room for
-            // its widest possible value and starves the title.
-            Text(timerInterval: range, countsDown: true)
-              .font(.system(size: 11, weight: .bold).monospacedDigit())
-              .foregroundStyle(.white)
-              .frame(width: 38, alignment: .trailing)
-          }
+    ZStack(alignment: .leading) {
+      Capsule().fill(.white.opacity(0.16))
+      Capsule()
+        .fill(snapshot.pingColor.map(Color.init) ?? .accentColor)
+        // **A transform, not a width.** Animating `frame(width:)` re-runs
+        // SwiftUI's layout for the whole panel on every frame of a drain that
+        // lasts the entire phase; a leading-anchored scale is one affine
+        // transform handed to the render server and left alone.
+        //
+        // **Scale the mask, not the capsule.** Scaling the capsule itself
+        // squashes its end caps, so the bar started rounded and finished with
+        // square ends — visible on the wrist at 15 pt tall, where an earlier
+        // comment here guessed it would not be. Masking keeps the capsule's
+        // own geometry untouched, so the leading cap stays round and only the
+        // trailing edge becomes a flat cut, and the animated property is still
+        // a single affine transform on a solid shape.
+        .mask(alignment: .leading) {
+          Rectangle()
+            .scaleEffect(x: remainingFraction, y: 1, anchor: .leading)
         }
-        // The fill slides under both labels, so a shadow keeps them readable
-        // against the filled and empty parts of the track.
-        .shadow(color: .black.opacity(0.7), radius: 1.5)
-        .padding(.horizontal, 6)
+    }
+    .overlay {
+      HStack {
+        // A missing deadline describes a durable state. A passed one is only
+        // the phone's last claim, so keep it visible but no longer assert it.
+        Text(snapshot.phaseTitle)
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.white.opacity(deadlineLapsed ? 0.45 : 1))
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 4)
+        if let range = activeCountdownRange {
+          // Fixed width because the native timer otherwise reserves room for
+          // its widest possible value and starves the title.
+          Text(timerInterval: range, countsDown: true)
+            .font(.system(size: 11, weight: .bold).monospacedDigit())
+            .foregroundStyle(.white)
+            .frame(width: 38, alignment: .trailing)
+        }
       }
+      // The fill slides under both labels, so a shadow keeps them readable
+      // against the filled and empty parts of the track.
+      .shadow(color: .black.opacity(0.7), radius: 1.5)
+      .padding(.horizontal, 6)
     }
     .task(id: phaseKey) {
       await runPhaseAnimation()
@@ -1783,34 +1820,82 @@ private struct WatchPhaseBar: View {
     let lapsed = snapshot.phaseEndsAt.map { $0 <= now } ?? false
 
     // A replacement phase must start at its true current fraction, not animate
-    // from the previous phase's endpoint before beginning its own drain.
-    var transaction = Transaction()
-    transaction.disablesAnimations = true
-    withTransaction(transaction) {
+    // from the previous phase's endpoint before beginning its own drain. This
+    // is also what makes the dim honest: the task re-runs when `drainsFill`
+    // flips, so the frozen bar is snapped to the deadline's truth rather than
+    // stranded wherever the cancelled animation happened to be.
+    //
+    // **A zero-duration animation, not `disablesAnimations`.** Suppressing the
+    // transaction leaves the running drain in place, and interrupting a
+    // transform animation reverts the layer to its model value — measured in
+    // the simulator as a bar that snapped back to *full* at the dim and stayed
+    // there, while the countdown beside it ran on. Replacing the animation
+    // rather than opting out of one is what actually ends it.
+    //
+    // **And replacing it requires the value to actually change.** While a drain
+    // runs, the *model* value here is already 0: `withAnimation` set it there at
+    // the start and is interpolating only the presentation toward it. So this
+    // assignment is a no-op precisely when the new truth is also 0 — which is
+    // the stopped-session case — and the in-flight drain survives untouched.
+    // Adam saw exactly that on the wrist: the title changed to "Ready" while
+    // the fill kept draining to the old deadline. The dim never showed it
+    // because a dim mid-phase has a non-zero truth, so the assignment was a
+    // real change and did replace the animation.
+    //
+    // Hence the nudge: one zero-duration transaction to a value that is
+    // certainly different, which SwiftUI must take and which abandons the
+    // animation in flight, then the real one to the truth. Both are
+    // zero-duration, so neither is visible.
+    // The nudge must land in its own transaction. SwiftUI batches state changes
+    // made in one run-loop turn, so a nudge and the real assignment written back
+    // to back coalesce into a single change that nets to nothing — the very
+    // no-op being escaped. `Task.yield()` separates them, which is the same
+    // reason the drain below already yields before it starts.
+    if remainingFraction == fraction {
+      withAnimation(.linear(duration: 0)) {
+        remainingFraction = fraction > 0.5 ? fraction - 0.001 : fraction + 0.001
+      }
+      await Task.yield()
+    }
+    withAnimation(.linear(duration: 0)) {
       remainingFraction = fraction
       deadlineLapsed = lapsed
     }
+
+    #if DEBUG
+    // Measure instead of reasoning about it: the stopped-session drain has now
+    // survived one reasoned fix, so record what this task actually sees. If no
+    // line appears on a stop, `phaseKey` did not change and the task never
+    // re-ran; if one appears with `endsAt nil fraction 0.000` while the fill is
+    // still visibly draining, the animation is outliving the state and no
+    // assignment here will end it.
+    WakeLog.note(
+      String(
+        format: "bar %@ endsAt %@ duration %@ fraction %.3f lapsed %@ drains %@",
+        snapshot.phaseTitle,
+        snapshot.phaseEndsAtMs.map { String(format: "%.0f", $0) } ?? "nil",
+        snapshot.phaseDurationMs.map(String.init) ?? "nil",
+        fraction,
+        lapsed ? "yes" : "no",
+        drainsFill ? "yes" : "no"
+      )
+    )
+    #endif
 
     guard let endsAt = snapshot.phaseEndsAt else { return }
     let remaining = endsAt.timeIntervalSince(now)
     guard remaining > 0 else { return }
 
-    await Task.yield()
-    #if DEBUG
-    // A/B harness for the drain's energy cost. The fill is an animated *layout*
-    // width, so SwiftUI re-runs layout every frame for the whole phase rather
-    // than handing a transform to the render server. Freezing it leaves every
-    // other cost in place — same snapshots, same markers, same timer text — so
-    // an Instruments trace of the two states isolates this animation alone.
-    if !WatchSettings.debugFreezesTimerBar {
-      withAnimation(.linear(duration: remaining)) { remainingFraction = 0 }
+    if drainsFill {
+      await Task.yield()
+      withAnimation(.linear(duration: remaining)) {
+        remainingFraction = 0
+      }
     }
-    #else
-    withAnimation(.linear(duration: remaining)) {
-      remainingFraction = 0
-    }
-    #endif
 
+    // Retiring the deadline is one wake per phase, not per frame, so it stays
+    // in place while dimmed. Losing it would leave a countdown asserting a
+    // claim the phone has stopped confirming.
     do {
       try await Task.sleep(for: .seconds(remaining))
     } catch {
@@ -1826,6 +1911,10 @@ private struct WatchPhaseBar: View {
     // an otherwise continuous bar every time the label flips.
     let endsAtMs: Double?
     let durationMs: Int?
+    /// Luminance participates only to stop and resume the drain. It belongs in
+    /// the key so the dim cancels the running animation rather than leaving it
+    /// interpolating against a screen that updates once a minute.
+    let drainsFill: Bool
   }
 }
 
