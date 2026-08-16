@@ -15,6 +15,23 @@ struct ControlsPage: View {
   private static let minimumTapHeight: CGFloat = 44
   private static let compactLabelHeight: CGFloat = 24
 
+  /// The explanatory text scales with the wearer's text-size setting; the
+  /// controls around it do not.
+  ///
+  /// **`Font.system(size:)` is a fixed point size and ignores Dynamic Type
+  /// entirely**, so the page-level `dynamicTypeSize` clamp that used to sit
+  /// here bounded nothing — every string on this page was 10 or 13 points at
+  /// every setting, including the largest accessibility sizes. `@ScaledMetric`
+  /// keeps the tuned 10 pt base and makes it grow, which is the whole point:
+  /// `blockedReason` is the one thing that explains a dead button, and at
+  /// 10 pt in 45 % white it was the least legible text in the app.
+  ///
+  /// Deliberately unbounded, following `NodeListView`: fewer rows at a large
+  /// setting is the correct outcome, and this page already scrolls. The
+  /// buttons keep their fixed labels so the hardware-checked 44 pt targets and
+  /// single-line titles survive — a narrower deviation, and a stated one.
+  @ScaledMetric(relativeTo: .caption2) private var reasonFontSize: CGFloat = 10
+
   private var controls: WatchControls? { client.snapshot?.controls }
 
   private var effectiveStartMode: WatchSettings.DefaultStartMode {
@@ -70,9 +87,10 @@ struct ControlsPage: View {
       // this twice before.
       .padding(.bottom, 14)
     }
-    // These are fixed pieces of control chrome rather than reading content;
-    // bounding type preserves the large tap targets on the smallest watch.
-    .dynamicTypeSize(.small ... .large)
+    // No page-level type clamp. It read as protecting the tap targets, but the
+    // controls it was protecting use fixed point sizes and were never at risk;
+    // all it actually did was cap `reasonFontSize` at `.large` and stop the one
+    // piece of reading content on the page from reaching accessibility sizes.
     .opacity(client.isStale ? 0.5 : 1.0)
     .onChange(of: controls?.canManualPing) { _, canManualPing in
       if canManualPing != true { disarmPing() }
@@ -153,7 +171,7 @@ struct ControlsPage: View {
 
   private func controlReason(_ reason: String) -> some View {
     Text(reason)
-      .font(.system(size: 10, weight: .medium))
+      .font(.system(size: reasonFontSize, weight: .medium))
       .foregroundStyle(.white.opacity(0.45))
       .multilineTextAlignment(.leading)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -165,7 +183,7 @@ struct ControlsPage: View {
       Image(systemName: "exclamationmark.circle.fill")
       Text(refusal)
     }
-    .font(.system(size: 10, weight: .medium))
+    .font(.system(size: reasonFontSize, weight: .medium))
     .foregroundStyle(WatchPalette.armed)
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 4)
