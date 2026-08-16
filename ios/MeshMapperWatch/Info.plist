@@ -24,6 +24,14 @@
 	<true/>
 	<key>WKCompanionAppBundleIdentifier</key>
 	<string>$(MESHMAPPER_BUNDLE_PREFIX)</string>
+	<!-- Empty array = every Live Activity this app starts may launch the watch
+	     app. Without the key the system does not check for a watchOS app at
+	     all: a tap in the Smart Stack gets a full-screen wrapper offering to
+	     open the iPhone app, which is the wrong device when the wearer is
+	     already looking at the wrist app that mirrors it. watchOS 11.1+; older
+	     systems ignore an unrecognised key, so it is safe at our 11.0 floor. -->
+	<key>WKSupportsLiveActivityLaunchAttributeTypes</key>
+	<array/>
 	<key>WKRunsIndependentlyOfCompanionApp</key>
 	<false/>
 </dict>
