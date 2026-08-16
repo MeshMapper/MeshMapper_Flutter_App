@@ -65,6 +65,12 @@ struct SettingsPage: View {
           "When available, show ping option",
           isOn: $settings.showPingWhenAvailable
         )
+
+        // Sits with Controls because the only cue the phone sends is the
+        // failure of a control the wearer used. It is the wearer's own wrist,
+        // so the switch stays on the wrist: silencing it must not depend on
+        // the phone link that just failed.
+        Toggle("Haptic feedback", isOn: $settings.haptics)
       }
 
       #if DEBUG

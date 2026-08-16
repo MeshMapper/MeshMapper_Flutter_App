@@ -10,9 +10,19 @@ import SwiftUI
 /// dump, with wrist-local layout preferences in settings.
 @main
 struct MeshMapperWatchApp: App {
-  @State private var client = WatchSessionClient()
-  @State private var settings = WatchSettings()
+  @State private var client: WatchSessionClient
+  @State private var settings: WatchSettings
   @Environment(\.scenePhase) private var scenePhase
+
+  /// Built here rather than as two independent property initializers so both
+  /// the environment and the session client hold the *same* `WatchSettings`.
+  /// A second instance would keep its own copy of the haptic preference and
+  /// silence only one of them.
+  init() {
+    let settings = WatchSettings()
+    _settings = State(initialValue: settings)
+    _client = State(initialValue: WatchSessionClient(settings: settings))
+  }
 
   var body: some Scene {
     WindowGroup {

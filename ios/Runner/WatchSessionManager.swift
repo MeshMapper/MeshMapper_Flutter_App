@@ -217,8 +217,23 @@ extension WatchSessionManager: WCSessionDelegate {
   }
 
   func sessionWatchStateDidChange(_ session: WCSession) {
-    // A newly installed or newly paired watch has no context yet.
-    lastContextData = nil
+    // Hopped, not written here. WatchConnectivity delivers this on a background
+    // thread while `send(payload:urgent:)` reads and writes the same property
+    // on the platform thread, which is a plain data race on the dedupe cache —
+    // and losing that race means a snapshot the watch needed gets suppressed as
+    // "identical" against a value another thread was midway through clearing.
+    DispatchQueue.main.async { [weak self] in
+      // A newly installed or newly paired watch has no context yet.
+      self?.lastContextData = nil
+    }
+    publishStatus()
+  }
+
+  /// The documented signal for reachability changing. Without it, the status
+  /// this bridge reports to Dart was only as current as the last activation or
+  /// watch-state change, and the diagnostics screen looked live purely because
+  /// it polls every five seconds while it is open.
+  func sessionReachabilityDidChange(_ session: WCSession) {
     publishStatus()
   }
 
