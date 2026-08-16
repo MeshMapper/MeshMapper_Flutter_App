@@ -444,50 +444,33 @@ private struct MeshMapperOutcomeDot: View {
   }
 }
 
+/// **No state and no task**, for the reason `MeshMapperPhaseBar` states above:
+/// WidgetKit renders these views out of process and the extension "is not
+/// continually active, even if the widget is onscreen", so a `@State` flag
+/// retired by a sleeping `Task.sleep` is a promise this context cannot keep.
+///
+/// Nothing is lost by dropping it. `activeCountdownRange` is evaluated on every
+/// render and already returns nil once the deadline passes, so the branch below
+/// falls through to the SNR or the outcome dot exactly when it should — using
+/// the clock the system re-reads for us rather than a flag we hoped to update.
 private struct MeshMapperCompactTrailing: View {
   let state: MeshMapperActivityAttributes.ContentState
 
-  @State private var deadlineLapsed: Bool
-
-  init(state: MeshMapperActivityAttributes.ContentState) {
-    self.state = state
-    let now = Date()
-    _deadlineLapsed = State(
-      initialValue: state.phaseEndsAt.map { $0 <= now } ?? false
-    )
-  }
-
   var body: some View {
-    Group {
-      if !deadlineLapsed, state.activeCountdownRange != nil {
-        MeshMapperCountdown(
-          state: state,
-          isActive: true,
-          font: .caption2.monospacedDigit().weight(.bold)
-        )
-        .frame(minWidth: 28)
-      } else if let best = state.repeaters.first {
-        Text(best.snr.formattedSnr)
-          .font(.caption2.monospacedDigit().weight(.bold))
-          .foregroundStyle(best.snrColor.map(Color.init) ?? .primary)
-          .accessibilityLabel("Best SNR \(best.snr.formattedSnr)")
-      } else {
-        MeshMapperOutcomeDot(state: state, diameter: 8)
-      }
-    }
-    .task(id: state.phaseDeadlineKey) {
-      let now = Date()
-      deadlineLapsed = state.phaseEndsAt.map { $0 <= now } ?? false
-      guard let endsAt = state.phaseEndsAt else { return }
-      let remaining = endsAt.timeIntervalSince(now)
-      guard remaining > 0 else { return }
-      do {
-        try await Task.sleep(for: .seconds(remaining))
-      } catch {
-        return
-      }
-      guard !Task.isCancelled else { return }
-      deadlineLapsed = true
+    if state.activeCountdownRange != nil {
+      MeshMapperCountdown(
+        state: state,
+        isActive: true,
+        font: .caption2.monospacedDigit().weight(.bold)
+      )
+      .frame(minWidth: 28)
+    } else if let best = state.repeaters.first {
+      Text(best.snr.formattedSnr)
+        .font(.caption2.monospacedDigit().weight(.bold))
+        .foregroundStyle(best.snrColor.map(Color.init) ?? .primary)
+        .accessibilityLabel("Best SNR \(best.snr.formattedSnr)")
+    } else {
+      MeshMapperOutcomeDot(state: state, diameter: 8)
     }
   }
 }
@@ -512,19 +495,7 @@ private enum MeshMapperPalette {
   static let accent = Color.accentColor
 }
 
-private struct MeshMapperPhaseDeadlineKey: Hashable {
-  let endsAt: Date?
-  let durationMs: Int?
-}
-
 extension MeshMapperActivityAttributes.ContentState {
-  fileprivate var phaseDeadlineKey: MeshMapperPhaseDeadlineKey {
-    MeshMapperPhaseDeadlineKey(
-      endsAt: phaseEndsAt,
-      durationMs: phaseDurationMs
-    )
-  }
-
   fileprivate var activeCountdownRange: ClosedRange<Date>? {
     let now = Date()
     guard let phaseEndsAt, phaseEndsAt > now else { return nil }
