@@ -185,6 +185,22 @@ struct MapPage: View {
 
   @State private var camera: MapCameraPosition = .automatic
 
+  /// Where the puck is *drawn*, as opposed to where the phone says it is.
+  ///
+  /// **The puck cannot read `fix` directly if the camera is ever animated.**
+  /// `fix` is derived from `client.snapshot`, which the transport replaces in
+  /// its own transaction, so by the time this page reacts the annotation has
+  /// already moved. Easing the camera afterwards would leave the puck sliding
+  /// away from centre and snapping back — the wander that `recenterIfFollowing`
+  /// cuts to avoid. Holding the rendered position in `@State` lets both change
+  /// inside one `withAnimation`, so they travel on the same curve and the puck
+  /// stays visually still while the world moves beneath it.
+  ///
+  /// Scoped to the native map's lifetime like `hasAssertedRegion`: `mapContent`
+  /// seeds it on appear, so a rebuilt map opens on the truth rather than
+  /// animating in from wherever the last glance ended.
+  @State private var displayedFix: CLLocationCoordinate2D?
+
   /// Non-nil once we have driven the camera. Assignment is not proof that
   /// MapKit rendered the request, but it is the first half of the span
   /// handshake that keeps `.automatic` from becoming the remembered zoom.
@@ -1108,7 +1124,7 @@ struct MapPage: View {
         )
       }
       #endif
-      recenterIfFollowing()
+      trackFix()
       // A first fix is the moment a map that had nothing to anchor to becomes
       // placeable. Idempotent, so this is a no-op on every later update.
       anchorCameraIfNeeded()
@@ -1140,6 +1156,10 @@ struct MapPage: View {
       // panel has already left, and `adoptPanelHeightNow` recentres itself when
       // it actually changes anything.
       adoptPanelHeightNow()
+      // Before the recentre, and never animated: a fresh map must open on the
+      // truth. Animating in from the previous glance's position would slide the
+      // puck across the first frame of every wrist raise.
+      displayedFix = fix
       recenterIfFollowing()
       anchorCameraIfNeeded()
       #if DEBUG
@@ -1703,8 +1723,11 @@ struct MapPage: View {
 
   @MapContentBuilder
   private var fixMarker: some MapContent {
-    if let fix, let you = snapshot?.geo.you {
-      Annotation("", coordinate: fix) {
+    // `displayedFix` for the position, `you` for the heading — the first is the
+    // eased rendering of the second's coordinate, and both must be present for
+    // the puck to mean anything.
+    if let displayedFix, let you = snapshot?.geo.you {
+      Annotation("", coordinate: displayedFix) {
         // The phone's fix, not the watch's. Rendering it ourselves keeps the
         // watch free of any location permission.
         FixPuck(headingDeg: you.headingDeg)
@@ -1714,6 +1737,76 @@ struct MapPage: View {
   }
 
   // MARK: - Camera
+
+  /// How a follow step should move, or `nil` to cut.
+  ///
+  /// **Reduced luminance cuts, on the same rule as `WatchPhaseBar.drainsFill`.**
+  /// Always-On repaints roughly once a minute, so an eased camera there buys no
+  /// visible motion and spends MapKit render work anyway — and the dim hold
+  /// deliberately keeps this map on screen for `dimmedMapHold` seconds past the
+  /// dim, which is exactly the window where it would otherwise be animating for
+  /// nobody. Geo can still arrive in that window: `needsMapGeo` goes false at
+  /// the dim but `WatchBridgeService` only schedules suppression 15 s out.
+  ///
+  /// 0.7 s is chosen against the update cadence, not by feel. The phone's
+  /// movement gate is 15 m and its non-urgent throttle is 2 s, so follow steps
+  /// arrive about 11 s apart at walking pace and never closer than 2 s. A curve
+  /// comfortably inside that floor means one step finishes before the next is
+  /// retargeted, so the common case is a clean glide rather than a chain of
+  /// interrupted animations.
+  private var followAnimation: Animation? {
+    guard !isLuminanceReduced else { return nil }
+    return .easeInOut(duration: 0.7)
+  }
+
+  /// A step larger than this is treated as a resumed stream, not as travel.
+  ///
+  /// Updates are at least 2 s apart, so even a sprint moves well under this
+  /// between them. Anything further means delivery was interrupted — a
+  /// suppressed geo claim, a wrist-down, a dropped session — and sliding the
+  /// map across that gap would draw a whoosh through territory the wearer never
+  /// walked. Cut instead, which is what this page did for every step before.
+  private static let followAnimationCeilingM: CLLocationDistance = 100
+
+  /// Move the puck and the camera together, so a follow step slides the world
+  /// rather than cutting to it.
+  ///
+  /// The 15 m movement gate on the phone means a walking wearer gets one step
+  /// every ~11 s, and at the 250 m default zoom 15 m is around 12 pt of screen —
+  /// large enough to read as a jump rather than as motion.
+  ///
+  /// Both assignments have to sit in the same `withAnimation` for the reason
+  /// `displayedFix` exists at all. `recenterIfFollowing` reaches `applyRegion`
+  /// with `animated: false`, which here means "add no animation of your own" —
+  /// the assignment inherits this transaction instead. Its own 0.25 s ease is
+  /// still right for the paths that pass `animated: true`, which are discrete
+  /// wearer-visible events rather than tracking.
+  private func trackFix() {
+    let previous = displayedFix
+    guard let animation = followAnimation,
+      let previous,
+      let fix,
+      CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+        .distance(from: CLLocation(latitude: fix.latitude, longitude: fix.longitude))
+        <= Self.followAnimationCeilingM
+    else {
+      // Covers a cut for every reason: dimmed, a first fix with nothing to
+      // travel from, geo withdrawn, or a step too large to be travel. Clearing
+      // to `nil` matters — a stale rendered position left standing would become
+      // the origin of the next animation.
+      displayedFix = fix
+      recenterIfFollowing()
+      return
+    }
+
+    withAnimation(animation) {
+      displayedFix = fix
+      // Follow off still animates the puck: it slides to its true place across
+      // a map the wearer chose to hold still, which is the same improvement for
+      // the case where the camera is deliberately not tracking.
+      recenterIfFollowing()
+    }
+  }
 
   /// `animated` defaults to following `force` — a tap is the case that wants to
   /// be shown to the wearer. The panel settle passes it explicitly, because it
@@ -1739,9 +1832,10 @@ struct MapPage: View {
     // corrected after the map reports back.
     //
     // A tap is a rare, explicit request to move the map, so animation shows the
-    // wearer what their action changed. Automatic follow is different: the fix
-    // coordinate has already changed in this frame, and animating the camera
-    // after it makes the puck wander before the map catches up.
+    // wearer what their action changed. Automatic follow passes `false` and is
+    // eased by its caller instead: `trackFix` wraps this call and the puck's
+    // position in one transaction, which is the only arrangement where the
+    // camera can move without the puck wandering away from centre first.
     applyRegion(center: fix, animated: animated ?? force)
   }
 
@@ -1832,8 +1926,11 @@ struct MapPage: View {
         camera = .region(region)
       }
     } else {
-      // First placement and GPS steps cut, so the puck stays visually fixed
-      // while the world moves beneath it.
+      // "No animation of our own", not "no animation". First placement, the
+      // anchor and the post-zoom correction all reach here outside any
+      // transaction and cut, which is what they want. A follow step reaches it
+      // from inside `trackFix`'s `withAnimation` and inherits that curve, so
+      // the camera travels on exactly the same one as the puck.
       camera = .region(region)
     }
   }
