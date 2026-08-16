@@ -62,7 +62,10 @@ struct MapPage: View {
   /// phone's geo claim open. `WatchBridgeService` only schedules suppression
   /// 15 s out, so a glance already costs about 21 s of geo — 5.9 s of map plus
   /// that delay — and holding the claim for the hold's duration as well would
-  /// roughly double it, for a map the wearer was looking at either way.
+  /// add the whole of `dimmedMapHold` on top, for a map the wearer was looking
+  /// at either way. Stated as a ratio this used to read "roughly double"; the
+  /// hold is now 12 s rather than 20, so it is nearer half again — the argument
+  /// is unchanged, only the arithmetic.
   private var needsMapGeo: Bool {
     settings.mainPageContent == .map && !isLuminanceReduced && isSelected
   }
@@ -83,12 +86,28 @@ struct MapPage: View {
   /// position. This can make the map flicker on and disappear while a user is
   /// looking at it."
   ///
-  /// Twenty seconds covers a deliberate glance. It leaves the *radio* alone —
-  /// `needsMapGeo` above is untouched by the hold — but it is not free: MapKit
-  /// stays constructed and rendering for the duration, which is the cost the
-  /// Always-On readout was introduced to avoid. Twenty seconds of it per
-  /// glance is the trade; a wrist-down's worth would not be.
-  private static let dimmedMapHold: TimeInterval = 20
+  /// **Twelve seconds, down from twenty, and the cost model behind that has
+  /// been corrected.** The earlier note priced the hold as "MapKit stays
+  /// constructed and rendering for the duration". It does not: watchOS suspends
+  /// this app about a second into a wrist-down — 7.42 s lost of an 8.20 s drop,
+  /// 12.89 of 13.63, 23.01 of 23.99 — so almost none of that rendering happens.
+  /// What the hold actually buys is a bright basemap held on an OLED always-on
+  /// display, and that cost is paid whether or not the app is scheduled.
+  ///
+  /// The dim lands 5.9 s in, so twelve seconds keeps the map up until nearly
+  /// 18 s into a glance, which still covers a deliberate one with room to
+  /// spare. Twenty spent most of its length showing a map to nobody: a typical
+  /// glance is over long before 26 s. The scrim in `map` cuts what each
+  /// remaining second costs; this cuts how many of them there are.
+  ///
+  /// It leaves the *radio* alone — `needsMapGeo` above is untouched by the
+  /// hold.
+  ///
+  /// The floor is the flicker this exists to prevent. Do not take it below the
+  /// 5.9 s dim by much, or `showsMap` starts tearing the subtree down inside a
+  /// glance again, which is the defect the wearer reported: "the map flicker on
+  /// and disappear while a user is looking at it."
+  private static let dimmedMapHold: TimeInterval = 12
 
 
   /// When the display last dimmed, or nil at full luminance.
@@ -719,8 +738,11 @@ struct MapPage: View {
   /// once the hold is expired, so nothing keeps asking.
   ///
   /// Always-On throttles these updates to roughly one a minute, so the readout
-  /// may return somewhat after twenty seconds. Nobody is looking by then — the
-  /// point is that it returns without needing the wrist.
+  /// may return well after the twelve seconds `dimmedMapHold` asks for — and
+  /// the shorter the hold, the larger that overshoot is in proportion. Nobody
+  /// is looking by then; the point is that it returns without needing the
+  /// wrist. The scrim on `map` is what bounds the cost of the overshoot, since
+  /// the basemap is dimmed for every second of it.
   @ViewBuilder
   private var dimmedMapHoldTicker: some View {
     if isLuminanceReduced, !isDimmedMapHoldExpired, let dimmedAt {
@@ -1585,6 +1607,30 @@ struct MapPage: View {
     // top chrome; the overlay remains in the safe content region, keeping its
     // inset recentre button below the system toolbar controls.
     .ignoresSafeArea(edges: [.top, .bottom])
+    // Dim the basemap for the length of the hold rather than tearing it down.
+    //
+    // **The hold's real cost is lit pixels, not CPU.** An earlier comment
+    // priced it as "MapKit stays constructed and rendering", but watchOS
+    // suspends this app about a second into a wrist-down, so almost none of
+    // that rendering happens — what does happen is a bright basemap held on an
+    // OLED always-on display for the length of the hold, per glance, whether or
+    // not the app is scheduled to draw it. Apple's Always-On
+    // guidance names this directly: "if you display rich images or large areas
+    // of color, consider removing the images and using dimmed colors."
+    //
+    // A scrim buys that back without giving up the hold, which exists to stop
+    // the map flickering out from under a wearer who is still looking at it.
+    //
+    // **Value, never presence.** An overlay that appeared at the dim would
+    // re-identify the subtree beneath it and rebuild all of MapKit at exactly
+    // the wrong moment — the defect `pageContent`'s background note records.
+    // This one is always in the tree and only its opacity changes.
+    .overlay {
+      Color.black
+        .opacity(isLuminanceReduced ? 0.45 : 0)
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
   }
 
   @MapContentBuilder
@@ -2212,29 +2258,42 @@ private struct ReadoutPhase: View {
     )
   }
 
+  /// **The native timer, in both luminance states. No coarse ladder, no
+  /// timeline.**
+  ///
+  /// This replaced a `TimelineView(.periodic(by: 60))` driving a
+  /// `"<15 sec"` / `"<30 sec"` / `"<1 min"` ladder, whose premise was that "a
+  /// seconds figure can be nearly a minute wrong while watchOS throttles
+  /// Always-On". **On hardware that premise is false**: the seconds in a
+  /// `Text(timerInterval:)` keep updating periodically under Always On, closely
+  /// enough to beat every rung of the ladder — which matters here because
+  /// `autoPingInterval` is 15, 30 or 60 seconds, so every phase lives inside
+  /// the range the ladder was coarsest about.
+  ///
+  /// **The simulator disagrees, and it is wrong.** With the Always On toggle on
+  /// watchOS 26 it renders the same construct as `9:––`, blanking the seconds
+  /// outright. That reading briefly justified keeping the ladder for sub-minute
+  /// phases, on the reasoning that `0:––` says nothing. Adam's wrist says
+  /// otherwise, and the wrist is the authority — this file has been caught by
+  /// simulator-only behaviour more than once.
+  ///
+  /// So the system does the work, more precisely than we did, and the per-dim
+  /// structural swap and the minute wake both go away.
   var body: some View {
-    Group {
-      if isLuminanceReduced {
-        // A seconds figure can be nearly a minute wrong while watchOS throttles
-        // Always-On. Match that cadence explicitly instead of showing false
-        // precision, and isolate the minute wake-up to this small subtree.
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-          phase(at: context.date, usesCoarseCountdown: true)
-        }
-      } else {
-        phase(at: Date(), usesCoarseCountdown: false)
+    phase(at: Date())
+      .task(id: phaseKey) {
+        await trackDeadline()
       }
-    }
-    .task(id: phaseKey) {
-      await trackDeadline()
-    }
   }
 
   @ViewBuilder
-  private func phase(at date: Date, usesCoarseCountdown: Bool) -> some View {
-    let lapsed = usesCoarseCountdown
-      ? snapshot.phaseEndsAt.map { $0 <= date } ?? false
-      : deadlineLapsed
+  private func phase(at date: Date) -> some View {
+    // The clock as well as the flag. `trackDeadline` is gated to full
+    // luminance — it must not wake a dimmed app — so under Always On the flag
+    // never flips, and only this comparison can retire a deadline the phone has
+    // stopped confirming. Same rule as `isWithinDimmedMapHold`: every render
+    // that actually happens gets the right answer, whenever it happens.
+    let lapsed = deadlineLapsed || (snapshot.phaseEndsAt.map { $0 <= date } ?? false)
 
     VStack(alignment: .leading, spacing: 2) {
       // Wrapping is intentional. The longest real phase names need two lines
@@ -2245,41 +2304,45 @@ private struct ReadoutPhase: View {
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
 
-      if usesCoarseCountdown {
-        if let countdown = coarseCountdown(at: date) {
-          countdownText(countdown)
-        }
-      } else if !lapsed, let endsAt = snapshot.phaseEndsAt, endsAt > date {
-        Text(timerInterval: date...endsAt, countsDown: true)
+      if !lapsed, let endsAt = snapshot.phaseEndsAt, endsAt > date {
+        // Marks the figure as an upper bound, which is exactly what it is under
+        // Always On. Measured on a Series 9: the system refreshes this text at
+        // a new phase, then again 12–18 s later, then about every 12 s after
+        // that — so between refreshes it reads high by up to that much.
+        // Remaining time only decreases, so "<" stays true across the whole
+        // gap, and an exact bound beats the ladder this replaced, which
+        // discarded up to 14 s of precision to say less.
+        //
+        // **Concatenation is safe here, and that was checked rather than
+        // assumed.** A probe rendering a plain timer, a concatenated one, and
+        // this exact value-driven form advanced together once the simulator
+        // left Always On. Worth recording that the check nearly read the other
+        // way: in Always On the simulator freezes *all* timer text, including a
+        // plain `Text(timerInterval:)`, so a first look suggested concatenation
+        // had broken the countdown when nothing was updating at all.
+        // The lift is not decoration. "<" is centred on the font's math axis,
+        // which sits below the optical centre of lining digits, so unshifted it
+        // reads low against "0:23" — Adam saw it immediately, and a @2x render
+        // measured it at 3.5 px low.
+        //
+        // **One point, chosen by eye over the geometric optimum.** The same
+        // render put the bounding-box centres closest at 2 pt (−0.5 px, against
+        // +1.5 px at 1 pt), but 2 looked high on the wrist. That is the usual
+        // gap between geometric and optical centring: a chevron is a wide,
+        // pointed glyph and the eye weights its extremes, so squaring the boxes
+        // overshoots. The measurement bounds the answer to 1 or 2; the wrist
+        // picks between them, and it picked 1 — which is also an even 2 device
+        // pixels at @2x.
+        //
+        // Tied to the 24 pt size above; re-measure if that changes.
+        (Text(isLuminanceReduced ? "< " : "").baselineOffset(1)
+          + Text(timerInterval: date...endsAt, countsDown: true))
           .font(.system(size: 24, weight: .bold).monospacedDigit())
-          .foregroundStyle(.white)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(.white)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
-  }
-
-  private func countdownText(_ value: String) -> some View {
-    Text(value)
-      .font(.system(size: 24, weight: .bold).monospacedDigit())
-      .foregroundStyle(.white)
-      .fixedSize(horizontal: false, vertical: true)
-      .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func coarseCountdown(at date: Date) -> String? {
-    guard let endsAt = snapshot.phaseEndsAt else { return nil }
-    let remaining = endsAt.timeIntervalSince(date)
-    guard remaining > 0 else { return nil }
-    // These are upper bounds, not estimates. Remaining time only decreases,
-    // so a tight statement rendered just before Always-On stops refreshing
-    // stays true afterward. Resolve it from this phase's live deadline on each
-    // render; retaining a previous phase's bound could make that guarantee
-    // false when a new, longer countdown begins.
-    if remaining < 15 { return "<15 sec" }
-    if remaining < 30 { return "<30 sec" }
-    if remaining < 60 { return "<1 min" }
-    return "\(Int(ceil(remaining / 60))) min"
   }
 
   @MainActor
@@ -2291,8 +2354,9 @@ private struct ReadoutPhase: View {
       deadlineLapsed = snapshot.phaseEndsAt.map { $0 <= now } ?? false
     }
 
-    // The minute timeline owns this boundary under Always-On. Sleeping for an
-    // exact second there would imply precision the display cannot present.
+    // Never sleeps while dimmed: waking a suspended app to retire a caption
+    // nobody is reading is exactly the cost this readout exists to avoid. The
+    // render-time clock check in `phase(at:)` covers that state instead.
     guard !isLuminanceReduced, let endsAt = snapshot.phaseEndsAt else { return }
     let remaining = endsAt.timeIntervalSince(now)
     guard remaining > 0 else { return }
