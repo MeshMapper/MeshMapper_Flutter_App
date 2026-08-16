@@ -250,9 +250,91 @@ struct MapPage: View {
     }
   }
 
+  #if DEBUG
+  /// When the phase last changed, opening a short window in which the camera
+  /// probes below are allowed to speak.
+  ///
+  /// **The volume is the point.** Adam sees the map jump at the end of the wait
+  /// timer and again at the end of the listening timer, and three things happen
+  /// at exactly those moments: a new fix can arrive and recentre, the status
+  /// panel's height can change and recentre through `PanelHeightKey`, or the
+  /// subtree can be rebuilt. A probe on every camera callback would drown that
+  /// in follow updates — the mistake this file's wake logging made once
+  /// already, at roughly 400 file writes an hour against the thing being
+  /// measured. Logging only around a boundary keeps a walk's worth of evidence
+  /// down to a handful of lines per cycle.
+  @State private var phaseBoundaryAt: Date?
+
+  /// The phase as of the last boundary this page logged.
+  @State private var boundaryPhase: String?
+
+  private static let phaseBoundaryWindow: TimeInterval = 2.5
+
+  /// SwiftUI does not promise an order between two `onChange` handlers on the
+  /// same view, so a window that only opened when the phase probe happened to
+  /// run first would miss exactly the callbacks worth catching. A phase that
+  /// has not been recorded yet counts as inside it.
+  private var isNearPhaseBoundary: Bool {
+    if snapshot?.phase != boundaryPhase { return true }
+    guard let phaseBoundaryAt else { return false }
+    return Date().timeIntervalSince(phaseBoundaryAt) < Self.phaseBoundaryWindow
+  }
+  #endif
+
   /// The panel's measured height, which is what the camera inset needs and,
   /// unlike its position, does not change while a page transition is animating.
   @State private var panelHeight: CGFloat = 0
+
+  /// The panel height the **camera** frames against, which is not always the
+  /// height just measured.
+  ///
+  /// **The panel thrashes when a session starts or stops, and every value it
+  /// passes through used to be a camera reframe.** Measured on the wrist:
+  /// 54 -> 59 -> 40 -> 54 inside three seconds across
+  /// `skipped -> idle -> starting -> listening_discovery`, four `applyRegion`
+  /// assignments, none animated. Ordinary phase boundaries did *not* move the
+  /// panel — it held at 54.0 through four of them — so this is a session-lifecycle
+  /// event, not a per-cycle one.
+  ///
+  /// **The inset changes apparent zoom, not just the centre.** `panelCameraInset`
+  /// feeds `.safeAreaPadding(.bottom,)`, and `applyRegion` holds the span
+  /// constant, so a taller panel squeezes the same span into fewer points and
+  /// the map reads as zooming *in*. Adam on the first asymmetric attempt: *"when
+  /// I click stop it looks like it zooms in and out slightly"* — a grow adopted
+  /// at once, then a shrink adopted 450 ms later, each one a visible scale
+  /// change. Hence one settled adoption for both directions: the wearer should
+  /// see the map adjust once, not twice.
+  @State private var cameraPanelHeight: CGFloat = 0
+  @State private var panelSettleTask: Task<Void, Never>?
+
+  /// The tallest the panel has been this launch, and what the camera actually
+  /// frames against.
+  ///
+  /// **Adam's simplification, and it is the right one: treat the panel as though
+  /// it were always at its maximum.** A settled, animated reframe was still one
+  /// visible zoom step per session transition, because a panel that populates to
+  /// two rows and later loses them is a real change in what MapKit is asked to
+  /// fit. Framing against the high-water mark means a *shrink* moves the camera
+  /// not at all — the common case, and the one Adam saw — while growth still
+  /// gets the settle and the ease below.
+  ///
+  /// **The cost, stated plainly:** while the panel is shorter than its maximum
+  /// the map is framed as if it were not, so the puck sits a few points above
+  /// the true centre of the visible band. Half the difference in heights, so
+  /// under ~10 pt at the sizes measured. A puck slightly off centre that never
+  /// moves reads far better than a centred one that jumps, which is the whole
+  /// trade being made here.
+  ///
+  /// Per launch rather than persisted: `@State` on the page survives the map
+  /// subtree's teardown on a wrist raise, so the mark holds across glances, and
+  /// a fresh launch re-derives it rather than inheriting a stale measurement
+  /// from a type ladder or content shape that has since changed. The 0.75-of-
+  /// display clamp in `panelCameraInset` still bounds it.
+  @State private var panelHighWaterMark: CGFloat = 0
+
+  /// Long enough to swallow a session transition's churn, short enough that the
+  /// map does not sit visibly mis-framed while it waits.
+  private static let panelSettleDelay: Duration = .milliseconds(450)
   @State private var latchedTopSafeAreaInset: CGFloat = 0
   @State private var currentTopSafeAreaInset: CGFloat = 0
   @State private var bottomSafeAreaInset: CGFloat = 0
@@ -287,15 +369,80 @@ struct MapPage: View {
   /// height changes with content — one column or two, with or without heard
   /// rows — and a stale constant would drift the fix off centre precisely when
   /// the panel grew.
+  /// Reads `cameraPanelHeight`, never the raw measurement, so a boundary's
+  /// transient heights never reach MapKit.
   private var panelCameraInset: CGFloat {
-    guard panelHeight > 0 else { return 0 }
+    guard cameraPanelHeight > 0 else { return 0 }
     let gapBeneath = curvedPanelHorizontalInset == nil
       ? bottomSafeAreaInset
       : panelBottomGap
     // Clamped: an inset approaching the display height would leave MapKit no
     // band to frame, and nothing about a status panel justifies that.
     let limit = WKInterfaceDevice.current().screenBounds.height * 0.75
-    return min(max(0, panelHeight + gapBeneath), limit)
+    return min(max(0, cameraPanelHeight + gapBeneath), limit)
+  }
+
+  /// Lets the measured height stop moving before the camera follows it, in both
+  /// directions, and animates the single reframe that results.
+  ///
+  /// **One adoption, not one per measurement.** In the measured
+  /// 54 -> 59 -> 40 -> 54 swing the camera is assigned once, at 54 — which is
+  /// where it started, so the whole session transition costs *no* reframe at
+  /// all. The intermediate 59 and the 19 pt collapse to 40 never reach MapKit.
+  /// An earlier attempt adopted growth immediately to guarantee the panel could
+  /// never cover the puck; that produced two visible scale changes 450 ms apart
+  /// and the protection was unnecessary at real panel sizes, where the puck sits
+  /// roughly 85 pt above a panel top near 170.
+  ///
+  /// **Animated, because a settled change is a rare and deliberate one.** It
+  /// happens on a session start or stop, not every cycle, so there is nothing
+  /// for the 0.25 s ease to compete with — the objection to animating was four
+  /// overlapping reframes, and there is now at most one.
+  ///
+  /// **Deliberately fail-safe rather than timer-dependent.** watchOS suspends
+  /// this app, so the sleep below fires whenever it is next resumed rather than
+  /// on schedule — the trap the dim hold was bitten by twice. A late fire only
+  /// reframes late. Against a fire that never comes, the map subtree's
+  /// `onAppear` reconciles the two heights outright, so no wrist raise can find
+  /// the camera framing against a height the panel abandoned.
+  private func adoptPanelHeightForCamera() {
+    panelHighWaterMark = max(panelHighWaterMark, panelHeight)
+    panelSettleTask?.cancel()
+    panelSettleTask = nil
+    // A shrink cannot change the mark, so it lands here and stops — no task, no
+    // reframe, nothing for the wearer to see. That is the point.
+    guard cameraPanelHeight != panelHighWaterMark else { return }
+
+    panelSettleTask = Task { @MainActor in
+      try? await Task.sleep(for: Self.panelSettleDelay)
+      guard !Task.isCancelled, panelHighWaterMark != cameraPanelHeight else { return }
+      #if DEBUG
+      WakeLog.note(
+        String(
+          format: "panel-settled %.1f -> %.1f (measured %.1f)",
+          cameraPanelHeight, panelHighWaterMark, panelHeight
+        )
+      )
+      #endif
+      cameraPanelHeight = panelHighWaterMark
+      panelSettleTask = nil
+      recenterIfFollowing(animated: true)
+    }
+  }
+
+  /// Drops any pending settle and takes the measured height as it stands.
+  ///
+  /// The safety net for the suspension case above, and the right behaviour on an
+  /// appearance regardless: a subtree that is being built has no in-flight
+  /// framing for a wearer to be watching, so there is nothing to animate and
+  /// nothing to smooth over.
+  private func adoptPanelHeightNow() {
+    panelHighWaterMark = max(panelHighWaterMark, panelHeight)
+    panelSettleTask?.cancel()
+    panelSettleTask = nil
+    guard cameraPanelHeight != panelHighWaterMark else { return }
+    cameraPanelHeight = panelHighWaterMark
+    recenterIfFollowing()
   }
 
   /// The placement scales with the estimated corner radius, putting every
@@ -909,10 +1056,36 @@ struct MapPage: View {
     }
     .onPreferenceChange(PanelHeightKey.self) { height in
       guard abs(height - panelHeight) > 0.5 else { return }
+      #if DEBUG
+      // Panel height is a camera input: `panelCameraInset` feeds
+      // `.safeAreaPadding(.bottom,)`, so the map reframes when the panel grows
+      // or shrinks. A ping that hears nothing replaces up to four heard rows
+      // with one "Nothing heard" line, which is exactly the cycle Adam
+      // described the jump on.
+      if isNearPhaseBoundary {
+        WakeLog.note(
+          String(
+            format: "boundary panel %.1f -> %.1f camera %.1f inset %.1f",
+            panelHeight, height, cameraPanelHeight, panelCameraInset
+          )
+        )
+      }
+      #endif
       panelHeight = height
-      recenterIfFollowing()
+      // Not straight to the camera: see `adoptPanelHeightForCamera`. A
+      // `boundary panel` line with no `boundary camera` line after it is this
+      // working — the measurement moved and the map did not.
+      adoptPanelHeightForCamera()
     }
-    .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { _, _ in
+    .onChange(of: snapshot?.geo.you.map { "\($0.lat),\($0.lon)" }) { previous, current in
+      #if DEBUG
+      if isNearPhaseBoundary {
+        WakeLog.note(
+          "boundary fix \(previous ?? "nil") -> \(current ?? "nil") "
+            + String(format: "moved %.1f m", fixDistanceMoved(previous, current))
+        )
+      }
+      #endif
       recenterIfFollowing()
       // A first fix is the moment a map that had nothing to anchor to becomes
       // placeable. Idempotent, so this is a no-op on every later update.
@@ -940,10 +1113,20 @@ struct MapPage: View {
       //     -> the camera holds a region but MapKit is not honouring it
       WakeLog.note("camera-before \(cameraStateDescription)")
       #endif
+      // Before recentring, not after: a pending settle from a previous
+      // appearance would otherwise have this frame framed against a height the
+      // panel has already left, and `adoptPanelHeightNow` recentres itself when
+      // it actually changes anything.
+      adoptPanelHeightNow()
       recenterIfFollowing()
       anchorCameraIfNeeded()
       #if DEBUG
       WakeLog.note("camera-after \(cameraStateDescription)")
+      // Close the boundary window this appearance opened. `onChange` does not
+      // fire for an initial value, so without seeding it here the phase would
+      // never match and every panel measurement and camera assignment for the
+      // rest of the session would log as though it sat on a boundary.
+      boundaryPhase = snapshot?.phase
       #endif
     }
     #if DEBUG
@@ -963,8 +1146,48 @@ struct MapPage: View {
     // building its selected page twice at launch. Nothing here can prevent it;
     // the cost is one discarded construction against a 0.104 s rebuild.
     .onDisappear { WakeLog.note("map-subtree-disappeared") }
+    // Opens the window the other boundary probes report inside of. Placement
+    // in the chain does not decide whether this runs before them —
+    // `isNearPhaseBoundary` treats an unrecorded transition as inside the
+    // window, so a boundary's own first callbacks are covered either way.
+    .onChange(of: snapshot?.phase) { previous, current in
+      phaseBoundaryAt = Date()
+      boundaryPhase = current
+      WakeLog.note(
+        "boundary \(previous ?? "nil") -> \(current ?? "nil") "
+          + String(
+            format: "panel %.1f camera %.1f inset %.1f ",
+            panelHeight, cameraPanelHeight, panelCameraInset
+          )
+          + cameraStateDescription
+      )
+    }
     #endif
   }
+
+  #if DEBUG
+  /// Distance between two `"lat,lon"` observation keys, for the boundary probe
+  /// only. The keys are this file's own formatting, so parsing them back is
+  /// cheaper than adding a second observed value beside them.
+  private func fixDistanceMoved(_ previous: String?, _ current: String?) -> Double {
+    guard let from = Self.probeCoordinate(previous),
+      let to = Self.probeCoordinate(current)
+    else { return 0 }
+    return CLLocation(latitude: from.latitude, longitude: from.longitude)
+      .distance(
+        from: CLLocation(latitude: to.latitude, longitude: to.longitude)
+      )
+  }
+
+  private static func probeCoordinate(_ key: String?) -> CLLocationCoordinate2D? {
+    let parts = key?.split(separator: ",") ?? []
+    guard parts.count == 2,
+      let lat = Double(parts[0]),
+      let lon = Double(parts[1])
+    else { return nil }
+    return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+  }
+  #endif
 
   private var readoutContent: some View {
     ZStack {
@@ -1446,7 +1669,11 @@ struct MapPage: View {
 
   // MARK: - Camera
 
-  private func recenterIfFollowing(force: Bool = false) {
+  /// `animated` defaults to following `force` — a tap is the case that wants to
+  /// be shown to the wearer. The panel settle passes it explicitly, because it
+  /// is not a forced recentre (Follow off must still mean Follow off) and yet it
+  /// is a deliberate, isolated change that reads better eased than snapped.
+  private func recenterIfFollowing(force: Bool = false, animated: Bool? = nil) {
     // Every early return here leaves `camera` untouched, and an untouched
     // camera can still be `.automatic` — which fits every annotation and has
     // been measured rendering 34.4 degrees, about 3,800 km. Log which clause
@@ -1469,7 +1696,7 @@ struct MapPage: View {
     // wearer what their action changed. Automatic follow is different: the fix
     // coordinate has already changed in this frame, and animating the camera
     // after it makes the puck wander before the map catches up.
-    applyRegion(center: fix, animated: force)
+    applyRegion(center: fix, animated: animated ?? force)
   }
 
   /// Guarantee this native map has a region of ours, whatever `recenterIfFollowing`
@@ -1527,6 +1754,21 @@ struct MapPage: View {
     span: MKCoordinateSpan? = nil,
     animated: Bool
   ) {
+    #if DEBUG
+    // The other half of the boundary probe: the two handlers above say what
+    // changed, this says whether the camera actually moved because of it.
+    if isNearPhaseBoundary {
+      WakeLog.note(
+        String(
+          format: "boundary camera %.6f,%.6f span %.6f animated %@",
+          center.latitude,
+          center.longitude,
+          (span ?? currentSpan).latitudeDelta,
+          animated ? "yes" : "no"
+        )
+      )
+    }
+    #endif
     programmaticCenter = center
     hasAssertedRegion = true
     settings.noteMapCenter(center)
