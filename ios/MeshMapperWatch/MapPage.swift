@@ -1645,9 +1645,29 @@ struct MapPage: View {
     // re-identify the subtree beneath it and rebuild all of MapKit at exactly
     // the wrong moment — the defect `pageContent`'s background note records.
     // This one is always in the tree and only its opacity changes.
+    // **0.70, and the number is measured rather than chosen by eye.** A watch
+    // powerlog gives content brightness per sample as `AvgAPL`, and across a
+    // 90-minute walk the surfaces separate cleanly: a bright map sits at APL
+    // 135, this scrim plus Always-On took it to 72, and the readout that
+    // eventually replaces it sits at 30.5 in the same dim state. So the held
+    // map was still 2.4x the readout's content brightness — on an OLED, where
+    // power tracks lit pixels, that is the cost the hold was paying.
+    //
+    // Luminance scales as `basemap * (1 - opacity)`, and the numbers agree: 72
+    // at 0.45 implies an unscrimmed 131, against a measured 135. Solving for
+    // the readout's 30.5 plus a little margin gives 0.70.
+    //
+    // **This is the lever, and the hold's duration is not.** Measured on the
+    // same walk: 63 map episodes, median 32.7 s, against the ~17.9 s this hold
+    // is supposed to cap them at — because the ticker below is throttled to
+    // roughly one wake a minute under Always On, so the readout returns when
+    // watchOS gets round to it and not when `dimmedMapHold` expires. Shortening
+    // the constant would not shorten the episodes; darkening the pixels they
+    // spend does. See `dimmedMapHoldTicker`, which already predicted the
+    // overshoot this measures.
     .overlay {
       Color.black
-        .opacity(isLuminanceReduced ? 0.45 : 0)
+        .opacity(isLuminanceReduced ? 0.70 : 0)
         .ignoresSafeArea()
         .allowsHitTesting(false)
     }
