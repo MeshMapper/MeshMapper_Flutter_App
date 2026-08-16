@@ -1,14 +1,36 @@
 import Foundation
 import SwiftUI
 import WatchConnectivity
+import WatchKit
 
 /// Receives snapshots from the iPhone and sends intents back.
 ///
 /// The watch never decides anything: it renders what the phone sent and asks
 /// for what the wearer tapped. The phone owns the BLE link, the GPS fix, and
 /// every guard around transmitting.
+///
+/// **Main-actor isolated, because everything it stores is rendered.**
+/// WatchConnectivity documents that "the methods of this protocol are called on
+/// a background thread of your app", and every stored property here is read by
+/// SwiftUI through `@Observable`. The delegate conformance below is therefore
+/// `nonisolated` and hops explicitly; see the note on the extension for what
+/// deliberately stays off the main actor.
 @Observable
+@MainActor
 final class WatchSessionClient: NSObject {
+  /// Read for exactly one decision: whether a cue may play a haptic.
+  ///
+  /// Held rather than resolved from `UserDefaults` here so the preference has
+  /// one owner. Two surfaces resolving the same preference independently is
+  /// the failure `effectiveStartMode` exists to prevent, and a silenced watch
+  /// that still buzzes would be the same class of bug.
+  @ObservationIgnored private let settings: WatchSettings
+
+  init(settings: WatchSettings) {
+    self.settings = settings
+    super.init()
+  }
+
   /// Latest state from the phone, or nil before the first delivery.
   private(set) var snapshot: WatchSnapshot?
 
@@ -61,7 +83,14 @@ final class WatchSessionClient: NSObject {
     WCSession.isSupported() ? WCSession.default : nil
   }
 
-  var isReachable: Bool { session?.isReachable ?? false }
+  /// Mirrors `WCSession.isReachable`, stored rather than computed.
+  ///
+  /// Reading `WCSession.default.isReachable` inside a computed property takes
+  /// no observation dependency, so a view rendering it was never invalidated
+  /// when reachability changed — it showed whatever happened to be true at the
+  /// last unrelated render. `sessionReachabilityDidChange` is the callback that
+  /// turns the change into an event, exactly as its documentation intends.
+  private(set) var isReachable = false
 
   /// A snapshot older than this is shown greyed with an age badge. The phone
   /// only sends on real change, so silence is normal — this threshold is
@@ -93,6 +122,9 @@ final class WatchSessionClient: NSObject {
     session.delegate = self
 
     if session.activationState == .activated {
+      // An already-activated session fires no activation callback, so this is
+      // the only chance to seed reachability before the first render.
+      noteReachability(session.isReachable)
       ingest(context: session.receivedApplicationContext)
       requestFullSnapshot()
       if !mapGeoNeeded { scheduleMapGeoSuppression() }
@@ -130,6 +162,9 @@ final class WatchSessionClient: NSObject {
       return
     }
 
+    // A reachability change during the suspension has no delegate callback to
+    // deliver, so re-read it alongside the retained context.
+    noteReachability(session.isReachable)
     ingest(context: session.receivedApplicationContext)
 
     // Read after ingesting: a context retained while the wrist was down may
@@ -361,14 +396,54 @@ final class WatchSessionClient: NSObject {
     return age >= -clockTolerance && age <= cueFreshFor
   }
 
+  /// The main-actor half of the activation callback.
+  private func completeActivation() {
+    guard pendingRefresh else { return }
+    pendingRefresh = false
+    requestFullSnapshot()
+    if !mapGeoNeeded { scheduleMapGeoSuppression() }
+  }
+
+  private func noteReachability(_ reachable: Bool) {
+    guard isReachable != reachable else { return }
+    isReachable = reachable
+  }
+
+  /// Let the wearer feel a cue the phone raised.
+  ///
+  /// **This only fires while watchOS is actually running this app.** The system
+  /// ignores `play(_:)` from a suspended or background app, so a failure that
+  /// lands during a long wrist-down is still seen rather than felt. The case it
+  /// answers is the real one: a wearer taps Ping or Start, gets an accepted
+  /// ack, glances away, and the command fails a moment later with the app
+  /// still frontmost. Before this the only report was a banner on a screen the
+  /// wearer had stopped reading.
+  ///
+  /// Unknown kinds still play. The wire calls this "a one-shot event the watch
+  /// should feel", so an older watch meeting a newer phone should err toward
+  /// the generic notification rather than toward silence.
+  private func play(_ cue: WatchHapticCue) {
+    guard settings.haptics else { return }
+    let type: WKHapticType
+    switch cue.kind {
+    case "success": type = .success
+    case "failure": type = .failure
+    default: type = .notification
+    }
+    WKInterfaceDevice.current().play(type)
+  }
+
   // MARK: - Ingest
 
-  private func ingest(context: [String: Any]) {
+  /// `nonisolated` on purpose: decoding is the expensive part, it needs no
+  /// isolation, and WatchConnectivity already hands it to us on a background
+  /// thread. Only `apply` crosses onto the main actor.
+  private nonisolated func ingest(context: [String: Any]) {
     guard let data = context[MeshMapperWatchWire.payloadKey] as? Data else { return }
     ingest(data: data)
   }
 
-  private func ingest(data: Data) {
+  private nonisolated func ingest(data: Data) {
     guard let decoded = try? MeshMapperWatchWire.decoder.decode(WatchSnapshot.self, from: data)
     else {
       return
@@ -377,52 +452,59 @@ final class WatchSessionClient: NSObject {
     // Refuse rather than render a payload whose fields may have changed
     // meaning — a wrong reading on the wrist is worse than a blank one.
     guard decoded.isSupportedVersion else {
-      Task { @MainActor in self.versionMismatch = true }
+      Task { @MainActor [weak self] in self?.versionMismatch = true }
       return
     }
 
-    Task { @MainActor in
-      let arrival = Date()
-      self.versionMismatch = false
-      self.snapshot = decoded
-      self.markSnapshotReceived(at: arrival, producedAt: decoded.updatedAt)
-      // A queued command has no ack. Any subsequent snapshot proves the phone
-      // has resumed communicating; a separate timeout covers the case where
-      // state dedupe means no snapshot follows.
-      self.clearPendingCommand()
+    Task { @MainActor [weak self] in self?.apply(decoded) }
+  }
 
-      if self.mapGeoNeeded && !decoded.mapGeoIncluded {
-        // updateApplicationContext is latest-state-wins, but a context sent
-        // just before the map reappeared may still win the delivery race. The
-        // empty arrays are rendered honestly, then a full replacement is
-        // requested immediately rather than mixing old markers with new state.
-        let lastRequest = self.lastMapGeoRecoveryRequestAt
-        if lastRequest == nil ||
-            arrival.timeIntervalSince(lastRequest ?? .distantPast) >=
-              Self.mapGeoRecoveryThrottle
-        {
-          self.lastMapGeoRecoveryRequestAt = arrival
-          self.sendMapGeoPreference(true, force: true)
-        }
-      }
+  private func apply(_ decoded: WatchSnapshot) {
+    let arrival = Date()
+    versionMismatch = false
+    snapshot = decoded
+    markSnapshotReceived(at: arrival, producedAt: decoded.updatedAt)
+    // A queued command has no ack. Any subsequent snapshot proves the phone
+    // has resumed communicating; a separate timeout covers the case where
+    // state dedupe means no snapshot follows.
+    clearPendingCommand()
 
-      if let cue = decoded.cue,
-         Self.isFresh(cue, at: arrival),
-         self.presentedCueIDs.insert(cue.id).inserted
+    if mapGeoNeeded && !decoded.mapGeoIncluded {
+      // updateApplicationContext is latest-state-wins, but a context sent
+      // just before the map reappeared may still win the delivery race. The
+      // empty arrays are rendered honestly, then a full replacement is
+      // requested immediately rather than mixing old markers with new state.
+      let lastRequest = lastMapGeoRecoveryRequestAt
+      if lastRequest == nil ||
+          arrival.timeIntervalSince(lastRequest ?? .distantPast) >=
+            Self.mapGeoRecoveryThrottle
       {
-        self.presentedCueIDOrder.append(cue.id)
-        // The phone bounds its command-ID cache for the same reason: a watch
-        // process can live for days, while only recent redelivery matters.
-        if self.presentedCueIDOrder.count > 64 {
-          self.presentedCueIDs.remove(self.presentedCueIDOrder.removeFirst())
-        }
-        if let message = cue.message, !message.isEmpty {
-          // A cue may be a late wrist-command failure or an unrelated phone
-          // event; the current wire cannot distinguish them, so attribution
-          // here would be a guess. Correlating it later requires carrying the
-          // originating command on `WatchHapticCue` across the wire.
-          self.setLastRefusal(message, from: nil)
-        }
+        lastMapGeoRecoveryRequestAt = arrival
+        sendMapGeoPreference(true, force: true)
+      }
+    }
+
+    if let cue = decoded.cue,
+       Self.isFresh(cue, at: arrival),
+       presentedCueIDs.insert(cue.id).inserted
+    {
+      presentedCueIDOrder.append(cue.id)
+      // The phone bounds its command-ID cache for the same reason: a watch
+      // process can live for days, while only recent redelivery matters.
+      if presentedCueIDOrder.count > 64 {
+        presentedCueIDs.remove(presentedCueIDOrder.removeFirst())
+      }
+      // Played here rather than from a view: this branch is already the one
+      // place that decides a cue is new, fresh, and worth presenting. A view
+      // would have to re-derive that gate from exported state and would get
+      // it wrong on redelivery, which WatchConnectivity does routinely.
+      play(cue)
+      if let message = cue.message, !message.isEmpty {
+        // A cue may be a late wrist-command failure or an unrelated phone
+        // event; the current wire cannot distinguish them, so attribution
+        // here would be a guess. Correlating it later requires carrying the
+        // originating command on `WatchHapticCue` across the wire.
+        setLastRefusal(message, from: nil)
       }
     }
   }
@@ -430,28 +512,49 @@ final class WatchSessionClient: NSObject {
 
 // MARK: - WCSessionDelegate
 
+/// Every method here is `nonisolated`, because WatchConnectivity documents that
+/// "the methods of this protocol are called on a background thread of your app"
+/// and asks that any resulting interface change be redirected to the main
+/// thread. `ingest` was already doing that for the payload; the activation path
+/// was not, and reached `pendingRefresh`, `lastSentMapGeoNeeded` and
+/// `mapGeoSuppressionTask` — all `@Observable`-tracked and all read on the main
+/// actor — straight from the delivery queue.
+///
+/// Decoding stays off the main actor deliberately. It is the only expensive
+/// thing that happens here, it touches no state, and pushing a 12 kB JSON parse
+/// onto the wrist's main thread on every snapshot would trade one defect for a
+/// worse one.
 extension WatchSessionClient: WCSessionDelegate {
-  func session(
+  nonisolated func session(
     _ session: WCSession,
     activationDidCompleteWith activationState: WCSessionActivationState,
     error: Error?
   ) {
-    if activationState == .activated {
-      ingest(context: session.receivedApplicationContext)
-      if pendingRefresh {
-        pendingRefresh = false
-        requestFullSnapshot()
-        if !mapGeoNeeded { scheduleMapGeoSuppression() }
-      }
+    guard activationState == .activated else { return }
+    ingest(context: session.receivedApplicationContext)
+    let reachable = session.isReachable
+    Task { @MainActor [weak self] in
+      self?.noteReachability(reachable)
+      self?.completeActivation()
     }
   }
 
-  func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+  nonisolated func session(
+    _ session: WCSession,
+    didReceiveApplicationContext applicationContext: [String: Any]
+  ) {
     ingest(context: applicationContext)
   }
 
-  func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+  nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
     guard let data = message[MeshMapperWatchWire.payloadKey] as? Data else { return }
     ingest(data: data)
+  }
+
+  /// The documented signal for `isReachable` changing. Without it the property
+  /// is only ever as current as the last activation.
+  nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+    let reachable = session.isReachable
+    Task { @MainActor [weak self] in self?.noteReachability(reachable) }
   }
 }

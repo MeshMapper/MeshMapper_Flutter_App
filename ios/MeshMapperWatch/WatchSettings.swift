@@ -19,6 +19,7 @@ final class WatchSettings {
     static let nodeListPlacement = "layout.nodeListPlacement"
     static let defaultStartMode = "controls.defaultStartMode"
     static let showPingWhenAvailable = "controls.showPingWhenAvailable"
+    static let haptics = "controls.haptics"
   }
 
   /// Roughly 250 m north-south: one degree of latitude is about 111,320 m.
@@ -130,6 +131,9 @@ final class WatchSettings {
     showPingWhenAvailable = defaults.object(
       forKey: Key.showPingWhenAvailable
     ) as? Bool ?? false
+    // Absent means on, so `bool(forKey:)` cannot be used: it turns a fresh
+    // install into a silent one. Same inversion as `follow` above.
+    haptics = defaults.object(forKey: Key.haptics) as? Bool ?? true
   }
 
   /// Draw a line from the fix to each repeater that answered the last ping.
@@ -279,6 +283,20 @@ final class WatchSettings {
 
   var showPingWhenAvailable: Bool {
     didSet { defaults.set(showPingWhenAvailable, forKey: Key.showPingWhenAvailable) }
+  }
+
+  /// Whether a phone-issued cue is allowed to reach the Taptic Engine.
+  ///
+  /// Wrist-local like everything else here, and for a stronger reason than
+  /// layout: the wearer is the person being buzzed, and a phone round-trip
+  /// would make silencing it depend on the very link that just failed.
+  ///
+  /// On by default because the only cue the phone currently sends is a
+  /// `failure` for a wrist command it had already accepted — rare, never part
+  /// of a routine ping cycle, and always the direct consequence of something
+  /// the wearer just tapped.
+  var haptics: Bool {
+    didSet { defaults.set(haptics, forKey: Key.haptics) }
   }
 
   #if DEBUG
