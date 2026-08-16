@@ -89,6 +89,31 @@ void main() {
       make().urgencyKey,
       isNot(make(phaseEndsAt: now.add(const Duration(seconds: 15))).urgencyKey),
     );
+
+    // A deadline that shifts by milliseconds is not news, and must not buy a
+    // trip past the non-urgent throttle. The phone's powerlog measured 720
+    // Live Activity updates across a 90-minute walk — one every 7.5 s, 116 of
+    // them less than a second apart — against Apple Fitness's 2 in the same
+    // window, because this key carried the deadline at millisecond resolution.
+    //
+    // Nothing visible is lost: the widget renders the deadline through
+    // `Text(timerInterval:)` and `ProgressView(timerInterval:)`, which show
+    // whole seconds.
+    expect(
+      make(phaseEndsAt: now).urgencyKey,
+      make(phaseEndsAt: now.add(const Duration(milliseconds: 120))).urgencyKey,
+    );
+    // Rounding, not truncation, so the boundary is not a cliff either way.
+    expect(
+      make(phaseEndsAt: now).urgencyKey,
+      make(phaseEndsAt: now.subtract(const Duration(milliseconds: 120)))
+          .urgencyKey,
+    );
+    // A whole second still counts as news.
+    expect(
+      make(phaseEndsAt: now).urgencyKey,
+      isNot(make(phaseEndsAt: now.add(const Duration(seconds: 1))).urgencyKey),
+    );
   });
 
   test('normalizes non-finite repeater values before encoding', () {
