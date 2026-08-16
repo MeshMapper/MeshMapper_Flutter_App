@@ -149,7 +149,27 @@ class LiveActivitySnapshot {
         phase.wireValue,
         phaseTitle,
         phaseDetail ?? '',
-        phaseEndsAt?.millisecondsSinceEpoch ?? 0,
+        // Seconds, not milliseconds. **At millisecond resolution any
+        // recomputation of the deadline reads as news** and forces an immediate
+        // send past the 15 s non-urgent throttle, because the key differs even
+        // when the phase has not changed.
+        //
+        // Measured on the 2026-08-16 walk, from the phone's powerlog
+        // (`PLApplicationAgent_EventPoint_LiveActivityUpdates`): 720 updates in
+        // 90 minutes, one every 7.5 s, against Apple Fitness's 2 in the same
+        // window. 69 % of the gaps were under the throttle, and 116 of them
+        // were **under one second** — which no real phase change can produce,
+        // and which the 200 ms debounce should already have absorbed.
+        //
+        // A deadline that moves by milliseconds is not something a wearer can
+        // see: the widget renders it with `Text(timerInterval:)` and
+        // `ProgressView(timerInterval:)`, both of which show whole seconds. So
+        // rounding here cannot lose anything the surface could display, while a
+        // genuine phase change moves the deadline by seconds at minimum and
+        // still bypasses the throttle exactly as intended.
+        phaseEndsAt == null
+            ? 0
+            : (phaseEndsAt!.millisecondsSinceEpoch / 1000).round(),
         phaseDurationMs ?? 0,
         pingColor?.r ?? '',
         pingColor?.g ?? '',
