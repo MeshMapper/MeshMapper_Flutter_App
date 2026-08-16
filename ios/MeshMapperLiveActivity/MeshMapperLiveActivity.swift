@@ -108,7 +108,6 @@ private struct MeshMapperLockScreenContent: View {
     VStack(alignment: .leading, spacing: 9) {
       MeshMapperPhaseBar(
         state: state,
-        height: 20,
         titleFont: .subheadline.weight(.semibold),
         countdownFont: .subheadline.monospacedDigit().weight(.semibold),
         countdownWidth: 54
@@ -147,7 +146,6 @@ private struct MeshMapperSmallActivityContent: View {
     VStack(alignment: .leading, spacing: 7) {
       MeshMapperPhaseBar(
         state: state,
-        height: 18,
         titleFont: .caption.weight(.semibold),
         countdownFont: .caption2.monospacedDigit().weight(.bold),
         countdownWidth: 40
@@ -187,133 +185,79 @@ private struct MeshMapperSmallActivityContent: View {
   }
 }
 
-/// The phase as a locally depleting bar, matching the watch map panel.
+/// The phase as a caption, a native countdown, and system-drawn progress.
 ///
-/// Absolute deadline plus duration lets SwiftUI animate between sparse phone
-/// updates. The title and countdown ride over the fill so neither consumes
-/// track width, and their shadow keeps them legible on both halves.
+/// **Nothing here animates and nothing here holds state.** It used to: a
+/// `@State` fraction was driven to zero by a `withAnimation` lasting the whole
+/// phase, which a Live Activity cannot honour. Widgets cap a custom animation
+/// at two seconds and run none at all under reduced luminance, so on an
+/// always-on lock screen the fill simply stayed wherever the last ActivityKit
+/// update left it — observed still nearly full with nine seconds on the clock.
+///
+/// Both elements are now derived from absolute dates by the system, so every
+/// render the system chooses to make, on whatever schedule it likes, lands in
+/// the right place — and none of them costs this extension any work.
 private struct MeshMapperPhaseBar: View {
-  @Environment(\.isLuminanceReduced) private var isLuminanceReduced
-
   let state: MeshMapperActivityAttributes.ContentState
-  let height: CGFloat
   let titleFont: Font
   let countdownFont: Font
   let countdownWidth: CGFloat
 
-  @State private var remainingFraction: CGFloat
-  @State private var deadlineLapsed: Bool
-
-  init(
-    state: MeshMapperActivityAttributes.ContentState,
-    height: CGFloat,
-    titleFont: Font,
-    countdownFont: Font,
-    countdownWidth: CGFloat
-  ) {
-    self.state = state
-    self.height = height
-    self.titleFont = titleFont
-    self.countdownFont = countdownFont
-    self.countdownWidth = countdownWidth
-
-    let now = Date()
-    _remainingFraction = State(
-      initialValue: state.phaseRemainingFraction(at: now) ?? 0
-    )
-    _deadlineLapsed = State(
-      initialValue: state.phaseEndsAt.map { $0 <= now } ?? false
-    )
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 4) {
+        Text(state.phaseTitle)
+          .font(titleFont)
+          .foregroundStyle(.white.opacity(state.phaseDeadlineHasLapsed ? 0.45 : 1))
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 4)
+        // Fixed width because the native timer otherwise reserves room for its
+        // widest possible value and starves the title.
+        MeshMapperCountdown(state: state, font: countdownFont)
+          .frame(width: countdownWidth, alignment: .trailing)
+      }
+      MeshMapperPhaseProgress(state: state)
+    }
   }
+}
+
+/// Elapsed phase progress, drawn by the system from the phase's own dates.
+///
+/// The range is the **whole phase**, not `now...deadline`: a range beginning at
+/// the current render would reset the bar to empty every time the system
+/// redrew the activity, which is the failure the hand-animated fill had in a
+/// different form.
+///
+/// It fills rather than drains, which is the trade for handing the work to
+/// `ProgressView`. The countdown beside it remains the authoritative statement
+/// of time remaining; the bar is the glanceable one.
+private struct MeshMapperPhaseProgress: View {
+  let state: MeshMapperActivityAttributes.ContentState
 
   var body: some View {
-    GeometryReader { geometry in
-      ZStack(alignment: .leading) {
-        Capsule().fill(.white.opacity(0.16))
-        if !isLuminanceReduced {
-          Capsule()
-            // Progress says how much time remains. Outcome has quieter,
-            // dedicated dots elsewhere and must not recolour the whole track.
-            .fill(MeshMapperPalette.accent)
-            .frame(width: geometry.size.width * remainingFraction)
-        }
+    if let range = state.phaseProgressRange {
+      ProgressView(timerInterval: range, countsDown: false) {
+        EmptyView()
+      } currentValueLabel: {
+        EmptyView()
       }
-      .overlay {
-        HStack {
-          Text(state.phaseTitle)
-            .font(titleFont)
-            .foregroundStyle(.white.opacity(deadlineLapsed ? 0.45 : 1))
-            .lineLimit(1)
-            .truncationMode(.tail)
-          Spacer(minLength: 4)
-          MeshMapperCountdown(
-            state: state,
-            isActive: !deadlineLapsed,
-            font: countdownFont
-          )
-          .frame(width: countdownWidth, alignment: .trailing)
-        }
-        // The native timer keeps a small amount of reserved space beyond the
-        // visible glyphs even inside its trailing-aligned fixed frame. Leaving
-        // the title at seven points but tucking that reservation toward the
-        // rounded cap puts the visible digits about four points from the end;
-        // 2.5 points still clears the curve on the shortest 18 pt track.
-        .padding(.leading, 7)
-        .padding(.trailing, 2.5)
-        .shadow(color: .black.opacity(0.7), radius: 1.5)
-      }
-    }
-    .frame(height: height)
-    // An element that implies continuous motion must not be drawn where the
-    // refresh rate cannot deliver it. Luminance participates only to stop and
-    // resume rendering; among payload fields, deadline and duration alone
-    // identify the drain, so a caption change cannot restart it.
-    .task(id: animationTaskKey) {
-      await runPhaseAnimation(animateFill: !isLuminanceReduced)
+      .progressViewStyle(.linear)
+      // Progress says how far through the phase we are. Outcome has quieter,
+      // dedicated dots elsewhere and must not recolour the whole track.
+      .tint(MeshMapperPalette.accent)
+    } else {
+      // A durable state — disconnected, stopped, waiting for GPS — has no
+      // deadline to draw. The empty track keeps the block's height fixed, so
+      // arriving at one cannot reflow everything below it.
+      Capsule()
+        .fill(.white.opacity(0.16))
+        .frame(height: Self.trackHeight)
     }
   }
 
-  private var animationTaskKey: MeshMapperPhaseAnimationTaskKey {
-    MeshMapperPhaseAnimationTaskKey(
-      drain: state.phaseAnimationKey,
-      canRenderContinuously: !isLuminanceReduced
-    )
-  }
-
-  @MainActor
-  private func runPhaseAnimation(animateFill: Bool) async {
-    let now = Date()
-    let fraction = state.phaseRemainingFraction(at: now) ?? 0
-    let lapsed = state.phaseEndsAt.map { $0 <= now } ?? false
-
-    // ActivityKit may replace state midway through a phase. Snap to the
-    // absolute fraction before starting one compositor animation, so no timer
-    // tick or stale previous endpoint can distort the new bar.
-    var transaction = Transaction()
-    transaction.disablesAnimations = true
-    withTransaction(transaction) {
-      remainingFraction = fraction
-      deadlineLapsed = lapsed
-    }
-
-    guard animateFill else { return }
-    guard let endsAt = state.phaseEndsAt else { return }
-    let remaining = endsAt.timeIntervalSince(now)
-    guard remaining > 0 else { return }
-
-    await Task.yield()
-    withAnimation(.linear(duration: remaining)) {
-      remainingFraction = 0
-    }
-
-    do {
-      try await Task.sleep(for: .seconds(remaining))
-    } catch {
-      return
-    }
-    guard !Task.isCancelled else { return }
-    deadlineLapsed = true
-  }
+  /// Matches the linear `ProgressView` track this stands in for.
+  private static let trackHeight: CGFloat = 4
 }
 
 private struct MeshMapperStatusLabel: View {
@@ -438,7 +382,6 @@ private struct MeshMapperIslandBottom: View {
     VStack(alignment: .leading, spacing: 6) {
       MeshMapperPhaseBar(
         state: state,
-        height: 18,
         titleFont: .caption.weight(.semibold),
         countdownFont: .caption2.monospacedDigit().weight(.bold),
         countdownWidth: 42
@@ -532,7 +475,7 @@ private struct MeshMapperCompactTrailing: View {
         MeshMapperOutcomeDot(state: state, diameter: 8)
       }
     }
-    .task(id: state.phaseAnimationKey) {
+    .task(id: state.phaseDeadlineKey) {
       let now = Date()
       deadlineLapsed = state.phaseEndsAt.map { $0 <= now } ?? false
       guard let endsAt = state.phaseEndsAt else { return }
@@ -551,7 +494,7 @@ private struct MeshMapperCompactTrailing: View {
 
 private struct MeshMapperCountdown: View {
   let state: MeshMapperActivityAttributes.ContentState
-  let isActive: Bool
+  var isActive: Bool = true
   let font: Font
 
   var body: some View {
@@ -569,19 +512,14 @@ private enum MeshMapperPalette {
   static let accent = Color.accentColor
 }
 
-private struct MeshMapperPhaseAnimationKey: Hashable {
+private struct MeshMapperPhaseDeadlineKey: Hashable {
   let endsAt: Date?
   let durationMs: Int?
 }
 
-private struct MeshMapperPhaseAnimationTaskKey: Hashable {
-  let drain: MeshMapperPhaseAnimationKey
-  let canRenderContinuously: Bool
-}
-
 extension MeshMapperActivityAttributes.ContentState {
-  fileprivate var phaseAnimationKey: MeshMapperPhaseAnimationKey {
-    MeshMapperPhaseAnimationKey(
+  fileprivate var phaseDeadlineKey: MeshMapperPhaseDeadlineKey {
+    MeshMapperPhaseDeadlineKey(
       endsAt: phaseEndsAt,
       durationMs: phaseDurationMs
     )
@@ -591,6 +529,28 @@ extension MeshMapperActivityAttributes.ContentState {
     let now = Date()
     guard let phaseEndsAt, phaseEndsAt > now else { return nil }
     return now...phaseEndsAt
+  }
+
+  /// The phase's own span, for a `ProgressView` that reads the clock itself.
+  ///
+  /// Deliberately anchored to the phase's start rather than to `now`, so a
+  /// system-initiated redraw resumes the bar where the clock says it is
+  /// instead of restarting it.
+  fileprivate var phaseProgressRange: ClosedRange<Date>? {
+    guard let phaseEndsAt, let phaseDurationMs, phaseDurationMs > 0 else {
+      return nil
+    }
+    let start = phaseEndsAt.addingTimeInterval(-Double(phaseDurationMs) / 1000)
+    guard start < phaseEndsAt else { return nil }
+    return start...phaseEndsAt
+  }
+
+  /// Evaluated at render time rather than retired by a sleeping task: a widget
+  /// that is not being redrawn has no one to show the change to, and the phase
+  /// transition that follows a deadline arrives as an urgent update anyway.
+  fileprivate var phaseDeadlineHasLapsed: Bool {
+    guard let phaseEndsAt else { return false }
+    return phaseEndsAt <= Date()
   }
 
   fileprivate var connectionLabel: String {
@@ -659,17 +619,6 @@ extension MeshMapperActivityAttributes.ContentState {
     case "stopped": return .gray
     default: return .white
     }
-  }
-
-  /// Fraction remaining in the current countdown, calculated locally so the
-  /// Live Activity does not need a state update every second.
-  fileprivate func phaseRemainingFraction(at date: Date) -> CGFloat? {
-    guard let phaseEndsAt, let phaseDurationMs, phaseDurationMs > 0 else {
-      return nil
-    }
-    let remaining = phaseEndsAt.timeIntervalSince(date)
-    guard remaining > 0 else { return 0 }
-    return CGFloat(min(1, remaining / (Double(phaseDurationMs) / 1000)))
   }
 }
 
@@ -824,6 +773,15 @@ private struct MeshMapperActivityPreview: View {
 /// needs a session, which needs BLE — which the simulator does not have. That
 /// left three layouts reviewable only on a wrist. The content views take a
 /// plain `ContentState`, so `ImageRenderer` can draw them headlessly instead.
+///
+/// **`ImageRenderer` cannot draw the phase progress bar, and its failure looks
+/// like a bug in the bar.** A `ProgressView(timerInterval:)` comes out as a
+/// full-width track with a no-entry glyph in the middle, identically at every
+/// remaining fraction — `Text(timerInterval:)` beside it snapshots fine, which
+/// makes the difference easy to misread as ours. Hosting the same views in a
+/// live `UIHostingController` in the simulator draws them correctly and
+/// advances them with no state update at all: 0:40 of a 60 s phase at 33 %,
+/// 0:23 at 62 %, 0:05 at 92 %. Review the bar that way, not through here.
 ///
 /// DEBUG-only, and reached solely from a launch argument.
 enum MeshMapperActivityRenderHarness {

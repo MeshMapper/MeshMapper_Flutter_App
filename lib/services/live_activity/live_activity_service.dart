@@ -18,14 +18,36 @@ class LiveActivityService {
     @visibleForTesting MethodChannel? channel,
     @visibleForTesting
     Duration unavailableRetryDelay = const Duration(seconds: 30),
+    @visibleForTesting
+    Duration minimumNonUrgentInterval = defaultMinimumNonUrgentInterval,
   })  : _channel = channel ?? const MethodChannel('meshmapper/live_activity'),
-        _unavailableRetryDelay = unavailableRetryDelay;
+        _unavailableRetryDelay = unavailableRetryDelay,
+        _minimumNonUrgentInterval = minimumNonUrgentInterval;
 
   static const Duration _debounceDelay = Duration(milliseconds: 200);
-  static const Duration _minimumNonUrgentInterval = Duration(seconds: 2);
+
+  /// Floor between two updates that carry no change the wearer is waiting on.
+  ///
+  /// Counters, queue depth and the heard-repeater rows churn constantly in a
+  /// busy session, and none of them is worth an ActivityKit round trip the
+  /// moment it moves. Everything in [LiveActivitySnapshot.urgencyKey] — a phase
+  /// change, a ping outcome, connection loss, leaving the zone — bypasses this
+  /// entirely, so what it throttles is the noise and not the news.
+  ///
+  /// **This is a saving on both devices.** A locally generated ActivityKit
+  /// update is synchronised to a paired Apple Watch for the Smart Stack and
+  /// counts against *its* Live Activity budget, so the phone's update rate is
+  /// also a wrist battery cost — on top of the snapshots the native watch app
+  /// receives over WatchConnectivity, which are a separate channel entirely.
+  ///
+  /// Fifteen seconds takes the ceiling from 30 updates a minute to 4. The real
+  /// reduction is smaller, because the payload fingerprint already suppresses
+  /// updates that change nothing.
+  static const Duration defaultMinimumNonUrgentInterval = Duration(seconds: 15);
 
   final MethodChannel _channel;
   final Duration _unavailableRetryDelay;
+  final Duration _minimumNonUrgentInterval;
 
   Timer? _scheduledUpdate;
   LiveActivitySnapshotBuilder? _pendingSnapshotBuilder;
