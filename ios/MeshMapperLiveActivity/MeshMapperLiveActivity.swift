@@ -137,51 +137,285 @@ private struct MeshMapperLockScreenContent: View {
   }
 }
 
+/// The watch Smart Stack card.
+///
+/// **It is a widget-sized card, not a lock-screen banner**: 152x69.5 pt on a
+/// 40 mm watch through 191x81.5 pt on a 49 mm one, per the HIG's watchOS
+/// widget dimensions. The single-column stack this replaced asked for roughly
+/// 140 pt of that, so the wearer saw the phase, the mode and about one and a
+/// half heard rows, with the rest — including the counters — cut off the
+/// bottom.
+///
+/// The fix is the map page's status panel *rows*: `[type dot] [hex ID] [SNR]`
+/// in two columns, which turns the card's spare *width* into the room the rows
+/// needed and shows four observations in the height that fitted one and a half.
+///
+/// **The panel's bar does not come with them.** Whatever draws a depleting
+/// track has to be redrawn to deplete it, and the wrist is where this app's
+/// energy goes; the countdown carries the same fact for free.
+///
+/// **Both dimensions are measured rather than assumed.** This view is rendered
+/// by the iOS extension and mirrored to the wrist, so `WKInterfaceDevice`
+/// screen bounds — which size the equivalent panel in `MapPage` — are not
+/// reachable from here. The `GeometryReader` hands the row solver the card's
+/// real width, and `ViewThatFits` spends whatever height the card actually
+/// turns out to have: the heard rows are always drawn, and the summary and
+/// mode lines are added only on a card with room for them.
 @available(iOSApplicationExtension 18.0, *)
 private struct MeshMapperSmallActivityContent: View {
   let state: MeshMapperActivityAttributes.ContentState
   let isStale: Bool
 
+  /// Matches the map panel's own insets. The card has rounded corners the
+  /// system draws, so the horizontal value is clearance, not decoration.
+  private static let horizontalPadding: CGFloat = 8
+  private static let verticalPadding: CGFloat = 5
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
+    GeometryReader { geo in
+      let layout = MeshMapperHeardLayout(
+        contentWidth: geo.size.width - 2 * Self.horizontalPadding,
+        repeaters: state.repeaters
+      )
+      // Ordered richest first: `ViewThatFits` takes the first candidate whose
+      // ideal height fits the card and falls back to the last, so the rows
+      // survive on the smallest watch and the extra lines appear on larger
+      // ones without either being a guess about which watch this is.
+      ViewThatFits(in: .vertical) {
+        card(layout, showsSummary: true, showsMode: true)
+        card(layout, showsSummary: true, showsMode: false)
+        card(layout, showsSummary: false, showsMode: false)
+      }
+      .padding(.horizontal, Self.horizontalPadding)
+      .padding(.vertical, Self.verticalPadding)
+    }
+    .foregroundStyle(.white)
+  }
+
+  private func card(
+    _ layout: MeshMapperHeardLayout,
+    showsSummary: Bool,
+    showsMode: Bool
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      phaseLine
+      if showsSummary {
+        summaryLine
+      }
+      MeshMapperHeardGrid(state: state, layout: layout)
+        // Rows from a finished cycle are still worth showing, but they are not
+        // a claim about now. The summary line says so in words when the card
+        // has room for it; this says it in the one currency the rows always
+        // have space for.
+        .opacity(state.repeatersAreCurrent ? 1 : 0.55)
+      if showsMode {
+        modeLine
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// The phase, or the fact that the phone has stopped confirming it.
+  ///
+  /// Staleness replaces the bar rather than sitting beside it, as it does in
+  /// the map panel: a track still draining against a deadline nobody is
+  /// refreshing is worse than no track, and on this card the swap also buys
+  /// back the line the warning would otherwise need.
+  @ViewBuilder
+  private var phaseLine: some View {
+    if isStale {
+      Label("Update delayed", systemImage: "exclamationmark.triangle.fill")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(.orange)
+        .lineLimit(1)
+    } else {
       MeshMapperPhaseBar(
         state: state,
-        titleFont: .caption.weight(.semibold),
-        countdownFont: .caption2.monospacedDigit().weight(.bold),
-        countdownWidth: 40
+        titleFont: .system(size: 12, weight: .semibold),
+        countdownFont: .system(size: 11, weight: .bold).monospacedDigit(),
+        countdownWidth: 38,
+        showsProgress: false
       )
-
-      HStack(spacing: 6) {
-        Text(state.mode.uppercased())
-          .font(.caption2.weight(.bold))
-          .tracking(0.6)
-        Spacer(minLength: 3)
-        if isStale {
-          Image(systemName: "exclamationmark.triangle.fill")
-            .font(.caption2)
-            .foregroundStyle(.orange)
-            .accessibilityLabel("Update delayed")
-        } else {
-          MeshMapperOutcomeDot(state: state, diameter: 7)
-          if let zone = state.zoneCode {
-            Text(zone)
-              .font(.system(.caption2, design: .monospaced).weight(.semibold))
-              .foregroundStyle(.secondary)
-          }
-        }
-      }
-
-      MeshMapperRepeaterSummary(
-        state: state,
-        limit: 2,
-        showsNames: false,
-        rowFont: .caption2
-      )
-
-      MeshMapperMetrics(state: state, compact: true)
     }
-    .padding(12)
-    .foregroundStyle(.white)
+  }
+
+  /// Heard-list currency and total on one line with the session counters.
+  ///
+  /// They share a line because the card can afford one of them, not two, and
+  /// separating "how many were heard" from "how many were sent" costs more
+  /// vertical space than the distinction is worth at this size.
+  private var summaryLine: some View {
+    // **Measured, and deliberately without a `Spacer`.** An `HStack` holding
+    // one reports that it fits whatever width it is offered, so a candidate
+    // built that way would always be chosen and the counters would truncate to
+    // "RX…" on the narrow cards instead of standing down. A plain gap keeps the
+    // ideal width honest, which is the only thing `ViewThatFits` can act on.
+    ViewThatFits(in: .horizontal) {
+      summaryLine(showsMetrics: true)
+      summaryLine(showsMetrics: false)
+    }
+  }
+
+  private func summaryLine(showsMetrics: Bool) -> some View {
+    HStack(spacing: 5) {
+      Text(state.repeatersAreCurrent ? "HEARD NOW" : "LAST HEARD")
+        .font(.system(size: 9, weight: .bold))
+        .tracking(0.5)
+      if state.totalHeardCount > 0 {
+        Text("\(state.totalHeardCount)")
+          .font(.system(size: 9, weight: .semibold).monospacedDigit())
+      }
+      if showsMetrics {
+        MeshMapperMetrics(
+          state: state,
+          compact: true,
+          font: .system(size: 9, weight: .medium).monospacedDigit(),
+          showsQueue: false
+        )
+        .padding(.leading, 5)
+      }
+    }
+    .foregroundStyle(.secondary)
+    .lineLimit(1)
+    .fixedSize(horizontal: true, vertical: false)
+  }
+
+  /// Session mode, latest outcome and zone — the first line to go, because it
+  /// is the only one whose content the wearer can also read off the app.
+  private var modeLine: some View {
+    HStack(spacing: 5) {
+      Text(state.mode.uppercased())
+        .font(.system(size: 9, weight: .bold))
+        .tracking(0.5)
+      MeshMapperOutcomeDot(state: state, diameter: 6)
+      if let zone = state.zoneCode {
+        Text(zone)
+          .font(.system(size: 9, weight: .semibold, design: .monospaced))
+      } else if !state.isConnected {
+        Text("Disconnected")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(.orange)
+      }
+      Spacer(minLength: 0)
+    }
+    .foregroundStyle(.secondary)
+    .lineLimit(1)
+  }
+}
+
+/// The map panel's Top Heard block, rendered from Live Activity state.
+///
+/// Rows are `[type dot] [hex ID] [SNR]` and read down the left column before
+/// the right, matching `MapPage.statusPanel`. The hex path hash stays primary
+/// and unabbreviated: a 1-byte hash is frequently ambiguous, so it — not a
+/// resolved name — is the observation's identity, and names are dropped here
+/// rather than truncated.
+@available(iOSApplicationExtension 18.0, *)
+private struct MeshMapperHeardGrid: View {
+  let state: MeshMapperActivityAttributes.ContentState
+  let layout: MeshMapperHeardLayout
+
+  var body: some View {
+    if state.repeaters.isEmpty {
+      HStack(spacing: 6) {
+        // A failed ping produces no rows, so its colour needs its own mark;
+        // absence alone cannot distinguish failure from no attempt yet.
+        MeshMapperOutcomeDot(state: state, diameter: 6)
+        Text("Nothing heard")
+          .font(.system(size: 11))
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .minimumScaleFactor(0.75)
+      }
+    } else if layout.usesTwoColumns {
+      HStack(alignment: .top, spacing: MeshMapperHeardLayout.columnGap) {
+        column(Array(rows.prefix(2)))
+        column(Array(rows.dropFirst(2)))
+      }
+    } else {
+      column(rows)
+    }
+  }
+
+  /// Four rows are what two columns hold; one column keeps the two it can show
+  /// without pushing the lines below it off the card.
+  private var rows: [MeshMapperActivityAttributes.HeardRepeater] {
+    Array(state.repeaters.prefix(layout.usesTwoColumns ? 4 : 2))
+  }
+
+  private func column(
+    _ repeaters: [MeshMapperActivityAttributes.HeardRepeater]
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      ForEach(repeaters) { row($0) }
+    }
+  }
+
+  /// Content-sized on purpose, so the row's intrinsic measurement stays equal
+  /// to the width model that chose the font and the column count.
+  private func row(
+    _ repeater: MeshMapperActivityAttributes.HeardRepeater
+  ) -> some View {
+    HStack(spacing: 3) {
+      Circle()
+        .fill(repeater.typeColor.map(Color.init) ?? state.outcomeColor)
+        .frame(width: 6, height: 6)
+      Text(repeater.id.uppercased())
+        .font(
+          .system(size: layout.rowFontSize, weight: .semibold, design: .monospaced)
+        )
+      // No unit and no plus sign, as on the map panel: the column is all SNR,
+      // and "dB" on every row costs the width a fourth observation needs.
+      Text(repeater.snr, format: .number.precision(.fractionLength(1)))
+        .font(
+          .system(size: layout.rowFontSize, weight: .semibold, design: .monospaced)
+        )
+        .foregroundStyle(repeater.snrColor.map(Color.init) ?? .secondary)
+        // Fixed width so SNRs line up down a column despite varying digits.
+        .frame(width: layout.rowFontSize * 3.1, alignment: .trailing)
+    }
+    .lineLimit(1)
+    .fixedSize()
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(repeater.accessibilitySummary)
+  }
+}
+
+/// Column count and row font, solved from the card's measured width the way
+/// `MapPage` solves them from the watch's screen bounds.
+@available(iOSApplicationExtension 18.0, *)
+private struct MeshMapperHeardLayout {
+  /// A stable gutter keeps the width equation and the rendered columns in
+  /// agreement; deriving it from card size would silently spend the room the
+  /// font calculation just recovered on the smallest watch.
+  static let columnGap: CGFloat = 8
+
+  let usesTwoColumns: Bool
+  let rowFontSize: CGFloat
+
+  init(
+    contentWidth: CGFloat,
+    repeaters: [MeshMapperActivityAttributes.HeardRepeater]
+  ) {
+    let idChars = CGFloat(repeaters.map(\.id.count).max() ?? 2)
+    let columnWidth = (contentWidth - Self.columnGap) / 2 - 2
+    // The constants mirror the row: dot and gaps consume 12 pt, semibold
+    // monospaced IDs advance closer to 0.62 em than the nominal 0.6, and the
+    // aligned SNR owns 3.1 em. Two points of slack put measurement error on
+    // smaller type rather than on a row that overflows its column.
+    let unconstrained = (columnWidth - 12) / (0.62 * idChars + 3.1)
+
+    // Eight points is the wrist's measured glanceability floor and is
+    // inherited unchanged — below it the extra width stops paying for itself
+    // and one clearer column wins. Truncating the ID is never the trade,
+    // because the ID is the identity.
+    usesTwoColumns = unconstrained >= 8
+
+    // Two points above the app panel's ladder. The card is wider than the
+    // panel and has no map beneath it to stay out of the way of, so the same
+    // arm's-length reading distance affords larger type here.
+    let cap: CGFloat = idChars > 4 ? 12 : idChars > 2 ? 13 : 14
+    rowFontSize = usesTwoColumns ? min(max(unconstrained, 8), cap) : cap
   }
 }
 
@@ -202,6 +436,12 @@ private struct MeshMapperPhaseBar: View {
   let titleFont: Font
   let countdownFont: Font
   let countdownWidth: CGFloat
+  /// Off for the watch Smart Stack card. The track costs the wrist a redraw
+  /// every time the system advances the fill, and on the watch the display is
+  /// where this app's marginal energy goes — a measured 80 % of it. The
+  /// countdown beside it was already the authoritative statement of time
+  /// remaining, so what is given up is the glanceable duplicate, not the fact.
+  var showsProgress: Bool = true
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
@@ -217,7 +457,9 @@ private struct MeshMapperPhaseBar: View {
         MeshMapperCountdown(state: state, font: countdownFont)
           .frame(width: countdownWidth, alignment: .trailing)
       }
-      MeshMapperPhaseProgress(state: state)
+      if showsProgress {
+        MeshMapperPhaseProgress(state: state)
+      }
     }
   }
 }
@@ -360,16 +602,21 @@ private struct MeshMapperRepeaterRow: View {
 private struct MeshMapperMetrics: View {
   let state: MeshMapperActivityAttributes.ContentState
   let compact: Bool
+  /// Both defaulted so the lock screen and the island keep what they had. The
+  /// watch card overrides them to share a line with the heard-list summary,
+  /// where the queue is the first thing worth giving up for the room.
+  var font: Font = .caption2.monospacedDigit().weight(.medium)
+  var showsQueue: Bool = true
 
   var body: some View {
     HStack(spacing: compact ? 9 : 11) {
       Text("\(state.primaryMetricLabel) \(state.primaryMetricValue)")
       Text("RX \(state.rxCount)")
-      if state.queueSize > 0 {
+      if showsQueue, state.queueSize > 0 {
         Label("\(state.queueSize)", systemImage: "arrow.triangle.2.circlepath")
       }
     }
-    .font(.caption2.monospacedDigit().weight(.medium))
+    .font(font)
     .foregroundStyle(.secondary)
     .lineLimit(1)
   }
@@ -725,15 +972,51 @@ private struct MeshMapperActivityPreview: View {
           .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
 
         if #available(iOSApplicationExtension 18.0, *) {
-          MeshMapperSmallActivityContent(state: state, isStale: false)
-            .frame(width: 180)
-            .background(MeshMapperPalette.background)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+          // Both ends of the watch range, because the card's row solver and
+          // its `ViewThatFits` ladder can only be reviewed against real sizes.
+          ForEach(MeshMapperSmartStackSize.allCases, id: \.self) { size in
+            MeshMapperSmallActivityContent(state: state, isStale: false)
+              .frame(width: size.width, height: size.height)
+              .background(MeshMapperPalette.background)
+              .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+          }
         }
       }
       .padding()
     }
     .preferredColorScheme(.dark)
+  }
+}
+
+/// The Smart Stack card at both ends of the watch range, from the HIG's
+/// watchOS widget dimensions. A card this view is reviewed in must be given a
+/// height: overflowing it is the defect being guarded against, and a harness
+/// that lets the content pick its own height cannot show that.
+enum MeshMapperSmartStackSize: CaseIterable {
+  /// 40 mm — the smallest card, and the one the ladder must still fit.
+  case small
+  /// 49 mm — the largest, where the summary and mode lines earn their place.
+  case large
+
+  var label: String {
+    switch self {
+    case .small: return "40mm"
+    case .large: return "49mm"
+    }
+  }
+
+  var width: CGFloat {
+    switch self {
+    case .small: return 152
+    case .large: return 191
+    }
+  }
+
+  var height: CGFloat {
+    switch self {
+    case .small: return 69.5
+    case .large: return 81.5
+    }
   }
 }
 
@@ -756,9 +1039,10 @@ private struct MeshMapperActivityPreview: View {
 ///
 /// DEBUG-only, and reached solely from a launch argument.
 enum MeshMapperActivityRenderHarness {
-  /// Widths are the real ones: a Live Activity on the lock screen spans about
-  /// 360 pt, the watch's small family about 184, and the island's shared bottom
-  /// region about 360.
+  /// Sizes are the real ones: a Live Activity on the lock screen spans about
+  /// 360 pt, the island's shared bottom region about 360, and the watch's small
+  /// family a Smart Stack card — whose height is the constraint, so it is given
+  /// rather than left to the content to choose.
   @MainActor
   static func writeRenders(to directory: URL) -> [String] {
     let states: [(String, MeshMapperActivityAttributes.ContentState)] = [
@@ -787,13 +1071,15 @@ enum MeshMapperActivityRenderHarness {
       ].compactMap { $0 }
 
       if #available(iOS 18.0, *) {
-        if let path = render(
-          MeshMapperSmallActivityContent(state: state, isStale: false)
-            .frame(width: 184)
-            .background(MeshMapperPalette.background),
-          named: "small-\(name)", in: directory
-        ) {
-          written.append(path)
+        for size in MeshMapperSmartStackSize.allCases {
+          if let path = render(
+            MeshMapperSmallActivityContent(state: state, isStale: false)
+              .frame(width: size.width, height: size.height)
+              .background(MeshMapperPalette.background),
+            named: "small-\(size.label)-\(name)", in: directory
+          ) {
+            written.append(path)
+          }
         }
       }
     }
