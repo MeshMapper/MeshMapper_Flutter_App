@@ -243,6 +243,41 @@ class WatchGeoBuilder {
     return resolved;
   }
 
+  /// Resolve one identifier to a repeater, or null when it is not unambiguous.
+  ///
+  /// Tries exact identity first — the catalogue's short ID, its hex ID, or the
+  /// hex truncated to the zone's hop width, which is the form an overlay row is
+  /// labelled with — and only then a unique prefix relation.
+  ///
+  /// **A repeater with no `hexId` is never a prefix candidate.** The API omits
+  /// `hex_id` often enough that `Repeater.fromJson` defaults it to the empty
+  /// string, and `id.startsWith('')` is true for every id, so a single such
+  /// entry silently made every prefix lookup ambiguous and every name vanish.
+  static Repeater? resolveRepeater({
+    required List<Repeater> repeaters,
+    required String id,
+    int? hopBytes,
+  }) {
+    final needle = id.toUpperCase();
+    if (needle.isEmpty) return null;
+
+    final exact = repeaters.where((repeater) {
+      return repeater.id.toUpperCase() == needle ||
+          repeater.hexId.toUpperCase() == needle ||
+          repeater.displayHexId(overrideHopBytes: hopBytes).toUpperCase() ==
+              needle;
+    }).toList(growable: false);
+    if (exact.length == 1) return exact.single;
+    if (exact.isNotEmpty || needle.length < 2) return null;
+
+    final prefixed = repeaters.where((repeater) {
+      final hexId = repeater.hexId.toUpperCase();
+      if (hexId.isEmpty) return false;
+      return hexId.startsWith(needle) || needle.startsWith(hexId);
+    }).toList(growable: false);
+    return prefixed.length == 1 ? prefixed.single : null;
+  }
+
   /// Resolve overlay display hashes to repeaters, preferring the fuller
   /// identity the ping actually carried.
   ///

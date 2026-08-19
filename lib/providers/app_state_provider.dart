@@ -2246,34 +2246,32 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   String? _resolveRepeaterDisplayName(String rawId) {
-    // Resolve from the longest identity this row actually came with. The
-    // existing exact-then-prefix rules below are already right; they were just
-    // never given anything better than a two-character path hash to work with.
     final displayId = rawId.toUpperCase();
-    final id = _overlayIdentityById[displayId]?.toUpperCase() ?? displayId;
-    final exactMatches = _repeaters.where((repeater) {
-      return repeater.id.toUpperCase() == id ||
-          repeater.hexId.toUpperCase() == id ||
-          repeater
-                  .displayHexId(overrideHopBytes: _hopBytes)
-                  .toUpperCase() ==
-              id;
-    }).toList(growable: false);
 
-    if (exactMatches.length == 1) {
-      final name = exactMatches.single.name;
-      return name == 'Unknown' ? null : name;
-    }
-    if (exactMatches.isNotEmpty || id.length < 2) return null;
+    // Try the fullest identity the row arrived with, then the display hash.
+    //
+    // **The fallback is the point.** A discovery response's public key is a
+    // better identity, but the catalogue is matched by an 8-character `hexId`
+    // that the API frequently omits, and the display hash additionally resolves
+    // through `displayHexId` — which falls back to the short numeric ID when
+    // there is no hex at all. Trying only the longer form threw away the lookup
+    // that was doing the work, and left named repeaters unnamed.
+    final identity = _overlayIdentityById[displayId];
+    final match = (identity == null
+            ? null
+            : WatchGeoBuilder.resolveRepeater(
+                repeaters: _repeaters,
+                id: identity,
+                hopBytes: _hopBytes,
+              )) ??
+        WatchGeoBuilder.resolveRepeater(
+          repeaters: _repeaters,
+          id: displayId,
+          hopBytes: _hopBytes,
+        );
 
-    final prefixMatches = _repeaters.where((repeater) {
-      final hexId = repeater.hexId.toUpperCase();
-      return hexId.startsWith(id) || id.startsWith(hexId);
-    }).toList(growable: false);
-    if (prefixMatches.length != 1) return null;
-
-    final name = prefixMatches.single.name;
-    return name == 'Unknown' ? null : name;
+    final name = match?.name;
+    return name == null || name == 'Unknown' ? null : name;
   }
 
   // ============================================

@@ -595,6 +595,68 @@ void main() {
     });
   });
 
+  group('resolveRepeater', () {
+    // The catalogue's hex_id is optional in the API and defaults to empty, and
+    // an overlay row is labelled with the hex truncated to the zone's hop
+    // width. Both facts are load-bearing.
+    final capitol = _repeater(
+      id: '01',
+      hexId: '4E5D82AA',
+      name: 'Capitol Hill',
+      lat: 47.6,
+      lon: -122.3,
+    );
+    final noHex = _repeater(
+      id: '02',
+      hexId: '',
+      name: 'Site Without Hex',
+      lat: 47.5,
+      lon: -122.3,
+    );
+
+    test('a repeater with no hex never makes another lookup ambiguous', () {
+      // id.startsWith('') is true for every id, so one such entry used to make
+      // every prefix lookup ambiguous and every name disappear.
+      final resolved = WatchGeoBuilder.resolveRepeater(
+        repeaters: [capitol, noHex],
+        id: '4E5D82AA00112233',
+        hopBytes: 1,
+      );
+
+      expect(resolved?.name, 'Capitol Hill');
+    });
+
+    test('the display hash resolves through the zone hop width', () {
+      expect(
+        WatchGeoBuilder.resolveRepeater(
+          repeaters: [capitol, noHex],
+          id: '4E',
+          hopBytes: 1,
+        )?.name,
+        'Capitol Hill',
+      );
+    });
+
+    test('genuine ambiguity is still refused', () {
+      final beacon = _repeater(
+        id: '03',
+        hexId: '4E99F1BB',
+        name: 'Beacon Hill',
+        lat: 47.5,
+        lon: -122.3,
+      );
+
+      expect(
+        WatchGeoBuilder.resolveRepeater(
+          repeaters: [capitol, beacon],
+          id: '4E',
+          hopBytes: 1,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('resolveOverlayRepeaters — name from the identity the ping carried',
       () {
     // Two repeaters sharing a leading byte. With one hop byte the wrist shows
