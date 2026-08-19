@@ -507,9 +507,18 @@ that reply means `updateApplicationContext` took the blob, not that the watch
 ingested it, and the wearer's wrist is usually down at that moment. Because the
 cue ID is in the urgency key, dropping it there made the very next flush urgent
 and overwrote the retained context with a cue-less payload — so a suspended
-watch woke to idle UI and no account of the failure. Re-attaching is free and
-cannot double-buzz: the watch keys haptics on `presentedCueIDs` and drops the
-cue itself past the boundary rather than asserting a dead failure as current.
+watch woke to idle UI and no account of the failure. Re-attaching is free: the
+watch keys haptics on `presentedCueIDs` and drops the cue itself past the
+boundary rather than asserting a dead failure as current.
+
+`presentedCueIDs` is process-local, so that de-duplication covers WatchConnectivity
+redelivery but **not** a watch process that dies and relaunches. Launch ingests
+the retained context, and a cue still inside `cueFreshFor` (30 s) buzzes again
+against an empty set. Widening the attachment window from about a second to 90 s
+widened that case with it — deliberately. One duplicate haptic after a relaunch
+is a far smaller failure than the silence it replaced, and closing it properly
+means persisting presented IDs across launches for a payload the watch is
+already re-reading on purpose.
 
 **Wire versioning** (`WatchWire.version`, mirrored in
 `ios/Shared/MeshMapperWatchPayload.swift`)
