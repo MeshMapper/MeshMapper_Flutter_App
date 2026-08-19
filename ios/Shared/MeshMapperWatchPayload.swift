@@ -397,7 +397,25 @@ struct WatchCommand: Codable, Hashable {
   let id: String
   /// Queued delivery can outlive the place where a transmit was requested.
   /// The phone uses this to reject stale actions before admission.
+  ///
+  /// Stamped in the *watch's* clock, deliberately. It doubles as the ordering
+  /// key for map-geo suppression claims, and rewriting it into phone time
+  /// would make that key jump the moment an offset is first learned — turning
+  /// a monotonic sequence into one where a newer claim can look older.
   let issuedAtMs: Double
+  /// The watch's estimate of phone-clock minus watch-clock, in milliseconds.
+  ///
+  /// Optional and additive, so an older phone ignores it and behaves exactly as
+  /// before. It lets the phone measure this command's *age* in its own clock
+  /// without the two devices having to agree on what time it is: an unshared
+  /// clock is a normal condition, and the transmit-age window used to turn any
+  /// disagreement past five seconds into "every command refused" rather than
+  /// into a slightly wider margin.
+  ///
+  /// Learned only from a live `sendMessage`, whose transit is milliseconds. An
+  /// application context can sit retained for hours, so its timestamp says
+  /// nothing about the current offset.
+  let clockOffsetMs: Double?
 }
 
 // There is deliberately no acknowledgement model: queued commands have no

@@ -95,6 +95,11 @@ class WatchBridgeService {
   static const Duration defaultMapGeoClaimFreshFor = Duration(minutes: 10);
 
   static const Duration _maximumCommandAge = Duration(seconds: 30);
+
+  /// Residual slack after the watch's own clock-offset correction, not the
+  /// whole budget for two devices disagreeing about the time. A watch that has
+  /// measured the offset sends it with every command, so what has to fit inside
+  /// this is transit and measurement error — not the skew itself.
   static const Duration _clockTolerance = Duration(seconds: 5);
 
   final MethodChannel _channel;
@@ -225,9 +230,24 @@ class WatchBridgeService {
 
     final rawIssuedAtMs = args['issuedAtMs'];
     final issuedAtMs = rawIssuedAtMs is num ? rawIssuedAtMs.toDouble() : null;
+
+    // The two devices do not share a clock. `issuedAtMs` is stamped in the
+    // watch's, and the watch tells us how far that runs from ours when it has
+    // been able to measure it — from a live `sendMessage`, whose transit is
+    // milliseconds. Correcting by it means the age below is a real elapsed
+    // time rather than an elapsed time plus however far the clocks disagree,
+    // which used to turn any skew past `_clockTolerance` into "every command
+    // refused" instead of a slightly wider margin.
+    //
+    // Absent from older watch builds, and from a watch that has not yet seen a
+    // live delivery. Zero then, which is exactly the previous behaviour.
+    final rawClockOffsetMs = args['clockOffsetMs'];
+    final clockOffsetMs =
+        rawClockOffsetMs is num ? rawClockOffsetMs.toDouble() : 0.0;
     final ageMs = issuedAtMs == null
         ? null
-        : DateTime.now().millisecondsSinceEpoch - issuedAtMs;
+        : DateTime.now().millisecondsSinceEpoch -
+            (issuedAtMs + clockOffsetMs);
     final requestedMapGeo = args['mapGeoNeeded'];
     final mapGeoNeeded = requestedMapGeo is bool ? requestedMapGeo : null;
     final freshMapGeoSuppression = ageMs != null &&

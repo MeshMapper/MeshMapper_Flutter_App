@@ -70,6 +70,25 @@ final class WatchSessionClient: NSObject {
   /// Set when a payload arrives from a wire version this build predates.
   private(set) var versionMismatch = false
 
+  /// Phone clock minus watch clock, learned from a live delivery.
+  ///
+  /// The two devices do not share a clock, and nothing guarantees they agree.
+  /// Every phone-stamped time this class reads — how old a snapshot is, how old
+  /// a cue is — and every watch-stamped time the phone reads back was compared
+  /// across that gap with five seconds of slack, so a larger disagreement did
+  /// not degrade: it refused every command and marked every payload stale, for
+  /// as long as the skew lasted.
+  ///
+  /// A live `sendMessage` crosses in milliseconds, so the phone's `updatedAt`
+  /// on one of those is effectively a reading of the phone's clock taken now.
+  /// The difference from the local clock is the offset, and correcting by it
+  /// turns an unshared clock back into a measurement problem with a small
+  /// residual — which is what the five seconds were always meant to cover.
+  ///
+  /// Nil until a live delivery has been seen, where every comparison falls back
+  /// to the raw timestamps exactly as before.
+  private(set) var clockOffset: TimeInterval?
+
   /// Whether the currently rendered surface needs map-only geography.
   /// Launches begin true: an unnecessary full payload is preferable to a map
   /// that opens blank before this process has described its current surface.
@@ -222,7 +241,12 @@ final class WatchSessionClient: NSObject {
       mapGeoNeeded: mapGeoNeeded,
       forceRefresh: forceRefresh ? true : nil,
       id: UUID().uuidString,
-      issuedAtMs: Date().timeIntervalSince1970 * 1000
+      issuedAtMs: Date().timeIntervalSince1970 * 1000,
+      // Sent alongside the watch-clock stamp rather than folded into it: the
+      // phone needs this to measure age, but uses the raw stamp to order
+      // map-geo claims, and rewriting that key would make it jump backwards
+      // the first time an offset is learned.
+      clockOffsetMs: clockOffset.map { $0 * 1000 }
     )
     guard let data = try? MeshMapperWatchWire.encoder.encode(command),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -377,7 +401,9 @@ final class WatchSessionClient: NSObject {
     // into the future and extend its life, with a few seconds of slack so
     // ordinary skew does not age a genuinely live payload early.
     let origin =
-      producedAt.map { min(arrival, $0.addingTimeInterval(Self.clockTolerance)) } ?? arrival
+      producedAt
+        .map { inLocalTime($0) }
+        .map { min(arrival, $0.addingTimeInterval(Self.clockTolerance)) } ?? arrival
     receivedAt = origin
 
     let remaining = Self.staleAfter - arrival.timeIntervalSince(origin)
@@ -395,6 +421,12 @@ final class WatchSessionClient: NSObject {
       self?.isStale = true
       self?.staleBoundaryTask = nil
     }
+  }
+
+  /// A phone-stamped instant expressed in this watch's clock.
+  private func inLocalTime(_ phoneInstant: Date) -> Date {
+    guard let clockOffset else { return phoneInstant }
+    return phoneInstant.addingTimeInterval(-clockOffset)
   }
 
   /// How much of a cue is still worth presenting, given its age.
@@ -418,17 +450,17 @@ final class WatchSessionClient: NSObject {
   /// the screen: past it the wearer is already being told the whole surface is
   /// old, and a banner asserting a stale failure as current would be its own
   /// lie.
-  private static func presentation(
+  private func presentation(
     for cue: WatchHapticCue,
     at arrival: Date
   ) -> CuePresentation {
     guard let issuedAt = cue.issuedAt else { return .drop }
-    let age = arrival.timeIntervalSince(issuedAt)
+    let age = arrival.timeIntervalSince(inLocalTime(issuedAt))
     // A few seconds of skew must not suppress a real failure that has just
     // crossed the radio.
-    guard age >= -clockTolerance else { return .drop }
-    if age <= cueFreshFor { return .feel }
-    return age <= staleAfter ? .read : .drop
+    guard age >= -Self.clockTolerance else { return .drop }
+    if age <= Self.cueFreshFor { return .feel }
+    return age <= Self.staleAfter ? .read : .drop
   }
 
   /// The main-actor half of the activation callback.
@@ -546,14 +578,17 @@ final class WatchSessionClient: NSObject {
     ingest(data: data)
   }
 
-  private nonisolated func ingest(data: Data) {
+  /// - Parameter live: whether this arrived by `sendMessage`, whose transit is
+  ///   milliseconds. Only those can date the phone's clock; an application
+  ///   context may have been retained for hours before this process read it.
+  private nonisolated func ingest(data: Data, live: Bool = false) {
     switch Self.decode(data) {
     case .undecodable:
       return
     case .unsupportedVersion:
       Task { @MainActor [weak self] in self?.versionMismatch = true }
     case .snapshot(let decoded):
-      Task { @MainActor [weak self] in self?.apply(decoded) }
+      Task { @MainActor [weak self] in self?.apply(decoded, live: live) }
     }
   }
 
@@ -576,8 +611,14 @@ final class WatchSessionClient: NSObject {
     }
   }
 
-  private func apply(_ decoded: WatchSnapshot) {
+  private func apply(_ decoded: WatchSnapshot, live: Bool = false) {
     let arrival = Date()
+
+    // Learned before anything below reads a phone-stamped time.
+    if live {
+      clockOffset = decoded.updatedAt.timeIntervalSince(arrival)
+    }
+
     versionMismatch = false
     snapshot = decoded
     markSnapshotReceived(at: arrival, producedAt: decoded.updatedAt)
@@ -602,7 +643,7 @@ final class WatchSessionClient: NSObject {
     }
 
     if let cue = decoded.cue,
-       case let presentation = Self.presentation(for: cue, at: arrival),
+       case let presentation = presentation(for: cue, at: arrival),
        presentation != .drop,
        presentedCueIDs.insert(cue.id).inserted
     {
@@ -666,7 +707,9 @@ extension WatchSessionClient: WCSessionDelegate {
 
   nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
     guard let data = message[MeshMapperWatchWire.payloadKey] as? Data else { return }
-    ingest(data: data)
+    // The one delivery path whose transit is short enough to date the phone's
+    // clock against this one.
+    ingest(data: data, live: true)
   }
 
   /// The documented signal for `isReachable` changing. Without it the property
