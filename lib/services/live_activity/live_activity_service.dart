@@ -9,6 +9,12 @@ import 'live_activity_models.dart';
 
 typedef LiveActivitySnapshotBuilder = LiveActivitySnapshot? Function();
 
+/// The urgent half of the next snapshot, resolved without building one.
+///
+/// Returns null when no activity should exist, which is how ending stays
+/// immediate rather than waiting out the non-urgent floor.
+typedef LiveActivityUrgencyKeyBuilder = String? Function();
+
 /// Owns the Flutter-to-ActivityKit bridge and coalesces noisy app-state changes.
 ///
 /// Timer ticks are represented by absolute phase deadlines, allowing SwiftUI to
@@ -51,11 +57,24 @@ class LiveActivityService {
 
   Timer? _scheduledUpdate;
   LiveActivitySnapshotBuilder? _pendingSnapshotBuilder;
+  LiveActivityUrgencyKeyBuilder? _pendingUrgencyKeyBuilder;
+  DateTime? _lastBuiltAt;
   String? _lastPayload;
   String? _lastUrgencyKey;
+
+  /// The preflight key as of the last build, kept apart from [_lastUrgencyKey]
+  /// because the two are different projections: this one omits the ping colour
+  /// so it can be produced without walking a ping history.
+  String? _lastPreflightUrgencyKey;
   DateTime? _lastSentAt;
   String? _unavailableSessionId;
   DateTime? _unavailableRetryAt;
+
+  /// Set when a flush was deferred for a reason unrelated to how much changed —
+  /// ActivityKit reporting itself unavailable, or refusing a `request` from the
+  /// background. Those retries must not be swallowed by the build floor below,
+  /// which would otherwise reason "nothing urgent moved" and never re-ask.
+  bool _bypassBuildFloor = false;
   bool _disposed = false;
   bool _didReconcileNativeState = false;
   Future<void> _operationChain = Future<void>.value();
@@ -65,11 +84,13 @@ class LiveActivityService {
 
   void schedule(
     LiveActivitySnapshotBuilder snapshotBuilder, {
+    required LiveActivityUrgencyKeyBuilder urgencyKeyBuilder,
     bool immediate = false,
   }) {
     if (_disposed || !isSupportedPlatform) return;
 
     _pendingSnapshotBuilder = snapshotBuilder;
+    _pendingUrgencyKeyBuilder = urgencyKeyBuilder;
     _scheduledUpdate?.cancel();
 
     if (immediate) {
@@ -94,6 +115,35 @@ class LiveActivityService {
 
     if (_disposed || !isSupportedPlatform) return;
 
+    // The 500 ms countdown listenable drives this at ~2 Hz for a whole session,
+    // and building a snapshot resolves the latest ping colour by walking the
+    // TX, RX, discovery and trace logs — up to 500 entries each — only for the
+    // result to be discarded as a duplicate. So decide whether this flush can
+    // wait *before* constructing or encoding anything, from a key that reads
+    // scalars off the provider. Mirrors `WatchBridgeService._flush`.
+    final pendingUrgencyKey = _pendingUrgencyKeyBuilder?.call();
+    final endAlreadyDelivered =
+        pendingUrgencyKey == null && _lastPayload == null;
+    if (endAlreadyDelivered && _didReconcileNativeState) return;
+
+    final predictedUrgent = pendingUrgencyKey != _lastPreflightUrgencyKey;
+    final lastBuiltAt = _lastBuiltAt;
+    if (!_bypassBuildFloor && !predictedUrgent && lastBuiltAt != null) {
+      final elapsed = DateTime.now().difference(lastBuiltAt);
+      if (elapsed < _minimumNonUrgentInterval) {
+        // The deferral keeps any outstanding bypass, so a retry that is waiting
+        // on this floor still gets its turn rather than being dropped.
+        _scheduledUpdate = Timer(
+          _minimumNonUrgentInterval - elapsed,
+          _enqueueFlush,
+        );
+        return;
+      }
+    }
+
+    _bypassBuildFloor = false;
+    _lastBuiltAt = DateTime.now();
+    _lastPreflightUrgencyKey = pendingUrgencyKey;
     final snapshot = _pendingSnapshotBuilder?.call();
     if (snapshot == null) {
       if (_lastPayload == null && _didReconcileNativeState) return;
@@ -108,6 +158,7 @@ class LiveActivityService {
         // Authorization can be enabled in Settings while this session is
         // running. One scheduled retry makes that recover without asking
         // ActivityKit on every high-frequency provider notification.
+        _bypassBuildFloor = true;
         _scheduledUpdate = Timer(retryAt.difference(now), _enqueueFlush);
         return;
       }
@@ -147,6 +198,7 @@ class LiveActivityService {
       if (result == false) {
         _unavailableSessionId = snapshot.sessionId;
         _unavailableRetryAt = DateTime.now().add(_unavailableRetryDelay);
+        _bypassBuildFloor = true;
         _scheduledUpdate = Timer(_unavailableRetryDelay, _enqueueFlush);
         debugLog('[LIVE ACTIVITY] Live Activities are unavailable or disabled');
         return;
@@ -187,9 +239,12 @@ class LiveActivityService {
       _didReconcileNativeState = true;
       _lastPayload = null;
       _lastUrgencyKey = null;
+      _lastPreflightUrgencyKey = null;
       _lastSentAt = null;
+      _lastBuiltAt = null;
       _unavailableSessionId = null;
       _unavailableRetryAt = null;
+      _bypassBuildFloor = false;
     }
   }
 
@@ -198,6 +253,7 @@ class LiveActivityService {
     _scheduledUpdate?.cancel();
     _scheduledUpdate = null;
     _pendingSnapshotBuilder = null;
+    _pendingUrgencyKeyBuilder = null;
     _unavailableRetryAt = null;
   }
 }

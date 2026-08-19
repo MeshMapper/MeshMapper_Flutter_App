@@ -25,6 +25,21 @@ LiveActivitySnapshot _snapshot({
       updatedAt: DateTime.utc(2026, 8, 13),
     );
 
+/// The cheap projection the service preflights on, derived from a built
+/// snapshot so a test reads the same way the provider's builder does.
+String _preflightKey(LiveActivitySnapshot snapshot) =>
+    LiveActivitySnapshot.buildPreflightUrgencyKey(
+      sessionId: snapshot.sessionId,
+      mode: snapshot.mode,
+      phase: snapshot.phase,
+      phaseTitle: snapshot.phaseTitle,
+      phaseDetail: snapshot.phaseDetail,
+      phaseEndsAt: snapshot.phaseEndsAt,
+      phaseDurationMs: snapshot.phaseDurationMs,
+      isConnected: snapshot.isConnected,
+      zoneCode: snapshot.zoneCode,
+    );
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -49,7 +64,11 @@ void main() {
           .setMockMethodCallHandler(channel, null);
     });
 
-    service.schedule(_snapshot, immediate: true);
+    service.schedule(
+      _snapshot,
+      urgencyKeyBuilder: () => _preflightKey(_snapshot()),
+      immediate: true,
+    );
     await Future<void>.delayed(const Duration(milliseconds: 80));
 
     expect(syncCalls, 2,
@@ -77,11 +96,19 @@ void main() {
           .setMockMethodCallHandler(channel, null);
     });
 
-    service.schedule(_snapshot, immediate: true);
+    service.schedule(
+      _snapshot,
+      urgencyKeyBuilder: () => _preflightKey(_snapshot()),
+      immediate: true,
+    );
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     // A changed RX count is real, but nobody is waiting on it.
-    service.schedule(() => _snapshot(rxCount: 3), immediate: true);
+    service.schedule(
+      () => _snapshot(rxCount: 3),
+      urgencyKeyBuilder: () => _preflightKey(_snapshot(rxCount: 3)),
+      immediate: true,
+    );
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     expect(phases, ['listening_discovery'],
@@ -90,10 +117,74 @@ void main() {
     // A phase change is news, and news is not throttled.
     service.schedule(
       () => _snapshot(phase: LiveActivityPhase.waitingDiscovery, rxCount: 3),
+      urgencyKeyBuilder: () =>
+          _preflightKey(_snapshot(phase: LiveActivityPhase.waitingDiscovery)),
       immediate: true,
     );
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     expect(phases, ['listening_discovery', 'waiting_discovery']);
+  });
+
+  test('a throttled flush costs nothing to build', () async {
+    // The 500 ms countdown listenable asks for a flush twice a second for the
+    // length of a session, and building a snapshot walks the whole TX, RX,
+    // discovery and trace history to resolve the latest ping colour. The
+    // throttle has to be decided before any of that, not after.
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    const channel = MethodChannel('meshmapper/live_activity_preflight_test');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async => true);
+    final service = LiveActivityService(
+      channel: channel,
+      minimumNonUrgentInterval: const Duration(seconds: 30),
+    );
+    addTearDown(() {
+      service.dispose();
+      debugDefaultTargetPlatformOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    var builds = 0;
+    final steadyKey = _preflightKey(_snapshot());
+    LiveActivitySnapshot? countedBuild() {
+      builds++;
+      return _snapshot(rxCount: builds);
+    }
+
+    service.schedule(
+      countedBuild,
+      urgencyKeyBuilder: () => steadyKey,
+      immediate: true,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(builds, 1);
+
+    for (var tick = 0; tick < 5; tick++) {
+      service.schedule(
+        countedBuild,
+        urgencyKeyBuilder: () => steadyKey,
+        immediate: true,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+
+    expect(builds, 1,
+        reason: 'a tick that changes nothing urgent must not build a snapshot');
+
+    // News still bypasses the floor, and still pays to build.
+    final news = _snapshot(phase: LiveActivityPhase.waitingDiscovery);
+    service.schedule(
+      () {
+        builds++;
+        return news;
+      },
+      urgencyKeyBuilder: () => _preflightKey(news),
+      immediate: true,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(builds, 2, reason: 'a phase change is news and is never deferred');
   });
 }

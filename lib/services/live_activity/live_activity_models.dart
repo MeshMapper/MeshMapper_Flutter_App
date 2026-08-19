@@ -144,6 +144,46 @@ class LiveActivitySnapshot {
 
   /// Fields that must bypass the normal update throttle.
   String get urgencyKey => [
+        buildPreflightUrgencyKey(
+          sessionId: sessionId,
+          mode: mode,
+          phase: phase,
+          phaseTitle: phaseTitle,
+          phaseDetail: phaseDetail,
+          phaseEndsAt: phaseEndsAt,
+          phaseDurationMs: phaseDurationMs,
+          isConnected: isConnected,
+          zoneCode: zoneCode,
+        ),
+        pingColor?.r ?? '',
+        pingColor?.g ?? '',
+        pingColor?.b ?? '',
+      ].join('|');
+
+  /// Every urgent field that can be resolved without walking a ping history.
+  ///
+  /// [LiveActivityService] needs to decide whether a flush may wait *before* it
+  /// builds a snapshot, and building one resolves the latest ping colour by
+  /// scanning the full TX, RX, discovery and trace logs. Sharing this formatter
+  /// with [urgencyKey] keeps the cheap preflight and the eventual decision from
+  /// drifting on what counts as news.
+  ///
+  /// The ping colour is the one urgent field left out, because it is the
+  /// expensive one. In practice a ping outcome moves the phase with it, so this
+  /// key changes anyway; a colour that somehow moved alone is held for at most
+  /// one throttle interval rather than being dropped.
+  static String buildPreflightUrgencyKey({
+    required String sessionId,
+    required String mode,
+    required LiveActivityPhase phase,
+    required String phaseTitle,
+    required String? phaseDetail,
+    required DateTime? phaseEndsAt,
+    required int? phaseDurationMs,
+    required bool isConnected,
+    required String? zoneCode,
+  }) =>
+      [
         sessionId,
         mode,
         phase.wireValue,
@@ -169,11 +209,8 @@ class LiveActivitySnapshot {
         // still bypasses the throttle exactly as intended.
         phaseEndsAt == null
             ? 0
-            : (phaseEndsAt!.millisecondsSinceEpoch / 1000).round(),
+            : (phaseEndsAt.millisecondsSinceEpoch / 1000).round(),
         phaseDurationMs ?? 0,
-        pingColor?.r ?? '',
-        pingColor?.g ?? '',
-        pingColor?.b ?? '',
         isConnected,
         zoneCode ?? '',
       ].join('|');
