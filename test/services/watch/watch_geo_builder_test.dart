@@ -81,9 +81,11 @@ void main() {
       // surviving marker whenever one arrived, so SwiftUI rebuilt all sixty
       // annotations to show one new dot.
       final base = DateTime(2026, 8, 12, 10);
-      final older = List.generate(5, (i) => _disc(base.add(Duration(minutes: i)), discovered: true));
+      final older = List.generate(
+          5, (i) => _disc(base.add(Duration(minutes: i)), discovered: true));
 
-      List<String> idsFor(List<DiscLogEntry> entries) => WatchGeoBuilder.buildPings(
+      List<String> idsFor(List<DiscLogEntry> entries) =>
+          WatchGeoBuilder.buildPings(
             txPings: const [],
             rxPings: const [],
             discLogEntries: entries,
@@ -91,7 +93,8 @@ void main() {
           ).map((p) => p.id).toList();
 
       final before = idsFor(older.reversed.toList());
-      final arrival = _disc(base.add(const Duration(minutes: 9)), discovered: true);
+      final arrival =
+          _disc(base.add(const Duration(minutes: 9)), discovered: true);
       final after = idsFor([arrival, ...older.reversed]);
 
       expect(after.length, before.length + 1);
@@ -107,7 +110,10 @@ void main() {
       final pings = WatchGeoBuilder.buildPings(
         txPings: const [],
         rxPings: const [],
-        discLogEntries: [_disc(at, discovered: true), _disc(at, discovered: false)],
+        discLogEntries: [
+          _disc(at, discovered: true),
+          _disc(at, discovered: false)
+        ],
         traceLogEntries: const [],
       );
       expect(pings.map((p) => p.id).toSet().length, 2);

@@ -359,5 +359,4 @@ class WatchGeoBuilder {
     index.removeWhere((prefix, _) => (counts[prefix] ?? 0) > 1);
     return index;
   }
-
 }
