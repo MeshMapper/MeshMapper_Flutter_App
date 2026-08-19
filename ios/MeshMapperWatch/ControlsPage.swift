@@ -40,11 +40,18 @@ struct ControlsPage: View {
     )
   }
 
-  /// Manual-ping cooldown deadline, if one is still ahead of us.
-  private var cooldownEndsAt: Date? {
+  /// The manual-ping cooldown as a native timer range, if one is still ahead.
+  ///
+  /// One `now` for both bounds. Reading `Date()` to test the deadline and again
+  /// to build the range let a deadline crossing between the two produce
+  /// `lower > upper`, which traps at runtime. MapPage's `activeCountdownRange`
+  /// documents and avoids the same hazard.
+  private var cooldownCountdownRange: ClosedRange<Date>? {
     guard let ms = controls?.manualCooldownEndsAtMs else { return nil }
+    let now = Date()
     let endsAt = Date(timeIntervalSince1970: ms / 1000)
-    return endsAt > Date() ? endsAt : nil
+    guard endsAt > now else { return nil }
+    return now...endsAt
   }
 
   var body: some View {
@@ -283,10 +290,10 @@ struct ControlsPage: View {
   /// snapshot arrives.
   @ViewBuilder
   private func pingLabel(isPending: Bool) -> some View {
-    if let endsAt = cooldownEndsAt {
+    if let range = cooldownCountdownRange {
       HStack(spacing: 5) {
         Text("Ping in")
-        Text(timerInterval: Date()...endsAt, countsDown: true)
+        Text(timerInterval: range, countsDown: true)
           .monospacedDigit()
           .frame(width: 38, alignment: .leading)
       }
