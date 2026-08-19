@@ -132,6 +132,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _discoveryWindowTimer; // Discovery listening window (Passive Mode)
   late final Listenable _timerListenable;
 
+  /// Whether [_timerListenable] has been assigned *and* had the Live Activity
+  /// listener attached.
+  ///
+  /// `late final` throws on read before assignment, and the assignment happens
+  /// partway through [initialize]. A provider torn down before that point —
+  /// a widget test, or an early init failure — would otherwise throw on the
+  /// first line of [dispose] and skip every cancel below it.
+  bool _timerListenerAttached = false;
+
   final LiveActivityService _liveActivityService = LiveActivityService();
   final WatchBridgeService _watchBridge = WatchBridgeService();
   bool _hasEverPairedWatch = false;
@@ -2235,6 +2244,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     ]);
     if (_liveActivityService.isSupportedPlatform) {
       _timerListenable.addListener(_handleLiveActivityTimerChange);
+      _timerListenerAttached = true;
     }
     if (_watchBridge.isSupportedPlatform) {
       _watchBridge.diagnostics.addListener(_handleWatchDiagnosticsChanged);
@@ -9050,7 +9060,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     _isDisposed = true;
-    _timerListenable.removeListener(_handleLiveActivityTimerChange);
+    if (_timerListenerAttached) {
+      _timerListenable.removeListener(_handleLiveActivityTimerChange);
+    }
     _liveActivityService.dispose();
     _watchBridge.diagnostics.removeListener(_handleWatchDiagnosticsChanged);
     _watchBridge.dispose();
