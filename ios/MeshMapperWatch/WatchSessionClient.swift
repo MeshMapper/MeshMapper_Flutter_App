@@ -632,13 +632,21 @@ final class WatchSessionClient: NSObject {
       // just before the map reappeared may still win the delivery race. The
       // empty arrays are rendered honestly, then a full replacement is
       // requested immediately rather than mixing old markers with new state.
+      //
+      // `refresh: true` is what makes that a replacement rather than a wish.
+      // `force` only defeats this client's own "already told the phone that"
+      // check; the phone still has its payload fingerprint, and by now it has
+      // usually already sent full geography and cached it. Without the refresh
+      // the request dedupes into silence and the wrist keeps the empty arrays
+      // until something unrelated moves the urgency key — which, parked and
+      // idle, is exactly when it does not.
       let lastRequest = lastMapGeoRecoveryRequestAt
       if lastRequest == nil ||
           arrival.timeIntervalSince(lastRequest ?? .distantPast) >=
             Self.mapGeoRecoveryThrottle
       {
         lastMapGeoRecoveryRequestAt = arrival
-        sendMapGeoPreference(true, force: true)
+        sendMapGeoPreference(true, force: true, refresh: true)
       }
     }
 
