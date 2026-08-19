@@ -152,8 +152,10 @@ class WatchBridgeService {
   double? _lastMapGeoClaimIssuedAtMs;
   Future<void> _operationChain = Future<void>.value();
 
-  /// Commands already handled, so redelivery can't fire a second transmit.
-  final Set<String> _handledCommandIds = <String>{};
+  /// Outcome of every command already handled, keyed by ID, so redelivery
+  /// cannot fire a second transmit — and is answered with what actually
+  /// happened rather than a blanket acceptance. Null means accepted.
+  final Map<String, String?> _handledCommandOutcomes = <String, String?>{};
 
   bool get isSupportedPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
@@ -212,8 +214,14 @@ class WatchBridgeService {
     }
 
     // WatchConnectivity redelivers; a duplicate must not transmit twice.
-    if (_handledCommandIds.contains(id)) {
-      return {'id': id, 'accepted': true, 'reason': null};
+    //
+    // Answered with the outcome recorded the first time. Replying "accepted"
+    // to the redelivery of something this bridge refused would describe a
+    // transmit that never happened, and be wrong in exactly the case the
+    // caller most needs the truth.
+    if (_handledCommandOutcomes.containsKey(id)) {
+      final refusal = _handledCommandOutcomes[id];
+      return {'id': id, 'accepted': refusal == null, 'reason': refusal};
     }
 
     final kind = WatchCommandKind.fromWire(rawKind);
@@ -226,7 +234,7 @@ class WatchBridgeService {
       return {'id': id, 'accepted': false, 'reason': 'App not ready'};
     }
 
-    _rememberCommandId(id);
+    _rememberCommand(id);
 
     final rawIssuedAtMs = args['issuedAtMs'];
     final issuedAtMs = rawIssuedAtMs is num ? rawIssuedAtMs.toDouble() : null;
@@ -293,6 +301,7 @@ class WatchBridgeService {
         // This window is about correctness, not queue housekeeping: executing
         // a transmit after the vehicle has moved attributes it to the wrong
         // place. Missing timestamps remain accepted for older watch builds.
+        _rememberCommand(id, refusal: reason);
         _commandRefusalHandler?.call(reason);
         return {'id': id, 'accepted': false, 'reason': reason};
       }
@@ -311,17 +320,20 @@ class WatchBridgeService {
       ));
       final refusal =
           admission is Future<String?> ? await admission : admission;
+      _rememberCommand(id, refusal: refusal);
       if (refusal != null) {
         _commandRefusalHandler?.call(refusal);
-        // Reply-capable legacy watches could retry an admission refusal with
-        // the same ID. Queued commands must stay remembered: redelivery after
+        // An untimestamped command cannot be aged, so it is also the one whose
+        // sender may legitimately retry it under changed conditions. Queued,
+        // timestamped commands must stay remembered: redelivery after
         // conditions change must never turn yesterday's tap into a transmit.
-        if (issuedAtMs == null) _handledCommandIds.remove(id);
+        if (issuedAtMs == null) _handledCommandOutcomes.remove(id);
       }
       return {'id': id, 'accepted': refusal == null, 'reason': refusal};
     } catch (error) {
       debugError('[WATCH] Command $rawKind failed: $error');
       const reason = 'Command failed';
+      _rememberCommand(id, refusal: reason);
       _commandRefusalHandler?.call(reason);
       return {'id': id, 'accepted': false, 'reason': reason};
     }
@@ -404,11 +416,16 @@ class WatchBridgeService {
     );
   }
 
-  void _rememberCommandId(String id) {
-    _handledCommandIds.add(id);
+  /// Record a command and, once known, what it resolved to.
+  ///
+  /// Called before admission so a re-entrant redelivery cannot slip past the
+  /// dedupe, then again with the outcome. Updating an existing key leaves the
+  /// insertion order alone, so the bound below still evicts the oldest.
+  void _rememberCommand(String id, {String? refusal}) {
+    _handledCommandOutcomes[id] = refusal;
     // Unbounded growth would leak across a long session.
-    if (_handledCommandIds.length > 64) {
-      _handledCommandIds.remove(_handledCommandIds.first);
+    if (_handledCommandOutcomes.length > 64) {
+      _handledCommandOutcomes.remove(_handledCommandOutcomes.keys.first);
     }
   }
 

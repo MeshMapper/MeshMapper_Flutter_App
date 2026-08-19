@@ -194,19 +194,6 @@ final class WatchSessionManager: NSObject {
     }
   }
 
-  /// Drop the keys whose value is Dart `null`.
-  ///
-  /// The standard method codec decodes Dart's `null` as `NSNull`, which is not
-  /// a property-list type, and `WCSession`'s `replyHandler` raises on anything
-  /// that isn't. Every *accepted* command replies `{"accepted": true, "reason":
-  /// null}`, so without this the legacy reply path failed on precisely its
-  /// success case — the one case the overload is kept around to serve. An
-  /// absent key reads the same as a null one on the watch, which decodes the
-  /// reply into optionals.
-  private static func propertyListSafe(_ dict: [String: Any]) -> [String: Any] {
-    dict.filter { !($0.value is NSNull) }
-  }
-
   private func flutterError(_ error: Error, code: String) -> FlutterError {
     FlutterError(
       code: code,
@@ -217,13 +204,16 @@ final class WatchSessionManager: NSObject {
 
   // MARK: - watch → Flutter
 
-  /// Relays a command to Dart and returns its admission ack. Dart owns the
-  /// synchronous decision and starts accepted work separately; this side never
-  /// evaluates whether a transmit is legal or waits for BLE/network completion.
-  private func relayCommand(_ payload: [String: Any], reply: @escaping ([String: Any]) -> Void) {
+  /// Relays a command to Dart. Dart owns the synchronous admission decision and
+  /// starts accepted work separately; this side never evaluates whether a
+  /// transmit is legal or waits for BLE/network completion.
+  ///
+  /// The ack is logged rather than returned. Queued delivery has no reply
+  /// channel to return it on, which is the whole reason the wire carries
+  /// outcomes as snapshots and one-shot cues instead.
+  private func relayCommand(_ payload: [String: Any]) {
     guard let channel else {
       NSLog("[WATCH] Command dropped: no method channel")
-      reply(["accepted": false, "reason": "App not ready"])
       return
     }
 
@@ -235,11 +225,12 @@ final class WatchSessionManager: NSObject {
     DispatchQueue.main.async {
       channel.invokeMethod("command", arguments: payload) { response in
         if let dict = response as? [String: Any] {
-          NSLog("[WATCH] Command \(kind) acked: accepted=\(dict["accepted"] ?? "?")")
-          reply(Self.propertyListSafe(dict))
+          NSLog(
+            "[WATCH] Command \(kind) acked: accepted=\(dict["accepted"] ?? "?") "
+              + "reason=\(dict["reason"] ?? "none")"
+          )
         } else {
           NSLog("[WATCH] Command \(kind) got no response from Dart")
-          reply(["accepted": false, "reason": "No response"])
         }
       }
     }
@@ -296,31 +287,18 @@ extension WatchSessionManager: WCSessionDelegate {
       NSLog("[WATCH] Malformed queued command payload: \(Array(userInfo.keys))")
       return
     }
-    relayCommand(command) { _ in }
+    relayCommand(command)
   }
 
-  /// Retained for commands already sent by watch builds that predate the
-  /// queued transport; removing it would strand an in-flight wrist action.
-  func session(
-    _ session: WCSession,
-    didReceiveMessage message: [String: Any],
-    replyHandler: @escaping ([String: Any]) -> Void
-  ) {
-    guard let command = message[MeshMapperWatchWire.commandKey] as? [String: Any] else {
-      NSLog("[WATCH] Malformed command payload: \(Array(message.keys))")
-      replyHandler(["accepted": false, "reason": "Malformed command"])
-      return
-    }
-    relayCommand(command, reply: replyHandler)
-  }
-
-  /// The no-reply legacy overload is retained for the same compatibility
-  /// window. New watches use `transferUserInfo` exclusively.
-  func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-    guard let command = message[MeshMapperWatchWire.commandKey] as? [String: Any] else {
-      NSLog("[WATCH] Malformed command payload: \(Array(message.keys))")
-      return
-    }
-    relayCommand(command) { _ in }
-  }
 }
+
+// The `didReceiveMessage` overloads that used to sit here are gone. They
+// existed for watch builds predating the queued transport, and no such build
+// has ever shipped — the companion app is landing for the first time with the
+// queued path already in place, and `WatchSessionClient.send(_:)` calls
+// `transferUserInfo` exclusively.
+//
+// Removing them takes away a second entry point into transmit admission, which
+// is the part worth being strict about: the queued path is deliberate, because
+// `sendMessage` can execute a command and still fail its reply as
+// undeliverable, leaving the wrist unable to tell a refusal from a lost ack.
