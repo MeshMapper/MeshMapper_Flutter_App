@@ -728,6 +728,7 @@ void main() {
             'paired': true,
             'installed': true,
             'reachable': true,
+            'nativeCacheCleared': true,
           },
         )),
         null,
@@ -738,6 +739,49 @@ void main() {
       expect(builds, 2);
       expect(syncCalls, 2,
           reason: 'native cleared its context cache on the state change');
+    });
+
+    test('a reachability flip alone leaves the caches intact', () async {
+      // `sessionReachabilityDidChange` fires on every wrist raise and lower,
+      // and native does not drop `lastContextData` there. Treating it as cache
+      // invalidation made each glance force a full `updateApplicationContext`
+      // resend and silently voided the map-geo lease.
+      bridge.attachCommandHandler((_) => null);
+      await Future<void>.delayed(Duration.zero);
+
+      void schedule() => bridge.schedule(
+            _snapshot,
+            urgencyKeyBuilder: () => _snapshot().urgencyKey,
+            immediate: true,
+          );
+
+      schedule();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(syncCalls, 1);
+
+      for (final reachable in [false, true]) {
+        await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .handlePlatformMessage(
+          channel.name,
+          channel.codec.encodeMethodCall(MethodCall(
+            'availabilityChanged',
+            {
+              'supported': true,
+              'activated': true,
+              'paired': true,
+              'installed': true,
+              'reachable': reachable,
+              'nativeCacheCleared': false,
+            },
+          )),
+          null,
+        );
+        schedule();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+
+      expect(syncCalls, 1,
+          reason: 'an unchanged payload must stay deduplicated across glances');
     });
 
     // The watch asks for a snapshot after a relaunch, holding a retained

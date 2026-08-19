@@ -159,7 +159,15 @@ class WatchBridgeService {
 
   Future<Object?> _handleNativeCall(MethodCall call) async {
     if (call.method == 'availabilityChanged') {
-      _applyAvailability(call.arguments, refreshNativeState: true);
+      // Only a push that says native dropped its own application-context cache
+      // invalidates ours. Reachability flips on every wrist raise and lower,
+      // and treating those as cache invalidation forced a full
+      // `updateApplicationContext` resend per glance and silently voided the
+      // map-geo lease — the two costs this bridge exists to avoid.
+      final args = call.arguments;
+      final nativeCacheCleared =
+          args is Map && args['nativeCacheCleared'] == true;
+      _applyAvailability(args, refreshNativeState: nativeCacheCleared);
       return null;
     }
     if (call.method != 'command') return null;
@@ -318,10 +326,10 @@ class WatchBridgeService {
     }
     if (!availabilityChanged && !refreshNativeState) return;
 
-    // Native forgets its application-context cache whenever WatchConnectivity
-    // reports a state change. Forget ours on the same notification even when
-    // availability remains true, or an installed replacement watch could wait
-    // forever for state whose fingerprint Dart still considers delivered.
+    // Native forgets its application-context cache when WatchConnectivity
+    // reports a *watch-state* change. Forget ours on the same notification even
+    // when availability remains true, or an installed replacement watch could
+    // wait forever for state whose fingerprint Dart still considers delivered.
     if (!available || refreshNativeState) {
       _mapGeoSuppressedAt = null;
       _lastMapGeoClaimIssuedAtMs = null;
