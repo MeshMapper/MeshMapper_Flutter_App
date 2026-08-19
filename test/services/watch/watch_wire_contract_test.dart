@@ -528,6 +528,42 @@ void main() {
       expect(result, (mode: null, refusal: null));
     });
 
+    test('diagnostics stay reachable exactly when they are needed', () {
+      bool show({
+        bool isSupportedPlatform = true,
+        bool supported = true,
+        bool paired = false,
+        bool activated = true,
+        bool hasEverPaired = false,
+      }) =>
+          resolveShouldShowWatchDiagnostics(
+            isSupportedPlatform: isSupportedPlatform,
+            supported: supported,
+            paired: paired,
+            activated: activated,
+            hasEverPaired: hasEverPaired,
+          );
+
+      // The case the old rule got backwards: activation failed, so `paired`
+      // reads false for a phone that may well have a watch — and the screen
+      // that would explain the failure was the thing being hidden.
+      expect(show(activated: false), isTrue,
+          reason: 'a session that never came up cannot deny a watch exists');
+
+      // A healthy session that genuinely sees no watch. The common iPhone.
+      expect(show(), isFalse);
+
+      // Seen now, or seen once. Pairing history stays one-way on purpose: an
+      // unpaired watch is when this is most useful.
+      expect(show(paired: true), isTrue);
+      expect(show(hasEverPaired: true), isTrue);
+
+      // Not an iOS host at all, and a host without WatchConnectivity.
+      expect(show(isSupportedPlatform: false, activated: false), isFalse);
+      expect(show(supported: false, activated: false), isFalse,
+          reason: 'no WatchConnectivity means no watch to diagnose');
+    });
+
     test('the wrist is never offered a mode every start would refuse', () {
       // Hybrid used to be advertised whenever the phone was connected and TX
       // was allowed, ignoring Offline Mode — where sessionStartAvailability
@@ -713,6 +749,7 @@ void main() {
       String? mode,
       bool? mapGeoNeeded,
       double? issuedAtMs,
+      double? clockOffsetMs,
       bool? forceRefresh,
     }) async {
       final result = await TestDefaultBinaryMessengerBinding
@@ -726,6 +763,7 @@ void main() {
             if (mode != null) 'mode': mode,
             if (mapGeoNeeded != null) 'mapGeoNeeded': mapGeoNeeded,
             if (issuedAtMs != null) 'issuedAtMs': issuedAtMs,
+            if (clockOffsetMs != null) 'clockOffsetMs': clockOffsetMs,
             if (forceRefresh != null) 'forceRefresh': forceRefresh,
           }),
         ),
@@ -1334,6 +1372,35 @@ void main() {
           reason: 'WatchConnectivity redelivers; a second ping must not fire');
     });
 
+    test('a redelivered acceptance still acks as accepted', () async {
+      // The other half of the echo: an accepted command must not start
+      // reporting itself refused just because the conditions moved on.
+      var refuse = false;
+      bridge.attachCommandHandler((command) async {
+        handled.add(command.kind);
+        return refuse ? 'Not connected' : null;
+      });
+
+      final issuedAtMs = DateTime.now().millisecondsSinceEpoch.toDouble();
+      final first = await sendCommand(
+        'queued-3',
+        'manualPing',
+        issuedAtMs: issuedAtMs,
+      );
+      expect(first?['accepted'], isTrue);
+
+      refuse = true;
+      final redelivered = await sendCommand(
+        'queued-3',
+        'manualPing',
+        issuedAtMs: issuedAtMs,
+      );
+
+      expect(handled, hasLength(1));
+      expect(redelivered?['accepted'], isTrue);
+      expect(redelivered?['reason'], isNull);
+    });
+
     test('a refused command may be retried once conditions change', () async {
       var refuse = true;
       bridge.attachCommandHandler((command) async {
@@ -1383,8 +1450,10 @@ void main() {
       expect(handled, hasLength(1),
           reason: 'redelivery must never turn yesterday\'s tap into a '
               'transmit');
-      expect(redelivered?['accepted'], isTrue,
-          reason: 'the dedupe reply acks delivery, not a fresh admission');
+      expect(redelivered?['accepted'], isFalse,
+          reason: 'the ack must describe what happened, not what was hoped');
+      expect(redelivered?['reason'], 'Not connected',
+          reason: 'the recorded outcome is echoed, not recomputed');
     });
 
     // transferUserInfo keeps a tapped command alive until the phone is
@@ -1471,6 +1540,87 @@ void main() {
         expect(reply?['accepted'], isTrue,
             reason: 'older watch builds send no issuedAtMs');
         expect(handled, hasLength(1));
+      });
+
+      test('a skewed watch clock degrades, it does not refuse everything',
+          () async {
+        // The failure this replaces: two devices that disagree about the time
+        // by more than the tolerance had every timestamped command refused, for
+        // as long as the skew lasted. An unshared clock is a normal condition,
+        // not a reason to make the wrist inert.
+        bridge.attachCommandHandler((command) async {
+          handled.add(command.kind);
+          return null;
+        });
+
+        // A watch running four minutes fast. Without the offset this stamp is
+        // 240 s in the future and fails the lower bound outright.
+        const skew = Duration(minutes: 4);
+        final reply = await sendCommand(
+          'skewed-fast',
+          'manualPing',
+          issuedAtMs: nowMs() +
+              skew.inMilliseconds -
+              const Duration(seconds: 2).inMilliseconds,
+          clockOffsetMs: -skew.inMilliseconds.toDouble(),
+        );
+
+        expect(reply?['accepted'], isTrue,
+            reason: 'a measured offset must make the age a real elapsed time');
+        expect(handled, [WatchCommandKind.manualPing]);
+      });
+
+      test('the offset corrects the age, it does not excuse a stale command',
+          () async {
+        // The window still has to mean something: a genuinely old command is
+        // still old once the clocks agree, and correcting for skew must not
+        // become a way to smuggle yesterday's tap onto the radio.
+        final refusals = <String>[];
+        bridge.attachCommandHandler(
+          (command) async {
+            handled.add(command.kind);
+            return null;
+          },
+          onRefusal: refusals.add,
+        );
+
+        const skew = Duration(minutes: 4);
+        final reply = await sendCommand(
+          'skewed-and-stale',
+          'manualPing',
+          issuedAtMs: nowMs() +
+              skew.inMilliseconds -
+              const Duration(seconds: 45).inMilliseconds,
+          clockOffsetMs: -skew.inMilliseconds.toDouble(),
+        );
+
+        expect(reply?['accepted'], isFalse);
+        expect(reply?['reason'], 'Took too long to reach iPhone');
+        expect(handled, isEmpty);
+        expect(refusals, ['Took too long to reach iPhone']);
+      });
+
+      test('an older watch build sending no offset behaves exactly as before',
+          () async {
+        bridge.attachCommandHandler((command) async {
+          handled.add(command.kind);
+          return null;
+        });
+
+        final fresh = await sendCommand(
+          'no-offset-fresh',
+          'manualPing',
+          issuedAtMs: nowMs() - const Duration(seconds: 5).inMilliseconds,
+        );
+        expect(fresh?['accepted'], isTrue);
+
+        final stale = await sendCommand(
+          'no-offset-stale',
+          'manualPing',
+          issuedAtMs: nowMs() - const Duration(seconds: 31).inMilliseconds,
+        );
+        expect(stale?['accepted'], isFalse,
+            reason: 'absent offset must mean zero, not unbounded tolerance');
       });
 
       test('an aged requestSnapshot is exempt from the transmit window',
