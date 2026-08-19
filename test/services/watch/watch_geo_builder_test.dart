@@ -504,6 +504,43 @@ void main() {
       expect(built[2].typeColor, WatchColor.fromColor(PingColors.rx));
     });
 
+    test('an RX slot of a different hash width still gets its name', () {
+      final capitol = _repeater(
+          id: '01',
+          hexId: '4E5D82',
+          lat: 47.6,
+          lon: -122.3,
+          name: 'Capitol Hill');
+      final beacon = _repeater(
+          id: '02',
+          hexId: '77A1B0',
+          lat: 47.6,
+          lon: -122.3,
+          name: 'Beacon Hill');
+
+      // Exactly what the provider now hands in: resolved per distinct length.
+      final repeaterByHex = WatchGeoBuilder.resolveUniqueHexPrefixes(
+        repeaters: [capitol, beacon],
+        prefixes: const ['4E5D', '77A1B0'],
+      );
+
+      final built = WatchGeoBuilder.buildHeard(
+        top: const [(repeaterId: '4E5D', snr: 8.5, type: OverlayPingType.tx)],
+        rxSlot: (repeaterId: '77A1B0', snr: 9.9),
+        repeaterByHex: repeaterByHex,
+        topAt: DateTime(2026, 8, 12),
+        rxAt: DateTime(2026, 8, 12, 0, 1),
+        lat: 47.6,
+        lon: -122.3,
+      );
+
+      expect(built[0].name, 'Capitol Hill');
+      expect(built[1].name, 'Beacon Hill',
+          reason: 'the RX row lost its name to a single-length index');
+      expect(built[1].distanceM, isNotNull,
+          reason: 'distance is resolved from the same repeater match');
+    });
+
     test('never exceeds the wire cap of three rows plus the RX slot', () {
       final built = WatchGeoBuilder.buildHeard(
         top: const [
@@ -569,6 +606,34 @@ void main() {
       );
 
       expect(linked['4E5D'], same(repeater));
+    });
+
+    test('resolves every distinct prefix length in one pass', () {
+      // The RX slot's path hash can be a wider or narrower hash than the top
+      // rows', because the two come from different pings and the zone's
+      // hop-byte count sets the width. Indexing at one length left the odd row
+      // out with no name and no distance while every other row resolved.
+      final short = _repeater(
+          id: '01',
+          hexId: '4E5D82',
+          lat: 47.6,
+          lon: -122.3,
+          name: 'Capitol Hill');
+      final long = _repeater(
+          id: '02',
+          hexId: '77A1B0',
+          lat: 47.6,
+          lon: -122.3,
+          name: 'Beacon Hill');
+
+      final linked = WatchGeoBuilder.resolveUniqueHexPrefixes(
+        repeaters: [short, long],
+        prefixes: const ['4E', '77A1B0'],
+      );
+
+      expect(linked['4E']?.name, 'Capitol Hill');
+      expect(linked['77A1B0']?.name, 'Beacon Hill',
+          reason: 'a row of a different hash width must still resolve');
     });
 
     test('an ambiguous link prefix resolves to nothing', () {
