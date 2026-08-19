@@ -39,6 +39,15 @@ class WatchWire {
   /// Three top-SNR rows plus the RX slot, matching `_buildTopRepeatersOverlay`.
   static const int maxHeard = 4;
 
+  /// How long a one-shot cue keeps riding outgoing snapshots.
+  ///
+  /// Mirrors `WatchSessionClient.staleAfter`, the boundary past which the watch
+  /// greys the whole surface and drops a cue rather than asserting a dead
+  /// failure as current. Keep the two in step: a phone that stops attaching
+  /// early reintroduces the silent-failure bug this bounds, and one that
+  /// attaches past the boundary only sends bytes the watch discards.
+  static const Duration cueReadableFor = Duration(seconds: 90);
+
   /// Skip a geo-only update unless the fix moved at least this far. Phase
   /// changes and new pings always go through; this only suppresses the
   /// jitter of a stationary GPS.
@@ -322,6 +331,16 @@ class WatchHapticCue {
   /// admission. This additive field is optional, so v2 remains decodable; no
   /// wire bump is needed while the matched phone and watch targets ship it.
   final String? message;
+
+  /// Whether the watch would still present this cue if it arrived now.
+  ///
+  /// The watch applies the same bound on ingest — buzzing inside its own
+  /// fresh window, showing the message without a haptic up to
+  /// [WatchWire.cueReadableFor], dropping it after. This is the phone's half
+  /// of that one rule, not a second policy: it decides how long the cue is
+  /// worth carrying, and the watch decides how it lands.
+  bool isPresentableAt(DateTime now) =>
+      now.difference(issuedAt) < WatchWire.cueReadableFor;
 
   Map<String, Object?> toMap() => {
         'id': id,

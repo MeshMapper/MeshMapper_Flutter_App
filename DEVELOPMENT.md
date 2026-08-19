@@ -500,6 +500,17 @@ a lost ack.
   'Flood Traffic Off'. The preference **defaults off**, so a wrist that skips
   this admits the common configuration rather than an edge one.
 
+**Failure cues.** A one-shot cue rides *every* snapshot until it is older than
+`WatchWire.cueReadableFor` (90 s), which mirrors `WatchSessionClient.staleAfter`.
+It is deliberately **not** dropped when native accepts a payload carrying it:
+that reply means `updateApplicationContext` took the blob, not that the watch
+ingested it, and the wearer's wrist is usually down at that moment. Because the
+cue ID is in the urgency key, dropping it there made the very next flush urgent
+and overwrote the retained context with a cue-less payload — so a suspended
+watch woke to idle UI and no account of the failure. Re-attaching is free and
+cannot double-buzz: the watch keys haptics on `presentedCueIDs` and drops the
+cue itself past the boundary rather than asserting a dead failure as current.
+
 **Wire versioning** (`WatchWire.version`, mirrored in
 `ios/Shared/MeshMapperWatchPayload.swift`)
 

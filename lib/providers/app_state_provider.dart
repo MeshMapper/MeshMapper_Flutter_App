@@ -154,6 +154,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   ({double lat, double lon})? _rankingPosition;
   WatchHapticCue? _watchCue;
 
+  /// The pending cue, for as long as the watch would still present it.
+  ///
+  /// **Age, not delivery.** This used to be dropped the moment a snapshot
+  /// carrying it came back from native — but that reply means
+  /// `updateApplicationContext` accepted the blob, not that the watch ingested
+  /// it, and the wearer's wrist is usually down at exactly that moment. Since
+  /// the cue ID sits in the urgency key, the very next flush was urgent and
+  /// overwrote the retained context with a cue-less payload, often within a
+  /// second. The watch woke to idle UI and no account of the failure it had
+  /// just been told about — the failure path having quietly deleted its own
+  /// only evidence.
+  ///
+  /// Re-attaching costs nothing and cannot double-buzz: the watch keys its
+  /// haptics on `presentedCueIDs`, and past [WatchWire.cueReadableFor] it
+  /// drops the cue itself rather than asserting a dead failure as current.
+  WatchHapticCue? get _presentableWatchCue {
+    final cue = _watchCue;
+    if (cue == null) return null;
+    return cue.isPresentableAt(DateTime.now()) ? cue : null;
+  }
+
   /// Human-readable failure from the most recent server-side session check.
   /// The bool returned by that check controls the action; this preserves the
   /// discarded explanation for a wrist action's later failure cue.
@@ -1334,7 +1355,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phaseEndsAt: phase.endsAt,
       isConnected: isConnected,
       controls: controls,
-      cue: _watchCue,
+      cue: _presentableWatchCue,
       mapGeoIncluded: _watchBridge.shouldIncludeMapGeo,
     );
   }
@@ -1386,7 +1407,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       mapGeoIncluded: includeMapGeo,
       availableStartModes: _availableWatchStartModes,
       pingColor: pingColor,
-      cue: _watchCue,
+      cue: _presentableWatchCue,
       phaseDurationMs: phaseDurationMs,
       updatedAt: now,
     );
@@ -1874,16 +1895,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _scheduleWatchSync(immediate: true);
   }
 
-  void _handleWatchSnapshotDelivered(WatchSnapshot snapshot) {
-    final deliveredCue = snapshot.cue;
-    if (deliveredCue != null && _watchCue?.id == deliveredCue.id) {
-      // Delivery means future snapshots must stop carrying this event. The
-      // watch independently age-checks the retained application context, so a
-      // process restart cannot turn it back into a new failure.
-      _watchCue = null;
-    }
-  }
-
   void _handleWatchDiagnosticsChanged() {
     if (_watchBridge.diagnostics.value.paired) {
       unawaited(_rememberWatchPairing());
@@ -2359,7 +2370,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _watchBridge.attachCommandHandler(
         _handleWatchCommand,
         onRefusal: _emitWatchFailure,
-        onSnapshotDelivered: _handleWatchSnapshotDelivered,
         // Availability can become true long after provider startup when a
         // watch is paired or its app is installed. Push the current state then
         // rather than waiting for an unrelated phone-side notification.
