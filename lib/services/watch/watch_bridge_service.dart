@@ -77,6 +77,39 @@ class WatchBridgeService {
 
   static const String _channelName = 'meshmapper/watch';
 
+  /// How many wrist commands may wait for Dart to start listening.
+  ///
+  /// A queued command can wake a phone app that was not running, and
+  /// `didReceiveUserInfo` fires as soon as WatchConnectivity has it — which can
+  /// be well before [attachCommandHandler] runs, since that happens partway
+  /// through the provider's asynchronous initialization. `transferUserInfo`
+  /// hands each command over exactly once, so anything dropped in that window
+  /// is gone: the wrist shows a spinner, times out after ten seconds, and says
+  /// nothing about why.
+  ///
+  /// Flutter already buffers platform messages sent before a handler exists,
+  /// but only one deep by default, so a wearer who tapped twice lost the first
+  /// tap. Eight is well past any plausible burst — the wearer has one Start and
+  /// one Ping button — while still bounded, because these are intents that go
+  /// through the age window and the ID cache on arrival, not state to replay.
+  static const int _commandQueueDepth = 8;
+
+  /// Reserve that room. Must run before the first command can arrive, which in
+  /// practice means the top of `main()`.
+  ///
+  /// This narrows the window rather than closing it. Messages that arrive
+  /// before Dart's entrypoint executes at all are still governed by the default
+  /// depth of one — resizing upward keeps whatever is already queued, so that
+  /// one survives, but a burst landing in the gap between engine start and this
+  /// call cannot. Closing it completely means buffering natively and handshaking
+  /// a ready signal, which is a lot of moving parts for a smaller window than
+  /// the one this covers.
+  static void reserveCommandQueue() {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+    ServicesBinding.instance.channelBuffers
+        .resize(_channelName, _commandQueueDepth);
+  }
+
   /// The three durations a test may shorten.
   ///
   /// Without a seam here every throttle assertion had to wait out the real

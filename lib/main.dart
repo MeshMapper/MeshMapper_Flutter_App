@@ -16,10 +16,16 @@ import 'services/bluetooth/web_bluetooth.dart';
 import 'services/background_service.dart';
 import 'services/debug_file_logger.dart';
 import 'services/offline_map_service.dart';
+import 'services/watch/watch_bridge_service.dart';
 import 'utils/debug_logger_io.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Before anything slow. A watch command can launch this process, and the
+  // native relay fires as soon as WatchConnectivity delivers — long before the
+  // provider finishes initializing and starts listening.
+  WatchBridgeService.reserveCommandQueue();
 
   // Enable debug file logging FIRST on mobile to capture early logs
   // This must happen before DebugLogger.initialize() to capture early logs
