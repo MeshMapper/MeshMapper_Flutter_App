@@ -1229,7 +1229,35 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (!_liveActivityService.isSupportedPlatform) return;
     _liveActivityService.schedule(
       _buildLiveActivitySnapshot,
+      urgencyKeyBuilder: _buildLiveActivityUrgencyKey,
       immediate: immediate,
+    );
+  }
+
+  /// The urgent half of the next Live Activity payload, without building one.
+  ///
+  /// [_buildLiveActivitySnapshot] resolves the latest ping colour by walking
+  /// the whole TX, RX, discovery and trace history, and the 500 ms countdown
+  /// listenable asks for a flush twice a second for the length of a session.
+  /// This reads scalars only, so the service can decide the flush may wait
+  /// before paying for any of that. Null means no activity should exist, which
+  /// keeps ending immediate.
+  String? _buildLiveActivityUrgencyKey() {
+    final sessionId = _liveActivitySessionId;
+    if (_isDisposed || !_liveActivitySessionActive || sessionId == null) {
+      return null;
+    }
+    final phase = _resolveLiveActivityPhase();
+    return LiveActivitySnapshot.buildPreflightUrgencyKey(
+      sessionId: sessionId,
+      mode: _liveActivityModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      phaseDurationMs: _phaseDurationMsFor(phase.endsAt),
+      isConnected: isConnected,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
     );
   }
 
