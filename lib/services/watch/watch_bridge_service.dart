@@ -254,8 +254,7 @@ class WatchBridgeService {
         rawClockOffsetMs is num ? rawClockOffsetMs.toDouble() : 0.0;
     final ageMs = issuedAtMs == null
         ? null
-        : DateTime.now().millisecondsSinceEpoch -
-            (issuedAtMs + clockOffsetMs);
+        : DateTime.now().millisecondsSinceEpoch - (issuedAtMs + clockOffsetMs);
     final requestedMapGeo = args['mapGeoNeeded'];
     final mapGeoNeeded = requestedMapGeo is bool ? requestedMapGeo : null;
     final freshMapGeoSuppression = ageMs != null &&
