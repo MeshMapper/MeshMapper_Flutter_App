@@ -243,6 +243,69 @@ class WatchGeoBuilder {
     return resolved;
   }
 
+  /// Resolve overlay display hashes to repeaters, preferring the fuller
+  /// identity the ping actually carried.
+  ///
+  /// A path hash is 1–3 bytes, so in a busy zone it routinely matches several
+  /// repeaters and [resolveUniqueHexPrefixes] correctly refuses to name any of
+  /// them. But the phone often knows exactly who answered: a discovery response
+  /// carries the responder's full 64-character public key, and a trace carries
+  /// its 4-byte target. Resolving from the truncated hash threw that away, and
+  /// left the wrist reading "Name unresolved" for a node the phone could have
+  /// named precisely.
+  ///
+  /// [identities] maps a display hash to the longest identity known for the row
+  /// shown under it. It must describe the **current** rows only: a hash that
+  /// meant one repeater in a discovery response says nothing about who a later
+  /// TX echo under the same hash was, and carrying it over would turn a refusal
+  /// to guess into a confident wrong answer.
+  ///
+  /// Uniqueness is still required. A longer identity makes a collision
+  /// vanishingly unlikely rather than impossible, and a confidently wrong name
+  /// stays worse than none.
+  static Map<String, Repeater> resolveOverlayRepeaters({
+    required List<Repeater> repeaters,
+    required Iterable<String> displayIds,
+    Map<String, String> identities = const {},
+  }) {
+    final resolved = <String, Repeater>{};
+    final unresolved = <String>[];
+
+    for (final rawId in displayIds) {
+      final displayId = rawId.toUpperCase();
+      if (displayId.isEmpty) continue;
+
+      final identity = identities[displayId]?.toUpperCase();
+      if (identity == null || identity.isEmpty) {
+        unresolved.add(displayId);
+        continue;
+      }
+
+      // Both values are the leading hex of the same public key, so whichever
+      // is shorter is a prefix of the other.
+      final matches = repeaters.where((repeater) {
+        final hexId = repeater.hexId.toUpperCase();
+        if (hexId.isEmpty) return false;
+        return hexId.startsWith(identity) || identity.startsWith(hexId);
+      }).toList(growable: false);
+
+      if (matches.length == 1) {
+        resolved[displayId] = matches.single;
+      } else {
+        // No match at all means the catalogue simply has no hex for this
+        // repeater; more than one means the fuller identity did not help.
+        // Either way the ordinary prefix rules get their turn.
+        unresolved.add(displayId);
+      }
+    }
+
+    resolved.addAll(resolveUniqueHexPrefixes(
+      repeaters: repeaters,
+      prefixes: unresolved,
+    ));
+    return resolved;
+  }
+
   /// Dot colour for an overlay row, mirroring `_overlayTypeColor` on the map.
   static WatchColor overlayTypeColor(OverlayPingType type) => switch (type) {
         OverlayPingType.tx => WatchColor.fromColor(PingColors.txSuccess),

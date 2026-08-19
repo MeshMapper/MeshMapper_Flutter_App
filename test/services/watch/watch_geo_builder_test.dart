@@ -595,6 +595,111 @@ void main() {
     });
   });
 
+  group('resolveOverlayRepeaters — name from the identity the ping carried',
+      () {
+    // Two repeaters sharing a leading byte. With one hop byte the wrist shows
+    // "4E" for both, and a name resolved from that alone would be a coin flip —
+    // which is why the prefix rules refuse. A discovery response, though,
+    // carries the responder's full public key.
+    final capitol = _repeater(
+      id: '01',
+      hexId: '4E5D82AA11',
+      name: 'Capitol Hill',
+      lat: 47.6,
+      lon: -122.3,
+    );
+    final beacon = _repeater(
+      id: '02',
+      hexId: '4E99F1BB22',
+      name: 'Beacon Hill',
+      lat: 47.5,
+      lon: -122.3,
+    );
+
+    test('a full public key names a row the path hash cannot', () {
+      expect(
+        WatchGeoBuilder.resolveUniqueHexPrefixes(
+          repeaters: [capitol, beacon],
+          prefixes: const ['4E'],
+        ),
+        isEmpty,
+        reason: 'the hash alone is genuinely ambiguous, and must stay refused',
+      );
+
+      final resolved = WatchGeoBuilder.resolveOverlayRepeaters(
+        repeaters: [capitol, beacon],
+        displayIds: const ['4E'],
+        identities: const {'4E': '4E99F1BB2233445566'},
+      );
+
+      expect(resolved['4E']?.name, 'Beacon Hill',
+          reason: 'the responder published exactly who it was');
+    });
+
+    test('a row with no identity keeps the ordinary prefix rules', () {
+      // TX echoes and passive RX carry only the path byte. Nothing changes for
+      // them, including the refusal to guess.
+      expect(
+        WatchGeoBuilder.resolveOverlayRepeaters(
+          repeaters: [capitol, beacon],
+          displayIds: const ['4E'],
+        ),
+        isEmpty,
+      );
+
+      final unique = WatchGeoBuilder.resolveOverlayRepeaters(
+        repeaters: [capitol, beacon],
+        displayIds: const ['4E5D'],
+      );
+      expect(unique['4E5D']?.name, 'Capitol Hill');
+    });
+
+    test('an identity that matches nothing falls back rather than giving up',
+        () {
+      // A catalogue entry with no hex at all still resolves by its short ID
+      // through the prefix path, so an unmatched identity must not strand it.
+      final resolved = WatchGeoBuilder.resolveOverlayRepeaters(
+        repeaters: [capitol, beacon],
+        displayIds: const ['4E5D'],
+        identities: const {'4E5D': 'FFFFFFFFFFFF'},
+      );
+
+      expect(resolved['4E5D']?.name, 'Capitol Hill');
+    });
+
+    test('a duplicated catalogue entry is still refused', () {
+      final duplicate = _repeater(
+        id: '03',
+        hexId: '4E99F1BB22',
+        name: 'Beacon Hill (dup)',
+        lat: 47.5,
+        lon: -122.3,
+      );
+
+      final resolved = WatchGeoBuilder.resolveOverlayRepeaters(
+        repeaters: [capitol, beacon, duplicate],
+        displayIds: const ['4E'],
+        identities: const {'4E': '4E99F1BB2233445566'},
+      );
+
+      expect(resolved, isEmpty,
+          reason: 'a longer identity makes collision unlikely, not impossible');
+    });
+
+    test('mixed rows each use the best identity they have', () {
+      // One discovery row that knows exactly who answered, one TX echo that
+      // does not. The echo must not borrow the discovery row's certainty.
+      final resolved = WatchGeoBuilder.resolveOverlayRepeaters(
+        repeaters: [capitol, beacon],
+        displayIds: const ['4E', '4E5D'],
+        identities: const {'4E': '4E99F1BB2233445566'},
+      );
+
+      expect(resolved['4E']?.name, 'Beacon Hill');
+      expect(resolved['4E5D']?.name, 'Capitol Hill');
+    });
+  });
+
   group('indexByHexPrefix', () {
     test('resolves a link from a path-hash prefix to the full hex', () {
       final repeater =

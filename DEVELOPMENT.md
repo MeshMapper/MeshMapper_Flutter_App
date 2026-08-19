@@ -504,11 +504,26 @@ app" prompt instead of going silently stale.
 `WatchGeoBuilder` on the sending side, after merging every source and sorting by
 recency, so a busy TX history cannot erase discovery or trace markers.
 
-**Heard-row names** are resolved per *distinct* hex-prefix length. The RX slot's
-path hash can be a different width than the top rows' — they come from different
-pings, and the zone's hop-byte count sets the width — so a single-length index
-silently drops the odd row's name and distance. `resolveUniqueHexPrefixes` is
-the only correct entry point.
+**Heard-row names** resolve from the fullest identity each row arrived with,
+via `WatchGeoBuilder.resolveOverlayRepeaters`. A path hash is 1–3 bytes and in a
+busy zone routinely matches several repeaters, where naming one would be a coin
+flip — but the phone often knows exactly who answered: a discovery response
+carries the responder's full 64-character public key, and a trace carries its
+4-byte target. Those identities travel beside the overlay rows in
+`_overlayIdentityById`, **replaced wholesale per ping and never merged**, because
+a hash that meant one repeater in a discovery response says nothing about who a
+later TX echo under the same hash was.
+
+TX echoes and passive RX carry only the path byte, so they fall back to prefix
+matching and keep refusing to guess. That fallback indexes per *distinct*
+prefix length: the RX slot's hash can be a different width than the top rows',
+so a single-length index silently drops the odd row's name and distance.
+
+Uniqueness is required at every step. A longer identity makes a collision
+vanishingly unlikely, not impossible, and a confidently wrong name stays worse
+than none. **Never resolve names on the watch** — it holds only the nearest 20
+repeaters, so it would name rows the phone refused as ambiguous across the full
+catalogue.
 
 **Live Activity host support.** ActivityKit answers `sync` with `true`, `false`,
 or `"unsupported"`. `false` means *not right now* — authorization is off, or
