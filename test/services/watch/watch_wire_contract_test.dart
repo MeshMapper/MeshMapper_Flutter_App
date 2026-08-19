@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -2171,6 +2172,61 @@ void main() {
           geoAt(47.6001, fixedAtMs: 1760000030000), 1);
       await pushExpectingSend(geoAt(47.6002, fixedAtMs: 1760000060000), 2);
       expect(sentLat(1), 47.6002);
+    });
+  });
+
+  group('command queue depth', () {
+    setUp(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    });
+
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      ServicesBinding.instance.channelBuffers.resize('meshmapper/watch', 1);
+    });
+
+    /// Push straight at the channel buffer, the way the engine does for a
+    /// platform message with no Dart handler yet.
+    Future<void> push(String id) {
+      final data = const StandardMethodCodec().encodeMethodCall(
+        MethodCall('command', {'id': id, 'kind': 'manualPing'}),
+      );
+      final completer = Completer<void>();
+      ServicesBinding.instance.channelBuffers.push(
+        'meshmapper/watch',
+        data,
+        (_) => completer.complete(),
+      );
+      return completer.future;
+    }
+
+    test('commands arriving before Dart listens are not lost', () async {
+      // A queued command can launch this process, and the native relay fires
+      // as soon as WatchConnectivity delivers — before attachCommandHandler
+      // runs partway through the provider's async init. transferUserInfo hands
+      // each command over exactly once, so a dropped one is gone: the wrist
+      // spins for ten seconds and then says nothing.
+      WatchBridgeService.reserveCommandQueue();
+
+      unawaited(push('early-1'));
+      unawaited(push('early-2'));
+      unawaited(push('early-3'));
+
+      final seen = <String>[];
+      final bridge = WatchBridgeService(
+        channel: const MethodChannel('meshmapper/watch'),
+      );
+      addTearDown(bridge.dispose);
+      bridge.attachCommandHandler((command) {
+        seen.add(command.kind.name);
+        return null;
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(seen.length, 3,
+          reason: 'the default depth of one keeps only the newest');
     });
   });
 }
