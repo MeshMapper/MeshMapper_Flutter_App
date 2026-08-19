@@ -39,6 +39,16 @@ final class LiveActivityManager {
           let parsed = try parse(payload)
           try await sync(attributes: parsed.attributes, state: parsed.state)
           result(true)
+        } catch ActivityAuthorizationError.visibility {
+          // ActivityKit only permits `request` from a foreground app, and a
+          // session can begin backgrounded — auto-ping is restored after a BLE
+          // auto-reconnect under the background service. Reported as an error
+          // this bypassed Dart's 30 s backoff, which only arms on a `false`
+          // result, so every throttled sync retried and logged a failure for as
+          // long as the app stayed in the background. `false` is the honest
+          // answer anyway: there is nowhere to put an activity right now.
+          NSLog("[LIVE ACTIVITY] Cannot start while backgrounded; will retry")
+          result(false)
         } catch {
           result(self.flutterError(error, code: "sync_failed"))
         }
