@@ -494,19 +494,36 @@ void main() {
       }
     });
 
-    test('Passive ignores blockers that only constrain a transmitting start',
+    test('Passive ignores the policy blockers that only constrain a TX start',
         () {
       final passive = startAvailability(
         isTransmitMode: false,
-        cooldownActive: true,
-        isPingSending: true,
-        rxWindowActive: true,
         txBlockedByOffline: true,
         txNotAllowed: true,
         transmitValidationReason: 'Waiting for GPS lock',
       );
 
       expect(passive, (allowed: true, reason: null));
+    });
+
+    test('Passive still waits out a manual ping, because Passive transmits',
+        () {
+      // Passive Mode starts by sending a discovery request and repeats it every
+      // 30 s. Letting the wrist start one inside a manual ping's TX window puts
+      // a second transmit on air where the phone's own Passive button is dead.
+      final blocked = <String, SessionStartAvailability>{
+        'Cooling down':
+            startAvailability(isTransmitMode: false, cooldownActive: true),
+        'Ping in progress':
+            startAvailability(isTransmitMode: false, isPingSending: true),
+        'Listening for ping response':
+            startAvailability(isTransmitMode: false, rxWindowActive: true),
+      };
+
+      for (final entry in blocked.entries) {
+        expect(entry.value.allowed, isFalse, reason: entry.key);
+        expect(entry.value.reason, entry.key);
+      }
     });
   });
 
