@@ -510,6 +510,26 @@ WatchRequestedStartModeResolution resolveWatchRequestedStartMode({
   return (mode: mode, refusal: null);
 }
 
+/// Which start modes the wrist may offer.
+///
+/// Advertisement, not admission. Transient conditions — a ping in flight, a
+/// cooldown — belong to [resolveSessionStartAvailability] and would only make
+/// the option list flicker; what belongs here is whether a mode could start at
+/// all in the current configuration.
+///
+/// Offline Mode is part of that configuration. Advertising Hybrid while it is
+/// on offered the wearer a button every start refuses with 'Offline Mode' — a
+/// permanently dead option on a screen with room for two.
+List<WatchStartMode> resolveAvailableWatchStartModes({
+  required bool isConnected,
+  required bool txAllowed,
+  required bool offlineMode,
+}) =>
+    [
+      WatchStartMode.passive,
+      if (isConnected && txAllowed && !offlineMode) WatchStartMode.hybrid,
+    ];
+
 typedef WatchCommandAdmission = ({bool shouldRun, String? refusal});
 
 typedef SessionStartAvailability = ({bool allowed, String? reason});

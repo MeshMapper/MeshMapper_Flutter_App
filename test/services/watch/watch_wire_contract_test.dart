@@ -528,6 +528,66 @@ void main() {
       expect(result, (mode: null, refusal: null));
     });
 
+    test('the wrist is never offered a mode every start would refuse', () {
+      // Hybrid used to be advertised whenever the phone was connected and TX
+      // was allowed, ignoring Offline Mode — where sessionStartAvailability
+      // refuses every start with 'Offline Mode'. That is a permanently dead
+      // button on a screen with room for two.
+      expect(
+        resolveAvailableWatchStartModes(
+          isConnected: true,
+          txAllowed: true,
+          offlineMode: true,
+        ),
+        [WatchStartMode.passive],
+      );
+
+      expect(
+        resolveAvailableWatchStartModes(
+          isConnected: true,
+          txAllowed: true,
+          offlineMode: false,
+        ),
+        [WatchStartMode.passive, WatchStartMode.hybrid],
+      );
+
+      // Passive is always offered: it is what the wrist falls back to, and the
+      // phone still re-validates the start.
+      for (final connected in [true, false]) {
+        for (final tx in [true, false]) {
+          expect(
+            resolveAvailableWatchStartModes(
+              isConnected: connected,
+              txAllowed: tx,
+              offlineMode: false,
+            ),
+            contains(WatchStartMode.passive),
+          );
+        }
+      }
+    });
+
+    test('an advertised Hybrid is one the start gate actually admits', () {
+      // The pairing the two resolvers must agree on: whenever Hybrid is
+      // offered, a start in that mode is not refused for a configuration
+      // reason. Transient timing guards are deliberately not checked here.
+      for (final offline in [true, false]) {
+        final offered = resolveAvailableWatchStartModes(
+          isConnected: true,
+          txAllowed: true,
+          offlineMode: offline,
+        ).contains(WatchStartMode.hybrid);
+
+        final admitted = startAvailability(
+          isTransmitMode: true,
+          txBlockedByOffline: offline,
+        );
+
+        expect(offered, admitted.allowed,
+            reason: 'offered and admitted must not drift on Offline Mode');
+      }
+    });
+
     test('start admission names every shared blocked precondition', () {
       final blocked = <String, SessionStartAvailability>{
         'Not connected': startAvailability(isConnected: false),
