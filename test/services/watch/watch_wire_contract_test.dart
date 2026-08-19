@@ -60,7 +60,8 @@ WatchSnapshot _snapshot({
       pingColor: const WatchColor(1, 0, 0),
       phaseDurationMs: phaseDurationMs,
       cue: cue,
-      updatedAt: updatedAt ?? DateTime.fromMillisecondsSinceEpoch(1759999999000),
+      updatedAt:
+          updatedAt ?? DateTime.fromMillisecondsSinceEpoch(1759999999000),
     );
 
 void main() {
@@ -275,6 +276,63 @@ void main() {
         'lon',
         'color',
         'heardThisCycle',
+      });
+    });
+
+    test('geo wire objects pin the key names the watch decodes', () {
+      // Every one of these is non-optional on the Swift side, so a rename here
+      // does not degrade — it fails `WatchSnapshot`'s throwing decode and the
+      // watch stops receiving anything at all. Renaming `fixedAtMs` otherwise
+      // passes this entire suite.
+      final position = WatchPosition(
+        lat: 47.6,
+        lon: -122.3,
+        headingDeg: 90,
+        accuracyM: 5,
+        fixedAt: DateTime.utc(2026, 8, 12),
+      );
+      expect(position.toMap().keys.toSet(), {
+        'lat',
+        'lon',
+        'headingDeg',
+        'accuracyM',
+        'fixedAtMs',
+      });
+
+      final ping = WatchPing(
+        id: 'tx-1',
+        lat: 47.6,
+        lon: -122.3,
+        kind: 'tx',
+        color: const WatchColor(1, 0, 0),
+        at: DateTime.utc(2026, 8, 12),
+      );
+      expect(ping.toMap().keys.toSet(), {
+        'id',
+        'lat',
+        'lon',
+        'kind',
+        'color',
+        'atMs',
+      });
+
+      final heard = WatchHeardNode(
+        id: '4E5D',
+        name: 'Capitol Hill',
+        snr: 7.5,
+        at: DateTime.utc(2026, 8, 12),
+        distanceM: 1200,
+        snrColor: const WatchColor(0, 1, 0),
+        typeColor: const WatchColor(0, 0, 1),
+      );
+      expect(heard.toMap().keys.toSet(), {
+        'id',
+        'name',
+        'snr',
+        'atMs',
+        'distanceM',
+        'snrColor',
+        'typeColor',
       });
     });
 
@@ -884,7 +942,8 @@ void main() {
           updatedAt: DateTime.fromMillisecondsSinceEpoch(1760000600000),
           forceDelivery: true,
         );
-        expect(syncCalls, 2, reason: 'the refused attempt still reached native');
+        expect(syncCalls, 2,
+            reason: 'the refused attempt still reached native');
 
         syncSucceeds = true;
         // Note the absent forceDelivery: the obligation has to be the thing
@@ -1061,6 +1120,42 @@ void main() {
       final second = await sendCommand('cmd-2', 'startSession');
       expect(second?['accepted'], isTrue);
       expect(handled, hasLength(2));
+    });
+
+    test('a refused queued command is never retried once conditions change',
+        () async {
+      // The counterpart to the test above, and the branch that matters on a
+      // shipping watch: transferUserInfo has no reply to act on a refusal, so
+      // WatchConnectivity redelivers the same tap on its own schedule.
+      // Forgetting the ID the way the legacy reply path does would let a stale
+      // wrist action transmit the moment the phone became willing.
+      var refuse = true;
+      final issuedAtMs = DateTime.now().millisecondsSinceEpoch.toDouble();
+      bridge.attachCommandHandler((command) async {
+        handled.add(command.kind);
+        return refuse ? 'Not connected' : null;
+      });
+
+      final first = await sendCommand(
+        'queued-2',
+        'startSession',
+        issuedAtMs: issuedAtMs,
+      );
+      expect(first?['accepted'], isFalse);
+      expect(first?['reason'], 'Not connected');
+
+      refuse = false;
+      final redelivered = await sendCommand(
+        'queued-2',
+        'startSession',
+        issuedAtMs: issuedAtMs,
+      );
+
+      expect(handled, hasLength(1),
+          reason: 'redelivery must never turn yesterday\'s tap into a '
+              'transmit');
+      expect(redelivered?['accepted'], isTrue,
+          reason: 'the dedupe reply acks delivery, not a fresh admission');
     });
 
     // transferUserInfo keeps a tapped command alive until the phone is
@@ -1428,7 +1523,8 @@ void main() {
       // A newer fix time and a couple of metres. This is a stationary phone,
       // and it must not reach the radio — including on the retry the throttle
       // scheduled, which `settle` has already allowed to fire.
-      await pushExpectingSuppression(geoAt(47.60002, fixedAtMs: 1760000030000), 1);
+      await pushExpectingSuppression(
+          geoAt(47.60002, fixedAtMs: 1760000030000), 1);
 
       // The same two metres, now travelling with a ping. The ping alone
       // defeats the dedupe, so this send happens either way; the assertion is
@@ -1499,7 +1595,8 @@ void main() {
       // on its own, but the second lands ~22 m from the fix the watch actually
       // holds, so it goes. Anchoring on the previous *computed* fix instead
       // would suppress a wearer walking away one short step at a time.
-      await pushExpectingSuppression(geoAt(47.6001, fixedAtMs: 1760000030000), 1);
+      await pushExpectingSuppression(
+          geoAt(47.6001, fixedAtMs: 1760000030000), 1);
       await pushExpectingSend(geoAt(47.6002, fixedAtMs: 1760000060000), 2);
       expect(sentLat(1), 47.6002);
     });
