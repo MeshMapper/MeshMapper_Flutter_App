@@ -219,7 +219,17 @@ class WatchBridgeService {
         _lastMapGeoClaimIssuedAtMs = issuedAtMs;
       }
     }
-    if (kind != WatchCommandKind.requestSnapshot && issuedAtMs != null) {
+    // Stopping is exempt for the same reason as requestSnapshot: the window
+    // exists so a late command cannot put a transmit on air from the wrong
+    // place, and a stop takes the radio *off* air. Refusing a queued stop that
+    // was slow to arrive — the phone out of range, the watch suspended mid
+    // transfer — leaves the session transmitting after the wearer asked it to
+    // end, which is the failure the window is supposed to prevent.
+    const ageExemptKinds = {
+      WatchCommandKind.requestSnapshot,
+      WatchCommandKind.stopSession,
+    };
+    if (!ageExemptKinds.contains(kind) && issuedAtMs != null) {
       // Both bounds matter. Too old is the obvious case; too far in the future
       // is the same bug wearing a disguise, because a watch clock running fast
       // makes `ageMs` negative and would otherwise extend the window by however
