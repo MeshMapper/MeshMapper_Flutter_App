@@ -5242,6 +5242,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Forward a successfully uploaded offline batch to the Custom API endpoint.
+  ///
+  /// The whole batch is stamped with the upload-location zone (the fresh
+  /// /auth at the current GPS position), not where the pings were recorded —
+  /// the client cannot compute per-ping zones for sessions that span regions.
   void _forwardOfflineBatchToCustomApi(
     List<Map<String, dynamic>> batch, {
     required int batchNum,

@@ -52,13 +52,11 @@ class CustomApiService {
     if (pings.isEmpty) return;
 
     final prefs = _prefsGetter();
+    if (!prefs.customApiEnabled) return;
+
     debugLog(
         '[CUSTOM API] Forward requested ($source): ${pings.length} item(s)');
 
-    if (!prefs.customApiEnabled) {
-      debugLog('[CUSTOM API] Forward skipped ($source): Custom API disabled');
-      return;
-    }
     if (prefs.customApiUrl == null || prefs.customApiUrl!.isEmpty) {
       debugLog('[CUSTOM API] Forward skipped ($source): URL not configured');
       return;
@@ -74,8 +72,12 @@ class CustomApiService {
         : null;
     final iata = iataOverride ?? iataGetter?.call();
 
-    debugLog(
-        '[CUSTOM API] Forwarding ($source) → ${prefs.customApiUrl} '
+    // Log the endpoint host only — the full URL may embed auth tokens, and
+    // debug log files are uploaded verbatim with bug reports.
+    var endpointHost = Uri.tryParse(prefs.customApiUrl!)?.host ?? '';
+    if (endpointHost.isEmpty) endpointHost = 'custom endpoint';
+
+    debugLog('[CUSTOM API] Forwarding ($source) → $endpointHost '
         '(contact=${contact ?? "off"}, iata=${iata ?? "none"})');
 
     final enriched = pings.map((ping) {
