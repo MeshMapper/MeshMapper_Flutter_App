@@ -550,14 +550,24 @@ bool resolveShouldShowWatchDiagnostics({
 /// Offline Mode is part of that configuration. Advertising Hybrid while it is
 /// on offered the wearer a button every start refuses with 'Offline Mode' — a
 /// permanently dead option on a screen with room for two.
+///
+/// So is flood traffic, and that one is the default state rather than an edge.
+/// The phone builds Send Ping and the Active/Hybrid button inside
+/// `if (!txNotAllowed && floodTrafficVisible)`, so with flood off those
+/// controls do not exist — and [floodTrafficEnabled] folds in the regional
+/// `flood_disabled` veto, which a zone admin sets and the wearer cannot
+/// override. A wrist offering Hybrid there advertises a control the phone
+/// withholds, and in the veto case one a zone admin forbade.
 List<WatchStartMode> resolveAvailableWatchStartModes({
   required bool isConnected,
   required bool txAllowed,
   required bool offlineMode,
+  required bool floodTrafficEnabled,
 }) =>
     [
       WatchStartMode.passive,
-      if (isConnected && txAllowed && !offlineMode) WatchStartMode.hybrid,
+      if (isConnected && txAllowed && !offlineMode && floodTrafficEnabled)
+        WatchStartMode.hybrid,
     ];
 
 typedef WatchCommandAdmission = ({bool shouldRun, String? refusal});
@@ -574,9 +584,9 @@ typedef SessionStartAvailability = ({bool allowed, String? reason});
 /// phone's own Passive button is dead during all three.
 ///
 /// What stays transmit-only is *policy* rather than timing: offline mode, a
-/// passive-only zone, and the auto-mode validation reason all describe whether
-/// the wearer may originate a TX ping, and the phone's Passive button ignores
-/// them too.
+/// passive-only zone, flood traffic being off, and the auto-mode validation
+/// reason all describe whether the wearer may originate a TX ping, and the
+/// phone's Passive button ignores them all.
 ///
 /// The setup and transition guards still apply to every mode. Keeping that
 /// split here prevents the offered button and the radio admission from
@@ -594,6 +604,7 @@ SessionStartAvailability resolveSessionStartAvailability({
   required bool rxWindowActive,
   required bool txBlockedByOffline,
   required bool txNotAllowed,
+  required bool floodTrafficEnabled,
   required String? transmitValidationReason,
 }) {
   if (!isConnected) return (allowed: false, reason: 'Not connected');
@@ -620,6 +631,13 @@ SessionStartAvailability resolveSessionStartAvailability({
 
   if (txBlockedByOffline) return (allowed: false, reason: 'Offline Mode');
   if (txNotAllowed) return (allowed: false, reason: 'Passive Only');
+  // True whether the wearer turned flood traffic off or a regional admin did;
+  // the phone's own gate is the same single effective value, and the wearer's
+  // next step — look at the phone, where Settings says which it was — is the
+  // same either way.
+  if (!floodTrafficEnabled) {
+    return (allowed: false, reason: 'Flood Traffic Off');
+  }
   if (transmitValidationReason != null) {
     return (allowed: false, reason: transmitValidationReason);
   }

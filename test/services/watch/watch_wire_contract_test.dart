@@ -439,6 +439,7 @@ void main() {
       bool rxWindowActive = false,
       bool txBlockedByOffline = false,
       bool txNotAllowed = false,
+      bool floodTrafficEnabled = true,
       String? transmitValidationReason,
     }) =>
         resolveSessionStartAvailability(
@@ -454,6 +455,7 @@ void main() {
           rxWindowActive: rxWindowActive,
           txBlockedByOffline: txBlockedByOffline,
           txNotAllowed: txNotAllowed,
+          floodTrafficEnabled: floodTrafficEnabled,
           transmitValidationReason: transmitValidationReason,
         );
 
@@ -574,6 +576,7 @@ void main() {
           isConnected: true,
           txAllowed: true,
           offlineMode: true,
+          floodTrafficEnabled: true,
         ),
         [WatchStartMode.passive],
       );
@@ -583,6 +586,7 @@ void main() {
           isConnected: true,
           txAllowed: true,
           offlineMode: false,
+          floodTrafficEnabled: true,
         ),
         [WatchStartMode.passive, WatchStartMode.hybrid],
       );
@@ -596,6 +600,7 @@ void main() {
               isConnected: connected,
               txAllowed: tx,
               offlineMode: false,
+              floodTrafficEnabled: true,
             ),
             contains(WatchStartMode.passive),
           );
@@ -603,25 +608,65 @@ void main() {
       }
     });
 
+    test('flood traffic off withdraws Hybrid from the wrist', () {
+      // The phone builds Send Ping and the Active/Hybrid button inside
+      // `if (!txNotAllowed && floodTrafficVisible)`, so with flood off neither
+      // control exists. The preference defaults off and a regional
+      // `flood_disabled` veto forces it off, so a wrist that ignored this was
+      // advertising a phone-withheld control in the *default* configuration —
+      // and in the veto case one a zone admin forbade.
+      expect(
+        resolveAvailableWatchStartModes(
+          isConnected: true,
+          txAllowed: true,
+          offlineMode: false,
+          floodTrafficEnabled: false,
+        ),
+        [WatchStartMode.passive],
+        reason: 'Passive is not flood traffic and stays offered',
+      );
+    });
+
     test('an advertised Hybrid is one the start gate actually admits', () {
       // The pairing the two resolvers must agree on: whenever Hybrid is
       // offered, a start in that mode is not refused for a configuration
       // reason. Transient timing guards are deliberately not checked here.
       for (final offline in [true, false]) {
-        final offered = resolveAvailableWatchStartModes(
-          isConnected: true,
-          txAllowed: true,
-          offlineMode: offline,
-        ).contains(WatchStartMode.hybrid);
+        for (final flood in [true, false]) {
+          final offered = resolveAvailableWatchStartModes(
+            isConnected: true,
+            txAllowed: true,
+            offlineMode: offline,
+            floodTrafficEnabled: flood,
+          ).contains(WatchStartMode.hybrid);
 
-        final admitted = startAvailability(
-          isTransmitMode: true,
-          txBlockedByOffline: offline,
-        );
+          final admitted = startAvailability(
+            isTransmitMode: true,
+            txBlockedByOffline: offline,
+            floodTrafficEnabled: flood,
+          );
 
-        expect(offered, admitted.allowed,
-            reason: 'offered and admitted must not drift on Offline Mode');
+          expect(offered, admitted.allowed,
+              reason: 'offered and admitted must not drift on '
+                  'offline=$offline flood=$flood');
+        }
       }
+    });
+
+    test('flood traffic gates transmit starts but never Passive', () {
+      final hybrid =
+          startAvailability(isTransmitMode: true, floodTrafficEnabled: false);
+      expect(hybrid.allowed, isFalse);
+      expect(hybrid.reason, 'Flood Traffic Off');
+
+      // Passive monitoring is not flood traffic. The phone's Passive button
+      // sits outside the flood gate, so the wrist's must too — withdrawing it
+      // would strand a wearer with no way to start anything at all.
+      expect(
+        startAvailability(isTransmitMode: false, floodTrafficEnabled: false)
+            .allowed,
+        isTrue,
+      );
     });
 
     test('start admission names every shared blocked precondition', () {

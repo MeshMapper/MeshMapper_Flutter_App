@@ -1567,6 +1567,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // This must remain the sole copy of the app button's gate. One caller says
     // what the wrist may offer while the other decides whether the radio may
     // transmit; letting those answers drift makes a stale watch payload unsafe.
+    //
+    // That gate has two halves and this used to copy only the inner one. Send
+    // Ping is built inside `if (!txNotAllowed && floodTrafficVisible)`, so
+    // with flood traffic off the phone has no such button at all — and since
+    // the preference defaults off and a regional `flood_disabled` veto forces
+    // it off, the wrist was admitting the common case, not an edge one.
+    final floodAllowed = floodTrafficEnabled;
     final canPingManual = manualPingValidation == PingValidation.valid;
     final isAutoStarting = isAutoPingStarting;
     final isTxModeActive = isTxModeRunning;
@@ -1579,7 +1586,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final pingSending = isPingSending;
     final discoveryWindowActive = discoveryWindowTimer.isRunning;
     final pendingDisable = isPendingDisable;
-    final allowed = canPingManual &&
+    final allowed = floodAllowed &&
+        canPingManual &&
         !isAutoStarting &&
         !isTxModeActive &&
         !isTargetedRunning &&
@@ -1606,6 +1614,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       reason = 'Offline Mode';
     } else if (txNotAllowed) {
       reason = 'Passive Only';
+    } else if (!floodAllowed) {
+      reason = 'Flood Traffic Off';
     } else if (manualPingValidation == PingValidation.manualCooldownActive ||
         cooldownActive ||
         manualCooldownActive ||
@@ -1637,6 +1647,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         isConnected: isConnected,
         txAllowed: txAllowed,
         offlineMode: offlineMode,
+        floodTrafficEnabled: floodTrafficEnabled,
       );
 
   String get _resolvedWatchSessionModeTitle =>
@@ -1667,8 +1678,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // and receive windows would otherwise replace Ping with Stop beneath a
       // thumb. TX sessions cannot manually ping for their entire lifetime, so
       // they keep Stop available even in a region where TX is permitted.
+      //
+      // Flood traffic belongs here rather than with the timing guards, for the
+      // same reason `txAllowed` does: it is a stable configuration fact, not a
+      // transient one. Leaving it out would hand the map toolbar's one corner
+      // to a Ping that can never fire — and that corner is where Stop lives.
       manualPingApplicable: isConnected &&
           txAllowed &&
+          floodTrafficEnabled &&
           !isTxModeRunning &&
           !isTargetedModeRunning,
       manualCooldownEndsAt: cooldownMs > 0
@@ -1719,6 +1736,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       rxWindowActive: _rxWindowTimer.isRunning,
       txBlockedByOffline: offlineMode && isConnected,
       txNotAllowed: isConnected && !txAllowed,
+      floodTrafficEnabled: floodTrafficEnabled,
       transmitValidationReason:
           validation == PingValidation.valid ? null : validation.message,
     );

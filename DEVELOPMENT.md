@@ -488,7 +488,17 @@ a lost ack.
   offered button and the admitted command. **Passive counts as transmitting** —
   it sends a discovery request on start and every 30 s — so the manual-ping,
   RX-window and cooldown guards apply to every mode. Only offline mode,
-  passive-only zones and TX validation are transmit-only.
+  passive-only zones, flood traffic being off, and TX validation are
+  transmit-only.
+- **Flood traffic is an existence policy, not a preference.** The phone builds
+  Send Ping and the Active/Hybrid button inside
+  `if (!txNotAllowed && floodTrafficVisible)`, so with flood off those controls
+  do not exist — and `floodTrafficEnabled` folds in the regional
+  `flood_disabled` veto a zone admin sets. It gates the wrist on both sides:
+  `resolveAvailableWatchStartModes` withdraws Hybrid, and
+  `resolveSessionStartAvailability` plus `_manualPingAvailability` refuse with
+  'Flood Traffic Off'. The preference **defaults off**, so a wrist that skips
+  this admits the common configuration rather than an edge one.
 
 **Wire versioning** (`WatchWire.version`, mirrored in
 `ios/Shared/MeshMapperWatchPayload.swift`)
