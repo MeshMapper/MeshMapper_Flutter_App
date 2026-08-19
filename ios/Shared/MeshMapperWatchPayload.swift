@@ -31,7 +31,11 @@ enum MeshMapperWatchWire {
   /// Rejecting that pair would add no protection.
   static let version = 2
 
-  /// Caps, mirrored in Dart. Enforced on send *and* validated on receive.
+  /// Caps, mirrored in Dart and enforced by `WatchGeoBuilder` on send.
+  ///
+  /// The receiving side does not truncate: these values describe what the phone
+  /// promises to send, and the views size themselves from what actually
+  /// arrives. A peer that ignored them would render more rows, not crash.
   static let maxPings = 60
   static let maxRepeaters = 20
 
