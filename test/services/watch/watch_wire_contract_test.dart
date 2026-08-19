@@ -524,6 +524,60 @@ void main() {
       expect(WatchCommandKind.fromWire('selfDestruct'), isNull);
     });
 
+    test('a queued Stop cannot end a session it never saw', () {
+      // Stop is exempt from the transmit-age window, so it can arrive
+      // arbitrarily late — the phone out of range, the watch suspended mid
+      // transfer. That exemption assumed one session was as good as another.
+      // A Stop queued against A, delivered after A ended and B began, used to
+      // stop B silently, and the wearer found out by noticing that recording
+      // had halted.
+      final wrongSession = resolveWatchSessionCommandAdmission(
+        kind: WatchCommandKind.stopSession,
+        isSessionActive: true,
+        isSessionStarting: false,
+        requestedSessionId: 'session-a',
+        currentSessionId: 'session-b',
+      );
+      expect(wrongSession.shouldRun, isFalse);
+      expect(wrongSession.refusal, 'That session already ended');
+
+      final sameSession = resolveWatchSessionCommandAdmission(
+        kind: WatchCommandKind.stopSession,
+        isSessionActive: true,
+        isSessionStarting: false,
+        requestedSessionId: 'session-a',
+        currentSessionId: 'session-a',
+      );
+      expect(sameSession, (shouldRun: true, refusal: null));
+
+      // An older watch build names no session. It is admitted exactly as it
+      // was before the field existed, because refusing it would strand a
+      // wearer whose only Stop button the phone had stopped honouring.
+      final olderBuild = resolveWatchSessionCommandAdmission(
+        kind: WatchCommandKind.stopSession,
+        isSessionActive: true,
+        isSessionStarting: false,
+        currentSessionId: 'session-b',
+      );
+      expect(olderBuild, (shouldRun: true, refusal: null));
+    });
+
+    test('a Stop with nothing running stays a harmless no-op', () {
+      // Checked after the active-session gate on purpose. With no session, a
+      // mismatched id must not turn a silent no-op into a refusal for
+      // something that is already over — the wearer asked for stopped, and
+      // stopped is what they have.
+      final stop = resolveWatchSessionCommandAdmission(
+        kind: WatchCommandKind.stopSession,
+        isSessionActive: false,
+        isSessionStarting: false,
+        requestedSessionId: 'session-a',
+        currentSessionId: 'idle',
+      );
+
+      expect(stop, (shouldRun: false, refusal: null));
+    });
+
     test('Start is idempotent while starting but Stop tells the truth', () {
       final start = resolveWatchSessionCommandAdmission(
         kind: WatchCommandKind.startSession,
@@ -851,6 +905,7 @@ void main() {
       double? issuedAtMs,
       double? clockOffsetMs,
       bool? forceRefresh,
+      String? sessionId,
     }) async {
       final result = await TestDefaultBinaryMessengerBinding
           .instance.defaultBinaryMessenger
@@ -865,6 +920,7 @@ void main() {
             if (issuedAtMs != null) 'issuedAtMs': issuedAtMs,
             if (clockOffsetMs != null) 'clockOffsetMs': clockOffsetMs,
             if (forceRefresh != null) 'forceRefresh': forceRefresh,
+            if (sessionId != null) 'sessionId': sessionId,
           }),
         ),
         null,
@@ -1846,6 +1902,36 @@ void main() {
 
       expect(reply?['accepted'], isFalse);
       expect(reply?['reason'], 'Command failed');
+    });
+
+    test('a stop command carries its session id to admission', () async {
+      // The bridge is the only place that names the wire key, and the watch
+      // target has no Swift tests to pin the other end. If `sessionId` were
+      // renamed here, every production stop would arrive unattributed and be
+      // admitted against whatever session happened to be running — the exact
+      // failure the field exists to prevent, reintroduced silently.
+      WatchCommand? seen;
+      bridge.attachCommandHandler((command) {
+        seen = command;
+        return null;
+      });
+
+      await sendCommand('stop-1', 'stopSession', sessionId: 'session-a');
+
+      expect(seen?.kind, WatchCommandKind.stopSession);
+      expect(seen?.sessionId, 'session-a');
+    });
+
+    test('a stop from an older watch build names no session', () async {
+      WatchCommand? seen;
+      bridge.attachCommandHandler((command) {
+        seen = command;
+        return null;
+      });
+
+      await sendCommand('stop-2', 'stopSession');
+
+      expect(seen?.sessionId, isNull);
     });
 
     test('a start command carries its requested mode to admission', () async {

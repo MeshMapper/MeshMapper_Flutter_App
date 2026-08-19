@@ -246,7 +246,11 @@ final class WatchSessionClient: NSObject {
       // phone needs this to measure age, but uses the raw stamp to order
       // map-geo claims, and rewriting that key would make it jump backwards
       // the first time an offset is learned.
-      clockOffsetMs: clockOffset.map { $0 * 1000 }
+      clockOffsetMs: clockOffset.map { $0 * 1000 },
+      // Named here rather than by each caller, so no Stop button can forget
+      // it. This is the session the wearer was actually looking at when they
+      // tapped; the phone refuses the stop if it has since moved on.
+      sessionId: kind == .stopSession ? snapshot?.sessionId : nil
     )
     guard let data = try? MeshMapperWatchWire.encoder.encode(command),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
