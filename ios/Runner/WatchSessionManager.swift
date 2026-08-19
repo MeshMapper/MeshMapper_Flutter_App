@@ -47,6 +47,17 @@ final class WatchSessionManager: NSObject {
   /// identical payload doesn't churn the radio.
   private var lastContextData: Data?
 
+  /// Backoff for retrying a failed activation, doubling to a cap.
+  ///
+  /// A failed activation used to be permanent: Dart's `canSync` stays false, so
+  /// `send(payload:urgent:)` — the only other caller of `activateIfNeeded()` —
+  /// is never reached, and the diagnostics screen polls `status` without ever
+  /// asking for another attempt. The watch then stayed unreachable for the life
+  /// of the process even after whatever caused the failure went away.
+  private var activationRetryDelay: TimeInterval = 2
+  private static let maximumActivationRetryDelay: TimeInterval = 60
+  private var activationRetryScheduled = false
+
   func attach(channel: FlutterMethodChannel) {
     self.channel = channel
     activateIfNeeded()
@@ -54,9 +65,23 @@ final class WatchSessionManager: NSObject {
 
   private func activateIfNeeded() {
     guard let session else { return }
-    if session.activationState != .activated {
+    // `.inactive` belongs to `sessionDidDeactivate`, which reactivates on its
+    // own; activating from here would race it.
+    if session.activationState == .notActivated {
       session.delegate = self
       session.activate()
+    }
+  }
+
+  private func scheduleActivationRetry() {
+    guard !activationRetryScheduled, session != nil else { return }
+    activationRetryScheduled = true
+    let delay = activationRetryDelay
+    activationRetryDelay = min(delay * 2, Self.maximumActivationRetryDelay)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+      guard let self else { return }
+      self.activationRetryScheduled = false
+      self.activateIfNeeded()
     }
   }
 
@@ -79,6 +104,9 @@ final class WatchSessionManager: NSObject {
       result(nil)
 
     case "status":
+      // Dart polls this while the diagnostics screen is open, which makes it a
+      // natural second chance at an activation that failed at launch.
+      activateIfNeeded()
       result(statusDictionary())
 
     default:
@@ -149,11 +177,34 @@ final class WatchSessionManager: NSObject {
   /// exists. Push changes as well as answering its startup query: pairing and
   /// app installation can happen after Flutter has been alive for hours, and
   /// a launch-time false must never become a permanent gate.
-  private func publishStatus() {
+  ///
+  /// - Parameter nativeCacheCleared: whether `lastContextData` was dropped
+  ///   alongside this push. Dart mirrors that cache to decide what it can
+  ///   dedupe, so it needs to know which pushes invalidate it and which do not.
+  ///   Only `sessionWatchStateDidChange` clears it here; reachability flips on
+  ///   every wrist raise and lower, and telling Dart to forget everything that
+  ///   often forced a full context resend per glance and voided the map-geo
+  ///   lease.
+  private func publishStatus(nativeCacheCleared: Bool = false) {
     guard let channel else { return }
     DispatchQueue.main.async {
-      channel.invokeMethod("availabilityChanged", arguments: self.statusDictionary())
+      var status = self.statusDictionary()
+      status["nativeCacheCleared"] = nativeCacheCleared
+      channel.invokeMethod("availabilityChanged", arguments: status)
     }
+  }
+
+  /// Drop the keys whose value is Dart `null`.
+  ///
+  /// The standard method codec decodes Dart's `null` as `NSNull`, which is not
+  /// a property-list type, and `WCSession`'s `replyHandler` raises on anything
+  /// that isn't. Every *accepted* command replies `{"accepted": true, "reason":
+  /// null}`, so without this the legacy reply path failed on precisely its
+  /// success case — the one case the overload is kept around to serve. An
+  /// absent key reads the same as a null one on the watch, which decodes the
+  /// reply into optionals.
+  private static func propertyListSafe(_ dict: [String: Any]) -> [String: Any] {
+    dict.filter { !($0.value is NSNull) }
   }
 
   private func flutterError(_ error: Error, code: String) -> FlutterError {
@@ -185,7 +236,7 @@ final class WatchSessionManager: NSObject {
       channel.invokeMethod("command", arguments: payload) { response in
         if let dict = response as? [String: Any] {
           NSLog("[WATCH] Command \(kind) acked: accepted=\(dict["accepted"] ?? "?")")
-          reply(dict)
+          reply(Self.propertyListSafe(dict))
         } else {
           NSLog("[WATCH] Command \(kind) got no response from Dart")
           reply(["accepted": false, "reason": "No response"])
@@ -205,6 +256,9 @@ extension WatchSessionManager: WCSessionDelegate {
   ) {
     if let error {
       NSLog("[WATCH] Activation failed: \(error.localizedDescription)")
+      DispatchQueue.main.async { [weak self] in self?.scheduleActivationRetry() }
+    } else if activationState == .activated {
+      DispatchQueue.main.async { [weak self] in self?.activationRetryDelay = 2 }
     }
     publishStatus()
   }
@@ -226,7 +280,7 @@ extension WatchSessionManager: WCSessionDelegate {
       // A newly installed or newly paired watch has no context yet.
       self?.lastContextData = nil
     }
-    publishStatus()
+    publishStatus(nativeCacheCleared: true)
   }
 
   /// The documented signal for reachability changing. Without it, the status
