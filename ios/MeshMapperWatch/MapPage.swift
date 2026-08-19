@@ -2548,7 +2548,7 @@ private struct RepeaterPin: View {
 ///
 ///     xcrun devicectl device copy from --device <id> \
 ///       --domain-type appDataContainer \
-///       --domain-identifier dev.agessaman.meshmapper.watchkitapp \
+///       --domain-identifier net.meshmapper.app.watchkitapp \
 ///       --source Documents/wake-timings.log --destination .
 ///
 /// Lines still go to `NSLog` as well, so Console.app keeps working for anyone
