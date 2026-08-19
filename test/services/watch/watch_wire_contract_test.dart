@@ -1009,7 +1009,9 @@ void main() {
     // far in the future" is a skewed watch clock buying the same command extra
     // life. requestSnapshot is deliberately exempt — it transmits nothing.
     group('queued command age', () {
-      const transmitting = ['startSession', 'stopSession', 'manualPing'];
+      // Stop is absent on purpose: it takes the radio off air, so a late one
+      // is always the safe direction and is exempt below.
+      const transmitting = ['startSession', 'manualPing'];
 
       double nowMs() => DateTime.now().millisecondsSinceEpoch.toDouble();
 
@@ -1102,6 +1104,41 @@ void main() {
         expect(reply?['accepted'], isTrue,
             reason: 'asking for state transmits nothing and cannot go stale');
         expect(handled, [WatchCommandKind.requestSnapshot]);
+      });
+
+      test('an aged stopSession is exempt, because stopping is the safe way',
+          () async {
+        bridge.attachCommandHandler((command) async {
+          handled.add(command.kind);
+          return null;
+        });
+
+        final reply = await sendCommand(
+          'aged-stop',
+          'stopSession',
+          issuedAtMs: nowMs() - const Duration(minutes: 5).inMilliseconds,
+        );
+
+        expect(reply?['accepted'], isTrue,
+            reason: 'refusing a late stop leaves the radio transmitting');
+        expect(handled, [WatchCommandKind.stopSession]);
+      });
+
+      test('a stopSession from a fast watch clock is exempt too', () async {
+        bridge.attachCommandHandler((command) async {
+          handled.add(command.kind);
+          return null;
+        });
+
+        final reply = await sendCommand(
+          'future-stop',
+          'stopSession',
+          issuedAtMs: nowMs() + const Duration(minutes: 10).inMilliseconds,
+        );
+
+        expect(reply?['accepted'], isTrue,
+            reason: 'skew cannot make stopping unsafe; it can only delay it');
+        expect(handled, [WatchCommandKind.stopSession]);
       });
     });
 
