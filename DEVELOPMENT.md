@@ -442,6 +442,18 @@ Every gate runs before the next, and each exists for a different failure:
 Urgent updates use `sendMessage` and *always* fall through to
 `updateApplicationContext`, so a missed message can't strand the watch.
 
+**The two paths are not ordered against each other, and the watch enforces
+that.** `sendMessage` does not populate `receivedApplicationContext`, so the
+retained context can hold a payload the watch already superseded live — and
+`resume` ingests that context on every wrist raise. `WatchSessionClient.apply`
+therefore refuses anything whose `updatedAt` predates what is already rendered.
+Both stamps come from the one phone clock, so they compare raw. The refusal is
+lifted once the held snapshot is stale, which bounds a backwards clock step to
+90 seconds of refusal instead of the life of the process. There is deliberately
+no wire `seq`: a counter restarting at zero is indistinguishable from an ancient
+one without a process identity beside it, which is a version conversation for
+behaviour this already has.
+
 **Cache invalidation.** Dart's dedupe caches mirror native's `lastContextData`.
 Native clears that only in `sessionWatchStateDidChange` and on `clear`, and says
 so with `nativeCacheCleared` on the `availabilityChanged` push. Reachability

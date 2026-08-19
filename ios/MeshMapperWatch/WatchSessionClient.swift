@@ -611,10 +611,59 @@ final class WatchSessionClient: NSObject {
     }
   }
 
+  /// Whether `decoded` supersedes what is already rendered.
+  ///
+  /// **The two delivery paths are not ordered with respect to each other.** An
+  /// urgent update goes out as `sendMessage` *and* as
+  /// `updateApplicationContext`, and only the first is fast. `sendMessage`
+  /// does not populate `receivedApplicationContext`, so the retained context
+  /// keeps whatever last arrived down the slow path — which can be a payload
+  /// this client already superseded live.
+  ///
+  /// That was enough to strand a wearer on stale state with nothing asking for
+  /// better: phone sends P2 both ways, the watch applies P2 from the message,
+  /// the wrist drops and rises before context P2 lands, `resume` ingests the
+  /// retained context and applies P1 over it. P1 is under 90 s old so `resume`
+  /// sees no reason to spend the radio, and the phone's own caches already
+  /// equal P2, so nothing further is sent. The wearer reads P1 until something
+  /// unrelated moves.
+  ///
+  /// Both stamps come from the same phone clock, so they are compared raw —
+  /// `inLocalTime` exists for phone-instant against watch-now, which this is
+  /// not. Equal stamps are accepted: two payloads built in the same
+  /// millisecond are interchangeable, and a forced refresh always restamps
+  /// `updatedAt`, so it can never be mistaken for a replay of itself.
+  ///
+  /// **A stale surface accepts anything.** Ordering is worth enforcing only
+  /// while what is held is still worth protecting. Bounding it this way means
+  /// the worst case of a phone clock stepping backwards is 90 seconds of
+  /// refusal — after which the boundary flips, the next payload lands, and the
+  /// watch recovers on its own. A bare timestamp comparison would refuse for
+  /// the life of the process.
+  ///
+  /// Deliberately no wire `seq`. It would need a phone-process identity beside
+  /// it — a counter that restarts at zero is indistinguishable from an ancient
+  /// one — to buy behaviour this already has without a version conversation.
+  ///
+  /// A rejected payload does not clear a pending command, and does not need
+  /// to: for one to be rejected, a newer payload must already have been
+  /// applied, and that one cleared it.
+  private func isNewerThanCurrent(_ decoded: WatchSnapshot) -> Bool {
+    guard let current = snapshot, !isStale else { return true }
+    return decoded.updatedAt >= current.updatedAt
+  }
+
   private func apply(_ decoded: WatchSnapshot, live: Bool = false) {
     let arrival = Date()
 
+    guard isNewerThanCurrent(decoded) else { return }
+
     // Learned before anything below reads a phone-stamped time.
+    //
+    // Reached only by a payload that won the ordering check above, which also
+    // keeps a *delayed* live message from teaching a wrong offset: its transit
+    // is the measurement, so one that arrives out of order has already failed
+    // the assumption the measurement rests on.
     if live {
       clockOffset = decoded.updatedAt.timeIntervalSince(arrival)
     }
