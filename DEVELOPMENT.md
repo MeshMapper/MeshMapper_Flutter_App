@@ -33,7 +33,32 @@ flutter test
 
 # Run a single test file
 flutter test test/services/gps_service_test.dart
+
+# Watch wire rules — snapshot ordering, cue presentation, staleness.
+# Plain SwiftPM over Foundation-only sources: no Xcode project, no simulator,
+# no signing. macOS only.
+(cd ios/WatchLogicTests && swift test)
+
+# Type-check every watch source against the watchOS SDK, without building
+xcrun --sdk watchos swiftc -typecheck -target arm64_32-apple-watchos11.0 \
+  ios/MeshMapperWatch/*.swift ios/Shared/MeshMapperWatchPayload.swift
 ```
+
+**What the watch is and is not covered by.** `WatchWireRules` in
+`ios/Shared/MeshMapperWatchPayload.swift` holds the decisions that pick what the
+wearer sees, deliberately kept Foundation-only and free of `WCSession` so they
+can be tested at all — `WatchSessionClient` is `@Observable`, `@MainActor`, and
+reaches `WCSession.default` through a computed property with no injection point.
+Logic that belongs to the wire goes there; the client keeps observable state and
+timers. `ios/WatchLogicTests` compiles the shipping file through a symlink, so
+there is no copy to drift.
+
+That covers the rules and, via the type-check, a Swift compile break. It does
+**not** cover WatchConnectivity delivery, SwiftUI, MapKit, or anything about
+target membership: a file added to `ios/MeshMapperWatch/` but never added to the
+target type-checks here and still fails to build in Xcode, as do embed-phase,
+entitlement and signing mistakes. Those still need a real build, and the
+delivery races still need a wrist.
 
 ### Building for Release
 ```bash

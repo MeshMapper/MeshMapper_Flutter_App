@@ -24,3 +24,34 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed .
       - run: flutter analyze
       - run: flutter test
+
+  watch-logic:
+    name: Watch Wire Rules
+    # The watch app's decision logic — snapshot ordering, cue presentation,
+    # staleness — decides what the wearer sees and was previously unreachable
+    # from CI: the analyze job runs on Linux and `flutter test` compiles no
+    # Swift. These are plain SwiftPM tests over Foundation-only sources, so
+    # they need no Xcode project, simulator or signing identity, and run in
+    # seconds. This does not cover WatchConnectivity, SwiftUI or MapKit; those
+    # still want a wrist.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit-test the wire rules
+        run: swift test
+        working-directory: ios/WatchLogicTests
+
+      # Compiles every watch source against the real watchOS SDK without an
+      # Xcode project, a simulator or a signing identity, so a Swift break in
+      # the companion app fails a PR instead of Adam's next device build.
+      #
+      # It type-checks sources; it does not link, and it knows nothing about
+      # target membership. A file added to the folder but never added to the
+      # target still passes here and still fails to build in Xcode, as do
+      # embed-phase, entitlement and signing mistakes.
+      - name: Type-check the watch target
+        run: >
+          xcrun --sdk watchos swiftc -typecheck
+          -target arm64_32-apple-watchos11.0
+          ios/MeshMapperWatch/*.swift ios/Shared/MeshMapperWatchPayload.swift
