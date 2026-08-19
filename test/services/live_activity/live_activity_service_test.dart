@@ -126,6 +126,92 @@ void main() {
     expect(phases, ['listening_discovery', 'waiting_discovery']);
   });
 
+  test('an unsupported host is asked once, not every 30 s for a session',
+      () async {
+    // iOS below 16.2 cannot show a Live Activity and never will while the app
+    // is running, but it answered the same way as "authorization is off" — so
+    // it earned the same 30 s retry, forever, on a device that was never going
+    // to display anything.
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    const channel = MethodChannel('meshmapper/live_activity_unsupported_test');
+    var syncCalls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method != 'sync') return null;
+      syncCalls++;
+      return LiveActivityService.unsupportedHost;
+    });
+    final service = LiveActivityService(
+      channel: channel,
+      unavailableRetryDelay: const Duration(milliseconds: 20),
+      minimumNonUrgentInterval: const Duration(milliseconds: 20),
+    );
+    addTearDown(() {
+      service.dispose();
+      debugDefaultTargetPlatformOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    service.schedule(
+      _snapshot,
+      urgencyKeyBuilder: () => _preflightKey(_snapshot()),
+      immediate: true,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(syncCalls, 1);
+
+    // Everything that would normally re-arm it: the retry it used to schedule,
+    // and a caller that keeps scheduling regardless.
+    for (var tick = 0; tick < 4; tick++) {
+      service.schedule(
+        () => _snapshot(rxCount: tick),
+        urgencyKeyBuilder: () =>
+            _preflightKey(_snapshot(phase: LiveActivityPhase.waitingDiscovery)),
+        immediate: true,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+
+    expect(syncCalls, 1,
+        reason: 'a host that cannot host one must be asked exactly once');
+  });
+
+  test('a missing channel also stops for good', () async {
+    // The other permanent condition: an iOS project generated before this
+    // feature existed has no such channel, and will not grow one at runtime.
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    const channel = MethodChannel('meshmapper/live_activity_missing_test');
+    var syncCalls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'sync') syncCalls++;
+      throw MissingPluginException('no channel');
+    });
+    final service = LiveActivityService(
+      channel: channel,
+      minimumNonUrgentInterval: const Duration(milliseconds: 20),
+    );
+    addTearDown(() {
+      service.dispose();
+      debugDefaultTargetPlatformOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    for (var tick = 0; tick < 4; tick++) {
+      service.schedule(
+        () => _snapshot(rxCount: tick),
+        urgencyKeyBuilder: () => _preflightKey(_snapshot(rxCount: tick)),
+        immediate: true,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+
+    expect(syncCalls, 1,
+        reason: 'a host with no channel must be asked exactly once');
+  });
+
   test('a throttled flush costs nothing to build', () async {
     // The 500 ms countdown listenable asks for a flush twice a second for the
     // length of a session, and building a snapshot walks the whole TX, RX,

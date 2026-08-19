@@ -7,6 +7,12 @@ import Foundation
 /// Flutter sends complete snapshots. The manager keeps at most one activity,
 /// updates it serially, and doesn't recreate a Live Activity the user dismissed
 /// during the same wardriving session.
+/// Sentinels shared with the Dart side of the channel.
+enum MeshMapperLiveActivityStatus {
+  /// This OS cannot host a Live Activity at all, at any point in this session.
+  static let unsupported = "unsupported"
+}
+
 final class LiveActivityManager {
   private enum BridgeError: LocalizedError {
     case invalidArguments
@@ -25,10 +31,15 @@ final class LiveActivityManager {
         result(flutterError(BridgeError.invalidArguments, code: "invalid_arguments"))
         return
       }
+      // Distinct from `false`, which means "not right now" and earns a retry.
+      // This host will never gain ActivityKit, so a retry loop for the life of
+      // every session is pure waste; Dart stops asking for good.
       guard #available(iOS 16.2, *) else {
-        result(false)
+        result(MeshMapperLiveActivityStatus.unsupported)
         return
       }
+      // Genuinely "not right now": the wearer can enable Live Activities in
+      // Settings while a session is running, so this one keeps its backoff.
       guard ActivityAuthorizationInfo().areActivitiesEnabled else {
         result(false)
         return
