@@ -64,18 +64,43 @@ class WatchDiagnosticStatus {
 /// updates arrive continuously while driving, and forwarding every one would
 /// flatten the watch battery for sub-pixel map changes.
 class WatchBridgeService {
-  WatchBridgeService({@visibleForTesting MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel(_channelName);
+  WatchBridgeService({
+    @visibleForTesting MethodChannel? channel,
+    @visibleForTesting Duration debounceDelay = defaultDebounceDelay,
+    @visibleForTesting
+    Duration minimumNonUrgentInterval = defaultMinimumNonUrgentInterval,
+    @visibleForTesting
+    Duration mapGeoClaimFreshFor = defaultMapGeoClaimFreshFor,
+  })  : _channel = channel ?? const MethodChannel(_channelName),
+        _debounceDelay = debounceDelay,
+        _minimumNonUrgentInterval = minimumNonUrgentInterval,
+        _mapGeoClaimFreshFor = mapGeoClaimFreshFor;
 
   static const String _channelName = 'meshmapper/watch';
 
-  static const Duration _debounceDelay = Duration(milliseconds: 200);
-  static const Duration _minimumNonUrgentInterval = Duration(seconds: 2);
+  /// The three durations a test may shorten.
+  ///
+  /// Without a seam here every throttle assertion had to wait out the real
+  /// interval, so one group of them spent ~35 s of wall clock and raced a live
+  /// timer on loaded CI — and the ten-minute lease expiry simply could not be
+  /// covered at all. [LiveActivityService] already took its intervals this way;
+  /// this closes the gap between the two.
+  ///
+  /// Deliberately *not* injectable: [_maximumCommandAge] and [_clockTolerance]
+  /// are compared against timestamps a test can choose freely, so shortening
+  /// them would buy nothing and would let a test pass against a window the
+  /// wire does not actually use.
+  static const Duration defaultDebounceDelay = Duration(milliseconds: 200);
+  static const Duration defaultMinimumNonUrgentInterval = Duration(seconds: 2);
+  static const Duration defaultMapGeoClaimFreshFor = Duration(minutes: 10);
+
   static const Duration _maximumCommandAge = Duration(seconds: 30);
-  static const Duration _mapGeoClaimFreshFor = Duration(minutes: 10);
   static const Duration _clockTolerance = Duration(seconds: 5);
 
   final MethodChannel _channel;
+  final Duration _debounceDelay;
+  final Duration _minimumNonUrgentInterval;
+  final Duration _mapGeoClaimFreshFor;
 
   Timer? _scheduledUpdate;
   WatchSnapshotBuilder? _pendingSnapshotBuilder;

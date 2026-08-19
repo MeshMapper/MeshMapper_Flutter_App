@@ -652,16 +652,31 @@ void main() {
     late bool nativeAvailable;
     late bool syncSucceeds;
     late int syncCalls;
+    late int clearCalls;
+
+    /// Short enough that a suite does not spend its life asleep, long enough
+    /// that a loaded machine cannot cross it between two adjacent statements.
+    /// The behaviour under test is the ordering the throttle imposes, never the
+    /// length of the wire's own 2 s interval.
+    const throttle = Duration(milliseconds: 80);
+
+    /// Comfortably past [throttle], including the retry it schedules.
+    const settle = Duration(milliseconds: 200);
 
     setUp(() {
       TestWidgetsFlutterBinding.ensureInitialized();
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       channel = const MethodChannel('meshmapper/watch_test');
-      bridge = WatchBridgeService(channel: channel);
+      bridge = WatchBridgeService(
+        channel: channel,
+        minimumNonUrgentInterval: throttle,
+        mapGeoClaimFreshFor: const Duration(milliseconds: 250),
+      );
       handled = [];
       nativeAvailable = true;
       syncSucceeds = true;
       syncCalls = 0;
+      clearCalls = 0;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
         if (call.method == 'status') {
@@ -676,6 +691,10 @@ void main() {
         if (call.method == 'sync') {
           syncCalls++;
           return syncSucceeds;
+        }
+        if (call.method == 'clear') {
+          clearCalls++;
+          return null;
         }
         return null;
       });
@@ -909,11 +928,9 @@ void main() {
     // unchanged session answers that request with silence, and the wearer keeps
     // looking at state marked stale while the phone is alive and listening.
     group('a requested refresh defeats dedupe', () {
-      // Long enough to clear the non-urgent radio interval. A forced refresh is
+      // `settle` clears the non-urgent radio interval. A forced refresh is
       // deliberately still subject to it, so anything shorter would only prove
       // the throttle deferred the flush, not what the flush decided.
-      const settle = Duration(milliseconds: 2300);
-
       Future<void> deliver({
         DateTime? updatedAt,
         bool forceDelivery = false,
@@ -1036,6 +1053,108 @@ void main() {
       });
     });
 
+    group('a session that ends clears the watch', () {
+      // The disconnect path: the provider stops producing a snapshot, and the
+      // bridge must tell native to drop its retained application context so the
+      // wrist is not left rendering a session that no longer exists.
+      //
+      // Untested before the throttle became injectable, because reaching the
+      // clear meant waiting out the real interval twice.
+      test('a null snapshot clears native and does not clear twice', () async {
+        bridge.attachCommandHandler((_) => null);
+        await Future<void>.delayed(Duration.zero);
+
+        WatchSnapshot? pending = _snapshot();
+        void schedule() => bridge.schedule(
+              () => pending,
+              urgencyKeyBuilder: () => _snapshot().urgencyKey,
+              immediate: true,
+            );
+
+        schedule();
+        await Future<void>.delayed(settle);
+        expect(syncCalls, 1);
+        expect(clearCalls, 0);
+
+        pending = null;
+        schedule();
+        await Future<void>.delayed(settle);
+
+        expect(clearCalls, 1,
+            reason: 'native must forget the context when the session ends');
+
+        // Still nothing to send, and native has already been reconciled.
+        schedule();
+        await Future<void>.delayed(settle);
+
+        expect(clearCalls, 1,
+            reason: 'an already-cleared bridge must not keep clearing');
+      });
+
+      test('a snapshot after a clear is delivered, not deduped away', () async {
+        bridge.attachCommandHandler((_) => null);
+        await Future<void>.delayed(Duration.zero);
+
+        WatchSnapshot? pending = _snapshot();
+        void schedule() => bridge.schedule(
+              () => pending,
+              urgencyKeyBuilder: () => _snapshot().urgencyKey,
+              immediate: true,
+            );
+
+        schedule();
+        await Future<void>.delayed(settle);
+        expect(syncCalls, 1);
+
+        pending = null;
+        schedule();
+        await Future<void>.delayed(settle);
+        expect(clearCalls, 1);
+
+        // The same payload as the first send. The clear dropped the
+        // fingerprint, so this is new information to a watch holding nothing.
+        pending = _snapshot();
+        schedule();
+        await Future<void>.delayed(settle);
+
+        expect(syncCalls, 2,
+            reason: 'a cleared watch must not be deduped against stale state');
+      });
+    });
+
+    test('a burst of notifications coalesces into one build', () async {
+      // The 200 ms debounce, which nothing covered. It is the first of the five
+      // suppression gates and the only one that acts on scheduling rather than
+      // on content, so a regression here would be invisible to every other test
+      // in this file.
+      final debounced = WatchBridgeService(
+        channel: channel,
+        debounceDelay: const Duration(milliseconds: 60),
+        minimumNonUrgentInterval: throttle,
+      );
+      addTearDown(debounced.dispose);
+      debounced.attachCommandHandler((_) => null);
+      await Future<void>.delayed(Duration.zero);
+
+      var builds = 0;
+      for (var i = 0; i < 8; i++) {
+        debounced.schedule(
+          () {
+            builds++;
+            return _snapshot();
+          },
+          urgencyKeyBuilder: () => _snapshot().urgencyKey,
+        );
+      }
+
+      expect(builds, 0, reason: 'nothing is built while the burst is arriving');
+
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(builds, 1,
+          reason: 'eight notifications must cost one snapshot, not eight');
+    });
+
     test('the nonurgent throttle runs before the snapshot builder', () async {
       bridge.attachCommandHandler((_) => null);
       await Future<void>.delayed(Duration.zero);
@@ -1113,6 +1232,56 @@ void main() {
         mapGeoNeeded: true,
       );
       expect(bridge.shouldIncludeMapGeo, isTrue);
+    });
+
+    test('an unrenewed suppression lease expires back to full geography',
+        () async {
+      // Suppression is a lease, not a latch. The watch renews it every five
+      // minutes while its map stays hidden; if those renewals stop — the watch
+      // app dies, the command is lost — the phone has to fail safe toward
+      // sending too much rather than leaving a future map blank.
+      //
+      // Untestable before the interval became injectable: the real lease is ten
+      // minutes long.
+      bridge.attachCommandHandler((_) => null);
+
+      await sendCommand(
+        'lease-off',
+        'requestSnapshot',
+        mapGeoNeeded: false,
+        issuedAtMs: DateTime.now().millisecondsSinceEpoch.toDouble(),
+      );
+      expect(bridge.shouldIncludeMapGeo, isFalse,
+          reason: 'a fresh claim suppresses the expensive payload');
+
+      await Future<void>.delayed(const Duration(milliseconds: 320));
+
+      expect(bridge.shouldIncludeMapGeo, isTrue,
+          reason: 'an unrenewed lease must expire, not persist');
+    });
+
+    test('a renewal keeps the lease alive without the wearer asking', () async {
+      bridge.attachCommandHandler((_) => null);
+
+      await sendCommand(
+        'lease-1',
+        'requestSnapshot',
+        mapGeoNeeded: false,
+        issuedAtMs: DateTime.now().millisecondsSinceEpoch.toDouble(),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      // The renewal the watch sends every five minutes on the real wire.
+      await sendCommand(
+        'lease-2',
+        'requestSnapshot',
+        mapGeoNeeded: false,
+        issuedAtMs: DateTime.now().millisecondsSinceEpoch.toDouble(),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(bridge.shouldIncludeMapGeo, isFalse,
+          reason: 'renewal must reset the lease, or a hidden map still pays');
     });
 
     test('stale suppression cannot blank a newly visible map', () async {
@@ -1481,18 +1650,26 @@ void main() {
     late MethodChannel channel;
     late List<Map<Object?, Object?>> sent;
 
-    /// Waiting out the 2 s non-urgent throttle is only necessary when the
-    /// assertion is that nothing was sent. A fixed wait tuned near that
-    /// boundary flakes on a loaded machine — this suite has already seen it —
-    /// so the positive cases poll instead and only "no send" pays a fixed cost.
-    const suppressionWindow = Duration(seconds: 3);
+    /// The throttle is injected rather than waited out. What this group tests
+    /// is which payloads the movement gate lets through, and that answer does
+    /// not depend on the wire's interval being two seconds.
+    const throttle = Duration(milliseconds: 80);
+
+    /// Waiting out the throttle is only necessary when the assertion is that
+    /// nothing was sent. A fixed wait tuned near that boundary flakes on a
+    /// loaded machine — this suite has already seen it — so the positive cases
+    /// poll instead and only "no send" pays a fixed cost.
+    const suppressionWindow = Duration(milliseconds: 240);
     const sendTimeout = Duration(seconds: 8);
 
     setUp(() {
       TestWidgetsFlutterBinding.ensureInitialized();
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       channel = const MethodChannel('meshmapper/watch_move_test');
-      bridge = WatchBridgeService(channel: channel);
+      bridge = WatchBridgeService(
+        channel: channel,
+        minimumNonUrgentInterval: throttle,
+      );
       sent = [];
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
