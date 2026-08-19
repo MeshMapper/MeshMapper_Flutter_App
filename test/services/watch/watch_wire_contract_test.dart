@@ -353,6 +353,61 @@ void main() {
       });
     });
 
+    test('a cue stays presentable until the watch would drop it', () {
+      // The bound the phone attaches by and the bound the watch presents by
+      // are one rule. `WatchSessionClient.staleAfter` greys the surface and
+      // drops the cue at 90 s; a phone that stopped attaching earlier would
+      // recreate the silent-failure bug, because the wearer's wrist is down
+      // for most of that window.
+      final issuedAt = DateTime.utc(2026, 8, 12, 10);
+      final cue = WatchHapticCue(
+        id: 'failure-1',
+        kind: 'failure',
+        issuedAt: issuedAt,
+        message: 'Could not start',
+      );
+
+      expect(cue.isPresentableAt(issuedAt), isTrue);
+      expect(
+        cue.isPresentableAt(issuedAt.add(const Duration(seconds: 89))),
+        isTrue,
+        reason: 'a wearer who raises their wrist late still gets the reason',
+      );
+      expect(
+        cue.isPresentableAt(issuedAt.add(WatchWire.cueReadableFor)),
+        isFalse,
+        reason: 'past the stale boundary the watch drops it anyway',
+      );
+    });
+
+    test('the cue survives the snapshot that carried it', () {
+      // The defect this pins: the phone treated native accepting one payload
+      // as the wearer having seen the cue, cleared it, and — because the cue
+      // ID is in the urgency key — immediately sent an urgent, cue-less
+      // payload that overwrote the retained application context. A suspended
+      // watch woke to idle UI and no account of the failure.
+      //
+      // Both snapshots must carry the cue, and both must agree it is urgent,
+      // or the cheap preflight key and the built payload drift.
+      final issuedAt = DateTime.utc(2026, 8, 12, 10);
+      final cue = WatchHapticCue(
+        id: 'failure-1',
+        kind: 'failure',
+        issuedAt: issuedAt,
+        message: 'Could not start',
+      );
+
+      final first = _snapshot(cue: cue);
+      final second = _snapshot(
+        cue: cue,
+        updatedAt: issuedAt.add(const Duration(seconds: 30)),
+      );
+
+      expect(second.toMap()['cue'], first.toMap()['cue']);
+      expect(second.urgencyKey, first.urgencyKey,
+          reason: 'a re-attached cue is not a new event to flush for');
+    });
+
     test('phase duration rides along so the watch can draw its own bar', () {
       // Deadline plus duration is everything needed to compute the remaining
       // fraction locally, which is why the bar needs no per-second updates.
@@ -1262,13 +1317,13 @@ void main() {
       expect(syncCalls, 1);
     });
 
-    test('successful native delivery reports the exact snapshot once',
-        () async {
-      WatchSnapshot? delivered;
-      bridge.attachCommandHandler(
-        (_) => null,
-        onSnapshotDelivered: (snapshot) => delivered = snapshot,
-      );
+    test('an accepted native send is recorded, not called delivered', () async {
+      // There is deliberately no per-snapshot delivery callback here. Native
+      // returning true means `updateApplicationContext` accepted the blob; the
+      // watch may be suspended and ingest it much later, or never. Anything
+      // that treated this as wearer-visible delivery — the cue lifetime once
+      // did — dropped state the watch had not yet seen.
+      bridge.attachCommandHandler((_) => null);
       await Future<void>.delayed(Duration.zero);
       final snapshot = _snapshot();
 
@@ -1279,7 +1334,6 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
-      expect(delivered, same(snapshot));
       expect(syncCalls, 1);
       expect(bridge.diagnostics.value.lastSendDelivered, isTrue);
       expect(bridge.diagnostics.value.lastSuccessfulSendAt, isNotNull);

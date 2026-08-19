@@ -17,7 +17,6 @@ typedef WatchUrgencyKeyBuilder = String Function();
 typedef WatchCommandHandler = FutureOr<String?> Function(WatchCommand command);
 typedef WatchCommandRefusalHandler = void Function(String reason);
 typedef WatchAvailabilityHandler = void Function(bool available);
-typedef WatchSnapshotDeliveryHandler = void Function(WatchSnapshot snapshot);
 
 /// Read-only evidence from both sides of the phone-to-watch bridge.
 ///
@@ -113,7 +112,6 @@ class WatchBridgeService {
   WatchCommandHandler? _commandHandler;
   WatchCommandRefusalHandler? _commandRefusalHandler;
   WatchAvailabilityHandler? _availabilityHandler;
-  WatchSnapshotDeliveryHandler? _snapshotDeliveryHandler;
 
   String? _lastPayload;
 
@@ -178,12 +176,10 @@ class WatchBridgeService {
     WatchCommandHandler handler, {
     WatchCommandRefusalHandler? onRefusal,
     WatchAvailabilityHandler? onAvailabilityChanged,
-    WatchSnapshotDeliveryHandler? onSnapshotDelivered,
   }) {
     _commandHandler = handler;
     _commandRefusalHandler = onRefusal;
     _availabilityHandler = onAvailabilityChanged;
-    _snapshotDeliveryHandler = onSnapshotDelivered;
     if (!isSupportedPlatform) return;
     _channel.setMethodCallHandler(_handleNativeCall);
     unawaited(_refreshAvailability());
@@ -574,7 +570,6 @@ class WatchBridgeService {
       _lastSuccessfulSendAt = sentAt;
       _lastSendDelivered = true;
       _publishDiagnostics();
-      _snapshotDeliveryHandler?.call(snapshot);
     } on MissingPluginException {
       // Expected on non-iOS hosts and in tests.
     } on PlatformException catch (error) {
@@ -657,7 +652,6 @@ class WatchBridgeService {
     _commandHandler = null;
     _commandRefusalHandler = null;
     _availabilityHandler = null;
-    _snapshotDeliveryHandler = null;
     _mapGeoSuppressedAt = null;
     _lastMapGeoClaimIssuedAtMs = null;
     _diagnostics.dispose();
