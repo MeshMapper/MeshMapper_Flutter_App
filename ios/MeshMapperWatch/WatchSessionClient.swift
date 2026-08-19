@@ -397,12 +397,38 @@ final class WatchSessionClient: NSObject {
     }
   }
 
-  private static func isFresh(_ cue: WatchHapticCue, at arrival: Date) -> Bool {
-    guard let issuedAt = cue.issuedAt else { return false }
+  /// How much of a cue is still worth presenting, given its age.
+  private enum CuePresentation {
+    /// Recent enough that the wearer can connect the buzz to what they did.
+    case feel
+    /// Too old to buzz for, but still the only account of the failure they
+    /// will ever get: the phone drops a cue once WatchConnectivity accepts the
+    /// snapshot carrying it, which happens while the watch is still suspended.
+    case read
+    case drop
+  }
+
+  /// A wrist-down interval longer than [cueFreshFor] used to discard the cue
+  /// outright — no haptic *and* no message — so a wearer who tapped Start,
+  /// dropped their wrist and looked back a minute later was never told why the
+  /// session had not begun. Buzzing for something that old is wrong, but
+  /// staying silent about it is worse.
+  ///
+  /// The upper bound is [staleAfter], the same boundary that greys the rest of
+  /// the screen: past it the wearer is already being told the whole surface is
+  /// old, and a banner asserting a stale failure as current would be its own
+  /// lie.
+  private static func presentation(
+    for cue: WatchHapticCue,
+    at arrival: Date
+  ) -> CuePresentation {
+    guard let issuedAt = cue.issuedAt else { return .drop }
     let age = arrival.timeIntervalSince(issuedAt)
     // A few seconds of skew must not suppress a real failure that has just
     // crossed the radio.
-    return age >= -clockTolerance && age <= cueFreshFor
+    guard age >= -clockTolerance else { return .drop }
+    if age <= cueFreshFor { return .feel }
+    return age <= staleAfter ? .read : .drop
   }
 
   /// The main-actor half of the activation callback.
@@ -576,7 +602,8 @@ final class WatchSessionClient: NSObject {
     }
 
     if let cue = decoded.cue,
-       Self.isFresh(cue, at: arrival),
+       case let presentation = Self.presentation(for: cue, at: arrival),
+       presentation != .drop,
        presentedCueIDs.insert(cue.id).inserted
     {
       presentedCueIDOrder.append(cue.id)
@@ -589,7 +616,7 @@ final class WatchSessionClient: NSObject {
       // place that decides a cue is new, fresh, and worth presenting. A view
       // would have to re-derive that gate from exported state and would get
       // it wrong on redelivery, which WatchConnectivity does routinely.
-      play(cue)
+      if presentation == .feel { play(cue) }
       if let message = cue.message, !message.isEmpty {
         // A cue may be a late wrist-command failure or an unrelated phone
         // event; the current wire cannot distinguish them, so attribution
