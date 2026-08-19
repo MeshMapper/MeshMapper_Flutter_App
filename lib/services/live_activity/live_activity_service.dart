@@ -51,6 +51,11 @@ class LiveActivityService {
   /// updates that change nothing.
   static const Duration defaultMinimumNonUrgentInterval = Duration(seconds: 15);
 
+  /// Native's answer when the host can never show a Live Activity — iOS below
+  /// 16.2. Distinct from `false`, which means "not right now" and is what the
+  /// authorization backoff exists for.
+  static const String unsupportedHost = 'unsupported';
+
   final MethodChannel _channel;
   final Duration _unavailableRetryDelay;
   final Duration _minimumNonUrgentInterval;
@@ -77,6 +82,15 @@ class LiveActivityService {
   bool _bypassBuildFloor = false;
   bool _disposed = false;
   bool _didReconcileNativeState = false;
+
+  /// Set once native reports a condition that cannot change while this process
+  /// lives: an OS without ActivityKit, or a host with no such channel at all.
+  ///
+  /// Before this, both answered every 30 s retry with the same guaranteed
+  /// failure, and kept doing it for the whole session — a timer, a build and a
+  /// channel round trip apiece, on devices that were never going to show
+  /// anything.
+  bool _hostCannotHostActivities = false;
   Future<void> _operationChain = Future<void>.value();
 
   bool get isSupportedPlatform =>
@@ -87,7 +101,7 @@ class LiveActivityService {
     required LiveActivityUrgencyKeyBuilder urgencyKeyBuilder,
     bool immediate = false,
   }) {
-    if (_disposed || !isSupportedPlatform) return;
+    if (_disposed || !isSupportedPlatform || _hostCannotHostActivities) return;
 
     _pendingSnapshotBuilder = snapshotBuilder;
     _pendingUrgencyKeyBuilder = urgencyKeyBuilder;
@@ -113,7 +127,7 @@ class LiveActivityService {
     _scheduledUpdate?.cancel();
     _scheduledUpdate = null;
 
-    if (_disposed || !isSupportedPlatform) return;
+    if (_disposed || !isSupportedPlatform || _hostCannotHostActivities) return;
 
     // The 500 ms countdown listenable drives this at ~2 Hz for a whole session,
     // and building a snapshot resolves the latest ping colour by walking the
@@ -195,6 +209,10 @@ class LiveActivityService {
     try {
       final result = await _channel.invokeMethod<Object?>('sync', payload);
       _didReconcileNativeState = true;
+      if (result == unsupportedHost) {
+        _stopForUnsupportedHost('iOS 16.2 is required for Live Activities');
+        return;
+      }
       if (result == false) {
         _unavailableSessionId = snapshot.sessionId;
         _unavailableRetryAt = DateTime.now().add(_unavailableRetryDelay);
@@ -209,7 +227,10 @@ class LiveActivityService {
       _lastUrgencyKey = snapshot.urgencyKey;
       _lastSentAt = DateTime.now();
     } on MissingPluginException {
-      // Expected on non-iOS test hosts and older generated iOS projects.
+      // A host with no such channel — a non-iOS test host, or an iOS project
+      // generated before this feature existed. Neither gains one at runtime,
+      // so this is the same permanent condition as an OS below 16.2.
+      _stopForUnsupportedHost('no Live Activity channel on this host');
     } on PlatformException catch (error) {
       debugError(
         '[LIVE ACTIVITY] ActivityKit sync failed: '
@@ -218,6 +239,22 @@ class LiveActivityService {
     } catch (error) {
       debugError('[LIVE ACTIVITY] Unexpected sync failure: $error');
     }
+  }
+
+  /// Stop asking, permanently. Nothing about the condition can change without
+  /// the app being relaunched, at which point this starts out false again.
+  void _stopForUnsupportedHost(String reason) {
+    if (_hostCannotHostActivities) return;
+    _hostCannotHostActivities = true;
+    _didReconcileNativeState = true;
+    _scheduledUpdate?.cancel();
+    _scheduledUpdate = null;
+    _pendingSnapshotBuilder = null;
+    _pendingUrgencyKeyBuilder = null;
+    _unavailableSessionId = null;
+    _unavailableRetryAt = null;
+    _bypassBuildFloor = false;
+    debugLog('[LIVE ACTIVITY] Disabled for this session: $reason');
   }
 
   Future<void> _endCurrentActivity({required bool immediate}) async {
