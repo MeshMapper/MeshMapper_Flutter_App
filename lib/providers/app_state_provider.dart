@@ -259,6 +259,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<({String repeaterId, double snr, OverlayPingType type})>
       _topRepeatersOverlay = [];
   DateTime? _topRepeatersOverlayUpdatedAt;
+
+  /// The fullest identity known for each overlay row, keyed by the display hash
+  /// the row is shown under.
+  ///
+  /// Discovery responses carry the responder's full 64-character public key and
+  /// traces carry their 4-byte target, so for those rows the phone knows
+  /// exactly who answered. TX echoes and passive RX carry only the path byte,
+  /// and are absent here because nothing better exists for them.
+  ///
+  /// Replaced wholesale by [_updateTopRepeaters], never merged, and for the
+  /// same reason those slots are: a hash that meant one repeater in a discovery
+  /// response says nothing about who a later TX echo under the same hash was.
+  Map<String, String> _overlayIdentityById = const {};
   ({String repeaterId, double snr})? _rxOverlaySlot;
   Timer? _rxOverlayWindowTimer;
 
@@ -642,8 +655,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Update the top repeaters overlay with results from the latest TX/DISC/Trace ping.
   /// Replaces all 3 slots entirely (no carryover from previous pings).
+  /// - Parameter identities: display hash to the fullest identity this ping
+  ///   carried for it, for the ping types that carry more than a path byte.
   void _updateTopRepeaters(
-      List<({String repeaterId, double snr})> current, OverlayPingType type) {
+      List<({String repeaterId, double snr})> current, OverlayPingType type,
+      {Map<String, String>? identities}) {
+    _overlayIdentityById = identities ?? const {};
     final bestSnr = <String, double>{};
     for (final r in current) {
       final key = r.repeaterId.toUpperCase();
@@ -682,6 +699,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveActivityRepeatersUpdatedAt = DateTime.now();
   }
 
+  /// Display hash to full public key, for the discovery nodes that published
+  /// one. Nodes whose hash is claimed by two different keys are left out rather
+  /// than resolved to whichever arrived last.
+  Map<String, String> _discoveryIdentities(List<DiscoveredNodeEntry> nodes) {
+    final identities = <String, String>{};
+    final contested = <String>{};
+    for (final node in nodes) {
+      final pubkey = node.pubkeyHex;
+      if (pubkey == null || pubkey.isEmpty) continue;
+      final displayId = node.repeaterId.toUpperCase();
+      final existing = identities[displayId];
+      if (existing != null && existing != pubkey.toUpperCase()) {
+        contested.add(displayId);
+        continue;
+      }
+      identities[displayId] = pubkey.toUpperCase();
+    }
+    for (final displayId in contested) {
+      identities.remove(displayId);
+    }
+    return identities;
+  }
+
   /// Update the RX overlay slot — window matches auto-ping interval (best SNR wins).
   void _updateRxOverlaySlot(String repeaterId, double snr) {
     final entry = (repeaterId: repeaterId.toUpperCase(), snr: snr);
@@ -704,6 +744,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _clearOverlayState() {
     _topRepeatersOverlay = [];
     _topRepeatersOverlayUpdatedAt = null;
+    _overlayIdentityById = const {};
     _rxOverlaySlot = null;
     _rxOverlayWindowTimer?.cancel();
     _rxOverlayWindowTimer = null;
@@ -1383,19 +1424,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final top = _topRepeatersOverlay;
     final rxSlot = _rxOverlaySlot;
 
-    // Overlay IDs are hex path hashes, resolved to names by prefix.
+    // Overlay IDs are hex path hashes. Resolved from the fullest identity each
+    // row actually arrived with — a discovery response's 64-character public
+    // key, a trace's 4-byte target — and only falling back to prefix matching
+    // for the rows that never had anything better, which is TX echoes and
+    // passive RX.
     //
-    // Indexed per distinct length, not at one length taken from the first row.
-    // The RX slot's hash can be a different width than the top rows' — the two
-    // come from different pings, and the zone's hop-byte count is what sets the
-    // width — so a single-length index silently dropped the odd row's name and
-    // distance while every other row resolved normally.
-    final repeaterByHex = WatchGeoBuilder.resolveUniqueHexPrefixes(
+    // The prefix fallback indexes per distinct length rather than at one length
+    // taken from the first row. The RX slot's hash can be a different width
+    // than the top rows', so a single-length index silently dropped the odd
+    // row's name and distance while every other row resolved normally.
+    final repeaterByHex = WatchGeoBuilder.resolveOverlayRepeaters(
       repeaters: _repeaters,
-      prefixes: [
+      displayIds: [
         ...top.map((row) => row.repeaterId),
         if (rxSlot != null) rxSlot.repeaterId,
       ],
+      identities: _overlayIdentityById,
     );
     final heard = WatchGeoBuilder.buildHeard(
       top: top,
@@ -2201,7 +2246,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   String? _resolveRepeaterDisplayName(String rawId) {
-    final id = rawId.toUpperCase();
+    // Resolve from the longest identity this row actually came with. The
+    // existing exact-then-prefix rules below are already right; they were just
+    // never given anything better than a two-character path hash to work with.
+    final displayId = rawId.toUpperCase();
+    final id = _overlayIdentityById[displayId]?.toUpperCase() ?? displayId;
     final exactMatches = _repeaters.where((repeater) {
       return repeater.id.toUpperCase() == id ||
           repeater.hexId.toUpperCase() == id ||
@@ -3918,7 +3967,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                 snr: node.localSnr,
               ))
           .toList(growable: false);
-      _updateTopRepeaters(heardRepeaters, OverlayPingType.disc);
+      _updateTopRepeaters(
+        heardRepeaters,
+        OverlayPingType.disc,
+        identities: _discoveryIdentities(discPing.discoveredNodes),
+      );
       _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
 
       _notifyMapThrottled();
@@ -5615,11 +5668,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Update top repeaters overlay with successful trace result
     if (entry.success && entry.localSnr != null) {
-      // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay
+      // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay.
+      // The untruncated ID still travels as the row's identity: shortening it
+      // is a presentation decision, and resolving the name from the shortened
+      // form threw away a byte of certainty for no reason.
       final id = entry.targetRepeaterId.toUpperCase();
       final displayId = id.length > 6 ? id.substring(0, 6) : id;
-      _updateTopRepeaters([(repeaterId: displayId, snr: entry.localSnr!)],
-          OverlayPingType.trace);
+      _updateTopRepeaters(
+        [(repeaterId: displayId, snr: entry.localSnr!)],
+        OverlayPingType.trace,
+        identities: {displayId: id},
+      );
     }
 
     _notifyMapNow();
