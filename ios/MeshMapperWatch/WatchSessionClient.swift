@@ -166,7 +166,15 @@ final class WatchSessionClient: NSObject {
     // A reachability change during the suspension has no delegate callback to
     // deliver, so re-read it alongside the retained context.
     noteReachability(session.isReachable)
-    ingest(context: session.receivedApplicationContext)
+
+    // Applied synchronously, unlike every other ingest. The queued variant
+    // lands after this method returns, so the decision below was made against
+    // pre-resume state — and the 90 s staleness flip inside `apply` is queued
+    // the same way. Whichever way main-actor ordering happened to fall, one of
+    // the two failures this method exists to prevent came back: a `forceRefresh`
+    // full snapshot on every glance past the boundary despite holding a
+    // seconds-old context, or a wearer left looking at stale UI.
+    ingestNow(context: session.receivedApplicationContext)
 
     // Read after ingesting: a context retained while the wrist was down may
     // have just answered the question, and then the radio is not needed.
@@ -468,6 +476,42 @@ final class WatchSessionClient: NSObject {
 
   // MARK: - Ingest
 
+  /// What a delivered payload turned out to be.
+  private enum Ingested {
+    case snapshot(WatchSnapshot)
+    case unsupportedVersion
+    case undecodable
+  }
+
+  /// Just the version, so it can be read from a payload the full model cannot
+  /// decode.
+  ///
+  /// `WatchSnapshot` decodes its required fields with a throwing decoder, so a
+  /// future wire that removes or renames one — a documented reason to bump
+  /// `MeshMapperWatchWire.version` — fails to decode before the version is ever
+  /// examined. That is precisely the case the refusal exists for: without this
+  /// the watch would silently drop every payload and go permanently stale
+  /// instead of telling the wearer to update the iPhone app.
+  private struct WireVersionProbe: Decodable {
+    let wireVersion: Int
+  }
+
+  private nonisolated static func decode(_ data: Data) -> Ingested {
+    let decoder = MeshMapperWatchWire.decoder
+    guard let probe = try? decoder.decode(WireVersionProbe.self, from: data) else {
+      return .undecodable
+    }
+    // Refuse rather than render a payload whose fields may have changed
+    // meaning — a wrong reading on the wrist is worse than a blank one.
+    guard probe.wireVersion == MeshMapperWatchWire.version else {
+      return .unsupportedVersion
+    }
+    guard let decoded = try? decoder.decode(WatchSnapshot.self, from: data) else {
+      return .undecodable
+    }
+    return .snapshot(decoded)
+  }
+
   /// `nonisolated` on purpose: decoding is the expensive part, it needs no
   /// isolation, and WatchConnectivity already hands it to us on a background
   /// thread. Only `apply` crosses onto the main actor.
@@ -477,19 +521,33 @@ final class WatchSessionClient: NSObject {
   }
 
   private nonisolated func ingest(data: Data) {
-    guard let decoded = try? MeshMapperWatchWire.decoder.decode(WatchSnapshot.self, from: data)
-    else {
+    switch Self.decode(data) {
+    case .undecodable:
       return
-    }
-
-    // Refuse rather than render a payload whose fields may have changed
-    // meaning — a wrong reading on the wrist is worse than a blank one.
-    guard decoded.isSupportedVersion else {
+    case .unsupportedVersion:
       Task { @MainActor [weak self] in self?.versionMismatch = true }
-      return
+    case .snapshot(let decoded):
+      Task { @MainActor [weak self] in self?.apply(decoded) }
     }
+  }
 
-    Task { @MainActor [weak self] in self?.apply(decoded) }
+  /// Ingest without the main-actor hop, for a caller that has to see the result
+  /// before it can decide anything.
+  ///
+  /// The asynchronous path above is the right default — a 12 kB parse does not
+  /// belong on the wrist's main thread on every snapshot. This one runs once
+  /// per wrist raise, where the alternative is deciding whether to spend the
+  /// radio against state the queued apply has not delivered yet.
+  private func ingestNow(context: [String: Any]) {
+    guard let data = context[MeshMapperWatchWire.payloadKey] as? Data else { return }
+    switch Self.decode(data) {
+    case .undecodable:
+      return
+    case .unsupportedVersion:
+      versionMismatch = true
+    case .snapshot(let decoded):
+      apply(decoded)
+    }
   }
 
   private func apply(_ decoded: WatchSnapshot) {
