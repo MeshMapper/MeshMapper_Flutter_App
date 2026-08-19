@@ -483,10 +483,24 @@ class WatchCommand {
     this.mode,
     this.mapGeoNeeded,
     this.forceRefresh = false,
+    this.sessionId,
   });
 
   final WatchCommandKind kind;
   final String? mode;
+
+  /// Which session a [WatchCommandKind.stopSession] means, taken from the
+  /// snapshot the wearer was looking at when they tapped.
+  ///
+  /// Stopping is exempt from the transmit-age window, because a late stop
+  /// takes the radio off air and refusing it is the worse failure. That
+  /// exemption quietly assumed sessions were interchangeable. They are not: a
+  /// Stop queued while the phone was out of range, delivered after that
+  /// session ended and another began, stopped the wrong one — silently, and
+  /// the wearer found out by noticing recording had halted.
+  ///
+  /// Null from an older watch build, which is admitted exactly as before.
+  final String? sessionId;
 
   /// Optional state piggybacked on requestSnapshot. Old phones ignore it and
   /// keep the fail-safe full payload; new phones suppress only after a fresh
@@ -667,10 +681,19 @@ SessionStartAvailability resolveSessionStartAvailability({
 /// asynchronous start transaction. A second Start is the same intent and can
 /// disappear harmlessly; Stop is the opposite intent, so claiming success
 /// before there is a running session would lie to the wearer.
+///
+/// [requestedSessionId] is the session the wrist meant, and is compared against
+/// [currentSessionId] before a stop is admitted. Both are needed because a stop
+/// is deliberately exempt from the transmit-age window: it can arrive
+/// arbitrarily late, and "stop the session" is only unambiguous while there is
+/// one session it could mean. A null request is an older watch build and keeps
+/// the previous behaviour.
 WatchCommandAdmission resolveWatchSessionCommandAdmission({
   required WatchCommandKind kind,
   required bool isSessionActive,
   required bool isSessionStarting,
+  String? requestedSessionId,
+  String? currentSessionId,
 }) {
   switch (kind) {
     case WatchCommandKind.startSession:
@@ -683,6 +706,17 @@ WatchCommandAdmission resolveWatchSessionCommandAdmission({
         return (
           shouldRun: false,
           refusal: 'Still starting — try Stop again',
+        );
+      }
+      // Checked only once there is a session to stop. With none running the
+      // stop stays the harmless no-op it has always been, rather than becoming
+      // a refusal for a session that is already over.
+      if (isSessionActive &&
+          requestedSessionId != null &&
+          requestedSessionId != currentSessionId) {
+        return (
+          shouldRun: false,
+          refusal: 'That session already ended',
         );
       }
       return (shouldRun: isSessionActive, refusal: null);

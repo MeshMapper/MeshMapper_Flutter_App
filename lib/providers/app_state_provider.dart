@@ -1823,6 +1823,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           kind: kind,
           isSessionActive: _autoPingEnabled,
           isSessionStarting: _autoPingStarting,
+          requestedSessionId: command.sessionId,
+          // The same value the wrist rendered, so a stop is matched against
+          // what the wearer was looking at rather than against a field only
+          // this side knows.
+          currentSessionId: _liveActivitySessionId ?? 'idle',
         );
         if (admission.refusal != null) return admission.refusal;
         if (!admission.shouldRun) return null;

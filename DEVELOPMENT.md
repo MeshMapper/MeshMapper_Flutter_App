@@ -495,7 +495,13 @@ a lost ack.
   the key jump backwards the first time an offset is learned.
 - `requestSnapshot` and `stopSession` are exempt from the age window: one
   transmits nothing, and the other takes the radio *off* air, so lateness can
-  only make refusing it worse.
+  only make refusing it worse. **A stop therefore names its session**, from the
+  snapshot the wearer was looking at when they tapped, and is refused if the
+  phone has since moved on. Without that the exemption assumed one session was
+  as good as another, and a stop queued against A could silently end B. The
+  field is optional: absent means an older watch build and is admitted as
+  before, because refusing those would strand a wearer whose Stop button the
+  phone had quietly stopped honouring.
 - `resolveSessionStartAvailability` is the single start gate for both the
   offered button and the admitted command. **Passive counts as transmitting** —
   it sends a discovery request on start and every 30 s — so the manual-ping,

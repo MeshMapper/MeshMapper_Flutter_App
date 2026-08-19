@@ -416,6 +416,19 @@ struct WatchCommand: Codable, Hashable {
   /// application context can sit retained for hours, so its timestamp says
   /// nothing about the current offset.
   let clockOffsetMs: Double?
+  /// Which session a `stopSession` means, from the snapshot the wearer was
+  /// looking at when they tapped.
+  ///
+  /// Stopping is exempt from the transmit-age window — a late stop takes the
+  /// radio off air, so refusing it is the worse failure — but that exemption
+  /// assumed sessions were interchangeable. They are not: a Stop queued while
+  /// the phone was out of range, delivered after that session ended and
+  /// another began, silently stopped the wrong one and the wearer learned
+  /// about it by noticing that recording had halted.
+  ///
+  /// Optional and additive. Absent — an older watch build — the phone admits
+  /// the stop exactly as it always did.
+  let sessionId: String?
 }
 
 // There is deliberately no acknowledgement model: queued commands have no

@@ -312,6 +312,7 @@ class WatchBridgeService {
         mode: args['mode'] as String?,
         mapGeoNeeded: effectiveMapGeoNeeded,
         forceRefresh: args['forceRefresh'] == true,
+        sessionId: args['sessionId'] as String?,
       ));
       final refusal =
           admission is Future<String?> ? await admission : admission;
