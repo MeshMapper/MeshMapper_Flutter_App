@@ -516,11 +516,21 @@ typedef SessionStartAvailability = ({bool allowed, String? reason});
 
 /// One start-admission rule shared by the wrist snapshot and command handler.
 ///
-/// Passive monitoring does not transmit, so a manual TX, its receive window,
-/// TX cooldown, offline TX policy, and zone TX policy must not block it. The
-/// setup and transition guards still apply to every mode. Keeping that split
-/// here prevents the offered button and the radio admission from drifting back
-/// into separate policy copies.
+/// Passive monitoring transmits too: `_startDiscoveryMode` puts a discovery
+/// request on air the moment it starts and every 30 s after. So a manual ping
+/// already in flight, its receive window, and the TX cooldown gate every mode
+/// — a discovery TX interleaved into a manual ping's `TxTracker` window
+/// attributes the response to the wrong request, which is exactly why the
+/// phone's own Passive button is dead during all three.
+///
+/// What stays transmit-only is *policy* rather than timing: offline mode, a
+/// passive-only zone, and the auto-mode validation reason all describe whether
+/// the wearer may originate a TX ping, and the phone's Passive button ignores
+/// them too.
+///
+/// The setup and transition guards still apply to every mode. Keeping that
+/// split here prevents the offered button and the radio admission from
+/// drifting back into separate policy copies.
 SessionStartAvailability resolveSessionStartAvailability({
   required bool isTransmitMode,
   required bool isConnected,
@@ -549,15 +559,17 @@ SessionStartAvailability resolveSessionStartAvailability({
     return (allowed: false, reason: 'Select power level');
   }
 
-  if (!isTransmitMode) return (allowed: true, reason: null);
-
-  if (txBlockedByOffline) return (allowed: false, reason: 'Offline Mode');
-  if (txNotAllowed) return (allowed: false, reason: 'Passive Only');
+  // Timing guards: every mode reaches the radio, so every mode waits.
   if (cooldownActive) return (allowed: false, reason: 'Cooling down');
   if (isPingSending) return (allowed: false, reason: 'Ping in progress');
   if (rxWindowActive) {
     return (allowed: false, reason: 'Listening for ping response');
   }
+
+  if (!isTransmitMode) return (allowed: true, reason: null);
+
+  if (txBlockedByOffline) return (allowed: false, reason: 'Offline Mode');
+  if (txNotAllowed) return (allowed: false, reason: 'Passive Only');
   if (transmitValidationReason != null) {
     return (allowed: false, reason: transmitValidationReason);
   }
