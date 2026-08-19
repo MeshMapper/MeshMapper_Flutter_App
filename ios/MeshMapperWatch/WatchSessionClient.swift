@@ -111,15 +111,10 @@ final class WatchSessionClient: NSObject {
   /// turns the change into an event, exactly as its documentation intends.
   private(set) var isReachable = false
 
-  /// A snapshot older than this is shown greyed with an age badge. The phone
-  /// only sends on real change, so silence is normal — this threshold is
-  /// about "the phone has probably gone away", not "no update recently".
-  static let staleAfter: TimeInterval = 90
-  private static let cueFreshFor: TimeInterval = 30
-  /// Phone and watch clocks normally agree to well under a second. This is the
-  /// slack allowed anywhere a phone-stamped time is compared against watch
-  /// "now", and mirrors the tolerance the phone applies to watch commands.
-  private static let clockTolerance: TimeInterval = 5
+  /// The timing rules this client applies live in `WatchWireRules`, which is
+  /// Foundation-only and therefore reachable from `swift test`. Kept as an
+  /// alias because the surrounding view code reads better for it.
+  static let staleAfter = WatchWireRules.staleAfter
   private static let mapGeoSuppressionDelay: TimeInterval = 15
   private static let mapGeoRenewalInterval: TimeInterval = 5 * 60
   private static let mapGeoRecoveryThrottle: TimeInterval = 3
@@ -396,21 +391,13 @@ final class WatchSessionClient: NSObject {
     staleBoundaryTask?.cancel()
     staleBoundaryTask = nil
 
-    // Age from when the phone built the payload rather than when it reached the
-    // wrist. Launch ingests whatever application context WatchConnectivity
-    // retained, which can be hours old, and stamping arrival there would
-    // present long-dead state as fresh for a full 90 seconds.
-    //
-    // Clamped to `arrival` so a phone clock running fast cannot date a snapshot
-    // into the future and extend its life, with a few seconds of slack so
-    // ordinary skew does not age a genuinely live payload early.
-    let origin =
-      producedAt
-        .map { inLocalTime($0) }
-        .map { min(arrival, $0.addingTimeInterval(Self.clockTolerance)) } ?? arrival
+    let (origin, remaining) = WatchWireRules.reception(
+      arrival: arrival,
+      producedAt: producedAt,
+      clockOffset: clockOffset
+    )
     receivedAt = origin
 
-    let remaining = Self.staleAfter - arrival.timeIntervalSince(origin)
     guard remaining > 0 else {
       isStale = true
       return
@@ -427,45 +414,6 @@ final class WatchSessionClient: NSObject {
     }
   }
 
-  /// A phone-stamped instant expressed in this watch's clock.
-  private func inLocalTime(_ phoneInstant: Date) -> Date {
-    guard let clockOffset else { return phoneInstant }
-    return phoneInstant.addingTimeInterval(-clockOffset)
-  }
-
-  /// How much of a cue is still worth presenting, given its age.
-  private enum CuePresentation {
-    /// Recent enough that the wearer can connect the buzz to what they did.
-    case feel
-    /// Too old to buzz for, but still the only account of the failure they
-    /// will ever get: the phone drops a cue once WatchConnectivity accepts the
-    /// snapshot carrying it, which happens while the watch is still suspended.
-    case read
-    case drop
-  }
-
-  /// A wrist-down interval longer than [cueFreshFor] used to discard the cue
-  /// outright — no haptic *and* no message — so a wearer who tapped Start,
-  /// dropped their wrist and looked back a minute later was never told why the
-  /// session had not begun. Buzzing for something that old is wrong, but
-  /// staying silent about it is worse.
-  ///
-  /// The upper bound is [staleAfter], the same boundary that greys the rest of
-  /// the screen: past it the wearer is already being told the whole surface is
-  /// old, and a banner asserting a stale failure as current would be its own
-  /// lie.
-  private func presentation(
-    for cue: WatchHapticCue,
-    at arrival: Date
-  ) -> CuePresentation {
-    guard let issuedAt = cue.issuedAt else { return .drop }
-    let age = arrival.timeIntervalSince(inLocalTime(issuedAt))
-    // A few seconds of skew must not suppress a real failure that has just
-    // crossed the radio.
-    guard age >= -Self.clockTolerance else { return .drop }
-    if age <= Self.cueFreshFor { return .feel }
-    return age <= Self.staleAfter ? .read : .drop
-  }
 
   /// The main-actor half of the activation callback.
   private func completeActivation() {
@@ -653,8 +601,7 @@ final class WatchSessionClient: NSObject {
   /// to: for one to be rejected, a newer payload must already have been
   /// applied, and that one cleared it.
   private func isNewerThanCurrent(_ decoded: WatchSnapshot) -> Bool {
-    guard let current = snapshot, !isStale else { return true }
-    return decoded.updatedAt >= current.updatedAt
+    WatchWireRules.supersedes(decoded, current: snapshot, isStale: isStale)
   }
 
   private func apply(_ decoded: WatchSnapshot, live: Bool = false) {
@@ -704,7 +651,11 @@ final class WatchSessionClient: NSObject {
     }
 
     if let cue = decoded.cue,
-       case let presentation = presentation(for: cue, at: arrival),
+       case let presentation = WatchWireRules.presentation(
+         for: cue,
+         at: arrival,
+         clockOffset: clockOffset
+       ),
        presentation != .drop,
        presentedCueIDs.insert(cue.id).inserted
     {

@@ -451,3 +451,137 @@ extension MeshMapperWatchWire {
   static let payloadKey = "snapshot"
   static let commandKey = "command"
 }
+
+/// The wire's timing rules, as pure functions.
+///
+/// These decide what the wearer sees: whether an arriving payload supersedes
+/// the one on screen, how old a snapshot is allowed to look before the surface
+/// greys, and whether a failure cue is buzzed, shown silently, or dropped.
+///
+/// **They live here to be testable.** `WatchSessionClient` is `@Observable`,
+/// `@MainActor`, and reaches `WCSession.default` through a computed property
+/// with no injection point, so nothing inside it can be exercised without a
+/// paired watch. These rules need none of that — a date, an optional offset,
+/// and a decoded payload — and this file is already Foundation-only and
+/// already compiled into every target that needs it, so moving them costs no
+/// project surgery. `WatchLogicTests` runs them under `swift test` on any
+/// toolchain; the client keeps the observable state and the timers.
+///
+/// Phone-side mirrors live in `lib/services/watch/watch_models.dart`:
+/// `WatchWire.cueReadableFor` tracks `staleAfter`, and the phone stops
+/// attaching a cue at the same boundary the watch stops presenting one.
+enum WatchWireRules {
+  /// A snapshot older than this is shown greyed with an age badge. The phone
+  /// only sends on real change, so silence is normal — this threshold is
+  /// about "the phone has probably gone away", not "no update recently".
+  static let staleAfter: TimeInterval = 90
+
+  /// Recent enough that the wearer can still connect a buzz to what they did.
+  static let cueFreshFor: TimeInterval = 30
+
+  /// Phone and watch clocks normally agree to well under a second. This is the
+  /// slack allowed anywhere a phone-stamped time is compared against watch
+  /// "now", and mirrors the tolerance the phone applies to watch commands.
+  static let clockTolerance: TimeInterval = 5
+
+  /// How much of a cue is still worth presenting, given its age.
+  enum CuePresentation {
+    /// Recent enough that the wearer can connect the buzz to what they did.
+    case feel
+    /// Too old to buzz for, but still the only account of the failure they
+    /// will ever get: the phone attaches a cue until it passes `staleAfter`,
+    /// and most of that window is spent with the wrist down.
+    case read
+    case drop
+  }
+
+  /// A phone-stamped instant expressed in this watch's clock.
+  static func inLocalTime(
+    _ phoneInstant: Date,
+    clockOffset: TimeInterval?
+  ) -> Date {
+    guard let clockOffset else { return phoneInstant }
+    return phoneInstant.addingTimeInterval(-clockOffset)
+  }
+
+  /// A wrist-down interval longer than [cueFreshFor] used to discard the cue
+  /// outright — no haptic *and* no message — so a wearer who tapped Start,
+  /// dropped their wrist and looked back a minute later was never told why the
+  /// session had not begun. Buzzing for something that old is wrong, but
+  /// staying silent about it is worse.
+  ///
+  /// The upper bound is [staleAfter], the same boundary that greys the rest of
+  /// the screen: past it the wearer is already being told the whole surface is
+  /// old, and a banner asserting a stale failure as current would be its own
+  /// lie.
+  static func presentation(
+    for cue: WatchHapticCue,
+    at arrival: Date,
+    clockOffset: TimeInterval?
+  ) -> CuePresentation {
+    guard let issuedAt = cue.issuedAt else { return .drop }
+    let age = arrival.timeIntervalSince(
+      inLocalTime(issuedAt, clockOffset: clockOffset)
+    )
+    // A few seconds of skew must not suppress a real failure that has just
+    // crossed the radio.
+    guard age >= -clockTolerance else { return .drop }
+    if age <= cueFreshFor { return .feel }
+    return age <= staleAfter ? .read : .drop
+  }
+
+  /// Whether `incoming` supersedes what is already rendered.
+  ///
+  /// **The two delivery paths are not ordered with respect to each other.** An
+  /// urgent update goes out as `sendMessage` *and* as
+  /// `updateApplicationContext`, and only the first is fast. `sendMessage`
+  /// does not populate `receivedApplicationContext`, so the retained context
+  /// keeps whatever last arrived down the slow path — which can be a payload
+  /// already superseded live. `resume` ingests that context on every wrist
+  /// raise, and last-writer-wins then walks the wearer backwards onto state
+  /// that is under 90 s old, so nothing asks for better.
+  ///
+  /// Both stamps come from the one phone clock, so they compare raw —
+  /// `inLocalTime` is for phone-instant against watch-now, which this is not.
+  /// Equal stamps are accepted: two payloads built in the same millisecond are
+  /// interchangeable, and a forced refresh always restamps `updatedAt`, so it
+  /// can never be mistaken for a replay of itself.
+  ///
+  /// **A stale surface accepts anything.** Ordering is worth enforcing only
+  /// while what is held is still worth protecting. Bounding it this way means
+  /// the worst case of a phone clock stepping backwards is 90 seconds of
+  /// refusal, after which the boundary flips and the watch recovers on its
+  /// own. A bare comparison would refuse for the life of the process.
+  static func supersedes(
+    _ incoming: WatchSnapshot,
+    current: WatchSnapshot?,
+    isStale: Bool
+  ) -> Bool {
+    guard let current, !isStale else { return true }
+    return incoming.updatedAt >= current.updatedAt
+  }
+
+  /// When a snapshot should be aged from, and how long it has left.
+  ///
+  /// Age from when the phone built the payload rather than when it reached the
+  /// wrist. Launch ingests whatever application context WatchConnectivity
+  /// retained, which can be hours old, and stamping arrival there would
+  /// present long-dead state as fresh for a full 90 seconds.
+  ///
+  /// Clamped to `arrival` so a phone clock running fast cannot date a snapshot
+  /// into the future and extend its life, with [clockTolerance] of slack so
+  /// ordinary skew does not age a genuinely live payload early.
+  ///
+  /// A non-positive `remaining` means the payload is already stale on arrival.
+  static func reception(
+    arrival: Date,
+    producedAt: Date?,
+    clockOffset: TimeInterval?
+  ) -> (origin: Date, remaining: TimeInterval) {
+    let origin =
+      producedAt
+        .map { inLocalTime($0, clockOffset: clockOffset) }
+        .map { min(arrival, $0.addingTimeInterval(clockTolerance)) } ?? arrival
+    return (origin, staleAfter - arrival.timeIntervalSince(origin))
+  }
+}

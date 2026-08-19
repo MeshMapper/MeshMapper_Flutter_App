@@ -82,3 +82,6 @@ drive_route_map*.html
 # Claude Code
 .claude/
 CLAUDE.md
+
+# SwiftPM build products for the watch wire-rule tests
+ios/WatchLogicTests/.build/
