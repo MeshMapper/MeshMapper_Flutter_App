@@ -455,17 +455,35 @@ renews it every 5 minutes. A lost command therefore fails safe — toward sendin
 too much rather than a permanently blank map. Renewals are deduplicatable;
 only a stated `forceRefresh` defeats the payload fingerprint.
 
-**Command admission.** Wrist commands are intent, revalidated by the phone:
+**Command admission.** Wrist commands are intent, revalidated by the phone.
+`transferUserInfo` is the *only* transport — there is deliberately no
+`sendMessage` path into admission, because that can execute a command and still
+fail its reply as undeliverable, leaving the wrist unable to tell a refusal from
+a lost ack.
 
 - IDs make WatchConnectivity's redelivery idempotent. A *queued* command refused
   once stays remembered — redelivery after conditions change must never turn
-  yesterday's tap into a transmit. Only the untimestamped legacy path forgets.
+  yesterday's tap into a transmit. Only an untimestamped command forgets, since
+  it cannot be aged and its sender may legitimately retry.
+- A redelivery is answered with the **outcome recorded the first time**, not a
+  blanket acceptance. Replying "accepted" to the redelivery of something the
+  bridge refused describes a transmit that never happened.
 - Timestamped commands must land inside `_maximumCommandAge` (30 s), with
-  `_clockTolerance` (5 s) of slack in both directions. A fast watch clock is the
-  same bug as a slow queue.
-- `requestSnapshot` and `stopSession` are exempt from that window: one transmits
-  nothing, and the other takes the radio *off* air, so lateness can only make
-  refusing it worse.
+  `_clockTolerance` (5 s) of slack in both directions.
+- **The two devices do not share a clock, and that is a normal condition.**
+  `issuedAtMs` is stamped in the watch's clock and the command carries
+  `clockOffsetMs` beside it, so the phone measures a real elapsed age rather
+  than an age plus the skew. The watch learns that offset only from a live
+  `sendMessage`, whose transit is milliseconds; an application context may have
+  sat retained for hours and says nothing about the current offset. Absent
+  offset means zero, which is the old behaviour exactly. `_clockTolerance` now
+  covers the residual — transit and measurement error — not the skew itself.
+  The offset is *not* folded into `issuedAtMs`, because that value doubles as
+  the ordering key for map-geo suppression claims and rewriting it would make
+  the key jump backwards the first time an offset is learned.
+- `requestSnapshot` and `stopSession` are exempt from the age window: one
+  transmits nothing, and the other takes the radio *off* air, so lateness can
+  only make refusing it worse.
 - `resolveSessionStartAvailability` is the single start gate for both the
   offered button and the admitted command. **Passive counts as transmitting** —
   it sends a discovery request on start and every 30 s — so the manual-ping,
@@ -485,6 +503,19 @@ app" prompt instead of going silently stale.
 **Geography caps** — `maxPings` 60, `maxRepeaters` 20, `maxHeard` 4. Applied by
 `WatchGeoBuilder` on the sending side, after merging every source and sorting by
 recency, so a busy TX history cannot erase discovery or trace markers.
+
+**Heard-row names** are resolved per *distinct* hex-prefix length. The RX slot's
+path hash can be a different width than the top rows' — they come from different
+pings, and the zone's hop-byte count sets the width — so a single-length index
+silently drops the odd row's name and distance. `resolveUniqueHexPrefixes` is
+the only correct entry point.
+
+**Live Activity host support.** ActivityKit answers `sync` with `true`, `false`,
+or `"unsupported"`. `false` means *not right now* — authorization is off, or
+`Activity.request` was refused because the app is backgrounded — and earns the
+30 s backoff. `"unsupported"` (and a `MissingPluginException`) means this host
+can never show one, and Dart stops asking for the rest of the process rather
+than running a guaranteed-fail retry loop all session.
 
 ### BLE Service UUIDs (MeshCore Companion Protocol)
 - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`

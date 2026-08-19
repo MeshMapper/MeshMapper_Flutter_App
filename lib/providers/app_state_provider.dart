@@ -570,9 +570,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String get deviceId => _deviceId;
   bool get preferencesLoaded => _preferencesLoaded;
   WatchBridgeService get watchBridge => _watchBridge;
-  bool get shouldShowWatchDiagnostics =>
-      _watchBridge.isSupportedPlatform &&
-      (_watchBridge.diagnostics.value.paired || _hasEverPairedWatch);
+  bool get shouldShowWatchDiagnostics {
+    final status = _watchBridge.diagnostics.value;
+    return resolveShouldShowWatchDiagnostics(
+      isSupportedPlatform: _watchBridge.isSupportedPlatform,
+      supported: status.supported,
+      paired: status.paired,
+      activated: status.activated,
+      hasEverPaired: _hasEverPairedWatch,
+    );
+  }
   TransportType get selectedTransport => _selectedTransport;
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;

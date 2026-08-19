@@ -510,6 +510,36 @@ WatchRequestedStartModeResolution resolveWatchRequestedStartMode({
   return (mode: mode, refusal: null);
 }
 
+/// Whether Settings should offer the watch diagnostics screen.
+///
+/// The screen explains why the phone is or is not talking to a watch, so the
+/// case it most needs to be reachable in is the one where nothing is working.
+/// Requiring [paired] to have been observed true got that exactly backwards:
+/// a session whose activation failed reports `paired: false` for a phone that
+/// may well have a watch on the wrist, and the entry then stayed invisible for
+/// precisely the wearer who needed it.
+///
+/// So it appears when a watch can be seen or has ever been seen, and also when
+/// WatchConnectivity is supported but the session never came up — which is not
+/// a claim that a watch exists, only an admission that we cannot say it does
+/// not. A healthy session reporting no watch hides it, which is the common
+/// case on an iPhone with no Apple Watch at all.
+///
+/// [activated] is briefly false while activation is in flight at launch. That
+/// window is not reachable from here: the provider activates during its own
+/// initialization, long before Settings can be pushed.
+bool resolveShouldShowWatchDiagnostics({
+  required bool isSupportedPlatform,
+  required bool supported,
+  required bool paired,
+  required bool activated,
+  required bool hasEverPaired,
+}) {
+  if (!isSupportedPlatform) return false;
+  if (paired || hasEverPaired) return true;
+  return supported && !activated;
+}
+
 /// Which start modes the wrist may offer.
 ///
 /// Advertisement, not admission. Transient conditions — a ping in flight, a
