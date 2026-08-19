@@ -41,17 +41,44 @@ class CustomApiService {
         _client = client ?? http.Client();
 
   /// Fire-and-forget: forward pings to the custom endpoint.
-  /// Called after successful MeshMapper upload. Never throws.
-  void forwardPings(List<Map<String, dynamic>> pings) {
+  /// Called after successful MeshMapper upload (online queue or offline session).
+  /// Never throws.
+  void forwardPings(
+    List<Map<String, dynamic>> pings, {
+    String? contactOverride,
+    String? iataOverride,
+    String source = 'online',
+  }) {
+    if (pings.isEmpty) return;
+
     final prefs = _prefsGetter();
     if (!prefs.customApiEnabled) return;
-    if (prefs.customApiUrl == null || prefs.customApiUrl!.isEmpty) return;
-    if (prefs.customApiKey == null || prefs.customApiKey!.isEmpty) return;
+
+    debugLog(
+        '[CUSTOM API] Forward requested ($source): ${pings.length} item(s)');
+
+    if (prefs.customApiUrl == null || prefs.customApiUrl!.isEmpty) {
+      debugLog('[CUSTOM API] Forward skipped ($source): URL not configured');
+      return;
+    }
+    if (prefs.customApiKey == null || prefs.customApiKey!.isEmpty) {
+      debugLog('[CUSTOM API] Forward skipped ($source): API key not configured');
+      return;
+    }
 
     // Enrich with contact and iata (custom API only — never sent to MeshMapper)
-    final contact =
-        prefs.customApiIncludeContact ? contactGetter?.call() : null;
-    final iata = iataGetter?.call();
+    final contact = prefs.customApiIncludeContact
+        ? (contactOverride ?? contactGetter?.call())
+        : null;
+    final iata = iataOverride ?? iataGetter?.call();
+
+    // Log the endpoint host only — the full URL may embed auth tokens, and
+    // debug log files are uploaded verbatim with bug reports.
+    var endpointHost = Uri.tryParse(prefs.customApiUrl!)?.host ?? '';
+    if (endpointHost.isEmpty) endpointHost = 'custom endpoint';
+
+    debugLog('[CUSTOM API] Forwarding ($source) → $endpointHost '
+        '(contact=${contact ?? "off"}, iata=${iata ?? "none"})');
 
     final enriched = pings.map((ping) {
       final enrichedPing = Map<String, dynamic>.from(ping);

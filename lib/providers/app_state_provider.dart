@@ -5100,6 +5100,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Extract session_id into local variable — never stored in shared state
     final offlineSessionId = effectiveAuth!['session_id'] as String?;
+    final uploadPublicKey = publicKey!;
     if (offlineSessionId == null) {
       debugError('[OFFLINE] Auth succeeded but no session_id in response');
       return OfflineUploadResult.authFailed;
@@ -5179,6 +5180,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (result == UploadResult.success) {
         uploadedCount += batch.length;
         debugLog('[OFFLINE] Uploaded batch $batchNum: ${batch.length} pings');
+        _forwardOfflineBatchToCustomApi(
+          batch,
+          batchNum: batchNum,
+          publicKey: uploadPublicKey,
+          auth: effectiveAuth,
+        );
         continue;
       }
 
@@ -5232,6 +5239,36 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return OfflineUploadResult.partialFailure;
     }
+  }
+
+  /// Forward a successfully uploaded offline batch to the Custom API endpoint.
+  ///
+  /// The whole batch is stamped with the upload-location zone (the fresh
+  /// /auth at the current GPS position), not where the pings were recorded —
+  /// the client cannot compute per-ping zones for sessions that span regions.
+  void _forwardOfflineBatchToCustomApi(
+    List<Map<String, dynamic>> batch, {
+    required int batchNum,
+    required String publicKey,
+    required Map<String, dynamic> auth,
+  }) {
+    final contact = publicKey.length >= 8
+        ? publicKey.substring(0, 8).toUpperCase()
+        : null;
+    var iata = zoneCode ?? _preferences.iataCode;
+    final zone = auth['zone'];
+    if (zone is Map && zone['code'] != null) {
+      iata = zone['code'].toString();
+    }
+    debugLog(
+        '[OFFLINE] Custom API forward for batch $batchNum '
+        '(${batch.length} pings, contact=$contact, iata=$iata)');
+    _customApiService.forwardPings(
+      batch,
+      contactOverride: contact,
+      iataOverride: iata,
+      source: 'offline',
+    );
   }
 
   /// Delete an offline session without uploading
