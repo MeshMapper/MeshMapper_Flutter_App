@@ -1376,14 +1376,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final top = _topRepeatersOverlay;
     final rxSlot = _rxOverlaySlot;
 
-    // Overlay IDs are hex path hashes, so resolve names by prefix at whatever
-    // length this zone actually uses.
-    final hexLength = top.isNotEmpty
-        ? top.first.repeaterId.length
-        : (rxSlot?.repeaterId.length ?? 0);
-    final repeaterByHex = hexLength > 0
-        ? WatchGeoBuilder.indexByHexPrefix(_repeaters, hexLength)
-        : const <String, Repeater>{};
+    // Overlay IDs are hex path hashes, resolved to names by prefix.
+    //
+    // Indexed per distinct length, not at one length taken from the first row.
+    // The RX slot's hash can be a different width than the top rows' — the two
+    // come from different pings, and the zone's hop-byte count is what sets the
+    // width — so a single-length index silently dropped the odd row's name and
+    // distance while every other row resolved normally.
+    final repeaterByHex = WatchGeoBuilder.resolveUniqueHexPrefixes(
+      repeaters: _repeaters,
+      prefixes: [
+        ...top.map((row) => row.repeaterId),
+        if (rxSlot != null) rxSlot.repeaterId,
+      ],
+    );
     final heard = WatchGeoBuilder.buildHeard(
       top: top,
       rxSlot: rxSlot,
@@ -1574,10 +1580,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _autoMode;
   }
 
-  List<WatchStartMode> get _availableWatchStartModes => [
-        WatchStartMode.passive,
-        if (isConnected && txAllowed) WatchStartMode.hybrid,
-      ];
+  List<WatchStartMode> get _availableWatchStartModes =>
+      resolveAvailableWatchStartModes(
+        isConnected: isConnected,
+        txAllowed: txAllowed,
+        offlineMode: offlineMode,
+      );
 
   String get _resolvedWatchSessionModeTitle =>
       switch (_resolvedWatchSessionMode) {
