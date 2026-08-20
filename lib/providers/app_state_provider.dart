@@ -496,8 +496,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (isPendingDisable &&
         !_rxWindowTimer.isRunning &&
         !_discoveryWindowTimer.isRunning) {
-      debugWarn(
-          '[TIMER] pendingDisable stuck true with no RX/discovery window '
+      debugWarn('[TIMER] pendingDisable stuck true with no RX/discovery window '
           'running — locks ping controls until restart [$reason]');
     }
   }
@@ -730,6 +729,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           final x = (((lon + 180.0) / 360.0) * n).floor();
           return x < 0 ? 0 : (x >= n ? n - 1 : x);
         }
+
         int latToY(double lat) {
           final latRad = lat * math.pi / 180.0;
           final sinhArg = math.tan(latRad);
@@ -1035,6 +1035,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _floodDisabledAlertPending = false;
     notifyListeners();
   }
+
   int get minModeInterval => _apiService.minModeInterval;
   bool get enforceHopBytes => _apiService.enforceHopBytes;
   int get hopBytes => _hopBytes;
@@ -1619,12 +1620,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                 '[CONN] Firmware name is "Anonymous" but no persisted real name found');
           }
         }
-        deviceName = selfInfoName ??
-            connectedDeviceName?.replaceFirst('MeshCore-', '');
+        deviceName =
+            selfInfoName ?? connectedDeviceName?.replaceFirst('MeshCore-', '');
       }
       if (deviceName == null || deviceName.isEmpty) {
-        debugError(
-            '[APP] Cannot request auth: could not retrieve device name');
+        debugError('[APP] Cannot request auth: could not retrieve device name');
         return {
           'success': false,
           'reason': 'no_device_name',
@@ -1687,8 +1687,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         };
       }
 
-      debugLog(
-          '[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
+      debugLog('[APP] Stage 1 failed: ${result['message'] ?? 'Unknown error'}');
 
       final stage1Reason = result['reason'] as String?;
       if (stage1Reason == 'gps_inaccurate' || stage1Reason == 'gps_stale') {
@@ -1761,8 +1760,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _meshCoreConnection != null) {
           try {
             final deviceTime = await _meshCoreConnection!.getDeviceTime();
-            final appTime =
-                DateTime.now().millisecondsSinceEpoch ~/ 1000;
+            final appTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
             final drift = deviceTime - appTime;
             debugError(
                 '[APP] Device clock: $deviceTime, app clock: $appTime, drift: ${drift}s');
@@ -1857,8 +1855,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (status == ConnectionStatus.disconnected) {
         final wasConnected = _connectionStep == ConnectionStep.connected;
         final hasRemembered = _rememberedDevice != null;
-        final isUnexpected =
-            !_userRequestedDisconnect && !_isAutoReconnecting;
+        final isUnexpected = !_userRequestedDisconnect && !_isAutoReconnecting;
         final canAutoReconnect = hasRemembered &&
             !kIsWeb &&
             _rememberedDevice!.transportType != TransportType.usbSerial;
@@ -2032,8 +2029,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _meshCoreConnection!.stepStream.listen((step) {
         _connectionStep = step;
         if (step == ConnectionStep.connected) {
-          _manufacturerString =
-              _meshCoreConnection!.deviceInfo?.manufacturer;
+          _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
           _firmwareVersionString =
               _meshCoreConnection!.deviceInfo?.firmwareVersionString;
           _deviceModel = _meshCoreConnection!.deviceModel;
@@ -2138,8 +2134,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       final usbProductName =
           usbDevice['productName'] as String? ?? 'USB Serial';
-      final usbDeviceName =
-          usbDevice['deviceName'] as String? ?? 'USB Serial';
+      final usbDeviceName = usbDevice['deviceName'] as String? ?? 'USB Serial';
       final serialService = AndroidSerialService(
         deviceName: usbDeviceName,
         productName: usbProductName,
@@ -2162,8 +2157,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _meshCoreConnection!.stepStream.listen((step) {
         _connectionStep = step;
         if (step == ConnectionStep.connected) {
-          _manufacturerString =
-              _meshCoreConnection!.deviceInfo?.manufacturer;
+          _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
           _firmwareVersionString =
               _meshCoreConnection!.deviceInfo?.firmwareVersionString;
           _deviceModel = _meshCoreConnection!.deviceModel;
@@ -2284,8 +2278,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _meshCoreConnection!.stepStream.listen((step) {
         _connectionStep = step;
         if (step == ConnectionStep.connected) {
-          _manufacturerString =
-              _meshCoreConnection!.deviceInfo?.manufacturer;
+          _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
           _firmwareVersionString =
               _meshCoreConnection!.deviceInfo?.firmwareVersionString;
           _deviceModel = _meshCoreConnection!.deviceModel;
@@ -2453,8 +2446,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     if (_preferences.autoPingInterval < _apiService.minModeInterval) {
-      _preferences = _preferences.copyWith(
-          autoPingInterval: _apiService.minModeInterval);
+      _preferences =
+          _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
       debugLog(
           '[CONN] Auto-ping interval bumped to ${_apiService.minModeInterval}s by regional admin');
     }
@@ -2656,11 +2649,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (isNew) {
             multiHopEvents.add(newEvent);
             _audioService.playReceiveSound();
-            _pingStats =
-                _pingStats.copyWith(rxCount: _pingStats.rxCount + 1);
+            _pingStats = _pingStats.copyWith(rxCount: _pingStats.rxCount + 1);
           } else {
-            final idx = multiHopEvents
-                .indexWhere((e) => e.repeaterId == repeaterId);
+            final idx =
+                multiHopEvents.indexWhere((e) => e.repeaterId == repeaterId);
             if (idx >= 0) {
               multiHopEvents[idx] = newEvent;
             }
@@ -2686,10 +2678,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
 
       if (skipReason != null) {
-        if (_preferences.autoStopAfterIdle &&
-            _idleAutoStopReference != null) {
-          final elapsed =
-              DateTime.now().difference(_idleAutoStopReference!);
+        if (_preferences.autoStopAfterIdle && _idleAutoStopReference != null) {
+          final elapsed = DateTime.now().difference(_idleAutoStopReference!);
           if (elapsed >= _autoStopIdleTimeout) {
             _triggerIdleAutoStop();
           }
@@ -2856,8 +2846,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService!.onDiscCarpeaterDrop = (String repeaterId, String reason) {
       debugLog(
           '[APP] Discovery carpeater drop: repeater=$repeaterId, reason=$reason');
-      logError(
-          'Discovery Dropped\nPossible carpeater: $repeaterId\n$reason',
+      logError('Discovery Dropped\nPossible carpeater: $repeaterId\n$reason',
           severity: ErrorSeverity.warning, autoSwitch: false);
     };
 
@@ -5039,7 +5028,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         offlineMode: true,
         skipSessionStore: true,
       );
-      if (authResult != null) break; // got a response (success OR a real rejection)
+      if (authResult != null) {
+        break; // got a response (success OR a real rejection)
+      }
       if (attempt >= authRetryBackoff.length) break; // retries exhausted
       final delay = authRetryBackoff[attempt];
       debugWarn(
@@ -5130,7 +5121,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (pc is Map) {
         pc.forEach((k, v) {
           final n = (v is int) ? v : (int.tryParse('$v') ?? 0);
-          placementTotals[k.toString()] = (placementTotals[k.toString()] ?? 0) + n;
+          placementTotals[k.toString()] =
+              (placementTotals[k.toString()] ?? 0) + n;
         });
       }
       final tf = resp['too_far_region'];
@@ -5154,9 +5146,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final batch = pings.skip(i).take(batchSize).toList();
       final backoff = i == 0 ? firstBatchBackoff : laterBatchBackoff;
 
-      var result =
-          await _apiService.uploadBatchWithSessionId(batch, offlineSessionId,
-              onResponse: accumulatePlacement);
+      var result = await _apiService.uploadBatchWithSessionId(
+          batch, offlineSessionId,
+          onResponse: accumulatePlacement);
 
       // Retry only session-propagation / transient errors. nonRetryable
       // (data/zone/key) errors are NOT retried — we stop and preserve instead.
@@ -5172,9 +5164,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[OFFLINE] Batch $batchNum $kind error, retry ${retry + 1}/${backoff.length} after ${delay}s');
         onProgress?.call('Batch $batchNum/$totalBatches (retry ${retry + 1})');
         await Future.delayed(Duration(seconds: delay));
-        result =
-            await _apiService.uploadBatchWithSessionId(batch, offlineSessionId,
-              onResponse: accumulatePlacement);
+        result = await _apiService.uploadBatchWithSessionId(
+            batch, offlineSessionId,
+            onResponse: accumulatePlacement);
       }
 
       if (result == UploadResult.success) {
@@ -5252,16 +5244,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     required String publicKey,
     required Map<String, dynamic> auth,
   }) {
-    final contact = publicKey.length >= 8
-        ? publicKey.substring(0, 8).toUpperCase()
-        : null;
+    final contact =
+        publicKey.length >= 8 ? publicKey.substring(0, 8).toUpperCase() : null;
     var iata = zoneCode ?? _preferences.iataCode;
     final zone = auth['zone'];
     if (zone is Map && zone['code'] != null) {
       iata = zone['code'].toString();
     }
-    debugLog(
-        '[OFFLINE] Custom API forward for batch $batchNum '
+    debugLog('[OFFLINE] Custom API forward for batch $batchNum '
         '(${batch.length} pings, contact=$contact, iata=$iata)');
     _customApiService.forwardPings(
       batch,
@@ -5557,7 +5547,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setBroadcastCoords(bool enabled) async {
     _preferences = _preferences.copyWith(broadcastCoords: enabled);
     await _savePreferences();
-    debugLog('[PING] Broadcast coordinates ${enabled ? 'enabled' : 'disabled'}');
+    debugLog(
+        '[PING] Broadcast coordinates ${enabled ? 'enabled' : 'disabled'}');
     notifyListeners();
   }
 
@@ -5590,7 +5581,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void clearErrorLogSwitchRequest() {
     _requestErrorLogSwitch = false;
   }
-
 
   // ============================================
   // API Error Handling
@@ -5639,7 +5629,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case 'network_error':
         return 'Unable to connect to the MeshMapper server. Please check your internet connection and try again.';
       case 'clock_error':
-        return serverMessage ?? 'Device clock error. Power-cycle your device to reset it.';
+        return serverMessage ??
+            'Device clock error. Power-cycle your device to reset it.';
       default:
         return serverMessage ?? 'Unknown error occurred.';
     }
@@ -5660,7 +5651,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       try {
         await _apiQueueService.flushQueue();
       } catch (e) {
-        debugError('[SESSION] Queue flush before session-limit disconnect failed: $e');
+        debugError(
+            '[SESSION] Queue flush before session-limit disconnect failed: $e');
       }
       await disconnect();
       return;
@@ -6356,8 +6348,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _cooldownTimer.stop();
           _pingService!.clearCooldown();
           final resolvedMode = _resolveAutoModeForZone(previousMode);
-          debugLog(
-              '[ZONE GRACE] Mode resolved: $previousMode → $resolvedMode');
+          debugLog('[ZONE GRACE] Mode resolved: $previousMode → $resolvedMode');
           toggleAutoPing(resolvedMode);
         }
       });
@@ -6423,8 +6414,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Handle zone-to-zone transfer during active wardriving session.
   /// Releases old zone session and acquires new session for target zone.
   /// Preserves BLE connection and radio configuration.
-  Future<void> _handleZoneTransfer(
-      String newZoneCode, String newZoneName,
+  Future<void> _handleZoneTransfer(String newZoneCode, String newZoneName,
       {bool? wasAutoPingOverride, AutoMode? previousModeOverride}) async {
     if (_isZoneTransferInProgress) {
       debugLog('[ZONE] Transfer already in progress, skipping');
@@ -6678,8 +6668,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             _preferences.copyWith(discDropEnabled: _userOriginalDiscDrop!);
       }
       if (_userOriginalFloodTraffic != null) {
-        _preferences =
-            _preferences.copyWith(floodTrafficEnabled: _userOriginalFloodTraffic!);
+        _preferences = _preferences.copyWith(
+            floodTrafficEnabled: _userOriginalFloodTraffic!);
       }
       debugLog(
           '[ZONE] Preferences restored to user baseline before applying new zone policies');
@@ -7208,7 +7198,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _rememberedDevice =
             RememberedDevice.fromJson(Map<String, dynamic>.from(json));
         _selectedTransport = _rememberedDevice!.transportType;
-        debugLog('[APP] Loaded remembered device: ${_rememberedDevice!.name} (${_rememberedDevice!.transportType.name})');
+        debugLog(
+            '[APP] Loaded remembered device: ${_rememberedDevice!.name} (${_rememberedDevice!.transportType.name})');
         notifyListeners();
       }
     } catch (e) {

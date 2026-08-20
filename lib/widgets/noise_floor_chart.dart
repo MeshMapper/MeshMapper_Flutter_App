@@ -463,8 +463,7 @@ class InteractiveNoiseFloorChartState
   /// Build direct and multi-hop repeater sections for the marker detail sheet
   List<Widget> _buildMarkerRepeaterSections(
       BuildContext context, List<MarkerRepeaterInfo> repeaters) {
-    final directRepeaters =
-        repeaters.where((r) => r.pathHops == null).toList();
+    final directRepeaters = repeaters.where((r) => r.pathHops == null).toList();
     final multiHopRepeaters =
         repeaters.where((r) => r.pathHops != null).toList();
 

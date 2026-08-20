@@ -32,8 +32,7 @@ abstract class StreamTransportBase implements CompanionTransport {
   Stream<Uint8List> get dataStream => _dataController.stream;
 
   @override
-  Stream<ConnectionStatus> get connectionStream =>
-      _connectionController.stream;
+  Stream<ConnectionStatus> get connectionStream => _connectionController.stream;
 
   @override
   ConnectionStatus get connectionStatus => _status;

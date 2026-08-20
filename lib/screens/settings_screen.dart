@@ -221,16 +221,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 },
               ),
             SwitchListTile(
-              secondary: Icon(
-                  prefs.mapTilesEnabled ? Icons.cloud : Icons.cloud_off),
+              secondary:
+                  Icon(prefs.mapTilesEnabled ? Icons.cloud : Icons.cloud_off),
               title: const Text('Use Downloaded Tiles Only'),
               subtitle: Text(prefs.mapTilesEnabled
                   ? 'Online tiles load normally'
                   : 'Only downloaded areas are shown · no network tile requests'),
               value: !prefs.mapTilesEnabled,
               onChanged: (value) {
-                appState.updatePreferences(
-                    prefs.copyWith(mapTilesEnabled: !value));
+                appState
+                    .updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
               },
             ),
             if (prefs.mapTilesEnabled)

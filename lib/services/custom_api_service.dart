@@ -62,7 +62,8 @@ class CustomApiService {
       return;
     }
     if (prefs.customApiKey == null || prefs.customApiKey!.isEmpty) {
-      debugLog('[CUSTOM API] Forward skipped ($source): API key not configured');
+      debugLog(
+          '[CUSTOM API] Forward skipped ($source): API key not configured');
       return;
     }
 

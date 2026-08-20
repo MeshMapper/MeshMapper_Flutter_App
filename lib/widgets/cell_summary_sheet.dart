@@ -87,7 +87,9 @@ class CellSummarySheet extends StatelessWidget {
                 );
               }
               final s = snap.data;
-              if (s == null) return _note(context, 'Could not load coverage data.');
+              if (s == null) {
+                return _note(context, 'Could not load coverage data.');
+              }
               if (s.total == 0) return _note(context, 'No coverage data here.');
               return _buildSummary(context, s);
             },
@@ -146,7 +148,8 @@ class CellSummarySheet extends StatelessWidget {
             _cell(
               context,
               value: s.maxDistMeters != null
-                  ? formatCoverageDistance(s.maxDistMeters!, isImperial: isImperial)
+                  ? formatCoverageDistance(s.maxDistMeters!,
+                      isImperial: isImperial)
                   : 'N/A',
               label: 'MAX DIST',
               color: _maxDistBlue,
@@ -249,7 +252,8 @@ class CellSummarySheet extends StatelessWidget {
         child: Icon(icon, size: 22, color: color),
       );
     }
-    return _cell(context, value: '', label: 'AVG SNR', valueWidget: valueWidget);
+    return _cell(context,
+        value: '', label: 'AVG SNR', valueWidget: valueWidget);
   }
 
   Widget _barGraph(BuildContext context, GridSummary s) {
@@ -308,7 +312,8 @@ class CellSummarySheet extends StatelessWidget {
         child: Center(
           child: Text(
             msg,
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ),
       );

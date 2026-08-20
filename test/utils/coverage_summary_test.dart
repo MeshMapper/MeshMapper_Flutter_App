@@ -210,7 +210,12 @@ void main() {
     test('no matches yields zeros + null range', () {
       final none = RepeaterStats.fromCoverage(
         const [
-          {'status': 1, 'lat': 40.0, 'lon': -70.0, 'heard_repeats': 'ff99(9)[40,-70]'},
+          {
+            'status': 1,
+            'lat': 40.0,
+            'lon': -70.0,
+            'heard_repeats': 'ff99(9)[40,-70]'
+          },
         ],
         target,
         lookup,
@@ -224,7 +229,8 @@ void main() {
     // 100 m Detailed grid steps (kCoverageGridSteps[100]).
     const latStep = 0.0009, lonStep = 0.00128;
 
-    test('taps anywhere in a cell resolve to the same cell; centre is inside', () {
+    test('taps anywhere in a cell resolve to the same cell; centre is inside',
+        () {
       final cell = GridCell.containing(45.26970, -75.77795, latStep, lonStep);
       final a =
           GridCell.containing(cell.centerLat, cell.centerLon, latStep, lonStep);
@@ -241,7 +247,10 @@ void main() {
       final cell = GridCell.containing(45.0, -75.0, latStep, lonStep);
       final pts = <Map<String, dynamic>>[
         {'lat': cell.centerLat, 'lon': cell.centerLon}, // in cell (num)
-        {'lat': '${cell.centerLat}', 'lon': '${cell.centerLon}'}, // in cell (string)
+        {
+          'lat': '${cell.centerLat}',
+          'lon': '${cell.centerLon}'
+        }, // in cell (string)
         {
           'lat': (cell.i + 3) * latStep + latStep * 0.5,
           'lon': cell.centerLon
@@ -288,7 +297,8 @@ void main() {
       expect(cell.filterWithinBlob(pts, 0).length, 1);
     });
 
-    test('blob fetch radius reaches the ±blob block corner, floored at gridSize',
+    test(
+        'blob fetch radius reaches the ±blob block corner, floored at gridSize',
         () {
       // Detailed: blob=1, 100 m floor → must exceed 100 m and reach the block's
       // far corner (~212 m here) so blob-neighbour pings get fetched.
@@ -414,7 +424,8 @@ void main() {
     });
 
     test('picks the highest-priority (lowest st) across a mix', () {
-      expect(dominantCoverageStatus([p(2), p(6), p(3)]), 2); // orange/cyan/grey -> cyan
+      expect(dominantCoverageStatus([p(2), p(6), p(3)]),
+          2); // orange/cyan/grey -> cyan
     });
   });
 }

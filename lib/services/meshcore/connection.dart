@@ -643,7 +643,8 @@ class MeshCoreConnection {
         reader.readInt32LE(); // advLon
         reader.readBytes(3); // reserved
         reader.readByte(); // manualAddContacts
-        radioFreqKHz = reader.readUInt32LE(); // radioFreq (kHz on real hardware)
+        radioFreqKHz =
+            reader.readUInt32LE(); // radioFreq (kHz on real hardware)
         radioBwHz = reader.readUInt32LE(); // radioBw (Hz)
         radioSf = reader.readByte(); // radioSf
         radioCr = reader.readByte(); // radioCr

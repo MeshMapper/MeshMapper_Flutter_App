@@ -614,7 +614,8 @@ class PingService {
         // Applies to BOTH privacy and broadcast-coords modes — a combined ping consumes
         // a counter exactly like a privacy ping, so the session ends identically.
         if ((getPingCounter?.call() ?? 0) >= 2047) {
-          debugError('[SESSION] Reached session ping limit (2047) — disconnecting');
+          debugError(
+              '[SESSION] Reached session ping limit (2047) — disconnecting');
           _pingInProgress = false;
           onSessionLimitReached?.call();
           return false;
@@ -722,9 +723,8 @@ class PingService {
             if (isNew) {
               txPing.heardRepeaters.add(repeater);
             } else {
-              final idx = txPing.heardRepeaters
-                  .indexWhere((r) => r.repeaterId == repeaterId &&
-                      r.pathHops != null);
+              final idx = txPing.heardRepeaters.indexWhere(
+                  (r) => r.repeaterId == repeaterId && r.pathHops != null);
               if (idx >= 0) {
                 txPing.heardRepeaters[idx] = repeater;
               }
@@ -846,8 +846,12 @@ class PingService {
     }
 
     // Collect multi-hop echo data for the onTxWindowComplete callback
-    final multiHopEchoes =
-        <({String repeaterId, double? snr, int? rssi, List<String> pathHops})>[];
+    final multiHopEchoes = <({
+      String repeaterId,
+      double? snr,
+      int? rssi,
+      List<String> pathHops
+    })>[];
     if (txTracker != null && txTracker.multiHopRepeaters.isNotEmpty) {
       for (final entry in txTracker.multiHopRepeaters.entries) {
         final echo = entry.value;
@@ -874,7 +878,8 @@ class PingService {
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
         power: getPowerLevel?.call(),
-        pingCounter: _pendingTxPingCounter, // null in coords mode → server coords path
+        pingCounter:
+            _pendingTxPingCounter, // null in coords mode → server coords path
         wireTag: _pendingTxWireTag, // null in coords mode → server coords path
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');

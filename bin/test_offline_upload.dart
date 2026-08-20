@@ -62,8 +62,10 @@ List<Map<String, dynamic>> generateTestItems(
   double baseLat = 45.3215,
   double baseLon = -75.6693,
 }) {
-  final baseTimestamp =
-      (DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch ~/ 1000);
+  final baseTimestamp = (DateTime.now()
+          .subtract(const Duration(hours: 24))
+          .millisecondsSinceEpoch ~/
+      1000);
   final items = <Map<String, dynamic>>[];
 
   for (var i = 0; i < count; i++) {
@@ -633,7 +635,8 @@ void printSummary(List<ScenarioResult> results) {
       print('     Auth failed: ${result.failureReason}');
     } else if (result.passed) {
       print('  $icon ${result.name} (batch=${result.batchSize}, $delayStr)');
-      print('     PASSED ${result.totalUploaded} items across ${result.batches.length} batches');
+      print(
+          '     PASSED ${result.totalUploaded} items across ${result.batches.length} batches');
     } else {
       print('  $icon ${result.name} (batch=${result.batchSize}, $delayStr)');
       print(
@@ -656,15 +659,13 @@ void printSummary(List<ScenarioResult> results) {
     print('  FINDINGS:');
 
     final rapidFire = validResults
-        .where(
-            (r) => r.interBatchDelay.inSeconds == 0 && r.batchSize == 50)
+        .where((r) => r.interBatchDelay.inSeconds == 0 && r.batchSize == 50)
         .toList();
     final throttled = validResults
         .where((r) => r.interBatchDelay.inSeconds > 0 && r.batchSize == 50)
         .toList();
     final batchSweep = validResults
-        .where(
-            (r) => r.interBatchDelay.inSeconds == 0 && r.batchSize != 50)
+        .where((r) => r.interBatchDelay.inSeconds == 0 && r.batchSize != 50)
         .toList();
 
     // Check if rapid fire failed but throttled passed
@@ -686,8 +687,7 @@ void printSummary(List<ScenarioResult> results) {
       final rapidItems = rapidFire.first.totalUploaded;
       final throttledItems = throttled.first.totalUploaded;
       if ((rapidItems - throttledItems).abs() < 60) {
-        print(
-            '  - Both rapid and throttled fail at ~$rapidItems items.');
+        print('  - Both rapid and throttled fail at ~$rapidItems items.');
         print(
             '  - CONCLUSION: Server-side ITEM COUNT LIMIT (~$rapidItems per session).');
         print(
@@ -700,8 +700,7 @@ void printSummary(List<ScenarioResult> results) {
       }
     } else if (validResults.every((r) => r.passed)) {
       print('  - All scenarios passed!');
-      print(
-          '  - Could not reproduce the session invalidation in this run.');
+      print('  - Could not reproduce the session invalidation in this run.');
       print(
           '  - The issue may depend on server load, time of day, or specific session state.');
     }
@@ -798,7 +797,8 @@ Future<void> main(List<String> arguments) async {
     exit(1);
   }
   if (pubkey == null && contactUri == null) {
-    print('Error: --pubkey=<DEVICE_PUB_KEY> or --contact-uri=<URI> is required');
+    print(
+        'Error: --pubkey=<DEVICE_PUB_KEY> or --contact-uri=<URI> is required');
     printUsage();
     exit(1);
   }
