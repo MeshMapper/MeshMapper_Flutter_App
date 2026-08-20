@@ -33,7 +33,32 @@ flutter test
 
 # Run a single test file
 flutter test test/services/gps_service_test.dart
+
+# Watch wire rules — snapshot ordering, cue presentation, staleness.
+# Plain SwiftPM over Foundation-only sources: no Xcode project, no simulator,
+# no signing. macOS only.
+(cd ios/WatchLogicTests && swift test)
+
+# Type-check every watch source against the watchOS SDK, without building
+xcrun --sdk watchos swiftc -typecheck -target arm64_32-apple-watchos11.0 \
+  ios/MeshMapperWatch/*.swift ios/Shared/MeshMapperWatchPayload.swift
 ```
+
+**What the watch is and is not covered by.** `WatchWireRules` in
+`ios/Shared/MeshMapperWatchPayload.swift` holds the decisions that pick what the
+wearer sees, deliberately kept Foundation-only and free of `WCSession` so they
+can be tested at all — `WatchSessionClient` is `@Observable`, `@MainActor`, and
+reaches `WCSession.default` through a computed property with no injection point.
+Logic that belongs to the wire goes there; the client keeps observable state and
+timers. `ios/WatchLogicTests` compiles the shipping file through a symlink, so
+there is no copy to drift.
+
+That covers the rules and, via the type-check, a Swift compile break. It does
+**not** cover WatchConnectivity delivery, SwiftUI, MapKit, or anything about
+target membership: a file added to `ios/MeshMapperWatch/` but never added to the
+target type-checks here and still fails to build in Xcode, as do embed-phase,
+entitlement and signing mistakes. Those still need a real build, and the
+delivery races still need a wrist.
 
 ### Building for Release
 ```bash
@@ -403,6 +428,183 @@ fan-out logic (`MeshMapper_Server/dev/index.php`):
   `repeaterCoverageCells`, `RepeaterStats.fromCoverageWithPoints`),
   `lib/utils/coverage_tile_palette.dart` (`colorsForStatus`).
 
+### Apple Companion Surfaces (Watch + Live Activity)
+
+Both surfaces are **projections of phone-owned state**. The phone keeps the
+MeshCore connection, the GPS fix, the session lifecycle, the transmit policy and
+command admission; the wrist and the Live Activity render that state and send
+intent back. Nothing on either surface may decide that a transmit is legal.
+
+`docs/LIVE_ACTIVITIES.md` covers the ActivityKit half. The invariants below
+belong to the watch bridge, and breaking one of them costs battery on two
+devices or puts a packet on air from the wrong place.
+
+**Delivery and suppression** (`lib/services/watch/watch_bridge_service.dart`)
+
+Every gate runs before the next, and each exists for a different failure:
+
+1. **Debounce** — 200 ms. Coalesces a burst of `notifyListeners()`.
+2. **Urgency preflight** — the flush decides whether it may wait *before*
+   building anything. `WatchSnapshot.buildUrgencyKey` is a small scalar
+   projection (session, mode, phase, connection, control enablement, cue ID,
+   map-geo inclusion); if it hasn't moved, the 2 s floor applies and no
+   geography is constructed, sorted or encoded. `LiveActivityService` mirrors
+   this with `LiveActivitySnapshot.buildPreflightUrgencyKey` and a 15 s floor.
+   **Sustained per-tick work is the thing to avoid here** — the countdown
+   timers drive a flush at ~2 Hz for a whole session, and this app has a
+   wardriving overheat history.
+3. **Payload fingerprint** — JSON of the payload minus `updatedAtMs`. Timestamp
+   metadata must never defeat dedupe; the watch renders countdowns from the
+   absolute `phaseEndsAt` deadline instead. An explicit `forceRefresh` is the
+   one thing that may send an identical payload again.
+4. **Movement gate** — `WatchWire.minMoveMeters` (15 m). Expressed as "nothing
+   but the fix changed, and the fix didn't move far enough", measured against
+   the fix the watch last *received*. A refused or dropped send must not
+   consume the wearer's next 15 m.
+5. **Send throttle** — the same 2 s floor, applied to delivery. A forced
+   refresh outlives a deferral rather than being dropped.
+
+Urgent updates use `sendMessage` and *always* fall through to
+`updateApplicationContext`, so a missed message can't strand the watch.
+
+**The two paths are not ordered against each other, and the watch enforces
+that.** `sendMessage` does not populate `receivedApplicationContext`, so the
+retained context can hold a payload the watch already superseded live — and
+`resume` ingests that context on every wrist raise. `WatchSessionClient.apply`
+therefore refuses anything whose `updatedAt` predates what is already rendered.
+Both stamps come from the one phone clock, so they compare raw. The refusal is
+lifted once the held snapshot is stale, which bounds a backwards clock step to
+90 seconds of refusal instead of the life of the process. There is deliberately
+no wire `seq`: a counter restarting at zero is indistinguishable from an ancient
+one without a process identity beside it, which is a version conversation for
+behaviour this already has.
+
+**Cache invalidation.** Dart's dedupe caches mirror native's `lastContextData`.
+Native clears that only in `sessionWatchStateDidChange` and on `clear`, and says
+so with `nativeCacheCleared` on the `availabilityChanged` push. Reachability
+flips on every wrist raise and lower — treating those as invalidation forces a
+full context resend per glance and voids the map-geo lease.
+
+**Map-geo lease.** While the map isn't visible the watch asks the phone to omit
+geography. The phone treats that as a *lease*, not a latch: suppression expires
+after `_mapGeoClaimFreshFor` (10 min) back to full geography, and the watch
+renews it every 5 minutes. A lost command therefore fails safe — toward sending
+too much rather than a permanently blank map. Renewals are deduplicatable;
+only a stated `forceRefresh` defeats the payload fingerprint.
+
+**Command admission.** Wrist commands are intent, revalidated by the phone.
+`transferUserInfo` is the *only* transport — there is deliberately no
+`sendMessage` path into admission, because that can execute a command and still
+fail its reply as undeliverable, leaving the wrist unable to tell a refusal from
+a lost ack.
+
+- IDs make WatchConnectivity's redelivery idempotent. A *queued* command refused
+  once stays remembered — redelivery after conditions change must never turn
+  yesterday's tap into a transmit. Only an untimestamped command forgets, since
+  it cannot be aged and its sender may legitimately retry.
+- A redelivery is answered with the **outcome recorded the first time**, not a
+  blanket acceptance. Replying "accepted" to the redelivery of something the
+  bridge refused describes a transmit that never happened.
+- Timestamped commands must land inside `_maximumCommandAge` (30 s), with
+  `_clockTolerance` (5 s) of slack in both directions.
+- **The two devices do not share a clock, and that is a normal condition.**
+  `issuedAtMs` is stamped in the watch's clock and the command carries
+  `clockOffsetMs` beside it, so the phone measures a real elapsed age rather
+  than an age plus the skew. The watch learns that offset only from a live
+  `sendMessage`, whose transit is milliseconds; an application context may have
+  sat retained for hours and says nothing about the current offset. Absent
+  offset means zero, which is the old behaviour exactly. `_clockTolerance` now
+  covers the residual — transit and measurement error — not the skew itself.
+  The offset is *not* folded into `issuedAtMs`, because that value doubles as
+  the ordering key for map-geo suppression claims and rewriting it would make
+  the key jump backwards the first time an offset is learned.
+- `requestSnapshot` and `stopSession` are exempt from the age window: one
+  transmits nothing, and the other takes the radio *off* air, so lateness can
+  only make refusing it worse. **A stop therefore names its session**, from the
+  snapshot the wearer was looking at when they tapped, and is refused if the
+  phone has since moved on. Without that the exemption assumed one session was
+  as good as another, and a stop queued against A could silently end B. The
+  field is optional: absent means an older watch build and is admitted as
+  before, because refusing those would strand a wearer whose Stop button the
+  phone had quietly stopped honouring.
+- `resolveSessionStartAvailability` is the single start gate for both the
+  offered button and the admitted command. **Passive counts as transmitting** —
+  it sends a discovery request on start and every 30 s — so the manual-ping,
+  RX-window and cooldown guards apply to every mode. Only offline mode,
+  passive-only zones, flood traffic being off, and TX validation are
+  transmit-only.
+- **Flood traffic is an existence policy, not a preference.** The phone builds
+  Send Ping and the Active/Hybrid button inside
+  `if (!txNotAllowed && floodTrafficVisible)`, so with flood off those controls
+  do not exist — and `floodTrafficEnabled` folds in the regional
+  `flood_disabled` veto a zone admin sets. It gates the wrist on both sides:
+  `resolveAvailableWatchStartModes` withdraws Hybrid, and
+  `resolveSessionStartAvailability` plus `_manualPingAvailability` refuse with
+  'Flood Traffic Off'. The preference **defaults off**, so a wrist that skips
+  this admits the common configuration rather than an edge one.
+
+**Failure cues.** A one-shot cue rides *every* snapshot until it is older than
+`WatchWire.cueReadableFor` (90 s), which mirrors `WatchSessionClient.staleAfter`.
+It is deliberately **not** dropped when native accepts a payload carrying it:
+that reply means `updateApplicationContext` took the blob, not that the watch
+ingested it, and the wearer's wrist is usually down at that moment. Because the
+cue ID is in the urgency key, dropping it there made the very next flush urgent
+and overwrote the retained context with a cue-less payload — so a suspended
+watch woke to idle UI and no account of the failure. Re-attaching is free: the
+watch keys haptics on `presentedCueIDs` and drops the cue itself past the
+boundary rather than asserting a dead failure as current.
+
+`presentedCueIDs` is process-local, so that de-duplication covers WatchConnectivity
+redelivery but **not** a watch process that dies and relaunches. Launch ingests
+the retained context, and a cue still inside `cueFreshFor` (30 s) buzzes again
+against an empty set. Widening the attachment window from about a second to 90 s
+widened that case with it — deliberately. One duplicate haptic after a relaunch
+is a far smaller failure than the silence it replaced, and closing it properly
+means persisting presented IDs across launches for a payload the watch is
+already re-reading on purpose.
+
+**Wire versioning** (`WatchWire.version`, mirrored in
+`ios/Shared/MeshMapperWatchPayload.swift`)
+
+Bump only when a field **changes meaning or is removed**. Additive optional
+fields must not bump it: a bump strands compatible pairs, and older peers are
+required to default absent fields safely. The watch reads `wireVersion` with a
+minimal probe struct *before* attempting the full decode, so a payload that a
+future breaking change makes undecodable still reaches the "update the iPhone
+app" prompt instead of going silently stale.
+
+**Geography caps** — `maxPings` 60, `maxRepeaters` 20, `maxHeard` 4. Applied by
+`WatchGeoBuilder` on the sending side, after merging every source and sorting by
+recency, so a busy TX history cannot erase discovery or trace markers.
+
+**Heard-row names** resolve from the fullest identity each row arrived with,
+via `WatchGeoBuilder.resolveOverlayRepeaters`. A path hash is 1–3 bytes and in a
+busy zone routinely matches several repeaters, where naming one would be a coin
+flip — but the phone often knows exactly who answered: a discovery response
+carries the responder's full 64-character public key, and a trace carries its
+4-byte target. Those identities travel beside the overlay rows in
+`_overlayIdentityById`, **replaced wholesale per ping and never merged**, because
+a hash that meant one repeater in a discovery response says nothing about who a
+later TX echo under the same hash was.
+
+TX echoes and passive RX carry only the path byte, so they fall back to prefix
+matching and keep refusing to guess. That fallback indexes per *distinct*
+prefix length: the RX slot's hash can be a different width than the top rows',
+so a single-length index silently drops the odd row's name and distance.
+
+Uniqueness is required at every step. A longer identity makes a collision
+vanishingly unlikely, not impossible, and a confidently wrong name stays worse
+than none. **Never resolve names on the watch** — it holds only the nearest 20
+repeaters, so it would name rows the phone refused as ambiguous across the full
+catalogue.
+
+**Live Activity host support.** ActivityKit answers `sync` with `true`, `false`,
+or `"unsupported"`. `false` means *not right now* — authorization is off, or
+`Activity.request` was refused because the app is backgrounded — and earns the
+30 s backoff. `"unsupported"` (and a `MissingPluginException`) means this host
+can never show one, and Dart stops asking for the rest of the process rather
+than running a guaranteed-fail retry loop all session.
+
 ### BLE Service UUIDs (MeshCore Companion Protocol)
 - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
 - RX Characteristic: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` (write to device)
@@ -546,6 +748,8 @@ debugError('[API] Failed to post batch: $error');
 | `[OFFLINE]` | Offline mode operations |
 | `[SCAN]` | BLE device scanning |
 | `[WAKELOCK]` | Wake lock acquisition/release |
+| `[WATCH]` | WatchConnectivity bridge: availability, snapshot delivery, wrist commands |
+| `[LIVE ACTIVITY]` | ActivityKit bridge: sync, end, and authorization failures |
 
 Never log without a tag.
 
@@ -671,6 +875,13 @@ All API endpoints may return maintenance mode:
 - `lib/services/debug_submit_service.dart` - Bug report submission (4-step workflow)
 - `lib/services/gps_simulator_service.dart` - GPS simulation for testing
 - `lib/services/wakelock_service.dart` - Screen wake lock during auto-ping
+- `lib/services/watch/watch_bridge_service.dart` - WatchConnectivity transport: throttle, dedupe, movement gate, map-geo lease, command admission
+- `lib/services/watch/watch_models.dart` - Watch wire contract and shared start-admission resolver
+- `lib/services/watch/watch_geo_builder.dart` - Ping/repeater/heard geography for the wrist, with wire caps
+- `lib/services/watch/watch_color.dart` - Wire colour projection shared with the phone map
+- `lib/services/live_activity/live_activity_service.dart` - ActivityKit bridge: preflight urgency, throttle, dedupe, unavailable backoff
+- `lib/services/live_activity/live_activity_models.dart` - Live Activity snapshot model and urgency keys
+- `lib/screens/watch_diagnostics_screen.dart` - Watch transport diagnostics (Settings)
 - `lib/services/meshcore/packet_validator.dart` - Packet validation and carpeater filtering
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
 - `lib/widgets/noise_floor_chart.dart` - Noise floor graph visualization

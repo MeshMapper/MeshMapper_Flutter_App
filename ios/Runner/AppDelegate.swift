@@ -67,6 +67,8 @@ class IOSMapOfflineBridge {
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private let mapOfflineBridge = IOSMapOfflineBridge()
+  private let liveActivityManager = LiveActivityManager()
+  private let watchSessionManager = WatchSessionManager()
 
   override func application(
     _ application: UIApplication,
@@ -107,6 +109,37 @@ class IOSMapOfflineBridge {
           result(FlutterMethodNotImplemented)
         }
       }
+
+      // Method channel: local ActivityKit status for active wardriving
+      // sessions. The widget extension renders the Lock Screen, Dynamic Island,
+      // and compact system/CarPlay presentations from these snapshots.
+      let liveActivityChannel = FlutterMethodChannel(
+        name: "meshmapper/live_activity",
+        binaryMessenger: controller.binaryMessenger
+      )
+      liveActivityChannel.setMethodCallHandler { [weak self] call, result in
+        guard let self = self else {
+          result(FlutterError(code: "unavailable", message: "bridge deallocated", details: nil))
+          return
+        }
+        self.liveActivityManager.handle(call, result: result)
+      }
+
+      // Method channel: watchOS companion. Dart pushes WatchSnapshots down
+      // and the watch sends start/stop/manual-ping intents back up the same
+      // channel. Unlike the Live Activity, this needs no entitlement.
+      let watchChannel = FlutterMethodChannel(
+        name: "meshmapper/watch",
+        binaryMessenger: controller.binaryMessenger
+      )
+      watchChannel.setMethodCallHandler { [weak self] call, result in
+        guard let self = self else {
+          result(FlutterError(code: "unavailable", message: "bridge deallocated", details: nil))
+          return
+        }
+        self.watchSessionManager.handle(call, result: result)
+      }
+      watchSessionManager.attach(channel: watchChannel)
 
       // Method channel: MapLibre tile cache management. Mirrors the Android
       // handler in MainActivity.kt. Dart's TileCacheService calls into these

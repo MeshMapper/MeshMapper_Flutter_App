@@ -45,6 +45,11 @@ import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
+import '../services/live_activity/live_activity_models.dart';
+import '../services/live_activity/live_activity_service.dart';
+import '../services/watch/watch_bridge_service.dart';
+import '../services/watch/watch_geo_builder.dart';
+import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
@@ -69,6 +74,8 @@ enum AutoMode {
 
 /// Ping type for the top-heard overlay dots
 enum OverlayPingType { tx, disc, trace, rx }
+
+enum _LiveActivityOperation { sending, discovering, tracing }
 
 /// Result of uploading an offline session
 enum OfflineUploadResult {
@@ -124,6 +131,59 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final DiscoveryWindowTimer
       _discoveryWindowTimer; // Discovery listening window (Passive Mode)
   late final Listenable _timerListenable;
+
+  /// Whether [_timerListenable] has been assigned *and* had the Live Activity
+  /// listener attached.
+  ///
+  /// `late final` throws on read before assignment, and the assignment happens
+  /// partway through [initialize]. A provider torn down before that point —
+  /// a widget test, or an early init failure — would otherwise throw on the
+  /// first line of [dispose] and skip every cancel below it.
+  bool _timerListenerAttached = false;
+
+  final LiveActivityService _liveActivityService = LiveActivityService();
+  final WatchBridgeService _watchBridge = WatchBridgeService();
+  bool _hasEverPairedWatch = false;
+
+  /// Last position handed to the watch, kept so a dropped GPS fix leaves the
+  /// puck where it was rather than removing it. See [_resolveWatchPosition].
+  WatchPosition? _lastWatchPosition;
+
+  /// Held position behind every distance and ordering decision in the payload.
+  /// See [_resolveRankingPosition] for why this one still lags on purpose.
+  ({double lat, double lon})? _rankingPosition;
+  WatchHapticCue? _watchCue;
+
+  /// The pending cue, for as long as the watch would still present it.
+  ///
+  /// **Age, not delivery.** This used to be dropped the moment a snapshot
+  /// carrying it came back from native — but that reply means
+  /// `updateApplicationContext` accepted the blob, not that the watch ingested
+  /// it, and the wearer's wrist is usually down at exactly that moment. Since
+  /// the cue ID sits in the urgency key, the very next flush was urgent and
+  /// overwrote the retained context with a cue-less payload, often within a
+  /// second. The watch woke to idle UI and no account of the failure it had
+  /// just been told about — the failure path having quietly deleted its own
+  /// only evidence.
+  ///
+  /// Re-attaching costs nothing and cannot double-buzz: the watch keys its
+  /// haptics on `presentedCueIDs`, and past [WatchWire.cueReadableFor] it
+  /// drops the cue itself rather than asserting a dead failure as current.
+  WatchHapticCue? get _presentableWatchCue {
+    final cue = _watchCue;
+    if (cue == null) return null;
+    return cue.isPresentableAt(DateTime.now()) ? cue : null;
+  }
+
+  /// Human-readable failure from the most recent server-side session check.
+  /// The bool returned by that check controls the action; this preserves the
+  /// discarded explanation for a wrist action's later failure cue.
+  String? _lastSessionCheckFailureReason;
+  bool _liveActivitySessionActive = false;
+  bool _liveActivityManualSession = false;
+  String? _liveActivitySessionId;
+  DateTime? _liveActivityCycleStartedAt;
+  _LiveActivityOperation? _liveActivityOperation;
   MeshCoreConnection? _meshCoreConnection;
   PingService? _pingService;
   UnifiedRxHandler? _unifiedRxHandler;
@@ -219,8 +279,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Top repeaters overlay — updated live on each ping event
   List<({String repeaterId, double snr, OverlayPingType type})>
       _topRepeatersOverlay = [];
+  DateTime? _topRepeatersOverlayUpdatedAt;
+
+  /// The fullest identity known for each overlay row, keyed by the display hash
+  /// the row is shown under.
+  ///
+  /// Discovery responses carry the responder's full 64-character public key and
+  /// traces carry their 4-byte target, so for those rows the phone knows
+  /// exactly who answered. TX echoes and passive RX carry only the path byte,
+  /// and are absent here because nothing better exists for them.
+  ///
+  /// Replaced wholesale by [_updateTopRepeaters], never merged, and for the
+  /// same reason those slots are: a hash that meant one repeater in a discovery
+  /// response says nothing about who a later TX echo under the same hash was.
+  Map<String, String> _overlayIdentityById = const {};
   ({String repeaterId, double snr})? _rxOverlaySlot;
   Timer? _rxOverlayWindowTimer;
+
+  // Live Activity repeater snapshot. Kept separate from the map overlay so the
+  // system presentation cannot change existing in-app overlay behaviour.
+  List<({String repeaterId, double snr, OverlayPingType type})>
+      _liveActivityRepeaters = [];
+  int _liveActivityRepeaterTotalCount = 0;
+  DateTime? _liveActivityRepeatersUpdatedAt;
+  DateTime? _liveActivityRxUpdatedAt;
 
   // Targeted mode state
   String? _targetRepeaterId;
@@ -349,6 +431,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _zoneGracePollingTimer; // 5-second zone polling
   Timer? _zoneGraceCountdownTimer; // 1-second UI countdown tick
   int _zoneGraceSecondsRemaining = 0;
+  DateTime? _zoneGraceEndsAt;
   bool _autoPingWasEnabledBeforeGrace = false;
   AutoMode _autoModeBeforeGrace = AutoMode.active;
   static const Duration _zoneGraceTimeout = Duration(minutes: 5);
@@ -519,6 +602,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String get deviceId => _deviceId;
   bool get preferencesLoaded => _preferencesLoaded;
+  WatchBridgeService get watchBridge => _watchBridge;
+  bool get shouldShowWatchDiagnostics {
+    final status = _watchBridge.diagnostics.value;
+    return resolveShouldShowWatchDiagnostics(
+      isSupportedPlatform: _watchBridge.isSupportedPlatform,
+      supported: status.supported,
+      paired: status.paired,
+      activated: status.activated,
+      hasEverPaired: _hasEverPairedWatch,
+    );
+  }
   TransportType get selectedTransport => _selectedTransport;
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;
@@ -581,8 +675,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Update the top repeaters overlay with results from the latest TX/DISC/Trace ping.
   /// Replaces all 3 slots entirely (no carryover from previous pings).
+  /// - Parameter identities: display hash to the fullest identity this ping
+  ///   carried for it, for the ping types that carry more than a path byte.
   void _updateTopRepeaters(
-      List<({String repeaterId, double snr})> current, OverlayPingType type) {
+      List<({String repeaterId, double snr})> current, OverlayPingType type,
+      {Map<String, String>? identities}) {
+    _overlayIdentityById = identities ?? const {};
     final bestSnr = <String, double>{};
     for (final r in current) {
       final key = r.repeaterId.toUpperCase();
@@ -595,6 +693,53 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
     _topRepeatersOverlay = fresh.take(3).toList();
+    _topRepeatersOverlayUpdatedAt = DateTime.now();
+  }
+
+  void _updateLiveActivityRepeaters(
+      Iterable<({String repeaterId, double snr})> current,
+      OverlayPingType type) {
+    final bestSnr = <String, double>{};
+    for (final repeater in current) {
+      if (!repeater.snr.isFinite) continue;
+      final id = repeater.repeaterId.toUpperCase();
+      final previous = bestSnr[id];
+      if (previous == null || repeater.snr > previous) {
+        bestSnr[id] = repeater.snr;
+      }
+    }
+
+    final sorted = bestSnr.entries
+        .map((entry) =>
+            (repeaterId: entry.key, snr: entry.value, type: type))
+        .toList()
+      ..sort((a, b) => b.snr.compareTo(a.snr));
+    _liveActivityRepeaters = sorted.take(3).toList(growable: false);
+    _liveActivityRepeaterTotalCount = sorted.length;
+    _liveActivityRepeatersUpdatedAt = DateTime.now();
+  }
+
+  /// Display hash to full public key, for the discovery nodes that published
+  /// one. Nodes whose hash is claimed by two different keys are left out rather
+  /// than resolved to whichever arrived last.
+  Map<String, String> _discoveryIdentities(List<DiscoveredNodeEntry> nodes) {
+    final identities = <String, String>{};
+    final contested = <String>{};
+    for (final node in nodes) {
+      final pubkey = node.pubkeyHex;
+      if (pubkey == null || pubkey.isEmpty) continue;
+      final displayId = node.repeaterId.toUpperCase();
+      final existing = identities[displayId];
+      if (existing != null && existing != pubkey.toUpperCase()) {
+        contested.add(displayId);
+        continue;
+      }
+      identities[displayId] = pubkey.toUpperCase();
+    }
+    for (final displayId in contested) {
+      identities.remove(displayId);
+    }
+    return identities;
   }
 
   /// Update the RX overlay slot — window matches auto-ping interval (best SNR wins).
@@ -603,9 +748,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_rxOverlayWindowTimer?.isActive ?? false) {
       if (_rxOverlaySlot == null || snr > _rxOverlaySlot!.snr) {
         _rxOverlaySlot = entry;
+        _liveActivityRxUpdatedAt = DateTime.now();
       }
     } else {
       _rxOverlaySlot = entry;
+      _liveActivityRxUpdatedAt = DateTime.now();
       _rxOverlayWindowTimer =
           Timer(Duration(seconds: _preferences.autoPingInterval), () {
         // Window closed — slot stays until next RX or cleared
@@ -616,9 +763,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Clear all overlay state (top 3 + RX slot).
   void _clearOverlayState() {
     _topRepeatersOverlay = [];
+    _topRepeatersOverlayUpdatedAt = null;
+    _overlayIdentityById = const {};
     _rxOverlaySlot = null;
     _rxOverlayWindowTimer?.cancel();
     _rxOverlayWindowTimer = null;
+    _liveActivityRepeaters = [];
+    _liveActivityRepeaterTotalCount = 0;
+    _liveActivityRepeatersUpdatedAt = null;
+    _liveActivityRxUpdatedAt = null;
   }
 
   List<TxLogEntry> get txLogEntries => List.unmodifiable(_txLogEntries);
@@ -1073,6 +1226,1089 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _discoveryWindowTimer; // Discovery listening window (Passive Mode)
   Listenable get timerListenable => _timerListenable;
 
+  void _handleLiveActivityTimerChange() {
+    if (_liveActivityManualSession &&
+        !_isPingSending &&
+        !_rxWindowTimer.isRunning &&
+        !_manualPingCooldownTimer.isRunning) {
+      _finishLiveActivitySession();
+      return;
+    }
+    _scheduleLiveActivitySync();
+  }
+
+  void _startLiveActivitySession({bool manual = false}) {
+    if (!_liveActivityService.isSupportedPlatform) return;
+    if (_liveActivitySessionActive) {
+      // Starting an automatic mode while a manual-ping activity is still in
+      // cooldown upgrades the existing activity instead of creating a second.
+      if (!manual && _liveActivityManualSession) {
+        _liveActivityManualSession = false;
+        _scheduleLiveActivitySync(immediate: true);
+      }
+      return;
+    }
+    _liveActivitySessionActive = true;
+    _liveActivityManualSession = manual;
+    _liveActivitySessionId = const Uuid().v4();
+    _liveActivityCycleStartedAt = _activeLiveActivityCycleStartedAt;
+    _liveActivityOperation = null;
+    _scheduleLiveActivitySync(immediate: true);
+  }
+
+  DateTime? get _activeLiveActivityCycleStartedAt {
+    if (_rxWindowTimer.isRunning && _txLogEntries.isNotEmpty) {
+      return _txLogEntries.last.timestamp;
+    }
+    if (!_discoveryWindowTimer.isRunning) return null;
+    if (_autoMode == AutoMode.targeted && _traceLogEntries.isNotEmpty) {
+      return _traceLogEntries.first.timestamp;
+    }
+    if (_discLogEntries.isNotEmpty) {
+      return _discLogEntries.first.timestamp;
+    }
+    return null;
+  }
+
+  void _finishLiveActivitySession() {
+    if (!_liveActivitySessionActive) return;
+    _liveActivitySessionActive = false;
+    _liveActivityManualSession = false;
+    _liveActivityOperation = null;
+    _liveActivityCycleStartedAt = null;
+    _scheduleLiveActivitySync(immediate: true);
+    _liveActivitySessionId = null;
+  }
+
+  void _markLiveActivityOperation(_LiveActivityOperation operation) {
+    if (!_liveActivitySessionActive ||
+        !_liveActivityService.isSupportedPlatform) {
+      return;
+    }
+    final now = DateTime.now();
+    _liveActivityOperation = operation;
+    _liveActivityCycleStartedAt = now;
+    _scheduleLiveActivitySync(immediate: true);
+  }
+
+  void _scheduleLiveActivitySync({bool immediate = false}) {
+    if (_isDisposed) return;
+    // The watch mirrors state even with no session running — otherwise you
+    // could never start one from the wrist.
+    _scheduleWatchSync(immediate: immediate);
+    if (!_liveActivityService.isSupportedPlatform) return;
+    _liveActivityService.schedule(
+      _buildLiveActivitySnapshot,
+      urgencyKeyBuilder: _buildLiveActivityUrgencyKey,
+      immediate: immediate,
+    );
+  }
+
+  /// The urgent half of the next Live Activity payload, without building one.
+  ///
+  /// [_buildLiveActivitySnapshot] resolves the latest ping colour by walking
+  /// the whole TX, RX, discovery and trace history, and the 500 ms countdown
+  /// listenable asks for a flush twice a second for the length of a session.
+  /// This reads scalars only, so the service can decide the flush may wait
+  /// before paying for any of that. Null means no activity should exist, which
+  /// keeps ending immediate.
+  String? _buildLiveActivityUrgencyKey() {
+    final sessionId = _liveActivitySessionId;
+    if (_isDisposed || !_liveActivitySessionActive || sessionId == null) {
+      return null;
+    }
+    final phase = _resolveLiveActivityPhase();
+    return LiveActivitySnapshot.buildPreflightUrgencyKey(
+      sessionId: sessionId,
+      mode: _liveActivityModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      phaseDurationMs: _phaseDurationMsFor(phase.endsAt),
+      isConnected: isConnected,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+    );
+  }
+
+  void _scheduleWatchSync({bool immediate = false, bool forceDelivery = false}) {
+    if (_isDisposed || !_watchBridge.canSync) return;
+    _watchBridge.schedule(
+      _buildWatchSnapshot,
+      urgencyKeyBuilder: _buildWatchUrgencyKey,
+      immediate: immediate,
+      forceDelivery: forceDelivery,
+    );
+  }
+
+  /// The bridge needs to decide whether a flush can wait before it builds the
+  /// geographic payload. Keep this in the wire model's shared formatter so the
+  /// cheap preflight and the eventual snapshot cannot drift on what is urgent.
+  String _buildWatchUrgencyKey() {
+    final phase = _resolveWatchPhase();
+    final controls = _buildWatchControls();
+    return WatchSnapshot.buildUrgencyKey(
+      sessionId: _liveActivitySessionId ?? 'idle',
+      mode: _resolvedWatchSessionModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      isConnected: isConnected,
+      controls: controls,
+      cue: _presentableWatchCue,
+      mapGeoIncluded: _watchBridge.shouldIncludeMapGeo,
+    );
+  }
+
+  /// Builds the watch payload.
+  ///
+  /// Unlike the Live Activity, this is never null while the app is alive: the
+  /// wrist shows idle and disconnected states too, and the start button has to
+  /// be reachable before a session exists.
+  WatchSnapshot? _buildWatchSnapshot() {
+    if (_isDisposed) return null;
+
+    final phase = _resolveWatchPhase();
+    final repeaterState = _buildLiveActivityRepeaters();
+    final now = DateTime.now();
+    final phaseDurationMs = _phaseDurationMsFor(phase.endsAt);
+    final pingColor = _resolveWatchPingColor();
+    final includeMapGeo = _watchBridge.shouldIncludeMapGeo;
+
+    final core = LiveActivitySnapshot(
+      sessionId: _liveActivitySessionId ?? 'idle',
+      // On the watch this field is also the Start button's promise, so it must
+      // describe the resolver the command will use rather than the ambient
+      // default that only becomes meaningful after a phone button is pressed.
+      mode: _resolvedWatchSessionModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      phaseDurationMs: phaseDurationMs,
+      pingColor: pingColor,
+      isConnected: isConnected,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      txCount: _pingStats.txCount,
+      rxCount: _pingStats.rxCount,
+      discoveryCount: _pingStats.discCount,
+      traceCount: _pingStats.traceCount,
+      queueSize: _queueSize,
+      repeaters: repeaterState.repeaters,
+      totalHeardCount: repeaterState.totalCount,
+      repeatersAreCurrent: repeaterState.isCurrent,
+      updatedAt: now,
+    );
+
+    return WatchSnapshot(
+      core: core,
+      geo: _buildWatchGeo(includeMapGeo: includeMapGeo),
+      controls: _buildWatchControls(),
+      mapGeoIncluded: includeMapGeo,
+      availableStartModes: _availableWatchStartModes,
+      pingColor: pingColor,
+      cue: _presentableWatchCue,
+      phaseDurationMs: phaseDurationMs,
+      updatedAt: now,
+    );
+  }
+
+  /// Total length of the countdown that owns [endsAt].
+  ///
+  /// The phase resolver returns a deadline without saying which timer produced
+  /// it, so the owner is identified by matching end times. Returns null for
+  /// deadlines no countdown owns (the zone grace period), in which case the
+  /// watch shows the remaining time without a progress bar.
+  int? _phaseDurationMsFor(DateTime? endsAt) {
+    if (endsAt == null) return null;
+    for (final timer in <CountdownTimerService>[
+      _autoPingTimer,
+      _rxWindowTimer,
+      _discoveryWindowTimer,
+      _manualPingCooldownTimer,
+      _cooldownTimer,
+    ]) {
+      if (timer.isRunning && timer.endTime == endsAt) {
+        return timer.durationMs;
+      }
+    }
+    return null;
+  }
+
+  WatchGeo _buildWatchGeo({required bool includeMapGeo}) {
+    final position = _resolveWatchPosition();
+    final ranking = _resolveRankingPosition();
+
+    // The wrist mirrors the map's "Top Heard" overlay: the latest ping's top
+    // three by SNR plus the current RX slot. Same source, so the two surfaces
+    // can never disagree.
+    final top = _topRepeatersOverlay;
+    final rxSlot = _rxOverlaySlot;
+
+    // Overlay IDs are hex path hashes. Resolved from the fullest identity each
+    // row actually arrived with — a discovery response's 64-character public
+    // key, a trace's 4-byte target — and only falling back to prefix matching
+    // for the rows that never had anything better, which is TX echoes and
+    // passive RX.
+    //
+    // The prefix fallback indexes per distinct length rather than at one length
+    // taken from the first row. The RX slot's hash can be a different width
+    // than the top rows', so a single-length index silently dropped the odd
+    // row's name and distance while every other row resolved normally.
+    final repeaterByHex = WatchGeoBuilder.resolveOverlayRepeaters(
+      repeaters: _repeaters,
+      displayIds: [
+        ...top.map((row) => row.repeaterId),
+        if (rxSlot != null) rxSlot.repeaterId,
+      ],
+      identities: _overlayIdentityById,
+    );
+    final heard = WatchGeoBuilder.buildHeard(
+      top: top,
+      rxSlot: rxSlot,
+      repeaterByHex: repeaterByHex,
+      topAt: _topRepeatersOverlayUpdatedAt,
+      rxAt: _liveActivityRxUpdatedAt,
+      lat: ranking?.lat,
+      lon: ranking?.lon,
+    );
+
+    // The readout still needs the fix and Top Heard, but none of the arrays
+    // below. Return before merging and sorting four ping histories or sorting
+    // the repeater catalogue: suppression is meant to save phone work as well
+    // as radio bytes.
+    if (!includeMapGeo) {
+      return WatchGeo(
+        you: position,
+        pings: const [],
+        repeaters: const [],
+        heard: heard,
+        linkedRepeaterIds: const [],
+      );
+    }
+
+    // Repeaters heard during the current cycle get the highlight ring.
+    final heardIds = top.map((r) => r.repeaterId.toUpperCase()).toSet();
+    if (rxSlot != null) heardIds.add(rxSlot.repeaterId.toUpperCase());
+
+    return WatchGeo(
+      you: position,
+      pings: WatchGeoBuilder.buildPings(
+        txPings: _txPings,
+        rxPings: _rxPings,
+        discLogEntries: _discLogEntries,
+        traceLogEntries: _traceLogEntries,
+      ),
+      repeaters: WatchGeoBuilder.buildRepeaters(
+        repeaters: _repeaters,
+        heardThisCycle: heardIds,
+        lat: ranking?.lat,
+        lon: ranking?.lon,
+      ),
+      heard: heard,
+      linkedRepeaterIds: [
+        ...WatchGeoBuilder.resolveUniqueHexPrefixes(
+          repeaters: _repeaters,
+          prefixes: heardIds,
+        ).keys,
+      ],
+    );
+  }
+
+  /// The current fix, reported as it is.
+  ///
+  /// **The movement gate used to live here and deliberately does not any
+  /// more.** It returned the *previous* position until the fix had moved
+  /// [WatchWire.minMoveMeters], which left the payload fingerprint unchanged so
+  /// the bridge's dedupe suppressed the send — that is how a parked phone stops
+  /// streaming GPS jitter at the watch, and it is still how it works. But
+  /// suppressing a *send* by degrading the *content* also degrades every send
+  /// that happens for some other reason. A new ping changes the payload
+  /// regardless, so the packet goes out carrying a puck up to 15 m stale while
+  /// the ping beside it carries its own transmit-time GPS. The wearer sees the
+  /// pings leading them in the direction of travel.
+  ///
+  /// The gate now sits in [WatchBridgeService], which asks "is this change
+  /// worth a send?" without touching what gets sent — and in
+  /// [_resolveRankingPosition], which keeps every *derived* field as still as
+  /// it was before. Only the puck moved.
+  WatchPosition? _resolveWatchPosition() {
+    final position = _currentPosition;
+    if (position == null) return _lastWatchPosition;
+
+    final resolved = WatchPosition(
+      lat: position.latitude,
+      lon: position.longitude,
+      headingDeg: position.heading.isFinite && position.heading >= 0
+          ? position.heading
+          : null,
+      accuracyM: position.accuracy.isFinite ? position.accuracy : null,
+      fixedAt: position.timestamp,
+    );
+    _lastWatchPosition = resolved;
+    return resolved;
+  }
+
+  /// Position used to rank repeaters and to measure Top Heard distances, held
+  /// still until the fix moves [WatchWire.minMoveMeters].
+  ///
+  /// **This is the old gate, kept exactly where it still belongs.** It was
+  /// removed from the puck because a stale puck is visibly wrong beside a ping
+  /// carrying its own GPS. Everything derived from position has the opposite
+  /// requirement: `WatchHeardNode.distanceM` is a full-precision double over a
+  /// distance measured in kilometres, and the nearest-first repeater order can
+  /// swap on a metre. Feeding those the live fix would make a parked phone's
+  /// GPS jitter change the payload every time, which is precisely the send the
+  /// bridge's gate exists to suppress — and it would slip past that gate,
+  /// because the gate can only recognise a change confined to the fix itself.
+  ///
+  /// Fifteen metres of staleness is invisible in a distance readout and cannot
+  /// meaningfully reorder repeaters. The puck is the only place it showed.
+  ({double lat, double lon})? _resolveRankingPosition() {
+    final position = _currentPosition;
+    if (position == null) return _rankingPosition;
+
+    final previous = _rankingPosition;
+    if (previous != null &&
+        !WatchWire.movedEnough(
+          lastLat: previous.lat,
+          lastLon: previous.lon,
+          lat: position.latitude,
+          lon: position.longitude,
+        )) {
+      return previous;
+    }
+
+    final resolved = (lat: position.latitude, lon: position.longitude);
+    _rankingPosition = resolved;
+    return resolved;
+  }
+
+  ({bool allowed, String? reason}) get _manualPingAvailability {
+    // This must remain the sole copy of the app button's gate. One caller says
+    // what the wrist may offer while the other decides whether the radio may
+    // transmit; letting those answers drift makes a stale watch payload unsafe.
+    //
+    // That gate has two halves and this used to copy only the inner one. Send
+    // Ping is built inside `if (!txNotAllowed && floodTrafficVisible)`, so
+    // with flood traffic off the phone has no such button at all — and since
+    // the preference defaults off and a regional `flood_disabled` veto forces
+    // it off, the wrist was admitting the common case, not an edge one.
+    final floodAllowed = floodTrafficEnabled;
+    final canPingManual = manualPingValidation == PingValidation.valid;
+    final isAutoStarting = isAutoPingStarting;
+    final isTxModeActive = isTxModeRunning;
+    final isTargetedRunning = isTargetedModeRunning;
+    final cooldownActive = cooldownTimer.isRunning;
+    final manualCooldownActive = manualPingCooldownTimer.isRunning;
+    final txBlockedByOffline = offlineMode && isConnected;
+    final txNotAllowed = isConnected && !txAllowed;
+    final rxWindowActive = rxWindowTimer.isRunning;
+    final pingSending = isPingSending;
+    final discoveryWindowActive = discoveryWindowTimer.isRunning;
+    final pendingDisable = isPendingDisable;
+    final allowed = floodAllowed &&
+        canPingManual &&
+        !isAutoStarting &&
+        !isTxModeActive &&
+        !isTargetedRunning &&
+        !cooldownActive &&
+        !manualCooldownActive &&
+        !txBlockedByOffline &&
+        !txNotAllowed &&
+        !rxWindowActive &&
+        !pingSending &&
+        !discoveryWindowActive &&
+        !pendingDisable;
+
+    // Only describe a refusal that is actually happening. A reason computed
+    // alongside an allowed ping would surface on the wrist as a status line
+    // under two working buttons.
+    final String? reason;
+    if (allowed) {
+      reason = null;
+    } else if (!isConnected) {
+      reason = 'Not connected';
+    } else if (!hasGpsLock) {
+      reason = 'No GPS fix';
+    } else if (txBlockedByOffline) {
+      reason = 'Offline Mode';
+    } else if (txNotAllowed) {
+      reason = 'Passive Only';
+    } else if (!floodAllowed) {
+      reason = 'Flood Traffic Off';
+    } else if (manualPingValidation == PingValidation.manualCooldownActive ||
+        cooldownActive ||
+        manualCooldownActive ||
+        rxWindowActive ||
+        discoveryWindowActive) {
+      reason = 'Cooling down';
+    } else if (!canPingManual) {
+      reason = manualPingValidation.message;
+    } else {
+      reason = 'Another operation is in progress';
+    }
+
+    return (allowed: allowed, reason: reason);
+  }
+
+  AutoMode get _resolvedWatchSessionMode {
+    // Phone buttons each carry an explicit mode, but the wrist has one generic
+    // Start button and `_autoMode` begins as Active before any phone choice has
+    // established intent. In a passive-only region inheriting that default
+    // silently selects the one forbidden mode. Once running, preserve the
+    // actual mode so the same resolver always stops what it started.
+    if (_autoPingEnabled) return _autoMode;
+    if (isConnected && !txAllowed) return AutoMode.passive;
+    return _autoMode;
+  }
+
+  List<WatchStartMode> get _availableWatchStartModes =>
+      resolveAvailableWatchStartModes(
+        isConnected: isConnected,
+        txAllowed: txAllowed,
+        offlineMode: offlineMode,
+        floodTrafficEnabled: floodTrafficEnabled,
+      );
+
+  String get _resolvedWatchSessionModeTitle =>
+      switch (_resolvedWatchSessionMode) {
+        AutoMode.active => 'Active',
+        AutoMode.passive => 'Passive',
+        AutoMode.hybrid => 'Hybrid',
+        AutoMode.targeted => 'Trace',
+      };
+
+  WatchControls _buildWatchControls() {
+    final cooldownMs = _manualPingCooldownTimer.remainingMs;
+    final manualPing = _manualPingAvailability;
+    final passiveStart = sessionStartAvailability(AutoMode.passive);
+    // The wire has one Start/Stop bit while the preferred start mode lives on
+    // the watch. Passive is always advertised and is the safe fallback, so this
+    // bit answers whether at least that start is currently possible; the
+    // command handler applies the same rule again to the mode actually asked
+    // for. An active session uses the bit for Stop instead.
+    final canStartOrStop =
+        _autoPingEnabled ? isConnected : passiveStart.allowed;
+
+    return WatchControls(
+      canStartStop: canStartOrStop,
+      canManualPing: manualPing.allowed,
+      isSessionActive: _autoPingEnabled,
+      // Slot ownership must not follow the live manual-ping gate: cooldowns
+      // and receive windows would otherwise replace Ping with Stop beneath a
+      // thumb. TX sessions cannot manually ping for their entire lifetime, so
+      // they keep Stop available even in a region where TX is permitted.
+      //
+      // Flood traffic belongs here rather than with the timing guards, for the
+      // same reason `txAllowed` does: it is a stable configuration fact, not a
+      // transient one. Leaving it out would hand the map toolbar's one corner
+      // to a Ping that can never fire — and that corner is where Stop lives.
+      manualPingApplicable: isConnected &&
+          txAllowed &&
+          floodTrafficEnabled &&
+          !isTxModeRunning &&
+          !isTargetedModeRunning,
+      manualCooldownEndsAt: cooldownMs > 0
+          ? _manualPingCooldownTimer.endTime
+          : null,
+      // The button already renders its cooldown deadline. The handler still
+      // returns this refusal to a stale tap, but duplicating it as a status
+      // line would spend wrist space without adding an explanation.
+      blockedReason: !_autoPingEnabled && !passiveStart.allowed
+          ? passiveStart.reason
+          : (manualPing.reason == 'Cooling down' ? null : manualPing.reason),
+    );
+  }
+
+  /// Colour of the most recent completed coverage event, matching the marker
+  /// beside it rather than leaving Passive mode stuck on an old TX result.
+  WatchColor? _resolveWatchPingColor() => WatchGeoBuilder.latestPingColor(
+        txPings: _txPings,
+        rxPings: _rxPings,
+        discLogEntries: _discLogEntries,
+        traceLogEntries: _traceLogEntries,
+      );
+
+  /// Whether [mode] may begin now, with the reason the wearer should see.
+  ///
+  /// This is the sole provider-side start gate. One caller publishes wrist
+  /// enablement and the other admits the command that mutates session state;
+  /// separate copies let a stale or racing wrist action enter a state the phone
+  /// button itself would never offer.
+  SessionStartAvailability sessionStartAvailability(AutoMode mode) {
+    final isTransmitMode = mode != AutoMode.passive;
+    final validation =
+        isTransmitMode ? autoModeValidation : PingValidation.valid;
+    final powerConfigured = _preferences.autoPowerSet ||
+        _preferences.powerLevelSet ||
+        _deviceModel != null;
+
+    return resolveSessionStartAvailability(
+      isTransmitMode: isTransmitMode,
+      isConnected: isConnected,
+      antennaConfigured: _preferences.externalAntennaSet,
+      powerConfigured: powerConfigured,
+      isPendingDisable: isPendingDisable,
+      isTargetedRunning: isTargetedModeRunning,
+      isAutoStarting: isAutoPingStarting,
+      cooldownActive: _cooldownTimer.isRunning,
+      isPingSending: isPingSending,
+      rxWindowActive: _rxWindowTimer.isRunning,
+      txBlockedByOffline: offlineMode && isConnected,
+      txNotAllowed: isConnected && !txAllowed,
+      floodTrafficEnabled: floodTrafficEnabled,
+      transmitValidationReason:
+          validation == PingValidation.valid ? null : validation.message,
+    );
+  }
+
+  /// Decides whether an intent from the wrist may begin.
+  ///
+  /// Returns null when accepted, or a reason to show on the watch. Every guard
+  /// is re-evaluated here: the watch's view of what's permitted may be stale,
+  /// and a stale payload must never be able to cause a transmit.
+  ///
+  /// Once admitted, the action deliberately outlives this synchronous reply:
+  /// WatchConnectivity cannot wait for BLE or server work. Successful outcomes
+  /// already surface through session, phase, and ping-colour snapshots; a late
+  /// failure gets its own cue so dropping completion from the ack loses nothing.
+  String? _handleWatchCommand(WatchCommand command) {
+    if (_isDisposed) return 'App closing';
+
+    final kind = command.kind;
+
+    switch (kind) {
+      case WatchCommandKind.requestSnapshot:
+        // This command carries two intents. A genuine plea for state — after a
+        // relaunch or a resume onto a retained context of unknown age — must
+        // not be answered with dedupe's silence. A change of map demand is not
+        // that, and the lease behind it renews every five minutes for as long
+        // as the map stays hidden, so forcing those would spend the radio
+        // exactly where the lease exists to save it.
+        _scheduleWatchSync(
+          immediate: true,
+          forceDelivery: command.forceRefresh,
+        );
+        return null;
+
+      case WatchCommandKind.startSession:
+        final admission = resolveWatchSessionCommandAdmission(
+          kind: kind,
+          isSessionActive: _autoPingEnabled,
+          isSessionStarting: _autoPingStarting,
+        );
+        if (admission.refusal != null) return admission.refusal;
+        if (!admission.shouldRun) return null;
+        final requested = resolveWatchRequestedStartMode(
+          requestedMode: command.mode,
+          isConnected: isConnected,
+          txAllowed: txAllowed,
+        );
+        if (requested.refusal != null) return requested.refusal;
+        final mode = switch (requested.mode) {
+          WatchStartMode.passive => AutoMode.passive,
+          WatchStartMode.hybrid => AutoMode.hybrid,
+          null => _resolvedWatchSessionMode,
+        };
+        final availability = sessionStartAvailability(mode);
+        if (!availability.allowed) {
+          return availability.reason ?? 'Could not start';
+        }
+        unawaited(_runWatchStartSession(mode));
+        return null;
+
+      case WatchCommandKind.stopSession:
+        final admission = resolveWatchSessionCommandAdmission(
+          kind: kind,
+          isSessionActive: _autoPingEnabled,
+          isSessionStarting: _autoPingStarting,
+          requestedSessionId: command.sessionId,
+          // The same value the wrist rendered, so a stop is matched against
+          // what the wearer was looking at rather than against a field only
+          // this side knows.
+          currentSessionId: _liveActivitySessionId ?? 'idle',
+        );
+        if (admission.refusal != null) return admission.refusal;
+        if (!admission.shouldRun) return null;
+        unawaited(_runWatchStopSession(_resolvedWatchSessionMode));
+        return null;
+
+      case WatchCommandKind.manualPing:
+        final availability = _manualPingAvailability;
+        if (!availability.allowed) {
+          return availability.reason ?? 'Ping unavailable';
+        }
+        unawaited(_runWatchManualPing());
+        return null;
+    }
+  }
+
+  Future<void> _runWatchStartSession(AutoMode mode) async {
+    _lastSessionCheckFailureReason = null;
+    try {
+      final started = await toggleAutoPing(mode);
+      if (!started) {
+        _emitWatchFailure(_watchStartFailureReason(mode));
+      }
+    } catch (error) {
+      debugError('[WATCH] startSession failed after admission: $error');
+      _emitWatchFailure(_watchStartFailureReason(mode));
+    }
+  }
+
+  Future<void> _runWatchStopSession(AutoMode mode) async {
+    try {
+      final stopped = await toggleAutoPing(mode);
+      if (!stopped) _emitWatchFailure('Could not stop');
+    } catch (error) {
+      debugError('[WATCH] stopSession failed after admission: $error');
+      _emitWatchFailure('Could not stop');
+    }
+  }
+
+  String _watchStartFailureReason(AutoMode mode) {
+    final sessionReason = _lastSessionCheckFailureReason;
+    if (sessionReason != null) return sessionReason;
+    if (mode != AutoMode.passive && _cooldownTimer.isRunning) {
+      return 'Cooling down';
+    }
+    return 'Could not start';
+  }
+
+  Future<void> _runWatchManualPing() async {
+    _lastSessionCheckFailureReason = null;
+    try {
+      final sent = await sendPing();
+      if (!sent) {
+        _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
+      }
+    } catch (error) {
+      debugError('[WATCH] manualPing failed after admission: $error');
+      _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
+    }
+  }
+
+  void _emitWatchFailure(String message) {
+    if (_isDisposed) return;
+    _watchCue = WatchHapticCue(
+      id: const Uuid().v4(),
+      kind: 'failure',
+      issuedAt: DateTime.now(),
+      message: message,
+    );
+    _scheduleWatchSync(immediate: true);
+  }
+
+  void _handleWatchDiagnosticsChanged() {
+    if (_watchBridge.diagnostics.value.paired) {
+      unawaited(_rememberWatchPairing());
+    }
+  }
+
+  Future<void> _rememberWatchPairing() async {
+    if (_hasEverPairedWatch) return;
+
+    // Pairing history is intentionally one-way. An unpaired watch is the most
+    // important time to keep this diagnostic reachable, so no later native
+    // false is allowed to erase the evidence that the feature once existed.
+    _hasEverPairedWatch = true;
+    _notifyWatchDiagnosticVisibilityChanged();
+
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      await box.put('watch_has_ever_been_paired', true);
+    } catch (error) {
+      debugError('[WATCH] Failed to persist pairing history: $error');
+    }
+  }
+
+  void _notifyWatchDiagnosticVisibilityChanged() {
+    if (_isDisposed) return;
+    // The provider's normal notifier also schedules a watch snapshot. This
+    // flag only controls Settings visibility, so bypass that transport side
+    // effect and keep pairing persistence strictly observational.
+    super.notifyListeners();
+  }
+
+  ({
+    LiveActivityPhase phase,
+    String title,
+    String? detail,
+    DateTime? endsAt,
+  }) _resolveWatchPhase() {
+    final shared = _resolveLiveActivityPhase();
+    final watchPhase = resolveWatchSurfacePhase(
+      sharedPhase: shared.phase,
+      isSessionActive: _autoPingEnabled,
+      isSessionStarting: _autoPingStarting,
+    );
+    if (watchPhase == shared.phase) return shared;
+
+    return (
+      phase: LiveActivityPhase.idle,
+      title: 'Ready',
+      detail: 'No session running',
+      endsAt: null,
+    );
+  }
+
+  LiveActivitySnapshot? _buildLiveActivitySnapshot() {
+    final sessionId = _liveActivitySessionId;
+    if (!_liveActivitySessionActive || sessionId == null) {
+      return null;
+    }
+
+    final phase = _resolveLiveActivityPhase();
+    final repeaterState = _buildLiveActivityRepeaters();
+    final phaseDurationMs = _phaseDurationMsFor(phase.endsAt);
+    final pingColor = _resolveWatchPingColor();
+
+    return LiveActivitySnapshot(
+      sessionId: sessionId,
+      mode: _liveActivityModeTitle,
+      phase: phase.phase,
+      phaseTitle: phase.title,
+      phaseDetail: phase.detail,
+      phaseEndsAt: phase.endsAt,
+      phaseDurationMs: phaseDurationMs,
+      pingColor: pingColor,
+      isConnected: isConnected,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      txCount: _pingStats.txCount,
+      rxCount: _pingStats.rxCount,
+      discoveryCount: _pingStats.discCount,
+      traceCount: _pingStats.traceCount,
+      queueSize: _queueSize,
+      repeaters: repeaterState.repeaters,
+      totalHeardCount: repeaterState.totalCount,
+      repeatersAreCurrent: repeaterState.isCurrent,
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  ({
+    LiveActivityPhase phase,
+    String title,
+    String? detail,
+    DateTime? endsAt,
+  }) _resolveLiveActivityPhase() {
+    if (_isInZoneGracePeriod) {
+      return (
+        phase: LiveActivityPhase.pausedOutsideZone,
+        title: 'Outside service area',
+        detail: 'Searching for a nearby wardriving zone',
+        endsAt: _zoneGraceEndsAt,
+      );
+    }
+
+    if (_isZoneTransferInProgress) {
+      return (
+        phase: LiveActivityPhase.pausedOutsideZone,
+        title: 'Changing region…',
+        detail: [_zoneTransferFrom, _zoneTransferTo]
+            .whereType<String>()
+            .join(' → '),
+        endsAt: null,
+      );
+    }
+
+    if (_isAutoReconnecting || _connectionStep == ConnectionStep.reconnecting) {
+      return (
+        phase: LiveActivityPhase.disconnected,
+        title: 'Reconnecting…',
+        detail: 'Restoring MeshCore connection',
+        endsAt: null,
+      );
+    }
+
+    if (!isConnected) {
+      return (
+        phase: LiveActivityPhase.disconnected,
+        title: _connectionStep == ConnectionStep.disconnecting
+            ? 'Disconnecting…'
+            : 'Device disconnected',
+        detail: 'Open MeshMapper to reconnect',
+        endsAt: null,
+      );
+    }
+
+    if (isPendingDisable) {
+      return (
+        phase: LiveActivityPhase.stopping,
+        title: 'Stopping…',
+        detail: 'Finishing the current listening window',
+        endsAt: _rxWindowTimer.endTime ?? _discoveryWindowTimer.endTime,
+      );
+    }
+
+    if (_gpsStatus != GpsStatus.locked) {
+      return (
+        phase: LiveActivityPhase.waitingForGps,
+        title: 'Waiting for GPS',
+        detail: _liveActivityGpsLabel,
+        endsAt: null,
+      );
+    }
+
+    if ((_autoMode == AutoMode.active ||
+            _autoMode == AutoMode.hybrid ||
+            _autoMode == AutoMode.targeted) &&
+        !txAllowed) {
+      return (
+        phase: LiveActivityPhase.txBlocked,
+        title: 'TX unavailable',
+        detail: 'This zone is currently passive-only',
+        endsAt: null,
+      );
+    }
+
+    if (_liveActivityManualSession && _isPingSending) {
+      return (
+        phase: LiveActivityPhase.sending,
+        title: 'Sending ping…',
+        detail: null,
+        endsAt: null,
+      );
+    }
+
+    if (_discoveryWindowTimer.isRunning) {
+      final isTrace = _autoMode == AutoMode.targeted;
+      return (
+        phase: isTrace
+            ? LiveActivityPhase.listeningTrace
+            : LiveActivityPhase.listeningDiscovery,
+        title: isTrace ? 'Listening for trace…' : 'Listening…',
+        detail: isTrace ? _targetRepeaterDisplayName : 'Discovery responses',
+        endsAt: _discoveryWindowTimer.endTime,
+      );
+    }
+
+    if (_rxWindowTimer.isRunning) {
+      return (
+        phase: LiveActivityPhase.listening,
+        title: 'Listening…',
+        detail: 'Waiting for repeater echoes',
+        endsAt: _rxWindowTimer.endTime,
+      );
+    }
+
+    if (_liveActivityManualSession &&
+        _manualPingCooldownTimer.isRunning) {
+      return (
+        phase: LiveActivityPhase.cooldown,
+        title: 'Cooldown',
+        detail: 'Manual ping available when the timer ends',
+        endsAt: _manualPingCooldownTimer.endTime,
+      );
+    }
+
+    if (_autoPingTimer.isRunning) {
+      if (_autoPingTimer.skipReason != null) {
+        return (
+          phase: LiveActivityPhase.skipped,
+          title: 'Ping skipped',
+          detail: 'Move at least ${PingService.currentMinDistance} m',
+          endsAt: _autoPingTimer.endTime,
+        );
+      }
+
+      if (_autoMode == AutoMode.passive) {
+        return (
+          phase: LiveActivityPhase.waitingDiscovery,
+          title: 'Next discovery',
+          detail: null,
+          endsAt: _autoPingTimer.endTime,
+        );
+      }
+
+      if (_autoMode == AutoMode.targeted) {
+        return (
+          phase: LiveActivityPhase.waitingTrace,
+          title: 'Next trace',
+          detail: _targetRepeaterDisplayName,
+          endsAt: _autoPingTimer.endTime,
+        );
+      }
+
+      return (
+        phase: LiveActivityPhase.waiting,
+        title: 'Next ping',
+        detail: null,
+        endsAt: _autoPingTimer.endTime,
+      );
+    }
+
+    switch (_liveActivityOperation) {
+      case _LiveActivityOperation.sending:
+        return (
+          phase: LiveActivityPhase.sending,
+          title: 'Sending ping…',
+          detail: null,
+          endsAt: null,
+        );
+      case _LiveActivityOperation.discovering:
+        return (
+          phase: LiveActivityPhase.discovering,
+          title: 'Discovering…',
+          detail: 'Requesting nearby repeaters',
+          endsAt: null,
+        );
+      case _LiveActivityOperation.tracing:
+        return (
+          phase: LiveActivityPhase.tracing,
+          title: 'Tracing repeater…',
+          detail: _targetRepeaterDisplayName,
+          endsAt: null,
+        );
+      case null:
+        break;
+    }
+
+    if (_autoPingStarting || !_autoPingEnabled) {
+      return (
+        phase: LiveActivityPhase.starting,
+        title: 'Preparing session…',
+        detail: null,
+        endsAt: null,
+      );
+    }
+
+    return (
+      phase: LiveActivityPhase.active,
+      title: '$_liveActivityModeTitle active',
+      detail: 'Waiting for the next cycle',
+      endsAt: null,
+    );
+  }
+
+  ({
+    List<LiveActivityRepeater> repeaters,
+    int totalCount,
+    bool isCurrent,
+  }) _buildLiveActivityRepeaters() {
+    final cycleStartedAt = _liveActivityCycleStartedAt;
+    final topIsCurrent = cycleStartedAt != null &&
+        _liveActivityRepeatersUpdatedAt != null &&
+        !_liveActivityRepeatersUpdatedAt!.isBefore(cycleStartedAt);
+    final rxIsCurrent = cycleStartedAt != null &&
+        _liveActivityRxUpdatedAt != null &&
+        !_liveActivityRxUpdatedAt!.isBefore(cycleStartedAt);
+    final hasCurrent = topIsCurrent || rxIsCurrent;
+
+    final includeTop = !hasCurrent || topIsCurrent;
+    final includeRx = !hasCurrent || rxIsCurrent;
+    final repeatersById = <String, LiveActivityRepeater>{};
+
+    if (includeTop) {
+      for (final repeater in _liveActivityRepeaters) {
+        if (!repeater.snr.isFinite) continue;
+        final id = repeater.repeaterId.toUpperCase();
+        repeatersById[id] = LiveActivityRepeater(
+          id: id,
+          name: _resolveRepeaterDisplayName(id),
+          snr: repeater.snr,
+          typeColor: WatchGeoBuilder.overlayTypeColor(repeater.type),
+          snrColor: WatchGeoBuilder.snrColor(repeater.snr),
+        );
+      }
+    }
+
+    final rx = _rxOverlaySlot;
+    if (includeRx && rx != null && rx.snr.isFinite) {
+      final id = rx.repeaterId.toUpperCase();
+      final existing = repeatersById[id];
+      if (existing == null || rx.snr > existing.snr) {
+        repeatersById[id] = LiveActivityRepeater(
+          id: id,
+          name: _resolveRepeaterDisplayName(id),
+          snr: rx.snr,
+          typeColor: WatchGeoBuilder.overlayTypeColor(OverlayPingType.rx),
+          snrColor: WatchGeoBuilder.snrColor(rx.snr),
+        );
+      }
+    }
+
+    final repeaters = repeatersById.values.toList()
+      ..sort((a, b) => b.snr.compareTo(a.snr));
+
+    var totalCount = includeTop ? _liveActivityRepeaterTotalCount : 0;
+    if (includeRx &&
+        rx != null &&
+        rx.snr.isFinite &&
+        !_liveActivityRepeaters.any(
+          (entry) =>
+              entry.repeaterId.toUpperCase() == rx.repeaterId.toUpperCase(),
+        )) {
+      totalCount++;
+    }
+    if (totalCount < repeaters.length) totalCount = repeaters.length;
+
+    return (
+      // Four so the watch Smart Stack card's two-by-two grid fills, which also
+      // lets the RX slot survive alongside the three top-SNR rows the way the
+      // map overlay shows them. Surfaces that want fewer trim their own.
+      repeaters: repeaters.take(4).toList(growable: false),
+      totalCount: totalCount,
+      isCurrent: hasCurrent,
+    );
+  }
+
+  String get _liveActivityModeTitle {
+    if (_liveActivityManualSession) return 'Manual';
+    return switch (_autoMode) {
+      AutoMode.active => 'Active',
+      AutoMode.passive => 'Passive',
+      AutoMode.hybrid => 'Hybrid',
+      AutoMode.targeted => 'Trace',
+    };
+  }
+
+  String get _liveActivityGpsLabel => switch (_gpsStatus) {
+        GpsStatus.permissionDenied => 'Location permission required',
+        GpsStatus.disabled => 'Location services disabled',
+        GpsStatus.searching => 'Searching for GPS signal',
+        GpsStatus.locked => 'GPS locked',
+        GpsStatus.outsideGeofence => 'Outside service area',
+      };
+
+  String? get _targetRepeaterDisplayName {
+    final id = _targetRepeaterId;
+    if (id == null || id.isEmpty) return null;
+    return _resolveRepeaterDisplayName(id) ?? id.toUpperCase();
+  }
+
+  String? _resolveRepeaterDisplayName(String rawId) {
+    final displayId = rawId.toUpperCase();
+
+    // Try the fullest identity the row arrived with, then the display hash.
+    //
+    // **The fallback is the point.** A discovery response's public key is a
+    // better identity, but the catalogue is matched by an 8-character `hexId`
+    // that the API frequently omits, and the display hash additionally resolves
+    // through `displayHexId` — which falls back to the short numeric ID when
+    // there is no hex at all. Trying only the longer form threw away the lookup
+    // that was doing the work, and left named repeaters unnamed.
+    final identity = _overlayIdentityById[displayId];
+    final match = (identity == null
+            ? null
+            : WatchGeoBuilder.resolveRepeater(
+                repeaters: _repeaters,
+                id: identity,
+                hopBytes: _hopBytes,
+              )) ??
+        WatchGeoBuilder.resolveRepeater(
+          repeaters: _repeaters,
+          id: displayId,
+          hopBytes: _hopBytes,
+        );
+
+    final name = match?.name;
+    return name == null || name == 'Unknown' ? null : name;
+  }
+
   // ============================================
   // Initialization
   // ============================================
@@ -1131,6 +2367,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _rxWindowTimer,
       _discoveryWindowTimer,
     ]);
+    if (_liveActivityService.isSupportedPlatform) {
+      _timerListenable.addListener(_handleLiveActivityTimerChange);
+      _timerListenerAttached = true;
+    }
+    if (_watchBridge.isSupportedPlatform) {
+      _watchBridge.diagnostics.addListener(_handleWatchDiagnosticsChanged);
+      _watchBridge.attachCommandHandler(
+        _handleWatchCommand,
+        onRefusal: _emitWatchFailure,
+        // Availability can become true long after provider startup when a
+        // watch is paired or its app is installed. Push the current state then
+        // rather than waiting for an unrelated phone-side notification.
+        onAvailabilityChanged: (available) {
+          if (available) _scheduleWatchSync(immediate: true);
+        },
+      );
+    }
 
     // Initialize debug logging (enabled by default, respects user preference)
     await _initDebugLogs();
@@ -1213,6 +2466,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Load user preferences
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
+    await _loadWatchPairingPreference();
     await _loadDeviceAntennaPreferences();
     await _loadDevicePowerOverrides();
     await _loadDeviceRealNames();
@@ -2506,6 +3760,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         () => handleSessionError('session_limit', null);
 
     _pingService!.onTxPing = (ping) {
+      _markLiveActivityOperation(_LiveActivityOperation.sending);
       _txPings.add(ping);
       if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
 
@@ -2607,13 +3862,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               '[APP] Updated TxLogEntry with ${existingEvents.length} direct, '
               '${lastEntry.multiHopEvents.length} multi-hop events (real-time)');
 
-          _updateTopRepeaters(
-              existingEvents
-                  .where((e) => e.snr != null)
-                  .map((e) =>
-                      (repeaterId: e.repeaterId.toUpperCase(), snr: e.snr!))
-                  .toList(),
-              OverlayPingType.tx);
+          final directRepeaters = existingEvents
+              .where((event) => event.snr != null)
+              .map((event) => (
+                    repeaterId: event.repeaterId.toUpperCase(),
+                    snr: event.snr!,
+                  ))
+              .toList(growable: false);
+          _updateTopRepeaters(directRepeaters, OverlayPingType.tx);
+          _updateLiveActivityRepeaters([
+            ...directRepeaters,
+            ...lastEntry.multiHopEvents
+                .where((event) => event.snr != null)
+                .map((event) => (
+                      repeaterId: event.repeaterId.toUpperCase(),
+                      snr: event.snr!,
+                    )),
+          ], OverlayPingType.tx);
 
           debugLog('[APP] Calling notifyListeners() to update UI');
           _notifyMapThrottled();
@@ -2667,6 +3932,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             multiHopEvents: multiHopEvents,
           );
 
+          _updateLiveActivityRepeaters([
+            ...lastEntry.events
+                .where((event) => event.snr != null)
+                .map((event) => (
+                      repeaterId: event.repeaterId.toUpperCase(),
+                      snr: event.snr!,
+                    )),
+            ...multiHopEvents
+                .where((event) => event.snr != null)
+                .map((event) => (
+                      repeaterId: event.repeaterId.toUpperCase(),
+                      snr: event.snr!,
+                    )),
+          ], OverlayPingType.tx);
+
           _notifyMapThrottled();
         }
       }
@@ -2675,6 +3955,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService!.onPingProgressChanged = notifyListeners;
 
     _pingService!.onAutoPingScheduled = (intervalMs, skipReason) {
+      _liveActivityOperation = null;
       _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
 
       if (skipReason != null) {
@@ -2690,6 +3971,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onDiscPing = (entry) {
+      _markLiveActivityOperation(_LiveActivityOperation.discovering);
       _addDiscLogEntry(entry);
     };
 
@@ -2700,20 +3982,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _audioService.playReceiveSound();
       }
 
+      final heardRepeaters = discPing.discoveredNodes
+          .map((node) => (
+                repeaterId: node.repeaterId.toUpperCase(),
+                snr: node.localSnr,
+              ))
+          .toList(growable: false);
       _updateTopRepeaters(
-          discPing.discoveredNodes
-              .map((n) =>
-                  (repeaterId: n.repeaterId.toUpperCase(), snr: n.localSnr))
-              .toList(),
-          OverlayPingType.disc);
+        heardRepeaters,
+        OverlayPingType.disc,
+        identities: _discoveryIdentities(discPing.discoveredNodes),
+      );
+      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
 
       _notifyMapThrottled();
     };
 
     _pingService!.onTxWindowComplete = (directSuccess, multiHopEchoes) {
+      _liveActivityOperation = null;
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? allRepeaters;
+      final heardRepeaters = <({String repeaterId, double snr})>[];
 
       if (_txLogEntries.isNotEmpty) {
         final lastTx = _txLogEntries.last;
@@ -2740,7 +4030,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (directRepeaters.isNotEmpty || multiHopRepeaters.isNotEmpty) {
           allRepeaters = [...directRepeaters, ...multiHopRepeaters];
         }
+
+        heardRepeaters.addAll(lastTx.events
+            .where((event) => event.snr?.isFinite ?? false)
+            .map((event) => (
+                  repeaterId: event.repeaterId.toUpperCase(),
+                  snr: event.snr!,
+                )));
+        heardRepeaters.addAll(multiHopEchoes
+            .where((event) => event.snr?.isFinite ?? false)
+            .map((event) => (
+                  repeaterId: event.repeaterId.toUpperCase(),
+                  snr: event.snr!,
+                )));
       }
+      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.tx);
 
       final PingEventType eventType;
       if (directSuccess) {
@@ -2760,9 +4064,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onDiscoveryWindowComplete = (success) {
+      _liveActivityOperation = null;
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? repeaters;
+      final heardRepeaters = <({String repeaterId, double snr})>[];
 
       if (_discLogEntries.isNotEmpty) {
         final lastDisc = _discLogEntries.first;
@@ -2778,7 +4084,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                   ))
               .toList();
         }
+        heardRepeaters.addAll(lastDisc.discoveredNodes
+            .where((node) => node.localSnr.isFinite)
+            .map((node) => (
+                  repeaterId: node.repeaterId.toUpperCase(),
+                  snr: node.localSnr,
+                )));
       }
+      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
 
       PingEventType eventType;
       if (success) {
@@ -2798,10 +4111,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onTracePing = (entry) {
+      _markLiveActivityOperation(_LiveActivityOperation.tracing);
       _addTraceLogEntry(entry);
     };
 
     _pingService!.onTraceWindowComplete = (result) {
+      _liveActivityOperation = null;
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? repeaters;
@@ -2832,6 +4147,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _notifyMapNow();
         }
       }
+
+      final traceSnr = result?.localSnr;
+      _updateLiveActivityRepeaters(
+        result != null && result.success && traceSnr != null
+            ? [(repeaterId: result.targetRepeaterId, snr: traceSnr)]
+            : const [],
+        OverlayPingType.trace,
+      );
 
       recordPingEvent(
         result != null && result.success
@@ -2870,6 +4193,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
+      _finishLiveActivitySession();
 
       debugLog('[APP] Pending disable cleanup complete, cooldown running');
       notifyListeners();
@@ -3422,6 +4746,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _fullDisconnectCleanup() async {
+    _finishLiveActivitySession();
     // Guard against double cleanup (e.g., reconnect timeout + BLE disconnect event)
     if (_connectionStep == ConnectionStep.disconnected) {
       debugLog('[CONN] Already disconnected, skipping duplicate cleanup');
@@ -3787,6 +5112,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Disconnect from current device
   Future<void> disconnect() async {
+    _finishLiveActivitySession();
     // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
     _userRequestedDisconnect = true;
 
@@ -4029,6 +5355,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isPingSending = true;
     notifyListeners();
 
+    var ownsLiveActivity = false;
+    var keepLiveActivity = false;
     try {
       // Check session validity before starting (skip in offline mode)
       if (!_preferences.offlineMode) {
@@ -4040,8 +5368,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _startIdleDisconnectTimer();
 
       debugLog('[PING] Sending manual TX ping');
-      return await _pingService!.sendTxPing(manual: true);
+      ownsLiveActivity = !_liveActivitySessionActive;
+      if (ownsLiveActivity) {
+        _startLiveActivitySession(manual: true);
+      }
+      final sent = await _pingService!.sendTxPing(manual: true);
+      keepLiveActivity = sent;
+      return sent;
     } finally {
+      if (ownsLiveActivity && !keepLiveActivity) {
+        _finishLiveActivitySession();
+      }
       // Clear sending state on every path: session-check failure, exception,
       // or success (RX window timer takes over showing the listening state)
       _isPingSending = false;
@@ -4052,6 +5389,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Check session validity before starting a wardrive action
   /// Returns true if session is valid, false if expired (triggers disconnect)
   Future<bool> _checkSessionBeforeAction() async {
+    _lastSessionCheckFailureReason = null;
     final pos = _gpsService.lastPosition;
     final result = await _apiService.checkSessionValid(
       lat: pos?.latitude,
@@ -4059,12 +5397,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
 
     if (!result.isValid) {
+      _lastSessionCheckFailureReason = _sessionCheckFailureMessage(
+        result.reason,
+        result.message,
+      );
       debugWarn(
           '[API] Session check failed: ${result.reason} - ${result.message ?? "Session expired"}');
       // Note: onSessionError callback will trigger disconnect for critical errors
       return false;
     }
     return true;
+  }
+
+  String _sessionCheckFailureMessage(String? reason, String? message) {
+    // `zone_full` is the server-side form of the same TX prohibition already
+    // named "Passive Only" by watch controls. Reusing it avoids three wrist
+    // phrasings for one condition; other presentable server text stays intact.
+    if (reason == 'zone_full') return 'Passive Only';
+
+    final serverMessage = message?.trim();
+    if (serverMessage != null && serverMessage.isNotEmpty) {
+      return serverMessage;
+    }
+    return _getErrorMessage(reason, null);
   }
 
   /// Set the target repeater ID for targeted mode
@@ -4142,6 +5497,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _autoPingEnabled = false;
       _idleAutoStopReference = null;
+      _finishLiveActivitySession();
 
       // Clear top-heard overlay on stop
       _clearOverlayState();
@@ -4234,6 +5590,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _rxLogger?.startWardriving();
         _autoPingEnabled = true;
         _idleAutoStopReference = DateTime.now();
+        _startLiveActivitySession();
 
         // Start noise floor session for graph tracking
         final sessionLabel = isPassive
@@ -4331,11 +5688,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Update top repeaters overlay with successful trace result
     if (entry.success && entry.localSnr != null) {
-      // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay
+      // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay.
+      // The untruncated ID still travels as the row's identity: shortening it
+      // is a presentation decision, and resolving the name from the shortened
+      // form threw away a byte of certainty for no reason.
       final id = entry.targetRepeaterId.toUpperCase();
       final displayId = id.length > 6 ? id.substring(0, 6) : id;
-      _updateTopRepeaters([(repeaterId: displayId, snr: entry.localSnr!)],
-          OverlayPingType.trace);
+      _updateTopRepeaters(
+        [(repeaterId: displayId, snr: entry.localSnr!)],
+        OverlayPingType.trace,
+        identities: {displayId: id},
+      );
     }
 
     _notifyMapNow();
@@ -4762,6 +6125,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 9. Update state
     _autoPingEnabled = false;
     _idleAutoStopReference = null;
+    _finishLiveActivitySession();
     debugLog('[APP] Auto-ping mode stopped gracefully');
     notifyListeners();
   }
@@ -6172,6 +7536,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Cancel all zone grace period timers.
   void _cancelZoneGraceTimers() {
+    _zoneGraceEndsAt = null;
     _zoneGraceTimer?.cancel();
     _zoneGraceTimer = null;
     _zoneGracePollingTimer?.cancel();
@@ -6227,7 +7592,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Keep alive: BLE, _meshCoreConnection, _pingService, _unifiedRxHandler,
     // noise floor, and API session (backend auto-transfers on zone re-entry)
 
-    // Start 5-minute countdown
+    // Start 5-minute countdown. Keep an absolute deadline so ActivityKit can
+    // render the timer without receiving an update every second.
+    _zoneGraceEndsAt = DateTime.now().add(_zoneGraceTimeout);
     _zoneGraceSecondsRemaining = _zoneGraceTimeout.inSeconds;
 
     // Overall timeout — abandon grace period after 5 minutes
@@ -7332,6 +8699,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  Future<void> _loadWatchPairingPreference() async {
+    if (!_watchBridge.isSupportedPlatform) return;
+
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      // OR with the in-memory observation because WCSession may report a
+      // pairing while startup persistence is still loading. That race must
+      // never turn the one-way flag back off.
+      final wasPaired = box.get('watch_has_ever_been_paired') == true;
+      if (wasPaired && !_hasEverPairedWatch) {
+        _hasEverPairedWatch = true;
+        _notifyWatchDiagnosticVisibilityChanged();
+      }
+    } catch (error) {
+      debugError('[WATCH] Failed to load pairing history: $error');
+    }
+  }
+
   /// Save user preferences to Hive storage
   Future<void> _savePreferences() async {
     final box = await _openBoxSafely(_preferencesBoxName);
@@ -7827,12 +9213,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   @override
   @override
   void notifyListeners() {
-    if (!_isDisposed) super.notifyListeners();
+    if (_isDisposed) return;
+    super.notifyListeners();
+    _scheduleLiveActivitySync();
   }
 
   @override
   void dispose() {
     _isDisposed = true;
+    if (_timerListenerAttached) {
+      _timerListenable.removeListener(_handleLiveActivityTimerChange);
+    }
+    _liveActivityService.dispose();
+    _watchBridge.diagnostics.removeListener(_handleWatchDiagnosticsChanged);
+    _watchBridge.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();
     _connectionSubscription?.cancel();
