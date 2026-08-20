@@ -770,7 +770,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
+                SizedBox(
+                    width: nodeWidth, child: _tableHeader(context, 'Node')),
                 Expanded(child: _tableHeader(context, 'SNR', center: true)),
                 Expanded(child: _tableHeader(context, 'RSSI', center: true)),
               ],
@@ -861,7 +862,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                SizedBox(width: nodeWidth, child: _tableHeader(context, 'Node')),
+                SizedBox(
+                    width: nodeWidth, child: _tableHeader(context, 'Node')),
                 Expanded(child: _tableHeader(context, 'SNR', center: true)),
                 Expanded(child: _tableHeader(context, 'RSSI', center: true)),
               ],
@@ -896,9 +898,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                         Expanded(
                             child: Center(
                                 child: _buildChip(
-                                    event.rssi != null
-                                        ? '${event.rssi}'
-                                        : '-',
+                                    event.rssi != null ? '${event.rssi}' : '-',
                                     rssiColor))),
                       ],
                     ),
@@ -916,9 +916,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                           child: Icon(
                             Icons.route,
                             size: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
                         const SizedBox(width: 4),
@@ -1046,8 +1045,7 @@ class _AllPingsTabState extends State<_AllPingsTab> {
                     Expanded(
                       child: RxPathChain(
                         hops: entry.pathHops,
-                        fromLatLng:
-                            (lat: entry.latitude, lon: entry.longitude),
+                        fromLatLng: (lat: entry.latitude, lon: entry.longitude),
                         fontSize: 12,
                       ),
                     ),
@@ -1143,8 +1141,8 @@ class _AllPingsTabState extends State<_AllPingsTab> {
     );
   }
 
-  Widget _buildDiscNodeRow(
-      BuildContext context, DiscoveredNodeEntry node, List<Repeater> repeaters) {
+  Widget _buildDiscNodeRow(BuildContext context, DiscoveredNodeEntry node,
+      List<Repeater> repeaters) {
     final rxSnrColor = _snrColorFromValue(node.localSnr);
     final rssiColor = _rssiColor(node.localRssi);
     final txSnrColor = PingColors.snrColor(node.remoteSnr.toDouble());

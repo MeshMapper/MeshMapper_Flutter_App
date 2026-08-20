@@ -253,11 +253,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       );
     }
 
-    final canConnect =
-        appState.connectionStep == ConnectionStep.disconnected &&
-            !appState.isAutoReconnecting &&
-            (!appState.maintenanceMode || appState.offlineMode) &&
-            (appState.offlineMode || appState.inZone == true);
+    final canConnect = appState.connectionStep == ConnectionStep.disconnected &&
+        !appState.isAutoReconnecting &&
+        (!appState.maintenanceMode || appState.offlineMode) &&
+        (appState.offlineMode || appState.inZone == true);
 
     switch (appState.selectedTransport) {
       case TransportType.ble:
@@ -285,9 +284,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             icon: Icons.usb,
             label: 'Connect',
             color: Theme.of(context).colorScheme.primary,
-            onPressed: canConnect
-                ? () => _connectWebSerial(appState)
-                : null,
+            onPressed: canConnect ? () => _connectWebSerial(appState) : null,
           );
         }
         return _buildBottomButton(
@@ -296,7 +293,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           color: Theme.of(context).colorScheme.primary,
           onPressed: canConnect
               ? () => setState(() {
-                    _usbDevicesFuture = AndroidSerialService.getAvailablePorts();
+                    _usbDevicesFuture =
+                        AndroidSerialService.getAvailablePorts();
                   })
               : null,
         );
@@ -1921,7 +1919,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           for (final transport in available)
             Expanded(
               child: _buildTransportSegment(
-                context, appState, transport,
+                context,
+                appState,
+                transport,
                 isSelected: appState.selectedTransport == transport,
               ),
             ),
@@ -2109,7 +2109,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             future: _savedTcpFuture ??= TcpService.getSavedConnections(),
             builder: (context, snapshot) {
               final saved = snapshot.data;
-              if (saved == null || saved.isEmpty) return const SizedBox.shrink();
+              if (saved == null || saved.isEmpty) {
+                return const SizedBox.shrink();
+              }
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2120,8 +2122,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                         ),
                   ),
                   const SizedBox(height: 8),
-                  ...saved.map((conn) => _buildSavedTcpTile(
-                      context, appState, conn, canConnect)),
+                  ...saved.map((conn) =>
+                      _buildSavedTcpTile(context, appState, conn, canConnect)),
                 ],
               );
             },
@@ -2189,7 +2191,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                 await TcpService.deleteConnection(conn.id);
                 if (mounted) {
                   final future = TcpService.getSavedConnections();
-                  setState(() { _savedTcpFuture = future; });
+                  setState(() {
+                    _savedTcpFuture = future;
+                  });
                 }
               },
             ),
@@ -2235,8 +2239,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             icon: Icons.usb_off,
             iconColor: Colors.grey.withValues(alpha: 0.5),
             title: 'No USB Devices',
-            message:
-                'Connect a MeshCore device via USB OTG and tap Refresh.',
+            message: 'Connect a MeshCore device via USB OTG and tap Refresh.',
             action: FilledButton.icon(
               onPressed: () => setState(() {
                 _usbDevicesFuture = AndroidSerialService.getAvailablePorts();
@@ -2255,14 +2258,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             final pid = device['pid'] as int? ?? 0;
             return ListTile(
               leading: const Icon(Icons.usb),
-              title: Text(
-                  device['productName'] as String? ?? 'USB Device'),
+              title: Text(device['productName'] as String? ?? 'USB Device'),
               subtitle: Text(
                   'VID: ${vid.toRadixString(16)} PID: ${pid.toRadixString(16)}'),
               enabled: canConnect,
-              onTap: canConnect
-                  ? () => appState.connectViaUsb(device)
-                  : null,
+              onTap: canConnect ? () => appState.connectViaUsb(device) : null,
             );
           },
         );
@@ -2281,7 +2281,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             Icon(
               Icons.usb,
               size: 64,
-              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+              color:
+                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
             ),
             const SizedBox(height: 16),
             Text(

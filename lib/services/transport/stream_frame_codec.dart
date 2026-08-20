@@ -95,8 +95,8 @@ class StreamFrameCodec {
       if (bytes.length < totalFrameSize) return;
 
       // Extract the payload (strip header)
-      final payload = Uint8List.fromList(
-          bytes.sublist(headerSize, totalFrameSize));
+      final payload =
+          Uint8List.fromList(bytes.sublist(headerSize, totalFrameSize));
 
       // Remove consumed bytes, keep remainder
       if (bytes.length > totalFrameSize) {

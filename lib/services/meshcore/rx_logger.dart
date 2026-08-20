@@ -507,6 +507,7 @@ class RxObservation {
   final double lon;
   final DateTime timestamp;
   final PacketMetadata metadata;
+
   /// Display path hops, origin → ... → us. Already CARpeater-stripped (the
   /// user's own carpeater, when present, has been removed from the tail).
   final List<String> displayHops;
@@ -536,6 +537,7 @@ class RxApiEntry {
   final int header;
   final DateTime timestamp;
   final PacketMetadata metadata;
+
   /// Display path hops, origin → ... → us. Already CARpeater-stripped.
   final List<String> displayHops;
 

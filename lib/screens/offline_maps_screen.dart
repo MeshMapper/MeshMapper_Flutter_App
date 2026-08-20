@@ -179,9 +179,8 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
                 const Spacer(),
                 IconButton(
                   icon: const Icon(Icons.refresh, size: 18),
-                  onPressed: _tileCacheBusy
-                      ? null
-                      : () => service.refreshRegions(),
+                  onPressed:
+                      _tileCacheBusy ? null : () => service.refreshRegions(),
                   tooltip: 'Refresh sizes',
                   visualDensity: VisualDensity.compact,
                 ),
@@ -616,8 +615,8 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
               child: TextButton.icon(
                 onPressed: () => _confirmCancelDownload(context, service),
                 icon: const Icon(Icons.close, size: 16, color: Colors.red),
-                label: const Text('Cancel',
-                    style: TextStyle(color: Colors.red)),
+                label:
+                    const Text('Cancel', style: TextStyle(color: Colors.red)),
                 style: TextButton.styleFrom(
                   visualDensity: VisualDensity.compact,
                   padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -649,9 +648,7 @@ class _OfflineMapsScreenState extends State<OfflineMapsScreen> {
       return s == 0 ? '${d.inMinutes}m' : '${d.inMinutes}m ${s}s';
     }
     final minutes = d.inMinutes % 60;
-    return minutes == 0
-        ? '${d.inHours}h'
-        : '${d.inHours}h ${minutes}m';
+    return minutes == 0 ? '${d.inHours}h' : '${d.inHours}h ${minutes}m';
   }
 
   Future<void> _confirmCancelDownload(
@@ -1265,8 +1262,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                             ),
                           )
                         : const Icon(Icons.download),
-                    label:
-                        Text(_submitting ? 'Starting...' : 'Download Area'),
+                    label: Text(_submitting ? 'Starting...' : 'Download Area'),
                     style: FilledButton.styleFrom(
                       minimumSize: const Size.fromHeight(44),
                     ),
@@ -1296,12 +1292,10 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
       return;
     }
 
-    final halfLat = (visible.northeast.latitude - visible.southwest.latitude)
-            .abs() *
-        0.2;
-    final halfLng = (visible.northeast.longitude - visible.southwest.longitude)
-            .abs() *
-        0.2;
+    final halfLat =
+        (visible.northeast.latitude - visible.southwest.latitude).abs() * 0.2;
+    final halfLng =
+        (visible.northeast.longitude - visible.southwest.longitude).abs() * 0.2;
 
     final sw = LatLng(
       coordinates.latitude - halfLat,
@@ -1545,9 +1539,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     DragEventType eventType,
   ) {
     final corner = _handleIdToCorner[id];
-    if (corner == null ||
-        _boundsSW == null ||
-        _boundsNE == null) {
+    if (corner == null || _boundsSW == null || _boundsNE == null) {
       return;
     }
 

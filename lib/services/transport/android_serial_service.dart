@@ -14,8 +14,7 @@ class AndroidSerialService extends StreamTransportBase {
   final String deviceName;
   final String productName;
 
-  static const _methodChannel =
-      MethodChannel('net.meshmapper.app/usb_serial');
+  static const _methodChannel = MethodChannel('net.meshmapper.app/usb_serial');
   static const _eventChannel =
       EventChannel('net.meshmapper.app/usb_serial/data');
 
@@ -55,7 +54,8 @@ class AndroidSerialService extends StreamTransportBase {
         'baudRate': 115200,
       });
       if (connectResult != null) {
-        debugLog('[CONN] USB device info: controlFound=${connectResult['controlFound']}, '
+        debugLog(
+            '[CONN] USB device info: controlFound=${connectResult['controlFound']}, '
             'interfaces=${connectResult['interfaceCount']}, '
             'dataClass=0x${(connectResult['dataClass'] as int?)?.toRadixString(16) ?? '?'}, '
             'inPacket=${connectResult['inMaxPacket']}, outPacket=${connectResult['outMaxPacket']}');
@@ -84,8 +84,7 @@ class AndroidSerialService extends StreamTransportBase {
   @override
   Future<void> closeConnection() async {
     try {
-      final diag =
-          await _methodChannel.invokeMethod<Map>('readDiagnostics');
+      final diag = await _methodChannel.invokeMethod<Map>('readDiagnostics');
       if (diag != null) {
         debugLog('[CONN] USB read loop: '
             'reads=${diag['readAttempts']}, '
@@ -121,11 +120,8 @@ class AndroidSerialService extends StreamTransportBase {
 
   /// List available USB serial devices via native Android USB API.
   static Future<List<Map<String, dynamic>>> getAvailablePorts() async {
-    final result =
-        await _methodChannel.invokeMethod<List>('listDevices');
+    final result = await _methodChannel.invokeMethod<List>('listDevices');
     if (result == null) return [];
-    return result
-        .map((e) => Map<String, dynamic>.from(e as Map))
-        .toList();
+    return result.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 }

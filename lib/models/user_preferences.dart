@@ -111,7 +111,6 @@ class UserPreferences {
   /// layer so users can see the base map underneath the coverage squares.
   final double coverageOverlayOpacity;
 
-
   /// Coverage grid preset, matching the web UI's Grid Mode: 300 = Simplified
   /// (300 m cells, the default), 100 = Detailed (100 m cells + 3×3 blob,
   /// applied server-side). Only these two values are valid.

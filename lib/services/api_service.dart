@@ -41,7 +41,8 @@ class ApiService {
   bool _rxAllowed = false;
   int? _sessionExpiresAt;
   String? _wireKey; // TX wire-tag secret from /auth (null = un-keyed fallback)
-  int _pingCounter = 0; // per-session TX counter; resets on fresh /auth, not on heartbeat
+  int _pingCounter =
+      0; // per-session TX counter; resets on fresh /auth, not on heartbeat
   Timer? _heartbeatTimer;
   Timer? _heartbeatRetryTimer;
 
@@ -442,7 +443,8 @@ class ApiService {
           final resumeCounter = (data['resume_counter'] as num?)?.toInt() ?? 0;
           _pingCounter = resumeCounter;
           if (resumeCounter > 0) {
-            debugLog('[AUTH] resumed ping counter at $resumeCounter (reused session)');
+            debugLog(
+                '[AUTH] resumed ping counter at $resumeCounter (reused session)');
           }
           if (_wireKey != null) {
             debugLog('[AUTH] wire-tag key received (len=${_wireKey!.length})');
@@ -916,9 +918,9 @@ class ApiService {
     required int y,
     int gsize = 300,
   }) async {
-    final url = Uri.parse(
-        'https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
-        '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1');
+    final url =
+        Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
+            '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1');
     final sw = Stopwatch()..start();
     debugLog(
         '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1 (zone ${zone.toLowerCase()})');

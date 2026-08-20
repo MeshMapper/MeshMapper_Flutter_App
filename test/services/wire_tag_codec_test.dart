@@ -47,7 +47,8 @@ void main() {
   group('key fallback', () {
     test('null key == empty-string key, and both differ from a real key', () {
       const sid = 'AAR-20260611-0123';
-      expect(WireTagCodec.encode(sid, 5, null), WireTagCodec.encode(sid, 5, ''));
+      expect(
+          WireTagCodec.encode(sid, 5, null), WireTagCodec.encode(sid, 5, ''));
       expect(WireTagCodec.encode(sid, 5, null),
           isNot(WireTagCodec.encode(sid, 5, key)));
     });
@@ -83,7 +84,10 @@ void main() {
     test('boundary dates and the 14-bit NNNN / 11-bit counter extremes', () {
       final cases = <(String, int)>[
         ('AAA-20200101-0001', 1), // epoch floor of the date field (year 2020)
-        ('ZZZ-20831231-9999', 2047), // ceilings: year 2083, NNNN 9999, counter 2047
+        (
+          'ZZZ-20831231-9999',
+          2047
+        ), // ceilings: year 2083, NNNN 9999, counter 2047
         ('PAE-20260101-0007', 1),
         ('PAE-20261231-0007', 2047),
         ('JKG-20260229-0009', 100), // leap day
@@ -130,7 +134,8 @@ void main() {
       ('YOW-20260504-0005', 1): 'MM:q2REy6j1xQ',
       ('ZZZ-20260101-9999', 2047): 'MM:tbOGo9kJHg',
       ('PAE-20260620-0007', 18): 'MM:YPKG3YBefw',
-      ('PAE-20260621-0007', 18): 'MM:gCXS1s-0ew', // same NNNN/counter, next day → different tag
+      ('PAE-20260621-0007', 18):
+          'MM:gCXS1s-0ew', // same NNNN/counter, next day → different tag
       ('AAA-20200101-0001', 1): 'MM:mcvZkYjWyw',
       ('ZZZ-20831231-9999', 2047): 'MM:lT-SF6aZAw',
     };

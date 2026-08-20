@@ -101,7 +101,8 @@ class UnifiedRxHandler {
           return;
         }
         if (result.type == TxEchoResultType.multiHopEcho) {
-          debugLog('[UNIFIED RX] Packet was multi-hop TX echo, grouped with TX');
+          debugLog(
+              '[UNIFIED RX] Packet was multi-hop TX echo, grouped with TX');
           return;
         }
       }

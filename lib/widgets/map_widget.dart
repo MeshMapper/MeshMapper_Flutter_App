@@ -1068,9 +1068,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         !_canAnimateCamera) {
       return;
     }
-    final valid = points
-        .where((p) => isValidLatLng(p.latitude, p.longitude))
-        .toList();
+    final valid =
+        points.where((p) => isValidLatLng(p.latitude, p.longitude)).toList();
     if (valid.length < 2) return;
 
     double minLat = valid[0].latitude, maxLat = valid[0].latitude;
@@ -1344,7 +1343,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _mapController!
           .getMetersPerPixelAtLatitude(position.latitude)
           .then((mapLibreMpx) {
-        debugLog('[MAP CENTER] m/px sanity: formula=${metersPerPixel.toStringAsFixed(4)} '
+        debugLog(
+            '[MAP CENTER] m/px sanity: formula=${metersPerPixel.toStringAsFixed(4)} '
             'maplibre=${mapLibreMpx.toStringAsFixed(4)} '
             'ratio=${(metersPerPixel / mapLibreMpx).toStringAsFixed(3)} '
             '(zoom=${zoom.toStringAsFixed(2)} lat=${position.latitude.toStringAsFixed(4)})');
@@ -1444,8 +1444,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   widget.bottomPaddingPixels,
                   widget.rightPaddingPixels,
                   16.0 - _zoomEpsilon);
-              _animateToPositionWithZoom(
-                  adjustedPosition, 16.0 - _zoomEpsilon);
+              _animateToPositionWithZoom(adjustedPosition, 16.0 - _zoomEpsilon);
               debugLog(
                   '[MAP] Initial zoom to GPS position (with panel offset)');
             } else {
@@ -1914,8 +1913,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// maplibre_gl 0.25.0 has no `setOffline` implementation, so we ship our
   /// own: a URLProtocol that fails tile requests fast while offline mode is
   /// engaged, letting MapLibre-iOS render only its cached tiles.
-  static const _iosOfflineChannel =
-      MethodChannel('meshmapper/ios_map_offline');
+  static const _iosOfflineChannel = MethodChannel('meshmapper/ios_map_offline');
 
   /// Toggle MapLibre between online (network tiles) and offline (cache-only).
   /// Android uses the plugin's native `setOffline`; iOS uses our bridge.
@@ -2340,9 +2338,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // hide the repeaters that didn't, and label each line with its distance.
     // Lines are theme-aware blue (web keys off the basemap; we key off the
     // Flutter theme). Read brightness before the async gap.
-    final fanColor = Theme.of(context).brightness == Brightness.dark
-        ? '#4da6ff'
-        : '#00008b';
+    final fanColor =
+        Theme.of(context).brightness == Brightness.dark ? '#4da6ff' : '#00008b';
     blobPointsFuture.then((pts) {
       if (!mounted || !_cellPopupActive) return;
       final eps = _capByFarthest(
@@ -3027,7 +3024,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     if (_consecutiveTileLoadFailures > 0 && mounted) {
       if (_consecutiveTileLoadFailures >= _tileLoadFailureThreshold) {
-        debugLog('[MAP] Tiles recovered after $_consecutiveTileLoadFailures consecutive load failures');
+        debugLog(
+            '[MAP] Tiles recovered after $_consecutiveTileLoadFailures consecutive load failures');
       }
       _consecutiveTileLoadFailures = 0;
       setState(() {});
@@ -3357,8 +3355,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Remove a specific coverage source+layer pair without touching the
   /// active-ID tracking.
-  Future<void> _removeCoverageLayerById(
-      String layerId, String sourceId) async {
+  Future<void> _removeCoverageLayerById(String layerId, String sourceId) async {
     if (_mapController == null) return;
     try {
       await _mapController!.removeLayer(layerId);
@@ -3383,9 +3380,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// GeoJSON FeatureCollection of the session patch: one rectangle per cell,
   /// corners computed from grid indices exactly like the server's tiles.
   Map<String, dynamic> _buildPatchGeoJson(AppStateProvider appState) {
-    final steps =
-        kCoverageGridSteps[appState.preferences.coverageGridSize] ??
-            kCoverageGridSteps[300]!;
+    final steps = kCoverageGridSteps[appState.preferences.coverageGridSize] ??
+        kCoverageGridSteps[300]!;
     final features = <Map<String, dynamic>>[];
     for (final cell in appState.coveragePatchCells.values) {
       final lat0 = cell.i * steps[0];
@@ -3435,9 +3431,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           'in',
           [
             'concat',
-            ['to-string', ['get', 'i']],
+            [
+              'to-string',
+              ['get', 'i']
+            ],
             '_',
-            ['to-string', ['get', 'j']],
+            [
+              'to-string',
+              ['get', 'j']
+            ],
           ],
           ['literal', keys],
         ],
@@ -4080,8 +4082,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       debugError('[MAP] Failed to update repeater source: $e');
     }
     // Also push the spider source. Empty FeatureCollection if no spider open.
-    final currentZoom =
-        _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+    final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _syncSpiderSymbols(appState, currentZoom);
@@ -4095,9 +4096,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Web-Mercator metres-per-pixel at the given latitude and zoom.
   double _metersPerPxAtZoom(double latDeg, num zoom) {
-    return 156543.03392 *
-        math.cos(latDeg * math.pi / 180) /
-        math.pow(2, zoom);
+    return 156543.03392 * math.cos(latDeg * math.pi / 180) / math.pow(2, zoom);
   }
 
   /// Great-circle distance between two LatLngs in metres (haversine).
@@ -4114,9 +4113,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             math.cos(lat2) *
             math.sin(dLon / 2) *
             math.sin(dLon / 2);
-    return 2 *
-        earthRadiusM *
-        math.asin(math.min(1.0, math.sqrt(h)));
+    return 2 * earthRadiusM * math.asin(math.min(1.0, math.sqrt(h)));
   }
 
   /// MapLibre Native (Android SDK 12.3.1 / iOS 6.19.1, both bound by
@@ -4163,8 +4160,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// any repeater is within the broad search disc; caller should treat a
   /// result of length < 2 as "no spiderfy needed".
   List<Repeater> _findSpiderGroup(LatLng anchor, AppStateProvider appState) {
-    final mPerPxMaxZoom =
-        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final mPerPxMaxZoom = _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
     final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
 
     // Broad initial radius: 10× the stick threshold so we don't miss an
@@ -4200,8 +4196,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final curPos = LatLng(cur.lat, cur.lon);
       for (final r in candidates) {
         if (visited.contains(r.id)) continue;
-        if (_haversineMeters(curPos, LatLng(r.lat, r.lon)) <=
-            stickThresholdM) {
+        if (_haversineMeters(curPos, LatLng(r.lat, r.lon)) <= stickThresholdM) {
           visited.add(r.id);
           result.add(r);
           queue.add(r);
@@ -4227,8 +4222,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // cluster diameter at maxZoom is ~2× the cluster radius (centroid
     // drift); pointCount × stickThreshold is a comfortable upper bound for
     // any plausible cluster size.
-    final mPerPxMaxZoom =
-        _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
+    final mPerPxMaxZoom = _metersPerPxAtZoom(anchor.latitude, _maxUserZoom);
     final stickThresholdM = _clusterRadiusPx * mPerPxMaxZoom;
     final broadRadiusM = stickThresholdM * math.max(10, pointCount);
     final candidates = <MapEntry<Repeater, double>>[];
@@ -4245,8 +4239,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Layout the [n] spread positions around [center]. Uses a single ring up to
   /// 8 markers, two concentric rings up to 20, and a Fermat / golden-angle
   /// spiral past 20.
-  List<LatLng> _computeSpiderRing(
-      LatLng center, int n, double currentZoom) {
+  List<LatLng> _computeSpiderRing(LatLng center, int n, double currentZoom) {
     final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
     final lat0 = center.latitude;
     final lon0 = center.longitude;
@@ -4286,9 +4279,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ));
       }
       for (var i = 0; i < outerCount; i++) {
-        final angle = -math.pi / 2 +
-            math.pi / outerCount +
-            2 * math.pi * i / outerCount;
+        final angle =
+            -math.pi / 2 + math.pi / outerCount + 2 * math.pi * i / outerCount;
         positions.add(offset(
           _spiderOuterRadiusPx * math.cos(angle),
           _spiderOuterRadiusPx * math.sin(angle),
@@ -4374,8 +4366,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // Leader line — shortened by `_leaderLineEndShortenPx` at the marker
       // end so it doesn't punch through the icon / label halo. Compute the
       // shortening in screen-pixel space, then convert back to lat/lon.
-      final dxM =
-          (pos.longitude - center.longitude) * 111320 * cosLat;
+      final dxM = (pos.longitude - center.longitude) * 111320 * cosLat;
       final dyM = (pos.latitude - center.latitude) * 111320;
       final dxPx = dxM / mPerPx;
       final dyPx = dyM / mPerPx;
@@ -4384,8 +4375,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final scale = (lenPx - _leaderLineEndShortenPx) / lenPx;
       final endLon =
           center.longitude + (pos.longitude - center.longitude) * scale;
-      final endLat =
-          center.latitude + (pos.latitude - center.latitude) * scale;
+      final endLat = center.latitude + (pos.latitude - center.latitude) * scale;
       features.add({
         'type': 'Feature',
         'properties': {'repeaterId': repeater.id},
@@ -4408,8 +4398,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       AppStateProvider appState, double currentZoom) async {
     if (_mapController == null || !_clusterLayersReady) return;
     try {
-      final geojson =
-          _buildSpiderFeatureCollection(appState, currentZoom);
+      final geojson = _buildSpiderFeatureCollection(appState, currentZoom);
       // Detailed mode references baked per-chip images. The main collection
       // usually registers them first, but a spidered repeater that the main
       // builder filtered out (focus / isolation / heard-repeater fade) would
@@ -5147,8 +5136,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Draw the selected repeater's coverage [cells] as status-coloured fills
   /// (Feature B). [latStep]/[lonStep] size each cell's ring. Empty list clears.
-  Future<void> _updateCoverageCells(List<RepeaterCoverageCell> cells, String cvd,
-      double latStep, double lonStep) async {
+  Future<void> _updateCoverageCells(List<RepeaterCoverageCell> cells,
+      String cvd, double latStep, double lonStep) async {
     if (_mapController == null || !_styleLoaded) return;
     if (cells.isEmpty) {
       await _clearCoverageCells();
@@ -5344,7 +5333,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ),
     ];
     // Skinnier than the tile fan-out — a repeater draws many lines at once.
-    await _updateCoverageLines(segments, repeater.lat, repeater.lon, width: 1.5);
+    await _updateCoverageLines(segments, repeater.lat, repeater.lon,
+        width: 1.5);
     // Dim the base coverage tiles so the repeater's coloured cells + lines pop
     // (web `drawRepeaterCoverageFromCache` tile-dim parity). Restored in
     // _clearRepeaterIsolation. Skip while ping focus already hid the overlay.
@@ -5555,8 +5545,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           debugError('[MAP] render/addImage(distance label) failed: $e');
         }
       }
-      imageSize ??= _registeredDistanceLabelImageSizes[imageName] ??
-          const Size(60, 18);
+      imageSize ??=
+          _registeredDistanceLabelImageSizes[imageName] ?? const Size(60, 18);
       _distanceLabelImageSize[key] = imageSize;
       _distanceLabelRepeaterPos[key] = LatLng(r.repeater.lat, r.repeater.lon);
 
@@ -6051,8 +6041,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _buildControlButton(
         icon: _autoFollow ? Icons.my_location : Icons.location_searching,
         tooltip: _autoFollow ? 'Following GPS' : 'Center on Position',
-        onPressed:
-            appState.currentPosition != null ? _centerOnPosition : null,
+        onPressed: appState.currentPosition != null ? _centerOnPosition : null,
         isActive: _autoFollow,
       ),
       // Always North toggle
@@ -7137,157 +7126,159 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     final iconReserve = lacksLocation ? 18.0 : 0.0;
                     final nodeColWidth = chipWidth + iconReserve;
                     return Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: nodeColWidth,
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'TX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(
-                            height: 1, color: Theme.of(context).dividerColor),
-                        // Data row
-                        Builder(builder: (context) {
-                          final localSnr = entry.localSnr ?? 0;
-                          final localRssi = entry.localRssi ?? 0;
-                          final remoteSnr = entry.remoteSnr ?? 0;
-
-                          final rxSnrColor = PingColors.snrColor(localSnr);
-                          final rssiColor = PingColors.rssiColor(localRssi);
-                          final txSnrColor =
-                              PingColors.snrColor(remoteSnr.toDouble());
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(
-                                context, entry.targetRepeaterId, fromLatLng: (
-                              lat: entry.latitude,
-                              lon: entry.longitude
-                            )),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Repeater ID + optional no-location icon,
-                                  // pinned to the node column width so the
-                                  // SNR/RSSI/TX columns stay aligned.
-                                  SizedBox(
-                                    width: nodeColWidth,
-                                    child: Row(
-                                      children: [
-                                        RepeaterIdChip(
-                                            repeaterId: entry.targetRepeaterId,
-                                            fontSize: 13,
-                                            width: chipWidth),
-                                        if (lacksLocation)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                                left: 4),
-                                            child: _noLocationIndicator(),
-                                          ),
-                                      ],
+                      decoration: BoxDecoration(
+                        color:
+                            Theme.of(context).colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .outline
+                                .withValues(alpha: 0.5)),
+                      ),
+                      child: Column(
+                        children: [
+                          // Header row
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: nodeColWidth,
+                                  child: Text(
+                                    'Node',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: localSnr.toStringAsFixed(1),
-                                        color: rxSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RX RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: '$localRssi',
-                                        color: rssiColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX RSSI',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // TX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: remoteSnr.toStringAsFixed(1),
-                                        color: txSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'TX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                          );
-                        }),
-                      ],
-                    ),
-                  );
+                          ),
+                          Divider(
+                              height: 1, color: Theme.of(context).dividerColor),
+                          // Data row
+                          Builder(builder: (context) {
+                            final localSnr = entry.localSnr ?? 0;
+                            final localRssi = entry.localRssi ?? 0;
+                            final remoteSnr = entry.remoteSnr ?? 0;
+
+                            final rxSnrColor = PingColors.snrColor(localSnr);
+                            final rssiColor = PingColors.rssiColor(localRssi);
+                            final txSnrColor =
+                                PingColors.snrColor(remoteSnr.toDouble());
+
+                            return InkWell(
+                              onTap: () => RepeaterIdChip.showRepeaterPopup(
+                                  context, entry.targetRepeaterId, fromLatLng: (
+                                lat: entry.latitude,
+                                lon: entry.longitude
+                              )),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                child: Row(
+                                  children: [
+                                    // Repeater ID + optional no-location icon,
+                                    // pinned to the node column width so the
+                                    // SNR/RSSI/TX columns stay aligned.
+                                    SizedBox(
+                                      width: nodeColWidth,
+                                      child: Row(
+                                        children: [
+                                          RepeaterIdChip(
+                                              repeaterId:
+                                                  entry.targetRepeaterId,
+                                              fontSize: 13,
+                                              width: chipWidth),
+                                          if (lacksLocation)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                  left: 4),
+                                              child: _noLocationIndicator(),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    // RX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: localSnr.toStringAsFixed(1),
+                                          color: rxSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // RX RSSI
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: '$localRssi',
+                                          color: rssiColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // TX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: remoteSnr.toStringAsFixed(1),
+                                          color: txSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    );
                   }),
                 ],
               ],
@@ -7648,8 +7639,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Row-2 stats for the cell pill: Max Dist · Avg SNR · Avg Noise · Total Pings.
-  Widget _cellPillStats(
-      BuildContext context, Future<GridSummary?> summaryFuture, bool isImperial) {
+  Widget _cellPillStats(BuildContext context,
+      Future<GridSummary?> summaryFuture, bool isImperial) {
     return FutureBuilder<GridSummary?>(
       future: summaryFuture,
       builder: (context, snap) {
@@ -7658,10 +7649,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         final dist = loading
             ? '…'
             : (s?.maxDistMeters != null
-                ? formatCoverageDistance(s!.maxDistMeters!, isImperial: isImperial)
+                ? formatCoverageDistance(s!.maxDistMeters!,
+                    isImperial: isImperial)
                 : 'N/A');
-        final noise =
-            loading ? '…' : (s?.avgNoise != null ? '${s!.avgNoise} dBm' : 'N/A');
+        final noise = loading
+            ? '…'
+            : (s?.avgNoise != null ? '${s!.avgNoise} dBm' : 'N/A');
         final total = loading ? '…' : '${s?.total ?? 0}';
         return Wrap(
           spacing: 14,
@@ -7731,14 +7724,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Row-2 stats for the repeater pill: Max Range · Hop Bytes · Clock Sync ·
   /// Last Heard. (Online/offline status is the coloured tower in the title.)
   /// Max Range comes from the lazy [statsFuture].
-  Widget _repeaterPillStats(
-      BuildContext context,
-      Repeater repeater,
-      Future<RepeaterStats?> statsFuture,
-      String? clockSkew,
-      bool isImperial) {
+  Widget _repeaterPillStats(BuildContext context, Repeater repeater,
+      Future<RepeaterStats?> statsFuture, String? clockSkew, bool isImperial) {
     final clockOk = clockSkew == null;
-    final lastHeard = repeater.lastHeard > 0 ? daysAgo(repeater.lastHeard) : 'N/A';
+    final lastHeard =
+        repeater.lastHeard > 0 ? daysAgo(repeater.lastHeard) : 'N/A';
     return FutureBuilder<RepeaterStats?>(
       future: statsFuture,
       builder: (context, snap) {
@@ -7820,8 +7810,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
 
     final theme = Theme.of(context);
-    final timeStr =
-        _focusedPingTimestamp != null ? _formatTime(_focusedPingTimestamp!) : '';
+    final timeStr = _focusedPingTimestamp != null
+        ? _formatTime(_focusedPingTimestamp!)
+        : '';
 
     return GestureDetector(
       // Swallow body taps (no accidental expand / no fall-through to the map).
@@ -7947,8 +7938,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             iconColor: PingColors.txSuccess));
         if (source.localSnr != null) chips.add(snrChip(source.localSnr!));
         if (source.remoteSnr != null) {
-          chips.add(_pillStat(
-              Icons.arrow_upward, 'TX ${source.remoteSnr!.toStringAsFixed(1)}'));
+          chips.add(_pillStat(Icons.arrow_upward,
+              'TX ${source.remoteSnr!.toStringAsFixed(1)}'));
         }
         if (source.localRssi != null) chips.add(rssiChip(source.localRssi!));
       }
@@ -8092,8 +8083,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(
-            color:
-                Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
           ),
         ),
         child: ConstrainedBox(
@@ -8292,8 +8282,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 const SizedBox(height: 16),
 
                 // Split repeaters into direct and multi-hop
-                ..._buildTxRepeaterSections(context, ping, heardRepeaters,
-                    resolved, hasAmbiguous),
+                ..._buildTxRepeaterSections(
+                    context, ping, heardRepeaters, resolved, hasAmbiguous),
               ],
             ),
           ),
@@ -8402,8 +8392,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ],
       ));
       widgets.add(const SizedBox(height: 12));
-      widgets.add(_buildMultiHopRepeaterTable(
-          context, ping, multiHopRepeaters));
+      widgets
+          .add(_buildMultiHopRepeaterTable(context, ping, multiHopRepeaters));
     }
 
     return widgets;
@@ -8422,16 +8412,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-            color: Theme.of(context)
-                .colorScheme
-                .outline
-                .withValues(alpha: 0.5)),
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
       ),
       child: Column(
         children: [
           Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
                 SizedBox(
@@ -8440,9 +8427,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant)),
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant)),
                 ),
                 Expanded(
                     child: Text('SNR',
@@ -8480,8 +8466,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   context, repeater.repeaterId,
                   fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: [
                     SizedBox(
@@ -8511,9 +8497,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     Expanded(
                       child: Center(
                         child: _buildStatChip(
-                          value: repeater.rssi != null
-                              ? '${repeater.rssi}'
-                              : '-',
+                          value:
+                              repeater.rssi != null ? '${repeater.rssi}' : '-',
                           color: rssiColor,
                         ),
                       ),
@@ -8541,17 +8526,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-            color: Theme.of(context)
-                .colorScheme
-                .outline
-                .withValues(alpha: 0.5)),
+            color:
+                Theme.of(context).colorScheme.outline.withValues(alpha: 0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
                 SizedBox(
@@ -8560,9 +8542,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurfaceVariant)),
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant)),
                 ),
                 Expanded(
                     child: Text('SNR',
@@ -8603,8 +8584,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       context, repeater.repeaterId,
                       fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
                         SizedBox(
@@ -8626,8 +8607,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         Expanded(
                           child: Center(
                             child: _buildStatChip(
-                              value:
-                                  repeater.snr?.toStringAsFixed(1) ?? '-',
+                              value: repeater.snr?.toStringAsFixed(1) ?? '-',
                               color: snrColor,
                             ),
                           ),
@@ -8648,8 +8628,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 ),
                 if (repeater.pathHops != null && repeater.pathHops!.isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(
-                        left: 12, right: 12, bottom: 8),
+                    padding:
+                        const EdgeInsets.only(left: 12, right: 12, bottom: 8),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -8726,8 +8706,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   decoration: BoxDecoration(
                     color: PingColors.rx.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: PingColors.rx.withValues(alpha: 0.4)),
+                    border:
+                        Border.all(color: PingColors.rx.withValues(alpha: 0.4)),
                   ),
                   child: Icon(Icons.arrow_downward,
                       color: PingColors.rx, size: 24),
@@ -8825,119 +8805,121 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               final iconReserve = lacksLocation ? 18.0 : 0.0;
               final nodeColWidth = chipWidth + iconReserve;
               return Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .outline
-                        .withValues(alpha: 0.5)),
-              ),
-              child: Column(
-                children: [
-                  // Header row
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: nodeColWidth,
-                          child: Text(
-                            'Node',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            'SNR',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            'RSSI',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Divider(height: 1, color: Theme.of(context).dividerColor),
-                  // Data row
-                  InkWell(
-                    onTap: () => RepeaterIdChip.showRepeaterPopup(
-                        context, ping.repeaterId,
-                        fromLatLng: (lat: ping.latitude, lon: ping.longitude)),
-                    child: Padding(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: Column(
+                  children: [
+                    // Header row
+                    Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                          horizontal: 12, vertical: 10),
                       child: Row(
                         children: [
-                          // Repeater ID + optional no-location icon, pinned
-                          // to the node column width so SNR/RSSI stay aligned.
                           SizedBox(
                             width: nodeColWidth,
-                            child: Row(
-                              children: [
-                                RepeaterIdChip(
-                                    repeaterId: ping.repeaterId,
-                                    fontSize: 13,
-                                    width: chipWidth),
-                                if (lacksLocation)
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 4),
-                                    child: _noLocationIndicator(),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          // SNR
-                          Expanded(
-                            child: Center(
-                              child: _buildStatChip(
-                                value: ping.snr.toStringAsFixed(1),
-                                color: snrColor,
+                            child: Text(
+                              'Node',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
                               ),
                             ),
                           ),
-                          // RSSI
                           Expanded(
-                            child: Center(
-                              child: _buildStatChip(
-                                value: '${ping.rssi}',
-                                color: rssiColor,
+                            child: Text(
+                              'SNR',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              'RSSI',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                  ),
-                ],
-              ),
-            );
+                    Divider(height: 1, color: Theme.of(context).dividerColor),
+                    // Data row
+                    InkWell(
+                      onTap: () => RepeaterIdChip.showRepeaterPopup(
+                          context, ping.repeaterId, fromLatLng: (
+                        lat: ping.latitude,
+                        lon: ping.longitude
+                      )),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        child: Row(
+                          children: [
+                            // Repeater ID + optional no-location icon, pinned
+                            // to the node column width so SNR/RSSI stay aligned.
+                            SizedBox(
+                              width: nodeColWidth,
+                              child: Row(
+                                children: [
+                                  RepeaterIdChip(
+                                      repeaterId: ping.repeaterId,
+                                      fontSize: 13,
+                                      width: chipWidth),
+                                  if (lacksLocation)
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 4),
+                                      child: _noLocationIndicator(),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            // SNR
+                            Expanded(
+                              child: Center(
+                                child: _buildStatChip(
+                                  value: ping.snr.toStringAsFixed(1),
+                                  color: snrColor,
+                                ),
+                              ),
+                            ),
+                            // RSSI
+                            Expanded(
+                              child: Center(
+                                child: _buildStatChip(
+                                  value: '${ping.rssi}',
+                                  color: rssiColor,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
             }),
 
             // Path section (origin → ... → us). Skipped when the path is
@@ -8955,8 +8937,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 12),
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(8),
@@ -8996,9 +8978,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final resolved = entry.discoveredNodes.isNotEmpty
           ? _resolveRepeatersByHexIds(
               entry.discoveredNodes.map((n) => n.repeaterId).toList(),
-              fullHexIds: entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
-              snrValues:
-                  entry.discoveredNodes.map((n) => n.localSnr as double?).toList(),
+              fullHexIds:
+                  entry.discoveredNodes.map((n) => n.pubkeyHex).toList(),
+              snrValues: entry.discoveredNodes
+                  .map((n) => n.localSnr as double?)
+                  .toList(),
             )
           : const <_ResolvedRepeater>[];
       _activatePingFocus(
@@ -9149,166 +9133,169 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         .any((n) => _hexIdLacksLocation(n.repeaterId));
                     final nodeExtra = 20.0 + (anyLacksLocation ? 18.0 : 0.0);
                     return Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .outline
-                              .withValues(alpha: 0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Header row
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width:
-                                    _nodeColumnWidth(extraPadding: nodeExtra),
-                                child: Text(
-                                  'Node',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'RX RSSI',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  'TX SNR',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Divider(
-                            height: 1, color: Theme.of(context).dividerColor),
-                        // Data rows
-                        ...entry.discoveredNodes.map((node) {
-                          final rxSnrColor = PingColors.snrColor(node.localSnr);
-                          final rssiColor =
-                              PingColors.rssiColor(node.localRssi);
-                          final txSnrColor =
-                              PingColors.snrColor(node.remoteSnr.toDouble());
-                          final lacksLocation =
-                              _hexIdLacksLocation(node.repeaterId);
-
-                          return InkWell(
-                            onTap: () => RepeaterIdChip.showRepeaterPopup(
-                                context, node.repeaterId,
-                                fullHexId: node.pubkeyHex,
-                                fromLatLng: (
-                                  lat: entry.latitude,
-                                  lon: entry.longitude
-                                )),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              child: Row(
-                                children: [
-                                  // Node ID with type (+ optional no-loc icon)
-                                  SizedBox(
-                                    width:
-                                        _nodeColumnWidth(extraPadding: nodeExtra),
-                                    child: Row(
-                                      children: [
-                                        RepeaterIdChip(
-                                            repeaterId: node.repeaterId,
-                                            fontSize: 13),
-                                        Text(
-                                          node.nodeTypeLabel,
-                                          style: TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w500,
-                                            color: _discMarkerColor,
-                                          ),
-                                        ),
-                                        if (lacksLocation)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                                left: 4),
-                                            child: _noLocationIndicator(),
-                                          ),
-                                      ],
+                      decoration: BoxDecoration(
+                        color:
+                            Theme.of(context).colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .outline
+                                .withValues(alpha: 0.5)),
+                      ),
+                      child: Column(
+                        children: [
+                          // Header row
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width:
+                                      _nodeColumnWidth(extraPadding: nodeExtra),
+                                  child: Text(
+                                    'Node',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: node.localSnr.toStringAsFixed(1),
-                                        color: rxSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // RSSI
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value: '${node.localRssi}',
-                                        color: rssiColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'RX RSSI',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                  // TX SNR
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildStatChip(
-                                        value:
-                                            node.remoteSnr.toStringAsFixed(1),
-                                        color: txSnrColor,
-                                      ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    'TX SNR',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
-                          );
-                        }),
-                      ],
-                    ),
-                  );
+                          ),
+                          Divider(
+                              height: 1, color: Theme.of(context).dividerColor),
+                          // Data rows
+                          ...entry.discoveredNodes.map((node) {
+                            final rxSnrColor =
+                                PingColors.snrColor(node.localSnr);
+                            final rssiColor =
+                                PingColors.rssiColor(node.localRssi);
+                            final txSnrColor =
+                                PingColors.snrColor(node.remoteSnr.toDouble());
+                            final lacksLocation =
+                                _hexIdLacksLocation(node.repeaterId);
+
+                            return InkWell(
+                              onTap: () => RepeaterIdChip.showRepeaterPopup(
+                                  context, node.repeaterId,
+                                  fullHexId: node.pubkeyHex,
+                                  fromLatLng: (
+                                    lat: entry.latitude,
+                                    lon: entry.longitude
+                                  )),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                child: Row(
+                                  children: [
+                                    // Node ID with type (+ optional no-loc icon)
+                                    SizedBox(
+                                      width: _nodeColumnWidth(
+                                          extraPadding: nodeExtra),
+                                      child: Row(
+                                        children: [
+                                          RepeaterIdChip(
+                                              repeaterId: node.repeaterId,
+                                              fontSize: 13),
+                                          Text(
+                                            node.nodeTypeLabel,
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w500,
+                                              color: _discMarkerColor,
+                                            ),
+                                          ),
+                                          if (lacksLocation)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                  left: 4),
+                                              child: _noLocationIndicator(),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    // RX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value:
+                                              node.localSnr.toStringAsFixed(1),
+                                          color: rxSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // RSSI
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value: '${node.localRssi}',
+                                          color: rssiColor,
+                                        ),
+                                      ),
+                                    ),
+                                    // TX SNR
+                                    Expanded(
+                                      child: Center(
+                                        child: _buildStatChip(
+                                          value:
+                                              node.remoteSnr.toStringAsFixed(1),
+                                          color: txSnrColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      ),
+                    );
                   }),
                 ],
               ],
@@ -9504,210 +9491,210 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             children: [
               // Header with icon badge (containing ID) and name
               Row(
-              children: [
-                // Icon badge with hex ID (mirrors map marker)
-                Builder(builder: (context) {
-                  final displayId = repeater.displayHexId(
-                      overrideHopBytes: regionHopBytesOverride);
-                  final isLongId = displayId.length > 2;
-                  return Container(
-                    constraints: const BoxConstraints(minWidth: 44),
-                    height: 44,
-                    padding: isLongId
-                        ? const EdgeInsets.symmetric(horizontal: 8)
-                        : EdgeInsets.zero,
-                    decoration: BoxDecoration(
-                      color: iconColor,
-                      borderRadius: BorderRadius.circular(22),
-                      border: Border.all(color: Colors.white, width: 2),
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      displayId,
-                      style: TextStyle(
-                        fontSize: isLongId ? 13 : 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  );
-                }),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    repeater.name,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.keyboard_arrow_down, size: 20),
-                  onPressed: () => Navigator.pop(context, 'minimized'),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  tooltip: 'Minimize',
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 20),
-                  onPressed: () => Navigator.pop(context),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // Status chips row
-            Row(
-              children: [
-                if (isDuplicate) ...[
-                  _buildRepeaterStatusChip(
-                      'Duplicate', _repeaterDuplicateColor),
-                  const SizedBox(width: 8),
-                ],
-                _buildRepeaterStatusChip(statusLabel, statusColor),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // Details card
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .outline
-                        .withValues(alpha: 0.5)),
-              ),
-              child: Column(
                 children: [
-                  // Location
-                  _repRow(
-                    context,
-                    Icons.location_on,
-                    Text(
-                      '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
-                      style: const TextStyle(
-                          fontSize: 13, fontFamily: 'monospace'),
-                    ),
-                  ),
-                  // Fingerprint (id / hex)
-                  _repRow(
-                    context,
-                    Icons.fingerprint,
-                    Text.rich(TextSpan(children: [
-                      TextSpan(
-                        text: fingerprintShort,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            fontFamily: 'monospace',
-                            fontWeight: FontWeight.w600),
+                  // Icon badge with hex ID (mirrors map marker)
+                  Builder(builder: (context) {
+                    final displayId = repeater.displayHexId(
+                        overrideHopBytes: regionHopBytesOverride);
+                    final isLongId = displayId.length > 2;
+                    return Container(
+                      constraints: const BoxConstraints(minWidth: 44),
+                      height: 44,
+                      padding: isLongId
+                          ? const EdgeInsets.symmetric(horizontal: 8)
+                          : EdgeInsets.zero,
+                      decoration: BoxDecoration(
+                        color: iconColor,
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(color: Colors.white, width: 2),
                       ),
-                      TextSpan(
-                        text: '  ($fingerprintFull)',
+                      alignment: Alignment.center,
+                      child: Text(
+                        displayId,
                         style: TextStyle(
-                          fontSize: 12,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontSize: isLongId ? 13 : 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          fontFamily: 'monospace',
                         ),
                       ),
-                    ])),
-                  ),
-                  // Hop bytes
-                  _repRow(
-                    context,
-                    Icons.swap_horiz,
-                    Text(
-                      'Hop Bytes: ${repeater.hopBytes} byte${repeater.hopBytes == 1 ? '' : 's'}',
-                      style: const TextStyle(fontSize: 13),
+                    );
+                  }),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      repeater.name,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  // Last heard (schedule)
-                  if (repeater.lastHeard > 0)
-                    _repRow(
-                      context,
-                      Icons.schedule,
-                      Text(formatDateWithAgo(repeater.lastHeard),
-                          style: const TextStyle(fontSize: 13)),
-                    ),
-                  // Clock-skew warning — single compact row, e.g. "Clock is
-                  // 1.2 days ahead" (was two rows / a long sentence).
-                  if (clockSkew != null)
-                    _repRow(
-                      context,
-                      Icons.warning_amber_rounded,
-                      Text('Clock is $clockSkew',
-                          style: const TextStyle(fontSize: 13)),
-                      color: Colors.red.shade400,
-                    ),
-                  // First heard
-                  if (repeater.createdAt != null)
-                    _repRow(
-                      context,
-                      Icons.event,
-                      Text(
-                          'First Heard: ${formatDateWithAgo(repeater.createdAt)}',
-                          style: const TextStyle(fontSize: 13)),
-                    ),
-                  // Max range (lazy)
-                  FutureBuilder<RepeaterStats?>(
-                    future: statsFuture,
-                    builder: (context, snap) {
-                      final loading =
-                          snap.connectionState != ConnectionState.done;
-                      final stats = snap.data;
-                      final range = loading
-                          ? '…'
-                          : (stats?.maxRangeMeters != null
-                              ? formatCoverageDistance(stats!.maxRangeMeters!,
-                                  isImperial: isImperial)
-                              : 'N/A');
-                      return _repRow(
-                        context,
-                        Icons.open_in_full,
-                        Text('Max Range: $range',
-                            style: const TextStyle(fontSize: 13)),
-                      );
-                    },
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_down, size: 20),
+                    onPressed: () => Navigator.pop(context, 'minimized'),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    tooltip: 'Minimize',
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 20),
+                    onPressed: () => Navigator.pop(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 14),
-            // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
-            FutureBuilder<RepeaterStats?>(
-              future: statsFuture,
-              builder: (context, snap) {
-                final loading = snap.connectionState != ConnectionState.done;
-                final stats = snap.data;
-                String v(int? n) => loading ? '…' : '${n ?? 0}';
-                return Row(
-                  children: [
-                    _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
-                        const Color(0xFF1E7E34)),
-                    _repeaterStatCell(
-                        context, 'TX', v(stats?.tx), const Color(0xFFFD7E14)),
-                    _repeaterStatCell(
-                        context, 'RX', v(stats?.rx), const Color(0xFF6F42C1)),
-                    _repeaterStatCell(context, 'DISC', v(stats?.disc),
-                        const Color(0xFF17A2B8)),
-                    _repeaterStatCell(context, 'DEAD', v(stats?.dead),
-                        const Color(0xFF6C757D)),
+              const SizedBox(height: 16),
+
+              // Status chips row
+              Row(
+                children: [
+                  if (isDuplicate) ...[
+                    _buildRepeaterStatusChip(
+                        'Duplicate', _repeaterDuplicateColor),
+                    const SizedBox(width: 8),
                   ],
-                );
-              },
-            ),
-          ],
-        ),
+                  _buildRepeaterStatusChip(statusLabel, statusColor),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Details card
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: Column(
+                  children: [
+                    // Location
+                    _repRow(
+                      context,
+                      Icons.location_on,
+                      Text(
+                        '${repeater.lat.toStringAsFixed(5)}, ${repeater.lon.toStringAsFixed(5)}',
+                        style: const TextStyle(
+                            fontSize: 13, fontFamily: 'monospace'),
+                      ),
+                    ),
+                    // Fingerprint (id / hex)
+                    _repRow(
+                      context,
+                      Icons.fingerprint,
+                      Text.rich(TextSpan(children: [
+                        TextSpan(
+                          text: fingerprintShort,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w600),
+                        ),
+                        TextSpan(
+                          text: '  ($fingerprintFull)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ])),
+                    ),
+                    // Hop bytes
+                    _repRow(
+                      context,
+                      Icons.swap_horiz,
+                      Text(
+                        'Hop Bytes: ${repeater.hopBytes} byte${repeater.hopBytes == 1 ? '' : 's'}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                    // Last heard (schedule)
+                    if (repeater.lastHeard > 0)
+                      _repRow(
+                        context,
+                        Icons.schedule,
+                        Text(formatDateWithAgo(repeater.lastHeard),
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    // Clock-skew warning — single compact row, e.g. "Clock is
+                    // 1.2 days ahead" (was two rows / a long sentence).
+                    if (clockSkew != null)
+                      _repRow(
+                        context,
+                        Icons.warning_amber_rounded,
+                        Text('Clock is $clockSkew',
+                            style: const TextStyle(fontSize: 13)),
+                        color: Colors.red.shade400,
+                      ),
+                    // First heard
+                    if (repeater.createdAt != null)
+                      _repRow(
+                        context,
+                        Icons.event,
+                        Text(
+                            'First Heard: ${formatDateWithAgo(repeater.createdAt)}',
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    // Max range (lazy)
+                    FutureBuilder<RepeaterStats?>(
+                      future: statsFuture,
+                      builder: (context, snap) {
+                        final loading =
+                            snap.connectionState != ConnectionState.done;
+                        final stats = snap.data;
+                        final range = loading
+                            ? '…'
+                            : (stats?.maxRangeMeters != null
+                                ? formatCoverageDistance(stats!.maxRangeMeters!,
+                                    isImperial: isImperial)
+                                : 'N/A');
+                        return _repRow(
+                          context,
+                          Icons.open_in_full,
+                          Text('Max Range: $range',
+                              style: const TextStyle(fontSize: 13)),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
+              FutureBuilder<RepeaterStats?>(
+                future: statsFuture,
+                builder: (context, snap) {
+                  final loading = snap.connectionState != ConnectionState.done;
+                  final stats = snap.data;
+                  String v(int? n) => loading ? '…' : '${n ?? 0}';
+                  return Row(
+                    children: [
+                      _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
+                          const Color(0xFF1E7E34)),
+                      _repeaterStatCell(
+                          context, 'TX', v(stats?.tx), const Color(0xFFFD7E14)),
+                      _repeaterStatCell(
+                          context, 'RX', v(stats?.rx), const Color(0xFF6F42C1)),
+                      _repeaterStatCell(context, 'DISC', v(stats?.disc),
+                          const Color(0xFF17A2B8)),
+                      _repeaterStatCell(context, 'DEAD', v(stats?.dead),
+                          const Color(0xFF6C757D)),
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
         ),
       ),
     ).then((result) {

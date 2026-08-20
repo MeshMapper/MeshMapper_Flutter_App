@@ -134,8 +134,7 @@ class TcpService extends StreamTransportBase {
     }
   }
 
-  static Future<void> saveConnection(
-      String host, int port, String name) async {
+  static Future<void> saveConnection(String host, int port, String name) async {
     final prefs = await SharedPreferences.getInstance();
     final connections = await getSavedConnections();
 
@@ -151,8 +150,7 @@ class TcpService extends StreamTransportBase {
           lastConnected: DateTime.now(),
         ));
 
-    final jsonString =
-        jsonEncode(connections.map((c) => c.toJson()).toList());
+    final jsonString = jsonEncode(connections.map((c) => c.toJson()).toList());
     await prefs.setString(_prefsKey, jsonString);
   }
 
@@ -161,8 +159,7 @@ class TcpService extends StreamTransportBase {
     final connections = await getSavedConnections();
     connections.removeWhere((c) => c.id == id);
 
-    final jsonString =
-        jsonEncode(connections.map((c) => c.toJson()).toList());
+    final jsonString = jsonEncode(connections.map((c) => c.toJson()).toList());
     await prefs.setString(_prefsKey, jsonString);
   }
 }

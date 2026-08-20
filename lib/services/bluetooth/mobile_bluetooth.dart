@@ -438,8 +438,7 @@ class MobileBluetoothService implements BluetoothService {
 
         if ((isError133 || isBondError) && attempt < _maxRetries) {
           if (isBondError) {
-            debugLog(
-                '[BLE] Bond error (apple-code 14/15) on attempt $attempt');
+            debugLog('[BLE] Bond error (apple-code 14/15) on attempt $attempt');
             await removeBond(deviceId);
             // On iOS, removeBond() is a no-op (not supported by Core Bluetooth).
             // Don't burn internal retries against stale bond keys — they will all

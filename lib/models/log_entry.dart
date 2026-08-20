@@ -108,6 +108,7 @@ class RxLogEntry {
   final int header; // Packet header byte
   final double latitude;
   final double longitude;
+
   /// Display path hops, origin → ... → us. Already CARpeater-stripped.
   final List<String> pathHops;
 

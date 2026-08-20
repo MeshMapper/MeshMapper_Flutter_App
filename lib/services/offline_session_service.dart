@@ -13,8 +13,10 @@ class OfflineSession {
   final String? devicePublicKey; // Device public key for auth during upload
   final String? deviceName; // Device name for display
   final String? contactUri; // Signed contact URI for registration during upload
-  final String? radioConfig; // Radio config captured at record time ("910.525,62.5,7,5")
-  final String? deviceModel; // Device model/manufacturer captured at record time
+  final String?
+      radioConfig; // Radio config captured at record time ("910.525,62.5,7,5")
+  final String?
+      deviceModel; // Device model/manufacturer captured at record time
   final double? powerLevel; // TX power level (watts) captured at record time
   final String? appVersion; // App version captured at record time
   final bool uploaded; // Track upload status
@@ -364,8 +366,7 @@ class OfflineSessionService {
   /// Remove the first [processedCount] pings from a session.
   /// Called after partial upload so retries don't re-send already-processed data.
   /// Returns the number of remaining pings, or null if session not found.
-  Future<int?> removeProcessedPings(
-      String filename, int processedCount) async {
+  Future<int?> removeProcessedPings(String filename, int processedCount) async {
     final index = _sessions.indexWhere((s) => s.filename == filename);
     if (index == -1) {
       debugWarn('[OFFLINE] Session not found for ping removal: $filename');

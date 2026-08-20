@@ -36,9 +36,8 @@ class TxTracker {
       onEchoReceived;
 
   /// Callback fired when a multi-hop echo is received (for real-time UI updates)
-  void Function(
-          String repeaterId, double? snr, int? rssi, List<String> pathHops, bool isNew)?
-      onMultiHopEchoReceived;
+  void Function(String repeaterId, double? snr, int? rssi,
+      List<String> pathHops, bool isNew)? onMultiHopEchoReceived;
 
   /// Callback for carpeater drops (for quiet error logging)
   /// Called with repeater ID and reason when an echo is dropped due to carpeater detection
@@ -173,7 +172,8 @@ class TxTracker {
       if (isMultiHop) {
         pathHex = metadata.lastHopHex!;
         displayHops = [
-          for (var i = 0; i < metadata.pathHashCount; i++) metadata.getHopHex(i)!,
+          for (var i = 0; i < metadata.pathHashCount; i++)
+            metadata.getHopHex(i)!,
         ];
         debugLog(
             '[TX LOG] Multi-hop echo (pathHashCount=${metadata.pathHashCount}): '
@@ -344,8 +344,7 @@ class TxTracker {
       // Notify appropriate callback
       final best = targetMap[pathHex]!;
       if (isMultiHop) {
-        debugLog(
-            '[TX LOG] Invoking onMultiHopEchoReceived callback');
+        debugLog('[TX LOG] Invoking onMultiHopEchoReceived callback');
         onMultiHopEchoReceived?.call(
             pathHex, best.snr, best.rssi, displayHops, isNewRepeater);
       } else {

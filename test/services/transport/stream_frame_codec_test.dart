@@ -104,8 +104,7 @@ void main() {
       final frame1 = makeIncomingFrame([0x01]);
       final frame2 = makeIncomingFrame([0x02]);
       final frame3 = makeIncomingFrame([0x03]);
-      final combined =
-          Uint8List.fromList([...frame1, ...frame2, ...frame3]);
+      final combined = Uint8List.fromList([...frame1, ...frame2, ...frame3]);
 
       codec.addBytes(combined);
       await Future.delayed(Duration.zero);
@@ -183,8 +182,7 @@ void main() {
       final frame1 = makeIncomingFrame([0xAA]);
       final junk = [0x44, 0x45, 0x42, 0x55, 0x47]; // "DEBUG"
       final frame2 = makeIncomingFrame([0xBB]);
-      final combined =
-          Uint8List.fromList([...frame1, ...junk, ...frame2]);
+      final combined = Uint8List.fromList([...frame1, ...junk, ...frame2]);
 
       codec.addBytes(combined);
       await Future.delayed(Duration.zero);
@@ -213,8 +211,7 @@ void main() {
       // Frame claiming 301 bytes: marker + [0x2D, 0x01] = 301
       final oversizedHeader = Uint8List.fromList([0x3E, 0x2D, 0x01]);
       final validFrame = makeIncomingFrame([0x42]);
-      final combined =
-          Uint8List.fromList([...oversizedHeader, ...validFrame]);
+      final combined = Uint8List.fromList([...oversizedHeader, ...validFrame]);
 
       codec.addBytes(combined);
       await Future.delayed(Duration.zero);
