@@ -151,16 +151,25 @@ void main() {
       expect(service.isSignedIn, isFalse);
     });
 
-    test('ignores an expired pending pair', () async {
+    test('ignores an expired pending pair and reports it', () async {
       await seedPending('st4te', age: const Duration(minutes: 11));
       final service =
           buildService(recordingClient((_) => http.Response(tokenBody(), 200)));
+      bool? reported;
+      String? errorCode;
+      service.onSignInComplete = (success, code) {
+        reported = success;
+        errorCode = code;
+      };
 
       await service.handleAuthCallback(
           Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
 
       expect(requests, isEmpty);
       expect(await store.readPendingPkce(), isNull);
+      // A real attempt was live and just died — the UI must stop spinning.
+      expect(reported, isFalse);
+      expect(errorCode, 'expired');
     });
 
     test('exchanges a given code only once', () async {
@@ -276,6 +285,130 @@ void main() {
       expect(await store.readToken(), isNull);
       expect(errorCode, 'code_invalid');
     });
+
+    // A hostile or broken portal answering `"user": []` / `"user": "bob"` used
+    // to throw a TypeError on the cast. Via the uriLinkStream listener that is
+    // an unawaited future, so it became an unhandled zone error and the whole
+    // attempt died silently with the code still claimed.
+    for (final shape in <Object>[<Object>[], 'bob', 42]) {
+      test('a non-object user (${shape.runtimeType}) is rejected, not thrown',
+          () async {
+        final localStore = InMemoryTokenStore();
+        await localStore.writePendingPkce(PendingPkce(
+          verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+          state: 'st4te',
+          createdAt: DateTime.now(),
+        ));
+        final service = PortalAccountService(
+          client: recordingClient((_) => http.Response(
+              jsonEncode({'ok': true, 'token': 'f' * 64, 'user': shape}), 200)),
+          store: localStore,
+          launcher: (uri) async => true,
+        );
+        bool? reported;
+        String? errorCode;
+        service.onSignInComplete = (success, code) {
+          reported = success;
+          errorCode = code;
+        };
+
+        await service.handleAuthCallback(Uri.parse(
+            'meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
+
+        expect(service.isSignedIn, isFalse);
+        expect(await localStore.readToken(), isNull);
+        expect(reported, isFalse);
+        expect(errorCode, 'bad_response');
+      });
+    }
+
+    test('a throw inside the exchange cannot escape as a zone error', () async {
+      final throwing = _ThrowingWriteStore();
+      await throwing.writePendingPkce(PendingPkce(
+        verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+        state: 'st4te',
+        createdAt: DateTime.now(),
+      ));
+      final service = PortalAccountService(
+        client: recordingClient((_) => http.Response(tokenBody(), 200)),
+        store: throwing,
+        launcher: (uri) async => true,
+      );
+      String? errorCode;
+      service.onSignInComplete = (success, code) => errorCode = code;
+
+      // Must complete normally rather than propagating the keystore failure.
+      await service.handleAuthCallback(
+          Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
+
+      expect(errorCode, 'bad_response');
+    });
+  });
+
+  // A callback is unauthenticated: ANY app on the device can fire
+  // meshmapper-auth://callback?error=... An error is therefore only believed
+  // when it answers a sign-in we actually started.
+  group('error callbacks are only honoured when they answer a live attempt',
+      () {
+    test('an error with no pending pair is ignored', () async {
+      final service =
+          buildService(recordingClient((_) => http.Response(tokenBody(), 200)));
+      var completions = 0;
+      service.onSignInComplete = (_, __) => completions++;
+
+      await service.handleAuthCallback(Uri.parse(
+          'meshmapper-auth://callback?error=access_denied&state=st4te'));
+
+      expect(completions, 0);
+      expect(requests, isEmpty);
+    });
+
+    test('an error with a mismatched state leaves the pair intact', () async {
+      await seedPending('st4te');
+      final service =
+          buildService(recordingClient((_) => http.Response(tokenBody(), 200)));
+      var completions = 0;
+      service.onSignInComplete = (_, __) => completions++;
+
+      await service.handleAuthCallback(Uri.parse(
+          'meshmapper-auth://callback?error=access_denied&state=wrong'));
+
+      expect(completions, 0,
+          reason: 'a foreign app must not fail a live sign-in');
+      expect(await store.readPendingPkce(), isNotNull,
+          reason: 'the genuine callback may still arrive');
+    });
+
+    test('a matching error is reported exactly once', () async {
+      await seedPending('st4te');
+      final service =
+          buildService(recordingClient((_) => http.Response(tokenBody(), 200)));
+      final reported = <String?>[];
+      service.onSignInComplete = (success, code) => reported.add(code);
+      final uri = Uri.parse(
+          'meshmapper-auth://callback?error=access_denied&state=st4te');
+
+      await service.handleAuthCallback(uri);
+      await service.handleAuthCallback(uri);
+
+      expect(reported, ['access_denied']);
+      expect(await store.readPendingPkce(), isNull);
+      expect(requests, isEmpty);
+    });
+
+    test('a hostile error value is sanitized before it is reported', () async {
+      await seedPending('st4te');
+      final service =
+          buildService(recordingClient((_) => http.Response(tokenBody(), 200)));
+      String? errorCode;
+      service.onSignInComplete = (success, code) => errorCode = code;
+      final hostile = Uri.encodeQueryComponent('<script>alert(1)</script>');
+
+      await service.handleAuthCallback(
+          Uri.parse('meshmapper-auth://callback?error=$hostile&state=st4te'));
+
+      expect(errorCode, 'denied');
+    });
   });
 
   group('logging never leaks a secret', () {
@@ -326,4 +459,12 @@ class _GatedStore extends InMemoryTokenStore {
     await _gate.future;
     return super.readPendingPkce();
   }
+}
+
+/// A store whose token write blows up, the way a wedged keystore does. Stands
+/// in for any throw raised inside the exchange after validation has passed.
+class _ThrowingWriteStore extends InMemoryTokenStore {
+  @override
+  Future<void> writeToken(String value) async =>
+      throw StateError('keystore unavailable');
 }
