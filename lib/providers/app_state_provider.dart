@@ -452,8 +452,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// UPPER pubkey -> how many times CMD_SIGN_START answered ERR. In-memory:
   /// two strikes are required before the verdict is persisted (see
-  /// [_performDeviceLink]).
+  /// [_performDeviceLink]). Cleared the moment the radio signs successfully.
   final Map<String, int> _portalUnsupportedStrikes = {};
+
+  /// UPPER pubkey -> how many times the server rejected our signature. Kept
+  /// separate from [_portalLinkAttempts] on purpose: that counter also holds
+  /// nonce and network failures, which say nothing about what the radio signs.
+  final Map<String, int> _portalBadSignatureStrikes = {};
 
   static const String _portalAccountKey = 'portal_account_info';
   static const String _portalLinkedPubkeysKey = 'portal_linked_pubkeys';
@@ -9205,6 +9210,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return const PortalLinkOutcome(PortalLinkStatus.failed);
     }
 
+    // The radio just produced a signature, which disproves "this firmware has
+    // no CMD_SIGN". Drop the strike so an earlier stray ERR cannot combine
+    // with a later one to condemn a radio that demonstrably signs.
+    _portalUnsupportedStrikes.remove(pubkey);
+
     final result = await _portalAccountService.linkDevice(
       pubkey: pubkey,
       nonce: nonceHex,
@@ -9220,6 +9230,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         _portalLinkAttempts.remove(pubkey);
         _portalLinkRetryAfter.remove(pubkey);
+        // A signature the server accepted retires every "this radio cannot
+        // sign" verdict, including one already written to disk — otherwise a
+        // single later stray ERR would re-condemn a radio that just linked.
+        _portalUnsupportedStrikes.remove(pubkey);
+        _portalBadSignatureStrikes.remove(pubkey);
+        _portalSignUnsupportedDevices.remove(pubkey);
         await _savePortalAccountState();
         notifyListeners();
         return PortalLinkOutcome(
@@ -9255,22 +9271,33 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case LinkServerError(:final code, :final statusCode):
         debugWarn('[ACCOUNT] Link server error: $code (HTTP $statusCode)');
         final outcome = _recordLinkFailure(pubkey, code);
-        if (code == 'bad_signature' &&
-            (_portalLinkAttempts[pubkey] ?? 0) >= 2) {
-          // Repeated bad signatures mean this firmware signs something else.
-          // Stop burning rate-limited nonces on it.
-          debugLog('[ACCOUNT] Repeated bad_signature — marking sign '
-              'unsupported for ${_pkPrefix(pubkey)}');
-          _portalSignUnsupportedDevices[pubkey] = true;
-          await _savePortalAccountState();
+        if (code == 'bad_signature') {
+          // Count ONLY bad signatures here. _portalLinkAttempts also holds
+          // nonce and network failures, so reading it would let two unrelated
+          // network blips plus one genuine rejection condemn the radio.
+          final strikes = (_portalBadSignatureStrikes[pubkey] ?? 0) + 1;
+          _portalBadSignatureStrikes[pubkey] = strikes;
+          if (strikes >= 2) {
+            // Repeated bad signatures mean this firmware signs something else.
+            // Stop burning rate-limited nonces on it.
+            debugLog('[ACCOUNT] Repeated bad_signature — marking sign '
+                'unsupported for ${_pkPrefix(pubkey)}');
+            _portalSignUnsupportedDevices[pubkey] = true;
+            await _savePortalAccountState();
+          } else {
+            debugLog('[ACCOUNT] Server rejected the signature for '
+                '${_pkPrefix(pubkey)} (strike $strikes of 2)');
+          }
         }
         return outcome;
     }
   }
 
-  /// Count a failure and schedule the next allowed attempt (30s, 1m, 2m, 4m,
-  /// 8m, capped at 30m). Nothing is shown to the user — the next connection
-  /// simply tries again.
+  /// Count a failure and schedule the next allowed attempt: 30s, 1m, 2m, 4m,
+  /// 8m — the whole ladder, because [_portalLinkMaxAttempts] stops the offer
+  /// at 5. The 30m clamp below is a guard for a raised cap, not a step anyone
+  /// reaches today. Nothing is shown to the user — the next connection simply
+  /// tries again.
   PortalLinkOutcome _recordLinkFailure(String pubkey, String reason) {
     final attempts = (_portalLinkAttempts[pubkey] ?? 0) + 1;
     _portalLinkAttempts[pubkey] = attempts;
