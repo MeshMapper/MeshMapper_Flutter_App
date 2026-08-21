@@ -264,32 +264,43 @@ class PortalAccountService {
     }
 
     // app_links 6.x can deliver the same cold-start URI twice (getInitialLink
-    // AND uriLinkStream). The portal burns a code on first use, so a second
-    // exchange fails with code_invalid and looks like a broken sign-in.
-    if (_consumedCodes.contains(code)) {
+    // AND uriLinkStream) and can deliver both CONCURRENTLY — init() runs the
+    // stream listener unawaited while getInitialLink() is still in flight. The
+    // portal burns a code on first use, so a second exchange fails with
+    // code_invalid and looks like a broken sign-in.
+    //
+    // `Set.add` is the atomic test-and-set, and it has to happen HERE: every
+    // later checkpoint sits behind `await _store.readPendingPkce()`, and an
+    // await between the test and the insert lets both deliveries through. The
+    // claim is released again on each path below that decides not to exchange.
+    if (!_consumedCodes.add(code)) {
       _log('callback duplicate — this code was already exchanged');
       return;
     }
 
     final pending = _pendingPkce ?? await _store.readPendingPkce();
     if (pending == null) {
+      _consumedCodes.remove(code);
       _warn('callback with no pending PKCE pair — ignoring');
       return;
     }
     if (DateTime.now().difference(pending.createdAt) > PortalApi.pkceTtl) {
+      _consumedCodes.remove(code);
       _warn('callback pending pair expired — discarding');
       _pendingPkce = null;
       await _store.deletePendingPkce();
       return;
     }
     if (pending.state != state) {
-      // Do NOT burn the pair: the genuine callback may still be coming.
+      // Do NOT burn the pair, and release the code: the genuine callback may
+      // still be coming and may legitimately carry this very code.
+      _consumedCodes.remove(code);
       _warn('callback state mismatch — ignoring');
       return;
     }
 
-    // Burn the pair BEFORE the exchange: one attempt per authorize.
-    _consumedCodes.add(code);
+    // Burn the pair BEFORE the exchange: one attempt per authorize. The code
+    // itself was already claimed by the atomic add above.
     _pendingPkce = null;
     await _store.deletePendingPkce();
 

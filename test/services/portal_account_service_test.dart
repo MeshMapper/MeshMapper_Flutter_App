@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -177,6 +178,57 @@ void main() {
       expect(requests.length, 1);
     });
 
+    test('a concurrent duplicate delivery still exchanges only once', () async {
+      // The init() race: the uriLinkStream listener runs unawaited while
+      // getInitialLink() is still in flight, so both deliveries can be inside
+      // handleAuthCallback at the same time. The gate parks them both on the
+      // store read, which is where the guard used to leak.
+      final gated = _GatedStore();
+      await gated.writePendingPkce(PendingPkce(
+        verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+        state: 'st4te',
+        createdAt: DateTime.now(),
+      ));
+      final service = PortalAccountService(
+        client: recordingClient((_) => http.Response(tokenBody(), 200)),
+        store: gated,
+        launcher: (uri) async => true,
+      );
+      final uri =
+          Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te');
+
+      final first = service.handleAuthCallback(uri);
+      final second = service.handleAuthCallback(uri);
+      gated.openGate();
+      await Future.wait([first, second]);
+
+      expect(requests.length, 1,
+          reason: 'the portal burns a code on first use');
+      expect(service.isSignedIn, isTrue);
+      expect(gated.pendingReads, 1,
+          reason: 'the duplicate must bounce before it reaches the store');
+    });
+
+    test('a state mismatch does not poison the code for the genuine callback',
+        () async {
+      await seedPending('st4te');
+      final service =
+          buildService(recordingClient((_) => http.Response(tokenBody(), 200)));
+
+      // A stale or hostile callback carrying this code but the wrong state.
+      await service.handleAuthCallback(
+          Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=wrong'));
+      expect(requests, isEmpty);
+
+      // The genuine callback arrives afterwards with the SAME code and must
+      // still be exchangeable.
+      await service.handleAuthCallback(
+          Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
+
+      expect(requests.length, 1);
+      expect(service.isSignedIn, isTrue);
+    });
+
     test('access_denied clears the pending pair without an exchange', () async {
       await seedPending('st4te');
       final service =
@@ -256,4 +308,22 @@ void main() {
           reason: 'the flow should log something');
     });
   });
+}
+
+/// A store whose `readPendingPkce` parks until [openGate] is called, so a test
+/// can hold two `handleAuthCallback` calls inside the duplicate guard at once.
+class _GatedStore extends InMemoryTokenStore {
+  final Completer<void> _gate = Completer<void>();
+
+  /// How many times the callback flow got as far as reading the pending pair.
+  int pendingReads = 0;
+
+  void openGate() => _gate.complete();
+
+  @override
+  Future<PendingPkce?> readPendingPkce() async {
+    pendingReads++;
+    await _gate.future;
+    return super.readPendingPkce();
+  }
 }
