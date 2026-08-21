@@ -248,18 +248,24 @@ class PortalAccountService {
     _log('callback received: ${uri.scheme}://${uri.host}${uri.path}');
 
     final error = uri.queryParameters['error'];
-    if (error != null && error.isNotEmpty) {
-      _log('callback carried error=$error — clearing the pending pair');
-      _pendingPkce = null;
-      await _store.deletePendingPkce();
-      onSignInComplete?.call(false, error);
+    final code = uri.queryParameters['code'];
+    final state = uri.queryParameters['state'];
+    final hasError = error != null && error.isNotEmpty;
+
+    // `state` is what ties any callback — success OR failure — to an attempt
+    // this app actually started.
+    if (state == null || state.isEmpty) {
+      _warn('callback missing state — ignoring');
       return;
     }
 
-    final code = uri.queryParameters['code'];
-    final state = uri.queryParameters['state'];
-    if (code == null || code.isEmpty || state == null || state.isEmpty) {
-      _warn('callback missing code or state — ignoring');
+    if (hasError) {
+      await _handleErrorCallback(error, state);
+      return;
+    }
+
+    if (code == null || code.isEmpty) {
+      _warn('callback missing code — ignoring');
       return;
     }
 
@@ -284,11 +290,19 @@ class PortalAccountService {
       _warn('callback with no pending PKCE pair — ignoring');
       return;
     }
+    // Arm the redactor. On a cold start the pair comes off disk and
+    // `_pendingPkce` would otherwise stay null, leaving `_liveSecrets` empty —
+    // the backstop would be inert for the rest of this flow, which is exactly
+    // the stretch that handles the verifier and the token.
+    _pendingPkce = pending;
+
     if (DateTime.now().difference(pending.createdAt) > PortalApi.pkceTtl) {
       _consumedCodes.remove(code);
       _warn('callback pending pair expired — discarding');
       _pendingPkce = null;
       await _store.deletePendingPkce();
+      // A real attempt was live and just died; the UI must stop waiting.
+      onSignInComplete?.call(false, 'expired');
       return;
     }
     if (pending.state != state) {
@@ -307,10 +321,53 @@ class PortalAccountService {
     _lastCode = code;
     try {
       await _exchangeCode(code: code, verifier: pending.verifier);
+    } catch (e) {
+      // handleAuthCallback is driven unawaited from the uriLinkStream listener,
+      // so anything escaping here is an unhandled zone error: the attempt would
+      // die silently with the code already claimed and the UI still spinning.
+      _err('token exchange crashed: ${e.runtimeType}');
+      onSignInComplete?.call(false, 'bad_response');
     } finally {
       _lastCode = null;
     }
   }
+
+  /// Handle a callback that reported `error=`.
+  ///
+  /// A deep link is unauthenticated — ANY app on the device can fire
+  /// `meshmapper-auth://callback?error=x`. Honouring that blindly let a foreign
+  /// app destroy a legitimate in-flight pair (a sign-in DoS) and push an
+  /// arbitrary string into the completion callback. So an error is believed
+  /// only when it answers a sign-in this app actually started: a live pending
+  /// pair whose state matches. Everything else is dropped without a trace of
+  /// the attacker's string.
+  Future<void> _handleErrorCallback(String error, String state) async {
+    final pending = _pendingPkce ?? await _store.readPendingPkce();
+    if (pending == null) {
+      _warn('callback reported an error with no sign-in in flight — ignoring');
+      return;
+    }
+    _pendingPkce = pending;
+    if (pending.state != state) {
+      // Leave the pair alone: the genuine callback may still be coming.
+      _warn('callback reported an error for a different attempt — ignoring');
+      return;
+    }
+
+    _pendingPkce = null;
+    await _store.deletePendingPkce();
+    final reason = _sanitizeErrorCode(error);
+    _log('the portal declined the sign-in (reason=$reason)');
+    onSignInComplete?.call(false, reason);
+  }
+
+  /// The portal's error codes are lowercase snake_case (`access_denied`).
+  /// Anything else came from something that is not the portal, so it is
+  /// collapsed to a fixed token rather than forwarded to the UI or a log.
+  static String _sanitizeErrorCode(String raw) =>
+      _errorCodePattern.hasMatch(raw) ? raw : 'denied';
+
+  static final RegExp _errorCodePattern = RegExp(r'^[a-z_]{1,32}$');
 
   Future<void> _exchangeCode({
     required String code,
@@ -335,8 +392,12 @@ class PortalAccountService {
     }
 
     final token = response.json['token'];
-    final account =
-        PortalAccount.fromJson(response.json['user'] as Map<String, dynamic>?);
+    // Type CHECK, not a cast: `"user": []` or `"user": "bob"` would throw a
+    // TypeError out of an unawaited future. fromJson's null path already
+    // reports this as an unusable body.
+    final rawUser = response.json['user'];
+    final account = PortalAccount.fromJson(
+        rawUser is Map<String, dynamic> ? rawUser : null);
     if (token is! String || token.isEmpty || account == null) {
       _warn('token exchange returned an unusable body');
       onSignInComplete?.call(false, 'bad_response');
