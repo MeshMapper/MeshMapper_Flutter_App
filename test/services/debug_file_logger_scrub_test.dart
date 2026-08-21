@@ -33,6 +33,32 @@ void main() {
     expect(scrubbed, isNot(contains('d' * 43)));
   });
 
+  test('redacts an unquoted token in a rendered map', () {
+    // Dart's Map.toString() has neither quotes nor `=`, and
+    // debug_submit_service.dart logs a decoded response body exactly this way
+    // ("Full response: $data"). The quoted-JSON pattern never sees that shape.
+    final scrubbed = DebugFileLogger.scrubSecrets(
+        'Full response: {ok: true, token: ${'f' * 64}}');
+    expect(scrubbed, contains('token: <redacted>'));
+    expect(scrubbed, isNot(contains('f' * 64)));
+  });
+
+  test('redacts the X-MM-App-Token header shape', () {
+    final scrubbed =
+        DebugFileLogger.scrubSecrets('X-MM-App-Token: ${'a1b2c3d4' * 8}');
+    expect(scrubbed, 'X-MM-App-Token: <redacted>');
+  });
+
+  test('leaves a short token value alone', () {
+    expect(DebugFileLogger.scrubSecrets('token: abc'), 'token: abc');
+  });
+
+  test('leaves a wire tag untouched', () {
+    // MM:<10 base64url> is not a secret and shows up constantly in TX logs.
+    const line = '[PING] on-air body MM:YVNPAr5OIw';
+    expect(DebugFileLogger.scrubSecrets(line), line);
+  });
+
   test('leaves ordinary log lines untouched', () {
     const line = '[CONN] Frame received (7 bytes): 13 00 80 00 00 00';
     expect(DebugFileLogger.scrubSecrets(line), line);
