@@ -25,6 +25,7 @@ import '../services/debug_file_logger.dart';
 import '../services/gps_simulator_service.dart';
 import '../services/offline_session_service.dart';
 import '../services/permission_disclosure_service.dart';
+import '../services/portal_account_service.dart';
 import '../utils/constants.dart';
 import '../widgets/bug_report_dialog.dart';
 import '../widgets/upload_logs_dialog.dart';
@@ -709,6 +710,89 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         context, appState, session.filename),
                   )),
           ]),
+
+          // MeshMapper Account — mobile only. The sign-in flow needs an
+          // OS-registered URL scheme, which the web build cannot have.
+          if (!kIsWeb)
+            _buildSection(context, 'MeshMapper Account', [
+              if (!appState.isPortalLoggedIn)
+                ListTile(
+                  leading: const Icon(Icons.account_circle_outlined),
+                  title: const Text('Sign in to MyMeshMapper'),
+                  subtitle: const Text(
+                      'Link your radios so wardriving counts toward your account'),
+                  trailing: const Icon(Icons.open_in_new, size: 18),
+                  onTap: () => _startPortalSignIn(context, appState),
+                )
+              else ...[
+                ListTile(
+                  leading:
+                      const Icon(Icons.account_circle, color: Colors.green),
+                  title:
+                      Text(appState.portalAccount?.displayName ?? 'Signed in'),
+                  subtitle: Text('@${appState.portalAccount?.username ?? ''}'),
+                ),
+                ListTile(
+                  leading: Icon(
+                    appState.isCurrentDeviceLinked
+                        ? Icons.link
+                        : Icons.link_off,
+                    color: appState.isCurrentDeviceLinked
+                        ? Colors.green
+                        : Colors.grey,
+                  ),
+                  title: const Text('This Device'),
+                  subtitle: Text(
+                    !appState.isConnected
+                        ? 'Connect a device to link it'
+                        : appState.isCurrentDeviceLinked
+                            ? 'Linked to your account'
+                            : 'Not linked',
+                  ),
+                  trailing: !appState.isConnected
+                      ? null
+                      : appState.isCurrentDeviceLinked
+                          ? TextButton(
+                              onPressed: isAutoMode
+                                  ? null
+                                  : () =>
+                                      _unlinkPortalDevice(context, appState),
+                              child: const Text('Unlink'),
+                            )
+                          : TextButton(
+                              // Linking drives the radio (CMD_SIGN), so it
+                              // follows this screen's auto-ping lock.
+                              onPressed: isAutoMode
+                                  ? null
+                                  : () => _linkPortalDevice(context, appState),
+                              child: const Text('Link now'),
+                            ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.devices_other),
+                  title: const Text('Linked Devices'),
+                  subtitle: Text(
+                      '${appState.portalLinkedDeviceCount} device(s) on this account'),
+                  trailing: const Icon(Icons.refresh),
+                  onTap: () => _refreshPortalAccount(context, appState),
+                ),
+                if (appState.hasPortalLinkDeclines)
+                  ListTile(
+                    leading: const Icon(Icons.replay),
+                    title: const Text('Re-enable Link Prompts'),
+                    subtitle: const Text('Ask again for devices you declined'),
+                    onTap: () => _resetPortalDeclines(context, appState),
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.logout, color: Colors.orange),
+                  title: const Text('Sign Out'),
+                  subtitle:
+                      const Text('Keeps your linked devices on the server'),
+                  onTap: () =>
+                      _showPortalSignOutConfirmation(context, appState),
+                ),
+              ],
+            ]),
 
           // API Endpoints
           _buildSection(context, 'API Endpoints', [
@@ -2693,6 +2777,100 @@ class _SettingsScreenState extends State<SettingsScreen> {
         AppToast.error(context, 'Invalid meshmapper:// link');
       }
     }
+  }
+
+  Future<void> _startPortalSignIn(
+      BuildContext context, AppStateProvider appState) async {
+    debugLog('[ACCOUNT] Opening the portal sign-in page');
+    final launched = await appState.beginPortalSignIn();
+    if (!context.mounted) return;
+    if (launched) {
+      AppToast.info(context, 'Finish signing in, then return to the app');
+    } else {
+      AppToast.error(context, 'Could not open the browser');
+    }
+  }
+
+  Future<void> _linkPortalDevice(
+      BuildContext context, AppStateProvider appState) async {
+    AppToast.info(context, 'Linking this device...');
+    final outcome = await appState.startManualDeviceLink();
+    if (!context.mounted) return;
+    switch (outcome.status) {
+      case PortalLinkStatus.linked:
+        AppToast.success(context,
+            'Linked to ${outcome.accountName ?? 'your MeshMapper account'}');
+      case PortalLinkStatus.adoptionRequired:
+        AppToast.warning(
+          context,
+          'Claim your ${outcome.adoptionDeviceCount} placeholder device(s) at '
+          'portal.meshmapper.net first',
+          duration: const Duration(seconds: 6),
+        );
+      case PortalLinkStatus.alreadyLinkedOtherAccount:
+        AppToast.error(context, 'This radio is linked to a different account');
+      case PortalLinkStatus.unauthorized:
+        AppToast.error(context, 'Signed out — please sign in again');
+      case PortalLinkStatus.skipped:
+      case PortalLinkStatus.failed:
+        // A manual tap deserves feedback even though the automatic path is
+        // deliberately silent.
+        AppToast.error(context, 'Could not link right now — try again later');
+    }
+  }
+
+  Future<void> _unlinkPortalDevice(
+      BuildContext context, AppStateProvider appState) async {
+    final ok = await appState.unlinkCurrentDevice();
+    if (!context.mounted) return;
+    if (ok) {
+      AppToast.success(context, 'Device unlinked');
+    } else {
+      AppToast.error(context, 'Could not unlink right now');
+    }
+  }
+
+  Future<void> _refreshPortalAccount(
+      BuildContext context, AppStateProvider appState) async {
+    await appState.refreshPortalAccount(force: true);
+    if (!context.mounted) return;
+    AppToast.simple(
+        context, '${appState.portalLinkedDeviceCount} linked device(s)');
+  }
+
+  Future<void> _resetPortalDeclines(
+      BuildContext context, AppStateProvider appState) async {
+    await appState.resetLinkPromptDeclines();
+    if (!context.mounted) return;
+    AppToast.success(context, 'Link prompts re-enabled');
+  }
+
+  void _showPortalSignOutConfirmation(
+      BuildContext context, AppStateProvider appState) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sign Out'),
+        content: const Text(
+          'Sign out of MyMeshMapper on this phone? Your radios stay linked to '
+          'your account, and wardriving keeps working.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              appState.portalSignOut();
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.orange),
+            child: const Text('Sign Out'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showCloseAppConfirmation(
