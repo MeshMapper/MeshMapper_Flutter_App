@@ -15,7 +15,6 @@ Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
 **App Store Releases**
 - **Android:** [Google Play](https://play.google.com/store/apps/details?id=net.meshmapper.app) or grab the [APK from GitHub](https://github.com/MeshMapper/MeshMapper_Project/releases/)
 - **iOS:** [App Store](https://apps.apple.com/us/app/meshmapper/id6758073991)
-- **Web:** [wd.meshmapper.net](https://wd.meshmapper.net) (Chrome/Edge only)
 
 **Beta Releases**
 - **iOS:** [TestFlight](https://testflight.apple.com/join/PXxfr5Jr)
@@ -27,7 +26,7 @@ Built with contributions by **The Greater Ottawa Mesh Radio Enthusiasts**
 
 ## Features
 
-- **Cross-Platform** — Android, iOS, and Web (Chrome/Edge)
+- **Cross-Platform** — Android and iOS
 - **BLE Connectivity** — Connect to MeshCore companion devices via Bluetooth Low Energy
 - **GPS Tracking** — High-accuracy location tracking with 50m distance filter
 - **Real-time Map** — View TX/RX/DISC ping markers on OpenStreetMap with dark mode tiles

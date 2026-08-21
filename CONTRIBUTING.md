@@ -42,6 +42,8 @@ Without an API key, the app will function normally for UI work, BLE connectivity
 
 ### Web Development
 
+> **Note:** The web app is no longer built or published — development focuses on Android and iOS. The web code remains in the repo, so these instructions still work if you need to run the web target locally.
+
 For local web development with CORS issues:
 ```bash
 flutter run -d chrome --web-browser-flag="--disable-web-security"
