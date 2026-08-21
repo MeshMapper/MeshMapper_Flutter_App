@@ -409,6 +409,62 @@ void main() {
 
       expect(errorCode, 'denied');
     });
+
+    test('a concurrent duplicate error is reported only once', () async {
+      // Same init() race as the code path: getInitialLink() and the
+      // uriLinkStream listener can both be inside handleAuthCallback at once.
+      // Sequential dedupe falls out of the pair being burned, but two
+      // deliveries parked on the store read would BOTH fire onSignInComplete.
+      final gated = _GatedStore();
+      await gated.writePendingPkce(PendingPkce(
+        verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+        state: 'st4te',
+        createdAt: DateTime.now(),
+      ));
+      final service = PortalAccountService(
+        client: recordingClient((_) => http.Response(tokenBody(), 200)),
+        store: gated,
+        launcher: (uri) async => true,
+      );
+      final reported = <String?>[];
+      service.onSignInComplete = (success, code) => reported.add(code);
+      final uri = Uri.parse(
+          'meshmapper-auth://callback?error=access_denied&state=st4te');
+
+      final first = service.handleAuthCallback(uri);
+      final second = service.handleAuthCallback(uri);
+      gated.openGate();
+      await Future.wait([first, second]);
+
+      expect(reported, ['access_denied']);
+      expect(gated.pendingReads, 1,
+          reason: 'the duplicate must bounce before it reaches the store');
+      expect(requests, isEmpty);
+    });
+
+    test('a wedged keystore still lets the decline reach the UI', () async {
+      // handleAuthCallback runs unawaited off the uriLinkStream, so a throwing
+      // deletePendingPkce would escape as a zone error and leave the UI
+      // spinning on a sign-in that has already been refused.
+      final wedged = _ThrowingDeletePendingStore();
+      await wedged.writePendingPkce(PendingPkce(
+        verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+        state: 'st4te',
+        createdAt: DateTime.now(),
+      ));
+      final service = PortalAccountService(
+        client: recordingClient((_) => http.Response(tokenBody(), 200)),
+        store: wedged,
+        launcher: (uri) async => true,
+      );
+      String? errorCode;
+      service.onSignInComplete = (success, code) => errorCode = code;
+
+      await service.handleAuthCallback(Uri.parse(
+          'meshmapper-auth://callback?error=access_denied&state=st4te'));
+
+      expect(errorCode, 'access_denied');
+    });
   });
 
   group('logging never leaks a secret', () {
@@ -441,6 +497,205 @@ void main() {
           reason: 'the flow should log something');
     });
   });
+
+  group('authenticated calls', () {
+    Future<PortalAccountService> signedIn(MockClient client) async {
+      store.token = 'f' * 64;
+      final service = buildService(client);
+      await service.init();
+      return service;
+    }
+
+    test('send both auth headers and a form-encoded body', () async {
+      final service = await signedIn(recordingClient(
+          (_) => http.Response('{"nonce":"${'b' * 64}"}', 200)));
+
+      // Mixed case in, UPPER out.
+      final lowerPubkey = 'abc123${'d' * 58}';
+      await service.requestNonce(lowerPubkey);
+
+      final request = requests.single;
+      expect(request.headers['Authorization'], 'Bearer ${'f' * 64}');
+      expect(request.headers['X-MM-App-Token'], 'f' * 64);
+      expect(request.headers['Content-Type'],
+          contains('application/x-www-form-urlencoded'));
+      expect(request.url.queryParameters['action'], 'nonce');
+      // pubkey is normalised to UPPER hex.
+      expect(request.bodyFields['pubkey'], lowerPubkey.toUpperCase());
+      // Form, never JSON.
+      expect(request.body, isNot(startsWith('{')));
+    });
+
+    test('nonce is accepted without an ok flag', () async {
+      final service = await signedIn(recordingClient((_) =>
+          http.Response('{"nonce":"${'b' * 64}","expires_at":123}', 200)));
+      expect(await service.requestNonce('A' * 64), 'b' * 64);
+    });
+
+    test('a nonce that is not 64 hex is rejected', () async {
+      final service = await signedIn(
+          recordingClient((_) => http.Response('{"nonce":"short"}', 200)));
+      expect(await service.requestNonce('A' * 64), isNull);
+    });
+
+    test('link success maps to LinkSuccess and carries the nonce', () async {
+      final service = await signedIn(recordingClient(
+          (_) => http.Response('{"ok":true,"pubkey":"${'A' * 64}"}', 200)));
+
+      final result = await service.linkDevice(
+        pubkey: 'a' * 64,
+        nonce: 'b' * 64,
+        signature: 'c' * 128,
+        label: 'Ikoka Stick',
+      );
+
+      expect(result, isA<LinkSuccess>());
+      expect((result as LinkSuccess).already, isFalse);
+      final body = requests.single.bodyFields;
+      expect(body['pubkey'], 'A' * 64);
+      expect(body['nonce'], 'b' * 64);
+      expect(body['signature'], 'c' * 128);
+      expect(body['label'], 'Ikoka Stick');
+    });
+
+    test('an idempotent relink reports already=true', () async {
+      final service = await signedIn(recordingClient((_) => http.Response(
+          '{"ok":true,"already":true,"pubkey":"${'A' * 64}"}', 200)));
+      final result = await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+      expect((result as LinkSuccess).already, isTrue);
+    });
+
+    test('already_linked maps to LinkAlreadyLinkedOtherAccount', () async {
+      final service = await signedIn(recordingClient(
+          (_) => http.Response('{"error":"already_linked"}', 409)));
+      expect(
+        await service.linkDevice(
+            pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128),
+        isA<LinkAlreadyLinkedOtherAccount>(),
+      );
+    });
+
+    test('adoption_required carries the device count', () async {
+      final service = await signedIn(recordingClient((_) =>
+          http.Response('{"error":"adoption_required","devices":4}', 409)));
+      final result = await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+      expect(result, isA<LinkAdoptionRequired>());
+      expect((result as LinkAdoptionRequired).devices, 4);
+    });
+
+    test('bad_signature maps to LinkServerError with its code', () async {
+      final service = await signedIn(recordingClient(
+          (_) => http.Response('{"error":"bad_signature"}', 400)));
+      final result = await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+      expect((result as LinkServerError).code, 'bad_signature');
+      expect(result.statusCode, 400);
+    });
+
+    test('401 token_invalid signs the user out and deletes the token',
+        () async {
+      final service = await signedIn(recordingClient(
+          (_) => http.Response('{"error":"token_invalid"}', 401)));
+      var reason = '';
+      service.onSignedOut = (value) => reason = value;
+
+      final result = await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+
+      expect(result, isA<LinkUnauthorized>());
+      expect(service.isSignedIn, isFalse);
+      expect(await store.readToken(), isNull);
+      expect(reason, 'token_invalid');
+    });
+
+    test('a bare 401 is a network error and keeps the session', () async {
+      // Captive portals and WAFs emit body-less 401s. Treating those as
+      // "signed out" would log users out on hotel wifi.
+      final service =
+          await signedIn(recordingClient((_) => http.Response('', 401)));
+      final result = await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+
+      expect(result, isA<LinkNetworkError>());
+      expect(service.isSignedIn, isTrue);
+      expect(await store.readToken(), 'f' * 64);
+    });
+
+    test('me populates the linked-device list', () async {
+      final service = await signedIn(recordingClient((_) => http.Response(
+          jsonEncode({
+            'ok': true,
+            'user': {'id': 7, 'username': 'sparkgap'},
+            'pubkeys': [
+              {
+                'pubkey': ('e' * 64),
+                'label': 'Stick',
+                'name': 'WX7RAW',
+                'points': 12,
+              }
+            ],
+          }),
+          200)));
+
+      expect(await service.refreshMe(), isTrue);
+      expect(service.linkedPubkeys.length, 1);
+      expect(service.linkedPubkeys.single.pubkey, ('e' * 64).toUpperCase());
+      expect(service.linkedPubkeys.single.points, 12);
+      expect(service.account!.displayName, 'sparkgap');
+    });
+
+    test('me is throttled to once an hour unless forced', () async {
+      final service = await signedIn(recordingClient((_) => http.Response(
+          '{"ok":true,"user":{"id":7,"username":"a"},"pubkeys":[]}', 200)));
+
+      expect(await service.refreshMe(), isTrue);
+      expect(await service.refreshMe(), isFalse);
+      expect(requests.length, 1);
+      expect(await service.refreshMe(force: true), isTrue);
+      expect(requests.length, 2);
+    });
+
+    test('a non-object user in me is rejected, not thrown', () async {
+      // Same hostile shape the token exchange already defends against; me is
+      // awaited by the provider, so a TypeError here would surface as a
+      // failed reconnect rather than a skipped refresh.
+      final service = await signedIn(recordingClient(
+          (_) => http.Response('{"ok":true,"user":[],"pubkeys":[]}', 200)));
+      expect(await service.refreshMe(), isTrue);
+      expect(service.account, isNull);
+    });
+
+    test('unlink removes the pubkey from the cache', () async {
+      final service = await signedIn(
+          recordingClient((_) => http.Response('{"ok":true}', 200)));
+      expect(await service.unlinkDevice('a' * 64), isTrue);
+      expect(service.linkedPubkeys, isEmpty);
+    });
+
+    test('logout clears locally even when the revoke POST fails', () async {
+      final service =
+          await signedIn(recordingClient((_) => http.Response('boom', 500)));
+
+      await service.logout();
+
+      expect(service.isSignedIn, isFalse);
+      expect(service.account, isNull);
+      expect(await store.readToken(), isNull);
+      // One attempt plus exactly one retry.
+      expect(requests.length, 2);
+      expect(requests.every((r) => r.url.queryParameters['action'] == 'logout'),
+          isTrue);
+    });
+
+    test('logout still sends the token it just deleted', () async {
+      final service = await signedIn(
+          recordingClient((_) => http.Response('{"ok":true}', 200)));
+      await service.logout();
+      expect(requests.single.headers['X-MM-App-Token'], 'f' * 64);
+    });
+  });
 }
 
 /// A store whose `readPendingPkce` parks until [openGate] is called, so a test
@@ -466,5 +721,13 @@ class _GatedStore extends InMemoryTokenStore {
 class _ThrowingWriteStore extends InMemoryTokenStore {
   @override
   Future<void> writeToken(String value) async =>
+      throw StateError('keystore unavailable');
+}
+
+/// A store that cannot burn the pending pair. `SecureTokenStore` swallows its
+/// own delete failures, but the service must not depend on that.
+class _ThrowingDeletePendingStore extends InMemoryTokenStore {
+  @override
+  Future<void> deletePendingPkce() async =>
       throw StateError('keystore unavailable');
 }

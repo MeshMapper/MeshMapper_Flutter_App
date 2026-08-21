@@ -105,6 +105,97 @@ class PortalAccount {
   }
 }
 
+/// One companion radio bound to the account (`me` → `pubkeys[]`).
+class LinkedPubkey {
+  final String pubkey; // UPPER 64-hex
+  final String label;
+  final String name;
+  final int points;
+
+  const LinkedPubkey({
+    required this.pubkey,
+    required this.label,
+    required this.name,
+    required this.points,
+  });
+
+  static LinkedPubkey? fromJson(Map<String, dynamic> json) {
+    final pubkey = json['pubkey'];
+    if (pubkey is! String || pubkey.isEmpty) return null;
+    return LinkedPubkey(
+      pubkey: pubkey.toUpperCase(),
+      label: json['label'] is String ? json['label'] as String : '',
+      name: json['name'] is String ? json['name'] as String : '',
+      points: (json['points'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// Outcome of an `action=link` POST.
+sealed class LinkResult {
+  const LinkResult();
+}
+
+class LinkSuccess extends LinkResult {
+  final String pubkey;
+
+  /// True when the server answered `already:true` (idempotent relink).
+  final bool already;
+
+  const LinkSuccess({required this.pubkey, required this.already});
+}
+
+/// The pubkey belongs to a different account. `UNIQUE(pubkey)` means this is
+/// permanent until the other owner unlinks — never retry it silently.
+class LinkAlreadyLinkedOtherAccount extends LinkResult {
+  const LinkAlreadyLinkedOtherAccount();
+}
+
+/// The account still holds placeholder devices. The app lane NEVER adopts —
+/// adoption is irreversible and belongs in the browser portal.
+class LinkAdoptionRequired extends LinkResult {
+  final int devices;
+  const LinkAdoptionRequired(this.devices);
+}
+
+class LinkUnauthorized extends LinkResult {
+  const LinkUnauthorized();
+}
+
+class LinkNetworkError extends LinkResult {
+  final String detail;
+  const LinkNetworkError(this.detail);
+}
+
+class LinkServerError extends LinkResult {
+  final String code;
+  final int statusCode;
+  const LinkServerError(this.code, this.statusCode);
+}
+
+/// How a link attempt should be presented. Returned by `AppStateProvider`, not
+/// by the service — the provider folds persistence and backoff into it.
+enum PortalLinkStatus {
+  skipped,
+  linked,
+  adoptionRequired,
+  alreadyLinkedOtherAccount,
+  unauthorized,
+  failed,
+}
+
+class PortalLinkOutcome {
+  final PortalLinkStatus status;
+  final int adoptionDeviceCount;
+  final String? accountName;
+
+  const PortalLinkOutcome(
+    this.status, {
+    this.adoptionDeviceCount = 0,
+    this.accountName,
+  });
+}
+
 /// One HTTP answer from the portal's machine lane.
 class _PortalResponse {
   /// 0 means no HTTP response at all (timeout, DNS, socket).
@@ -133,12 +224,18 @@ class PortalAccountService {
 
   String? _token;
   PortalAccount? _account;
+  List<LinkedPubkey> _linkedPubkeys = const [];
+  DateTime? _lastMeAt;
   PendingPkce? _pendingPkce;
   String? _lastCode;
   StreamSubscription<Uri>? _linkSub;
 
   /// Codes already exchanged this app session (dedupe — see handleAuthCallback).
   final Set<String> _consumedCodes = {};
+
+  /// States whose `error=` callback has already been honoured this session
+  /// (dedupe — see _handleErrorCallback).
+  final Set<String> _consumedErrorStates = {};
 
   /// Optional friendly label sent with `token` and `link` (device name).
   String? Function()? deviceLabelProvider;
@@ -169,6 +266,7 @@ class PortalAccountService {
 
   bool get isSignedIn => _token != null;
   PortalAccount? get account => _account;
+  List<LinkedPubkey> get linkedPubkeys => List.unmodifiable(_linkedPubkeys);
 
   /// Restore the identity cached in Hive so the UI has a name before any
   /// network call happens.
@@ -342,20 +440,47 @@ class PortalAccountService {
   /// pair whose state matches. Everything else is dropped without a trace of
   /// the attacker's string.
   Future<void> _handleErrorCallback(String error, String state) async {
-    final pending = _pendingPkce ?? await _store.readPendingPkce();
+    // Same atomic test-and-set as the code path, keyed on the state. Sequential
+    // dedupe falls out of the pair being burned, but two CONCURRENT deliveries
+    // both park on the store read below and would both fire onSignInComplete.
+    // The claim is released again on every path that decides not to honour it.
+    if (!_consumedErrorStates.add(state)) {
+      _log('callback duplicate — this attempt was already declined');
+      return;
+    }
+
+    final PendingPkce? pending;
+    try {
+      pending = _pendingPkce ?? await _store.readPendingPkce();
+    } catch (e) {
+      _consumedErrorStates.remove(state);
+      _err('reading the pending pair for a declined sign-in failed: '
+          '${e.runtimeType}');
+      return;
+    }
     if (pending == null) {
+      _consumedErrorStates.remove(state);
       _warn('callback reported an error with no sign-in in flight — ignoring');
       return;
     }
     _pendingPkce = pending;
     if (pending.state != state) {
       // Leave the pair alone: the genuine callback may still be coming.
+      _consumedErrorStates.remove(state);
       _warn('callback reported an error for a different attempt — ignoring');
       return;
     }
 
     _pendingPkce = null;
-    await _store.deletePendingPkce();
+    try {
+      await _store.deletePendingPkce();
+    } catch (e) {
+      // Not fatal — the pair is dead in memory and the stored copy carries a
+      // TTL. What must NOT happen is this escaping as a zone error on the
+      // unawaited uriLinkStream path, leaving the UI spinning on a sign-in
+      // that has already been refused.
+      _warn('clearing the declined pending pair failed: ${e.runtimeType}');
+    }
     final reason = _sanitizeErrorCode(error);
     _log('the portal declined the sign-in (reason=$reason)');
     onSignInComplete?.call(false, reason);
@@ -412,6 +537,182 @@ class PortalAccountService {
     onSignInComplete?.call(true, null);
   }
 
+  /// True only for the one answer that means "this token is dead". A bare 401
+  /// (captive portal, WAF) must NOT sign the user out.
+  bool _isTokenInvalid(_PortalResponse response) =>
+      response.status == 401 && response.error == 'token_invalid';
+
+  /// Ask the portal for a fresh 32-byte challenge bound to [pubkeyHex].
+  /// Returns the 64-hex nonce, or null on any failure (never throws).
+  Future<String?> requestNonce(String pubkeyHex) async {
+    final response = await _post('nonce', {'pubkey': pubkeyHex.toUpperCase()});
+    if (_isTokenInvalid(response)) {
+      await _forceSignOut('token_invalid');
+      return null;
+    }
+    // The nonce route answers {nonce, expires_at} with no `ok` flag.
+    final nonce = response.json['nonce'];
+    if (response.status >= 200 &&
+        response.status < 300 &&
+        nonce is String &&
+        _noncePattern.hasMatch(nonce)) {
+      _log('nonce issued for ${_pk(pubkeyHex)}');
+      return nonce;
+    }
+    _warn('nonce request failed for ${_pk(pubkeyHex)} '
+        '(status=${response.status}, error=${response.error ?? 'none'})');
+    return null;
+  }
+
+  static final RegExp _noncePattern = RegExp(r'^[0-9a-fA-F]{64}$');
+
+  /// Post the radio's Ed25519 signature over the raw nonce bytes.
+  Future<LinkResult> linkDevice({
+    required String pubkey,
+    required String nonce,
+    required String signature,
+    String? label,
+  }) async {
+    final upper = pubkey.toUpperCase();
+    final response = await _post('link', {
+      'pubkey': upper,
+      'nonce': nonce,
+      'signature': signature,
+      if (label != null && label.isNotEmpty) 'label': label,
+    });
+
+    if (_isTokenInvalid(response)) {
+      await _forceSignOut('token_invalid');
+      return const LinkUnauthorized();
+    }
+    if (response.status == 401) {
+      return const LinkNetworkError('bare 401 (captive portal?)');
+    }
+    if (response.networkFailure) {
+      return LinkNetworkError(response.error ?? 'network');
+    }
+    if (response.ok) {
+      final already = response.json['already'] == true;
+      _log('link ok for ${_pk(upper)} (already=$already)');
+      if (!_linkedPubkeys.any((p) => p.pubkey == upper)) {
+        _linkedPubkeys = [
+          ..._linkedPubkeys,
+          LinkedPubkey(
+            pubkey: upper,
+            label: label ?? '',
+            name: response.json['name'] is String
+                ? response.json['name'] as String
+                : '',
+            points: (response.json['points'] as num?)?.toInt() ?? 0,
+          ),
+        ];
+        onAccountChanged?.call();
+      }
+      return LinkSuccess(pubkey: upper, already: already);
+    }
+
+    switch (response.error) {
+      case 'already_linked':
+        _log('link refused for ${_pk(upper)}: owned by another account');
+        return const LinkAlreadyLinkedOtherAccount();
+      case 'adoption_required':
+        final devices = (response.json['devices'] as num?)?.toInt() ?? 0;
+        _log('link needs browser adoption first '
+            '($devices placeholder device(s))');
+        return LinkAdoptionRequired(devices);
+      default:
+        _warn('link failed for ${_pk(upper)} '
+            '(status=${response.status}, error=${response.error ?? 'none'})');
+        return LinkServerError(response.error ?? 'unknown', response.status);
+    }
+  }
+
+  /// In-app recovery for a mislink — without it a phone mistake needs a laptop.
+  Future<bool> unlinkDevice(String pubkey) async {
+    final upper = pubkey.toUpperCase();
+    final response = await _post('unlink', {'pubkey': upper});
+    if (_isTokenInvalid(response)) {
+      await _forceSignOut('token_invalid');
+      return false;
+    }
+    if (!response.ok) {
+      _warn('unlink failed for ${_pk(upper)} (status=${response.status})');
+      return false;
+    }
+    _linkedPubkeys =
+        _linkedPubkeys.where((p) => p.pubkey != upper).toList(growable: false);
+    _log('unlinked ${_pk(upper)}');
+    onAccountChanged?.call();
+    return true;
+  }
+
+  /// Refresh the identity and the linked-device list.
+  ///
+  /// Throttled to once an hour: the bearer gate touches the SITE-WIDE auth DB
+  /// on every call, so a chatty client writes it on every reconnect.
+  Future<bool> refreshMe({bool force = false}) async {
+    if (_token == null) return false;
+    final last = _lastMeAt;
+    if (!force &&
+        last != null &&
+        DateTime.now().difference(last) < PortalApi.meThrottle) {
+      _log('me: throttled');
+      return false;
+    }
+    _lastMeAt = DateTime.now();
+
+    final response = await _post('me', const {});
+    if (_isTokenInvalid(response)) {
+      await _forceSignOut('token_invalid');
+      return false;
+    }
+    if (!response.ok) {
+      _warn('me failed (status=${response.status}, '
+          'error=${response.error ?? 'none'})');
+      return false;
+    }
+
+    // Type CHECK, not a cast — same hostile shape the token exchange guards
+    // against (`"user": []` would throw a TypeError out of a plain cast).
+    final rawUser = response.json['user'];
+    final account = PortalAccount.fromJson(
+        rawUser is Map<String, dynamic> ? rawUser : null);
+    if (account != null) _account = account;
+
+    final raw = response.json['pubkeys'];
+    if (raw is List) {
+      _linkedPubkeys = raw
+          .whereType<Map>()
+          .map((entry) => LinkedPubkey.fromJson(entry.cast<String, dynamic>()))
+          .whereType<LinkedPubkey>()
+          .toList(growable: false);
+    }
+    _log('me ok: ${_linkedPubkeys.length} linked device(s)');
+    onAccountChanged?.call();
+    return true;
+  }
+
+  /// Sign out. The LOCAL clear always happens; the server revoke is best-effort
+  /// with a single retry, because a live server-side token with no local copy
+  /// is an orphan the user cannot revoke from the app.
+  Future<void> logout() async {
+    final token = _token;
+    await _forceSignOut('user');
+    if (token == null) return;
+
+    final first = await _postWithToken('logout', const {}, token);
+    if (first.ok) {
+      _log('logout: server token revoked');
+      return;
+    }
+    _warn('logout revoke failed (status=${first.status}) — retrying once');
+    final retry = await _postWithToken('logout', const {}, token);
+    if (!retry.ok) {
+      _warn('logout revoke retry failed (status=${retry.status}); '
+          'the server token stays until it expires');
+    }
+  }
+
   Future<_PortalResponse> _post(
     String action,
     Map<String, String> body, {
@@ -464,6 +765,8 @@ class PortalAccountService {
   Future<void> _forceSignOut(String reason) async {
     _token = null;
     _account = null;
+    _linkedPubkeys = const [];
+    _lastMeAt = null;
     await _store.deleteToken();
     await _store.deletePendingPkce();
     _pendingPkce = null;
