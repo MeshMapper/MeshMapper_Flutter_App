@@ -514,9 +514,24 @@ class MeshCoreConnection {
           final errorCode =
               reader.remainingBytesCount > 0 ? reader.readByte() : 0;
           debugLog('[CONN] Received ERR response (error code: $errorCode)');
-          // A pending sign owns this ERR: the write gate has queued every other
-          // command, so nothing else can be in flight. Without this the
-          // old-firmware feature detect hangs for the full sign timeout.
+          // A pending sign claims this ERR. Without it the old-firmware feature
+          // detect hangs for the full sign timeout.
+          //
+          // The claim is not airtight, and deliberately so. The write gate
+          // keeps every command *issued during* the sign off the wire, but it
+          // cannot recall one that was already awaiting its response when the
+          // sign began — and unlike the bare OK (whose only other consumer is
+          // setDeviceTime, once per connect), ERR has five: stats, channel
+          // info, device query, export contact and get time, two of them
+          // timer-driven (getStats every 5s, battery every 30s). So a foreign
+          // ERR that lands in that window is misattributed to the sign.
+          //
+          // Bounded, not dangerous: the foreign command still times out on its
+          // own (getStats carries its own 5s timeout), and the sign fails and
+          // is retried. The one verdict worth protecting is "this firmware has
+          // no CMD_SIGN" — the persistence layer requires two strikes before
+          // recording it, so a single misattributed ERR cannot condemn a radio
+          // that actually supports signing.
           if (_failPendingSign(
             SignException('err',
                 'Radio returned ERR during sign (error code $errorCode)'),
@@ -690,6 +705,13 @@ class MeshCoreConnection {
     if (gate != null && !gate.isCompleted) gate.complete();
     if (wasPending) debugLog('[CONN] Aborted in-flight sign');
   }
+
+  /// Abort any in-flight sign immediately, releasing the write gate so
+  /// teardown-time writes (advert-name restore, path-hash restore, flood
+  /// scope, channel deletion) are not parked behind the sign timeout.
+  /// Safe to call when no sign is running. The provider calls this FIRST
+  /// in its disconnect sequence (wired in a later task).
+  void abortPendingSign() => _abortPendingSign();
 
   void _onDeviceInfoResponse(BufferReader reader) {
     // Protocol format changed in v7/v8:

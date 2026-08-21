@@ -406,5 +406,32 @@ void main() {
       await connection.deleteWardrivingChannelEarly();
       await aborted;
     });
+
+    test('abortPendingSign releases the gate for teardown-time writes',
+        () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+      expect(transport.commandAt(0), CommandCodes.signStart);
+
+      final aborted = expectLater(
+        future,
+        throwsA(isA<SignException>().having((e) => e.code, 'code', 'aborted')),
+      );
+
+      // What the provider will call FIRST in its disconnect sequence.
+      connection.abortPendingSign();
+      await aborted;
+
+      // A gated write now goes out immediately instead of waiting out the
+      // sign's 5s timeout — this is the whole point of the public hook.
+      await connection.getBatteryVoltage();
+      expect(transport.commandAt(1), CommandCodes.getBatteryVoltage);
+    });
+
+    test('abortPendingSign is safe when no sign is running', () async {
+      connection.abortPendingSign();
+      await connection.getBatteryVoltage();
+      expect(transport.commandAt(0), CommandCodes.getBatteryVoltage);
+    });
   });
 }
