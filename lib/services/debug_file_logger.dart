@@ -96,6 +96,16 @@ class DebugFileLogger {
   static final RegExp _codeParamPattern = RegExp(
       r'\b(code|code_verifier|code_challenge|token)=[A-Za-z0-9._~%+/=-]{20,}');
 
+  /// The loose shapes the two patterns above miss: an UNQUOTED value, a `:`
+  /// separator, or a header name. `Map.toString()` renders a decoded body as
+  /// `{ok: true, token: fff…}` — no quotes, no `=` — and that is exactly what
+  /// `debug_submit_service.dart` writes on a failed upload. Case-insensitive so
+  /// the `X-MM-App-Token:` header is covered too. The 20-char floor keeps
+  /// `token: abc` and `code=7` intact.
+  static final RegExp _looseTokenPattern = RegExp(
+      r'''(\btoken['"]?\s*[:=]\s*)['"]?[A-Za-z0-9._~%+/=-]{20,}''',
+      caseSensitive: false);
+
   /// Strip credential shapes out of a log line.
   ///
   /// Log files are uploaded verbatim with bug reports and debug logging stays
@@ -103,9 +113,13 @@ class DebugFileLogger {
   /// "never log a secret". Public so it can be unit-tested.
   static String scrubSecrets(String message) {
     var out = message.replaceAll(_bearerPattern, 'Bearer <redacted>');
+    // Quoted JSON first, so the canonical `"token":"<redacted>"` shape is
+    // preserved rather than being half-eaten by the loose pattern.
     out = out.replaceAll(_tokenFieldPattern, '"token":"<redacted>"');
     out = out.replaceAllMapped(
         _codeParamPattern, (match) => '${match.group(1)}=<redacted>');
+    out = out.replaceAllMapped(
+        _looseTokenPattern, (match) => '${match.group(1)}<redacted>');
     return out;
   }
 

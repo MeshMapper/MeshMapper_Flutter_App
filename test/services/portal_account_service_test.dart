@@ -506,6 +506,19 @@ void main() {
       return service;
     }
 
+    /// Answers per `?action=`, so one test can seed the cache with `me` and
+    /// then exercise `link`/`unlink` against a cache that is not empty.
+    MockClient routedClient(Map<String, http.Response> byAction) =>
+        recordingClient((request) =>
+            byAction[request.url.queryParameters['action']] ??
+            http.Response('{"error":"unexpected_action"}', 500));
+
+    String meBody(List<Map<String, Object>> pubkeys) => jsonEncode({
+          'ok': true,
+          'user': {'id': 7, 'username': 'sparkgap'},
+          'pubkeys': pubkeys,
+        });
+
     test('send both auth headers and a form-encoded body', () async {
       final service = await signedIn(recordingClient(
           (_) => http.Response('{"nonce":"${'b' * 64}"}', 200)));
@@ -667,11 +680,105 @@ void main() {
       expect(service.account, isNull);
     });
 
-    test('unlink removes the pubkey from the cache', () async {
-      final service = await signedIn(
-          recordingClient((_) => http.Response('{"ok":true}', 200)));
+    test('a successful link lands in the cache exactly once', () async {
+      final service = await signedIn(routedClient({
+        'link': http.Response(
+            '{"ok":true,"pubkey":"${'A' * 64}","name":"WX7RAW","points":5}',
+            200),
+      }));
+      var changed = 0;
+      service.onAccountChanged = () => changed++;
+
+      expect(
+        await service.linkDevice(
+            pubkey: 'a' * 64,
+            nonce: 'b' * 64,
+            signature: 'c' * 128,
+            label: 'Ikoka Stick'),
+        isA<LinkSuccess>(),
+      );
+
+      final entry = service.linkedPubkeys.single;
+      expect(entry.pubkey, 'A' * 64);
+      expect(entry.label, 'Ikoka Stick');
+      expect(entry.name, 'WX7RAW');
+      expect(entry.points, 5);
+      expect(changed, 1);
+
+      // A relink of the SAME radio must not duplicate the entry, and must not
+      // re-notify: the UI would rebuild the device list for nothing.
+      expect(
+        await service.linkDevice(
+            pubkey: 'a' * 64, nonce: 'b' * 64, signature: 'c' * 128),
+        isA<LinkSuccess>(),
+      );
+      expect(service.linkedPubkeys.length, 1);
+      expect(changed, 1, reason: 'nothing was added the second time');
+    });
+
+    test('a link with no label caches an empty label', () async {
+      final service = await signedIn(routedClient({
+        'link': http.Response('{"ok":true,"pubkey":"${'A' * 64}"}', 200),
+      }));
+      await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+      expect(service.linkedPubkeys.single.label, '');
+      expect(service.linkedPubkeys.single.name, '');
+      expect(service.linkedPubkeys.single.points, 0);
+    });
+
+    test('unlink removes only the named pubkey and keeps the rest', () async {
+      final service = await signedIn(routedClient({
+        'me': http.Response(
+            meBody([
+              {
+                'pubkey': 'a' * 64,
+                'label': 'Stick',
+                'name': 'WX7RAW',
+                'points': 12
+              },
+              {
+                'pubkey': 'e' * 64,
+                'label': 'Nano',
+                'name': 'WX7NAN',
+                'points': 3
+              },
+            ]),
+            200),
+        'unlink': http.Response('{"ok":true}', 200),
+      }));
+
+      // Seed a NON-EMPTY cache first — unlinking out of an empty list passes
+      // even when the removal never happens.
+      expect(await service.refreshMe(), isTrue);
+      expect(service.linkedPubkeys.length, 2);
+
+      var changed = 0;
+      service.onAccountChanged = () => changed++;
+
       expect(await service.unlinkDevice('a' * 64), isTrue);
-      expect(service.linkedPubkeys, isEmpty);
+
+      expect(service.linkedPubkeys.map((p) => p.pubkey).toList(),
+          [('e' * 64).toUpperCase()]);
+      expect(changed, 1);
+    });
+
+    test('a refused unlink leaves the cache alone', () async {
+      final service = await signedIn(routedClient({
+        'me': http.Response(
+            meBody([
+              {'pubkey': 'a' * 64, 'label': '', 'name': '', 'points': 0}
+            ]),
+            200),
+        'unlink': http.Response('{"error":"not_found"}', 404),
+      }));
+      expect(await service.refreshMe(), isTrue);
+      var changed = 0;
+      service.onAccountChanged = () => changed++;
+
+      expect(await service.unlinkDevice('a' * 64), isFalse);
+      expect(service.linkedPubkeys.length, 1);
+      expect(changed, 0);
     });
 
     test('logout clears locally even when the revoke POST fails', () async {
