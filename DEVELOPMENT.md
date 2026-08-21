@@ -358,6 +358,95 @@ Keeps the screen on during auto-ping to prevent device sleep during wardriving s
 - **Platform**: Android and iOS only (Web N/A — always requires active tab)
 - **File**: `lib/services/wakelock_service.dart`
 
+### MyMeshMapper Account + Companion Linking
+
+Signs the user in to their portal account and offers to bind each connected
+radio's Ed25519 pubkey to it, so their wardriving counts toward that account.
+**Linking is strictly non-fatal — no failure may surface as an error or affect
+a connection.** Mobile only (`!kIsWeb`). Server contract:
+`MeshMapper_Server/docs/SPEC-app-portal-link.md`.
+
+- **Sign-in**: system-browser PKCE (S256 only). `PkcePair` (`lib/utils/pkce.dart`)
+  mints a 43-char verifier + challenge + independent `state`; the app opens
+  `portal.php?app_authorize=1&…` with `LaunchMode.externalApplication` (an in-app
+  WebView would see the user's password) and the portal deep-links back
+  `meshmapper-auth://callback?code=…&state=…`.
+- **Scheme**: `meshmapper-auth` (host `callback`), registered in
+  `ios/Runner/Info.plist` `CFBundleURLTypes` and the `MainActivity`
+  VIEW/BROWSABLE intent-filter. Deliberately NOT the bare `meshmapper` scheme —
+  that is a paste-only clipboard format (`docs/CUSTOM_API_ENDPOINT.md`,
+  `meshmapper://custom-api?…`) and registering it would hijack those links.
+- **Token**: 64-hex bearer in `flutter_secure_storage`
+  (`SecureTokenStore`, keys `portal_app_token` / `portal_pending_pkce`;
+  iOS `first_unlock_this_device`, Android EncryptedSharedPreferences in
+  `MeshMapperSecure`). Reads NEVER throw — a restored Android backup carries
+  ciphertext without the Keystore key, so the store wipes itself and reports
+  signed-out. The secure-prefs file is excluded from backup in
+  `res/xml/backup_rules.xml` and `res/xml/data_extraction_rules.xml`.
+- **The PKCE pair is PERSISTED**, not held in memory: iOS routinely kills the
+  backgrounded app while the user types their password in Safari. 10-minute TTL,
+  burned after one exchange attempt, and the `code` is deduped because
+  `app_links` 6.x delivers the cold-start URI on both `getInitialLink()` and
+  `uriLinkStream`. That dedupe is a **claim/release pair**: `Set.add` is the
+  atomic test-and-set at the guard (it must sit ahead of the first `await`), and
+  the claim is released again on every path that declines to exchange — no
+  pending pair, expired pair, state mismatch — so the genuine callback carrying
+  that same code is never locked out.
+- **An `error=` callback is honoured only when it answers a live attempt**: a
+  pending pair must exist and its `state` must match, and the code is allowlisted
+  (`^[a-z_]{1,32}$`, anything else collapses to `denied`). A deep link is
+  unauthenticated — any app on the device can fire
+  `meshmapper-auth://callback?error=x`, which would otherwise destroy a
+  legitimate in-flight pair and push an arbitrary string into the UI.
+- **Linking**: `requestNonce(pubkey)` → the app validates the answer is exactly
+  64 hex / 32 bytes → `MeshCoreConnection.sign()` has the radio Ed25519-sign the
+  **raw 32 bytes** → `linkDevice(pubkey, nonce, signature, label)` binds it. The
+  app lane NEVER auto-adopts placeholders: `adoption_required` shows a dialog
+  pointing at the browser portal.
+- **The sign write gate**: `CMD_SIGN_DATA` is acked by a bare `OK (0x00)`, and so
+  are `setFloodScope`, `setChannel`, `setPathHashMode`, `setAdvertName` and
+  `setTxPower`. Every outbound frame in `connection.dart` therefore funnels
+  through one private `_write(bytes, {isSignFrame})`, which queues non-sign
+  frames behind `_signGate` for the few hundred ms a sign takes. `getChannel()`
+  used to bypass `_sendToRadio` with a direct `_transport.write` — it now goes
+  through the gate too. `disconnect()`, `deleteWardrivingChannelEarly()` and
+  `dispose()` all call `_abortPendingSign()`, and the provider's user-initiated
+  `disconnect()` calls the public `abortPendingSign()` **first**, before any
+  teardown write, so a live sign can never park the advert-name/path-hash
+  restore or the channel deletion behind its timeout.
+- **When the prompt appears**: pure `decideLinkFlow()`
+  (`lib/services/link_decision.dart`) — signed in, not offline, not anonymous,
+  not auto-pinging, not auto-reconnecting, a pubkey exists, not declined, not
+  already linked, firmware can sign, and not already asked **this app session**
+  (per pubkey, so a BLE flap mid-drive cannot re-ask). Time-dependent backoff
+  and the 5-attempt cap live in `AppStateProvider` just before that call; the
+  dialog additionally gates on `isConnected`, since a pending prompt survives a
+  disconnect but the handshake needs a radio to sign. Control flow reads
+  `isPortalLoggedIn` (the live token), never `portalAccount != null` — the
+  cached account is a display name that outlives the token.
+- **Two strikes before a radio is written off**: an `unsupported` SignException
+  bumps an in-memory strike and is persisted to `portal_sign_unsupported_devices`
+  only on the SECOND one, because a stats/battery poller ERR already in flight
+  when the sign starts is misattributed as `unsupported`. A server
+  `bad_signature` has its own dedicated 2-strike counter (the generic attempt
+  counter also holds nonce and network failures, so it cannot stand in). A local
+  sign that succeeds clears the unsupported strike; a `LinkSuccess` clears BOTH
+  counters and the persisted verdict.
+- **Persistence** (Hive `user_preferences`): `portal_account_info`,
+  `portal_linked_pubkeys` (UPPER hex), `portal_link_declined_devices`,
+  `portal_sign_unsupported_devices`. Sign-out clears the first two and keeps the
+  last two — those are device preferences, not account data.
+- **Logging**: everything is `[ACCOUNT]`, routed through a redactor that strips
+  any live token / verifier / state / code, and `DebugFileLogger.scrubSecrets()`
+  strips credential shapes from every line written to a log FILE (debug logging
+  is on in release builds and those files ship with bug reports). Public keys
+  appear as an 8-char prefix only.
+- **Files**: `lib/utils/pkce.dart`, `lib/services/portal_token_store.dart`,
+  `lib/services/portal_account_service.dart`, `lib/services/link_decision.dart`,
+  `lib/services/meshcore/connection.dart` (`sign()`, `_write()`),
+  `lib/providers/app_state_provider.dart`, `lib/screens/main_scaffold.dart`,
+  `lib/screens/settings_screen.dart`.
+
 ### Coverage Overlay (vector tiles)
 
 The MeshMapper coverage layer is rendered from the region server's vector tiles
@@ -642,15 +731,18 @@ than running a guaranteed-fail retry loop all session.
 
 ### Android
 - Requires permissions: Bluetooth, Location (for BLE scanning)
-- minSdkVersion: 21 (Android 5.0+)
+- minSdkVersion: 24 (Flutter's `flutter.minSdkVersion` default; MapLibre GL needs 23+)
 - Background location permission for continuous tracking
 - Uses `flutter_blue_plus` package
+- URL scheme `meshmapper-auth` (host `callback`) registered on MainActivity via a VIEW/DEFAULT/BROWSABLE intent-filter — the portal sign-in return. The bare `meshmapper://` scheme is deliberately NOT registered: it is a paste-only clipboard format (`docs/CUSTOM_API_ENDPOINT.md`).
+- `android:fullBackupContent` / `android:dataExtractionRules` exclude the `MeshMapperSecure` secure-prefs file from backup
 
 ### iOS
 - Requires Info.plist entries: NSBluetoothAlwaysUsageDescription, NSLocationWhenInUseUsageDescription
-- Deployment target: 12.0+
+- Deployment target: 13.0
 - Background modes: bluetooth-central, location
 - Uses `flutter_blue_plus` package
+- `CFBundleURLTypes` registers the `meshmapper-auth` scheme (name `net.meshmapper.app.auth`) for the portal sign-in return
 
 ## Dependencies
 
@@ -665,6 +757,8 @@ Key packages used in this project:
 - `http`: API requests
 - `pointycastle`: Encryption (AES-ECB, SHA-256)
 - `usb_serial`: USB Serial communication on Android (USB OTG)
+- `app_links`: Custom-scheme deep links (`meshmapper-auth://callback`) for the portal sign-in return
+- `flutter_secure_storage`: Keychain / Android Keystore storage for the portal app token
 
 ### Vendored `maplibre_gl` (`third_party/maplibre_gl`)
 
@@ -750,6 +844,7 @@ debugError('[API] Failed to post batch: $error');
 | `[WAKELOCK]` | Wake lock acquisition/release |
 | `[WATCH]` | WatchConnectivity bridge: availability, snapshot delivery, wrist commands |
 | `[LIVE ACTIVITY]` | ActivityKit bridge: sync, end, and authorization failures |
+| `[ACCOUNT]` | MyMeshMapper portal sign-in and companion device linking |
 
 Never log without a tag.
 
@@ -875,6 +970,10 @@ All API endpoints may return maintenance mode:
 - `lib/services/debug_submit_service.dart` - Bug report submission (4-step workflow)
 - `lib/services/gps_simulator_service.dart` - GPS simulation for testing
 - `lib/services/wakelock_service.dart` - Screen wake lock during auto-ping
+- `lib/services/portal_account_service.dart` - MyMeshMapper portal lane (PKCE sign-in, nonce/link/unlink/me/logout)
+- `lib/services/portal_token_store.dart` - Keychain/Keystore storage for the portal token and pending PKCE pair
+- `lib/services/link_decision.dart` - Pure decision for whether to offer a device link
+- `lib/utils/pkce.dart` - RFC 7636 S256 PKCE pair generation
 - `lib/services/watch/watch_bridge_service.dart` - WatchConnectivity transport: throttle, dedupe, movement gate, map-geo lease, command admission
 - `lib/services/watch/watch_models.dart` - Watch wire contract and shared start-admission resolver
 - `lib/services/watch/watch_geo_builder.dart` - Ping/repeater/heard geography for the wrist, with wire caps

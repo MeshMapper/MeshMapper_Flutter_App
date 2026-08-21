@@ -241,3 +241,10 @@ The user copies this link, opens MeshMapper Settings > API Endpoints, and taps "
 - **Batch size**: 1-50 ping objects per request (typically 1-10).
 - **Session duration**: Wardriving sessions commonly last 30 minutes to several hours.
 - **Concurrent users**: Plan for multiple users if distributing your endpoint URL. Each user sends independently.
+
+## Why `meshmapper://` links are paste-only
+
+The `meshmapper://custom-api?...` format is deliberately **not** registered as
+an OS URL scheme. Tapping one does nothing; it has to be copied and imported
+from Settings. The app registers `meshmapper-auth://callback` instead (portal
+sign-in) precisely so that claiming a scheme never hijacks these config links.
