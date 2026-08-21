@@ -116,6 +116,8 @@ class SecureTokenStore implements PortalTokenStore {
     }
   }
 
+  /// Failures are swallowed by design — a completed write is NOT proof the
+  /// value was persisted; callers learn that only from a later null read.
   Future<void> _writeSafely(String key, String value) async {
     try {
       await _storage.write(
@@ -130,6 +132,8 @@ class SecureTokenStore implements PortalTokenStore {
     }
   }
 
+  /// Failures are swallowed by design — a completed delete is NOT proof the
+  /// value is gone; sign-out must never hard-fail on a flaky keystore.
   Future<void> _deleteSafely(String key) async {
     try {
       await _storage.delete(
