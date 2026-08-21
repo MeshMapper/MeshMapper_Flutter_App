@@ -4,7 +4,7 @@ This document provides comprehensive architecture documentation and development 
 
 ## Project Overview
 
-MeshMapper Flutter App is a cross-platform wardriving application for MeshCore mesh network devices. It's a Flutter port of the [MeshMapper WebClient](https://github.com/MeshMapper/MeshMapper_WebClient), supporting Android, iOS, and Web (Chrome/Edge only).
+MeshMapper Flutter App is a cross-platform wardriving application for MeshCore mesh network devices. It's a Flutter port of the [MeshMapper WebClient](https://github.com/MeshMapper/MeshMapper_WebClient), supporting Android and iOS. The web (Chrome/Edge) target's code is retained in the codebase but the web app is no longer built or published.
 
 **Purpose**: Connect to MeshCore devices via Bluetooth Low Energy, send GPS-tagged pings to the `#wardriving` channel, track repeater echoes, and post coverage data to the MeshMapper API for community mesh mapping.
 
