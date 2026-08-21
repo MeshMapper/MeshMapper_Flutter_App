@@ -9,7 +9,9 @@ import 'package:provider/provider.dart';
 import '../models/connection_state.dart';
 import '../providers/app_state_provider.dart';
 import '../services/permission_disclosure_service.dart';
+import '../services/portal_account_service.dart';
 import '../utils/debug_logger_io.dart';
+import '../widgets/app_toast.dart';
 import 'home_screen.dart';
 import 'log_screen.dart';
 import 'connection_screen.dart';
@@ -29,6 +31,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   bool _hasCheckedDisclosure = false;
   bool _hasShownLocationSettingsPrompt = false;
   bool _floodDisabledDialogOpen = false;
+  bool _linkPromptDialogOpen = false;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -160,6 +163,99 @@ class _MainScaffoldState extends State<MainScaffold> {
     _floodDisabledDialogOpen = false;
   }
 
+  /// One-tap offer to bind the connected radio to the signed-in account.
+  ///
+  /// Mirrors the flood-disabled alert: a postFrameCallback plus a local
+  /// open-guard, because build() runs on every provider notify.
+  Future<void> _showLinkPrompt() async {
+    final appState = context.read<AppStateProvider>();
+    final deviceName = appState.portalLinkPromptDeviceName ?? 'this device';
+    final accountName = appState.portalAccount?.displayName ?? 'your account';
+    debugLog('[ACCOUNT] Showing the device link prompt');
+
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Link This Device?'),
+        content: Text(
+          "Link '$deviceName' to your MeshMapper account ($accountName)? "
+          'Wardriving data from this device will count toward your account.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('No thanks'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Link Device'),
+          ),
+        ],
+      ),
+    );
+
+    final outcome = await appState.respondToLinkPrompt(accepted ?? false);
+    _linkPromptDialogOpen = false;
+    if (!mounted) return;
+    await showLinkOutcome(context, outcome);
+  }
+
+  /// Present a link result. Success is a toast; the two cases that need the
+  /// user to go somewhere else get a dialog. Every other outcome — network,
+  /// server, unsupported firmware, unauthorized — is deliberately SILENT:
+  /// linking must never look like a wardriving failure.
+  static Future<void> showLinkOutcome(
+      BuildContext context, PortalLinkOutcome outcome) async {
+    switch (outcome.status) {
+      case PortalLinkStatus.linked:
+        AppToast.success(
+          context,
+          'Linked to ${outcome.accountName ?? 'your MeshMapper account'}',
+        );
+      case PortalLinkStatus.adoptionRequired:
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Finish Setup in the Portal'),
+            content: Text(
+              'Your account still has ${outcome.adoptionDeviceCount} '
+              'placeholder device(s). Claiming them moves every one of your '
+              'radios at once, so it has to be done deliberately at '
+              'portal.meshmapper.net. Once that is finished, come back and '
+              'link this device.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      case PortalLinkStatus.alreadyLinkedOtherAccount:
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Already Linked Elsewhere'),
+            content: const Text(
+              'This radio is already linked to a different MeshMapper '
+              'account. Unlink it there first, then link it here.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      case PortalLinkStatus.skipped:
+      case PortalLinkStatus.unauthorized:
+      case PortalLinkStatus.failed:
+        break;
+    }
+  }
+
   void _showLocationSettingsPrompt() {
     if (!mounted || _hasShownLocationSettingsPrompt) return;
     _hasShownLocationSettingsPrompt = true;
@@ -210,6 +306,20 @@ class _MainScaffoldState extends State<MainScaffold> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _showFloodDisabledDialog();
+      });
+    }
+
+    // MyMeshMapper account link offer (post-connection, non-fatal).
+    // A pending prompt survives disconnect by design (the provider no-ops
+    // safely if it is answered afterwards), but never RAISE the dialog for a
+    // dead connection — the link handshake needs the radio to sign a nonce.
+    if (appState.isConnected &&
+        appState.portalLinkPromptPending &&
+        !_linkPromptDialogOpen) {
+      _linkPromptDialogOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _showLinkPrompt();
       });
     }
 
