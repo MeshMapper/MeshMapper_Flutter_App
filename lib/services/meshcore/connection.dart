@@ -99,6 +99,25 @@ class SelfInfo {
   }
 }
 
+/// Thrown by [MeshCoreConnection.sign] for protocol-level sign failures.
+///
+/// [code] is stable and is what callers branch on:
+/// * `unsupported`          — the radio answered CMD_SIGN_START with ERR (old firmware)
+/// * `data_too_long`        — payload exceeds the radio's `maxSignDataLen`
+/// * `malformed_response`   — a truncated RESP_SIGN_START / RESP_SIGNATURE frame
+/// * `bad_signature_length` — the radio returned something other than 64 bytes
+/// * `err`                  — the radio answered ERR mid-sign
+/// * `aborted`              — the connection closed while a sign was in flight
+class SignException implements Exception {
+  final String code;
+  final String message;
+
+  const SignException(this.code, this.message);
+
+  @override
+  String toString() => 'SignException($code): $message';
+}
+
 /// MeshCore connection manager
 /// Ported from content/mc/connection/connection.js in WebClient repo
 ///
@@ -142,6 +161,15 @@ class MeshCoreConnection {
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
   Completer<int>? _getTimeCompleter;
+
+  // CMD_SIGN state. `_signGate` is non-null for the whole duration of a sign;
+  // Task-4's write funnel queues every non-sign frame behind it so no other
+  // command's OK can be mistaken for a per-chunk sign ack.
+  bool _signInProgress = false;
+  Completer<int>? _signStartCompleter; // resolves with maxSignDataLen
+  Completer<void>? _signChunkOkCompleter; // resolves on each chunk's OK
+  Completer<Uint8List>? _signatureCompleter; // resolves with the 64-byte sig
+  Completer<void>? _signGate;
 
   // Device self info (contains public key)
   SelfInfo? _selfInfo;
@@ -454,10 +482,21 @@ class MeshCoreConnection {
 
       switch (responseCode) {
         case ResponseCodes.ok:
-          debugLog('[CONN] Received OK response');
-          _setTimeCompleter?.complete();
-          _setTimeCompleter = null;
-          break;
+          {
+            debugLog('[CONN] Received OK response');
+            // A pending sign owns the bare OK: while a sign runs, the write
+            // gate has queued every other OK-emitting command, so nothing else
+            // can be waiting on one.
+            final signOk = _signChunkOkCompleter;
+            if (signOk != null) {
+              _signChunkOkCompleter = null;
+              if (!signOk.isCompleted) signOk.complete();
+              break;
+            }
+            _setTimeCompleter?.complete();
+            _setTimeCompleter = null;
+            break;
+          }
         case ResponseCodes.err:
           final errorCode =
               reader.remainingBytesCount > 0 ? reader.readByte() : 0;
@@ -530,6 +569,45 @@ class MeshCoreConnection {
         case ResponseCodes.exportContact:
           _onExportContactResponse(reader);
           break;
+        case ResponseCodes.signStart:
+          {
+            final completer = _signStartCompleter;
+            _signStartCompleter = null;
+            if (completer == null || completer.isCompleted) {
+              debugLog('[CONN] Ignoring unsolicited SIGN_START response');
+              break;
+            }
+            // [reserved:1][maxSignDataLen:u32 LE]
+            if (reader.remainingBytesCount < 5) {
+              completer.completeError(const SignException('malformed_response',
+                  'SIGN_START response is shorter than 5 bytes'));
+              break;
+            }
+            reader.readByte(); // reserved
+            completer.complete(reader.readUInt32LE());
+            break;
+          }
+        case ResponseCodes.signature:
+          {
+            final completer = _signatureCompleter;
+            _signatureCompleter = null;
+            if (completer == null || completer.isCompleted) {
+              debugLog('[CONN] Ignoring unsolicited SIGNATURE response');
+              break;
+            }
+            // Guard BEFORE readBytes(64): a short frame must fast-fail here,
+            // otherwise it becomes a RangeError swallowed by the outer catch
+            // and the caller waits out the full 5s timeout for nothing.
+            if (reader.remainingBytesCount < 64) {
+              completer.completeError(SignException(
+                  'malformed_response',
+                  'SIGNATURE response carries ${reader.remainingBytesCount} '
+                      'bytes, expected 64'));
+              break;
+            }
+            completer.complete(reader.readBytes(64));
+            break;
+          }
         default:
           // Log unhandled response codes (like JS implementation)
           debugLog(
@@ -847,9 +925,16 @@ class MeshCoreConnection {
     }
   }
 
+  /// The ONE outbound funnel. Every frame this class sends goes through here so
+  /// there is a single place to serialize writes (see the sign gate) — a second
+  /// path would silently escape it.
+  Future<void> _write(Uint8List bytes) async {
+    await _transport.write(bytes);
+  }
+
   /// Write frame to device
   Future<void> _sendToRadio(BufferWriter data) async {
-    await _transport.write(data.toBytes());
+    await _write(data.toBytes());
   }
 
   // ============================================
@@ -987,7 +1072,7 @@ class MeshCoreConnection {
     final bytes = data.toBytes();
     debugLog(
         '[CONN] getChannel bytes: ${bytes.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').join(' ')}');
-    await _transport.write(bytes);
+    await _write(bytes);
 
     return future.timeout(
       const Duration(seconds: 5),
@@ -1224,6 +1309,93 @@ class MeshCoreConnection {
       timeout,
       onTimeout: () => throw TimeoutException('Export contact timed out'),
     );
+  }
+
+  /// Ask the radio to Ed25519-sign [data] with its device private key.
+  ///
+  /// Framing (byte-identical to the portal's meshcore.js, which minted every
+  /// existing `portal_pubkeys` row):
+  ///   CMD_SIGN_START  (0x21)                    -> RESP_SIGN_START (19)
+  ///   CMD_SIGN_DATA   (0x22) + <=128 data bytes -> OK (0x00), one per chunk
+  ///   CMD_SIGN_FINISH (0x23)                    -> RESP_SIGNATURE (20) [64]
+  ///
+  /// Sign the RAW bytes, never their hex text. Throws [SignException] for
+  /// protocol failures, [TimeoutException] when the radio goes quiet, and
+  /// [StateError] when the connection is disposed or a sign is already running.
+  Future<Uint8List> sign(Uint8List data,
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    if (_disposed) {
+      throw StateError('Cannot sign on a disposed connection');
+    }
+    if (_signInProgress) {
+      throw StateError('A sign is already in progress');
+    }
+
+    _signInProgress = true;
+    final gate = Completer<void>();
+    _signGate = gate;
+    debugLog('[CONN] sign: starting (${data.length} bytes)');
+
+    try {
+      // 1) SIGN_START -> maxSignDataLen
+      final startCompleter = Completer<int>();
+      _signStartCompleter = startCompleter;
+      final startFrame = BufferWriter()..writeByte(CommandCodes.signStart);
+      await _write(startFrame.toBytes());
+      final maxSignDataLen = await startCompleter.future.timeout(
+        timeout,
+        onTimeout: () => throw TimeoutException('sign: SIGN_START timed out'),
+      );
+      debugLog('[CONN] sign: maxSignDataLen=$maxSignDataLen');
+
+      if (data.length > maxSignDataLen) {
+        throw SignException('data_too_long',
+            'Payload is ${data.length} bytes, radio accepts $maxSignDataLen');
+      }
+
+      // 2) SIGN_DATA chunks, one OK each
+      final chunkSize = min(128, maxSignDataLen);
+      for (var offset = 0; offset < data.length; offset += chunkSize) {
+        final end = min(offset + chunkSize, data.length);
+        final okCompleter = Completer<void>();
+        _signChunkOkCompleter = okCompleter;
+        final chunkFrame = BufferWriter()
+          ..writeByte(CommandCodes.signData)
+          ..writeBytes(data.sublist(offset, end));
+        await _write(chunkFrame.toBytes());
+        await okCompleter.future.timeout(
+          timeout,
+          onTimeout: () => throw TimeoutException('sign: chunk ack timed out'),
+        );
+        debugLog('[CONN] sign: chunk acked (${end - offset} bytes)');
+      }
+
+      // 3) SIGN_FINISH -> signature
+      final sigCompleter = Completer<Uint8List>();
+      _signatureCompleter = sigCompleter;
+      final finishFrame = BufferWriter()..writeByte(CommandCodes.signFinish);
+      await _write(finishFrame.toBytes());
+      final signature = await sigCompleter.future.timeout(
+        timeout,
+        onTimeout: () => throw TimeoutException('sign: signature timed out'),
+      );
+
+      if (signature.length != 64) {
+        throw SignException('bad_signature_length',
+            'Radio returned ${signature.length} bytes, expected 64');
+      }
+      debugLog('[CONN] sign: signature received');
+      return signature;
+    } finally {
+      // Clear on EVERY path (success, throw, timeout) or the next sign
+      // inherits a stale completer and hangs.
+      _signStartCompleter = null;
+      _signChunkOkCompleter = null;
+      _signatureCompleter = null;
+      _signInProgress = false;
+      if (identical(_signGate, gate)) _signGate = null;
+      if (!gate.isCompleted) gate.complete();
+    }
   }
 
   /// Get radio statistics (noise floor)
