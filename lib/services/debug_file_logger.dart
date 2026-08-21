@@ -88,6 +88,27 @@ class DebugFileLogger {
     }
   }
 
+  /// Credential shapes stripped from every line written to a log FILE.
+  static final RegExp _bearerPattern =
+      RegExp(r'Bearer\s+[A-Za-z0-9._~+/=-]{8,}');
+  static final RegExp _tokenFieldPattern =
+      RegExp(r'"token"\s*:\s*"[0-9a-zA-Z._~+/=-]{8,}"');
+  static final RegExp _codeParamPattern = RegExp(
+      r'\b(code|code_verifier|code_challenge|token)=[A-Za-z0-9._~%+/=-]{20,}');
+
+  /// Strip credential shapes out of a log line.
+  ///
+  /// Log files are uploaded verbatim with bug reports and debug logging stays
+  /// on in release builds, so this is the last line of defence behind
+  /// "never log a secret". Public so it can be unit-tested.
+  static String scrubSecrets(String message) {
+    var out = message.replaceAll(_bearerPattern, 'Bearer <redacted>');
+    out = out.replaceAll(_tokenFieldPattern, '"token":"<redacted>"');
+    out = out.replaceAllMapped(
+        _codeParamPattern, (match) => '${match.group(1)}=<redacted>');
+    return out;
+  }
+
   /// Write a log entry to the current file
   ///
   /// Called by debug_logger_stub.dart for each log message
@@ -99,7 +120,7 @@ class DebugFileLogger {
     if (!_enabled) return;
 
     final timestamp = DateTime.now().toIso8601String();
-    final line = '[$timestamp] $level: $message';
+    final line = '[$timestamp] $level: ${scrubSecrets(message)}';
 
     if (_logSink == null) {
       // Buffer logs until sink is ready (race condition during initialization)
