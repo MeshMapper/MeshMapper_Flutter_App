@@ -173,31 +173,41 @@ class _MainScaffoldState extends State<MainScaffold> {
     final accountName = appState.portalAccount?.displayName ?? 'your account';
     debugLog('[ACCOUNT] Showing the device link prompt');
 
-    final accepted = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Link This Device?'),
-        content: Text(
-          "Link '$deviceName' to your MeshMapper account ($accountName)? "
-          'Wardriving data from this device will count toward your account.',
+    // try/finally, not a plain assignment: anything that throws between here
+    // and the reset (a dialog torn down mid-route, a respondToLinkPrompt
+    // failure) would leave the guard latched TRUE for the life of the screen,
+    // and the prompt could never be shown again this session.
+    try {
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Link This Device?'),
+          content: Text(
+            "Link '$deviceName' to your MeshMapper account ($accountName)? "
+            'Wardriving data from this device will count toward your account.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('No thanks'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Link Device'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('No thanks'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Link Device'),
-          ),
-        ],
-      ),
-    );
+      );
 
-    final outcome = await appState.respondToLinkPrompt(accepted ?? false);
-    _linkPromptDialogOpen = false;
-    if (!mounted) return;
-    await showLinkOutcome(context, outcome);
+      final outcome = await appState.respondToLinkPrompt(accepted ?? false);
+      // Released BEFORE the outcome is presented, as before: the outcome
+      // dialog is its own modal and must not hold the prompt guard.
+      _linkPromptDialogOpen = false;
+      if (!mounted) return;
+      await showLinkOutcome(context, outcome);
+    } finally {
+      _linkPromptDialogOpen = false;
+    }
   }
 
   /// Present a link result. Success is a toast; the two cases that need the

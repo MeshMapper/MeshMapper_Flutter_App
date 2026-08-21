@@ -781,6 +781,79 @@ void main() {
       expect(changed, 0);
     });
 
+    test('a link keeps the pubkeys restored from the cache', () async {
+      final service = await signedIn(routedClient({
+        'link': http.Response('{"ok":true,"pubkey":"${'C' * 64}"}', 200),
+      }));
+
+      // Exactly what the provider does on startup: replay the Hive cache into
+      // the service before anything can mutate it.
+      service.hydrateLinkedPubkeys([('a' * 64), ('b' * 64).toUpperCase()]);
+      expect(service.linkedPubkeys.length, 2);
+
+      expect(
+        await service.linkDevice(
+            pubkey: 'c' * 64, nonce: 'd' * 64, signature: 'e' * 128),
+        isA<LinkSuccess>(),
+      );
+
+      // The provider mirrors this list back wholesale, so a dropped A/B here
+      // is a wiped cache on disk.
+      expect(
+        service.linkedPubkeys.map((p) => p.pubkey).toList(),
+        [('A' * 64), ('B' * 64), ('C' * 64)],
+      );
+    });
+
+    test('an unlink removes only its own pubkey from a restored cache',
+        () async {
+      final service = await signedIn(routedClient({
+        'unlink': http.Response('{"ok":true}', 200),
+      }));
+
+      service.hydrateLinkedPubkeys([('a' * 64), ('b' * 64)]);
+
+      expect(await service.unlinkDevice('a' * 64), isTrue);
+
+      expect(service.linkedPubkeys.map((p) => p.pubkey).toList(), [('B' * 64)]);
+    });
+
+    test('hydrating the cache does not notify', () async {
+      final service = await signedIn(routedClient(const {}));
+      var changed = 0;
+      service.onAccountChanged = () => changed++;
+
+      service.hydrateLinkedPubkeys([('a' * 64)]);
+
+      expect(service.linkedPubkeys.length, 1);
+      expect(changed, 0, reason: 'a load is not a change');
+      expect(requests, isEmpty);
+    });
+
+    test('a signed-out link is refused without any HTTP call', () async {
+      final service = buildService(
+          recordingClient((_) => http.Response('{"ok":true}', 200)));
+      await service.init();
+      expect(service.isSignedIn, isFalse);
+
+      final result = await service.linkDevice(
+          pubkey: 'a' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+
+      expect(result, isA<LinkNetworkError>());
+      expect((result as LinkNetworkError).detail, 'no_token');
+      expect(requests, isEmpty,
+          reason: 'a header-less POST can only ever be refused');
+    });
+
+    test('a signed-out nonce request makes no HTTP call', () async {
+      final service = buildService(recordingClient(
+          (_) => http.Response('{"nonce":"${'b' * 64}"}', 200)));
+      await service.init();
+
+      expect(await service.requestNonce('A' * 64), isNull);
+      expect(requests, isEmpty);
+    });
+
     test('logout clears locally even when the revoke POST fails', () async {
       final service =
           await signedIn(recordingClient((_) => http.Response('boom', 500)));

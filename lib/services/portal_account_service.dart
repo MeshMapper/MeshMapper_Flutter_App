@@ -272,6 +272,26 @@ class PortalAccountService {
   /// network call happens.
   void hydrateAccount(PortalAccount account) => _account = account;
 
+  /// Restore the cached linked-device list from Hive.
+  ///
+  /// Load-bearing: `link`/`unlink` mutate THIS list and the provider mirrors it
+  /// back wholesale on `onAccountChanged`. Without the hydrate, linking a new
+  /// radio would publish a one-entry list and wipe every previously cached
+  /// pubkey. Only membership is restored — label/name/points are `me` data and
+  /// are refilled by the next `refreshMe`. Deliberately does NOT fire
+  /// `onAccountChanged`: this runs during load, before any listener cares.
+  void hydrateLinkedPubkeys(List<String> pubkeys) {
+    _linkedPubkeys = pubkeys
+        .where((pubkey) => pubkey.isNotEmpty)
+        .map((pubkey) => LinkedPubkey(
+              pubkey: pubkey.toUpperCase(),
+              label: '',
+              name: '',
+              points: 0,
+            ))
+        .toList(growable: false);
+  }
+
   Future<void> init() async {
     _token = await _store.readToken();
     _log('init: signedIn=${_token != null}');
@@ -289,12 +309,16 @@ class PortalAccountService {
       onError: (Object e) => _warn('link stream error: ${e.runtimeType}'),
     );
 
-    try {
-      final initial = await links.getInitialLink();
+    // Fire-and-forget on purpose. The caller AWAITS init() during app startup,
+    // and handleAuthCallback runs a token exchange with a 10s timeout — that is
+    // the feature's own cold-start path, and awaiting it here would stall BLE
+    // setup and auto-connect behind it. The token read and the stream subscribe
+    // above are the only parts startup actually has to wait for.
+    unawaited(links.getInitialLink().then<void>((initial) async {
       if (initial != null) await handleAuthCallback(initial);
-    } catch (e) {
+    }).catchError((Object e) {
       _warn('getInitialLink failed: ${e.runtimeType}');
-    }
+    }));
   }
 
   /// Re-check the last deep link on app resume — iOS can deliver the callback
@@ -717,8 +741,18 @@ class PortalAccountService {
     String action,
     Map<String, String> body, {
     bool authenticated = true,
-  }) =>
-      _postWithToken(action, body, authenticated ? _token : null);
+  }) {
+    // An authenticated call with no token can only ever be refused, and sending
+    // it header-less would draw a bare 401 the callers have to disambiguate —
+    // worse, a race that signs out mid-link would answer `token_invalid` and
+    // fire a SECOND sign-out event. Answer locally instead; `status == 0` makes
+    // this a network failure to every caller, which is the harmless verdict.
+    if (authenticated && _token == null) {
+      _warn('$action skipped: signed out');
+      return Future.value(const _PortalResponse(0, {}, 'no_token'));
+    }
+    return _postWithToken(action, body, authenticated ? _token : null);
+  }
 
   Future<_PortalResponse> _postWithToken(
     String action,

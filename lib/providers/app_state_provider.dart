@@ -1127,8 +1127,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// How many radios this account owns (from the last `me` refresh).
   int get portalLinkedDeviceCount => _portalLinkedPubkeys.length;
 
-  /// True when the user has declined linking for at least one radio.
-  bool get hasPortalLinkDeclines => _portalLinkDeclinedDevices.isNotEmpty;
+  /// True when at least one radio is suppressed from the link prompt — either
+  /// the user declined it or it was judged unable to sign. Both are cleared by
+  /// `resetLinkPromptDeclines()`, so this is what gates the reset control:
+  /// a sign-unsupported verdict with no visible way back is a dead end.
+  bool get hasPortalLinkResets =>
+      _portalLinkDeclinedDevices.isNotEmpty ||
+      _portalSignUnsupportedDevices.isNotEmpty;
 
   /// True when the currently connected radio is already bound to the account.
   bool get isCurrentDeviceLinked {
@@ -2587,7 +2592,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _loadDevicePowerOverrides();
     await _loadDeviceRealNames();
     await _loadPortalAccountState();
-    await _portalAccountService.init();
+    // Account init is never allowed to abort the rest of startup — everything
+    // after this point (GPS restore, BLE listeners, auto-connect) matters more
+    // than the portal lane.
+    try {
+      await _portalAccountService.init();
+    } catch (e) {
+      debugWarn('[ACCOUNT] Init failed: ${e.runtimeType}');
+    }
 
     // Load last known GPS position for map centering
     await _loadLastPosition();
@@ -4434,6 +4446,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_maybeOfferDeviceLink());
     } catch (e) {
       debugWarn('[ACCOUNT] Link offer failed to start: $e');
+    }
+
+    // Heal a stale cache: a portal-side unlink or a revoked token is discovered
+    // within the hour instead of never. Non-forced, so the service's own 1/hour
+    // throttle bounds the writes this makes to the site-wide auth DB, and it
+    // returns immediately when signed out.
+    if (!kIsWeb) {
+      try {
+        unawaited(_portalAccountService.refreshMe());
+      } catch (e) {
+        debugWarn('[ACCOUNT] Account refresh failed to start: $e');
+      }
     }
   }
 
@@ -8963,6 +8987,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (rawLinked is List) {
         _portalLinkedPubkeys =
             rawLinked.map((entry) => entry.toString().toUpperCase()).toList();
+        // The service is the single source of truth for this list —
+        // onAccountChanged mirrors it back WHOLESALE. Seed it too, or the first
+        // link/unlink would publish a list built from an empty cache and wipe
+        // every radio linked before this launch.
+        _portalAccountService.hydrateLinkedPubkeys(_portalLinkedPubkeys);
       }
 
       final rawDeclined = box.get(_portalDeclinedKey);
@@ -9047,12 +9076,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _portalAccountService.refreshMe(force: force);
   }
 
-  /// Clear every persisted decline so declined radios are offered again.
+  /// Clear every persisted decline AND every sign-unsupported verdict, so both
+  /// kinds of suppressed radio are offered again.
+  ///
+  /// The sign-unsupported verdict is sticky by design (a radio without
+  /// CMD_SIGN must not be re-asked every connect), but it is a firmware fact,
+  /// not a permanent one: a firmware update adds the command. This is the only
+  /// user-facing way back, so the in-memory strike counters that feed the
+  /// verdict are reset with it — otherwise one more strike would re-latch it.
   Future<void> resetLinkPromptDeclines() async {
     debugLog('[ACCOUNT] Clearing '
-        '${_portalLinkDeclinedDevices.length} link decline(s)');
+        '${_portalLinkDeclinedDevices.length} link decline(s) and '
+        '${_portalSignUnsupportedDevices.length} sign-unsupported verdict(s)');
     _portalLinkDeclinedDevices.clear();
     _portalPromptedThisSession.clear();
+    _portalSignUnsupportedDevices.clear();
+    _portalUnsupportedStrikes.clear();
+    _portalBadSignatureStrikes.clear();
     await _savePortalAccountState();
     notifyListeners();
   }

@@ -776,11 +776,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   trailing: const Icon(Icons.refresh),
                   onTap: () => _refreshPortalAccount(context, appState),
                 ),
-                if (appState.hasPortalLinkDeclines)
+                if (appState.hasPortalLinkResets)
                   ListTile(
                     leading: const Icon(Icons.replay),
                     title: const Text('Re-enable Link Prompts'),
-                    subtitle: const Text('Ask again for devices you declined'),
+                    subtitle:
+                        const Text('Ask again for declined or unsupported '
+                            'devices'),
                     onTap: () => _resetPortalDeclines(context, appState),
                   ),
                 ListTile(
