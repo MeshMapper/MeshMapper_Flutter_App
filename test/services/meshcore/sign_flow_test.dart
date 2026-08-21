@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
+import 'package:mesh_mapper/utils/debug_logger_io.dart';
 
 import 'fake_companion_transport.dart';
 
@@ -108,5 +110,64 @@ void main() {
   test('signing on a disposed connection throws StateError', () {
     connection.dispose();
     expect(() => connection.sign(nonce32()), throwsA(isA<StateError>()));
+  });
+
+  test('the signature never reaches the debug log', () async {
+    // Debug logs are uploadable to the bug-report endpoint, so the 64-byte
+    // Ed25519 signature must not appear in one — not even via the generic
+    // per-frame hexdump that runs before the dispatch switch.
+    final logLines = <String>[];
+    final originalDebugPrint = debugPrint;
+    final originalEnabled = DebugLogger.isEnabled;
+    debugPrint = (String? message, {int? wrapWidth}) {
+      if (message != null) logLines.add(message);
+    };
+    DebugLogger.setEnabled(true);
+    addTearDown(() {
+      debugPrint = originalDebugPrint;
+      DebugLogger.setEnabled(originalEnabled);
+    });
+
+    final future = connection.sign(nonce32());
+    await transport.settle();
+    transport.emit(signStartResponse(128));
+    await transport.settle();
+    transport.emit([ResponseCodes.ok]);
+    await transport.settle();
+    transport.emit(signatureResponse(0xAB));
+    expect((await future).length, 64);
+
+    // The harness actually captured something, or the assertions below are
+    // vacuously true.
+    expect(logLines, isNotEmpty);
+
+    // No line carries the signature bytes in any quantity.
+    expect(
+      logLines.where((line) => line.contains('ab ab ab')),
+      isEmpty,
+      reason: 'signature bytes were hex-dumped into the debug log',
+    );
+    expect(logLines.where((line) => line.contains('ab ab')), isEmpty);
+
+    // The frame is still logged — by length, with the payload redacted.
+    expect(
+      logLines.where((line) =>
+          line.contains('Frame received (65 bytes)') &&
+          line.contains('SIGNATURE payload redacted')),
+      isNotEmpty,
+    );
+
+    // Ordinary frames are untouched: the SIGN_START response and the bare OK
+    // still hexdump in full.
+    expect(
+      logLines.where((line) =>
+          line.contains('Frame received (6 bytes): 13 00 80 00 00 00')),
+      isNotEmpty,
+      reason: 'non-signature frames must keep the existing hexdump',
+    );
+    expect(
+      logLines.where((line) => line.contains('Frame received (1 bytes): 00')),
+      isNotEmpty,
+    );
   });
 }

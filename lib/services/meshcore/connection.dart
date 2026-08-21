@@ -470,9 +470,16 @@ class MeshCoreConnection {
   void _onFrameReceived(Uint8List frame) {
     if (frame.isEmpty) return;
 
+    // A RESP_SIGNATURE payload is 64 bytes of Ed25519 signature over the
+    // portal's login nonce, and debug logs are uploadable to the bug-report
+    // endpoint — so this one frame is logged by length only, never as hex.
+    // Every other frame keeps the full hexdump.
+    final frameDump = frame[0] == ResponseCodes.signature
+        ? 'SIGNATURE payload redacted'
+        : _hexDump(frame);
+
     try {
-      debugLog(
-          '[CONN] Frame received (${frame.length} bytes): ${_hexDump(frame)}');
+      debugLog('[CONN] Frame received (${frame.length} bytes): $frameDump');
 
       final reader = BufferReader(frame);
       final responseCode = reader.readByte();
@@ -616,7 +623,7 @@ class MeshCoreConnection {
       }
     } catch (e, stack) {
       debugError('[CONN] Error processing frame (${frame.length} bytes): $e');
-      debugError('[CONN] Frame hex: ${_hexDump(frame)}');
+      debugError('[CONN] Frame hex: $frameDump');
       debugError('[CONN] Stack trace: $stack');
     }
   }
