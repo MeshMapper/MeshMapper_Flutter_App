@@ -39,6 +39,11 @@ dependencies:
   fl_chart: ^0.69.0
   web: ^1.1.0
   disk_space_plus: ^0.2.3
+  # Custom-scheme deep links for the MyMeshMapper portal sign-in callback
+  # (meshmapper-auth://callback). uni_links was rejected — unmaintained.
+  app_links: ^6.3.0
+  # Keychain / Android Keystore storage for the portal app token
+  flutter_secure_storage: ^9.2.0
 
 dev_dependencies:
   flutter_test:
