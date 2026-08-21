@@ -407,6 +407,9 @@ class MeshCoreConnection {
   /// Delete wardriving channel early (before stopping services)
   /// This should be called FIRST in the disconnect flow to ensure BLE is still connected
   Future<void> deleteWardrivingChannelEarly() async {
+    // Channel deletion is a gated write; a live sign would park it behind the
+    // sign timeout while BLE is still up. Abort the sign first.
+    _abortPendingSign();
     final channel = _wardrivingChannel;
     if (channel != null) {
       await ChannelService.deleteWardrivingChannel(this, channel.channelIndex);
@@ -417,6 +420,7 @@ class MeshCoreConnection {
   Future<void> disconnect() async {
     try {
       debugLog('[CONN] Disconnecting');
+      _abortPendingSign();
 
       // Stop noise floor polling
       _stopNoiseFloorPolling();
@@ -491,9 +495,11 @@ class MeshCoreConnection {
         case ResponseCodes.ok:
           {
             debugLog('[CONN] Received OK response');
-            // A pending sign owns the bare OK: while a sign runs, the write
-            // gate has queued every other OK-emitting command, so nothing else
-            // can be waiting on one.
+            // A pending sign owns the bare OK. The write gate keeps every
+            // OK-emitting command *issued during* the sign off the wire, but it
+            // cannot recall one that was already awaiting its OK when the sign
+            // began. That is safe only because the sole other bare-OK consumer
+            // is setDeviceTime, which runs once during connect().
             final signOk = _signChunkOkCompleter;
             if (signOk != null) {
               _signChunkOkCompleter = null;
@@ -508,6 +514,17 @@ class MeshCoreConnection {
           final errorCode =
               reader.remainingBytesCount > 0 ? reader.readByte() : 0;
           debugLog('[CONN] Received ERR response (error code: $errorCode)');
+          // A pending sign owns this ERR: the write gate has queued every other
+          // command, so nothing else can be in flight. Without this the
+          // old-firmware feature detect hangs for the full sign timeout.
+          if (_failPendingSign(
+            SignException('err',
+                'Radio returned ERR during sign (error code $errorCode)'),
+            startError: SignException('unsupported',
+                'Radio rejected CMD_SIGN_START (error code $errorCode)'),
+          )) {
+            break;
+          }
           // Time sync: error code 6 (ERR_CODE_ILLEGAL_ARG) means "no sync needed" — treat as success
           if (_setTimeCompleter != null) {
             if (errorCode == 6) {
@@ -631,6 +648,47 @@ class MeshCoreConnection {
   /// Helper to convert bytes to hex string for debugging
   String _hexDump(Uint8List bytes) {
     return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+  }
+
+  /// Complete every pending sign completer with an error. The SIGN_START
+  /// completer gets [startError] when supplied, so an ERR at that stage reads
+  /// as "this firmware has no CMD_SIGN" rather than a generic failure.
+  ///
+  /// Returns true when a sign was actually pending, so the caller can treat the
+  /// frame as consumed.
+  bool _failPendingSign(SignException error, {SignException? startError}) {
+    final start = _signStartCompleter;
+    final chunk = _signChunkOkCompleter;
+    final signature = _signatureCompleter;
+    if (start == null && chunk == null && signature == null) return false;
+
+    _signStartCompleter = null;
+    _signChunkOkCompleter = null;
+    _signatureCompleter = null;
+
+    if (start != null && !start.isCompleted) {
+      start.completeError(startError ?? error);
+    }
+    if (chunk != null && !chunk.isCompleted) chunk.completeError(error);
+    if (signature != null && !signature.isCompleted) {
+      signature.completeError(error);
+    }
+    return true;
+  }
+
+  /// Tear down an in-flight sign on disconnect/dispose.
+  ///
+  /// Releasing the gate here is what keeps disconnect fast: the wardriving
+  /// channel deletion is a normal (gated) write, so leaving the gate closed
+  /// would park it behind the sign's 5s timeout while the link is dying.
+  void _abortPendingSign() {
+    final wasPending = _failPendingSign(
+        const SignException('aborted', 'Connection closed during sign'));
+    final gate = _signGate;
+    _signGate = null;
+    _signInProgress = false;
+    if (gate != null && !gate.isCompleted) gate.complete();
+    if (wasPending) debugLog('[CONN] Aborted in-flight sign');
   }
 
   void _onDeviceInfoResponse(BufferReader reader) {
@@ -932,10 +990,25 @@ class MeshCoreConnection {
     }
   }
 
-  /// The ONE outbound funnel. Every frame this class sends goes through here so
-  /// there is a single place to serialize writes (see the sign gate) — a second
-  /// path would silently escape it.
-  Future<void> _write(Uint8List bytes) async {
+  /// The ONE outbound funnel. Every frame this class sends goes through here.
+  ///
+  /// While a sign is in flight, non-sign frames wait for it to finish. That
+  /// matters because CMD_SIGN_DATA is acked with a bare OK (0x00) and so are
+  /// setFloodScope, setChannel, setPathHashMode, setAdvertName and setTxPower —
+  /// letting one of those onto the wire mid-sign means its OK is consumed as
+  /// the chunk ack and the handshake desynchronises. Sign's own frames pass
+  /// [isSignFrame] and bypass the gate.
+  Future<void> _write(Uint8List bytes, {bool isSignFrame = false}) async {
+    if (!isSignFrame) {
+      final gate = _signGate;
+      if (gate != null && !gate.isCompleted) {
+        final code = bytes.isNotEmpty ? bytes[0] : -1;
+        debugLog('[CONN] Queuing command $code behind an in-progress sign');
+        // The gate future NEVER completes with an error, so a queued command
+        // is delayed, never failed.
+        await gate.future;
+      }
+    }
     await _transport.write(bytes);
   }
 
@@ -1348,7 +1421,7 @@ class MeshCoreConnection {
       final startCompleter = Completer<int>();
       _signStartCompleter = startCompleter;
       final startFrame = BufferWriter()..writeByte(CommandCodes.signStart);
-      await _write(startFrame.toBytes());
+      await _write(startFrame.toBytes(), isSignFrame: true);
       final maxSignDataLen = await startCompleter.future.timeout(
         timeout,
         onTimeout: () => throw TimeoutException('sign: SIGN_START timed out'),
@@ -1369,7 +1442,7 @@ class MeshCoreConnection {
         final chunkFrame = BufferWriter()
           ..writeByte(CommandCodes.signData)
           ..writeBytes(data.sublist(offset, end));
-        await _write(chunkFrame.toBytes());
+        await _write(chunkFrame.toBytes(), isSignFrame: true);
         await okCompleter.future.timeout(
           timeout,
           onTimeout: () => throw TimeoutException('sign: chunk ack timed out'),
@@ -1381,7 +1454,7 @@ class MeshCoreConnection {
       final sigCompleter = Completer<Uint8List>();
       _signatureCompleter = sigCompleter;
       final finishFrame = BufferWriter()..writeByte(CommandCodes.signFinish);
-      await _write(finishFrame.toBytes());
+      await _write(finishFrame.toBytes(), isSignFrame: true);
       final signature = await sigCompleter.future.timeout(
         timeout,
         onTimeout: () => throw TimeoutException('sign: signature timed out'),
@@ -1531,6 +1604,7 @@ class MeshCoreConnection {
     _disposed = true;
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
+    _abortPendingSign();
     _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();

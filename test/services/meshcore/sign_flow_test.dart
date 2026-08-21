@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -169,5 +170,241 @@ void main() {
       logLines.where((line) => line.contains('Frame received (1 bytes): 00')),
       isNotEmpty,
     );
+  });
+
+  group('write gate', () {
+    test('a concurrent command cannot steal the chunk ack', () async {
+      final signFuture = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit(signStartResponse(128));
+      await transport.settle();
+
+      // The sign is now waiting for its chunk OK. A zone-transfer timer fires.
+      final floodFuture =
+          connection.setFloodScope(Uint8List.fromList(List<int>.filled(16, 7)));
+      await transport.settle();
+
+      // The gate must have held it back: only SIGN_START and SIGN_DATA are out.
+      expect(transport.writes.length, 2);
+      expect(transport.commandAt(0), CommandCodes.signStart);
+      expect(transport.commandAt(1), CommandCodes.signData);
+      expect(
+        transport.writes.any((w) => w[0] == CommandCodes.setFloodScope),
+        isFalse,
+        reason: 'setFloodScope escaped the sign gate',
+      );
+
+      // The single OK on the wire belongs to the sign.
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      expect(transport.commandAt(2), CommandCodes.signFinish);
+
+      transport.emit(signatureResponse(0x33));
+      expect((await signFuture).length, 64);
+
+      // Once the sign is done the queued command goes out.
+      await floodFuture;
+      expect(transport.commandAt(3), CommandCodes.setFloodScope);
+    });
+
+    test('queued commands are released in the order they were issued',
+        () async {
+      final signFuture = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit(signStartResponse(128));
+      await transport.settle();
+
+      final a = connection.setPathHashMode(1);
+      final b = connection.getBatteryVoltage();
+      await transport.settle();
+      expect(transport.writes.length, 2);
+
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      transport.emit(signatureResponse(0x44));
+      await signFuture;
+      await a;
+      await b;
+
+      expect(transport.commandAt(3), CommandCodes.setPathHashMode);
+      expect(transport.commandAt(4), CommandCodes.getBatteryVoltage);
+    });
+
+    test('the gate is released even when the sign fails', () async {
+      final signFuture = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit([ResponseCodes.err, 5]);
+
+      await expectLater(signFuture, throwsA(isA<SignException>()));
+
+      await connection.getBatteryVoltage();
+      expect(transport.commandAt(1), CommandCodes.getBatteryVoltage);
+    });
+  });
+
+  group('failure paths', () {
+    test('ERR at SIGN_START reports unsupported and does not hang', () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit([ResponseCodes.err, 1]);
+
+      await expectLater(
+        future,
+        throwsA(
+            isA<SignException>().having((e) => e.code, 'code', 'unsupported')),
+      );
+    });
+
+    test('ERR mid-sign reports err, not unsupported', () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit(signStartResponse(128));
+      await transport.settle();
+      transport.emit([ResponseCodes.err, 3]);
+
+      await expectLater(
+        future,
+        throwsA(isA<SignException>().having((e) => e.code, 'code', 'err')),
+      );
+    });
+
+    test('a 300-byte payload is sent as three chunks of 128/128/44', () async {
+      final payload =
+          Uint8List.fromList(List<int>.generate(300, (i) => i & 0xFF));
+      final future = connection.sign(payload);
+      await transport.settle();
+      transport.emit(signStartResponse(1024));
+      await transport.settle();
+
+      expect(transport.writes[1].length, 1 + 128);
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+
+      expect(transport.writes[2].length, 1 + 128);
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+
+      expect(transport.writes[3].length, 1 + 44);
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+
+      expect(transport.commandAt(4), CommandCodes.signFinish);
+      transport.emit(signatureResponse(0x55));
+      expect((await future).length, 64);
+    });
+
+    test('a payload longer than maxSignDataLen is refused before chunking',
+        () async {
+      final payload = Uint8List.fromList(List<int>.filled(64, 1));
+      final future = connection.sign(payload);
+      await transport.settle();
+      transport.emit(signStartResponse(32));
+
+      await expectLater(
+        future,
+        throwsA(isA<SignException>()
+            .having((e) => e.code, 'code', 'data_too_long')),
+      );
+      expect(transport.writes.length, 1, reason: 'no chunk should be written');
+    });
+
+    test('a short RESP_SIGNATURE fast-fails instead of timing out', () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit(signStartResponse(128));
+      await transport.settle();
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      // 20 bytes instead of 64.
+      transport.emit([ResponseCodes.signature, ...List<int>.filled(20, 9)]);
+
+      await expectLater(
+        future,
+        throwsA(isA<SignException>()
+            .having((e) => e.code, 'code', 'malformed_response')),
+      );
+    });
+
+    test('a short RESP_SIGN_START fast-fails', () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit([ResponseCodes.signStart, 0x00]); // missing the u32
+
+      await expectLater(
+        future,
+        throwsA(isA<SignException>()
+            .having((e) => e.code, 'code', 'malformed_response')),
+      );
+    });
+
+    test('a sign that timed out leaves no state behind', () async {
+      final timedOut =
+          connection.sign(nonce32(), timeout: const Duration(milliseconds: 30));
+      await expectLater(timedOut, throwsA(isA<TimeoutException>()));
+
+      // A late response for the abandoned sign must be ignored, not crash.
+      transport.emit(signStartResponse(128));
+      await transport.settle();
+
+      transport.writes.clear();
+      final second = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit(signStartResponse(128));
+      await transport.settle();
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      transport.emit(signatureResponse(0x66));
+      expect((await second).length, 64);
+    });
+
+    test('an interleaved battery push does not disturb the sign', () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+      transport.emit(signStartResponse(128));
+      await transport.settle();
+
+      // Battery voltage response (0x0C) arriving mid-sign.
+      transport.emit([ResponseCodes.batteryVoltage, 0x10, 0x0F, 0x00, 0x00]);
+      await transport.settle();
+      expect(transport.writes.length, 2, reason: 'sign must not advance');
+
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      transport.emit(signatureResponse(0x77));
+      expect((await future).length, 64);
+    });
+
+    test('disconnect aborts an in-flight sign', () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+
+      // Attach the expectation BEFORE triggering the abort. The teardown paths
+      // reject the sign synchronously, and a future that errors while nothing
+      // is listening yet is reported to the zone as an unhandled error — which
+      // fails the test even though expectLater would match it a microtask
+      // later. The assertion itself is unchanged.
+      final aborted = expectLater(
+        future,
+        throwsA(isA<SignException>().having((e) => e.code, 'code', 'aborted')),
+      );
+
+      await connection.disconnect();
+      await aborted;
+    });
+
+    test('deleteWardrivingChannelEarly is not blocked by a pending sign',
+        () async {
+      final future = connection.sign(nonce32());
+      await transport.settle();
+
+      final aborted = expectLater(
+        future,
+        throwsA(isA<SignException>().having((e) => e.code, 'code', 'aborted')),
+      );
+
+      // Must return promptly, not sit behind the 5s sign timeout.
+      await connection.deleteWardrivingChannelEarly();
+      await aborted;
+    });
   });
 }
