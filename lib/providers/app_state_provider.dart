@@ -36,6 +36,7 @@ import '../services/transport/tcp_service.dart';
 import '../services/device_model_service.dart';
 import '../services/gps_service.dart';
 import '../services/gps_simulator_service.dart';
+import '../services/link_decision.dart';
 import '../services/meshcore/channel_service.dart';
 import '../services/meshcore/connection.dart';
 import '../services/meshcore/crypto_service.dart';
@@ -433,8 +434,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Backing field for [portalLinkPromptPending]. Not final: the link flow
   // sets it when a radio needs the one-tap prompt.
-  // ignore: prefer_final_fields
   bool _portalLinkPromptPending = false;
+
+  /// The pubkey the pending prompt belongs to. Captured when the prompt is
+  /// raised so a mid-prompt reconnect cannot link the wrong radio.
+  String? _portalLinkPromptPubkey;
+
+  /// UPPER pubkey -> consecutive link failures. Drives the retry backoff and
+  /// the attempt cap. In-memory only — a restart is allowed a clean slate.
+  final Map<String, int> _portalLinkAttempts = {};
+
+  /// UPPER pubkey -> earliest time the next link attempt may run.
+  final Map<String, DateTime> _portalLinkRetryAfter = {};
+
+  /// Give up offering after this many failed attempts for one pubkey.
+  static const int _portalLinkMaxAttempts = 5;
+
+  /// UPPER pubkey -> how many times CMD_SIGN_START answered ERR. In-memory:
+  /// two strikes are required before the verdict is persisted (see
+  /// [_performDeviceLink]).
+  final Map<String, int> _portalUnsupportedStrikes = {};
 
   static const String _portalAccountKey = 'portal_account_info';
   static const String _portalLinkedPubkeysKey = 'portal_linked_pubkeys';
@@ -3706,6 +3725,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     int? tcpPort,
     String? serialPortPath,
   }) async {
+    // Per-connection account-link flags. Reset HERE, not in a teardown path:
+    // this is the ONE point all four transports funnel through, whereas
+    // disconnect(), _fullDisconnectCleanup() and _startAutoReconnect() each
+    // miss at least one of the others.
+    _portalLinkPromptPending = false;
+    _portalLinkPromptPubkey = null;
+
     if (connectionResult.deviceModelMatched &&
         connectionResult.deviceModel != null) {
       final matchedDevice = connectionResult.deviceModel!;
@@ -4394,6 +4420,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final validation = pingValidation;
     if (validation != PingValidation.valid) {
       debugLog('[CONN] Ping validation after connect: $validation');
+    }
+
+    // MyMeshMapper account link offer. Strictly non-fatal: it must never
+    // block, slow, or fail a connection, so it is fire-and-forget inside its
+    // own guard.
+    try {
+      unawaited(_maybeOfferDeviceLink());
+    } catch (e) {
+      debugWarn('[ACCOUNT] Link offer failed to start: $e');
     }
   }
 
@@ -5213,6 +5248,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Immediate UI feedback
     _connectionStep = ConnectionStep.disconnecting;
     notifyListeners();
+
+    // Release the sign gate before any teardown write (advert-name restore,
+    // path-hash restore, flood scope, channel deletion) is parked behind it.
+    _meshCoreConnection?.abortPendingSign();
 
     // Cancel idle disconnect timer
     _cancelIdleDisconnectTimer();
@@ -8965,6 +9004,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// 8-char uppercase prefix — full public keys never reach a log. Duplicated
+  /// from `PortalAccountService._pk` on purpose: that one is private and this
+  /// is the only redaction the provider is allowed to log a pubkey through.
+  String _pkPrefix(String? pubkey) {
+    if (pubkey == null || pubkey.isEmpty) return 'none';
+    final upper = pubkey.toUpperCase();
+    return upper.length <= 8 ? upper : upper.substring(0, 8);
+  }
+
   /// Friendly label sent with `token` and `link` (server caps it at 60).
   String? _portalDeviceLabel() {
     final name = displayDeviceName;
@@ -9003,6 +9051,248 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _savePortalAccountState();
     notifyListeners();
   }
+
+  /// Decide whether to surface the one-tap link prompt for the radio that just
+  /// connected. Never throws, never blocks anything, never shows an error.
+  Future<void> _maybeOfferDeviceLink() async {
+    if (kIsWeb) return;
+    final pubkey = _devicePublicKey?.toUpperCase();
+
+    // Time-dependent guards live here so decideLinkFlow() stays pure.
+    if (pubkey != null) {
+      final retryAfter = _portalLinkRetryAfter[pubkey];
+      if (retryAfter != null && DateTime.now().isBefore(retryAfter)) {
+        debugLog('[ACCOUNT] Link offer skipped for ${_pkPrefix(pubkey)}: '
+            'backing off after a failure');
+        return;
+      }
+      if ((_portalLinkAttempts[pubkey] ?? 0) >= _portalLinkMaxAttempts) {
+        debugLog('[ACCOUNT] Link offer skipped for ${_pkPrefix(pubkey)}: '
+            'attempt cap reached');
+        return;
+      }
+    }
+
+    final decision = decideLinkFlow(
+      loggedIn: isPortalLoggedIn,
+      offlineMode: _preferences.offlineMode,
+      anonymousMode: _preferences.anonymousMode,
+      // _autoPingWasEnabled covers the reconnect path, where auto-ping is
+      // restored 500ms after the connection settles.
+      autoPingActive: _autoPingEnabled || _autoPingWasEnabled,
+      autoReconnecting: _isAutoReconnecting,
+      pubkey: pubkey,
+      declined: pubkey != null && _portalLinkDeclinedDevices[pubkey] == true,
+      linked: pubkey != null && _portalLinkedPubkeys.contains(pubkey),
+      signUnsupported:
+          pubkey != null && _portalSignUnsupportedDevices[pubkey] == true,
+      promptedThisAppSession:
+          pubkey != null && _portalPromptedThisSession.contains(pubkey),
+    );
+
+    if (decision == LinkFlowDecision.skip) {
+      debugLog('[ACCOUNT] Link offer skipped for ${_pkPrefix(pubkey)}');
+      return;
+    }
+
+    _portalPromptedThisSession.add(pubkey!);
+    _portalLinkPromptPubkey = pubkey;
+    _portalLinkPromptPending = true;
+    debugLog('[ACCOUNT] Offering a device link for ${_pkPrefix(pubkey)}');
+    notifyListeners();
+  }
+
+  /// The user answered the link prompt.
+  Future<PortalLinkOutcome> respondToLinkPrompt(bool accepted) async {
+    final pubkey = _portalLinkPromptPubkey;
+    _portalLinkPromptPending = false;
+    _portalLinkPromptPubkey = null;
+    notifyListeners();
+
+    if (pubkey == null) {
+      return const PortalLinkOutcome(PortalLinkStatus.skipped);
+    }
+    if (!accepted) {
+      debugLog('[ACCOUNT] Link declined for ${_pkPrefix(pubkey)} — persisting');
+      _portalLinkDeclinedDevices[pubkey] = true;
+      await _savePortalAccountState();
+      notifyListeners();
+      return const PortalLinkOutcome(PortalLinkStatus.skipped);
+    }
+    return _performDeviceLink(pubkey);
+  }
+
+  /// "Link now" from Settings. Bypasses the decline list and the backoff cap —
+  /// the user asked for this explicitly.
+  Future<PortalLinkOutcome> startManualDeviceLink() async {
+    final pubkey = _devicePublicKey?.toUpperCase();
+    if (kIsWeb || pubkey == null || !isPortalLoggedIn) {
+      return const PortalLinkOutcome(PortalLinkStatus.skipped);
+    }
+    debugLog('[ACCOUNT] Manual link requested for ${_pkPrefix(pubkey)}');
+    _portalLinkDeclinedDevices.remove(pubkey);
+    _portalLinkAttempts.remove(pubkey);
+    _portalLinkRetryAfter.remove(pubkey);
+    await _savePortalAccountState();
+    return _performDeviceLink(pubkey);
+  }
+
+  /// Unbind the connected radio from the account.
+  Future<bool> unlinkCurrentDevice() async {
+    final pubkey = _devicePublicKey?.toUpperCase();
+    if (pubkey == null) return false;
+    final ok = await _portalAccountService.unlinkDevice(pubkey);
+    if (ok) {
+      _portalLinkedPubkeys.remove(pubkey);
+      await _savePortalAccountState();
+      notifyListeners();
+    }
+    return ok;
+  }
+
+  /// nonce -> radio signature -> link. Every failure is silent to the user.
+  Future<PortalLinkOutcome> _performDeviceLink(String pubkey) async {
+    final connection = _meshCoreConnection;
+    if (connection == null) {
+      return const PortalLinkOutcome(PortalLinkStatus.skipped);
+    }
+
+    final nonceHex = await _portalAccountService.requestNonce(pubkey);
+    if (nonceHex == null) return _recordLinkFailure(pubkey, 'nonce');
+
+    // Never hand the radio server-supplied bytes without checking their shape.
+    // The portal lane is specified as EXACTLY 32 random bytes (64 hex); the
+    // radio is a signing oracle, so anything else is refused.
+    if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(nonceHex)) {
+      debugWarn('[ACCOUNT] Nonce refused: not 64 hex characters');
+      return _recordLinkFailure(pubkey, 'bad_nonce');
+    }
+    final nonceBytes = _hexToBytes(nonceHex);
+    if (nonceBytes.length != 32) {
+      debugWarn('[ACCOUNT] Nonce refused: ${nonceBytes.length} bytes, '
+          'expected 32');
+      return _recordLinkFailure(pubkey, 'bad_nonce');
+    }
+
+    Uint8List signature;
+    try {
+      // The radio signs the RAW 32 bytes, never their hex text.
+      signature = await connection.sign(nonceBytes);
+    } on SignException catch (e) {
+      if (e.code == 'unsupported') {
+        // Two strikes before this is written down. A stats/battery ERR that
+        // was already in flight when the sign started is misattributed as
+        // 'unsupported' (see the ERR branch in connection.dart) — one stray
+        // ERR must never permanently disable linking for a radio.
+        final strikes = (_portalUnsupportedStrikes[pubkey] ?? 0) + 1;
+        _portalUnsupportedStrikes[pubkey] = strikes;
+        if (strikes >= 2) {
+          debugLog('[ACCOUNT] Radio has no CMD_SIGN — link disabled for '
+              '${_pkPrefix(pubkey)}');
+          _portalSignUnsupportedDevices[pubkey] = true;
+          await _savePortalAccountState();
+        } else {
+          debugLog('[ACCOUNT] CMD_SIGN_START answered ERR for '
+              '${_pkPrefix(pubkey)} (strike $strikes of 2) — could be a '
+              'stray ERR, not persisting yet');
+        }
+      } else {
+        debugWarn('[ACCOUNT] Sign failed (${e.code}) — staying silent');
+      }
+      return const PortalLinkOutcome(PortalLinkStatus.failed);
+    } catch (e) {
+      debugWarn('[ACCOUNT] Sign failed (${e.runtimeType}) — staying silent');
+      return const PortalLinkOutcome(PortalLinkStatus.failed);
+    }
+
+    final result = await _portalAccountService.linkDevice(
+      pubkey: pubkey,
+      nonce: nonceHex,
+      signature: _bytesToHex(signature),
+      label: _portalDeviceLabel(),
+    );
+
+    switch (result) {
+      case LinkSuccess(:final already):
+        debugLog('[ACCOUNT] Device linked (already=$already)');
+        if (!_portalLinkedPubkeys.contains(pubkey)) {
+          _portalLinkedPubkeys.add(pubkey);
+        }
+        _portalLinkAttempts.remove(pubkey);
+        _portalLinkRetryAfter.remove(pubkey);
+        await _savePortalAccountState();
+        notifyListeners();
+        return PortalLinkOutcome(
+          PortalLinkStatus.linked,
+          accountName: _portalAccount?.displayName,
+        );
+
+      case LinkAdoptionRequired(:final devices):
+        debugLog('[ACCOUNT] Link needs browser adoption first '
+            '($devices placeholder device(s))');
+        return PortalLinkOutcome(
+          PortalLinkStatus.adoptionRequired,
+          adoptionDeviceCount: devices,
+        );
+
+      case LinkAlreadyLinkedOtherAccount():
+        debugLog('[ACCOUNT] Radio belongs to another account — '
+            'persisting a decline so we stop asking');
+        _portalLinkDeclinedDevices[pubkey] = true;
+        await _savePortalAccountState();
+        notifyListeners();
+        return const PortalLinkOutcome(
+            PortalLinkStatus.alreadyLinkedOtherAccount);
+
+      case LinkUnauthorized():
+        debugLog('[ACCOUNT] Link unauthorized — already signed out, silent');
+        return const PortalLinkOutcome(PortalLinkStatus.unauthorized);
+
+      case LinkNetworkError(:final detail):
+        debugWarn('[ACCOUNT] Link network error: $detail');
+        return _recordLinkFailure(pubkey, 'network');
+
+      case LinkServerError(:final code, :final statusCode):
+        debugWarn('[ACCOUNT] Link server error: $code (HTTP $statusCode)');
+        final outcome = _recordLinkFailure(pubkey, code);
+        if (code == 'bad_signature' &&
+            (_portalLinkAttempts[pubkey] ?? 0) >= 2) {
+          // Repeated bad signatures mean this firmware signs something else.
+          // Stop burning rate-limited nonces on it.
+          debugLog('[ACCOUNT] Repeated bad_signature — marking sign '
+              'unsupported for ${_pkPrefix(pubkey)}');
+          _portalSignUnsupportedDevices[pubkey] = true;
+          await _savePortalAccountState();
+        }
+        return outcome;
+    }
+  }
+
+  /// Count a failure and schedule the next allowed attempt (30s, 1m, 2m, 4m,
+  /// 8m, capped at 30m). Nothing is shown to the user — the next connection
+  /// simply tries again.
+  PortalLinkOutcome _recordLinkFailure(String pubkey, String reason) {
+    final attempts = (_portalLinkAttempts[pubkey] ?? 0) + 1;
+    _portalLinkAttempts[pubkey] = attempts;
+    final backoffSeconds = math.min(30 * (1 << (attempts - 1)), 1800);
+    _portalLinkRetryAfter[pubkey] =
+        DateTime.now().add(Duration(seconds: backoffSeconds));
+    debugLog('[ACCOUNT] Link attempt $attempts failed ($reason) for '
+        '${_pkPrefix(pubkey)} — next try in ${backoffSeconds}s');
+    return const PortalLinkOutcome(PortalLinkStatus.failed);
+  }
+
+  Uint8List _hexToBytes(String hex) {
+    final length = hex.length ~/ 2;
+    final bytes = Uint8List(length);
+    for (var i = 0; i < length; i++) {
+      bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    return bytes;
+  }
+
+  String _bytesToHex(Uint8List bytes) =>
+      bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
   // ============================================
   // Device Real Name Persistence (Anonymous Mode Recovery)
