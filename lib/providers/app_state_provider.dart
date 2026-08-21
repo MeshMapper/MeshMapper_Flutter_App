@@ -9,6 +9,7 @@ import 'package:flutter/widgets.dart'
     show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:app_links/app_links.dart';
 import 'package:uuid/uuid.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
@@ -51,6 +52,7 @@ import '../services/watch/watch_bridge_service.dart';
 import '../services/watch/watch_geo_builder.dart';
 import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
+import '../services/portal_account_service.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
 import '../utils/ping_colors.dart';
@@ -407,6 +409,39 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
   bool _isAutoReconnecting = false;
+
+  // ============================================
+  // MyMeshMapper account + companion linking
+  // ============================================
+  late final PortalAccountService _portalAccountService;
+
+  /// Cached portal identity (mirrors Hive `portal_account_info`).
+  PortalAccount? _portalAccount;
+
+  /// UPPER 64-hex pubkeys this account owns (mirrors `portal_linked_pubkeys`).
+  List<String> _portalLinkedPubkeys = [];
+
+  /// UPPER pubkey -> declined. Persisted; survives sign-out (device pref).
+  Map<String, bool> _portalLinkDeclinedDevices = {};
+
+  /// UPPER pubkey -> firmware cannot sign. Persisted; survives sign-out.
+  Map<String, bool> _portalSignUnsupportedDevices = {};
+
+  /// Prompted once per pubkey per APP SESSION (not per connection) — a BLE flap
+  /// plus auto-reconnect must never re-ask mid-drive.
+  final Set<String> _portalPromptedThisSession = {};
+
+  // Backing field for [portalLinkPromptPending]. Not final: the link flow
+  // sets it when a radio needs the one-tap prompt.
+  // ignore: prefer_final_fields
+  bool _portalLinkPromptPending = false;
+
+  static const String _portalAccountKey = 'portal_account_info';
+  static const String _portalLinkedPubkeysKey = 'portal_linked_pubkeys';
+  static const String _portalDeclinedKey = 'portal_link_declined_devices';
+  static const String _portalSignUnsupportedKey =
+      'portal_sign_unsupported_devices';
+
   int _reconnectAttempt = 0;
   Timer? _reconnectTimer;
   Timer? _reconnectTimeoutTimer;
@@ -509,6 +544,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Diagnostic: timers can be suspended while backgrounded; on resume, log
       // any countdown timer stuck past its deadline (intermittent ping lockout).
       _logStuckTimers('resume');
+      // iOS can deliver the portal callback while the isolate is suspended.
+      unawaited(_portalAccountService.checkLinkOnResume());
     } else if (state == AppLifecycleState.paused) {
       debugLog('[APP] App paused (backgrounded)');
       // Save offline pings immediately on pause to prevent data loss if OS kills app
@@ -1056,6 +1093,31 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Auto-reconnect getters
   bool get isAutoReconnecting => _isAutoReconnecting;
+
+  /// True when a MyMeshMapper portal token is held.
+  bool get isPortalLoggedIn => _portalAccountService.isSignedIn;
+
+  /// Cached portal identity, or null when signed out.
+  PortalAccount? get portalAccount => _portalAccount;
+
+  /// How many radios this account owns (from the last `me` refresh).
+  int get portalLinkedDeviceCount => _portalLinkedPubkeys.length;
+
+  /// True when the user has declined linking for at least one radio.
+  bool get hasPortalLinkDeclines => _portalLinkDeclinedDevices.isNotEmpty;
+
+  /// True when the currently connected radio is already bound to the account.
+  bool get isCurrentDeviceLinked {
+    final pubkey = _devicePublicKey?.toUpperCase();
+    return pubkey != null && _portalLinkedPubkeys.contains(pubkey);
+  }
+
+  /// The one-tap link prompt is waiting to be shown.
+  bool get portalLinkPromptPending => _portalLinkPromptPending;
+
+  /// Device name for the link prompt copy (anonymity-aware).
+  String? get portalLinkPromptDeviceName => displayDeviceName;
+
   int get reconnectAttempt => _reconnectAttempt;
 
   // Zone grace period getters
@@ -2338,6 +2400,36 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _customApiService.iataGetter = () => zoneCode ?? _preferences.iataCode;
     _apiQueueService.customApiService = _customApiService;
 
+    // MyMeshMapper portal account. Mobile only — the sign-in flow needs an
+    // OS-registered URL scheme, which the web build cannot have.
+    _portalAccountService = PortalAccountService(
+      appLinks: kIsWeb ? null : AppLinks(),
+    );
+    _portalAccountService.deviceLabelProvider = _portalDeviceLabel;
+    _portalAccountService.onAccountChanged = () {
+      _portalAccount = _portalAccountService.account;
+      _portalLinkedPubkeys = _portalAccountService.linkedPubkeys
+          .map((entry) => entry.pubkey.toUpperCase())
+          .toList();
+      unawaited(_savePortalAccountState());
+      // Account state is NOT map state — plain notify only (Critical Rule 9).
+      notifyListeners();
+    };
+    _portalAccountService.onSignedOut = (reason) {
+      debugLog('[ACCOUNT] Signed out ($reason) — clearing the cached identity');
+      _portalAccount = null;
+      _portalLinkedPubkeys = [];
+      // Declines and sign-unsupported are DEVICE preferences, not account
+      // data: they deliberately survive a sign-out.
+      unawaited(_savePortalAccountState());
+      notifyListeners();
+    };
+    _portalAccountService.onSignInComplete = (success, errorCode) {
+      debugLog('[ACCOUNT] Sign-in complete: success=$success, '
+          'error=${errorCode ?? 'none'}');
+      notifyListeners();
+    };
+
     // Set up session error callback for auto-disconnect
     _apiService.onSessionError = (reason, message) async {
       debugError('[APP] Session error from API: $reason - $message');
@@ -2470,6 +2562,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _loadDeviceAntennaPreferences();
     await _loadDevicePowerOverrides();
     await _loadDeviceRealNames();
+    await _loadPortalAccountState();
+    await _portalAccountService.init();
 
     // Load last known GPS position for map centering
     await _loadLastPosition();
@@ -8804,6 +8898,113 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // ============================================
+  // MyMeshMapper Account Persistence
+  // ============================================
+
+  Future<void> _loadPortalAccountState() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      final rawAccount = box.get(_portalAccountKey);
+      if (rawAccount is Map) {
+        final cached = PortalAccount.fromCache(rawAccount);
+        if (cached != null) {
+          _portalAccount = cached;
+          _portalAccountService.hydrateAccount(cached);
+        }
+      }
+
+      final rawLinked = box.get(_portalLinkedPubkeysKey);
+      if (rawLinked is List) {
+        _portalLinkedPubkeys =
+            rawLinked.map((entry) => entry.toString().toUpperCase()).toList();
+      }
+
+      final rawDeclined = box.get(_portalDeclinedKey);
+      if (rawDeclined is Map) {
+        _portalLinkDeclinedDevices = rawDeclined.map(
+          (key, value) => MapEntry(key.toString().toUpperCase(), value == true),
+        );
+      }
+
+      final rawUnsupported = box.get(_portalSignUnsupportedKey);
+      if (rawUnsupported is Map) {
+        _portalSignUnsupportedDevices = rawUnsupported.map(
+          (key, value) => MapEntry(key.toString().toUpperCase(), value == true),
+        );
+      }
+
+      debugLog('[ACCOUNT] Loaded state: '
+          'account=${_portalAccount?.username ?? 'none'}, '
+          'linked=${_portalLinkedPubkeys.length}, '
+          'declined=${_portalLinkDeclinedDevices.length}, '
+          'signUnsupported=${_portalSignUnsupportedDevices.length}');
+    } catch (e) {
+      debugWarn('[ACCOUNT] Failed to load portal account state: $e');
+    }
+  }
+
+  Future<void> _savePortalAccountState() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+
+    try {
+      final account = _portalAccount;
+      if (account == null) {
+        await box.delete(_portalAccountKey);
+      } else {
+        await box.put(_portalAccountKey, account.toCache());
+      }
+      await box.put(_portalLinkedPubkeysKey, _portalLinkedPubkeys);
+      await box.put(_portalDeclinedKey, _portalLinkDeclinedDevices);
+      await box.put(_portalSignUnsupportedKey, _portalSignUnsupportedDevices);
+      await box.flush();
+    } catch (e) {
+      debugWarn('[ACCOUNT] Failed to save portal account state: $e');
+    }
+  }
+
+  /// Friendly label sent with `token` and `link` (server caps it at 60).
+  String? _portalDeviceLabel() {
+    final name = displayDeviceName;
+    if (name == null || name.isEmpty) return null;
+    return name.length <= 60 ? name : name.substring(0, 60);
+  }
+
+  // ============================================
+  // MyMeshMapper Account API (UI-facing)
+  // ============================================
+
+  /// Open the portal consent page in the system browser.
+  Future<bool> beginPortalSignIn() async {
+    if (kIsWeb) return false;
+    debugLog('[ACCOUNT] Sign-in requested');
+    return _portalAccountService.beginSignIn();
+  }
+
+  /// Sign out locally and revoke the token server-side (best effort).
+  Future<void> portalSignOut() async {
+    debugLog('[ACCOUNT] Sign-out requested');
+    await _portalAccountService.logout();
+  }
+
+  /// Refresh the identity and linked-device list (throttled to 1/hour).
+  Future<void> refreshPortalAccount({bool force = false}) async {
+    await _portalAccountService.refreshMe(force: force);
+  }
+
+  /// Clear every persisted decline so declined radios are offered again.
+  Future<void> resetLinkPromptDeclines() async {
+    debugLog('[ACCOUNT] Clearing '
+        '${_portalLinkDeclinedDevices.length} link decline(s)');
+    _portalLinkDeclinedDevices.clear();
+    _portalPromptedThisSession.clear();
+    await _savePortalAccountState();
+    notifyListeners();
+  }
+
+  // ============================================
   // Device Real Name Persistence (Anonymous Mode Recovery)
   // ============================================
 
@@ -9253,6 +9454,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _gpsService.dispose();
     _apiQueueService.dispose();
     _customApiService.dispose();
+    _portalAccountService.dispose();
     _offlineSessionService.dispose();
     _apiService.dispose();
     _bluetoothService.dispose();
