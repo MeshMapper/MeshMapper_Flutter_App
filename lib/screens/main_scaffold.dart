@@ -32,6 +32,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   bool _hasShownLocationSettingsPrompt = false;
   bool _floodDisabledDialogOpen = false;
   bool _linkPromptDialogOpen = false;
+  bool _signInErrorToastOpen = false;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -281,6 +282,31 @@ class _MainScaffoldState extends State<MainScaffold> {
     );
   }
 
+  /// Report a failed sign-in.
+  ///
+  /// The codes are the bounded set `PortalAccountService` emits — the portal's
+  /// own are already held to `^[a-z_]{1,32}$` by `_sanitizeErrorCode` — but the
+  /// copy is written here so an unrecognized code can never reach the user as
+  /// raw text.
+  void _showPortalSignInError(String code) {
+    debugLog('[ACCOUNT] Reporting a failed sign-in (reason=$code)');
+    // A cancel is a decision, not a failure — it gets the neutral toast.
+    final isCancel = code == 'denied' || code == 'access_denied';
+    final message = switch (code) {
+      'denied' || 'access_denied' => 'Sign-in cancelled',
+      'expired' => 'That sign-in expired — please try again',
+      'timeout' || 'network' =>
+        'Could not reach MyMeshMapper — check your connection',
+      'code_invalid' => 'That sign-in link was already used — please try again',
+      _ => 'Sign-in did not finish — please try again',
+    };
+    if (isCancel) {
+      AppToast.info(context, message);
+    } else {
+      AppToast.error(context, message);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
@@ -330,6 +356,22 @@ class _MainScaffoldState extends State<MainScaffold> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _showLinkPrompt();
+      });
+    }
+
+    // A failed MyMeshMapper sign-in is reported HERE and nowhere else: the
+    // browser round trip outlives the Settings tap that started it, so by the
+    // time the callback lands there is no live call site left to answer. The
+    // scaffold survives the trip whichever tab the user comes back to.
+    if (appState.portalSignInError != null && !_signInErrorToastOpen) {
+      _signInErrorToastOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _signInErrorToastOpen = false;
+        if (!mounted) return;
+        final code = appState.portalSignInError;
+        if (code == null) return;
+        appState.clearPortalSignInError();
+        _showPortalSignInError(code);
       });
     }
 
