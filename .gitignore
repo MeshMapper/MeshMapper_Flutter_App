@@ -79,6 +79,9 @@ meshmapper-debug-*.txt
 # Test/debug output
 drive_route_map*.html
 
+# Build metadata written by Build.sh (machine-specific)
+.last_build
+
 # Claude Code
 .claude/
 CLAUDE.md
