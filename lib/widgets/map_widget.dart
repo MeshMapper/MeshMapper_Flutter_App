@@ -3595,7 +3595,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // 2. Coverage markers — 8 variants for current style
       await _registerCoverageImages(appState.preferences.markerStyle);
 
-      // 3. GPS marker variants — 6 styles
+      // 3. GPS marker variants — 7 styles
       const gpsSize = Size(48, 48);
       final gpsPainters = <String, CustomPainter>{
         'arrow': const _ArrowPainter(),
@@ -3603,6 +3603,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         'bike': const _BikeMarkerPainter(),
         'boat': const _BoatMarkerPainter(),
         'walk': const _WalkMarkerPainter(),
+        'dog': const _DogMarkerPainter(),
         'chomper': const _ChomperMarkerPainter(),
       };
       for (final entry in gpsPainters.entries) {
@@ -10132,6 +10133,113 @@ class _ChomperMarkerPainter extends CustomPainter {
       )
       ..close();
     canvas.drawPath(bodyPath, bodyPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Paints a dog silhouette (side profile, facing right) for GPS position marker
+class _DogMarkerPainter extends CustomPainter {
+  const _DogMarkerPainter();
+
+  static const _blue = Color(0xFF2196F3);
+  static const _darkBlue = Color(0xFF1565C0);
+
+  /// Body, neck, head and muzzle as one closed silhouette around [cx],[cy].
+  ui.Path _bodyPath(double cx, double cy) {
+    return ui.Path()
+      ..moveTo(cx - 12, cy - 3) // rump
+      ..quadraticBezierTo(cx - 7, cy - 5.5, cx - 2, cy - 5) // back
+      ..quadraticBezierTo(cx + 1, cy - 5, cx + 2.5, cy - 7) // withers
+      ..lineTo(cx + 3.5, cy - 9.5) // nape
+      ..quadraticBezierTo(cx + 4, cy - 11.5, cx + 6.5, cy - 11) // skull
+      ..quadraticBezierTo(cx + 8.5, cy - 10.5, cx + 8.5, cy - 8.5) // stop
+      ..lineTo(cx + 11.5, cy - 7.5) // muzzle
+      ..quadraticBezierTo(cx + 12.5, cy - 7, cx + 12, cy - 5.5) // nose
+      ..lineTo(cx + 8, cy - 5) // under the muzzle
+      ..quadraticBezierTo(cx + 6.5, cy - 4.5, cx + 6, cy - 2.5) // throat
+      ..quadraticBezierTo(cx + 5.5, cy, cx + 4, cy + 1.5) // chest
+      ..quadraticBezierTo(cx - 2, cy + 3.5, cx - 8, cy + 1.5) // belly
+      ..quadraticBezierTo(cx - 12.5, cy + 0.5, cx - 12, cy - 3) // haunch
+      ..close();
+  }
+
+  /// Tail, sweeping up and back off the rump.
+  ui.Path _tailPath(double cx, double cy) {
+    return ui.Path()
+      ..moveTo(cx - 11.5, cy - 3)
+      ..quadraticBezierTo(cx - 14, cy - 6, cx - 12.5, cy - 10);
+  }
+
+  /// Floppy ear, hanging down over the cheek.
+  ui.Path _earPath(double cx, double cy) {
+    return ui.Path()
+      ..moveTo(cx + 3.2, cy - 9.5)
+      ..quadraticBezierTo(cx + 2.2, cy - 6.5, cx + 3.5, cy - 4.5)
+      ..quadraticBezierTo(cx + 5.5, cy - 4, cx + 6, cy - 6)
+      ..quadraticBezierTo(cx + 6, cy - 8.5, cx + 5, cy - 10)
+      ..close();
+  }
+
+  /// Near pair drawn a little ahead of the far pair, for depth.
+  static const _legs = <(double, double, double, double)>[
+    (4, 0, 4.5, 8), // front near
+    (1.5, 0, 1, 7.5), // front far
+    (-8, 0, -9, 8), // hind near
+    (-5.5, 0, -6, 7.5), // hind far
+  ];
+
+  void _drawLegs(Canvas canvas, double cx, double cy, Paint paint) {
+    for (final (x1, y1, x2, y2) in _legs) {
+      canvas.drawLine(
+          Offset(cx + x1, cy + y1), Offset(cx + x2, cy + y2), paint);
+    }
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    final body = _bodyPath(cx, cy);
+    final tail = _tailPath(cx, cy);
+
+    // Every white outline goes down before any blue, so the halo around one
+    // limb never paints over the blue of the one beside it.
+    final legOutline = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round;
+    final bodyOutline = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.5
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    _drawLegs(canvas, cx, cy, legOutline);
+    canvas.drawPath(tail, legOutline);
+    canvas.drawPath(body, bodyOutline);
+
+    final legPaint = Paint()
+      ..color = _blue
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..strokeCap = StrokeCap.round;
+
+    _drawLegs(canvas, cx, cy, legPaint);
+    canvas.drawPath(tail, legPaint);
+    canvas.drawPath(body, Paint()..color = _blue);
+
+    // Ear and nose read as darker shading on top of the body, the way the car
+    // marker's windshield does — no white outline, so nothing separates limbs.
+    canvas.drawPath(_earPath(cx, cy), Paint()..color = _darkBlue);
+    canvas.drawCircle(
+        Offset(cx + 11.3, cy - 6.3), 0.9, Paint()..color = _darkBlue);
+    canvas.drawCircle(
+        Offset(cx + 7, cy - 8.5), 1, Paint()..color = Colors.white);
   }
 
   @override
