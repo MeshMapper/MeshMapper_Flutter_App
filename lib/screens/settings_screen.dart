@@ -370,8 +370,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: const Text('Flood Traffic'),
               subtitle: appState.floodDisabled
                   ? const Text(
-                      'Set by Regional Admin — flood traffic is disabled in this region. Active and Hybrid modes are unavailable here.',
-                      style: TextStyle(color: Colors.amber),
+                      'Set by Regional Admin — this region has flood traffic disabled, '
+                      'so you can only wardrive passively here. Contact your regional '
+                      'admin if you have questions.',
+                      style: TextStyle(color: Colors.blue),
                     )
                   : const Text(
                       'Show Active, Hybrid, and manual Send Ping controls'),

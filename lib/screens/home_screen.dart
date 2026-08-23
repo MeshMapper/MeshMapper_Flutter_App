@@ -376,6 +376,17 @@ class _HomeScreenState extends State<HomeScreen> {
               Colors.grey
             );
           }
+          // Region veto comes first: a flood-disabled region reports 0 TX slots,
+          // which would otherwise read as "zone full" (red) instead of a
+          // deliberate regional setting (blue).
+          if (appState.floodDisabled) {
+            return (
+              '${appState.zoneName ?? appState.zoneCode} Zone',
+              'This region has flood traffic disabled, so you can only wardrive passively here. Passive and Trace modes still work. Contact your regional admin if you have questions.',
+              Icons.flight,
+              Colors.blue
+            );
+          }
           if (!appState.txAllowed) {
             return (
               '${appState.zoneName ?? appState.zoneCode} Zone',
@@ -837,7 +848,11 @@ class _HomeScreenState extends State<HomeScreen> {
           if (appState.inZone == true && appState.zoneCode != null) {
             icon = Icons.flight;
             color = appState.isConnected
-                ? (appState.txAllowed ? Colors.green : Colors.red)
+                ? (appState.floodDisabled
+                    ? Colors.blue // Region veto: passive only, not an error
+                    : appState.txAllowed
+                        ? Colors.green
+                        : Colors.red)
                 : Colors.grey;
             text = appState.zoneCode!;
           } else if (appState.inZone == false) {
