@@ -1295,6 +1295,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return 'Boat';
       case 'walk':
         return 'Walk';
+      case 'dog':
+        return 'Dog';
       case 'chomper':
         return 'Chomper';
       case 'arrow':
@@ -1360,6 +1362,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ('bike', 'Bike', const Icon(Icons.directions_bike)),
       ('boat', 'Boat', const Icon(Icons.directions_boat)),
       ('walk', 'Walk', const Icon(Icons.directions_walk)),
+      ('dog', 'Dog', const FaIcon(FontAwesomeIcons.dog)),
       ('chomper', 'Chomper', const _ChomperIcon()),
     ];
     showModalBottomSheet(
