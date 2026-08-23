@@ -1539,8 +1539,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             Expanded(
               child: Row(
                 children: [
-                  // Location chip (city name) — the only variable-width chip,
-                  // so it is the one that gives way when space runs out.
+                  // Location chip (city name). This is the only variable-width
+                  // chip, so it is the one that gives way when space runs out.
                   Flexible(
                     child: _buildChip(
                       icon: locationIcon,
@@ -1566,13 +1566,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
             // Slots chip
             _buildChip(
-              icon: passiveOnly ? Icons.hearing : Icons.people_outline,
+              icon: passiveOnly ? Icons.waves : Icons.people_outline,
               text: passiveOnly
-                  ? 'Passive'
+                  ? 'Flood Off'
                   : hasSlots
                       ? '$slotsAvailable/$slotsMax Open'
                       : '--',
               color: slotsColor,
+              onTap: passiveOnly ? () => _showFloodDisabledInfo(context) : null,
             ),
           ],
         ),
@@ -1585,33 +1586,129 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     required IconData icon,
     required String text,
     required Color color,
+    VoidCallback? onTap,
   }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(
-              text,
-              maxLines: 1,
-              softWrap: false,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: color,
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                text,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Explains a flood-disabled region.
+  ///
+  /// The chip has room for eight characters, which cannot say that Trace Mode
+  /// still works, so the detail lives here. Layout mirrors
+  /// [_showAuthMethodInfo]; wording matches the region-veto dialog in
+  /// MainScaffold so users see one consistent explanation.
+  void _showFloodDisabledInfo(BuildContext context) {
+    final bodyStyle = TextStyle(
+      fontSize: 14,
+      height: 1.4,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header with close button
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 8, 12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                      border:
+                          Border.all(color: Colors.blue.withValues(alpha: 0.4)),
+                    ),
+                    child:
+                        const Icon(Icons.waves, color: Colors.blue, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Flood Traffic Disabled',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // Content
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Your regional admin has turned off flood traffic in '
+                      'this area, so Active and Hybrid modes are unavailable '
+                      'here. This is a regional setting, not a full zone.',
+                      style: bodyStyle,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'You can still wardrive. Passive Mode and Trace Mode '
+                      'work normally, and the app keeps logging everything '
+                      'your radio hears.',
+                      style: bodyStyle,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Contact your regional admin if you have questions.',
+                      style: bodyStyle,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
