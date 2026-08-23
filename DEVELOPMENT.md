@@ -67,6 +67,13 @@ delivery races still need a wrist.
 
 # Or set API key via environment variable to skip prompt
 MESHMAPPER_API_KEY=<your-key> ./Build.sh
+
+# Non-interactive (secrets from ~/.meshmapper_release.env or env vars)
+./Build.sh --type prod --version 1.3.1                # or --type dev
+./Build.sh --type prod --version 1.3.1 --dry-run      # print resolved plan, build nothing
+
+# Upload the built iOS archive to App Store Connect (needs ASC API key, see upload_ios.sh)
+./upload_ios.sh
 ```
 
 ### Debug Logging
