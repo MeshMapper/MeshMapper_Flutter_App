@@ -147,7 +147,7 @@ class _StatusBarState extends State<StatusBar> {
           if (appState.floodDisabled) {
             return (
               '${appState.zoneName ?? appState.zoneCode} Zone',
-              'This region has flood traffic disabled, so you can only wardrive passively here. Passive and Trace modes still work. Contact your regional admin if you have questions.',
+              'Your regional admin has turned off flood traffic here, so Active and Hybrid modes are unavailable. The zone is not full. Passive Mode and Trace Mode still work.',
               Icons.flight,
               Colors.blue
             );
