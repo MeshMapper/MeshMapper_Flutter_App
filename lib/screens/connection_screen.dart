@@ -1493,13 +1493,15 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     final slotsMax = appState.zoneSlotsMax;
     final hasSlots = slotsAvailable != null && slotsMax != null;
 
-    // A flood-disabled region reports 0/0 slots — that is a regional setting,
-    // not a full zone, so it reads as info blue rather than red.
-    final floodDisabled = appState.floodDisabled;
+    // A flood-disabled region hands out no TX slots at all. Before connecting
+    // the auth flag isn't known yet, so fall back to the shape of the zone: a
+    // 0-max zone isn't FULL, it simply offers no TX slots. Either way it's a
+    // regional setting, so show info blue and drop the misleading 0/0 count.
+    final passiveOnly = appState.floodDisabled || slotsMax == 0;
 
     // Slots color based on availability
     Color slotsColor;
-    if (floodDisabled) {
+    if (passiveOnly) {
       slotsColor = Colors.blue;
     } else if (!hasSlots) {
       slotsColor = Colors.grey;
@@ -1548,8 +1550,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
             // Slots chip
             _buildChip(
-              icon: Icons.people_outline,
-              text: floodDisabled
+              icon: passiveOnly ? Icons.hearing : Icons.people_outline,
+              text: passiveOnly
                   ? 'Passive Only'
                   : hasSlots
                       ? '$slotsAvailable/$slotsMax Open'
