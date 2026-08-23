@@ -35,7 +35,7 @@ dependencies:
   just_audio: ^0.9.40
   audio_session: ^0.1.21
   dio: ^5.0.0
-  font_awesome_flutter: ^10.7.0
+  font_awesome_flutter: ^11.0.0
   fl_chart: ^0.69.0
   web: ^1.1.0
   disk_space_plus: ^0.2.3
