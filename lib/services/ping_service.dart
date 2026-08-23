@@ -597,9 +597,9 @@ class PingService {
       // Build the on-air body ONCE (same string is used for TxTracker echo
       // correlation AND the actual transmission). Power is sent per-ping in the API.
       //
-      // With a session: a keyed wire tag "MM:<tag>" (privacy default), or
-      // "MM:<tag>:lat,lon" when Broadcast My Coordinates is on (tag + plaintext coords).
-      // No session yet: plaintext "MM:lat,lon" (no tag can be computed).
+      // A keyed wire tag "MM:<tag>" (privacy default), or "MM:<tag>:lat,lon" when
+      // Broadcast My Coordinates is on (tag + plaintext coords). Those are the only
+      // two shapes: without a session there is no tag, and the ping is refused.
       final coordsStr =
           '${position.latitude.toStringAsFixed(5)},${position.longitude.toStringAsFixed(5)}';
       final broadcastCoords = getBroadcastCoords?.call() ?? false;
@@ -628,8 +628,13 @@ class PingService {
         // (txWireTag → _pendingTxWireTag), so /wardrive validation + tx_pings are unchanged.
         pingMessage = broadcastCoords ? '$txWireTag:$coordsStr' : txWireTag;
       } else {
-        // No session yet → no tag can be computed; plaintext coords only (unchanged).
-        pingMessage = 'MM:$coordsStr';
+        // Unreachable: tx_allowed and session_id arrive in the same /auth response,
+        // and every TX validator requires txAllowed. If we get here the session state
+        // is corrupt, so refuse to transmit rather than emit a tagless (untraceable)
+        // ping. Every ping the app sends carries a wire tag by construction.
+        debugError('[PING] TX attempted with no session, aborting ping');
+        _pingInProgress = false;
+        return false;
       }
 
       // Capture noise floor at ping time
