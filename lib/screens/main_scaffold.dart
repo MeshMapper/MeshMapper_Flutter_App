@@ -145,12 +145,12 @@ class _MainScaffoldState extends State<MainScaffold> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Flood Traffic Unavailable'),
+        title: const Text('Passive Wardriving Only'),
         content: const Text(
-          'Your regional MeshMapper admin has disabled flood traffic in this '
-          'area, so Active and Hybrid modes have been turned off for this '
-          'session. Passive Mode and Trace Mode remain available. Please '
-          'reach out to your regional admin if you have questions.',
+          'This region has flood traffic disabled, so Active and Hybrid modes '
+          'have been turned off for this session. You can still wardrive '
+          'passively — Passive Mode and Trace Mode remain available. Contact '
+          'your regional admin if you have questions.',
         ),
         actions: [
           TextButton(
