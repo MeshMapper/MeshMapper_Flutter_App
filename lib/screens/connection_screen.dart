@@ -1461,9 +1461,13 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       locationIcon = Icons.wifi_off;
       locationText = 'No Internet';
       locationColor = Colors.red;
+      // Clock error: a stale position is a wrong phone clock, not bad GPS
+    } else if (appState.zoneCheckErrorReason == 'gps_stale') {
+      locationIcon = Icons.schedule;
+      locationText = 'Clock Out of Sync';
+      locationColor = Colors.orange;
       // GPS error: show GPS issue indicator
-    } else if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
-        appState.zoneCheckErrorReason == 'gps_stale') {
+    } else if (appState.zoneCheckErrorReason == 'gps_inaccurate') {
       locationIcon = Icons.gps_off;
       locationText = 'GPS Unavailable';
       locationColor = Colors.orange;
@@ -1880,18 +1884,24 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           );
         }
 
-        // GPS errors — no auto-retry, show manual retry button
+        // GPS errors — no auto-retry, show manual retry button.
+        // 'gps_stale' means the position timestamp doesn't line up with server
+        // time, which is almost always a wrong phone clock rather than a weak
+        // fix. Say so plainly, or people chase a GPS problem that isn't there.
         if (appState.zoneCheckErrorReason == 'gps_inaccurate' ||
             appState.zoneCheckErrorReason == 'gps_stale') {
+          final isStale = appState.zoneCheckErrorReason == 'gps_stale';
           return _buildMessageContent(
             context: context,
-            icon: Icons.gps_off,
+            icon: isStale ? Icons.schedule : Icons.gps_off,
             iconColor: Colors.orange.withValues(alpha: 0.7),
-            title: appState.zoneCheckErrorReason == 'gps_inaccurate'
-                ? 'GPS Accuracy Error'
-                : 'GPS Stale Error',
-            message:
-                '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
+            title: isStale ? 'Phone Clock Out of Sync' : 'GPS Accuracy Error',
+            message: isStale
+                ? "Your phone's clock is off, so your location looks out of date. "
+                    'This is a time problem, not a GPS problem.\n\n'
+                    "Open your phone's Date & Time settings, turn on automatic "
+                    'date and time (and automatic time zone), then tap retry.'
+                : '${appState.zoneCheckError}\n\nTry moving to an area with better GPS signal, then tap retry.',
             action: FilledButton.icon(
               onPressed: () => appState.checkZoneStatus(),
               icon: const Icon(Icons.refresh),

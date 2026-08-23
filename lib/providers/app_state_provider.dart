@@ -7145,7 +7145,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case 'zone_full':
         return 'Zone is at TX capacity. You can still receive (RX-only mode).';
       case 'gps_stale':
-        return 'GPS data is too old. Acquiring fresh position...';
+        return "Your phone's clock is out of sync. Turn on automatic date and time in your phone settings.";
       case 'gps_inaccurate':
         return 'GPS accuracy insufficient (need <50m). Waiting for better signal...';
       case 'bad_key':
@@ -7561,7 +7561,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _scheduleZoneCheckRetry(
               seconds: 10, error: message, reason: 'gps_inaccurate');
         } else if (reason == 'gps_stale') {
-          logError('GPS Stale Error\n$message', autoSwitch: false);
+          // The server rejected the position age, which means the phone clock
+          // disagrees with real time. Name the clock, not the GPS.
+          logError(
+              'Phone Clock Out of Sync\nTurn on automatic date and time in '
+              'your phone settings.\n($message)',
+              autoSwitch: false);
           _scheduleZoneCheckRetry(
               seconds: 10, error: message, reason: 'gps_stale');
         } else if (reason == 'zone_disabled') {
