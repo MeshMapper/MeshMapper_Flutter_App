@@ -1529,30 +1529,42 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         child: Row(
           children: [
-            // Location chip (city name)
-            _buildChip(
-              icon: locationIcon,
-              text: locationText,
-              color: locationColor,
+            // The leading group absorbs the leftover width (replacing a
+            // Spacer) so the slots chip stays pinned right while a long city
+            // name ellipsizes instead of overflowing on a narrow phone.
+            Expanded(
+              child: Row(
+                children: [
+                  // Location chip (city name) — the only variable-width chip,
+                  // so it is the one that gives way when space runs out.
+                  Flexible(
+                    child: _buildChip(
+                      icon: locationIcon,
+                      text: locationText,
+                      color: locationColor,
+                    ),
+                  ),
+
+                  // IATA code chip (only when in zone)
+                  if (iataCode != null) ...[
+                    const SizedBox(width: 8),
+                    _buildChip(
+                      icon: Icons.flight,
+                      text: iataCode,
+                      color: Colors.blue,
+                    ),
+                  ],
+                ],
+              ),
             ),
 
-            // IATA code chip (only when in zone)
-            if (iataCode != null) ...[
-              const SizedBox(width: 8),
-              _buildChip(
-                icon: Icons.flight,
-                text: iataCode,
-                color: Colors.blue,
-              ),
-            ],
-
-            const Spacer(),
+            const SizedBox(width: 8),
 
             // Slots chip
             _buildChip(
               icon: passiveOnly ? Icons.hearing : Icons.people_outline,
               text: passiveOnly
-                  ? 'Passive Only'
+                  ? 'Passive'
                   : hasSlots
                       ? '$slotsAvailable/$slotsMax Open'
                       : '--',
@@ -1582,12 +1594,17 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         children: [
           Icon(icon, size: 14, color: color),
           const SizedBox(width: 4),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: color,
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
             ),
           ),
         ],
