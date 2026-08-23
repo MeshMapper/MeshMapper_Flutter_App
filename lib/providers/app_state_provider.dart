@@ -436,6 +436,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // sets it when a radio needs the one-tap prompt.
   bool _portalLinkPromptPending = false;
 
+  /// Sanitized failure code from the last sign-in attempt, waiting to be shown.
+  ///
+  /// The browser round trip outlives the Settings tap that started it, so the
+  /// service's completion callback is the ONLY place a failure can surface —
+  /// `MainScaffold` drains this and clears it. Deliberately holds the CODE, not
+  /// the copy: the UI layer owns the user-facing wording, same as
+  /// `PortalLinkStatus`.
+  String? _portalSignInError;
+
   /// The pubkey the pending prompt belongs to. Captured when the prompt is
   /// raised so a mid-prompt reconnect cannot link the wrong radio.
   String? _portalLinkPromptPubkey;
@@ -1143,6 +1152,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The one-tap link prompt is waiting to be shown.
   bool get portalLinkPromptPending => _portalLinkPromptPending;
+
+  /// A sign-in attempt failed and the user has not been told yet.
+  ///
+  /// Only failures the app can ATTRIBUTE to an attempt it started reach this.
+  /// An unsolicited callback — no pending PKCE pair, or a state mismatch — is
+  /// dropped silently inside `PortalAccountService` on purpose: a deep link is
+  /// unauthenticated, so any app on the device could otherwise raise this.
+  String? get portalSignInError => _portalSignInError;
 
   /// Device name for the link prompt copy (anonymity-aware).
   String? get portalLinkPromptDeviceName => displayDeviceName;
@@ -2456,6 +2473,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _portalAccountService.onSignInComplete = (success, errorCode) {
       debugLog('[ACCOUNT] Sign-in complete: success=$success, '
           'error=${errorCode ?? 'none'}');
+      // A success clears any stale code, so a late toast can never contradict
+      // a screen that already says "signed in".
+      _portalSignInError = success ? null : (errorCode ?? 'unknown');
       notifyListeners();
     };
 
@@ -9062,7 +9082,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<bool> beginPortalSignIn() async {
     if (kIsWeb) return false;
     debugLog('[ACCOUNT] Sign-in requested');
+    // A retry must not inherit the previous attempt's verdict.
+    _portalSignInError = null;
+    notifyListeners();
     return _portalAccountService.beginSignIn();
+  }
+
+  /// Drop the pending sign-in failure once the user has been shown it.
+  void clearPortalSignInError() {
+    if (_portalSignInError == null) return;
+    _portalSignInError = null;
+    notifyListeners();
   }
 
   /// Sign out locally and revoke the token server-side (best effort).

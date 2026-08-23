@@ -405,6 +405,14 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   unauthenticated — any app on the device can fire
   `meshmapper-auth://callback?error=x`, which would otherwise destroy a
   legitimate in-flight pair and push an arbitrary string into the UI.
+- **A failed sign-in is reported by `MainScaffold`, not by the call site**: the
+  browser round trip outlives the Settings tap that started it, so
+  `onSignInComplete` lands with no live caller left to answer. The provider
+  parks the sanitized code in `portalSignInError`; the scaffold drains it on the
+  next frame, maps it to user-facing copy and calls `clearPortalSignInError()`.
+  Only failures attributable to an attempt THIS app started get that far — an
+  unsolicited callback (no pending pair, state mismatch) still returns silently
+  by design, for the same reason the `error=` rule above exists.
 - **Linking**: `requestNonce(pubkey)` → the app validates the answer is exactly
   64 hex / 32 bytes → `MeshCoreConnection.sign()` has the radio Ed25519-sign the
   **raw 32 bytes** → `linkDevice(pubkey, nonce, signature, label)` binds it. The
