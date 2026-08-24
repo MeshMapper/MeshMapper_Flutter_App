@@ -9317,6 +9317,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return const PortalLinkOutcome(PortalLinkStatus.skipped);
     }
     debugLog('[ACCOUNT] Manual link requested for ${_pkPrefix(pubkey)}');
+
+    // The local ladder below is ours to clear; a block the SERVER asked for is
+    // not. Knocking on a live 429 re-arms a fresh penalty on the portal's
+    // sliding bucket, so an impatient tap would extend the user's own lockout.
+    final blocked = _portalAccountService.linkLaneBackoff;
+    if (blocked != null) {
+      debugLog('[ACCOUNT] Manual link blocked by portal for '
+          '${blocked.inSeconds}s');
+      return PortalLinkOutcome(PortalLinkStatus.failed, retryAfter: blocked);
+    }
+
     _portalLinkDeclinedDevices.remove(pubkey);
     _portalLinkAttempts.remove(pubkey);
     _portalLinkRetryAfter.remove(pubkey);
