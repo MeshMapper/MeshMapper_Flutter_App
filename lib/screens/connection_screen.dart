@@ -1686,21 +1686,24 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'Your regional admin has turned off flood traffic in '
-                      'this area, so Active and Hybrid modes are unavailable '
-                      'here. This is a regional setting, not a full zone.',
+                      'This region has grown large enough that flood traffic '
+                      'started hurting the mesh, so the regional mesh chose '
+                      'to turn it off. Active and Hybrid modes are '
+                      'unavailable across the whole MeshMapper region you '
+                      'are in. It is not a capacity limit.',
                       style: bodyStyle,
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'You can still wardrive. Passive Mode and Trace Mode '
-                      'work normally, and the app keeps logging everything '
-                      'your radio hears.',
+                      'Passive Mode (discovery requests and RX listening) and '
+                      'Trace Mode still work, and they map a mesh this size '
+                      'well. The app keeps logging everything your radio '
+                      'hears.',
                       style: bodyStyle,
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Contact your regional admin if you have questions.',
+                      'For more information, talk to your regional admin.',
                       style: bodyStyle,
                     ),
                   ],

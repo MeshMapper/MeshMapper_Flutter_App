@@ -1302,17 +1302,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get floodTrafficEnabled =>
       !_apiService.floodDisabled && _preferences.floodTrafficEnabled;
 
-  /// One-shot flag: true when the user had flood traffic enabled and the
-  /// region forced it off on auth/zone-change. UI shows a dialog, then calls
-  /// [clearFloodDisabledAlert].
-  bool _floodDisabledAlertPending = false;
-  bool get floodDisabledAlertPending => _floodDisabledAlertPending;
-  void clearFloodDisabledAlert() {
-    if (!_floodDisabledAlertPending) return;
-    _floodDisabledAlertPending = false;
-    notifyListeners();
-  }
-
   int get minModeInterval => _apiService.minModeInterval;
   bool get enforceHopBytes => _apiService.enforceHopBytes;
   int get hopBytes => _hopBytes;
@@ -3868,7 +3857,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[CONN] Discovery drop force-enabled by regional admin');
     }
 
-    final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
     final shouldEnableFlood = !_apiService.floodDisabled;
     if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
       _preferences =
@@ -3877,10 +3865,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? '[CONN] Flood traffic auto-enabled (region permits)'
           : '[CONN] Flood traffic disabled by regional admin');
     }
-    if (wasFloodEnabledByUser && _apiService.floodDisabled) {
-      _floodDisabledAlertPending = true;
-    }
-
     if (_preferences.autoPingInterval < _apiService.minModeInterval) {
       _preferences =
           _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
@@ -8343,7 +8327,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _preferences = _preferences.copyWith(discDropEnabled: true);
         debugLog('[ZONE] Discovery drop force-enabled by new zone admin');
       }
-      final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
       final shouldEnableFlood = !_apiService.floodDisabled;
       if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
         _preferences =
@@ -8351,9 +8334,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog(shouldEnableFlood
             ? '[ZONE] Flood traffic auto-enabled (new zone permits)'
             : '[ZONE] Flood traffic disabled by new zone admin');
-      }
-      if (wasFloodEnabledByUser && _apiService.floodDisabled) {
-        _floodDisabledAlertPending = true;
       }
       if (_preferences.autoPingInterval < _apiService.minModeInterval) {
         _preferences = _preferences.copyWith(

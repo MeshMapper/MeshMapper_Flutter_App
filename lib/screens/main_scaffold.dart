@@ -30,7 +30,6 @@ class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
   bool _hasShownLocationSettingsPrompt = false;
-  bool _floodDisabledDialogOpen = false;
   bool _linkPromptDialogOpen = false;
   bool _signInErrorToastOpen = false;
 
@@ -137,31 +136,6 @@ class _MainScaffoldState extends State<MainScaffold> {
       final appState = context.read<AppStateProvider>();
       await appState.restartGpsAfterPermission();
     }
-  }
-
-  Future<void> _showFloodDisabledDialog() async {
-    final appState = context.read<AppStateProvider>();
-    debugLog('[APP] Showing flood-traffic-disabled-by-region alert');
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Flood Traffic Disabled'),
-        content: const Text(
-          'Your regional admin has turned off flood traffic in this area, so '
-          'Active and Hybrid modes have been turned off for this session. You '
-          'can still wardrive. Passive Mode and Trace Mode work normally. '
-          'Contact your regional admin if you have questions.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-    appState.clearFloodDisabledAlert();
-    _floodDisabledDialogOpen = false;
   }
 
   /// One-tap offer to bind the connected radio to the signed-in account.
@@ -332,16 +306,6 @@ class _MainScaffoldState extends State<MainScaffold> {
           });
           // Don't clear yet - LogScreen needs to see it to switch to Error tab
         }
-      });
-    }
-
-    // Listen for flood-traffic-disabled-by-region alert (user had it on,
-    // region forced it off on auth/zone-change)
-    if (appState.floodDisabledAlertPending && !_floodDisabledDialogOpen) {
-      _floodDisabledDialogOpen = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _showFloodDisabledDialog();
       });
     }
 
