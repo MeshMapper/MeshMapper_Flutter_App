@@ -429,7 +429,21 @@ class ApiService {
       if ((reason == 'connect' || reason == 'register') &&
           data['success'] == true) {
         if (!skipSessionStore) {
+          // A wire tag only re-derives under the session that minted it. When
+          // the server hands back a DIFFERENT session id (it reuses one only
+          // while status=1 and unexpired), anything still sitting in the queue
+          // was tagged under the old session and would be silently dropped on
+          // upload, so tell the listener to drop those pings.
+          final previousSessionId = _sessionId;
           _sessionId = data['session_id'] as String?;
+          if (previousSessionId != null &&
+              _sessionId != null &&
+              previousSessionId != _sessionId) {
+            debugLog(
+                '[SESSION] New session id issued (was $previousSessionId, now $_sessionId). '
+                'Queued wire tags are stale');
+            onSessionIdChanged?.call();
+          }
           _txAllowed = data['tx_allowed'] == true;
           _rxAllowed = data['rx_allowed'] == true;
           _sessionExpiresAt = data['expires_at'] as int?;
@@ -900,6 +914,10 @@ class ApiService {
 
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
+
+  /// Fired when /auth returns a session id different from the one we held.
+  /// Wired to ApiQueueService.dropStaleTaggedItems(). See that method for why.
+  void Function()? onSessionIdChanged;
 
   /// Force-rebuild one vector coverage tile on the region server
   /// (`vector_tile.php?...&fresh=1`, see VECTOR_TILES.md). Used by the
