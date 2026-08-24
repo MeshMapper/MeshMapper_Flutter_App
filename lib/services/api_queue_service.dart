@@ -747,8 +747,65 @@ class ApiQueueService {
     _offlinePings.clear();
   }
 
+  /// Drop every queued item whose wire tag can no longer be validated.
+  ///
+  /// A wire tag only re-derives under the session that minted it: the server
+  /// recomputes it from the session_id the batch is POSTed under and skips the
+  /// entry entirely on a mismatch, while still returning success, so the app
+  /// prunes the item as uploaded and the TX ping is lost with no error
+  /// anywhere (`wardrive-api.php`, action=wire_tag_mismatch).
+  ///
+  /// Call this whenever the session id changes underneath a preserved queue.
+  /// Every item queued at that moment was necessarily minted under the old
+  /// session (anything minted under the new one is enqueued afterwards), so
+  /// dropping all tagged items is exact and needs no per-item bookkeeping.
+  ///
+  /// Auto-reconnect is the path that matters: it deliberately preserves the
+  /// queue, and /auth only reuses a session while it is status=1 and
+  /// unexpired. Otherwise a fresh session_id comes back and everything
+  /// already queued is stale.
+  ///
+  /// Dropping rather than un-tagging is deliberate. Re-minting under the new
+  /// session would claim a tag that never went out on the air. Stripping the
+  /// tag sends the ping down the server coords path, where hours (or just a
+  /// reconnect) later there is no status-4 WAIT row to join, so it inserts as
+  /// DEAD(3) and renders a GREY "dead" cell for a ping that was actually
+  /// heard. At roughly 0.2% of TX pings, an honest drop beats a misleading
+  /// map.
+  Future<void> dropStaleTaggedItems() async {
+    final staleHive = _safeRead(
+      (box) => box.values.where((i) => i.hasWireTag).toList(),
+      <ApiQueueItem>[],
+    );
+    for (final item in staleHive) {
+      try {
+        await item.delete();
+      } catch (e) {
+        debugError('[API QUEUE] Failed to drop stale tagged item: $e');
+      }
+    }
+
+    final beforeMemory = _memoryQueue.length;
+    _memoryQueue.removeWhere((i) => i.hasWireTag);
+    final dropped = staleHive.length + (beforeMemory - _memoryQueue.length);
+
+    if (dropped > 0) {
+      debugWarn(
+          '[API QUEUE] Session changed: dropped $dropped queued TX ping(s) whose wire tag '
+          'was minted under the old session (undeliverable)');
+      onQueueUpdated?.call(queueSize);
+    }
+  }
+
   /// Extract all queued items as API JSON without clearing the queue.
   /// Used to preserve data before session-expiry disconnect.
+  ///
+  /// Tagged TX pings are left OUT of the snapshot. It is bound for offline
+  /// storage and gets re-uploaded under a brand new `offline-YYYYMMDD-NNNN`
+  /// session, where the tag cannot re-derive: the server would skip the row
+  /// while still reporting success, so the ping is lost either way. Preserving
+  /// it only buys a wire_tag_mismatch warn. RX/DISC/TRACE carry no tag and are
+  /// preserved exactly as before.
   Future<List<Map<String, dynamic>>> extractAllAsJson() async {
     // Flush RX buffer first so all items are in the main queue
     await _flushRxBuffer();
@@ -762,7 +819,15 @@ class ApiQueueService {
 
     if (allItems.isEmpty) return [];
 
-    return allItems.map((item) => item.toApiJson()).toList();
+    final deliverable = allItems.where((i) => !i.hasWireTag).toList();
+    final skipped = allItems.length - deliverable.length;
+    if (skipped > 0) {
+      debugWarn(
+          '[API QUEUE] Preserving offline: skipped $skipped tagged TX ping(s) that no '
+          'offline session could upload (kept ${deliverable.length} untagged item(s))');
+    }
+
+    return deliverable.map((item) => item.toApiJson()).toList();
   }
 
   /// Dispose of resources

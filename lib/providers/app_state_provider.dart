@@ -2485,6 +2485,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await handleSessionError(reason, message);
     };
 
+    // A new session id makes every wire tag already queued under the old one
+    // undeliverable (auto-reconnect preserves the queue across re-auth). Drop
+    // those pings honestly instead of uploading claims the server will skip
+    // while reporting success.
+    _apiService.onSessionIdChanged = () {
+      unawaited(_apiQueueService.dropStaleTaggedItems());
+    };
+
     // Set up maintenance mode callback (for connected state)
     _apiService.onMaintenanceMode = (message, url) {
       debugLog('[MAINTENANCE] Callback triggered: $message');
