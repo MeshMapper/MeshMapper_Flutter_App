@@ -74,6 +74,11 @@ MESHMAPPER_API_KEY=<your-key> ./Build.sh
 
 # Upload the built iOS archive to App Store Connect (needs ASC API key, see upload_ios.sh)
 ./upload_ios.sh
+
+# Set the TestFlight "What to Test" text on the uploaded build (same ASC API key).
+# This cannot ride along with the upload, so it is a separate leg that waits for
+# App Store Connect to register the build.
+./set_whats_new.sh --notes-file notes.txt
 ```
 
 ### Debug Logging
