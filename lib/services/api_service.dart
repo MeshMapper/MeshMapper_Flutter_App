@@ -739,12 +739,12 @@ class ApiService {
     };
     if (criticalErrors.contains(reason)) {
       _clearSession();
-      onSessionError?.call(reason, message);
+      await onSessionError?.call(reason, message);
     }
 
     // outside_zone: notify listener but preserve session (backend auto-transfers on zone re-entry)
     if (reason == 'outside_zone') {
-      onSessionError?.call(reason, message);
+      await onSessionError?.call(reason, message);
     }
 
     return (isValid: false, reason: reason, message: message);
@@ -858,10 +858,10 @@ class ApiService {
 
       if (criticalErrors.contains(reason)) {
         _clearSession();
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
       } else if (reason == 'outside_zone') {
         // Preserve session — backend auto-transfers on zone re-entry
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
       } else {
         _onSessionExpiring?.call();
       }
@@ -988,8 +988,12 @@ class ApiService {
         final message = result['message'] as String?;
         // Clear session locally since it's invalid on server
         _clearSession();
-        // Notify listener for auto-disconnect
-        onSessionError?.call(reason, message);
+        // Notify listener for auto-disconnect. MUST be awaited: the handler
+        // snapshots the queue to offline storage, and returning nonRetryable
+        // makes the caller DISCARD that same batch. Fired bare, the snapshot's
+        // first real suspension (a non-empty RX buffer flushing to Hive) let
+        // the discard land first, so the preserved pings came back short.
+        await onSessionError?.call(reason, message);
         return UploadResult.nonRetryable;
       }
 
@@ -999,7 +1003,7 @@ class ApiService {
         debugWarn(
             '[API] Upload batch outside_zone — discarding batch, preserving session');
         final message = result['message'] as String?;
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
         return UploadResult.nonRetryable;
       }
 
