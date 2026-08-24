@@ -50,7 +50,12 @@ export PATH="$JAVA_HOME/bin:$PATH"
 # Local release secrets (optional, never committed; lives outside the repo)
 RELEASE_ENV="$HOME/.meshmapper_release.env"
 if [ -f "$RELEASE_ENV" ]; then
+    # set -a exports everything the file assigns. Gradle reads the signing
+    # passwords with System.getenv, so a plain "NAME=value" in the file has to
+    # be exported here or the release build fails on a null store password.
+    set -a
     source "$RELEASE_ENV"
+    set +a
 fi
 
 # Semver comparison: returns 0 (true) if $1 >= $2
