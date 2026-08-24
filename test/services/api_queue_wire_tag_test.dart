@@ -74,11 +74,20 @@ void main() {
       final queue = newQueue();
       await enqueueTaggedTx(queue);
       await enqueueRx(queue);
+      // RX sits in the per-repeater buffer until a flush, so the main queue
+      // holds exactly the tagged TX ping at this point.
+      expect(queue.queueSize, 1);
 
       // Auto-reconnect deliberately preserves the queue, but /auth only reuses
       // a session while it is status=1 and unexpired. Otherwise a new
       // session_id comes back and everything already queued is stale.
       await queue.dropStaleTaggedItems();
+
+      // Assert on queueSize, NOT on extractAllAsJson: the snapshot applies the
+      // same tag filter itself, so checking only its output passes even when
+      // dropStaleTaggedItems drops nothing at all.
+      expect(queue.queueSize, 0,
+          reason: 'the tagged TX ping must actually leave the queue');
 
       final pending = await queue.extractAllAsJson();
       expect(pending, hasLength(1));
