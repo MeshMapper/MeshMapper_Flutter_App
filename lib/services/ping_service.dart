@@ -565,6 +565,11 @@ class PingService {
 
         final validation = canPing();
         if (validation != PingValidation.valid) {
+          // Unlock BEFORE scheduling. onAutoPingScheduled fires synchronously
+          // and the idle auto-stop hangs off it, so a disable arriving while
+          // this is still true latches as pending and never drains (a skipped
+          // ping arms no RX window). Matches _sendDiscoveryRequest's ordering.
+          _pingInProgress = false;
           // For auto mode, schedule next attempt if distance check failed
           if (_autoPingEnabled && !_passiveModeEnabled) {
             if (validation == PingValidation.tooCloseToLastPing) {
@@ -578,7 +583,6 @@ class PingService {
               _scheduleNextAutoPing();
             }
           }
-          _pingInProgress = false;
           return false;
         }
       }
@@ -989,6 +993,15 @@ class PingService {
     // Start countdown display (with skip reason if applicable)
     // The AutoPingTimer in countdown_timer_service.dart handles the display
     onAutoPingScheduled?.call(_autoPingIntervalMs, _skipReason);
+
+    // That callback runs synchronously and can stop auto mode (the idle
+    // auto-stop hangs off it), which cancels _autoTimer. Re-check so we don't
+    // re-arm a timer the stop just cleared.
+    if (!_autoPingEnabled || _passiveModeEnabled) {
+      debugLog(
+          '[ACTIVE MODE] Auto mode stopped while scheduling, not arming timer');
+      return;
+    }
 
     // Schedule the next ping
     _autoTimer = Timer(Duration(milliseconds: _autoPingIntervalMs), () {
@@ -1499,6 +1512,12 @@ class PingService {
         '[HYBRID] Scheduling next ${isNextDisc ? "discovery" : "TX"} ping in ${waitMs}ms');
 
     onAutoPingScheduled?.call(waitMs, _skipReason);
+
+    // See _scheduleNextAutoPing: the callback can stop auto mode synchronously.
+    if (!_autoPingEnabled || !_hybridModeEnabled) {
+      debugLog('[HYBRID] Auto mode stopped while scheduling, not arming timer');
+      return;
+    }
 
     _autoTimer = Timer(Duration(milliseconds: waitMs), () {
       if (!_autoPingEnabled || !_hybridModeEnabled) return;
