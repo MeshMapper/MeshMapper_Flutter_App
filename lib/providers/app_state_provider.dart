@@ -2965,6 +2965,58 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Connection
   // ============================================
 
+  /// Derive the reported power from the radio that is connecting, before /auth
+  /// is told about it.
+  ///
+  /// _postConnectionSetup does this too, but it runs after
+  /// MeshCoreConnection.connect() returns, and /auth is Step 6 *inside* that
+  /// call. So on the first connect with a different radio the session opened
+  /// carrying the previous radio's wattage, alongside the new radio's model
+  /// string. It looked fixed on the next connect only because the preference
+  /// had been corrected by then (#426).
+  ///
+  /// Precedence matches _postConnectionSetup: the model's rating, then the
+  /// user's saved override for this radio. With neither, the power is not
+  /// configured, and saying so is what makes the app ask instead of quietly
+  /// reporting whatever the last radio used.
+  void _applyConnectingDevicePower(String? deviceName) {
+    final model = _meshCoreConnection?.deviceModel;
+    final overrideKey = _isAnonymousRenamed ? _originalDeviceName : deviceName;
+    final saved =
+        overrideKey == null ? null : _devicePowerOverrides[overrideKey];
+
+    if (saved != null) {
+      _preferences = _preferences.copyWith(
+        powerLevel: (saved['powerLevel'] as num).toDouble(),
+        txPower: (saved['txPower'] as num).toInt(),
+        autoPowerSet: false,
+        powerLevelSet: true,
+      );
+      debugLog('[MODEL] Reporting saved override for "$overrideKey": '
+          '${saved['powerLevel']}W');
+    } else if (model != null) {
+      _preferences = _preferences.copyWith(
+        powerLevel: model.power,
+        txPower: model.txPower,
+        autoPowerSet: true,
+        powerLevelSet: false,
+      );
+      debugLog(
+          '[MODEL] Reporting ${model.power}W for ${model.shortName} at auth');
+    } else {
+      // Unrecognized radio with nothing saved. Carrying the previous device's
+      // flags here would both report its wattage and suppress the prompt that
+      // asks the user to set one.
+      _preferences = _preferences.copyWith(
+        autoPowerSet: false,
+        powerLevelSet: false,
+      );
+      debugWarn('[MODEL] Unrecognized radio and no saved power, asking the '
+          'user rather than reusing the last one');
+    }
+    notifyListeners();
+  }
+
   /// Creates the two-stage auth callback for MeshCoreConnection Step 6.
   /// Shared by all transport types (BLE, TCP, USB Serial).
   Future<Map<String, dynamic>?> Function() _createAuthCallback() {
@@ -3049,6 +3101,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           'message': 'Could not retrieve device name'
         };
       }
+
+      // The radio is identified by now, so report ITS power, not whatever the
+      // last one left in preferences (#426).
+      _applyConnectingDevicePower(deviceName);
 
       // Stage 1: Try existing public_key authentication
       debugLog(
