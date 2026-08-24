@@ -875,6 +875,95 @@ void main() {
       await service.logout();
       expect(requests.single.headers['X-MM-App-Token'], 'f' * 64);
     });
+
+    /// The backoff is what is LEFT of the block, so it lands a hair under the
+    /// granted duration. Anything that ran a real clock is close enough.
+    void expectBackoff(Duration? actual, Duration granted) {
+      expect(actual, isNotNull);
+      expect(actual!, lessThanOrEqualTo(granted));
+      expect(actual, greaterThan(granted - const Duration(seconds: 5)));
+    }
+
+    // Every 429 the portal sends is terminal and carries Retry-After. Its
+    // buckets slide with a rolling penalty, so a blocked call that gets
+    // retried re-arms a fresh block instead of letting the old one expire.
+    http.Response rateLimited({String? retryAfter}) => http.Response(
+          '{"error":"rate_limited"}',
+          429,
+          headers: {if (retryAfter != null) 'retry-after': retryAfter},
+        );
+
+    test('a 429 on me blocks the next refresh even when it is forced',
+        () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '600')));
+
+      expect(await service.refreshMe(), isFalse);
+      expect(requests.length, 1);
+
+      // force skips the local hourly throttle, never a server backoff.
+      expect(await service.refreshMe(force: true), isFalse);
+      expect(requests.length, 1,
+          reason: 'a blocked route must not be hit again');
+
+      expectBackoff(
+          service.rateLimitBackoff('me'), const Duration(seconds: 600));
+    });
+
+    test('a 429 is not a sign-out', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '600')));
+
+      await service.refreshMe();
+
+      expect(service.isSignedIn, isTrue);
+      expect(await store.readToken(), 'f' * 64);
+    });
+
+    test('a 429 with no Retry-After still blocks for the default', () async {
+      final service = await signedIn(recordingClient((_) => rateLimited()));
+
+      await service.refreshMe();
+
+      expectBackoff(service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
+    });
+
+    test('an unparseable Retry-After falls back to the default', () async {
+      final service = await signedIn(recordingClient(
+          (_) => rateLimited(retryAfter: 'Sun, 23 Aug 2026 21:00:00 GMT')));
+
+      await service.refreshMe();
+
+      expectBackoff(service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
+    });
+
+    test('an absurd Retry-After is clamped', () async {
+      final service = await signedIn(
+          recordingClient((_) => rateLimited(retryAfter: '99999999')));
+
+      await service.refreshMe();
+
+      expectBackoff(service.rateLimitBackoff('me'), PortalApi.maxRetryAfter);
+    });
+
+    test('logout does not retry a 429', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '300')));
+
+      await service.logout();
+
+      expect(requests.length, 1, reason: 'the retry would land in the block');
+      expect(service.isSignedIn, isFalse);
+    });
+
+    test('a 429 on nonce backs the whole link lane off', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '120')));
+
+      expect(await service.requestNonce('A' * 64), isNull);
+
+      expectBackoff(service.linkLaneBackoff, const Duration(seconds: 120));
+    });
   });
 }
 

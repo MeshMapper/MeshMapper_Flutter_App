@@ -9119,6 +9119,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _portalAccountService.refreshMe(force: force);
   }
 
+  /// How long the portal has told us to stay off `me`, or null when a refresh
+  /// is free to run. The Settings refresh button reads this so a rate-limited
+  /// tap says so instead of re-printing a stale device count.
+  Duration? get portalRefreshBackoff =>
+      _portalAccountService.rateLimitBackoff('me');
+
   /// Clear every persisted decline AND every sign-unsupported verdict, so both
   /// kinds of suppressed radio are offered again.
   ///
@@ -9384,7 +9390,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   PortalLinkOutcome _recordLinkFailure(String pubkey, String reason) {
     final attempts = (_portalLinkAttempts[pubkey] ?? 0) + 1;
     _portalLinkAttempts[pubkey] = attempts;
-    final backoffSeconds = math.min(30 * (1 << (attempts - 1)), 1800);
+    var backoffSeconds = math.min(30 * (1 << (attempts - 1)), 1800);
+    // When the failure was a 429 the portal named its own wait, and its
+    // buckets re-arm on every request made during a block. Never come back
+    // sooner than it asked, even if the ladder says we could.
+    final serverBackoff = _portalAccountService.linkLaneBackoff;
+    if (serverBackoff != null && serverBackoff.inSeconds > backoffSeconds) {
+      backoffSeconds = serverBackoff.inSeconds;
+    }
     _portalLinkRetryAfter[pubkey] =
         DateTime.now().add(Duration(seconds: backoffSeconds));
     debugLog('[ACCOUNT] Link attempt $attempts failed ($reason) for '
