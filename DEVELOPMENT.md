@@ -377,7 +377,11 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   mints a 43-char verifier + challenge + independent `state`; the app opens
   `portal.php?app_authorize=1&…` with `LaunchMode.externalApplication` (an in-app
   WebView would see the user's password) and the portal deep-links back
-  `meshmapper-auth://callback?code=…&state=…`.
+  `meshmapper-auth://callback?code=…&state=…`. The exchange answers with the
+  identity but NOT the linked pubkeys, so it is followed by one `me` call:
+  without it the Settings account card reads "0 device(s) on this account"
+  until the next radio connect happens to refresh it. That call runs AFTER
+  `onSignInComplete`, so a device list that fails never colours the sign-in.
 - **Scheme**: `meshmapper-auth` (host `callback`), registered in
   `ios/Runner/Info.plist` `CFBundleURLTypes` and the `MainActivity`
   VIEW/BROWSABLE intent-filter. Deliberately NOT the bare `meshmapper` scheme —

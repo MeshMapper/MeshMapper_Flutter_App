@@ -581,6 +581,13 @@ class PortalAccountService {
     _log('signed in as ${account.username} (id=${account.id})');
     onAccountChanged?.call();
     onSignInComplete?.call(true, null);
+
+    // The exchange carries the identity but NOT the pubkeys, so the account
+    // card would sit at "0 device(s) on this account" until the next radio
+    // connect happened to run `me`. Pull the list now so a fresh sign-in shows
+    // the user it worked. Deliberately AFTER the callbacks above: the sign-in
+    // is already a success, and a failed list must not colour it.
+    await refreshMe();
   }
 
   /// True only for the one answer that means "this token is dead". A bare 401
