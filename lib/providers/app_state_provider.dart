@@ -7362,6 +7362,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[SESSION] Stationary revoke: dropping ${_apiQueueService.queueSize} queued pings instead of preserving them');
       } else if (sessionErrors.contains(reason)) {
         try {
+          // Land the per-repeater RX batches in the queue FIRST. disconnect()
+          // below flushes them too, but only after this snapshot has been
+          // taken and right before it clears the queue, so without this the
+          // best observation for every currently audible repeater is lost.
+          await _rxLogger?.flushAllBatches(trigger: 'session_expiry');
+
           final queuedPings = await _apiQueueService.extractAllAsJson();
           if (queuedPings.isNotEmpty) {
             final offlineDeviceName = _offlineDeviceName;
