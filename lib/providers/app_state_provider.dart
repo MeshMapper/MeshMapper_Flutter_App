@@ -6347,6 +6347,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _switchToOnlineMode();
   }
 
+  /// Device name recorded on an offline session.
+  ///
+  /// Mirrors the live auth path (`who:`): a session captured while Anonymous
+  /// Mode is on uploads as "Anonymous" too. Recording the real name here
+  /// leaked it on a later sync, since the mode may well be off by then.
+  String? get _offlineDeviceName => _isAnonymousRenamed
+      ? 'Anonymous'
+      : (_meshCoreConnection?.selfInfo?.name ??
+          connectedDeviceName?.replaceFirst('MeshCore-', ''));
+
   /// Save accumulated offline pings to a session file
   Future<void> _saveOfflineSession() async {
     final pings = _apiQueueService.getAndClearOfflinePings();
@@ -6359,12 +6369,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Include device info for auth during upload (use real name, not "Anonymous" — sessions upload later)
+    // Include device info for auth during upload.
     // Note: Connection already validates device name exists, so this should never be null
-    final offlineDeviceName = _isAnonymousRenamed
-        ? _originalDeviceName
-        : (_meshCoreConnection?.selfInfo?.name ??
-            connectedDeviceName?.replaceFirst('MeshCore-', ''));
+    final offlineDeviceName = _offlineDeviceName;
     // Finalize the in-progress session (created by periodic auto-save) in place
     // rather than creating a new one — otherwise the auto-saved session and this
     // final save become two identical sessions at the same time. updateCurrentSession
@@ -6397,10 +6404,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final pings = _apiQueueService.getOfflinePingsSnapshot();
     if (pings.isEmpty) return;
 
-    final offlineDeviceName = _isAnonymousRenamed
-        ? _originalDeviceName
-        : (_meshCoreConnection?.selfInfo?.name ??
-            connectedDeviceName?.replaceFirst('MeshCore-', ''));
+    final offlineDeviceName = _offlineDeviceName;
 
     _offlineSessionService.updateCurrentSession(
       pings,
@@ -7268,10 +7272,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         try {
           final queuedPings = await _apiQueueService.extractAllAsJson();
           if (queuedPings.isNotEmpty) {
-            final offlineDeviceName = _isAnonymousRenamed
-                ? _originalDeviceName
-                : (_meshCoreConnection?.selfInfo?.name ??
-                    connectedDeviceName?.replaceFirst('MeshCore-', ''));
+            final offlineDeviceName = _offlineDeviceName;
             await _offlineSessionService.saveSession(
               queuedPings,
               devicePublicKey: _devicePublicKey,
