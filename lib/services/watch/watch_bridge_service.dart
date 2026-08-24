@@ -342,6 +342,12 @@ class WatchBridgeService {
       // normal snapshots and one-shot cues.
       final admission = handler(WatchCommand(
         kind: kind,
+        id: id,
+        issuedAt: issuedAtMs == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(
+                (issuedAtMs + clockOffsetMs).round(),
+              ),
         mode: args['mode'] as String?,
         mapGeoNeeded: effectiveMapGeoNeeded,
         forceRefresh: args['forceRefresh'] == true,
