@@ -9412,6 +9412,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         appState
             .fetchRepeaterCoveragePoints(prefix: repeater.id)
             .then<RepeaterStats?>((pts) {
+          // null means the points could not be fetched at all. Keep it null so
+          // the sheet can say so, rather than aggregating an empty list into a
+          // zeroed RepeaterStats that reads as "this repeater heard nothing"
+          // (MeshMapper_Server#109). An EMPTY list still aggregates normally:
+          // that is a real answer.
+          if (pts == null) {
+            debugWarn('[COVERAGE] repeater ${repeater.id} coverage '
+                'unavailable, not rendering it as zero coverage');
+            return null;
+          }
           final res =
               RepeaterStats.fromCoverageWithPoints(pts, repeater, lookup);
           // Feature B: draw this repeater's coverage cells + status-coloured
