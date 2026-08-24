@@ -7735,12 +7735,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       builder: (context, snap) {
         final loading = snap.connectionState != ConnectionState.done;
         final stats = snap.data;
-        final range = loading
-            ? '…'
-            : (stats?.maxRangeMeters != null
-                ? formatCoverageDistance(stats!.maxRangeMeters!,
-                    isImperial: isImperial)
-                : 'N/A');
+        // '?' rather than 'N/A' when the fetch could not be answered: 'N/A'
+        // means we asked and there is nothing. Tapping the pill opens the sheet,
+        // which explains it properly.
+        final String range;
+        if (loading) {
+          range = '…';
+        } else if (stats == null) {
+          range = '?';
+        } else if (stats.maxRangeMeters != null) {
+          range = formatCoverageDistance(stats.maxRangeMeters!,
+              isImperial: isImperial);
+        } else {
+          range = 'N/A';
+        }
         return Wrap(
           spacing: 14,
           runSpacing: 6,
@@ -9663,12 +9671,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         final loading =
                             snap.connectionState != ConnectionState.done;
                         final stats = snap.data;
-                        final range = loading
-                            ? '…'
-                            : (stats?.maxRangeMeters != null
-                                ? formatCoverageDistance(stats!.maxRangeMeters!,
-                                    isImperial: isImperial)
-                                : 'N/A');
+                        // Three states: still loading, could not load, and
+                        // loaded (where a null range means nothing was heard).
+                        final String range;
+                        if (loading) {
+                          range = '…';
+                        } else if (stats == null) {
+                          range = 'Unavailable';
+                        } else if (stats.maxRangeMeters != null) {
+                          range = formatCoverageDistance(stats.maxRangeMeters!,
+                              isImperial: isImperial);
+                        } else {
+                          range = 'N/A';
+                        }
                         return _repRow(
                           context,
                           Icons.open_in_full,
@@ -9687,19 +9702,42 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 builder: (context, snap) {
                   final loading = snap.connectionState != ConnectionState.done;
                   final stats = snap.data;
+                  // Done with no stats means the fetch could not be answered.
+                  // Never fall through to the zero row here: that is the bug.
+                  if (!loading && stats == null) {
+                    return _coverageUnavailableRow(context);
+                  }
                   String v(int? n) => loading ? '…' : '${n ?? 0}';
-                  return Row(
+                  final nothingRecorded = !loading && stats!.totalMatched == 0;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
-                          const Color(0xFF1E7E34)),
-                      _repeaterStatCell(
-                          context, 'TX', v(stats?.tx), const Color(0xFFFD7E14)),
-                      _repeaterStatCell(
-                          context, 'RX', v(stats?.rx), const Color(0xFF6F42C1)),
-                      _repeaterStatCell(context, 'DISC', v(stats?.disc),
-                          const Color(0xFF17A2B8)),
-                      _repeaterStatCell(context, 'DEAD', v(stats?.dead),
-                          const Color(0xFF6C757D)),
+                      Row(
+                        children: [
+                          _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
+                              const Color(0xFF1E7E34)),
+                          _repeaterStatCell(context, 'TX', v(stats?.tx),
+                              const Color(0xFFFD7E14)),
+                          _repeaterStatCell(context, 'RX', v(stats?.rx),
+                              const Color(0xFF6F42C1)),
+                          _repeaterStatCell(context, 'DISC', v(stats?.disc),
+                              const Color(0xFF17A2B8)),
+                          _repeaterStatCell(context, 'DEAD', v(stats?.dead),
+                              const Color(0xFF6C757D)),
+                        ],
+                      ),
+                      if (nothingRecorded) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'No coverage recorded yet',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ],
                   );
                 },
@@ -9757,6 +9795,27 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// One cell of the repeater's BIDIR/TX/RX/DISC/DEAD totals row.
+  /// Shown in place of the BIDIR/TX/RX/DISC/DEAD row when the coverage fetch
+  /// could not be answered at all. Distinct from a repeater that was looked up
+  /// successfully and simply has no coverage, which keeps the zero row plus a
+  /// "no coverage recorded yet" caption (MeshMapper_Server#109).
+  Widget _coverageUnavailableRow(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.cloud_off, size: 16, color: scheme.onSurfaceVariant),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            "Couldn't load coverage",
+            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _repeaterStatCell(
       BuildContext context, String label, String value, Color color) {
     return Expanded(
