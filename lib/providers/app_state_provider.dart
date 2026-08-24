@@ -253,6 +253,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   AutoMode _autoMode = AutoMode.active;
   DateTime? _idleAutoStopReference;
   static const Duration _autoStopIdleTimeout = Duration(minutes: 30);
+  // Anchor walk backing the idle auto-stop, mirroring the server's stationary
+  // guard (stationary_guard.php sg_walk, SG_RADIUS_M / SG_STREAK_N) so a polite
+  // client stops itself before the server revokes the session.
+  double? _idleAnchorLat;
+  double? _idleAnchorLon;
+  int _idleAnchorEscapeStreak = 0;
+  static const double _idleAnchorRadiusMeters = 150;
+  static const int _idleAnchorStreakRequired = 3;
   bool _isPingSending = false; // True immediately when ping button clicked
   bool _autoPingStarting =
       false; // True while an auto mode is starting (before the first notify)
@@ -2480,9 +2488,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     // Set up session error callback for auto-disconnect
-    _apiService.onSessionError = (reason, message) async {
-      debugError('[APP] Session error from API: $reason - $message');
-      await handleSessionError(reason, message);
+    _apiService.onSessionError = (reason, message, {subReason}) async {
+      debugError('[APP] Session error from API: $reason'
+          '${subReason != null ? ' ($subReason)' : ''} - $message');
+      await handleSessionError(reason, message, subReason: subReason);
     };
 
     // A new session id makes every wire tag already queued under the old one
@@ -4123,16 +4132,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _liveActivityOperation = null;
       _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
 
-      if (skipReason != null) {
-        if (_preferences.autoStopAfterIdle && _idleAutoStopReference != null) {
-          final elapsed = DateTime.now().difference(_idleAutoStopReference!);
-          if (elapsed >= _autoStopIdleTimeout) {
-            _triggerIdleAutoStop();
-          }
-        }
-      } else {
-        _idleAutoStopReference = DateTime.now();
-      }
+      _updateIdleAutoStop();
     };
 
     _pingService!.onDiscPing = (entry) {
@@ -4357,7 +4357,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _apiService.disableHeartbeat();
 
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       _finishLiveActivitySession();
 
       debugLog('[APP] Pending disable cleanup complete, cooldown running');
@@ -4963,7 +4963,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _playDisconnectAlert();
       }
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       debugLog('[AUTO] Auto-ping disabled due to disconnect');
     }
 
@@ -5044,7 +5044,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
     _autoPingEnabled = false;
-    _idleAutoStopReference = null;
+    _resetIdleAutoStop();
 
     // Stop heartbeat
     _apiService.disableHeartbeat();
@@ -5339,7 +5339,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_autoPingEnabled) {
       await _pingService?.forceDisableAutoPing();
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
     }
 
     // End noise floor session on disconnect
@@ -5618,6 +5618,67 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Advance the idle auto-stop anchor walk by one auto-ping tick.
+  ///
+  /// Mirrors `sg_walk` in the server's stationary_guard.php: a fix within
+  /// [_idleAnchorRadiusMeters] of the anchor leaves the clock running, and only
+  /// [_idleAnchorStreakRequired] CONSECUTIVE fixes beyond it re-anchor and rearm
+  /// (isolated jitter spikes are one or two wild points; real movement is every
+  /// point far). The old rule rearmed on any ping that wasn't skipped, so GPS
+  /// jitter clearing the 25 m send filter kept the 30 minutes topped up
+  /// indefinitely and the stop never fired indoors.
+  void _updateIdleAutoStop() {
+    if (!_preferences.autoStopAfterIdle) return;
+
+    final position = _currentPosition;
+    if (position == null) return;
+
+    final anchorLat = _idleAnchorLat;
+    final anchorLon = _idleAnchorLon;
+    if (anchorLat == null || anchorLon == null) {
+      _anchorIdleAutoStop(position);
+      return;
+    }
+
+    final distance = Geolocator.distanceBetween(
+        anchorLat, anchorLon, position.latitude, position.longitude);
+
+    if (distance > _idleAnchorRadiusMeters) {
+      _idleAnchorEscapeStreak++;
+      if (_idleAnchorEscapeStreak >= _idleAnchorStreakRequired) {
+        debugLog(
+            '[AUTO] Idle anchor moved: ${distance.toStringAsFixed(0)}m out, '
+            '$_idleAnchorEscapeStreak consecutive');
+        _anchorIdleAutoStop(position);
+        return;
+      }
+    } else {
+      _idleAnchorEscapeStreak = 0;
+    }
+
+    final reference = _idleAutoStopReference;
+    if (reference != null &&
+        DateTime.now().difference(reference) >= _autoStopIdleTimeout) {
+      _triggerIdleAutoStop();
+    }
+  }
+
+  /// Re-anchor the idle walk here and restart the idle clock.
+  void _anchorIdleAutoStop(Position position) {
+    _idleAnchorLat = position.latitude;
+    _idleAnchorLon = position.longitude;
+    _idleAnchorEscapeStreak = 0;
+    _idleAutoStopReference = DateTime.now();
+  }
+
+  /// Clear the idle auto-stop clock and its anchor (auto-ping stopped).
+  void _resetIdleAutoStop() {
+    _idleAutoStopReference = null;
+    _idleAnchorLat = null;
+    _idleAnchorLon = null;
+    _idleAnchorEscapeStreak = 0;
+  }
+
   /// Auto-stop auto-ping after prolonged idle (no movement)
   void _triggerIdleAutoStop() {
     if (!_autoPingEnabled) return;
@@ -5628,7 +5689,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[AUTO] Auto-stop triggered: idle for $elapsed minutes');
     logError('Auto-ping stopped: no movement for 30 minutes',
         severity: ErrorSeverity.warning, autoSwitch: false);
-    _idleAutoStopReference = null;
+    _resetIdleAutoStop();
     toggleAutoPing(_autoMode);
   }
 
@@ -5686,7 +5747,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _startIdleDisconnectTimer();
 
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       _finishLiveActivitySession();
 
       // Clear top-heard overlay on stop
@@ -6314,7 +6375,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // 9. Update state
     _autoPingEnabled = false;
-    _idleAutoStopReference = null;
+    _resetIdleAutoStop();
     _finishLiveActivitySession();
     debugLog('[APP] Auto-ping mode stopped gracefully');
     notifyListeners();
@@ -7146,7 +7207,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Handle API error codes with user-friendly messages
   /// Returns a user-friendly message for the error code
-  String _getErrorMessage(String? reason, String? serverMessage) {
+  String _getErrorMessage(String? reason, String? serverMessage,
+      {String? subReason}) {
+    // Stationary revoke: the server's message names the actual cause and the
+    // window it measured, which the hardcoded text below cannot. Show it as-is.
+    if (reason == 'session_revoked' &&
+        subReason == 'stationary' &&
+        serverMessage != null &&
+        serverMessage.isNotEmpty) {
+      return serverMessage;
+    }
     switch (reason) {
       case 'unknown_device':
         return 'Unknown device. Please advertise yourself on the mesh using the official MeshCore app.';
@@ -7196,8 +7266,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Handle session error from wardrive/heartbeat API calls
   /// This may trigger auto-disconnect
-  Future<void> handleSessionError(String? reason, String? message) async {
-    final userMessage = _getErrorMessage(reason, message);
+  Future<void> handleSessionError(String? reason, String? message,
+      {String? subReason}) async {
+    final userMessage = _getErrorMessage(reason, message, subReason: subReason);
+    final isStationaryRevoke =
+        reason == 'session_revoked' && subReason == 'stationary';
 
     // Session ping-counter exhausted (wire tag's 11-bit cap). The session is still
     // valid here, so flush the queue under it BEFORE disconnecting: clearOnDisconnect()
@@ -7235,9 +7308,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Log error
+    // Log error. A stationary revoke is the guard working as designed (a
+    // surveyor pacing one spot trips it), so it warns rather than alarms.
     debugError('[API] Session error: $reason - $userMessage');
-    logError(userMessage, severity: ErrorSeverity.error);
+    logError(userMessage,
+        severity: isStationaryRevoke
+            ? ErrorSeverity.warning
+            : ErrorSeverity.error);
 
     // Session errors that require disconnect
     const sessionErrors = {
@@ -7267,8 +7344,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         zoneErrors.contains(reason)) {
       debugLog('[API] Session error requires disconnect: $reason');
 
-      // Preserve queued wardrive data to offline storage before disconnect clears it
-      if (sessionErrors.contains(reason)) {
+      // Preserve queued wardrive data to offline storage before disconnect clears it.
+      // NOT on a stationary revoke: those pings were earned sitting still, and
+      // preserving them just re-uploads them through the offline path later,
+      // which is exactly what the guard exists to stop. disconnect() below
+      // clears the queue, so skipping the snapshot is the drop.
+      if (isStationaryRevoke) {
+        debugLog(
+            '[SESSION] Stationary revoke: dropping ${_apiQueueService.queueSize} queued pings instead of preserving them');
+      } else if (sessionErrors.contains(reason)) {
         try {
           final queuedPings = await _apiQueueService.extractAllAsJson();
           if (queuedPings.isNotEmpty) {
@@ -7762,7 +7846,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cooldownTimer.stop();
     if (_autoPingEnabled) {
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       await _pingService?.forceDisableAutoPing();
       debugLog('[ZONE GRACE] Auto-ping paused');
     }
@@ -8003,7 +8087,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _cooldownTimer.stop();
       if (_autoPingEnabled) {
         _autoPingEnabled = false;
-        _idleAutoStopReference = null;
+        _resetIdleAutoStop();
         await _pingService?.forceDisableAutoPing();
         debugLog('[ZONE] Auto-ping paused for zone transfer');
       }
