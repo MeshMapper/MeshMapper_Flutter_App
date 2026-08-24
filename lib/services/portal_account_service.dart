@@ -198,10 +198,15 @@ class PortalLinkOutcome {
   final int adoptionDeviceCount;
   final String? accountName;
 
+  /// How long the portal asked us to stay off the link lane, when that is why
+  /// this attempt did not happen. Null for every other outcome.
+  final Duration? retryAfter;
+
   const PortalLinkOutcome(
     this.status, {
     this.adoptionDeviceCount = 0,
     this.accountName,
+    this.retryAfter,
   });
 }
 
@@ -844,6 +849,17 @@ class PortalAccountService {
     Map<String, String> body,
     String? token,
   ) async {
+    // Answer a live block locally instead of sending. The portal's buckets
+    // slide and a blocked request does NOT reset the count, it re-arms a FRESH
+    // penalty, so every extra knock extends the user's own lockout. Deliberately
+    // does NOT touch _rateLimitedUntil: only a real server 429 moves that clock.
+    final blocked = rateLimitBackoff(action);
+    if (blocked != null) {
+      _warn('$action not sent: rate limited, ${blocked.inSeconds}s left');
+      return _PortalResponse(429, const {}, 'rate_limited',
+          retryAfter: blocked);
+    }
+
     final headers = <String, String>{
       'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
       'Accept': 'application/json',

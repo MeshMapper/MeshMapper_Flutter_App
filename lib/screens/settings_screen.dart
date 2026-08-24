@@ -2823,9 +2823,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case PortalLinkStatus.skipped:
       case PortalLinkStatus.failed:
         // A manual tap deserves feedback even though the automatic path is
-        // deliberately silent.
-        AppToast.error(context, 'Could not link right now — try again later');
+        // deliberately silent. When the portal named a wait, say it: retrying
+        // inside the block only re-arms a fresh penalty.
+        final wait = outcome.retryAfter;
+        if (wait != null) {
+          AppToast.warning(context,
+              'Too many attempts. Try again in ${_waitLabel(wait)}.');
+        } else {
+          AppToast.error(context, 'Could not link right now — try again later');
+        }
     }
+  }
+
+  /// Round a backoff up to a whole unit the user can act on.
+  String _waitLabel(Duration wait) {
+    if (wait.inSeconds < 60) return '${wait.inSeconds}s';
+    return '${(wait.inSeconds / 60).ceil()} min';
   }
 
   Future<void> _unlinkPortalDevice(

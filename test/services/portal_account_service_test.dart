@@ -1014,6 +1014,31 @@ void main() {
 
       expectBackoff(service.linkLaneBackoff, const Duration(seconds: 120));
     });
+
+    test('a blocked route is not knocked on a second time', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '120')));
+
+      expect(await service.requestNonce('A' * 64), isNull);
+      expect(callsTo('nonce'), 1);
+
+      // The portal's bucket slides and a blocked request re-arms a FRESH
+      // penalty, so the second attempt must never leave the app.
+      expect(await service.requestNonce('A' * 64), isNull);
+      expect(callsTo('nonce'), 1);
+      expectBackoff(service.linkLaneBackoff, const Duration(seconds: 120));
+    });
+
+    test('a block on one route does not block another', () async {
+      final service = await signedIn(recordingClient((request) =>
+          request.url.queryParameters['action'] == 'nonce'
+              ? rateLimited(retryAfter: '120')
+              : http.Response('{"ok":true}', 200)));
+
+      expect(await service.requestNonce('A' * 64), isNull);
+      expect(await service.unlinkDevice('A' * 64), isTrue);
+      expect(callsTo('unlink'), 1);
+    });
   });
 }
 
