@@ -122,6 +122,18 @@ class PingService {
   // Pending disable flag - when true, disable will execute after RX window ends
   bool _pendingDisable = false;
 
+  // Backstop for the flag above. It is drained at exactly one point (the end of
+  // the RX window) while _pingInProgress is cleared on ~18 paths, so a ping that
+  // ends without ever arming a window (validation reject, no GPS fix, failed
+  // send) parks the disable forever and auto mode keeps its timer and keeps
+  // pinging after the user stopped it (#476).
+  Timer? _pendingDisableTimeout;
+
+  /// How long to wait for the real window completion before forcing a parked
+  /// disable. Comfortably past the longest legitimate in-flight ping (the 7s
+  /// discovery window) so a TX that is already on the air still gets its echoes.
+  static const Duration _pendingDisableTimeoutDelay = Duration(seconds: 12);
+
   // Auto-ping interval in milliseconds (default 30s, options: 15s, 30s, 60s)
   // Reference: getSelectedIntervalMs() in wardrive.js
   int _autoPingIntervalMs = 30000;
@@ -337,8 +349,12 @@ class PingService {
     // If user hasn't moved, old position is still valid
 
     // Check GPS accuracy (< 100m)
+    // Deliberately silent, like the other two validators. This runs on every
+    // provider notify (ping_controls.dart reads it to enable the buttons), so
+    // logging here wrote a line per second for as long as GPS stayed poor: 196
+    // lines in four minutes, 20% of a reporter's whole debug file (#476). The
+    // send paths log the blocking reason instead, once per real attempt.
     if (!_gpsService.isAccuracyAcceptableForPing(position)) {
-      debugWarn('[PING] GPS accuracy too low, rejecting ping');
       return PingValidation.gpsInaccurate;
     }
 
@@ -570,12 +586,13 @@ class PingService {
           // this is still true latches as pending and never drains (a skipped
           // ping arms no RX window). Matches _sendDiscoveryRequest's ordering.
           _pingInProgress = false;
+          // Logged here rather than inside canPing(), which the UI calls on
+          // every notify. Once per real attempt, matching the manual path.
+          debugLog('[PING] Auto ping blocked by validation: $validation');
           // For auto mode, schedule next attempt if distance check failed
           if (_autoPingEnabled && !_passiveModeEnabled) {
             if (validation == PingValidation.tooCloseToLastPing) {
               _skipReason = 'too close';
-              debugLog(
-                  '[PING] Auto ping blocked: too close to last ping, scheduling next');
             }
             if (_hybridModeEnabled) {
               _scheduleNextHybridPing();
@@ -925,30 +942,7 @@ class PingService {
 
     // After RX window ends, check if disable was requested during the window
     if (_pendingDisable) {
-      debugLog('[PING] Executing pending disable after RX window');
-      _pendingDisable = false;
-      final wasHybrid = _hybridModeEnabled;
-      final wasTargeted = _targetedModeEnabled;
-      _autoPingEnabled = false;
-      _passiveModeEnabled = false;
-      _hybridModeEnabled = false;
-      _targetedModeEnabled = false;
-      _nextPingIsDiscovery = true;
-      _autoTimer?.cancel();
-      _autoTimer = null;
-      // Clean up discovery infrastructure if hybrid was enabled
-      if (wasHybrid) {
-        _stopDiscoveryMode();
-      }
-      // Clean up targeted infrastructure if targeted was enabled
-      if (wasTargeted) {
-        _stopTargetedMode();
-      }
-      // Start cooldown immediately
-      _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
-      debugLog('[PING] Pending disable complete, cooldown started');
-      // Notify AppStateProvider to update its state and cleanup
-      await onPendingDisableComplete?.call();
+      await _executePendingDisable('after RX window');
       return; // Don't schedule next auto ping
     }
 
@@ -1155,6 +1149,7 @@ class PingService {
     if (_pingInProgress) {
       debugLog('[PING] Ping in progress, queuing disable for after RX window');
       _pendingDisable = true;
+      _armPendingDisableTimeout();
       return true; // Return true to indicate disable was accepted (pending)
     }
 
@@ -1198,10 +1193,76 @@ class PingService {
     return true;
   }
 
+  /// Run the disable that [disableAutoPing] parked while a ping was in flight:
+  /// clear auto mode, cancel the auto timer, start the cooldown, then hand back
+  /// to AppStateProvider for its half of the teardown.
+  ///
+  /// Safe to call from either the RX window completion or the timeout backstop:
+  /// it clears [_pendingDisable] and the timeout first, and both callers gate on
+  /// [_pendingDisable] still being set, so it can never run twice.
+  Future<void> _executePendingDisable(String trigger) async {
+    debugLog('[PING] Executing pending disable ($trigger)');
+    _pendingDisable = false;
+    _pendingDisableTimeout?.cancel();
+    _pendingDisableTimeout = null;
+    final wasHybrid = _hybridModeEnabled;
+    final wasTargeted = _targetedModeEnabled;
+    _autoPingEnabled = false;
+    _passiveModeEnabled = false;
+    _hybridModeEnabled = false;
+    _targetedModeEnabled = false;
+    _nextPingIsDiscovery = true;
+    _autoTimer?.cancel();
+    _autoTimer = null;
+    // Clean up discovery infrastructure if hybrid was enabled
+    if (wasHybrid) {
+      _stopDiscoveryMode();
+    }
+    // Clean up targeted infrastructure if targeted was enabled
+    if (wasTargeted) {
+      _stopTargetedMode();
+    }
+    // Start cooldown immediately
+    _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
+    debugLog('[PING] Pending disable complete, cooldown started');
+    // Notify AppStateProvider to update its state and cleanup
+    await onPendingDisableComplete?.call();
+  }
+
+  /// Guarantee a parked disable is drained even when the RX window that was
+  /// supposed to drain it never arrives.
+  ///
+  /// The window is only armed once a ping actually goes out. A ping rejected by
+  /// validation, or one that fails to send, clears [_pingInProgress] and returns
+  /// without arming anything, so the queued disable had no completion to wait
+  /// for and auto mode kept running (#476: hybrid kept scheduling pings for four
+  /// minutes after the user stopped it).
+  void _armPendingDisableTimeout() {
+    _pendingDisableTimeout?.cancel();
+    _pendingDisableTimeout = Timer(_pendingDisableTimeoutDelay, () async {
+      if (!_pendingDisable) return; // the window drained it, nothing to do
+      debugWarn(
+          '[PING] Pending disable never drained after '
+          '${_pendingDisableTimeoutDelay.inSeconds}s (no RX window arrived) - forcing it');
+      // The ping this was waiting on is gone. Leaving this set would keep the
+      // ping controls locked out until a restart.
+      _pingInProgress = false;
+      try {
+        await _executePendingDisable('timeout backstop');
+      } catch (e) {
+        // Nothing is awaiting a timer callback, so an escaping error here would
+        // go unhandled. The flags are already cleared by this point.
+        debugError('[PING] Forced pending disable failed: $e');
+      }
+    });
+  }
+
   /// Force disable auto-ping (ignores cooldown, used for disconnect)
   Future<void> forceDisableAutoPing() async {
     debugLog('[PING] Force disabling auto-ping');
     _pendingDisable = false; // Clear any pending disable
+    _pendingDisableTimeout?.cancel();
+    _pendingDisableTimeout = null;
     _autoTimer?.cancel();
     _autoTimer = null;
     _skipReason = null;
@@ -1790,6 +1851,8 @@ class PingService {
     _rxWindowTimer = null;
     _autoTimer?.cancel();
     _autoTimer = null;
+    _pendingDisableTimeout?.cancel();
+    _pendingDisableTimeout = null;
     _stopDiscoveryMode();
     _stopTargetedMode();
     _wakelockService.dispose();
