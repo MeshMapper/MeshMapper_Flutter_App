@@ -2841,8 +2841,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       BuildContext context, AppStateProvider appState) async {
     await appState.refreshPortalAccount(force: true);
     if (!context.mounted) return;
+    // A rate-limited refresh makes no request, so the count below would be the
+    // same stale number every tap, which reads as a dead button and invites
+    // more tapping. Every tap during a block extends it server-side.
+    final backoff = appState.portalRefreshBackoff;
+    if (backoff != null) {
+      AppToast.error(context,
+          'Too many refreshes. Try again in ${_formatBackoff(backoff)}.');
+      return;
+    }
     AppToast.simple(
         context, '${appState.portalLinkedDeviceCount} linked device(s)');
+  }
+
+  /// Rounded up: telling someone to wait "0 minutes" is worse than telling
+  /// them to wait a beat longer than they have to.
+  String _formatBackoff(Duration backoff) {
+    if (backoff.inSeconds < 60) return '${backoff.inSeconds + 1} seconds';
+    final minutes = (backoff.inSeconds / 60).ceil();
+    return minutes == 1 ? '1 minute' : '$minutes minutes';
   }
 
   Future<void> _resetPortalDeclines(

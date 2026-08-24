@@ -447,6 +447,19 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   counter also holds nonce and network failures, so it cannot stand in). A local
   sign that succeeds clears the unsupported strike; a `LinkSuccess` clears BOTH
   counters and the persisted verdict.
+- **A 429 is terminal and always carries `Retry-After`**: the portal's buckets
+  slide and a blocked request does NOT reset the count, it re-arms a FRESH
+  penalty (`me` is 12/hour with a 600s penalty, so a user who keeps tapping
+  extends their own lockout). `_postWithToken` parses the header (delta-seconds,
+  clamped to 1 hour, `PortalApi.defaultRetryAfter` = 5 min when it is missing or
+  unparseable) into a per-route block, readable as `rateLimitBackoff(route)` and
+  `linkLaneBackoff` (the longer of nonce/link). Three consumers:
+  `refreshMe(force: true)` skips the LOCAL hourly throttle but NEVER a server
+  block, and the Settings refresh button says how long to wait instead of
+  reprinting a stale device count; `logout` does not retry into a 429 and accepts
+  the orphaned server token; `_recordLinkFailure` takes the longer of its own
+  30s..8m ladder and the server's value. A 429 is never a sign-out: 401 +
+  `token_invalid` stays the only signed-out signal.
 - **Persistence** (Hive `user_preferences`): `portal_account_info`,
   `portal_linked_pubkeys` (UPPER hex), `portal_link_declined_devices`,
   `portal_sign_unsupported_devices`. Sign-out clears the first two and keeps the

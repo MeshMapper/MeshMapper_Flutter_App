@@ -38,6 +38,15 @@ class PortalApi {
   /// `me` writes the site-wide auth DB, so it is refreshed at most hourly.
   static const Duration meThrottle = Duration(hours: 1);
 
+  /// Every 429 on this lane carries `Retry-After` in delta-seconds, but a
+  /// proxy can strip it or rewrite it as an HTTP-date. This is what an
+  /// unusable header costs.
+  static const Duration defaultRetryAfter = Duration(minutes: 5);
+
+  /// Ceiling for a server-supplied backoff. The longest the portal sends is
+  /// 600s, so anything past an hour is a broken header, not an instruction.
+  static const Duration maxRetryAfter = Duration(hours: 1);
+
   static Uri authorizeUrl({
     required String codeChallenge,
     required String state,
@@ -205,10 +214,18 @@ class _PortalResponse {
   /// The value of `{"error": "..."}` when the body carried one.
   final String? error;
 
-  const _PortalResponse(this.status, this.json, this.error);
+  /// The `Retry-After` a 429 carried, already parsed and clamped. Null on
+  /// every answer that was not rate limited.
+  final Duration? retryAfter;
+
+  const _PortalResponse(this.status, this.json, this.error, {this.retryAfter});
 
   bool get ok => status >= 200 && status < 300 && json['ok'] == true;
   bool get networkFailure => status == 0;
+
+  /// Terminal on this lane: the portal never softens a 429 on a retry, it
+  /// re-arms the block (see [PortalAccountService.rateLimitBackoff]).
+  bool get rateLimited => status == 429;
 }
 
 /// The MyMeshMapper portal lane.
@@ -236,6 +253,11 @@ class PortalAccountService {
   /// States whose `error=` callback has already been honoured this session
   /// (dedupe — see _handleErrorCallback).
   final Set<String> _consumedErrorStates = {};
+
+  /// Route -> earliest time that route may be called again. Filled from a
+  /// 429's `Retry-After`. In-memory: a restart is a fresh start, and the
+  /// server re-answers 429 if the block is still live.
+  final Map<String, DateTime> _rateLimitedUntil = {};
 
   /// Optional friendly label sent with `token` and `link` (device name).
   String? Function()? deviceLabelProvider;
@@ -566,6 +588,43 @@ class PortalAccountService {
   bool _isTokenInvalid(_PortalResponse response) =>
       response.status == 401 && response.error == 'token_invalid';
 
+  /// How long the portal has told us to stay off [action], or null when that
+  /// route is clear.
+  ///
+  /// Worth honouring precisely: the server's buckets slide, and a request made
+  /// while blocked does NOT reset the count, it re-arms a FRESH penalty. A
+  /// client that keeps knocking extends its own lockout indefinitely.
+  Duration? rateLimitBackoff(String action) {
+    final until = _rateLimitedUntil[action];
+    if (until == null) return null;
+    final left = until.difference(DateTime.now());
+    if (left > Duration.zero) return left;
+    _rateLimitedUntil.remove(action);
+    return null;
+  }
+
+  /// The longest live block across the two routes one link attempt walks.
+  /// Either one blocked means the attempt cannot finish.
+  Duration? get linkLaneBackoff {
+    final nonce = rateLimitBackoff('nonce');
+    final link = rateLimitBackoff('link');
+    if (nonce == null) return link;
+    if (link == null) return nonce;
+    return nonce > link ? nonce : link;
+  }
+
+  /// `Retry-After` is delta-seconds on this lane. An HTTP-date is legal HTTP
+  /// and useless here, so anything that is not a sane integer falls back to
+  /// [PortalApi.defaultRetryAfter] rather than to no backoff at all.
+  static Duration _parseRetryAfter(String? raw) {
+    final seconds = int.tryParse(raw?.trim() ?? '');
+    if (seconds == null || seconds <= 0) return PortalApi.defaultRetryAfter;
+    final backoff = Duration(seconds: seconds);
+    return backoff > PortalApi.maxRetryAfter
+        ? PortalApi.maxRetryAfter
+        : backoff;
+  }
+
   /// Ask the portal for a fresh 32-byte challenge bound to [pubkeyHex].
   /// Returns the 64-hex nonce, or null on any failure (never throws).
   Future<String?> requestNonce(String pubkeyHex) async {
@@ -676,6 +735,17 @@ class PortalAccountService {
   /// on every call, so a chatty client writes it on every reconnect.
   Future<bool> refreshMe({bool force = false}) async {
     if (_token == null) return false;
+
+    // `force` skips the LOCAL throttle, never a backoff the server asked for.
+    // The `me` bucket is 12/hour with a 600s rolling penalty, so a user
+    // tapping Refresh past the cap would extend their own lockout with every
+    // tap.
+    final blocked = rateLimitBackoff('me');
+    if (blocked != null) {
+      _log('me: rate limited, ${blocked.inSeconds}s left');
+      return false;
+    }
+
     final last = _lastMeAt;
     if (!force &&
         last != null &&
@@ -727,6 +797,14 @@ class PortalAccountService {
     final first = await _postWithToken('logout', const {}, token);
     if (first.ok) {
       _log('logout: server token revoked');
+      return;
+    }
+    if (first.rateLimited) {
+      // The retry would land inside the block and re-arm it. The orphaned
+      // server token is the accepted trade, same as a failed retry.
+      _warn('logout revoke rate limited (retry after '
+          '${first.retryAfter?.inSeconds ?? 0}s); the server token stays '
+          'until it expires');
       return;
     }
     _warn('logout revoke failed (status=${first.status}) — retrying once');
@@ -784,7 +862,15 @@ class PortalAccountService {
         // Captive portal HTML / WAF block page — opaque, not an API answer.
       }
       final error = json['error'] is String ? json['error'] as String : null;
-      return _PortalResponse(response.statusCode, json, error);
+
+      Duration? retryAfter;
+      if (response.statusCode == 429) {
+        retryAfter = _parseRetryAfter(response.headers['retry-after']);
+        _rateLimitedUntil[action] = DateTime.now().add(retryAfter);
+        _warn('$action rate limited, backing off ${retryAfter.inSeconds}s');
+      }
+      return _PortalResponse(response.statusCode, json, error,
+          retryAfter: retryAfter);
     } on TimeoutException {
       _warn('$action timed out after ${PortalApi.requestTimeout.inSeconds}s');
       return const _PortalResponse(0, {}, 'timeout');
