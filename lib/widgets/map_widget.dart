@@ -9705,7 +9705,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   // Done with no stats means the fetch could not be answered.
                   // Never fall through to the zero row here: that is the bug.
                   if (!loading && stats == null) {
-                    return _coverageUnavailableRow(context);
+                    // Pop with our own token: the result handler treats every
+                    // other value, a bare pop included, as a real close and
+                    // tears the selection down.
+                    return _coverageUnavailableRow(
+                        context, () => Navigator.of(context).pop('retry'));
                   }
                   String v(int? n) => loading ? '…' : '${n ?? 0}';
                   final nothingRecorded = !loading && stats!.totalMatched == 0;
@@ -9748,7 +9752,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       ),
     ).then((result) {
       if (!mounted) return;
-      if (result == 'minimized') {
+      if (result == 'retry') {
+        // Re-open expanded with NO cachedStats, which re-runs the fetch. The
+        // selection stays isolated throughout, same as the minimize path.
+        debugLog('[COVERAGE] retrying coverage fetch for ${repeater.id}');
+        _showRepeaterDetails(repeater,
+            isDuplicate: isDuplicate,
+            regionHopBytesOverride: regionHopBytesOverride,
+            isolate: false,
+            expand: true);
+      } else if (result == 'minimized') {
         // Collapse back to the stats pill. The selection (and its coverage
         // cells/lines + tile dim) persists throughout pill<->sheet; it's torn
         // down only on a real close. Reuse the already-fetched stats so the pill
@@ -9799,7 +9812,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// could not be answered at all. Distinct from a repeater that was looked up
   /// successfully and simply has no coverage, which keeps the zero row plus a
   /// "no coverage recorded yet" caption (MeshMapper_Server#109).
-  Widget _coverageUnavailableRow(BuildContext context) {
+  ///
+  /// [onRetry] re-enters the sheet with no cached future. The stats future is
+  /// cached per selection and handed to both the pill and the sheet, so
+  /// toggling between them would otherwise just re-render the same failure.
+  Widget _coverageUnavailableRow(BuildContext context, VoidCallback onRetry) {
     final scheme = Theme.of(context).colorScheme;
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -9811,6 +9828,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             "Couldn't load coverage",
             style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
           ),
+        ),
+        const SizedBox(width: 8),
+        TextButton(
+          onPressed: onRetry,
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            minimumSize: const Size(0, 32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: const Text('Retry'),
         ),
       ],
     );
