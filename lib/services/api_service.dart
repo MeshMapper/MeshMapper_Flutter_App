@@ -1116,13 +1116,19 @@ class ApiService {
   /// GRID SUMMARY. Posts to the region's app-facing endpoint
   /// (`app_coverage.php` → `api.php` `map_data`); the app aggregates the points
   /// client-side (see `coverage_summary.dart`). Returns `[]` on any failure.
+  ///
+  /// NOTE: unlike [fetchRepeaterCoverage] this still collapses a failed request
+  /// into `[]`. The cell summary has no "couldn't load" state yet
+  /// (MeshMapper_Server#109 covers the repeater sheet only) and its tap flow
+  /// chains straight into `filterWithinBlob`. Give the cell sheet that state
+  /// before propagating the null here.
   Future<List<Map<String, dynamic>>> fetchMapData({
     required String zone,
     required double lat,
     required double lon,
     required double radiusMeters,
-  }) {
-    return _fetchCoveragePoints(
+  }) async {
+    final points = await _fetchCoveragePoints(
       zone: zone,
       label: 'map_data',
       body: {
@@ -1132,13 +1138,17 @@ class ApiService {
         'radius': radiusMeters,
       },
     );
+    return points ?? const <Map<String, dynamic>>[];
   }
 
   /// Fetch the coverage points referencing a repeater (a hex-prefix superset),
   /// for the repeater detail sheet's BIDIR/TX/RX/DISC/DEAD totals + max range.
-  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`. Returns `[]`
-  /// on any failure.
-  Future<List<Map<String, dynamic>>> fetchRepeaterCoverage({
+  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`.
+  ///
+  /// Returns `null` when the request could not be answered, and `[]` when the
+  /// zone genuinely has nothing for this prefix. The sheet renders those
+  /// differently (MeshMapper_Server#109).
+  Future<List<Map<String, dynamic>>?> fetchRepeaterCoverage({
     required String zone,
     required String prefix,
   }) {
@@ -1153,8 +1163,14 @@ class ApiService {
   }
 
   /// Shared POST to `https://<zone>.meshmapper.net/app_coverage.php` with the app
-  /// key in the JSON body. Returns a list of point maps, or `[]` on any failure.
-  Future<List<Map<String, dynamic>>> _fetchCoveragePoints({
+  /// key in the JSON body.
+  ///
+  /// Returns the point maps on success, which may legitimately be an EMPTY list
+  /// meaning the server has no coverage for this query, or `null` when the
+  /// request could not be answered at all. Callers MUST keep those apart:
+  /// collapsing them into `[]` was MeshMapper_Server#109, where a failed fetch
+  /// rendered as a repeater that had heard nothing.
+  Future<List<Map<String, dynamic>>?> _fetchCoveragePoints({
     required String zone,
     required String label,
     required Map<String, dynamic> body,
@@ -1181,13 +1197,13 @@ class ApiService {
                 : response.body);
         debugWarn(
             '[COVERAGE]   $label HTTP ${response.statusCode} in ${secs}s: $snippet');
-        return [];
+        return null;
       }
 
       final decoded = json.decode(response.body);
       if (decoded is! List) {
         debugWarn('[COVERAGE]   $label: unexpected response (not a JSON list)');
-        return [];
+        return null;
       }
       final points = decoded
           .whereType<Map>()
@@ -1198,7 +1214,7 @@ class ApiService {
     } catch (e) {
       debugWarn(
           '[COVERAGE]   $label POST failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
-      return [];
+      return null;
     }
   }
 

@@ -1232,15 +1232,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Lazy tap-to-inspect: fetch the coverage points referencing a repeater
-  /// (hex-prefix superset) from the current zone's app endpoint. Returns `[]`
-  /// when there is no zone or on failure. The caller aggregates these into the
-  /// repeater's BIDIR/TX/RX/DISC/DEAD totals + max range.
-  Future<List<Map<String, dynamic>>> fetchRepeaterCoveragePoints({
+  /// (hex-prefix superset) from the current zone's app endpoint. The caller
+  /// aggregates these into the repeater's BIDIR/TX/RX/DISC/DEAD totals + max
+  /// range.
+  ///
+  /// Returns `null` when the points could not be fetched (no zone yet, or the
+  /// request failed) and `[]` when the zone genuinely has nothing for this
+  /// prefix. Keeping those apart is MeshMapper_Server#109: a stale zone list
+  /// leaves the previous zone's markers tappable after the zone flips, and that
+  /// must not read as "this repeater heard nothing".
+  Future<List<Map<String, dynamic>>?> fetchRepeaterCoveragePoints({
     required String prefix,
   }) {
     final zone = zoneCode;
     if (zone == null || zone.isEmpty) {
-      return Future.value(const <Map<String, dynamic>>[]);
+      debugWarn('[COVERAGE] repeater points requested with no zone, '
+          'reporting unavailable rather than empty');
+      return Future.value(null);
     }
     return _apiService.fetchRepeaterCoverage(zone: zone, prefix: prefix);
   }
