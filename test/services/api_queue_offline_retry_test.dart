@@ -61,10 +61,6 @@ void main() {
         externalAntenna: false,
       );
 
-  // Both of these fail today. They describe the behaviour #437 needs, and are
-  // skipped so the suite stays green until that fix lands. Un-skip with it.
-  const openBug = 'unfixed: #437';
-
   test('an unreachable network must not consume the retry ladder', () async {
     final harness = await offlineApi();
     // No init(), so Hive stays closed and the service uses its in-memory
@@ -81,7 +77,7 @@ void main() {
           'skipped, the first failure started the backoff ladder, which means '
           'a dead socket is being counted as a server rejection',
     );
-  }, skip: openBug);
+  });
 
   test('a ping is stranded by a 30 second outage', () async {
     final harness = await offlineApi();
@@ -92,7 +88,9 @@ void main() {
     // isReadyForRetry reads DateTime.now() directly.
     for (var i = 0; i < 6; i++) {
       await queue.flushQueue();
-      await Future<void>.delayed(Duration(seconds: 1 << i));
+      // Wait out the backoff a failed attempt would have armed, so the next
+      // flush is a real attempt. 1s, 2s, 4s, 8s, 16s is the whole ladder.
+      if (i < 5) await Future<void>.delayed(Duration(seconds: 1 << i));
     }
 
     expect(queue.queueSize, 1, reason: 'the sample is still held in the queue');
@@ -101,5 +99,62 @@ void main() {
       reason: 'nothing in the app ever reads failedItems or resets retryCount, '
           'so an item that lands here is coverage the user will never get',
     );
-  }, timeout: const Timeout(Duration(minutes: 2)), skip: openBug);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('coming back online revives what the ladder wrote off', () async {
+    // An item can still exhaust the ladder against a server that is reachable
+    // but keeps rejecting: five 500s in a row. Nothing resets the counter, so
+    // without a revive it would sit in Hive forever (#437).
+    var reachable = false;
+    final api = ApiService(client: MockClient((request) async {
+      if (request.url.path.endsWith('/auth')) {
+        return http.Response(
+          json.encode({
+            'success': true,
+            'session_id': 'yow-20260824-0002',
+            'tx_allowed': true,
+            'rx_allowed': true,
+          }),
+          200,
+        );
+      }
+      return reachable
+          ? http.Response(json.encode({'success': true}), 200)
+          : http.Response('upstream is having a moment', 500);
+    }));
+    await api.requestAuth(
+      reason: 'connect',
+      publicKey: 'ab' * 32,
+      lat: 45.26974,
+      lon: -75.77746,
+      accuracyMeters: 5,
+    );
+
+    final queue = ApiQueueService(apiService: api);
+    await enqueueRx(queue);
+    // RX pings sit in the per-repeater buffer until a flush moves them into the
+    // queue proper, so this first pass is what makes the item visible at all.
+    await queue.flushQueue();
+
+    // Strand it. Set the retry state directly rather than spending 31 seconds
+    // of real time climbing the ladder.
+    for (final item in queue.heldItems) {
+      item.retryCount = 5;
+      item.lastRetryAt = null;
+    }
+    expect(queue.failedItems, hasLength(1),
+        reason: 'precondition: the item is past the ladder');
+
+    // A second ping arrives and the server is answering again.
+    reachable = true;
+    await enqueueRx(queue);
+    await queue.flushQueue();
+
+    expect(queue.failedItems, isEmpty,
+        reason: 'a successful upload proves the server is reachable, so the '
+            'written-off item goes back in the running');
+    await queue.flushQueue();
+    expect(queue.queueSize, 0,
+        reason: 'and on the next pass it actually uploads');
+  });
 }

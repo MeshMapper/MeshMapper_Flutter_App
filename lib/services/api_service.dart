@@ -9,7 +9,41 @@ import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 
 /// Result of a batch upload attempt
-enum UploadResult { success, retryable, sessionError, nonRetryable }
+///
+/// [unreachable] is deliberately separate from [retryable]: the data is fine,
+/// we simply never got an answer. The queue must not spend a retry on it, or a
+/// drive through a dead zone burns the whole ladder and strands the pings
+/// (#437).
+enum UploadResult { success, retryable, unreachable, sessionError, nonRetryable }
+
+/// The request never reached the server: no coverage, DNS failure, connection
+/// reset, TLS handshake, or a timeout waiting for the first byte.
+///
+/// Distinct from the server answering with a rejection, which is a verdict on
+/// the data itself.
+class _RequestNeverReachedServer implements Exception {
+  final Object cause;
+  const _RequestNeverReachedServer(this.cause);
+
+  @override
+  String toString() => 'Request never reached the server: $cause';
+}
+
+/// Classify a thrown request error as "never got an answer" or not.
+///
+/// A FormatException is excluded on purpose: the server did answer, just with
+/// something unparseable, which is a verdict-shaped failure and keeps its place
+/// on the retry ladder. SocketException and HandshakeException live in dart:io,
+/// which this file must not import because it is shared with the web build, so
+/// they are matched by type name.
+bool _requestNeverReachedServer(Object error) {
+  if (error is FormatException) return false;
+  if (error is TimeoutException) return true;
+  if (error is http.ClientException) return true;
+  final name = error.runtimeType.toString();
+  return name.contains('SocketException') ||
+      name.contains('HandshakeException');
+}
 
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
@@ -546,7 +580,10 @@ class ApiService {
   /// Matches submitWardriveData() in wardrive.js
   ///
   /// @param entries List of wardrive entries (TX/RX)
-  /// @returns Map with success, expires_at, reason, message
+  /// @returns Map with success, expires_at, reason, message, or null when the
+  /// server answered with something unusable
+  /// @throws when the request never reached the server, so the caller can tell
+  /// that apart from a rejection and hold the data without spending a retry
   Future<Map<String, dynamic>?> submitWardriveData(
       List<Map<String, dynamic>> entries) async {
     if (_sessionId == null) {
@@ -611,6 +648,9 @@ class ApiService {
     } catch (e) {
       stopwatch.stop();
       debugError('[API] POST /wardrive-api.php/wardrive failed: $e');
+      // Let uploadBatch tell the two failures apart. Returning null for both
+      // is what let a dead socket spend a retry (#437).
+      if (_requestNeverReachedServer(e)) throw _RequestNeverReachedServer(e);
       return null;
     }
   }
@@ -1047,6 +1087,9 @@ class ApiService {
       }
 
       return UploadResult.retryable;
+    } on _RequestNeverReachedServer catch (e) {
+      debugWarn('[API] Upload batch could not reach the server: ${e.cause}');
+      return UploadResult.unreachable;
     } catch (e) {
       debugError('[API] Upload batch exception: $e');
       return UploadResult.retryable;

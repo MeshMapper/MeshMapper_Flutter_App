@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
 import '../models/api_queue_item.dart';
@@ -614,6 +615,9 @@ class ApiQueueService {
           _memoryQueue.remove(item);
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
+        // The network is demonstrably back, so give anything the ladder has
+        // already written off one more chance.
+        _reviveFailedItems();
         onUploadSuccess?.call(uploadedCount, items);
         // Fire-and-forget: forward to custom API endpoint
         customApiService?.forwardPings(pings);
@@ -629,6 +633,13 @@ class ApiQueueService {
         }
         debugWarn(
             '[API QUEUE] Discarded ${items.length} items (non-retryable error)');
+      } else if (result == UploadResult.unreachable) {
+        // We never got an answer, so this says nothing about the data. Leave
+        // retryCount and lastRetryAt alone: spending a retry here meant ~75s
+        // out of coverage wrote every queued ping off for good (#437). The
+        // flush cadence is the pacing; there is nothing to back off from.
+        debugLog(
+            '[API QUEUE] Upload deferred: ${items.length} items held, no route to server');
       } else {
         // Mark items as retried
         for (final item in hiveItems) {
@@ -715,6 +726,42 @@ class ApiQueueService {
       _startBatchTimer();
     }
   }
+
+  /// Put items the retry ladder has written off back in the running.
+  ///
+  /// Called after a successful upload, which is the only proof we have that the
+  /// server is reachable and answering. Without it [_maxRetries] is a one-way
+  /// door: nothing resets the counter, so a written-off ping sat in Hive
+  /// forever, never uploaded and never surfaced (#437).
+  ///
+  /// Only items past the ladder are touched. Anything still climbing it is
+  /// mid-backoff for a reason the server gave us, and is left alone.
+  void _reviveFailedItems() {
+    final stranded = failedItems;
+    if (stranded.isEmpty) return;
+
+    for (final item in stranded) {
+      item.retryCount = 0;
+      item.lastRetryAt = null;
+      if (item.isInBox) {
+        try {
+          item.save();
+        } catch (_) {}
+      }
+    }
+    debugLog('[API QUEUE] Revived ${stranded.length} items the retry ladder '
+        'had written off');
+  }
+
+  /// Every item currently held, Hive and memory alike.
+  ///
+  /// Exists so tests can set an item's retry state directly instead of spending
+  /// 31 seconds of real time climbing the backoff ladder to reach it.
+  @visibleForTesting
+  List<ApiQueueItem> get heldItems => [
+        ..._safeRead((box) => box.values.toList(), <ApiQueueItem>[]),
+        ..._memoryQueue,
+      ];
 
   /// Get failed items (exceeded max retries)
   List<ApiQueueItem> get failedItems {
