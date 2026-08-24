@@ -1701,9 +1701,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: const Text('Enable Anonymous Mode?'),
         content: Text(
           'Your device will be renamed to "Anonymous" for all mesh pings. '
-          'Other mesh users will not see your companion name.\n\n'
-          'Your public key is still used to authenticate your session, but '
-          'neither your sessions nor your pings are linked to it on the server.\n\n'
+          'Other mesh users will not see your companion name, and you will '
+          'not appear on the public leaderboard.\n\n'
+          'Your public key is still sent to authenticate your session, and '
+          'your sessions and pings are still recorded against it. Anonymous '
+          'Mode hides your name. It does not hide your device.\n\n'
           '${isConnected ? 'Your device will disconnect and reconnect automatically.\n\n' : ''}'
           'If the app crashes or BLE disconnects unexpectedly, your device '
           'may remain named "Anonymous" until you reconnect and properly disconnect. '
