@@ -910,7 +910,12 @@ class ApiService {
 
   /// Callback for session errors (session_expired, bad_session, outside_zone)
   /// Set by AppStateProvider to handle auto-disconnect
-  Future<void> Function(String? reason, String? message)? onSessionError;
+  ///
+  /// [subReason] carries the server's `sub_reason` where it narrows the reason
+  /// enough to change what the app does. Only the upload path passes it today:
+  /// a stationary revoke can only be raised by an upload, never a heartbeat.
+  Future<void> Function(String? reason, String? message, {String? subReason})?
+      onSessionError;
 
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
@@ -1002,7 +1007,9 @@ class ApiService {
       };
 
       if (criticalErrors.contains(reason)) {
-        debugError('[API] Upload batch session error: $reason');
+        final subReason = result['sub_reason'] as String?;
+        debugError('[API] Upload batch session error: $reason'
+            '${subReason != null ? ' ($subReason)' : ''}');
         final message = result['message'] as String?;
         // Clear session locally since it's invalid on server
         _clearSession();
@@ -1011,7 +1018,7 @@ class ApiService {
         // makes the caller DISCARD that same batch. Fired bare, the snapshot's
         // first real suspension (a non-empty RX buffer flushing to Hive) let
         // the discard land first, so the preserved pings came back short.
-        await onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message, subReason: subReason);
         return UploadResult.nonRetryable;
       }
 
