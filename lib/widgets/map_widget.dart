@@ -9705,11 +9705,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   // Done with no stats means the fetch could not be answered.
                   // Never fall through to the zero row here: that is the bug.
                   if (!loading && stats == null) {
+                    // With no zone (Offline Mode, or not connected) there is
+                    // nothing to retry against: fetchRepeaterCoveragePoints
+                    // answers null without making a request, so a Retry button
+                    // would just loop on the same answer. Say why instead.
+                    final hasZone = (appState.zoneCode ?? '').isNotEmpty;
                     // Pop with our own token: the result handler treats every
                     // other value, a bare pop included, as a real close and
                     // tears the selection down.
                     return _coverageUnavailableRow(
-                        context, () => Navigator.of(context).pop('retry'));
+                      context,
+                      onRetry: hasZone
+                          ? () => Navigator.of(context).pop('retry')
+                          : null,
+                      message: hasZone
+                          ? "Couldn't load coverage"
+                          : 'Connect to load coverage',
+                    );
                   }
                   String v(int? n) => loading ? '…' : '${n ?? 0}';
                   final nothingRecorded = !loading && stats!.totalMatched == 0;
@@ -9816,7 +9828,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// [onRetry] re-enters the sheet with no cached future. The stats future is
   /// cached per selection and handed to both the pill and the sheet, so
   /// toggling between them would otherwise just re-render the same failure.
-  Widget _coverageUnavailableRow(BuildContext context, VoidCallback onRetry) {
+  /// A null [onRetry] means there is nothing to retry against, so the row
+  /// states the reason rather than offering a button that cannot work.
+  Widget _coverageUnavailableRow(
+    BuildContext context, {
+    required VoidCallback? onRetry,
+    required String message,
+  }) {
     final scheme = Theme.of(context).colorScheme;
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -9825,20 +9843,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         const SizedBox(width: 8),
         Flexible(
           child: Text(
-            "Couldn't load coverage",
+            message,
             style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
           ),
         ),
-        const SizedBox(width: 8),
-        TextButton(
-          onPressed: onRetry,
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            minimumSize: const Size(0, 32),
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        if (onRetry != null) ...[
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: onRetry,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('Retry'),
           ),
-          child: const Text('Retry'),
-        ),
+        ],
       ],
     );
   }
