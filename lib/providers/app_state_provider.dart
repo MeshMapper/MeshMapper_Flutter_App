@@ -47,6 +47,13 @@ import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
+import '../services/app_intents/app_intent_bridge_service.dart';
+import '../services/app_intents/app_intent_commands.dart';
+import '../services/app_intents/last_companion_connection.dart';
+import '../services/app_intents/siri_snapshot_builder.dart';
+import '../services/app_intents/siri_snapshot_models.dart';
+import '../services/external_commands/external_command_models.dart';
+import '../services/external_commands/external_session_commands.dart';
 import '../services/live_activity/live_activity_models.dart';
 import '../services/live_activity/live_activity_service.dart';
 import '../services/watch/watch_bridge_service.dart';
@@ -146,6 +153,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   final LiveActivityService _liveActivityService = LiveActivityService();
   final WatchBridgeService _watchBridge = WatchBridgeService();
+  final AppIntentBridgeService _appIntentBridge = AppIntentBridgeService();
   bool _hasEverPairedWatch = false;
 
   /// Last position handed to the watch, kept so a dropped GPS fix leaves the
@@ -340,6 +348,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Remembered device for quick reconnection (mobile only)
   RememberedDevice? _rememberedDevice;
+  final Completer<void> _rememberedDeviceReady = Completer<void>();
 
   // User's original preferences before zone admin overrides (single baseline).
   // Saved on initial connect; restored before applying each new zone's policies.
@@ -683,6 +692,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       hasEverPaired: _hasEverPairedWatch,
     );
   }
+
   TransportType get selectedTransport => _selectedTransport;
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;
@@ -780,8 +790,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final sorted = bestSnr.entries
-        .map((entry) =>
-            (repeaterId: entry.key, snr: entry.value, type: type))
+        .map((entry) => (repeaterId: entry.key, snr: entry.value, type: type))
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
     _liveActivityRepeaters = sorted.take(3).toList(growable: false);
@@ -1401,6 +1410,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void _scheduleLiveActivitySync({bool immediate = false}) {
     if (_isDisposed) return;
+    // Siri is local App Group state and must not depend on Watch availability.
+    _appIntentBridge.schedule(_buildSiriSnapshotMap, immediate: immediate);
     // The watch mirrors state even with no session running — otherwise you
     // could never start one from the wrist.
     _scheduleWatchSync(immediate: immediate);
@@ -1439,7 +1450,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  void _scheduleWatchSync({bool immediate = false, bool forceDelivery = false}) {
+  void _scheduleWatchSync(
+      {bool immediate = false, bool forceDelivery = false}) {
     if (_isDisposed || !_watchBridge.canSync) return;
     _watchBridge.schedule(
       _buildWatchSnapshot,
@@ -1818,9 +1830,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           floodTrafficEnabled &&
           !isTxModeRunning &&
           !isTargetedModeRunning,
-      manualCooldownEndsAt: cooldownMs > 0
-          ? _manualPingCooldownTimer.endTime
-          : null,
+      manualCooldownEndsAt:
+          cooldownMs > 0 ? _manualPingCooldownTimer.endTime : null,
       // The button already renders its cooldown deadline. The handler still
       // returns this refusal to a stale tap, but duplicating it as a status
       // line would spend wrist space without adding an explanation.
@@ -1838,6 +1849,79 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         discLogEntries: _discLogEntries,
         traceLogEntries: _traceLogEntries,
       );
+
+  Map<String, Object?>? _buildSiriSnapshotMap() {
+    if (_isDisposed) return null;
+
+    final recentHeard = SiriSnapshotBuilder.buildRecentHeard(
+      txEntries: _txLogEntries,
+      rxEntries: _rxLogEntries,
+      discoveryEntries: _discLogEntries,
+      traceEntries: _traceLogEntries,
+      repeaters: _repeaters,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      hopBytes: _hopBytes,
+    );
+    final phase = _resolveWatchPhase();
+    final passive = sessionStartAvailability(AutoMode.passive);
+    final active = sessionStartAvailability(AutoMode.active);
+    final hybrid = sessionStartAvailability(AutoMode.hybrid);
+    final manualPing = _manualPingAvailability;
+    final sessionBusy = _autoPingEnabled || _autoPingStarting;
+    final availableStartModes = <String>[
+      if (!sessionBusy && passive.allowed) AutoMode.passive.name,
+      if (!sessionBusy && active.allowed) AutoMode.active.name,
+      if (!sessionBusy && hybrid.allowed) AutoMode.hybrid.name,
+    ];
+    final uniqueHeard = recentHeard
+        .map((item) => item.entityId ?? 'unresolved:${item.displayHexId}')
+        .toSet()
+        .length;
+
+    return SiriSnapshot(
+      updatedAt: DateTime.now(),
+      connection: SiriConnectionSnapshot(
+        isConnected: isConnected,
+        deviceName: displayDeviceName,
+        batteryPercent: _currentBatteryPercent,
+        gpsStatus: _gpsStatus.name,
+      ),
+      session: SiriSessionSnapshot(
+        id: _liveActivitySessionId,
+        active: _autoPingEnabled,
+        starting: _autoPingStarting,
+        mode: sessionBusy ? _autoMode.name : 'idle',
+        phase: phase.phase.name,
+        phaseTitle: phase.title,
+        phaseDetail: phase.detail,
+        phaseEndsAt: phase.endsAt,
+        zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+        txCount: _pingStats.txCount,
+        rxCount: _pingStats.rxCount,
+        discoveryCount: _pingStats.discCount,
+        traceCount: _pingStats.traceCount,
+        queueSize: _queueSize,
+        uniqueRepeatersHeard: uniqueHeard,
+      ),
+      controls: SiriControlsSnapshot(
+        availableStartModes: availableStartModes,
+        canStart: !sessionBusy && passive.allowed,
+        startBlockedReason: _autoPingEnabled
+            ? 'Already running'
+            : _autoPingStarting
+                ? 'Already starting'
+                : passive.reason,
+        canStop: _autoPingEnabled,
+        canManualPing: manualPing.allowed,
+        manualPingBlockedReason: manualPing.reason,
+        manualCooldownEndsAt: _manualPingCooldownTimer.isRunning
+            ? _manualPingCooldownTimer.endTime
+            : null,
+      ),
+      recentHeard: recentHeard,
+      repeaters: SiriSnapshotBuilder.buildRepeaterCatalog(_repeaters),
+    ).toMap();
+  }
 
   /// Whether [mode] may begin now, with the reason the wearer should see.
   ///
@@ -1872,6 +1956,258 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
+  /// Applies the app's current session/radio rules to any external transport.
+  ExternalCommandAdmission admitExternalSessionCommand(
+    ExternalSessionCommand command,
+  ) {
+    if (_isDisposed) {
+      return const ExternalCommandAdmission(
+        disposition: ExternalCommandDisposition.refused,
+        reason: 'App closing',
+      );
+    }
+
+    final transition = resolveExternalSessionTransition(
+      command: command,
+      isSessionActive: _autoPingEnabled,
+      isSessionStarting: _autoPingStarting,
+      currentMode: _autoMode.name,
+      currentSessionId: _liveActivitySessionId ?? 'idle',
+    );
+    if (!transition.shouldExecute) return transition;
+
+    switch (command.kind) {
+      case ExternalSessionCommandKind.startSession:
+        final mode = transition.mode;
+        if (mode == null) {
+          return const ExternalCommandAdmission(
+            disposition: ExternalCommandDisposition.refused,
+            reason: 'Unsupported start mode',
+          );
+        }
+        final availability =
+            sessionStartAvailability(_autoModeFromExternal(mode));
+        if (!availability.allowed) {
+          return ExternalCommandAdmission(
+            disposition: ExternalCommandDisposition.refused,
+            reason: availability.reason ?? 'Could not start',
+            mode: mode,
+          );
+        }
+        return transition;
+
+      case ExternalSessionCommandKind.stopSession:
+        return transition;
+
+      case ExternalSessionCommandKind.manualPing:
+        final availability = _manualPingAvailability;
+        if (!availability.allowed) {
+          return ExternalCommandAdmission(
+            disposition: ExternalCommandDisposition.refused,
+            reason: availability.reason ?? 'Ping unavailable',
+          );
+        }
+        return transition;
+    }
+  }
+
+  /// Waits for the admitted operation's real outcome. Watch intentionally
+  /// does not await this; Siri does, so it never says "started" at admission.
+  Future<ExternalCommandCompletion> executeExternalSessionCommand(
+    ExternalSessionCommand command,
+    ExternalCommandAdmission admission,
+  ) async {
+    if (!admission.shouldExecute) {
+      return ExternalCommandCompletion(
+        success: admission.disposition == ExternalCommandDisposition.noOp,
+        disposition: admission.disposition,
+        message: admission.reason,
+        sessionId: _liveActivitySessionId,
+        mode: admission.mode,
+      );
+    }
+
+    _lastSessionCheckFailureReason = null;
+    try {
+      switch (command.kind) {
+        case ExternalSessionCommandKind.startSession:
+          final mode = admission.mode!;
+          final started = await toggleAutoPing(_autoModeFromExternal(mode));
+          if (!started || !_autoPingEnabled) {
+            return ExternalCommandCompletion(
+              success: false,
+              disposition: ExternalCommandDisposition.refused,
+              message: _externalStartFailureReason(mode),
+              mode: mode,
+            );
+          }
+          return ExternalCommandCompletion(
+            success: true,
+            disposition: ExternalCommandDisposition.admitted,
+            message: 'MeshMapper started in ${mode.displayName} mode.',
+            sessionId: _liveActivitySessionId,
+            mode: mode,
+          );
+
+        case ExternalSessionCommandKind.stopSession:
+          final stopped = await toggleAutoPing(_autoMode);
+          if (!stopped) {
+            return const ExternalCommandCompletion(
+              success: false,
+              disposition: ExternalCommandDisposition.refused,
+              message: 'Could not stop',
+            );
+          }
+          final stopping = _autoPingEnabled || isPendingDisable;
+          return ExternalCommandCompletion(
+            success: true,
+            disposition: ExternalCommandDisposition.admitted,
+            message:
+                stopping ? 'MeshMapper is stopping.' : 'MeshMapper stopped.',
+            sessionId: stopping ? _liveActivitySessionId : null,
+          );
+
+        case ExternalSessionCommandKind.manualPing:
+          final sent = await sendPing();
+          if (!sent) {
+            return ExternalCommandCompletion(
+              success: false,
+              disposition: ExternalCommandDisposition.refused,
+              message: _lastSessionCheckFailureReason ?? 'Ping failed',
+            );
+          }
+          return const ExternalCommandCompletion(
+            success: true,
+            disposition: ExternalCommandDisposition.admitted,
+            message: 'MeshMapper sent a manual ping.',
+          );
+      }
+    } catch (error) {
+      debugError('[EXTERNAL] ${command.kind.name} failed: $error');
+      return ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: command.kind == ExternalSessionCommandKind.startSession
+            ? _externalStartFailureReason(admission.mode)
+            : command.kind == ExternalSessionCommandKind.stopSession
+                ? 'Could not stop'
+                : (_lastSessionCheckFailureReason ?? 'Ping failed'),
+        mode: admission.mode,
+      );
+    }
+  }
+
+  Future<ExternalCommandCompletion> _handleSiriCommand(
+    AppIntentCommand command,
+  ) async {
+    if (command.kind == AppIntentCommandKind.connectLastCompanion) {
+      return _connectToLastCompanion(command);
+    }
+    final sessionCommand = command.toExternalSessionCommand();
+    if (sessionCommand == null) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: 'Unsupported command',
+      );
+    }
+    final admission = admitExternalSessionCommand(sessionCommand);
+    return executeExternalSessionCommand(sessionCommand, admission);
+  }
+
+  Future<ExternalCommandCompletion> _connectToLastCompanion(
+    AppIntentCommand command,
+  ) async {
+    await _rememberedDeviceReady.future;
+    if (_isDisposed) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: 'App closing',
+      );
+    }
+
+    final remembered = _rememberedDevice;
+    final connectedDevice =
+        (_activeTransport ?? _bluetoothService).connectedDevice;
+    final isConnectedToRemembered = remembered != null &&
+        connectedDevice?.id == remembered.id &&
+        _selectedTransport == remembered.transportType;
+    final admission = resolveLastCompanionConnection(
+      command: command,
+      hasRememberedCompanion: remembered != null,
+      isConnected: isConnected,
+      isConnectedToRememberedCompanion: isConnectedToRemembered,
+      isConnecting: _isConnecting || _isAutoReconnecting,
+      canReconnectWithoutUserInput:
+          remembered?.transportType != TransportType.usbSerial,
+    );
+
+    if (!admission.shouldExecute) {
+      final message = switch (admission.reason) {
+        'No remembered companion' =>
+          'MeshMapper has no remembered companion. Connect one in the app first.',
+        'Already connected' =>
+          'MeshMapper is already connected to ${remembered!.displayName}.',
+        'Another companion is connected' =>
+          'MeshMapper is already connected to ${displayDeviceName ?? connectedDevice?.name ?? 'another companion'}.',
+        'Already connecting' =>
+          'MeshMapper is already connecting. Try again shortly.',
+        'User interaction required' =>
+          'The last companion uses USB and must be selected in MeshMapper.',
+        _ => admission.reason ?? 'MeshMapper could not connect.',
+      };
+      return ExternalCommandCompletion(
+        success: admission.disposition == ExternalCommandDisposition.noOp,
+        disposition: admission.disposition,
+        message: message,
+      );
+    }
+
+    try {
+      await reconnectToRememberedDevice();
+      final reconnectedDevice =
+          (_activeTransport ?? _bluetoothService).connectedDevice;
+      if (isConnected && reconnectedDevice?.id == remembered!.id) {
+        return ExternalCommandCompletion(
+          success: true,
+          disposition: ExternalCommandDisposition.admitted,
+          message: 'MeshMapper connected to ${remembered.displayName}.',
+        );
+      }
+      return ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: _connectionError ??
+            'MeshMapper could not connect to ${remembered!.displayName}.',
+      );
+    } catch (error) {
+      debugError('[SIRI] Connect to last companion failed: $error');
+      return ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: _connectionError ??
+            'MeshMapper could not connect to ${remembered!.displayName}.',
+      );
+    }
+  }
+
+  static AutoMode _autoModeFromExternal(ExternalSessionMode mode) =>
+      switch (mode) {
+        ExternalSessionMode.active => AutoMode.active,
+        ExternalSessionMode.passive => AutoMode.passive,
+        ExternalSessionMode.hybrid => AutoMode.hybrid,
+      };
+
+  String _externalStartFailureReason(ExternalSessionMode? mode) {
+    final sessionReason = _lastSessionCheckFailureReason;
+    if (sessionReason != null) return sessionReason;
+    if (mode != ExternalSessionMode.passive && _cooldownTimer.isRunning) {
+      return 'Cooling down';
+    }
+    return 'Could not start';
+  }
+
   /// Decides whether an intent from the wrist may begin.
   ///
   /// Returns null when accepted, or a reason to show on the watch. Every guard
@@ -1883,11 +2219,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// already surface through session, phase, and ping-colour snapshots; a late
   /// failure gets its own cue so dropping completion from the ack loses nothing.
   String? _handleWatchCommand(WatchCommand command) {
-    if (_isDisposed) return 'App closing';
-
-    final kind = command.kind;
-
-    switch (kind) {
+    switch (command.kind) {
       case WatchCommandKind.requestSnapshot:
         // This command carries two intents. A genuine plea for state — after a
         // relaunch or a resume onto a retained context of unknown age — must
@@ -1902,13 +2234,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return null;
 
       case WatchCommandKind.startSession:
-        final admission = resolveWatchSessionCommandAdmission(
-          kind: kind,
-          isSessionActive: _autoPingEnabled,
-          isSessionStarting: _autoPingStarting,
-        );
-        if (admission.refusal != null) return admission.refusal;
-        if (!admission.shouldRun) return null;
         final requested = resolveWatchRequestedStartMode(
           requestedMode: command.mode,
           isConnected: isConnected,
@@ -1920,82 +2245,49 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           WatchStartMode.hybrid => AutoMode.hybrid,
           null => _resolvedWatchSessionMode,
         };
-        final availability = sessionStartAvailability(mode);
-        if (!availability.allowed) {
-          return availability.reason ?? 'Could not start';
-        }
-        unawaited(_runWatchStartSession(mode));
-        return null;
+        return _admitAndRunWatchCommand(command, mode: mode.name);
 
       case WatchCommandKind.stopSession:
-        final admission = resolveWatchSessionCommandAdmission(
-          kind: kind,
-          isSessionActive: _autoPingEnabled,
-          isSessionStarting: _autoPingStarting,
-          requestedSessionId: command.sessionId,
-          // The same value the wrist rendered, so a stop is matched against
-          // what the wearer was looking at rather than against a field only
-          // this side knows.
-          currentSessionId: _liveActivitySessionId ?? 'idle',
-        );
-        if (admission.refusal != null) return admission.refusal;
-        if (!admission.shouldRun) return null;
-        unawaited(_runWatchStopSession(_resolvedWatchSessionMode));
-        return null;
+        return _admitAndRunWatchCommand(command);
 
       case WatchCommandKind.manualPing:
-        final availability = _manualPingAvailability;
-        if (!availability.allowed) {
-          return availability.reason ?? 'Ping unavailable';
-        }
-        unawaited(_runWatchManualPing());
-        return null;
+        return _admitAndRunWatchCommand(command);
     }
   }
 
-  Future<void> _runWatchStartSession(AutoMode mode) async {
-    _lastSessionCheckFailureReason = null;
-    try {
-      final started = await toggleAutoPing(mode);
-      if (!started) {
-        _emitWatchFailure(_watchStartFailureReason(mode));
-      }
-    } catch (error) {
-      debugError('[WATCH] startSession failed after admission: $error');
-      _emitWatchFailure(_watchStartFailureReason(mode));
+  String? _admitAndRunWatchCommand(WatchCommand command, {String? mode}) {
+    final kind = switch (command.kind) {
+      WatchCommandKind.startSession => ExternalSessionCommandKind.startSession,
+      WatchCommandKind.stopSession => ExternalSessionCommandKind.stopSession,
+      WatchCommandKind.manualPing => ExternalSessionCommandKind.manualPing,
+      WatchCommandKind.requestSnapshot => throw ArgumentError.value(
+          command.kind,
+          'kind',
+          'Snapshot is a Watch transport command',
+        ),
+    };
+    final external = ExternalSessionCommand(
+      id: command.id ?? const Uuid().v4(),
+      source: ExternalCommandSource.watch,
+      kind: kind,
+      issuedAt: command.issuedAt ?? DateTime.now(),
+      mode: mode,
+      sessionId: command.sessionId,
+    );
+    final admission = admitExternalSessionCommand(external);
+    if (admission.disposition == ExternalCommandDisposition.refused) {
+      return admission.reason;
     }
-  }
-
-  Future<void> _runWatchStopSession(AutoMode mode) async {
-    try {
-      final stopped = await toggleAutoPing(mode);
-      if (!stopped) _emitWatchFailure('Could not stop');
-    } catch (error) {
-      debugError('[WATCH] stopSession failed after admission: $error');
-      _emitWatchFailure('Could not stop');
+    if (admission.shouldExecute) {
+      unawaited(executeExternalSessionCommand(external, admission).then(
+        (completion) {
+          if (!completion.success) {
+            _emitWatchFailure(completion.message ?? 'Command failed');
+          }
+        },
+      ));
     }
-  }
-
-  String _watchStartFailureReason(AutoMode mode) {
-    final sessionReason = _lastSessionCheckFailureReason;
-    if (sessionReason != null) return sessionReason;
-    if (mode != AutoMode.passive && _cooldownTimer.isRunning) {
-      return 'Cooling down';
-    }
-    return 'Could not start';
-  }
-
-  Future<void> _runWatchManualPing() async {
-    _lastSessionCheckFailureReason = null;
-    try {
-      final sent = await sendPing();
-      if (!sent) {
-        _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
-      }
-    } catch (error) {
-      debugError('[WATCH] manualPing failed after admission: $error');
-      _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
-    }
+    return null;
   }
 
   void _emitWatchFailure(String message) {
@@ -2203,8 +2495,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
 
-    if (_liveActivityManualSession &&
-        _manualPingCooldownTimer.isRunning) {
+    if (_liveActivityManualSession && _manualPingCooldownTimer.isRunning) {
       return (
         phase: LiveActivityPhase.cooldown,
         title: 'Cooldown',
@@ -2524,6 +2815,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (available) _scheduleWatchSync(immediate: true);
         },
       );
+    }
+    if (_appIntentBridge.isSupportedPlatform) {
+      _appIntentBridge.attachCommandHandler(_handleSiriCommand);
     }
 
     // Initialize debug logging (enabled by default, respects user preference)
@@ -8740,13 +9034,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Load remembered device from Hive storage
   Future<void> _loadRememberedDevice() async {
-    // Skip on web - Web Bluetooth requires user interaction for each connection
-    if (kIsWeb) return;
-
-    final box = await _openBoxSafely(_rememberedDeviceBoxName);
-    if (box == null) return;
-
     try {
+      // Skip on web - Web Bluetooth requires user interaction for each connection
+      if (kIsWeb) return;
+
+      final box = await _openBoxSafely(_rememberedDeviceBoxName);
+      if (box == null) return;
+
       final json = box.get('device');
       if (json != null) {
         _rememberedDevice =
@@ -8758,6 +9052,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (e) {
       debugLog('[APP] Failed to load remembered device: $e');
+    } finally {
+      if (!_rememberedDeviceReady.isCompleted) {
+        _rememberedDeviceReady.complete();
+      }
     }
   }
 
@@ -9818,6 +10116,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _timerListenable.removeListener(_handleLiveActivityTimerChange);
     }
     _liveActivityService.dispose();
+    _appIntentBridge.dispose();
     _watchBridge.diagnostics.removeListener(_handleWatchDiagnosticsChanged);
     _watchBridge.dispose();
     WidgetsBinding.instance.removeObserver(this);

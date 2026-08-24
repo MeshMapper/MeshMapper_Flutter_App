@@ -12,6 +12,7 @@
 		15EB8B11C186344E7D096C70 /* MeshMapperWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 74331FACF5FD72D49FF952AD /* MeshMapperWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		2E286CDEFC491253FF7615D3 /* NodeListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775B3F6C0618B4BD5644B40B /* NodeListView.swift */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
+		C10000000000000000000001 /* AppIntentLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001 /* AppIntentLogicTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		404769CF7E177D96A79BEA75 /* SettingsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84205AF3825B4E2EF987B27E /* SettingsPage.swift */; };
 		4FB810C0D8676DD8AB0B1B30 /* WatchSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DB902C46F9528E4D932613C /* WatchSessionManager.swift */; };
@@ -38,6 +39,22 @@
 		E6EDFA2E3EBEDBAFD72A5B9F /* MeshMapperWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87786D0E1C88A11BAB16DA95 /* MeshMapperWatchApp.swift */; };
 		E83718073D76FB741949ED05 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6CC8647C002484845F02D0CE /* Assets.xcassets */; };
 		F857D97D425B45AB76FD4B2F /* MeshMapperWatchPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */; };
+		B10000000000000000000001 /* SiriIntentCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* SiriIntentCoordinator.swift */; };
+		B10000000000000000000002 /* MeshMapperSessionMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* MeshMapperSessionMode.swift */; };
+		B10000000000000000000003 /* StartMeshMapperSessionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* StartMeshMapperSessionIntent.swift */; };
+		B10000000000000000000004 /* StopMeshMapperSessionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* StopMeshMapperSessionIntent.swift */; };
+		B10000000000000000000005 /* SendManualPingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* SendManualPingIntent.swift */; };
+		B10000000000000000000006 /* MeshMapperMutationAppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* MeshMapperMutationAppShortcuts.swift */; };
+		B10000000000000000000010 /* ConnectLastMeshMapperCompanionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000011 /* ConnectLastMeshMapperCompanionIntent.swift */; };
+		B10000000000000000000007 /* MeshMapperSiriSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* MeshMapperSiriSnapshot.swift */; };
+		B10000000000000000000008 /* MeshMapperSiriSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */; };
+		B10000000000000000000009 /* MeshMapperAppIntentsExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* MeshMapperAppIntentsExtension.swift */; };
+		B1000000000000000000000A /* MeshMapperReadIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* MeshMapperReadIntents.swift */; };
+		B1000000000000000000000B /* MeshMapperSiriSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* MeshMapperSiriSnapshot.swift */; };
+		B1000000000000000000000C /* MeshMapperSiriSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */; };
+		B1000000000000000000000D /* RepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* RepeaterEntity.swift */; };
+		B1000000000000000000000E /* HeardRepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* HeardRepeaterEntity.swift */; };
+		B1000000000000000000000F /* MeshMapperAppIntents.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* MeshMapperAppIntents.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,6 +78,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = A50000000000000000000001;
 			remoteInfo = MeshMapperLiveActivityExtension;
+		};
+		B60000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 97C146E61CF9000F007C117D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B50000000000000000000001;
+			remoteInfo = MeshMapperAppIntents;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -97,6 +121,17 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B40000000000000000000004 /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				B1000000000000000000000F /* MeshMapperAppIntents.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -107,6 +142,7 @@
 		178C77B846A00943CD881203 /* WatchSessionClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatchSessionClient.swift; sourceTree = "<group>"; };
 		1FD851ABE7C5AD5DBCEBDE26 /* ControlsPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ControlsPage.swift; sourceTree = "<group>"; };
 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
+		C20000000000000000000001 /* AppIntentLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntentLogicTests.swift; sourceTree = "<group>"; };
 		331C8081294A63A400263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		3EA64785988022009D0587B1 /* MapPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MapPage.swift; sourceTree = "<group>"; };
@@ -147,6 +183,23 @@
 		C5DCC2A7546C7F71461B567A /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		D478469A7D705340684EFF2B /* Pods-RunnerTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig"; sourceTree = "<group>"; };
 		F799CC3DB45F3F5C30B5907D /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000000000000000000001 /* SiriIntentCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriIntentCoordinator.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* MeshMapperSessionMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperSessionMode.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* StartMeshMapperSessionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartMeshMapperSessionIntent.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* StopMeshMapperSessionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopMeshMapperSessionIntent.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* SendManualPingIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendManualPingIntent.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* MeshMapperMutationAppShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperMutationAppShortcuts.swift; sourceTree = "<group>"; };
+		B20000000000000000000007 /* MeshMapperSiriSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperSiriSnapshot.swift; sourceTree = "<group>"; };
+		B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperSiriSnapshotStore.swift; sourceTree = "<group>"; };
+		B20000000000000000000009 /* RepeaterEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepeaterEntity.swift; sourceTree = "<group>"; };
+		B2000000000000000000000A /* HeardRepeaterEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeardRepeaterEntity.swift; sourceTree = "<group>"; };
+		B2000000000000000000000B /* MeshMapperReadIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperReadIntents.swift; sourceTree = "<group>"; };
+		B2000000000000000000000C /* MeshMapperAppIntentsExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperAppIntentsExtension.swift; sourceTree = "<group>"; };
+		B2000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B2000000000000000000000E /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
+		B2000000000000000000000F /* MeshMapperAppIntents.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MeshMapperAppIntents.entitlements; sourceTree = "<group>"; };
+		B20000000000000000000010 /* MeshMapperAppIntents.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = MeshMapperAppIntents.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000000000000000000011 /* ConnectLastMeshMapperCompanionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectLastMeshMapperCompanionIntent.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -175,6 +228,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A40000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B40000000000000000000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -225,6 +285,7 @@
 			isa = PBXGroup;
 			children = (
 				331C807B294A618700263BE5 /* RunnerTests.swift */,
+				C20000000000000000000001 /* AppIntentLogicTests.swift */,
 			);
 			path = RunnerTests;
 			sourceTree = "<group>";
@@ -263,6 +324,7 @@
 				97C146F01CF9000F007C117D /* Runner */,
 				A30000000000000000000001 /* Shared */,
 				A30000000000000000000002 /* MeshMapperLiveActivity */,
+				B30000000000000000000003 /* MeshMapperAppIntents */,
 				97C146EF1CF9000F007C117D /* Products */,
 				331C8082294A63A400263BE5 /* RunnerTests */,
 				88C2A374596BDB4F1DE4A0B4 /* Pods */,
@@ -278,6 +340,7 @@
 				331C8081294A63A400263BE5 /* RunnerTests.xctest */,
 				A20000000000000000000006 /* MeshMapperLiveActivityExtension.appex */,
 				74331FACF5FD72D49FF952AD /* MeshMapperWatch.app */,
+				B20000000000000000000010 /* MeshMapperAppIntents.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -285,6 +348,7 @@
 		97C146F01CF9000F007C117D /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				B30000000000000000000001 /* AppIntents */,
 				97C146FA1CF9000F007C117D /* Main.storyboard */,
 				97C146FD1CF9000F007C117D /* Assets.xcassets */,
 				97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */,
@@ -295,6 +359,7 @@
 				A20000000000000000000001 /* LiveActivityManager.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				4DB902C46F9528E4D932613C /* WatchSessionManager.swift */,
+				B2000000000000000000000E /* Runner.entitlements */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -302,6 +367,7 @@
 		A30000000000000000000001 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				B30000000000000000000002 /* AppIntents */,
 				A20000000000000000000002 /* MeshMapperActivityAttributes.swift */,
 				68B2C4905F4EEE82DDA8825A /* MeshMapperWatchPayload.swift */,
 			);
@@ -316,6 +382,42 @@
 				A20000000000000000000005 /* Info.plist */,
 			);
 			path = MeshMapperLiveActivity;
+			sourceTree = "<group>";
+		};
+		B30000000000000000000001 /* AppIntents */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000001 /* SiriIntentCoordinator.swift */,
+				B20000000000000000000002 /* MeshMapperSessionMode.swift */,
+				B20000000000000000000003 /* StartMeshMapperSessionIntent.swift */,
+				B20000000000000000000004 /* StopMeshMapperSessionIntent.swift */,
+				B20000000000000000000005 /* SendManualPingIntent.swift */,
+				B20000000000000000000006 /* MeshMapperMutationAppShortcuts.swift */,
+				B20000000000000000000011 /* ConnectLastMeshMapperCompanionIntent.swift */,
+			);
+			path = AppIntents;
+			sourceTree = "<group>";
+		};
+		B30000000000000000000002 /* AppIntents */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000007 /* MeshMapperSiriSnapshot.swift */,
+				B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */,
+				B20000000000000000000009 /* RepeaterEntity.swift */,
+				B2000000000000000000000A /* HeardRepeaterEntity.swift */,
+			);
+			path = AppIntents;
+			sourceTree = "<group>";
+		};
+		B30000000000000000000003 /* MeshMapperAppIntents */ = {
+			isa = PBXGroup;
+			children = (
+				B2000000000000000000000B /* MeshMapperReadIntents.swift */,
+				B2000000000000000000000C /* MeshMapperAppIntentsExtension.swift */,
+				B2000000000000000000000D /* Info.plist */,
+				B2000000000000000000000F /* MeshMapperAppIntents.entitlements */,
+			);
+			path = MeshMapperAppIntents;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -368,6 +470,7 @@
 				97C146EC1CF9000F007C117D /* Resources */,
 				9705A1C41CF9048500538489 /* Embed Frameworks */,
 				A40000000000000000000004 /* Embed Foundation Extensions */,
+				B40000000000000000000004 /* Embed ExtensionKit Extensions */,
 				6D0B327AA07726C8BA4AA892 /* Embed Watch Content */,
 				3B06AD1E1E4923F5004D2608 /* Thin Binary */,
 				FF739F0FAE03970EB94871F2 /* [CP] Embed Pods Frameworks */,
@@ -377,6 +480,7 @@
 			);
 			dependencies = (
 				A70000000000000000000001 /* PBXTargetDependency */,
+				B70000000000000000000001 /* PBXTargetDependency */,
 				F203972D6336527AC5F4F89D /* PBXTargetDependency */,
 			);
 			name = Runner;
@@ -404,6 +508,23 @@
 			productReference = A20000000000000000000006 /* MeshMapperLiveActivityExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		B50000000000000000000001 /* MeshMapperAppIntents */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B90000000000000000000001 /* Build configuration list for PBXNativeTarget "MeshMapperAppIntents" */;
+			buildPhases = (
+				B40000000000000000000001 /* Sources */,
+				B40000000000000000000002 /* Frameworks */,
+				B40000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MeshMapperAppIntents;
+			productName = MeshMapperAppIntents;
+			productReference = B20000000000000000000010 /* MeshMapperAppIntents.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -424,6 +545,9 @@
 					};
 					A50000000000000000000001 = {
 						CreatedOnToolsVersion = 15.1;
+					};
+					B50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
 					};
 				};
 			};
@@ -446,6 +570,7 @@
 				97C146ED1CF9000F007C117D /* Runner */,
 				331C8080294A63A400263BE5 /* RunnerTests */,
 				A50000000000000000000001 /* MeshMapperLiveActivityExtension */,
+				B50000000000000000000001 /* MeshMapperAppIntents */,
 				26F4F6F7B0F55BC605124558 /* MeshMapperWatch */,
 			);
 		};
@@ -479,6 +604,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A40000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B40000000000000000000003 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -605,6 +737,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */,
+				C10000000000000000000001 /* AppIntentLogicTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -618,6 +751,15 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				F857D97D425B45AB76FD4B2F /* MeshMapperWatchPayload.swift in Sources */,
 				4FB810C0D8676DD8AB0B1B30 /* WatchSessionManager.swift in Sources */,
+				B10000000000000000000001 /* SiriIntentCoordinator.swift in Sources */,
+				B10000000000000000000002 /* MeshMapperSessionMode.swift in Sources */,
+				B10000000000000000000003 /* StartMeshMapperSessionIntent.swift in Sources */,
+				B10000000000000000000004 /* StopMeshMapperSessionIntent.swift in Sources */,
+				B10000000000000000000005 /* SendManualPingIntent.swift in Sources */,
+				B10000000000000000000006 /* MeshMapperMutationAppShortcuts.swift in Sources */,
+				B10000000000000000000010 /* ConnectLastMeshMapperCompanionIntent.swift in Sources */,
+				B10000000000000000000007 /* MeshMapperSiriSnapshot.swift in Sources */,
+				B10000000000000000000008 /* MeshMapperSiriSnapshotStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -649,6 +791,19 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B40000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000009 /* MeshMapperAppIntentsExtension.swift in Sources */,
+				B1000000000000000000000A /* MeshMapperReadIntents.swift in Sources */,
+				B1000000000000000000000B /* MeshMapperSiriSnapshot.swift in Sources */,
+				B1000000000000000000000C /* MeshMapperSiriSnapshotStore.swift in Sources */,
+				B1000000000000000000000D /* RepeaterEntity.swift in Sources */,
+				B1000000000000000000000E /* HeardRepeaterEntity.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -661,6 +816,11 @@
 			isa = PBXTargetDependency;
 			target = A50000000000000000000001 /* MeshMapperLiveActivityExtension */;
 			targetProxy = A60000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		B70000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B50000000000000000000001 /* MeshMapperAppIntents */;
+			targetProxy = B60000000000000000000001 /* PBXContainerItemProxy */;
 		};
 		F203972D6336527AC5F4F89D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -753,6 +913,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -978,6 +1139,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -1000,6 +1162,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -1161,6 +1324,97 @@
 			};
 			name = Debug;
 		};
+		B80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000000000000000000007 /* LiveActivity.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MeshMapperAppIntents/MeshMapperAppIntents.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = "$(MESHMAPPER_DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MeshMapperAppIntents/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(MESHMAPPER_BUNDLE_PREFIX).appintents";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000000000000000000007 /* LiveActivity.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MeshMapperAppIntents/MeshMapperAppIntents.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = "$(MESHMAPPER_DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MeshMapperAppIntents/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(MESHMAPPER_BUNDLE_PREFIX).appintents";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B80000000000000000000003 /* Profile */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A20000000000000000000007 /* LiveActivity.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = MeshMapperAppIntents/MeshMapperAppIntents.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = "$(MESHMAPPER_DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MeshMapperAppIntents/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(MESHMAPPER_BUNDLE_PREFIX).appintents";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Profile;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1200,6 +1454,16 @@
 				A80000000000000000000001 /* Debug */,
 				A80000000000000000000002 /* Release */,
 				A80000000000000000000003 /* Profile */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B90000000000000000000001 /* Build configuration list for PBXNativeTarget "MeshMapperAppIntents" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B80000000000000000000001 /* Debug */,
+				B80000000000000000000002 /* Release */,
+				B80000000000000000000003 /* Profile */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -480,6 +480,8 @@ enum WatchCommandKind {
 class WatchCommand {
   const WatchCommand({
     required this.kind,
+    this.id,
+    this.issuedAt,
     this.mode,
     this.mapGeoNeeded,
     this.forceRefresh = false,
@@ -487,6 +489,8 @@ class WatchCommand {
   });
 
   final WatchCommandKind kind;
+  final String? id;
+  final DateTime? issuedAt;
   final String? mode;
 
   /// Which session a [WatchCommandKind.stopSession] means, taken from the
