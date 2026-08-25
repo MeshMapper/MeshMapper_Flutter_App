@@ -9,7 +9,7 @@ struct SendManualPingIntent: AppIntent {
   static var supportedModes: IntentModes { .foreground(.dynamic) }
 
   @MainActor
-  func perform() async throws -> some IntentResult & ProvidesDialog {
+  func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
     try await requestConfirmation(
       conditions: [],
       actionName: .send,
@@ -18,6 +18,7 @@ struct SendManualPingIntent: AppIntent {
     let result = try await SiriIntentCoordinator.shared.execute(
       SiriCommand(kind: .manualPing)
     )
-    return .result(dialog: "\(result.message ?? "MeshMapper couldn't send a ping.")")
+    let message = result.message ?? "MeshMapper couldn't send a ping."
+    return .result(value: message, dialog: "\(message)")
   }
 }

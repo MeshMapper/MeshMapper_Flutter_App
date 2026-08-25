@@ -6,26 +6,49 @@ import 'package:flutter/services.dart';
 
 import '../../utils/debug_logger_io.dart';
 import '../external_commands/external_command_models.dart';
+import '../external_surfaces/external_surface_publisher.dart';
 import 'app_intent_commands.dart';
 
 typedef AppIntentCommandHandler = Future<ExternalCommandCompletion> Function(
   AppIntentCommand command,
 );
 typedef AppIntentSnapshotBuilder = Map<String, Object?>? Function();
+typedef AppIntentPreflightKeyBuilder = String Function();
 
 /// Independent Flutter bridge for Siri/App Intents.
 ///
-/// It deliberately has no WatchConnectivity concepts. Native reads are served
-/// from the App Group snapshot; only mutations cross this channel into Dart.
+/// It deliberately has no WatchConnectivity, widget, or CarPlay concepts.
+/// Native reads are served from the Foundation-only App Group snapshot; only
+/// App Intent mutations cross this channel into Dart. Future native surfaces
+/// can consume that bounded projection while retaining their own lifecycle and
+/// command transport.
 class AppIntentBridgeService {
   AppIntentBridgeService({
     @visibleForTesting MethodChannel? channel,
     @visibleForTesting Duration debounceDelay = defaultDebounceDelay,
     @visibleForTesting
     Duration minimumNonUrgentInterval = defaultMinimumNonUrgentInterval,
-  })  : _channel = channel ?? const MethodChannel(_channelName),
-        _debounceDelay = debounceDelay,
-        _minimumNonUrgentInterval = minimumNonUrgentInterval;
+  }) : _channel = channel ?? const MethodChannel(_channelName) {
+    _publisher =
+        ExternalSurfacePublisher<Map<String, Object?>, Map<String, Object?>>(
+      debounceDelay: debounceDelay,
+      minimumNonUrgentInterval: minimumNonUrgentInterval,
+      isEnabled: () => isSupportedPlatform,
+      preflightPolicy: ExternalSurfacePreflightPolicy.deduplicateAfterPublish,
+      payloadBuilder: (snapshot) => snapshot,
+      fingerprintBuilder: (snapshot) {
+        final semantic = Map<String, Object?>.from(snapshot)
+          ..remove('updatedAtMs');
+        return jsonEncode(semantic);
+      },
+      urgencyKeyBuilder: (_) => null,
+      publish: (publication) async => await publishSnapshot(publication.payload)
+          ? const ExternalSurfacePublishResult.published()
+          : const ExternalSurfacePublishResult.rejected(),
+      restartDebounce: false,
+      immediateBypassesMinimumInterval: true,
+    );
+  }
 
   static const String _channelName = 'meshmapper/app_intents';
   static const int _commandQueueDepth = 8;
@@ -40,16 +63,12 @@ class AppIntentBridgeService {
   }
 
   final MethodChannel _channel;
-  final Duration _debounceDelay;
-  final Duration _minimumNonUrgentInterval;
+  late final ExternalSurfacePublisher<Map<String, Object?>,
+      Map<String, Object?>> _publisher;
   AppIntentCommandHandler? _commandHandler;
   final Map<String, ExternalCommandCompletion> _commandOutcomes = {};
+  final Map<String, Future<ExternalCommandCompletion>> _inFlightCommands = {};
   bool _disposed = false;
-  Timer? _scheduledUpdate;
-  AppIntentSnapshotBuilder? _pendingSnapshotBuilder;
-  String? _lastFingerprint;
-  DateTime? _lastPublishedAt;
-  Future<void> _operationChain = Future<void>.value();
 
   bool get isSupportedPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
@@ -73,21 +92,42 @@ class AppIntentBridgeService {
 
     final previous = _commandOutcomes[command.id];
     if (previous != null) return previous.toMap(commandId: command.id);
+    final inFlight = _inFlightCommands[command.id];
+    if (inFlight != null) {
+      final completion = await inFlight;
+      return completion.toMap(commandId: command.id);
+    }
 
     final handler = _commandHandler;
     if (handler == null) {
       return _refusal('App not ready').toMap(commandId: command.id);
     }
 
+    // Normalize handler failures inside the shared future so every concurrent
+    // delivery of this UUID receives the same refusal instead of the owner
+    // catching an error while a duplicate sees a PlatformException.
+    final execution = _executeCommand(handler, command);
+    _inFlightCommands[command.id] = execution;
     try {
-      final completion = await handler(command);
+      final completion = await execution;
       _remember(command.id, completion);
       return completion.toMap(commandId: command.id);
+    } finally {
+      if (identical(_inFlightCommands[command.id], execution)) {
+        _inFlightCommands.remove(command.id);
+      }
+    }
+  }
+
+  Future<ExternalCommandCompletion> _executeCommand(
+    AppIntentCommandHandler handler,
+    AppIntentCommand command,
+  ) async {
+    try {
+      return await handler(command);
     } catch (error) {
       debugError('[SIRI] ${command.kind.name} failed: $error');
-      final completion = _refusal('Command failed');
-      _remember(command.id, completion);
-      return completion.toMap(commandId: command.id);
+      return _refusal('Command failed');
     }
   }
 
@@ -108,66 +148,15 @@ class AppIntentBridgeService {
 
   void schedule(
     AppIntentSnapshotBuilder builder, {
+    required AppIntentPreflightKeyBuilder preflightKeyBuilder,
     bool immediate = false,
   }) {
     if (!isSupportedPlatform || _disposed) return;
-    _pendingSnapshotBuilder = builder;
-    if (immediate) {
-      _scheduledUpdate?.cancel();
-      _scheduledUpdate = null;
-      _queueFlush();
-      return;
-    }
-    _scheduledUpdate ??= Timer(_debounceDelay, () {
-      _scheduledUpdate = null;
-      final lastPublishedAt = _lastPublishedAt;
-      final remaining = lastPublishedAt == null
-          ? Duration.zero
-          : _minimumNonUrgentInterval -
-              DateTime.now().difference(lastPublishedAt);
-      if (remaining > Duration.zero) {
-        _scheduledUpdate = Timer(remaining, () {
-          _scheduledUpdate = null;
-          _queueFlush();
-        });
-      } else {
-        _queueFlush();
-      }
-    });
-  }
-
-  void _queueFlush() {
-    _operationChain = _operationChain.then((_) => _flush());
-  }
-
-  Future<void> _flush() async {
-    if (_disposed) return;
-    final builder = _pendingSnapshotBuilder;
-    _pendingSnapshotBuilder = null;
-    if (builder == null) return;
-    final snapshot = builder();
-    if (snapshot == null) return;
-
-    final semantic = Map<String, Object?>.from(snapshot)..remove('updatedAtMs');
-    final fingerprint = jsonEncode(semantic);
-    if (fingerprint == _lastFingerprint) return;
-    if (await publishSnapshot(snapshot)) {
-      _lastFingerprint = fingerprint;
-      _lastPublishedAt = DateTime.now();
-    }
-  }
-
-  Future<void> clearSnapshot() async {
-    if (!isSupportedPlatform || _disposed) return;
-    try {
-      await _channel.invokeMethod<void>('clearSnapshot');
-    } on MissingPluginException {
-      // Older native builds have no App Intent bridge.
-    } on PlatformException catch (error) {
-      debugError(
-        '[SIRI] Snapshot clear failed: ${error.code}: ${error.message}',
-      );
-    }
+    _publisher.schedule(
+      builder,
+      preflightKeyBuilder: preflightKeyBuilder,
+      immediate: immediate,
+    );
   }
 
   void _remember(String id, ExternalCommandCompletion completion) {
@@ -181,7 +170,7 @@ class AppIntentBridgeService {
       ExternalCommandCompletion(
         success: false,
         disposition: ExternalCommandDisposition.refused,
-        message: message,
+        message: ExternalCommandReason.other(message),
       );
 
   void dispose() {
@@ -189,9 +178,8 @@ class AppIntentBridgeService {
     _disposed = true;
     _commandHandler = null;
     _commandOutcomes.clear();
-    _scheduledUpdate?.cancel();
-    _scheduledUpdate = null;
-    _pendingSnapshotBuilder = null;
+    _inFlightCommands.clear();
+    _publisher.dispose();
     if (isSupportedPlatform) _channel.setMethodCallHandler(null);
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/app_intents/app_intent_commands.dart';
 import 'package:mesh_mapper/services/app_intents/last_companion_connection.dart';
 import 'package:mesh_mapper/services/external_commands/external_command_models.dart';
+import 'package:mesh_mapper/services/external_commands/external_session_commands.dart';
 
 void main() {
   final now = DateTime.fromMillisecondsSinceEpoch(100000);
@@ -41,36 +42,40 @@ void main() {
     );
 
     expect(result.disposition, ExternalCommandDisposition.noOp);
-    expect(result.reason, 'Already connected');
+    expect(result.reason?.compactText, 'Already connected');
   });
 
   test('fails closed for missing, busy, switched, and USB companions', () {
     expect(
-      resolve(remembered: false).reason,
+      resolve(remembered: false).reason?.compactText,
       'No remembered companion',
     );
     expect(
-      resolve(connecting: true).reason,
+      resolve(connecting: true).reason?.compactText,
       'Already connecting',
     );
     expect(
-      resolve(connected: true).reason,
+      resolve(connected: true).reason?.compactText,
       'Another companion is connected',
     );
     expect(
-      resolve(unattended: false).reason,
+      resolve(unattended: false).reason?.compactText,
       'User interaction required',
     );
   });
 
   test('stale and future connect commands are refused', () {
     expect(
-      resolve(issuedAt: now.subtract(const Duration(seconds: 31))).reason,
-      'Took too long to reach iPhone',
+      resolve(issuedAt: now.subtract(const Duration(seconds: 31)))
+          .reason
+          ?.compactText,
+      externalCommandExpiredReason,
     );
     expect(
-      resolve(issuedAt: now.add(const Duration(seconds: 6))).reason,
-      'Took too long to reach iPhone',
+      resolve(issuedAt: now.add(const Duration(seconds: 6)))
+          .reason
+          ?.compactText,
+      externalCommandExpiredReason,
     );
   });
 }

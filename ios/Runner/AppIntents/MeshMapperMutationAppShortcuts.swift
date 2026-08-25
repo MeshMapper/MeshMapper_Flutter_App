@@ -8,6 +8,10 @@ struct MeshMapperMutationAppShortcuts: AppShortcutsProvider {
       phrases: [
         "Connect \(.applicationName) to its last companion",
         "Reconnect \(.applicationName)",
+        "Connect \(.applicationName)",
+        "Connect \(.applicationName) to the last device",
+        "Connect to the last device in \(.applicationName)",
+        "Reconnect the last device in \(.applicationName)",
       ],
       shortTitle: "Connect Companion",
       systemImageName: "link"
@@ -18,6 +22,11 @@ struct MeshMapperMutationAppShortcuts: AppShortcutsProvider {
         "Start \(.applicationName)",
         "Start a session in \(.applicationName)",
         "Start mapping with \(.applicationName)",
+        "Start \(\.$mode) in \(.applicationName)",
+        "Start \(\.$mode) mode in \(.applicationName)",
+        "Start a \(\.$mode) session in \(.applicationName)",
+        "Start \(.applicationName) in \(\.$mode) mode",
+        "Start \(\.$mode) mapping with \(.applicationName)",
       ],
       shortTitle: "Start Session",
       systemImageName: "antenna.radiowaves.left.and.right"
@@ -27,6 +36,8 @@ struct MeshMapperMutationAppShortcuts: AppShortcutsProvider {
       phrases: [
         "Stop \(.applicationName)",
         "Stop the session in \(.applicationName)",
+        "Stop mapping with \(.applicationName)",
+        "End the session in \(.applicationName)",
       ],
       shortTitle: "Stop Session",
       systemImageName: "stop.fill"

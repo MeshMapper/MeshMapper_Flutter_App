@@ -15,12 +15,14 @@ struct StartMeshMapperSessionIntent: AppIntent {
   var mode: MeshMapperSessionMode
 
   @MainActor
-  func perform() async throws -> some IntentResult & ProvidesDialog {
+  func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
     let result = try await SiriIntentCoordinator.shared.execute(
       SiriCommand(kind: .startSession, mode: mode.rawValue)
     )
+    let message = result.message ?? Self.fallback(for: result, mode: mode)
     return .result(
-      dialog: "\(result.message ?? Self.fallback(for: result, mode: mode))"
+      value: message,
+      dialog: "\(message)"
     )
   }
 

@@ -1,9 +1,8 @@
 import AppIntents
-import CoreSpotlight
 import Foundation
 
 @available(iOS 26.0, *)
-struct RepeaterEntity: AppEntity, IndexedEntity {
+struct RepeaterEntity: AppEntity {
   static var typeDisplayRepresentation = TypeDisplayRepresentation(
     name: "MeshMapper Repeater",
     numericFormat: "\(placeholder: .int) repeaters"
@@ -39,19 +38,6 @@ struct RepeaterEntity: AppEntity, IndexedEntity {
     )
   }
 
-  var attributeSet: CSSearchableItemAttributeSet {
-    let attributes = defaultAttributeSet
-    attributes.title = name
-    attributes.contentDescription = [zoneCode, hexId]
-      .compactMap { $0 }
-      .joined(separator: " · ")
-    attributes.keywords = [name, hexId, zoneCode].compactMap { $0 }
-    if let latitude, let longitude {
-      attributes.latitude = latitude as NSNumber
-      attributes.longitude = longitude as NSNumber
-    }
-    return attributes
-  }
 }
 
 @available(iOS 26.0, *)
@@ -63,7 +49,9 @@ struct RepeaterEntityQuery: EntityStringQuery {
 
   func entities(matching string: String) async throws -> [RepeaterEntity] {
     let needle = string.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !needle.isEmpty else { return try catalog() }
+    guard !needle.isEmpty else {
+      return Array(try catalog().filter(\.isActive).prefix(20))
+    }
     return try catalog().filter {
       $0.name.localizedCaseInsensitiveContains(needle)
         || $0.hexId.localizedCaseInsensitiveContains(needle)

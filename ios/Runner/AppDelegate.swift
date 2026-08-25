@@ -1,3 +1,4 @@
+import AppIntents
 import Flutter
 import MapLibre
 import UIKit
@@ -84,6 +85,13 @@ class IOSMapOfflineBridge {
 
     GeneratedPluginRegistrant.register(with: self)
 
+    // App Shortcut metadata is extracted at build time, but asking the system
+    // to refresh parameters on launch makes newly added Siri phrases and enum
+    // synonyms available promptly after an app update.
+    if #available(iOS 26.0, *) {
+      MeshMapperMutationAppShortcuts.updateAppShortcutParameters()
+    }
+
     // Register background service
     SwiftFlutterBackgroundServicePlugin.taskIdentifier = "net.meshmapper.app.background"
 
@@ -167,9 +175,6 @@ class IOSMapOfflineBridge {
               details: nil
             ))
           }
-        case "clearSnapshot":
-          self.siriSnapshotStore.clear()
-          result(nil)
         default:
           result(FlutterMethodNotImplemented)
         }

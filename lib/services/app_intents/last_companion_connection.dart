@@ -24,7 +24,7 @@ ExternalCommandAdmission resolveLastCompanionConnection({
   if (!hasRememberedCompanion) {
     return const ExternalCommandAdmission(
       disposition: ExternalCommandDisposition.refused,
-      reason: 'No remembered companion',
+      reason: ExternalCommandReason.noRememberedCompanion,
     );
   }
   if (isConnected) {
@@ -33,20 +33,20 @@ ExternalCommandAdmission resolveLastCompanionConnection({
           ? ExternalCommandDisposition.noOp
           : ExternalCommandDisposition.refused,
       reason: isConnectedToRememberedCompanion
-          ? 'Already connected'
-          : 'Another companion is connected',
+          ? ExternalCommandReason.alreadyConnected
+          : ExternalCommandReason.anotherCompanionConnected,
     );
   }
   if (isConnecting) {
     return const ExternalCommandAdmission(
       disposition: ExternalCommandDisposition.refused,
-      reason: 'Already connecting',
+      reason: ExternalCommandReason.alreadyConnecting,
     );
   }
   if (!canReconnectWithoutUserInput) {
     return const ExternalCommandAdmission(
       disposition: ExternalCommandDisposition.refused,
-      reason: 'User interaction required',
+      reason: ExternalCommandReason.userInteractionRequired,
     );
   }
   return const ExternalCommandAdmission(

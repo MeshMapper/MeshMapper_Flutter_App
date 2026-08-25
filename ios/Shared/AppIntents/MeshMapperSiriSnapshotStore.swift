@@ -22,6 +22,13 @@ final class MeshMapperSiriSnapshotStore {
   static let appGroupIdentifier = "group.net.meshmapper.app.shared"
   static let supportedVersion = 1
 
+  // The historical Siri name and filename are a v1 wire-compatibility detail,
+  // not an ownership boundary. This is deliberately a Foundation-only,
+  // low-frequency projection of phone-owned state so future native surfaces
+  // such as widgets or a CarPlay scene can share it without importing Flutter
+  // or routing reads through SiriIntentCoordinator. Additive optional fields
+  // stay at version 1; bump only for a meaning change or removal.
+
   private let fileManager: FileManager
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
@@ -36,6 +43,8 @@ final class MeshMapperSiriSnapshotStore {
       .containerURL(
         forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
       )?
+      // Keep the installed v1 filename even if the Swift types are generalized
+      // later; changing it would strand an extension during an app update.
       .appendingPathComponent("siri-snapshot.json", isDirectory: false)
   }
 
@@ -77,8 +86,4 @@ final class MeshMapperSiriSnapshotStore {
     return snapshot
   }
 
-  func clear() {
-    guard let snapshotURL else { return }
-    try? fileManager.removeItem(at: snapshotURL)
-  }
 }

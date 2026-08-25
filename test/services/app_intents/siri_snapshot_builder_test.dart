@@ -295,4 +295,66 @@ void main() {
       isTrue,
     );
   });
+
+  test('non-finite radio and repeater values cannot poison the snapshot', () {
+    const invalidLocation = Repeater(
+      id: 'invalid-location',
+      hexId: 'AABBCCDD',
+      name: 'Invalid Location',
+      lat: double.infinity,
+      lon: -122.3,
+      lastHeard: 1787535900,
+      enabled: 1,
+      iata: 'SEA',
+    );
+    final observations = build(
+      rx: [
+        RxLogEntry(
+          timestamp: now,
+          repeaterId: 'AABBCCDD',
+          snr: double.nan,
+          pathLength: 1,
+          header: 0,
+          latitude: 47.6,
+          longitude: -122.3,
+        ),
+      ],
+      repeaters: const [invalidLocation],
+    );
+
+    expect(observations.single.snr, isNull);
+    expect(observations.single.distanceM, isNull);
+    expect(observations.single.repeaterLat, isNull);
+    expect(observations.single.repeaterLon, isNull);
+
+    final catalog = SiriSnapshotBuilder.buildRepeaterCatalog(
+      const [invalidLocation],
+    );
+    expect(catalog.single.latitude, isNull);
+    expect(catalog.single.longitude, isNull);
+  });
+
+  test('repeater catalogue is active-first, recent-first, and bounded', () {
+    final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final repeaters = List.generate(
+      SiriSnapshotBuilder.maximumRepeaters + 10,
+      (index) => Repeater(
+        id: 'repeater-$index',
+        hexId: index.toRadixString(16).padLeft(8, '0'),
+        name: 'Repeater $index',
+        lat: 47.0 + index / 1000,
+        lon: -122.0,
+        lastHeard: nowSeconds - index,
+        enabled: 1,
+        iata: 'SEA',
+        staleTime: index == 7 ? nowSeconds + 3600 : nowSeconds - 1,
+      ),
+    );
+
+    final catalog = SiriSnapshotBuilder.buildRepeaterCatalog(repeaters);
+
+    expect(catalog, hasLength(SiriSnapshotBuilder.maximumRepeaters));
+    expect(catalog.first.id, 'SEA|repeater-7');
+    expect(catalog[1].id, 'SEA|repeater-0');
+  });
 }

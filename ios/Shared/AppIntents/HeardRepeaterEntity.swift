@@ -18,11 +18,15 @@ struct HeardRepeaterEntity: AppEntity {
   let kind: String
   let direct: Bool
 
-  init(observation: MeshMapperSiriObservation, index: Int) {
-    id = "\(observation.entityId ?? observation.displayHexId)|\(observation.observedAtMs)|\(observation.kind)|\(index)"
+  init(
+    observation: MeshMapperSiriObservation,
+    repeaterById: [String: MeshMapperSiriRepeater]
+  ) {
+    // Derived only from observation content so sorting, filtering, or limiting
+    // cannot change the ID a saved Shortcut later asks EntityQuery to resolve.
+    id = observation.stableEntityIdentifier
     if let entityId = observation.entityId,
-       let snapshot = try? MeshMapperSiriSnapshotStore.shared.read(),
-       let repeaterSnapshot = snapshot.repeaters.first(where: { $0.id == entityId }) {
+       let repeaterSnapshot = repeaterById[entityId] {
       repeater = RepeaterEntity(snapshot: repeaterSnapshot)
     } else {
       repeater = nil
@@ -57,9 +61,15 @@ struct HeardRepeaterEntityQuery: EntityQuery {
   }
 
   private func observations() throws -> [HeardRepeaterEntity] {
-    try MeshMapperSiriSnapshotStore.shared.read()?
-      .recentHeard
-      .enumerated()
-      .map { HeardRepeaterEntity(observation: $0.element, index: $0.offset) } ?? []
+    guard let snapshot = try MeshMapperSiriSnapshotStore.shared.read() else {
+      return []
+    }
+    let repeaterById = Dictionary(
+      snapshot.repeaters.map { ($0.id, $0) },
+      uniquingKeysWith: { existing, _ in existing }
+    )
+    return snapshot.recentHeard.map {
+      HeardRepeaterEntity(observation: $0, repeaterById: repeaterById)
+    }
   }
 }
