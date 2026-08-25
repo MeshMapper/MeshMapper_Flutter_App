@@ -290,6 +290,18 @@ class ApiQueueItem extends HiveObject {
     };
   }
 
+  /// Whether this item carries a TX wire-tag claim.
+  ///
+  /// A tag only re-derives under the session that minted it, so a tagged item
+  /// is uploadable ONLY under that session. Once it outlives it the item is
+  /// undeliverable and gets dropped rather than uploaded, because every
+  /// alternative is worse: keeping the tag makes the server skip the row while
+  /// reporting success (a silent loss plus a wire_tag_mismatch warn), and
+  /// stripping it sends the ping down the coords path where, with no status-4
+  /// WAIT row left to join, it inserts as DEAD(3) and paints a GREY "dead"
+  /// cell on the map for a ping that actually got heard.
+  bool get hasWireTag => wireTag != null || pingCounter != null;
+
   /// Calculate next retry delay using exponential backoff
   Duration get nextRetryDelay {
     // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, max 60s

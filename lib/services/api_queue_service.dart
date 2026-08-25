@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
 import '../models/api_queue_item.dart';
@@ -614,6 +615,9 @@ class ApiQueueService {
           _memoryQueue.remove(item);
         }
         debugLog('[API QUEUE] Upload SUCCESS: deleted $uploadedCount items');
+        // The network is demonstrably back, so give anything the ladder has
+        // already written off one more chance.
+        _reviveFailedItems();
         onUploadSuccess?.call(uploadedCount, items);
         // Fire-and-forget: forward to custom API endpoint
         customApiService?.forwardPings(pings);
@@ -629,6 +633,13 @@ class ApiQueueService {
         }
         debugWarn(
             '[API QUEUE] Discarded ${items.length} items (non-retryable error)');
+      } else if (result == UploadResult.unreachable) {
+        // We never got an answer, so this says nothing about the data. Leave
+        // retryCount and lastRetryAt alone: spending a retry here meant ~75s
+        // out of coverage wrote every queued ping off for good (#437). The
+        // flush cadence is the pacing; there is nothing to back off from.
+        debugLog(
+            '[API QUEUE] Upload deferred: ${items.length} items held, no route to server');
       } else {
         // Mark items as retried
         for (final item in hiveItems) {
@@ -716,6 +727,42 @@ class ApiQueueService {
     }
   }
 
+  /// Put items the retry ladder has written off back in the running.
+  ///
+  /// Called after a successful upload, which is the only proof we have that the
+  /// server is reachable and answering. Without it [_maxRetries] is a one-way
+  /// door: nothing resets the counter, so a written-off ping sat in Hive
+  /// forever, never uploaded and never surfaced (#437).
+  ///
+  /// Only items past the ladder are touched. Anything still climbing it is
+  /// mid-backoff for a reason the server gave us, and is left alone.
+  void _reviveFailedItems() {
+    final stranded = failedItems;
+    if (stranded.isEmpty) return;
+
+    for (final item in stranded) {
+      item.retryCount = 0;
+      item.lastRetryAt = null;
+      if (item.isInBox) {
+        try {
+          item.save();
+        } catch (_) {}
+      }
+    }
+    debugLog('[API QUEUE] Revived ${stranded.length} items the retry ladder '
+        'had written off');
+  }
+
+  /// Every item currently held, Hive and memory alike.
+  ///
+  /// Exists so tests can set an item's retry state directly instead of spending
+  /// 31 seconds of real time climbing the backoff ladder to reach it.
+  @visibleForTesting
+  List<ApiQueueItem> get heldItems => [
+        ..._safeRead((box) => box.values.toList(), <ApiQueueItem>[]),
+        ..._memoryQueue,
+      ];
+
   /// Get failed items (exceeded max retries)
   List<ApiQueueItem> get failedItems {
     final hiveItems = _safeRead(
@@ -747,8 +794,65 @@ class ApiQueueService {
     _offlinePings.clear();
   }
 
+  /// Drop every queued item whose wire tag can no longer be validated.
+  ///
+  /// A wire tag only re-derives under the session that minted it: the server
+  /// recomputes it from the session_id the batch is POSTed under and skips the
+  /// entry entirely on a mismatch, while still returning success, so the app
+  /// prunes the item as uploaded and the TX ping is lost with no error
+  /// anywhere (`wardrive-api.php`, action=wire_tag_mismatch).
+  ///
+  /// Call this whenever the session id changes underneath a preserved queue.
+  /// Every item queued at that moment was necessarily minted under the old
+  /// session (anything minted under the new one is enqueued afterwards), so
+  /// dropping all tagged items is exact and needs no per-item bookkeeping.
+  ///
+  /// Auto-reconnect is the path that matters: it deliberately preserves the
+  /// queue, and /auth only reuses a session while it is status=1 and
+  /// unexpired. Otherwise a fresh session_id comes back and everything
+  /// already queued is stale.
+  ///
+  /// Dropping rather than un-tagging is deliberate. Re-minting under the new
+  /// session would claim a tag that never went out on the air. Stripping the
+  /// tag sends the ping down the server coords path, where hours (or just a
+  /// reconnect) later there is no status-4 WAIT row to join, so it inserts as
+  /// DEAD(3) and renders a GREY "dead" cell for a ping that was actually
+  /// heard. At roughly 0.2% of TX pings, an honest drop beats a misleading
+  /// map.
+  Future<void> dropStaleTaggedItems() async {
+    final staleHive = _safeRead(
+      (box) => box.values.where((i) => i.hasWireTag).toList(),
+      <ApiQueueItem>[],
+    );
+    for (final item in staleHive) {
+      try {
+        await item.delete();
+      } catch (e) {
+        debugError('[API QUEUE] Failed to drop stale tagged item: $e');
+      }
+    }
+
+    final beforeMemory = _memoryQueue.length;
+    _memoryQueue.removeWhere((i) => i.hasWireTag);
+    final dropped = staleHive.length + (beforeMemory - _memoryQueue.length);
+
+    if (dropped > 0) {
+      debugWarn(
+          '[API QUEUE] Session changed: dropped $dropped queued TX ping(s) whose wire tag '
+          'was minted under the old session (undeliverable)');
+      onQueueUpdated?.call(queueSize);
+    }
+  }
+
   /// Extract all queued items as API JSON without clearing the queue.
   /// Used to preserve data before session-expiry disconnect.
+  ///
+  /// Tagged TX pings are left OUT of the snapshot. It is bound for offline
+  /// storage and gets re-uploaded under a brand new `offline-YYYYMMDD-NNNN`
+  /// session, where the tag cannot re-derive: the server would skip the row
+  /// while still reporting success, so the ping is lost either way. Preserving
+  /// it only buys a wire_tag_mismatch warn. RX/DISC/TRACE carry no tag and are
+  /// preserved exactly as before.
   Future<List<Map<String, dynamic>>> extractAllAsJson() async {
     // Flush RX buffer first so all items are in the main queue
     await _flushRxBuffer();
@@ -762,7 +866,15 @@ class ApiQueueService {
 
     if (allItems.isEmpty) return [];
 
-    return allItems.map((item) => item.toApiJson()).toList();
+    final deliverable = allItems.where((i) => !i.hasWireTag).toList();
+    final skipped = allItems.length - deliverable.length;
+    if (skipped > 0) {
+      debugWarn(
+          '[API QUEUE] Preserving offline: skipped $skipped tagged TX ping(s) that no '
+          'offline session could upload (kept ${deliverable.length} untagged item(s))');
+    }
+
+    return deliverable.map((item) => item.toApiJson()).toList();
   }
 
   /// Dispose of resources

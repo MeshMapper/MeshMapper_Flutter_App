@@ -74,6 +74,11 @@ MESHMAPPER_API_KEY=<your-key> ./Build.sh
 
 # Upload the built iOS archive to App Store Connect (needs ASC API key, see upload_ios.sh)
 ./upload_ios.sh
+
+# Set the TestFlight "What to Test" text on the uploaded build (same ASC API key).
+# This cannot ride along with the upload, so it is a separate leg that waits for
+# App Store Connect to register the build.
+./set_whats_new.sh --notes-file notes.txt
 ```
 
 The upload export uses explicit App Store profiles from
@@ -160,6 +165,14 @@ the GPS puck from a **direct provider listener** (`_onPositionNotify` →
 `_handleGpsPosition`) that calls the native controller (`animateCamera` /
 `updateSymbol`) every tick — real-time nav, no widget rebuild. The GPS-info
 overlay rebuilds only when the map itself does.
+
+**Coverage overlay opacity does NOT bump `mapRevision`.** It is UI-only state,
+so bumping the revision would relayout the platform view once per slider step.
+`MapWidget` applies it through a **direct provider listener**
+(`_onCoverageOpacityNotify`) that pushes the value into the live fill layers via
+`setLayerProperties`. A `build()` watcher cannot serve this: the map is behind
+the `mapRevision` Selector and never rebuilds on an opacity change, so the value
+only reached MapLibre on the next full overlay rebuild.
 
 **The Selector MUST be memoized (identity-stable).** `HomeScreen.build()` uses
 `context.watch`, so it rebuilds on every notify (incl. the 2 Hz GPS one).
@@ -384,7 +397,11 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   mints a 43-char verifier + challenge + independent `state`; the app opens
   `portal.php?app_authorize=1&…` with `LaunchMode.externalApplication` (an in-app
   WebView would see the user's password) and the portal deep-links back
-  `meshmapper-auth://callback?code=…&state=…`.
+  `meshmapper-auth://callback?code=…&state=…`. The exchange answers with the
+  identity but NOT the linked pubkeys, so it is followed by one `me` call:
+  without it the Settings account card reads "0 device(s) on this account"
+  until the next radio connect happens to refresh it. That call runs AFTER
+  `onSignInComplete`, so a device list that fails never colours the sign-in.
 - **Scheme**: `meshmapper-auth` (host `callback`), registered in
   `ios/Runner/Info.plist` `CFBundleURLTypes` and the `MainActivity`
   VIEW/BROWSABLE intent-filter. Deliberately NOT the bare `meshmapper` scheme —
@@ -454,6 +471,19 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   counter also holds nonce and network failures, so it cannot stand in). A local
   sign that succeeds clears the unsupported strike; a `LinkSuccess` clears BOTH
   counters and the persisted verdict.
+- **A 429 is terminal and always carries `Retry-After`**: the portal's buckets
+  slide and a blocked request does NOT reset the count, it re-arms a FRESH
+  penalty (`me` is 12/hour with a 600s penalty, so a user who keeps tapping
+  extends their own lockout). `_postWithToken` parses the header (delta-seconds,
+  clamped to 1 hour, `PortalApi.defaultRetryAfter` = 5 min when it is missing or
+  unparseable) into a per-route block, readable as `rateLimitBackoff(route)` and
+  `linkLaneBackoff` (the longer of nonce/link). Three consumers:
+  `refreshMe(force: true)` skips the LOCAL hourly throttle but NEVER a server
+  block, and the Settings refresh button says how long to wait instead of
+  reprinting a stale device count; `logout` does not retry into a 429 and accepts
+  the orphaned server token; `_recordLinkFailure` takes the longer of its own
+  30s..8m ladder and the server's value. A 429 is never a sign-out: 401 +
+  `token_invalid` stays the only signed-out signal.
 - **Persistence** (Hive `user_preferences`): `portal_account_info`,
   `portal_linked_pubkeys` (UPPER hex), `portal_link_declined_devices`,
   `portal_sign_unsupported_devices`. Sign-out clears the first two and keeps the
