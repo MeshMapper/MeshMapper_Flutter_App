@@ -9,7 +9,41 @@ import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 
 /// Result of a batch upload attempt
-enum UploadResult { success, retryable, sessionError, nonRetryable }
+///
+/// [unreachable] is deliberately separate from [retryable]: the data is fine,
+/// we simply never got an answer. The queue must not spend a retry on it, or a
+/// drive through a dead zone burns the whole ladder and strands the pings
+/// (#437).
+enum UploadResult { success, retryable, unreachable, sessionError, nonRetryable }
+
+/// The request never reached the server: no coverage, DNS failure, connection
+/// reset, TLS handshake, or a timeout waiting for the first byte.
+///
+/// Distinct from the server answering with a rejection, which is a verdict on
+/// the data itself.
+class _RequestNeverReachedServer implements Exception {
+  final Object cause;
+  const _RequestNeverReachedServer(this.cause);
+
+  @override
+  String toString() => 'Request never reached the server: $cause';
+}
+
+/// Classify a thrown request error as "never got an answer" or not.
+///
+/// A FormatException is excluded on purpose: the server did answer, just with
+/// something unparseable, which is a verdict-shaped failure and keeps its place
+/// on the retry ladder. SocketException and HandshakeException live in dart:io,
+/// which this file must not import because it is shared with the web build, so
+/// they are matched by type name.
+bool _requestNeverReachedServer(Object error) {
+  if (error is FormatException) return false;
+  if (error is TimeoutException) return true;
+  if (error is http.ClientException) return true;
+  final name = error.runtimeType.toString();
+  return name.contains('SocketException') ||
+      name.contains('HandshakeException');
+}
 
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
@@ -429,7 +463,21 @@ class ApiService {
       if ((reason == 'connect' || reason == 'register') &&
           data['success'] == true) {
         if (!skipSessionStore) {
+          // A wire tag only re-derives under the session that minted it. When
+          // the server hands back a DIFFERENT session id (it reuses one only
+          // while status=1 and unexpired), anything still sitting in the queue
+          // was tagged under the old session and would be silently dropped on
+          // upload, so tell the listener to drop those pings.
+          final previousSessionId = _sessionId;
           _sessionId = data['session_id'] as String?;
+          if (previousSessionId != null &&
+              _sessionId != null &&
+              previousSessionId != _sessionId) {
+            debugLog(
+                '[SESSION] New session id issued (was $previousSessionId, now $_sessionId). '
+                'Queued wire tags are stale');
+            onSessionIdChanged?.call();
+          }
           _txAllowed = data['tx_allowed'] == true;
           _rxAllowed = data['rx_allowed'] == true;
           _sessionExpiresAt = data['expires_at'] as int?;
@@ -532,7 +580,10 @@ class ApiService {
   /// Matches submitWardriveData() in wardrive.js
   ///
   /// @param entries List of wardrive entries (TX/RX)
-  /// @returns Map with success, expires_at, reason, message
+  /// @returns Map with success, expires_at, reason, message, or null when the
+  /// server answered with something unusable
+  /// @throws when the request never reached the server, so the caller can tell
+  /// that apart from a rejection and hold the data without spending a retry
   Future<Map<String, dynamic>?> submitWardriveData(
       List<Map<String, dynamic>> entries) async {
     if (_sessionId == null) {
@@ -597,6 +648,9 @@ class ApiService {
     } catch (e) {
       stopwatch.stop();
       debugError('[API] POST /wardrive-api.php/wardrive failed: $e');
+      // Let uploadBatch tell the two failures apart. Returning null for both
+      // is what let a dead socket spend a retry (#437).
+      if (_requestNeverReachedServer(e)) throw _RequestNeverReachedServer(e);
       return null;
     }
   }
@@ -739,12 +793,12 @@ class ApiService {
     };
     if (criticalErrors.contains(reason)) {
       _clearSession();
-      onSessionError?.call(reason, message);
+      await onSessionError?.call(reason, message);
     }
 
     // outside_zone: notify listener but preserve session (backend auto-transfers on zone re-entry)
     if (reason == 'outside_zone') {
-      onSessionError?.call(reason, message);
+      await onSessionError?.call(reason, message);
     }
 
     return (isValid: false, reason: reason, message: message);
@@ -858,10 +912,10 @@ class ApiService {
 
       if (criticalErrors.contains(reason)) {
         _clearSession();
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
       } else if (reason == 'outside_zone') {
         // Preserve session — backend auto-transfers on zone re-entry
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
       } else {
         _onSessionExpiring?.call();
       }
@@ -896,10 +950,19 @@ class ApiService {
 
   /// Callback for session errors (session_expired, bad_session, outside_zone)
   /// Set by AppStateProvider to handle auto-disconnect
-  Future<void> Function(String? reason, String? message)? onSessionError;
+  ///
+  /// [subReason] carries the server's `sub_reason` where it narrows the reason
+  /// enough to change what the app does. Only the upload path passes it today:
+  /// a stationary revoke can only be raised by an upload, never a heartbeat.
+  Future<void> Function(String? reason, String? message, {String? subReason})?
+      onSessionError;
 
   /// Callback for maintenance mode detection (while connected)
   void Function(String message, String? url)? onMaintenanceMode;
+
+  /// Fired when /auth returns a session id different from the one we held.
+  /// Wired to ApiQueueService.dropStaleTaggedItems(). See that method for why.
+  void Function()? onSessionIdChanged;
 
   /// Force-rebuild one vector coverage tile on the region server
   /// (`vector_tile.php?...&fresh=1`, see VECTOR_TILES.md). Used by the
@@ -984,12 +1047,18 @@ class ApiService {
       };
 
       if (criticalErrors.contains(reason)) {
-        debugError('[API] Upload batch session error: $reason');
+        final subReason = result['sub_reason'] as String?;
+        debugError('[API] Upload batch session error: $reason'
+            '${subReason != null ? ' ($subReason)' : ''}');
         final message = result['message'] as String?;
         // Clear session locally since it's invalid on server
         _clearSession();
-        // Notify listener for auto-disconnect
-        onSessionError?.call(reason, message);
+        // Notify listener for auto-disconnect. MUST be awaited: the handler
+        // snapshots the queue to offline storage, and returning nonRetryable
+        // makes the caller DISCARD that same batch. Fired bare, the snapshot's
+        // first real suspension (a non-empty RX buffer flushing to Hive) let
+        // the discard land first, so the preserved pings came back short.
+        await onSessionError?.call(reason, message, subReason: subReason);
         return UploadResult.nonRetryable;
       }
 
@@ -999,7 +1068,7 @@ class ApiService {
         debugWarn(
             '[API] Upload batch outside_zone — discarding batch, preserving session');
         final message = result['message'] as String?;
-        onSessionError?.call(reason, message);
+        await onSessionError?.call(reason, message);
         return UploadResult.nonRetryable;
       }
 
@@ -1018,6 +1087,9 @@ class ApiService {
       }
 
       return UploadResult.retryable;
+    } on _RequestNeverReachedServer catch (e) {
+      debugWarn('[API] Upload batch could not reach the server: ${e.cause}');
+      return UploadResult.unreachable;
     } catch (e) {
       debugError('[API] Upload batch exception: $e');
       return UploadResult.retryable;
@@ -1087,13 +1159,19 @@ class ApiService {
   /// GRID SUMMARY. Posts to the region's app-facing endpoint
   /// (`app_coverage.php` → `api.php` `map_data`); the app aggregates the points
   /// client-side (see `coverage_summary.dart`). Returns `[]` on any failure.
+  ///
+  /// NOTE: unlike [fetchRepeaterCoverage] this still collapses a failed request
+  /// into `[]`. The cell summary has no "couldn't load" state yet
+  /// (MeshMapper_Server#109 covers the repeater sheet only) and its tap flow
+  /// chains straight into `filterWithinBlob`. Give the cell sheet that state
+  /// before propagating the null here.
   Future<List<Map<String, dynamic>>> fetchMapData({
     required String zone,
     required double lat,
     required double lon,
     required double radiusMeters,
-  }) {
-    return _fetchCoveragePoints(
+  }) async {
+    final points = await _fetchCoveragePoints(
       zone: zone,
       label: 'map_data',
       body: {
@@ -1103,13 +1181,17 @@ class ApiService {
         'radius': radiusMeters,
       },
     );
+    return points ?? const <Map<String, dynamic>>[];
   }
 
   /// Fetch the coverage points referencing a repeater (a hex-prefix superset),
   /// for the repeater detail sheet's BIDIR/TX/RX/DISC/DEAD totals + max range.
-  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`. Returns `[]`
-  /// on any failure.
-  Future<List<Map<String, dynamic>>> fetchRepeaterCoverage({
+  /// Posts to `app_coverage.php` → `api.php` `repeater_coverage`.
+  ///
+  /// Returns `null` when the request could not be answered, and `[]` when the
+  /// zone genuinely has nothing for this prefix. The sheet renders those
+  /// differently (MeshMapper_Server#109).
+  Future<List<Map<String, dynamic>>?> fetchRepeaterCoverage({
     required String zone,
     required String prefix,
   }) {
@@ -1124,8 +1206,14 @@ class ApiService {
   }
 
   /// Shared POST to `https://<zone>.meshmapper.net/app_coverage.php` with the app
-  /// key in the JSON body. Returns a list of point maps, or `[]` on any failure.
-  Future<List<Map<String, dynamic>>> _fetchCoveragePoints({
+  /// key in the JSON body.
+  ///
+  /// Returns the point maps on success, which may legitimately be an EMPTY list
+  /// meaning the server has no coverage for this query, or `null` when the
+  /// request could not be answered at all. Callers MUST keep those apart:
+  /// collapsing them into `[]` was MeshMapper_Server#109, where a failed fetch
+  /// rendered as a repeater that had heard nothing.
+  Future<List<Map<String, dynamic>>?> _fetchCoveragePoints({
     required String zone,
     required String label,
     required Map<String, dynamic> body,
@@ -1152,13 +1240,13 @@ class ApiService {
                 : response.body);
         debugWarn(
             '[COVERAGE]   $label HTTP ${response.statusCode} in ${secs}s: $snippet');
-        return [];
+        return null;
       }
 
       final decoded = json.decode(response.body);
       if (decoded is! List) {
         debugWarn('[COVERAGE]   $label: unexpected response (not a JSON list)');
-        return [];
+        return null;
       }
       final points = decoded
           .whereType<Map>()
@@ -1169,7 +1257,7 @@ class ApiService {
     } catch (e) {
       debugWarn(
           '[COVERAGE]   $label POST failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
-      return [];
+      return null;
     }
   }
 

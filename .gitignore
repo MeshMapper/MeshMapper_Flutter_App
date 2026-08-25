@@ -82,6 +82,9 @@ drive_route_map*.html
 # Build metadata written by Build.sh (machine-specific)
 .last_build
 
+# Local TestFlight "What to Test" scratch text picked up by set_whats_new.sh
+WhatToTest.txt
+
 # Claude Code
 .claude/
 CLAUDE.md

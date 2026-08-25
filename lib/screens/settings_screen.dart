@@ -1701,9 +1701,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: const Text('Enable Anonymous Mode?'),
         content: Text(
           'Your device will be renamed to "Anonymous" for all mesh pings. '
-          'Other mesh users will not see your companion name.\n\n'
-          'Your public key is still used to authenticate your session, but '
-          'neither your sessions nor your pings are linked to it on the server.\n\n'
+          'Other mesh users will not see your companion name, and you will '
+          'not appear on the public leaderboard.\n\n'
+          'Your public key is still sent to authenticate your session, and '
+          'your sessions and pings are still recorded against it. Anonymous '
+          'Mode hides your name. It does not hide your device.\n\n'
           '${isConnected ? 'Your device will disconnect and reconnect automatically.\n\n' : ''}'
           'If the app crashes or BLE disconnects unexpectedly, your device '
           'may remain named "Anonymous" until you reconnect and properly disconnect. '
@@ -2821,9 +2823,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case PortalLinkStatus.skipped:
       case PortalLinkStatus.failed:
         // A manual tap deserves feedback even though the automatic path is
-        // deliberately silent.
-        AppToast.error(context, 'Could not link right now — try again later');
+        // deliberately silent. When the portal named a wait, say it: retrying
+        // inside the block only re-arms a fresh penalty.
+        final wait = outcome.retryAfter;
+        if (wait != null) {
+          AppToast.warning(context,
+              'Too many attempts. Try again in ${_waitLabel(wait)}.');
+        } else {
+          AppToast.error(context, 'Could not link right now — try again later');
+        }
     }
+  }
+
+  /// Round a backoff up to a whole unit the user can act on.
+  String _waitLabel(Duration wait) {
+    if (wait.inSeconds < 60) return '${wait.inSeconds}s';
+    return '${(wait.inSeconds / 60).ceil()} min';
   }
 
   Future<void> _unlinkPortalDevice(
@@ -2841,8 +2856,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       BuildContext context, AppStateProvider appState) async {
     await appState.refreshPortalAccount(force: true);
     if (!context.mounted) return;
+    // A rate-limited refresh makes no request, so the count below would be the
+    // same stale number every tap, which reads as a dead button and invites
+    // more tapping. Every tap during a block extends it server-side.
+    final backoff = appState.portalRefreshBackoff;
+    if (backoff != null) {
+      AppToast.error(context,
+          'Too many refreshes. Try again in ${_formatBackoff(backoff)}.');
+      return;
+    }
     AppToast.simple(
         context, '${appState.portalLinkedDeviceCount} linked device(s)');
+  }
+
+  /// Rounded up: telling someone to wait "0 minutes" is worse than telling
+  /// them to wait a beat longer than they have to.
+  String _formatBackoff(Duration backoff) {
+    if (backoff.inSeconds < 60) return '${backoff.inSeconds + 1} seconds';
+    final minutes = (backoff.inSeconds / 60).ceil();
+    return minutes == 1 ? '1 minute' : '$minutes minutes';
   }
 
   Future<void> _resetPortalDeclines(
