@@ -12,6 +12,9 @@
 # Fallback if a future Xcode breaks this path (altool is deprecated but still ships):
 #   xcrun altool --upload-app -f <ipa> -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 #
+# The TestFlight "What to Test" text is not part of the archive and cannot be set
+# here. Run ./set_whats_new.sh after this, once App Store Connect registers the build.
+#
 # Usage: ./upload_ios.sh [path/to/Runner.xcarchive]
 
 set -e
@@ -60,3 +63,6 @@ xcodebuild -exportArchive \
 
 echo ""
 echo "Upload accepted. The build appears in TestFlight after Apple-side processing (~5-15 min)."
+echo ""
+echo "To set the TestFlight \"What to Test\" text for this build:"
+echo "  ./set_whats_new.sh --notes-file <file>"

@@ -27,6 +27,11 @@ void main() {
     });
   }
 
+  /// Requests to one route. A successful sign-in runs `token` and then `me`,
+  /// so a bare request count no longer means "exchanged exactly once".
+  int callsTo(String action) =>
+      requests.where((r) => r.url.queryParameters['action'] == action).length;
+
   PortalAccountService buildService(MockClient client) => PortalAccountService(
         client: client,
         store: store,
@@ -107,8 +112,8 @@ void main() {
       await service.handleAuthCallback(
           Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
 
-      expect(requests.length, 1);
-      final request = requests.single;
+      expect(callsTo('token'), 1);
+      final request = requests.first;
       expect(request.url.queryParameters['action'], 'token');
       expect(request.headers['Content-Type'],
           contains('application/x-www-form-urlencoded'));
@@ -123,7 +128,8 @@ void main() {
       expect(service.isSignedIn, isTrue);
       expect(service.account!.username, 'sparkgap');
       expect(service.account!.displayName, 'Spark Gap');
-      expect(changed, 1);
+      // Twice: the identity lands first, the device list right behind it.
+      expect(changed, 2);
     });
 
     test('ignores a state mismatch and makes zero HTTP calls', () async {
@@ -172,6 +178,50 @@ void main() {
       expect(errorCode, 'expired');
     });
 
+    test('a fresh sign-in fills in the linked-device list', () async {
+      // The exchange answers with the identity but no pubkeys, so the account
+      // card would read "0 device(s)" until the next radio connect ran `me`.
+      await seedPending('st4te');
+      final service = buildService(recordingClient((request) =>
+          request.url.queryParameters['action'] == 'me'
+              ? http.Response(
+                  jsonEncode({
+                    'ok': true,
+                    'user': {'id': 7, 'username': 'sparkgap'},
+                    'pubkeys': [
+                      {'pubkey': 'a' * 64},
+                      {'pubkey': 'b' * 64},
+                    ],
+                  }),
+                  200)
+              : http.Response(tokenBody(), 200)));
+
+      await service.handleAuthCallback(
+          Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
+
+      expect(requests.map((r) => r.url.queryParameters['action']).toList(),
+          ['token', 'me']);
+      expect(service.linkedPubkeys.length, 2);
+    });
+
+    test('a device list that fails still leaves the user signed in', () async {
+      await seedPending('st4te');
+      final completions = <bool>[];
+      final service = buildService(recordingClient((request) =>
+          request.url.queryParameters['action'] == 'me'
+              ? http.Response('boom', 500)
+              : http.Response(tokenBody(), 200)));
+      service.onSignInComplete = (success, _) => completions.add(success);
+
+      await service.handleAuthCallback(
+          Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
+
+      expect(completions, [true], reason: 'the sign-in itself succeeded');
+      expect(service.isSignedIn, isTrue);
+      expect(service.account!.username, 'sparkgap');
+      expect(service.linkedPubkeys, isEmpty);
+    });
+
     test('exchanges a given code only once', () async {
       await seedPending('st4te');
       final service =
@@ -184,7 +234,7 @@ void main() {
       await service.handleAuthCallback(uri);
       await service.handleAuthCallback(uri);
 
-      expect(requests.length, 1);
+      expect(callsTo('token'), 1);
     });
 
     test('a concurrent duplicate delivery still exchanges only once', () async {
@@ -211,7 +261,7 @@ void main() {
       gated.openGate();
       await Future.wait([first, second]);
 
-      expect(requests.length, 1,
+      expect(callsTo('token'), 1,
           reason: 'the portal burns a code on first use');
       expect(service.isSignedIn, isTrue);
       expect(gated.pendingReads, 1,
@@ -234,7 +284,7 @@ void main() {
       await service.handleAuthCallback(
           Uri.parse('meshmapper-auth://callback?code=${'a' * 64}&state=st4te'));
 
-      expect(requests.length, 1);
+      expect(callsTo('token'), 1);
       expect(service.isSignedIn, isTrue);
     });
 
@@ -874,6 +924,120 @@ void main() {
           recordingClient((_) => http.Response('{"ok":true}', 200)));
       await service.logout();
       expect(requests.single.headers['X-MM-App-Token'], 'f' * 64);
+    });
+
+    /// The backoff is what is LEFT of the block, so it lands a hair under the
+    /// granted duration. Anything that ran a real clock is close enough.
+    void expectBackoff(Duration? actual, Duration granted) {
+      expect(actual, isNotNull);
+      expect(actual!, lessThanOrEqualTo(granted));
+      expect(actual, greaterThan(granted - const Duration(seconds: 5)));
+    }
+
+    // Every 429 the portal sends is terminal and carries Retry-After. Its
+    // buckets slide with a rolling penalty, so a blocked call that gets
+    // retried re-arms a fresh block instead of letting the old one expire.
+    http.Response rateLimited({String? retryAfter}) => http.Response(
+          '{"error":"rate_limited"}',
+          429,
+          headers: {if (retryAfter != null) 'retry-after': retryAfter},
+        );
+
+    test('a 429 on me blocks the next refresh even when it is forced',
+        () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '600')));
+
+      expect(await service.refreshMe(), isFalse);
+      expect(requests.length, 1);
+
+      // force skips the local hourly throttle, never a server backoff.
+      expect(await service.refreshMe(force: true), isFalse);
+      expect(requests.length, 1,
+          reason: 'a blocked route must not be hit again');
+
+      expectBackoff(
+          service.rateLimitBackoff('me'), const Duration(seconds: 600));
+    });
+
+    test('a 429 is not a sign-out', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '600')));
+
+      await service.refreshMe();
+
+      expect(service.isSignedIn, isTrue);
+      expect(await store.readToken(), 'f' * 64);
+    });
+
+    test('a 429 with no Retry-After still blocks for the default', () async {
+      final service = await signedIn(recordingClient((_) => rateLimited()));
+
+      await service.refreshMe();
+
+      expectBackoff(service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
+    });
+
+    test('an unparseable Retry-After falls back to the default', () async {
+      final service = await signedIn(recordingClient(
+          (_) => rateLimited(retryAfter: 'Sun, 23 Aug 2026 21:00:00 GMT')));
+
+      await service.refreshMe();
+
+      expectBackoff(service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
+    });
+
+    test('an absurd Retry-After is clamped', () async {
+      final service = await signedIn(
+          recordingClient((_) => rateLimited(retryAfter: '99999999')));
+
+      await service.refreshMe();
+
+      expectBackoff(service.rateLimitBackoff('me'), PortalApi.maxRetryAfter);
+    });
+
+    test('logout does not retry a 429', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '300')));
+
+      await service.logout();
+
+      expect(requests.length, 1, reason: 'the retry would land in the block');
+      expect(service.isSignedIn, isFalse);
+    });
+
+    test('a 429 on nonce backs the whole link lane off', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '120')));
+
+      expect(await service.requestNonce('A' * 64), isNull);
+
+      expectBackoff(service.linkLaneBackoff, const Duration(seconds: 120));
+    });
+
+    test('a blocked route is not knocked on a second time', () async {
+      final service =
+          await signedIn(recordingClient((_) => rateLimited(retryAfter: '120')));
+
+      expect(await service.requestNonce('A' * 64), isNull);
+      expect(callsTo('nonce'), 1);
+
+      // The portal's bucket slides and a blocked request re-arms a FRESH
+      // penalty, so the second attempt must never leave the app.
+      expect(await service.requestNonce('A' * 64), isNull);
+      expect(callsTo('nonce'), 1);
+      expectBackoff(service.linkLaneBackoff, const Duration(seconds: 120));
+    });
+
+    test('a block on one route does not block another', () async {
+      final service = await signedIn(recordingClient((request) =>
+          request.url.queryParameters['action'] == 'nonce'
+              ? rateLimited(retryAfter: '120')
+              : http.Response('{"ok":true}', 200)));
+
+      expect(await service.requestNonce('A' * 64), isNull);
+      expect(await service.unlinkDevice('A' * 64), isTrue);
+      expect(callsTo('unlink'), 1);
     });
   });
 }

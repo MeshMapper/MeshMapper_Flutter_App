@@ -556,9 +556,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // would otherwise never re-run and the coverage layer would stay missing.
   String? _lastOverlayZoneCode;
   // Last coverage overlay opacity we pushed into MapLibre. Compared against
-  // the current preference in _buildMap to detect slider changes and apply
-  // them live via _applyCoverageOverlayOpacity (no layer rebuild needed).
+  // the current preference in _onCoverageOpacityNotify to detect slider
+  // changes and apply them live via _applyCoverageOverlayOpacity (no layer
+  // rebuild needed).
   double? _lastAppliedCoverageOpacity;
+  // Set while _onCoverageOpacityNotify has an apply in flight.
+  // _applyCoverageOverlayOpacity only records the new value AFTER both awaited
+  // setLayerProperties calls, and the listener runs on every provider notify
+  // (GPS at ~2 Hz, the passive-RX storm at 10-20/sec), so without this a single
+  // slider step fires duplicate platform calls and duplicate log lines for the
+  // whole round trip.
+  bool _coverageOpacityApplyInFlight = false;
   // Guard flag that coalesces multiple overlay-refresh triggers (zone and
   // pref changes) in the same frame into a single post-frame callback.
   // Without this, two watchers can schedule concurrent _refreshCoverageOverlay
@@ -827,6 +835,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // _handleGpsPosition. GPS notifies no longer bump mapRevision, so the map's
     // Selector doesn't rebuild on position.
     _patchProviderRef!.addListener(_onPositionNotify);
+    // Coverage overlay opacity is UI-only state that must not bump mapRevision
+    // (a rebuild per slider step would relayout the platform view), so it needs
+    // a direct listener too. See _onCoverageOpacityNotify.
+    _patchProviderRef!.addListener(_onCoverageOpacityNotify);
   }
 
   AppStateProvider? _patchProviderRef;
@@ -847,6 +859,44 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final appState = _patchProviderRef;
     if (appState == null || !mounted) return;
     _handleGpsPosition(appState);
+  }
+
+  /// Fires on every provider notify; pushes a changed coverage overlay opacity
+  /// straight into the live fill layers via the controller, no rebuild.
+  ///
+  /// This CANNOT be a build() watcher. The map is isolated behind the memoized
+  /// mapRevision Selector (home_screen._buildMapSelector) and the opacity
+  /// preference is UI-only state that deliberately does not bump mapRevision,
+  /// so build() never re-runs when the slider moves. The value then only
+  /// reached MapLibre on the next full overlay rebuild (#434).
+  ///
+  /// Skipped while ping focus mode is active (focus forces opacity to 0 and
+  /// _dismissPingFocus restores the preference value directly) and while a
+  /// tapped cell or an isolated repeater dims the backdrop, or this would
+  /// un-dim it mid-sheet.
+  void _onCoverageOpacityNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    if (!_isMapReady || !_styleLoaded) return;
+    if (_focusedPingLocation != null) return;
+    if (_coverageDimmedForCell || _coverageDimmedForRepeater) return;
+    if (_coverageOpacityApplyInFlight) return;
+    final wanted = appState.preferences.coverageOverlayOpacity;
+    if (_lastAppliedCoverageOpacity == null ||
+        _lastAppliedCoverageOpacity == wanted) {
+      return;
+    }
+    _coverageOpacityApplyInFlight = true;
+    _applyCoverageOverlayOpacity(wanted).whenComplete(() {
+      _coverageOpacityApplyInFlight = false;
+      if (!mounted) return;
+      // A slider step that landed mid-flight was dropped by the guard above.
+      // Re-check so the final value still lands when no further notify follows
+      // (e.g. sitting in Settings, not wardriving). Gated on the apply having
+      // actually succeeded: on failure _lastAppliedCoverageOpacity is unchanged
+      // and re-running would spin forever.
+      if (_lastAppliedCoverageOpacity == wanted) _onCoverageOpacityNotify();
+    });
   }
 
   @override
@@ -894,6 +944,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _patchProviderRef?.removeListener(_onPositionNotify);
+    _patchProviderRef?.removeListener(_onCoverageOpacityNotify);
     _tileLoadTimeoutTimer?.cancel();
     final controller = _mapController;
     if (controller != null) {
@@ -2068,24 +2119,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // (Session-patch application: direct provider listener
     // _onCoveragePatchNotify — see initState for why it's not a build watcher.)
 
-    // Detect coverage overlay opacity change (user dragged the slider in
-    // Settings → General) and push it to the live raster layer without
-    // rebuilding the whole overlay. Skipped while ping focus mode is active —
-    // focus forces opacity to 0 and _dismissPingFocus restores the preference
-    // value directly — and while a tapped cell dims the backdrop (_clearCellHighlight
-    // restores it on sheet close), or this would un-dim it mid-sheet.
-    final wantedOpacity = appState.preferences.coverageOverlayOpacity;
-    if (_isMapReady &&
-        _styleLoaded &&
-        _focusedPingLocation == null &&
-        !_coverageDimmedForCell &&
-        !_coverageDimmedForRepeater &&
-        _lastAppliedCoverageOpacity != null &&
-        _lastAppliedCoverageOpacity != wantedOpacity) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _applyCoverageOverlayOpacity(wantedOpacity);
-      });
-    }
+    // (Coverage overlay opacity: direct provider listener
+    // _onCoverageOpacityNotify, for the same reason. Opacity is UI-only state
+    // that must not bump mapRevision, so a build() watcher here would never
+    // run when the slider moves.)
 
     return Stack(
       children: [
@@ -3347,6 +3384,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final sourceId = _activeCoverageSourceId;
     _activeCoverageLayerId = null;
     _activeCoverageSourceId = null;
+    // No live layer means nothing is applied. Leaving this set would keep
+    // _onCoverageOpacityNotify calling into a guaranteed no-op on every notify
+    // while the overlay is off. _addCoverageOverlay sets it again.
+    _lastAppliedCoverageOpacity = null;
     if (layerId != null && sourceId != null) {
       await _removeCoverageLayerById(layerId, sourceId);
     }
@@ -7735,12 +7776,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       builder: (context, snap) {
         final loading = snap.connectionState != ConnectionState.done;
         final stats = snap.data;
-        final range = loading
-            ? '…'
-            : (stats?.maxRangeMeters != null
-                ? formatCoverageDistance(stats!.maxRangeMeters!,
-                    isImperial: isImperial)
-                : 'N/A');
+        // '?' rather than 'N/A' when the fetch could not be answered: 'N/A'
+        // means we asked and there is nothing. Tapping the pill opens the sheet,
+        // which explains it properly.
+        final String range;
+        if (loading) {
+          range = '…';
+        } else if (stats == null) {
+          range = '?';
+        } else if (stats.maxRangeMeters != null) {
+          range = formatCoverageDistance(stats.maxRangeMeters!,
+              isImperial: isImperial);
+        } else {
+          range = 'N/A';
+        }
         return Wrap(
           spacing: 14,
           runSpacing: 6,
@@ -9412,6 +9461,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         appState
             .fetchRepeaterCoveragePoints(prefix: repeater.id)
             .then<RepeaterStats?>((pts) {
+          // null means the points could not be fetched at all. Keep it null so
+          // the sheet can say so, rather than aggregating an empty list into a
+          // zeroed RepeaterStats that reads as "this repeater heard nothing"
+          // (MeshMapper_Server#109). An EMPTY list still aggregates normally:
+          // that is a real answer.
+          if (pts == null) {
+            debugWarn('[COVERAGE] repeater ${repeater.id} coverage '
+                'unavailable, not rendering it as zero coverage');
+            return null;
+          }
           final res =
               RepeaterStats.fromCoverageWithPoints(pts, repeater, lookup);
           // Feature B: draw this repeater's coverage cells + status-coloured
@@ -9653,12 +9712,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         final loading =
                             snap.connectionState != ConnectionState.done;
                         final stats = snap.data;
-                        final range = loading
-                            ? '…'
-                            : (stats?.maxRangeMeters != null
-                                ? formatCoverageDistance(stats!.maxRangeMeters!,
-                                    isImperial: isImperial)
-                                : 'N/A');
+                        // Three states: still loading, could not load, and
+                        // loaded (where a null range means nothing was heard).
+                        final String range;
+                        if (loading) {
+                          range = '…';
+                        } else if (stats == null) {
+                          range = 'Unavailable';
+                        } else if (stats.maxRangeMeters != null) {
+                          range = formatCoverageDistance(stats.maxRangeMeters!,
+                              isImperial: isImperial);
+                        } else {
+                          range = 'N/A';
+                        }
                         return _repRow(
                           context,
                           Icons.open_in_full,
@@ -9677,19 +9743,58 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 builder: (context, snap) {
                   final loading = snap.connectionState != ConnectionState.done;
                   final stats = snap.data;
+                  // Done with no stats means the fetch could not be answered.
+                  // Never fall through to the zero row here: that is the bug.
+                  if (!loading && stats == null) {
+                    // With no zone (Offline Mode, or not connected) there is
+                    // nothing to retry against: fetchRepeaterCoveragePoints
+                    // answers null without making a request, so a Retry button
+                    // would just loop on the same answer. Say why instead.
+                    final hasZone = (appState.zoneCode ?? '').isNotEmpty;
+                    // Pop with our own token: the result handler treats every
+                    // other value, a bare pop included, as a real close and
+                    // tears the selection down.
+                    return _coverageUnavailableRow(
+                      context,
+                      onRetry: hasZone
+                          ? () => Navigator.of(context).pop('retry')
+                          : null,
+                      message: hasZone
+                          ? "Couldn't load coverage"
+                          : 'Connect to load coverage',
+                    );
+                  }
                   String v(int? n) => loading ? '…' : '${n ?? 0}';
-                  return Row(
+                  final nothingRecorded = !loading && stats!.totalMatched == 0;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
-                          const Color(0xFF1E7E34)),
-                      _repeaterStatCell(
-                          context, 'TX', v(stats?.tx), const Color(0xFFFD7E14)),
-                      _repeaterStatCell(
-                          context, 'RX', v(stats?.rx), const Color(0xFF6F42C1)),
-                      _repeaterStatCell(context, 'DISC', v(stats?.disc),
-                          const Color(0xFF17A2B8)),
-                      _repeaterStatCell(context, 'DEAD', v(stats?.dead),
-                          const Color(0xFF6C757D)),
+                      Row(
+                        children: [
+                          _repeaterStatCell(context, 'BIDIR', v(stats?.bidir),
+                              const Color(0xFF1E7E34)),
+                          _repeaterStatCell(context, 'TX', v(stats?.tx),
+                              const Color(0xFFFD7E14)),
+                          _repeaterStatCell(context, 'RX', v(stats?.rx),
+                              const Color(0xFF6F42C1)),
+                          _repeaterStatCell(context, 'DISC', v(stats?.disc),
+                              const Color(0xFF17A2B8)),
+                          _repeaterStatCell(context, 'DEAD', v(stats?.dead),
+                              const Color(0xFF6C757D)),
+                        ],
+                      ),
+                      if (nothingRecorded) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'No coverage recorded yet',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ],
                   );
                 },
@@ -9700,7 +9805,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       ),
     ).then((result) {
       if (!mounted) return;
-      if (result == 'minimized') {
+      if (result == 'retry') {
+        // Re-open expanded with NO cachedStats, which re-runs the fetch. The
+        // selection stays isolated throughout, same as the minimize path.
+        debugLog('[COVERAGE] retrying coverage fetch for ${repeater.id}');
+        _showRepeaterDetails(repeater,
+            isDuplicate: isDuplicate,
+            regionHopBytesOverride: regionHopBytesOverride,
+            isolate: false,
+            expand: true);
+      } else if (result == 'minimized') {
         // Collapse back to the stats pill. The selection (and its coverage
         // cells/lines + tile dim) persists throughout pill<->sheet; it's torn
         // down only on a real close. Reuse the already-fetched stats so the pill
@@ -9747,6 +9861,49 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// One cell of the repeater's BIDIR/TX/RX/DISC/DEAD totals row.
+  /// Shown in place of the BIDIR/TX/RX/DISC/DEAD row when the coverage fetch
+  /// could not be answered at all. Distinct from a repeater that was looked up
+  /// successfully and simply has no coverage, which keeps the zero row plus a
+  /// "no coverage recorded yet" caption (MeshMapper_Server#109).
+  ///
+  /// [onRetry] re-enters the sheet with no cached future. The stats future is
+  /// cached per selection and handed to both the pill and the sheet, so
+  /// toggling between them would otherwise just re-render the same failure.
+  /// A null [onRetry] means there is nothing to retry against, so the row
+  /// states the reason rather than offering a button that cannot work.
+  Widget _coverageUnavailableRow(
+    BuildContext context, {
+    required VoidCallback? onRetry,
+    required String message,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.cloud_off, size: 16, color: scheme.onSurfaceVariant),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            message,
+            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+          ),
+        ),
+        if (onRetry != null) ...[
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: onRetry,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('Retry'),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _repeaterStatCell(
       BuildContext context, String label, String value, Color color) {
     return Expanded(
