@@ -12,11 +12,12 @@ struct ConnectLastMeshMapperCompanionIntent: AppIntent {
   static var supportedModes: IntentModes { .foreground(.dynamic) }
 
   @MainActor
-  func perform() async throws -> some IntentResult & ProvidesDialog {
+  func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
     let result = try await SiriIntentCoordinator.shared.execute(
       SiriCommand(kind: .connectLastCompanion)
     )
-    return .result(dialog: "\(result.message ?? Self.fallback(for: result))")
+    let message = result.message ?? Self.fallback(for: result)
+    return .result(value: message, dialog: "\(message)")
   }
 
   private static func fallback(for result: SiriCommandResult) -> String {

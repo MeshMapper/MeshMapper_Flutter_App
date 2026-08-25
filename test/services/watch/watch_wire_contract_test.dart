@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mesh_mapper/services/external_commands/external_command_models.dart';
+import 'package:mesh_mapper/services/external_commands/external_session_commands.dart';
 import 'package:mesh_mapper/services/live_activity/live_activity_models.dart';
 import 'package:mesh_mapper/services/watch/watch_bridge_service.dart';
 import 'package:mesh_mapper/services/watch/watch_models.dart';
@@ -496,7 +498,7 @@ void main() {
       bool txBlockedByOffline = false,
       bool txNotAllowed = false,
       bool floodTrafficEnabled = true,
-      String? transmitValidationReason,
+      ExternalCommandReason? transmitValidationReason,
     }) =>
         resolveSessionStartAvailability(
           isTransmitMode: isTransmitMode,
@@ -523,77 +525,6 @@ void main() {
 
     test('an unknown command is rejected rather than guessed at', () {
       expect(WatchCommandKind.fromWire('selfDestruct'), isNull);
-    });
-
-    test('a queued Stop cannot end a session it never saw', () {
-      // Stop is exempt from the transmit-age window, so it can arrive
-      // arbitrarily late — the phone out of range, the watch suspended mid
-      // transfer. That exemption assumed one session was as good as another.
-      // A Stop queued against A, delivered after A ended and B began, used to
-      // stop B silently, and the wearer found out by noticing that recording
-      // had halted.
-      final wrongSession = resolveWatchSessionCommandAdmission(
-        kind: WatchCommandKind.stopSession,
-        isSessionActive: true,
-        isSessionStarting: false,
-        requestedSessionId: 'session-a',
-        currentSessionId: 'session-b',
-      );
-      expect(wrongSession.shouldRun, isFalse);
-      expect(wrongSession.refusal, 'That session already ended');
-
-      final sameSession = resolveWatchSessionCommandAdmission(
-        kind: WatchCommandKind.stopSession,
-        isSessionActive: true,
-        isSessionStarting: false,
-        requestedSessionId: 'session-a',
-        currentSessionId: 'session-a',
-      );
-      expect(sameSession, (shouldRun: true, refusal: null));
-
-      // An older watch build names no session. It is admitted exactly as it
-      // was before the field existed, because refusing it would strand a
-      // wearer whose only Stop button the phone had stopped honouring.
-      final olderBuild = resolveWatchSessionCommandAdmission(
-        kind: WatchCommandKind.stopSession,
-        isSessionActive: true,
-        isSessionStarting: false,
-        currentSessionId: 'session-b',
-      );
-      expect(olderBuild, (shouldRun: true, refusal: null));
-    });
-
-    test('a Stop with nothing running stays a harmless no-op', () {
-      // Checked after the active-session gate on purpose. With no session, a
-      // mismatched id must not turn a silent no-op into a refusal for
-      // something that is already over — the wearer asked for stopped, and
-      // stopped is what they have.
-      final stop = resolveWatchSessionCommandAdmission(
-        kind: WatchCommandKind.stopSession,
-        isSessionActive: false,
-        isSessionStarting: false,
-        requestedSessionId: 'session-a',
-        currentSessionId: 'idle',
-      );
-
-      expect(stop, (shouldRun: false, refusal: null));
-    });
-
-    test('Start is idempotent while starting but Stop tells the truth', () {
-      final start = resolveWatchSessionCommandAdmission(
-        kind: WatchCommandKind.startSession,
-        isSessionActive: false,
-        isSessionStarting: true,
-      );
-      final stop = resolveWatchSessionCommandAdmission(
-        kind: WatchCommandKind.stopSession,
-        isSessionActive: false,
-        isSessionStarting: true,
-      );
-
-      expect(start, (shouldRun: false, refusal: null));
-      expect(stop.shouldRun, isFalse);
-      expect(stop.refusal, 'Still starting — try Stop again');
     });
 
     test('only the always-present watch projects shared Starting to idle', () {
@@ -638,6 +569,33 @@ void main() {
       );
 
       expect(result, (mode: null, refusal: null));
+    });
+
+    test('an old generic Start cannot inherit unsupported Trace mode', () {
+      expect(
+        resolveLegacyWatchStartMode(
+          currentMode: 'targeted',
+          isConnected: true,
+          txAllowed: true,
+        ),
+        'passive',
+      );
+      expect(
+        resolveLegacyWatchStartMode(
+          currentMode: 'hybrid',
+          isConnected: true,
+          txAllowed: true,
+        ),
+        'hybrid',
+      );
+      expect(
+        resolveLegacyWatchStartMode(
+          currentMode: 'active',
+          isConnected: true,
+          txAllowed: false,
+        ),
+        'passive',
+      );
     });
 
     test('diagnostics stay reachable exactly when they are needed', () {
@@ -767,7 +725,7 @@ void main() {
       final hybrid =
           startAvailability(isTransmitMode: true, floodTrafficEnabled: false);
       expect(hybrid.allowed, isFalse);
-      expect(hybrid.reason, 'Flood Traffic Off');
+      expect(hybrid.reason?.compactText, 'Flood Traffic Off');
 
       // Passive monitoring is not flood traffic. The phone's Passive button
       // sits outside the flood gate, so the wrist's must too — withdrawing it
@@ -793,13 +751,13 @@ void main() {
         'Ping in progress': startAvailability(isPingSending: true),
         'Listening for ping response': startAvailability(rxWindowActive: true),
         'Waiting for GPS lock': startAvailability(
-          transmitValidationReason: 'Waiting for GPS lock',
+          transmitValidationReason: ExternalCommandReason.waitingForGpsLock,
         ),
       };
 
       for (final entry in blocked.entries) {
         expect(entry.value.allowed, isFalse, reason: entry.key);
-        expect(entry.value.reason, entry.key);
+        expect(entry.value.reason?.compactText, entry.key);
       }
     });
 
@@ -809,7 +767,7 @@ void main() {
         isTransmitMode: false,
         txBlockedByOffline: true,
         txNotAllowed: true,
-        transmitValidationReason: 'Waiting for GPS lock',
+        transmitValidationReason: ExternalCommandReason.waitingForGpsLock,
       );
 
       expect(passive, (allowed: true, reason: null));
@@ -831,7 +789,7 @@ void main() {
 
       for (final entry in blocked.entries) {
         expect(entry.value.allowed, isFalse, reason: entry.key);
-        expect(entry.value.reason, entry.key);
+        expect(entry.value.reason?.compactText, entry.key);
       }
     });
   });
@@ -1643,10 +1601,10 @@ void main() {
           );
 
           expect(reply?['accepted'], isFalse);
-          expect(reply?['reason'], 'Took too long to reach iPhone');
+          expect(reply?['reason'], externalCommandExpiredReason);
           expect(handled, isEmpty,
               reason: 'an expired command must never reach admission');
-          expect(refusals, ['Took too long to reach iPhone'],
+          expect(refusals, [externalCommandExpiredReason],
               reason: 'the wearer is told why the tap did nothing');
         });
 
@@ -1751,9 +1709,9 @@ void main() {
         );
 
         expect(reply?['accepted'], isFalse);
-        expect(reply?['reason'], 'Took too long to reach iPhone');
+        expect(reply?['reason'], externalCommandExpiredReason);
         expect(handled, isEmpty);
-        expect(refusals, ['Took too long to reach iPhone']);
+        expect(refusals, [externalCommandExpiredReason]);
       });
 
       test('an older watch build sending no offset behaves exactly as before',

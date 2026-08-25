@@ -10,9 +10,18 @@ enum MeshMapperSessionMode: String, AppEnum {
     name: "MeshMapper Mode"
   )
   static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-    .passive: "Passive Discovery",
-    .active: "Active",
-    .hybrid: "Hybrid",
+    .passive: DisplayRepresentation(
+      title: "Passive Discovery",
+      synonyms: ["Passive", "Listen Only", "Receive Only"]
+    ),
+    .active: DisplayRepresentation(
+      title: "Active",
+      synonyms: ["Active Mapping"]
+    ),
+    .hybrid: DisplayRepresentation(
+      title: "Hybrid",
+      synonyms: ["Hybrid Mapping"]
+    ),
   ]
 
   var displayName: String {

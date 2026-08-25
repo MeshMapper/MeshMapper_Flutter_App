@@ -67,6 +67,16 @@ struct MeshMapperSiriObservation: Codable, Sendable {
   var observedAt: Date {
     Date(timeIntervalSince1970: Double(observedAtMs) / 1_000)
   }
+
+  var stableEntityIdentifier: String {
+    [
+      entityId ?? displayHexId,
+      String(observedAtMs),
+      kind,
+      direct ? "direct" : "routed",
+      String(hopCount),
+    ].joined(separator: "|")
+  }
 }
 
 struct MeshMapperSiriRepeater: Codable, Sendable {

@@ -1,6 +1,6 @@
 import '../../models/log_entry.dart';
 import '../../models/repeater.dart';
-import '../watch/watch_geo_builder.dart';
+import '../external_surfaces/geo/external_surface_geo_builder.dart';
 import '../watch/watch_models.dart';
 import 'siri_snapshot_models.dart';
 
@@ -8,6 +8,7 @@ class SiriSnapshotBuilder {
   const SiriSnapshotBuilder._();
 
   static const int maximumObservations = 64;
+  static const int maximumRepeaters = 64;
   static const Duration maximumObservationAge = Duration(hours: 2);
 
   static List<SiriRepeaterObservation> buildRecentHeard({
@@ -21,29 +22,18 @@ class SiriSnapshotBuilder {
     DateTime? now,
   }) {
     final cutoff = (now ?? DateTime.now()).subtract(maximumObservationAge);
-    final observations = <SiriRepeaterObservation>[];
+    final candidates = <_SiriObservationCandidate>[];
 
-    SiriRepeaterObservation observation({
-      required String displayId,
-      String? identity,
-      required DateTime observedAt,
-      required SiriObservationKind kind,
-      required bool direct,
-      required int hopCount,
-      required double latitude,
-      required double longitude,
-      double? snr,
-      int? rssi,
-    }) {
-      final normalizedId = displayId.toUpperCase();
-      final repeater = (identity == null
+    SiriRepeaterObservation resolve(_SiriObservationCandidate candidate) {
+      final normalizedId = candidate.displayId.toUpperCase();
+      final repeater = (candidate.identity == null
               ? null
-              : WatchGeoBuilder.resolveRepeater(
+              : ExternalSurfaceGeoBuilder.resolveRepeater(
                   repeaters: repeaters,
-                  id: identity,
+                  id: candidate.identity!,
                   hopBytes: hopBytes,
                 )) ??
-          WatchGeoBuilder.resolveRepeater(
+          ExternalSurfaceGeoBuilder.resolveRepeater(
             repeaters: repeaters,
             id: normalizedId,
             hopBytes: hopBytes,
@@ -51,30 +41,42 @@ class SiriSnapshotBuilder {
       final resolved = repeater != null;
       final hasDistance = resolved &&
           repeater.hasLocation &&
-          latitude.isFinite &&
-          longitude.isFinite;
+          repeater.lat.isFinite &&
+          repeater.lon.isFinite &&
+          candidate.latitude.isFinite &&
+          candidate.longitude.isFinite;
       return SiriRepeaterObservation(
         entityId: resolved
             ? '${repeater.iata ?? zoneCode ?? 'GLOBAL'}|${repeater.id}'
             : null,
         displayHexId: normalizedId,
         name: resolved && repeater.name != 'Unknown' ? repeater.name : null,
-        observedAt: observedAt,
-        kind: kind,
-        direct: direct,
-        hopCount: hopCount,
-        snr: snr,
-        rssi: rssi,
+        observedAt: candidate.observedAt,
+        kind: candidate.kind,
+        direct: candidate.direct,
+        hopCount: candidate.hopCount,
+        snr: candidate.snr?.isFinite == true ? candidate.snr : null,
+        rssi: candidate.rssi,
         distanceM: hasDistance
             ? WatchWire.distanceMeters(
-                latitude,
-                longitude,
+                candidate.latitude,
+                candidate.longitude,
                 repeater.lat,
                 repeater.lon,
               )
             : null,
-        repeaterLat: resolved && repeater.hasLocation ? repeater.lat : null,
-        repeaterLon: resolved && repeater.hasLocation ? repeater.lon : null,
+        repeaterLat: resolved &&
+                repeater.hasLocation &&
+                repeater.lat.isFinite &&
+                repeater.lon.isFinite
+            ? repeater.lat
+            : null,
+        repeaterLon: resolved &&
+                repeater.hasLocation &&
+                repeater.lat.isFinite &&
+                repeater.lon.isFinite
+            ? repeater.lon
+            : null,
         resolved: resolved,
       );
     }
@@ -82,7 +84,7 @@ class SiriSnapshotBuilder {
     for (final entry in txEntries) {
       if (entry.timestamp.isBefore(cutoff)) continue;
       for (final event in entry.events) {
-        observations.add(observation(
+        candidates.add(_SiriObservationCandidate(
           displayId: event.repeaterId,
           observedAt: entry.timestamp,
           kind: SiriObservationKind.txEcho,
@@ -95,7 +97,7 @@ class SiriSnapshotBuilder {
         ));
       }
       for (final event in entry.multiHopEvents) {
-        observations.add(observation(
+        candidates.add(_SiriObservationCandidate(
           displayId: event.repeaterId,
           observedAt: entry.timestamp,
           kind: SiriObservationKind.txEcho,
@@ -111,7 +113,7 @@ class SiriSnapshotBuilder {
 
     for (final entry in rxEntries) {
       if (entry.timestamp.isBefore(cutoff)) continue;
-      observations.add(observation(
+      candidates.add(_SiriObservationCandidate(
         displayId: entry.repeaterId,
         observedAt: entry.timestamp,
         kind: SiriObservationKind.passiveRx,
@@ -128,7 +130,7 @@ class SiriSnapshotBuilder {
       if (entry.timestamp.isBefore(cutoff)) continue;
       for (final node in entry.discoveredNodes
           .where((node) => node.nodeType == 'REPEATER')) {
-        observations.add(observation(
+        candidates.add(_SiriObservationCandidate(
           displayId: node.repeaterId,
           identity: node.pubkeyHex,
           observedAt: entry.timestamp,
@@ -145,7 +147,7 @@ class SiriSnapshotBuilder {
 
     for (final entry in traceEntries.where((entry) => entry.success)) {
       if (entry.timestamp.isBefore(cutoff)) continue;
-      observations.add(observation(
+      candidates.add(_SiriObservationCandidate(
         displayId: entry.targetRepeaterId,
         identity: entry.targetRepeaterId,
         observedAt: entry.timestamp,
@@ -159,32 +161,72 @@ class SiriSnapshotBuilder {
       ));
     }
 
-    observations.sort((a, b) => b.observedAt.compareTo(a.observedAt));
-    return observations.length > maximumObservations
-        ? observations.sublist(0, maximumObservations)
-        : observations;
+    // Identity resolution scans the zone catalogue. Rank and bound the cheap
+    // raw candidates first so a busy two-hour log pays that cost at most 64
+    // times rather than once per observation across all four histories.
+    candidates.sort((a, b) => b.observedAt.compareTo(a.observedAt));
+    return candidates.take(maximumObservations).map(resolve).toList(
+          growable: false,
+        );
   }
 
   static List<SiriRepeaterEntitySnapshot> buildRepeaterCatalog(
     List<Repeater> repeaters,
-  ) =>
-      repeaters
-          .map(
-            (repeater) => SiriRepeaterEntitySnapshot(
-              id: '${repeater.iata ?? 'GLOBAL'}|${repeater.id}',
-              name: repeater.name,
-              hexId: repeater.hexId.toUpperCase(),
-              zoneCode: repeater.iata,
-              isActive: repeater.isActive,
-              isNew: repeater.isNew,
-              serverLastHeard: repeater.lastHeard == 0
-                  ? null
-                  : DateTime.fromMillisecondsSinceEpoch(
-                      repeater.lastHeard * 1000,
-                    ),
-              latitude: repeater.hasLocation ? repeater.lat : null,
-              longitude: repeater.hasLocation ? repeater.lon : null,
-            ),
-          )
-          .toList(growable: false);
+  ) {
+    final ranked = List<Repeater>.of(repeaters)
+      ..sort((a, b) {
+        final active = (b.isActive ? 1 : 0).compareTo(a.isActive ? 1 : 0);
+        if (active != 0) return active;
+        final heard = b.lastHeard.compareTo(a.lastHeard);
+        return heard != 0 ? heard : a.id.compareTo(b.id);
+      });
+    return ranked.take(maximumRepeaters).map(
+      (repeater) {
+        final hasFiniteLocation = repeater.hasLocation &&
+            repeater.lat.isFinite &&
+            repeater.lon.isFinite;
+        return SiriRepeaterEntitySnapshot(
+          id: '${repeater.iata ?? 'GLOBAL'}|${repeater.id}',
+          name: repeater.name,
+          hexId: repeater.hexId.toUpperCase(),
+          zoneCode: repeater.iata,
+          isActive: repeater.isActive,
+          isNew: repeater.isNew,
+          serverLastHeard: repeater.lastHeard == 0
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(
+                  repeater.lastHeard * 1000,
+                ),
+          latitude: hasFiniteLocation ? repeater.lat : null,
+          longitude: hasFiniteLocation ? repeater.lon : null,
+        );
+      },
+    ).toList(growable: false);
+  }
+}
+
+class _SiriObservationCandidate {
+  const _SiriObservationCandidate({
+    required this.displayId,
+    this.identity,
+    required this.observedAt,
+    required this.kind,
+    required this.direct,
+    required this.hopCount,
+    required this.latitude,
+    required this.longitude,
+    this.snr,
+    this.rssi,
+  });
+
+  final String displayId;
+  final String? identity;
+  final DateTime observedAt;
+  final SiriObservationKind kind;
+  final bool direct;
+  final int hopCount;
+  final double latitude;
+  final double longitude;
+  final double? snr;
+  final int? rssi;
 }

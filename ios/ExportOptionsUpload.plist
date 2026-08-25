@@ -8,7 +8,7 @@
     <string>DQC6TNKG5P</string>
     <!-- Manual signing: Xcode's cloud signing is refused for the App Store Connect
          API key ("Cloud signing permission error"), even for bundle IDs that have
-         existed for years. The three profiles below are created once in the
+         existed for years. The four profiles below are created once in the
          developer portal and installed under
          ~/Library/MobileDevice/Provisioning Profiles/. -->
     <key>signingStyle</key>
@@ -23,6 +23,8 @@
         <string>MeshMapper LiveActivity AppStore</string>
         <key>net.meshmapper.app.watchkitapp</key>
         <string>MeshMapper Watch AppStore</string>
+        <key>net.meshmapper.app.appintents</key>
+        <string>MeshMapper AppIntents AppStore</string>
     </dict>
     <key>stripSwiftSymbols</key>
     <true/>

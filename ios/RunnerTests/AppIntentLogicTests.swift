@@ -55,7 +55,7 @@ final class AppIntentLogicTests: XCTestCase {
           "displayHexId": "A1B2C3D4",
           "name": "Ridge",
           "observedAtMs": 1787529590000,
-          "kind": "rx",
+          "kind": "passiveRx",
           "direct": true,
           "hopCount": 0,
           "snr": 7.5,
@@ -88,6 +88,10 @@ final class AppIntentLogicTests: XCTestCase {
     XCTAssertEqual(snapshot.session.id, "session-1")
     XCTAssertEqual(snapshot.recentHeard.first?.entityId, "repeater-1")
     XCTAssertEqual(snapshot.recentHeard.first?.repeaterLat, 37.1)
+    XCTAssertEqual(
+      snapshot.recentHeard.first?.stableEntityIdentifier,
+      "repeater-1|1787529590000|passiveRx|direct|0"
+    )
     XCTAssertFalse(json.contains("userLat"))
     XCTAssertFalse(json.contains("userLon"))
   }

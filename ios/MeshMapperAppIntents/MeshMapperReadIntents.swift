@@ -101,8 +101,11 @@ struct GetMeshMapperStatusIntent: AppIntent {
   }
 
   private static func relativeAge(_ age: TimeInterval) -> String {
-    if age < 60 { return "\(Int(age)) seconds ago" }
-    return "\(Int(age / 60)) minutes ago"
+    let seconds = max(Int(age), 0)
+    if seconds < 60 { return "\(seconds) seconds ago" }
+    if seconds < 60 * 60 { return "\(seconds / 60) minutes ago" }
+    if seconds < 24 * 60 * 60 { return "\(seconds / (60 * 60)) hours ago" }
+    return "\(seconds / (24 * 60 * 60)) days ago"
   }
 }
 
@@ -123,7 +126,7 @@ struct GetRecentlyHeardRepeatersIntent: AppIntent {
   @Parameter(title: "Sort By", default: .mostRecent)
   var sort: RepeaterSort
 
-  @Parameter(title: "Maximum Results", default: 3)
+  @Parameter(title: "Maximum Results", default: 3, inclusiveRange: (1, 5))
   var limit: Int
 
   func perform() async throws -> some IntentResult & ReturnsValue<[HeardRepeaterEntity]> & ProvidesDialog {
@@ -150,10 +153,16 @@ struct GetRecentlyHeardRepeatersIntent: AppIntent {
       }
     }
 
+    // The parameter range guides Siri/Shortcuts, while the clamp preserves
+    // safety for an older saved Shortcut carrying an out-of-range value.
     let requestedLimit = min(max(limit, 1), 5)
     let selected = Array(observations.prefix(requestedLimit))
-    let entities = selected.enumerated().map {
-      HeardRepeaterEntity(observation: $0.element, index: $0.offset)
+    let repeaterById = Dictionary(
+      snapshot.repeaters.map { ($0.id, $0) },
+      uniquingKeysWith: { existing, _ in existing }
+    )
+    let entities = selected.map {
+      HeardRepeaterEntity(observation: $0, repeaterById: repeaterById)
     }
     guard !selected.isEmpty else {
       return .result(

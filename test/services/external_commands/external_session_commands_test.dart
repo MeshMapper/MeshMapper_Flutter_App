@@ -101,20 +101,159 @@ void main() {
       }
       final trace = resolve(command(mode: 'targeted'));
       expect(trace.disposition, ExternalCommandDisposition.refused);
-      expect(trace.reason, 'Unsupported start mode');
+      expect(trace.reason?.compactText, 'Unsupported start mode');
+    });
+
+    test('voice refusal expands Passive Only with mode and next step', () {
+      final requested = command(mode: 'hybrid');
+      final completion = externalCommandCompletionForVoice(
+        command: requested,
+        completion: const ExternalCommandCompletion(
+          success: false,
+          disposition: ExternalCommandDisposition.refused,
+          message: ExternalCommandReason.passiveOnly,
+          sessionId: 'session-1',
+          mode: ExternalSessionMode.hybrid,
+        ),
+      );
+
+      expect(
+        completion.message?.compactText,
+        "Hybrid mode isn't available in this region. Start Passive Discovery instead.",
+      );
+      expect(completion.sessionId, 'session-1');
+      expect(completion.mode, ExternalSessionMode.hybrid);
+    });
+
+    test('voice presentation expands common compact admission labels', () {
+      final requested = command(mode: 'active');
+      final expected = <ExternalCommandReason, String>{
+        ExternalCommandReason.notConnected:
+            "MeshMapper isn't connected. Reconnect it, then try again.",
+        ExternalCommandReason.notConnectedToDevice:
+            "MeshMapper isn't connected. Reconnect it, then try again.",
+        ExternalCommandReason.stillStopping:
+            'MeshMapper is still stopping. Try again shortly.',
+        ExternalCommandReason.traceSessionActive:
+            'Stop the active Trace session before starting Active mode.',
+        ExternalCommandReason.alreadyStarting:
+            'MeshMapper is already starting a session.',
+        ExternalCommandReason.coolingDown:
+            'MeshMapper is cooling down. Try again shortly.',
+        ExternalCommandReason.waitFiveSeconds:
+            'MeshMapper is cooling down. Try again shortly.',
+        ExternalCommandReason.waitFifteenSeconds:
+            'MeshMapper is cooling down. Try again shortly.',
+        ExternalCommandReason.waitingForGpsLock:
+            'MeshMapper is waiting for a GPS fix. Try again shortly.',
+        ExternalCommandReason.selectAntennaOption:
+            'Select an antenna option in MeshMapper, then try again.',
+        ExternalCommandReason.selectAntennaOptionBeforePinging:
+            'Select an antenna option in MeshMapper, then try again.',
+        ExternalCommandReason.selectPowerLevel:
+            'Select a power level in MeshMapper, then try again.',
+        ExternalCommandReason.selectPowerLevelUnknownDevice:
+            'Select a power level in MeshMapper, then try again.',
+        ExternalCommandReason.offlineMode:
+            "Active mode isn't available in Offline Mode. Start Passive Discovery instead.",
+        ExternalCommandReason.passiveOnly:
+            "Active mode isn't available in this region. Start Passive Discovery instead.",
+        ExternalCommandReason.zoneAtCapacity:
+            "Active mode isn't available in this region. Start Passive Discovery instead.",
+        ExternalCommandReason.floodTrafficOff:
+            'Active mode requires Flood Traffic. Enable it or start Passive Discovery.',
+        ExternalCommandReason.pingInProgress:
+            'A ping is already in progress. Try again when it finishes.',
+        ExternalCommandReason.listeningForPingResponse:
+            'MeshMapper is listening for a response. Try again shortly.',
+        ExternalCommandReason.gpsDataStale:
+            'MeshMapper needs a current GPS position. Let location refresh, then retry.',
+        ExternalCommandReason.gpsAccuracyLow:
+            'GPS accuracy is too low. Try again when it improves.',
+        ExternalCommandReason.anotherOperationInProgress:
+            'Another radio operation is in progress. Try again shortly.',
+        ExternalCommandReason.stillStartingTryStopAgain:
+            'MeshMapper is still starting. Try Stop again shortly.',
+        ExternalCommandReason.sessionAlreadyEnded:
+            'That session already ended. There is nothing to stop.',
+        ExternalCommandReason.couldNotStart:
+            "MeshMapper couldn't start Active mode.",
+        ExternalCommandReason.couldNotStop:
+            "MeshMapper couldn't stop. Check the app for details.",
+        ExternalCommandReason.pingFailed:
+            "MeshMapper couldn't send the manual ping. Open the app for details.",
+        ExternalCommandReason.appClosing:
+            'MeshMapper is closing. Open it and try again.',
+      };
+
+      for (final entry in expected.entries) {
+        final completion = externalCommandCompletionForVoice(
+          command: requested,
+          completion: ExternalCommandCompletion(
+            success: false,
+            disposition: ExternalCommandDisposition.refused,
+            message: entry.key,
+          ),
+        );
+        expect(
+          completion.message?.compactText,
+          entry.value,
+          reason: entry.key.compactText,
+        );
+      }
+    });
+
+    test('voice presentation preserves already complete responses', () {
+      final requested = command(mode: 'passive');
+      const original = ExternalCommandCompletion(
+        success: true,
+        disposition: ExternalCommandDisposition.admitted,
+        message: ExternalCommandReason.other(
+          'MeshMapper started in Passive Discovery mode.',
+        ),
+      );
+
+      expect(
+        externalCommandCompletionForVoice(
+          command: requested,
+          completion: original,
+        ),
+        same(original),
+      );
     });
 
     test('duplicate Start and idle Stop are first-class no-ops', () {
       final duplicate = resolve(command(), active: true);
+      final duplicateStarting = resolve(command(), starting: true);
       final idleStop = resolve(command(
         kind: ExternalSessionCommandKind.stopSession,
         mode: null,
       ));
+      final stoppingWhileStarting = resolve(
+        command(
+          kind: ExternalSessionCommandKind.stopSession,
+          mode: null,
+        ),
+        starting: true,
+      );
 
       expect(duplicate.disposition, ExternalCommandDisposition.noOp);
-      expect(duplicate.reason, contains('already running'));
+      expect(duplicate.reason?.compactText, contains('already running'));
+      expect(duplicateStarting.disposition, ExternalCommandDisposition.noOp);
+      expect(
+        duplicateStarting.reason?.compactText,
+        contains('already starting'),
+      );
       expect(idleStop.disposition, ExternalCommandDisposition.noOp);
-      expect(idleStop.reason, contains("isn't"));
+      expect(idleStop.reason?.compactText, contains("isn't"));
+      expect(
+        stoppingWhileStarting.disposition,
+        ExternalCommandDisposition.refused,
+      );
+      expect(
+        stoppingWhileStarting.reason?.compactText,
+        'Still starting — try Stop again',
+      );
     });
 
     test('Stop cannot terminate a newer session', () {
@@ -129,7 +268,27 @@ void main() {
       );
 
       expect(admission.disposition, ExternalCommandDisposition.refused);
-      expect(admission.reason, 'That session already ended');
+      expect(admission.reason?.compactText, 'That session already ended');
+
+      final sameSession = resolve(
+        command(
+          kind: ExternalSessionCommandKind.stopSession,
+          mode: null,
+          sessionId: 'session-b',
+        ),
+        active: true,
+        currentSessionId: 'session-b',
+      );
+      final olderWatch = resolve(
+        command(
+          kind: ExternalSessionCommandKind.stopSession,
+          mode: null,
+        ),
+        active: true,
+        currentSessionId: 'session-b',
+      );
+      expect(sameSession.disposition, ExternalCommandDisposition.admitted);
+      expect(olderWatch.disposition, ExternalCommandDisposition.admitted);
     });
 
     test('Stop is age exempt but Start and Manual Ping expire', () {
@@ -150,8 +309,8 @@ void main() {
         active: true,
       );
 
-      expect(start.reason, 'Took too long to reach iPhone');
-      expect(ping.reason, 'Took too long to reach iPhone');
+      expect(start.reason?.compactText, externalCommandExpiredReason);
+      expect(ping.reason?.compactText, externalCommandExpiredReason);
       expect(stop.disposition, ExternalCommandDisposition.admitted);
     });
 

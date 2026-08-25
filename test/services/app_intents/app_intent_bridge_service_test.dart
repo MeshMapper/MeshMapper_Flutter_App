@@ -14,19 +14,15 @@ void main() {
     late MethodChannel channel;
     late AppIntentBridgeService bridge;
     late List<Map<Object?, Object?>> published;
-    var clearCalls = 0;
 
     setUp(() {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       channel = const MethodChannel('meshmapper/app_intents_test');
       published = [];
-      clearCalls = 0;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
         if (call.method == 'publishSnapshot') {
           published.add(call.arguments as Map<Object?, Object?>);
-        } else if (call.method == 'clearSnapshot') {
-          clearCalls++;
         }
         return null;
       });
@@ -76,7 +72,9 @@ void main() {
         return const ExternalCommandCompletion(
           success: true,
           disposition: ExternalCommandDisposition.admitted,
-          message: 'MeshMapper started in Passive Discovery mode.',
+          message: ExternalCommandReason.other(
+            'MeshMapper started in Passive Discovery mode.',
+          ),
           sessionId: 'session-1',
           mode: ExternalSessionMode.passive,
         );
@@ -101,6 +99,51 @@ void main() {
       expect(calls, 1);
     });
 
+    test('concurrent duplicate mutations share one in-flight execution',
+        () async {
+      var calls = 0;
+      final released = Completer<void>();
+      bridge.attachCommandHandler((command) async {
+        calls++;
+        await released.future;
+        return const ExternalCommandCompletion(
+          success: true,
+          disposition: ExternalCommandDisposition.admitted,
+          message: ExternalCommandReason.other('Connected'),
+        );
+      });
+
+      final first = sendCommand('command-concurrent');
+      final duplicate = sendCommand('command-concurrent');
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, 1);
+
+      released.complete();
+      expect(await duplicate, await first);
+      expect(calls, 1);
+    });
+
+    test('concurrent duplicates share the same handler failure refusal',
+        () async {
+      var calls = 0;
+      final released = Completer<void>();
+      bridge.attachCommandHandler((command) async {
+        calls++;
+        await released.future;
+        throw StateError('failed once');
+      });
+
+      final first = sendCommand('command-concurrent-failure');
+      final duplicate = sendCommand('command-concurrent-failure');
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, 1);
+
+      released.complete();
+      expect(await duplicate, await first);
+      expect(await first, containsPair('message', 'Command failed'));
+      expect(calls, 1);
+    });
+
     test('wrong-source and malformed commands fail closed', () async {
       bridge.attachCommandHandler((_) async => throw StateError('not called'));
 
@@ -118,7 +161,9 @@ void main() {
         return const ExternalCommandCompletion(
           success: true,
           disposition: ExternalCommandDisposition.admitted,
-          message: 'MeshMapper connected to Test Radio.',
+          message: ExternalCommandReason.other(
+            'MeshMapper connected to Test Radio.',
+          ),
         );
       });
 
@@ -141,20 +186,70 @@ void main() {
             'session': {'active': active},
           };
 
-      bridge.schedule(() => snapshot(1), immediate: true);
+      var builds = 0;
+      Map<String, Object?> build(int updatedAtMs, {bool active = false}) {
+        builds++;
+        return snapshot(updatedAtMs, active: active);
+      }
+
+      bridge.schedule(
+        () => build(1),
+        preflightKeyBuilder: () => 'idle',
+        immediate: true,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 10));
-      bridge.schedule(() => snapshot(2), immediate: true);
+      bridge.schedule(
+        () => build(2),
+        preflightKeyBuilder: () => 'idle',
+        immediate: true,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 10));
-      bridge.schedule(() => snapshot(3, active: true), immediate: true);
+      bridge.schedule(
+        () => build(3, active: true),
+        preflightKeyBuilder: () => 'active',
+        immediate: true,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
+      expect(builds, 2,
+          reason: 'an unchanged preflight must skip the expensive builder');
       expect(published, hasLength(2));
       expect((published.last['session'] as Map)['active'], isTrue);
     });
 
-    test('clearSnapshot uses the independent App Intents channel', () async {
-      await bridge.clearSnapshot();
-      expect(clearCalls, 1);
+    test('preflight dedupe starts only after a snapshot is published',
+        () async {
+      var attempts = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method != 'publishSnapshot') return null;
+        attempts++;
+        if (attempts == 1) {
+          throw PlatformException(code: 'not-written');
+        }
+        published.add(call.arguments as Map<Object?, Object?>);
+        return null;
+      });
+
+      var builds = 0;
+      Map<String, Object?> build() {
+        builds++;
+        return {'version': 1, 'updatedAtMs': builds};
+      }
+
+      for (var delivery = 0; delivery < 3; delivery++) {
+        bridge.schedule(
+          build,
+          preflightKeyBuilder: () => 'unchanged',
+          immediate: true,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+
+      expect(attempts, 2);
+      expect(builds, 2,
+          reason: 'a refused first publish must not arm preflight dedupe');
+      expect(published, hasLength(1));
     });
   });
 }
