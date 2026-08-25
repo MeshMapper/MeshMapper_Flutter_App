@@ -7096,11 +7096,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _savePreferences();
   }
 
-  /// Set coverage overlay opacity (0.3–1.0) and persist.
-  /// MapWidget watches `preferences.coverageOverlayOpacity` and applies the
-  /// new value to the raster layer at runtime via setLayerProperties, so the
-  /// overlay fades live as the slider moves. Lower bound of 0.3 prevents the
-  /// overlay from disappearing entirely.
+  /// Set coverage overlay opacity (0.3 to 1.0) and persist.
+  /// This is UI-only state and must NOT bump mapRevision: a rebuild per slider
+  /// step would relayout the map platform view. MapWidget picks the new value
+  /// up through its direct provider listener (`_onCoverageOpacityNotify`) and
+  /// pushes it into the live fill layers via setLayerProperties, so the overlay
+  /// fades without a rebuild. A build() watcher cannot do this, because the map
+  /// sits behind the mapRevision Selector and never rebuilds here (#434).
+  /// Lower bound of 0.3 prevents the overlay from disappearing entirely.
   void setCoverageOverlayOpacity(double opacity) {
     final clamped = opacity.clamp(0.3, 1.0);
     _preferences = _preferences.copyWith(coverageOverlayOpacity: clamped);
