@@ -503,12 +503,40 @@ class PingService {
     return _manualPingCooldownTimer.remainingSec;
   }
 
+  /// Set when a deadline gate refused a transmission.
+  ///
+  /// Lets a caller tell "the radio never keyed up because I had already given
+  /// up" apart from the ordinary reasons a send is skipped — cooldown, failed
+  /// validation, no GPS. Only the former abandons a start or earns a spoken
+  /// "took too long"; the rest keep their own reasons. Reset on entry to every
+  /// gated path, so it always describes the send just attempted.
+  bool _transmitAbortedByDeadline = false;
+
+  bool get transmitAbortedByDeadline => _transmitAbortedByDeadline;
+
+  /// Whether the surface waiting on this transmission has already given up.
+  ///
+  /// Call at the last suspension point before an RF send. Every send path here
+  /// awaits a fresh GPS fix first, and that fix can outlive the deadline an
+  /// external surface is holding a person on.
+  bool _deadlinePassed(bool Function()? shouldAbortBeforeTransmit) {
+    if (!(shouldAbortBeforeTransmit?.call() ?? false)) return false;
+    _transmitAbortedByDeadline = true;
+    debugLog('[PING] Deadline passed before transmit — not sending');
+    return true;
+  }
+
   /// Send a TX ping
   /// @param manual - Whether this is a manual ping (true) or auto ping (false)
+  /// @param shouldAbortBeforeTransmit - Deadline gate for an external caller
   /// Returns true if ping was sent successfully
   /// Reference: sendPing() in wardrive.js
-  Future<bool> sendTxPing({bool manual = true}) async {
+  Future<bool> sendTxPing({
+    bool manual = true,
+    bool Function()? shouldAbortBeforeTransmit,
+  }) async {
     debugLog('[PING] sendTxPing called (manual=$manual)');
+    _transmitAbortedByDeadline = false;
 
     // Guard: don't send pings if connection is not in connected state
     // Handles race where timer callback fires after reconnect started
@@ -532,6 +560,24 @@ class PingService {
       // where the device is NOW, not where it was at the last stream event.
       if (!manual) {
         await _gpsService.getFreshPosition();
+      }
+
+      // The transport parks a non-sign write behind an in-progress sign, and
+      // that wait is unbounded — it would happen inside the send call below,
+      // after the TxPing record exists and past everything checkable here. Take
+      // it now, while abandoning still costs nothing.
+      if (shouldAbortBeforeTransmit != null) {
+        await _connection.awaitWritableState();
+      }
+
+      // Last suspension point before the transmission: with the write gate
+      // already open, nothing below this awaits until the BLE send. Checking
+      // here rather than at the send itself is the same instant in wall-clock
+      // terms and leaves no TxPing record and no consumed wire-tag counter
+      // behind for a ping that never went out.
+      if (_deadlinePassed(shouldAbortBeforeTransmit)) {
+        _pingInProgress = false;
+        return false;
       }
 
       // Use different validation and cooldown for manual vs auto pings
@@ -1026,9 +1072,14 @@ class PingService {
   }
 
   /// Helper to send initial auto ping with error handling
-  Future<void> _sendInitialAutoPing() async {
+  Future<void> _sendInitialAutoPing({
+    bool Function()? shouldAbortBeforeTransmit,
+  }) async {
     try {
-      await sendTxPing(manual: false);
+      await sendTxPing(
+        manual: false,
+        shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
+      );
     } catch (e) {
       debugLog('[ACTIVE MODE] Initial auto ping error: $e');
       // Even on error, schedule next ping
@@ -1043,11 +1094,18 @@ class PingService {
   /// @param hybridMode - If true, alternates discovery + TX pings each interval
   /// @param targetedMode - If true, sends trace path to specific repeater
   /// @param targetRepeaterId - Repeater ID hex string (required when targetedMode=true)
+  /// @param shouldAbortBeforeTransmit - Deadline gate for an external caller
+  ///
+  /// The gate lets an external surface holding a person on a deadline — Siri —
+  /// abandon the start if that deadline passes before the session's first
+  /// transmission. A session must never come up after the surface has already
+  /// reported that it did not.
   Future<bool> enableAutoPing({
     bool passiveMode = false,
     bool hybridMode = false,
     bool targetedMode = false,
     String? targetRepeaterId,
+    bool Function()? shouldAbortBeforeTransmit,
   }) async {
     debugLog(
         '[AUTO] enableAutoPing called (passiveMode=$passiveMode, hybridMode=$hybridMode, targetedMode=$targetedMode)');
@@ -1079,6 +1137,7 @@ class PingService {
 
     // Clear any previous skip reason
     _skipReason = null;
+    _transmitAbortedByDeadline = false;
 
     _autoPingEnabled = true;
     _passiveModeEnabled = passiveMode;
@@ -1104,22 +1163,66 @@ class PingService {
       // Hybrid Mode: set up discovery infrastructure, then start with discovery
       debugLog(
           '[HYBRID] Hybrid Mode started - alternating discovery + TX pings');
-      await _startDiscoveryMode();
+      await _startDiscoveryMode(
+        shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
+      );
       // First ping was discovery, so next should be TX
       _nextPingIsDiscovery = false;
     } else if (passiveMode) {
       // Passive Mode: send discovery requests instead of TX pings
       debugLog(
           '[PASSIVE MODE] Passive Mode started - using discovery protocol');
-      await _startDiscoveryMode();
+      await _startDiscoveryMode(
+        shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
+      );
     } else {
       // Active Mode: send first ping immediately, then schedule timer
       // Reference: sendPing(false) called immediately in startAutoPing() in wardrive.js
       debugLog('[ACTIVE MODE] Sending initial auto ping');
-      _sendInitialAutoPing();
+      if (shouldAbortBeforeTransmit == null) {
+        _sendInitialAutoPing();
+      } else {
+        // Awaited only on the deadline-carrying path, so the ordinary start
+        // keeps returning as soon as the first ping is on its way.
+        await _sendInitialAutoPing(
+          shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
+        );
+      }
+    }
+
+    if (_transmitAbortedByDeadline) {
+      await _abandonAutoPingStart();
+      return false;
     }
 
     return true;
+  }
+
+  /// Unwind a start whose deadline passed before the first transmission.
+  ///
+  /// Mirrors the teardown in [disableAutoPing] without its cooldown and
+  /// pending-disable handling: nothing was transmitted, so there is no RX
+  /// window to let finish and no cooldown to earn.
+  Future<void> _abandonAutoPingStart() async {
+    debugLog('[AUTO] Abandoning start — caller gave up before first transmit');
+    _autoTimer?.cancel();
+    _autoTimer = null;
+    _skipReason = null;
+
+    if (_passiveModeEnabled || _hybridModeEnabled) {
+      _stopDiscoveryMode();
+    }
+    if (_targetedModeEnabled) {
+      _stopTargetedMode();
+    }
+
+    _autoPingEnabled = false;
+    _passiveModeEnabled = false;
+    _hybridModeEnabled = false;
+    _targetedModeEnabled = false;
+    _nextPingIsDiscovery = true;
+
+    await _wakelockService.disable();
   }
 
   /// Disable auto-ping mode (Active Mode or Passive Mode)
@@ -1208,7 +1311,9 @@ class PingService {
   // ============================================
 
   /// Start discovery mode - subscribes to control data and sends discovery requests
-  Future<void> _startDiscoveryMode() async {
+  Future<void> _startDiscoveryMode({
+    bool Function()? shouldAbortBeforeTransmit,
+  }) async {
     debugLog('[DISC] Starting discovery mode');
 
     // Create and configure discovery tracker
@@ -1256,7 +1361,9 @@ class PingService {
     });
 
     // Send first discovery request immediately
-    await _sendDiscoveryRequest();
+    await _sendDiscoveryRequest(
+      shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
+    );
   }
 
   /// Stop discovery mode - cleans up tracker and subscription
@@ -1275,7 +1382,13 @@ class PingService {
   }
 
   /// Send a discovery request and start listening window
-  Future<void> _sendDiscoveryRequest() async {
+  ///
+  /// [shouldAbortBeforeTransmit] is supplied only for the session's first
+  /// discovery. Later requests come from timers and belong to the session
+  /// itself, so no external deadline applies to them.
+  Future<void> _sendDiscoveryRequest({
+    bool Function()? shouldAbortBeforeTransmit,
+  }) async {
     // Guard: don't send discovery during reconnect (race with timer queue)
     if (_connection.currentStep != ConnectionStep.connected) {
       debugLog(
@@ -1290,6 +1403,21 @@ class PingService {
 
     // Request fresh GPS position before discovery (same rationale as TX auto-ping)
     final position = await _gpsService.getFreshPosition();
+
+    // As in sendTxPing: the transport parks a non-sign write behind an
+    // in-progress sign, so take that wait here rather than inside the send.
+    if (shouldAbortBeforeTransmit != null) {
+      await _connection.awaitWritableState();
+    }
+
+    // Ahead of every early return below, not just of the send: those returns
+    // schedule a retry, so a caller that has already given up would otherwise
+    // get a session that transmits on the next tick anyway.
+    if (_deadlinePassed(shouldAbortBeforeTransmit)) {
+      _pingInProgress = false;
+      return;
+    }
+
     if (position == null) {
       debugLog('[DISC] No GPS position, skipping discovery request');
       _pingInProgress = false;

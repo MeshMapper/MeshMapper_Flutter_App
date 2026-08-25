@@ -170,6 +170,24 @@ class SiriSnapshotBuilder {
         );
   }
 
+  /// Counts distinct repeaters heard since [sessionStartedAt].
+  ///
+  /// [maximumObservationAge] bounds the cache, not a session: a two-hour
+  /// history routinely spans several sessions, so counting all of it would let
+  /// a session that has heard nothing report the previous one's repeaters.
+  /// A null start means no session is running, which counts as none.
+  static int countUniqueRepeatersHeard(
+    List<SiriRepeaterObservation> observations,
+    DateTime? sessionStartedAt,
+  ) {
+    if (sessionStartedAt == null) return 0;
+    return observations
+        .where((item) => !item.observedAt.isBefore(sessionStartedAt))
+        .map((item) => item.entityId ?? 'unresolved:${item.displayHexId}')
+        .toSet()
+        .length;
+  }
+
   static List<SiriRepeaterEntitySnapshot> buildRepeaterCatalog(
     List<Repeater> repeaters,
   ) {

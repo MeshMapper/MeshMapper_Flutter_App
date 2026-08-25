@@ -14,6 +14,7 @@ void main() {
       ),
       session: SiriSessionSnapshot(
         id: 'session-1',
+        startedAt: at.subtract(const Duration(minutes: 4)),
         active: true,
         starting: false,
         mode: 'hybrid',
@@ -87,6 +88,7 @@ void main() {
     });
     expect((snapshot['session']! as Map).keys.toSet(), {
       'id',
+      'startedAtMs',
       'active',
       'starting',
       'mode',

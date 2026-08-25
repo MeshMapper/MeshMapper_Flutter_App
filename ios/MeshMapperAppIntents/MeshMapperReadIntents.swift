@@ -1,6 +1,23 @@
 import AppIntents
 import Foundation
 
+/// How the read-only intents decide whether the cached snapshot is recent
+/// enough to speak about in the present tense.
+///
+/// The App Group file deliberately outlives Runner, so every "currently" or
+/// "this session" claim has to be checked against `updatedAt` first.
+enum MeshMapperSnapshotFreshness {
+  static let currentClaimLimit: TimeInterval = 5 * 60
+
+  static func relativeAge(_ age: TimeInterval) -> String {
+    let seconds = max(Int(age), 0)
+    if seconds < 60 { return "\(seconds) seconds ago" }
+    if seconds < 60 * 60 { return "\(seconds / 60) minutes ago" }
+    if seconds < 24 * 60 * 60 { return "\(seconds / (60 * 60)) hours ago" }
+    return "\(seconds / (24 * 60 * 60)) days ago"
+  }
+}
+
 @available(iOS 26.0, *)
 enum RecentHeardWindow: String, AppEnum {
   case lastFiveMinutes
@@ -18,6 +35,10 @@ enum RecentHeardWindow: String, AppEnum {
     .currentSession: "Current Session",
   ]
 
+  /// Nil for `.currentSession`, which is bounded by the session's own start
+  /// rather than by a span. Treating that nil as "no boundary" is what made
+  /// Current Session silently mean "everything cached"; resolve it against the
+  /// snapshot instead.
   var duration: TimeInterval? {
     switch self {
     case .lastFiveMinutes: return 5 * 60
@@ -61,7 +82,8 @@ struct GetMeshMapperStatusIntent: AppIntent {
     }
 
     let age = Date().timeIntervalSince(snapshot.updatedAt)
-    if age > 5 * 60, snapshot.session.active || snapshot.session.starting {
+    if age > MeshMapperSnapshotFreshness.currentClaimLimit,
+       snapshot.session.active || snapshot.session.starting {
       return .result(
         dialog: "MeshMapper's last session update is too old to report as current. Open the app to refresh it."
       )
@@ -69,7 +91,7 @@ struct GetMeshMapperStatusIntent: AppIntent {
 
     let prefix: String
     if age >= 30 {
-      prefix = "As of \(Self.relativeAge(age)), "
+      prefix = "As of \(MeshMapperSnapshotFreshness.relativeAge(age)), "
     } else {
       prefix = ""
     }
@@ -98,14 +120,6 @@ struct GetMeshMapperStatusIntent: AppIntent {
 
   private static func modeName(_ mode: String) -> String {
     mode == "passive" ? "Passive Discovery" : mode.capitalized
-  }
-
-  private static func relativeAge(_ age: TimeInterval) -> String {
-    let seconds = max(Int(age), 0)
-    if seconds < 60 { return "\(seconds) seconds ago" }
-    if seconds < 60 * 60 { return "\(seconds / 60) minutes ago" }
-    if seconds < 24 * 60 * 60 { return "\(seconds / (60 * 60)) hours ago" }
-    return "\(seconds / (24 * 60 * 60)) days ago"
   }
 }
 
@@ -138,10 +152,33 @@ struct GetRecentlyHeardRepeatersIntent: AppIntent {
     }
 
     let now = Date()
-    var observations = snapshot.recentHeard.filter { observation in
-      guard let duration = timeWindow.duration else { return true }
-      return now.timeIntervalSince(observation.observedAt) <= duration
+    // "Current Session" is a session boundary, not the absence of one. The
+    // cached history spans two hours regardless of how many sessions ran in it,
+    // so without the session's own start there is nothing to filter against.
+    let cutoff: Date
+    if timeWindow == .currentSession {
+      let age = now.timeIntervalSince(snapshot.updatedAt)
+      guard age <= MeshMapperSnapshotFreshness.currentClaimLimit else {
+        return .result(
+          value: [],
+          dialog: "MeshMapper's last update is too old to say what the current session has heard. Open the app to refresh it."
+        )
+      }
+      guard snapshot.session.active || snapshot.session.starting,
+            let startedAt = snapshot.session.startedAt
+      else {
+        return .result(
+          value: [],
+          dialog: "No MeshMapper mapping session is running."
+        )
+      }
+      cutoff = startedAt
+    } else {
+      cutoff = timeWindow.duration.map { now.addingTimeInterval(-$0) }
+        ?? .distantPast
     }
+
+    var observations = snapshot.recentHeard.filter { $0.observedAt >= cutoff }
     switch sort {
     case .mostRecent:
       observations.sort { $0.observedAtMs > $1.observedAtMs }
@@ -165,16 +202,42 @@ struct GetRecentlyHeardRepeatersIntent: AppIntent {
       HeardRepeaterEntity(observation: $0, repeaterById: repeaterById)
     }
     guard !selected.isEmpty else {
+      let scope = timeWindow == .currentSession
+        ? "yet in this session"
+        : "in that time window"
       return .result(
         value: [],
-        dialog: "MeshMapper didn't hear any repeaters in that time window."
+        dialog: "MeshMapper hasn't heard any repeaters \(scope)."
       )
     }
 
-    let spoken = selected.prefix(3).map(Self.spokenObservation).joined(separator: ", ")
-    let lead = selected.count == 1 ? "The result was" : "The results were"
-    return .result(value: entities, dialog: "\(lead) \(spoken).")
+    // Naming every result would outstay its welcome when this is heard through
+    // AirPods with nothing on screen, but silently dropping the rest would make
+    // the spoken answer disagree with the returned value. Say how many are left.
+    let spokenCount = min(selected.count, Self.maximumSpokenResults)
+    let spoken = selected
+      .prefix(spokenCount)
+      .map(Self.spokenObservation)
+      .joined(separator: ", ")
+    let remaining = selected.count - spokenCount
+    let lead: String
+    if selected.count == 1 {
+      lead = "The result was"
+    } else if remaining > 0 {
+      lead = "The first \(spokenCount) were"
+    } else {
+      lead = "The results were"
+    }
+    let tail: String
+    switch remaining {
+    case 0: tail = ""
+    case 1: tail = " There is 1 more result."
+    default: tail = " There are \(remaining) more results."
+    }
+    return .result(value: entities, dialog: "\(lead) \(spoken).\(tail)")
   }
+
+  private static let maximumSpokenResults = 3
 
   private static func spokenObservation(_ observation: MeshMapperSiriObservation) -> String {
     let identity = observation.name ?? "repeater \(observation.displayHexId)"
@@ -193,7 +256,13 @@ struct GetRecentlyHeardRepeatersIntent: AppIntent {
 
 @available(iOS 26.0, *)
 struct FindMeshMapperRepeaterIntent: AppIntent {
-  static let title: LocalizedStringResource = "Find MeshMapper Repeater"
+  // Named for what it can actually search. The App Group catalog holds the
+  // active and most recently heard repeaters, not every repeater MeshMapper has
+  // loaded, so a broader name would fail unpredictably on the ones it omits.
+  static let title: LocalizedStringResource = "Find Recent MeshMapper Repeater"
+  static let description = IntentDescription(
+    "Looks up one of the active or recently heard repeaters MeshMapper has cached, and says how current that reading is."
+  )
   static var authenticationPolicy: IntentAuthenticationPolicy { .alwaysAllowed }
   static var supportedModes: IntentModes { .background }
 
@@ -201,11 +270,33 @@ struct FindMeshMapperRepeaterIntent: AppIntent {
   var repeater: RepeaterEntity
 
   func perform() async throws -> some IntentResult & ReturnsValue<RepeaterEntity> & ProvidesDialog {
-    let status = repeater.isActive ? "active" : "stale"
+    let snapshot = try? MeshMapperSiriSnapshotStore.shared.read()
+    // Prefer the catalog's own record: a saved Shortcut can carry an entity
+    // resolved long ago, and its captured state is what would otherwise be
+    // spoken as "currently".
+    let current = snapshot?.repeaters.first { $0.id == repeater.id }
+    let status = (current?.isActive ?? repeater.isActive) ? "active" : "stale"
     let zone = repeater.zoneCode.map { " in \($0)" } ?? ""
+    let identity = "\(repeater.name) is repeater \(repeater.hexId)\(zone)"
+
+    // The snapshot deliberately outlives Runner, so it can be days old. Only
+    // claim the present tense when it is recent enough to mean anything.
+    guard let snapshot else {
+      return .result(
+        value: repeater,
+        dialog: "\(identity). Open MeshMapper to see whether it's still active."
+      )
+    }
+    let age = Date().timeIntervalSince(snapshot.updatedAt)
+    guard age <= MeshMapperSnapshotFreshness.currentClaimLimit else {
+      return .result(
+        value: repeater,
+        dialog: "\(identity). When MeshMapper last updated \(MeshMapperSnapshotFreshness.relativeAge(age)), it was \(status)."
+      )
+    }
     return .result(
       value: repeater,
-      dialog: "\(repeater.name) is repeater \(repeater.hexId)\(zone), and is currently \(status)."
+      dialog: "\(identity), and is currently \(status)."
     )
   }
 }
@@ -234,7 +325,7 @@ struct MeshMapperReadAppShortcuts: AppShortcutsProvider {
     AppShortcut(
       intent: FindMeshMapperRepeaterIntent(),
       phrases: [
-        "Find a repeater in \(.applicationName)",
+        "Find a recent repeater in \(.applicationName)",
       ],
       shortTitle: "Find Repeater",
       systemImageName: "magnifyingglass"

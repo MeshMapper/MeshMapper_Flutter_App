@@ -23,6 +23,9 @@ struct MeshMapperSiriConnection: Codable, Sendable {
 
 struct MeshMapperSiriSession: Codable, Sendable {
   let id: String?
+  /// Additive and optional, so a snapshot written by an older build still
+  /// decodes; nil simply means "no session boundary is known".
+  let startedAtMs: Int64?
   let active: Bool
   let starting: Bool
   let mode: String
@@ -37,6 +40,10 @@ struct MeshMapperSiriSession: Codable, Sendable {
   let traceCount: Int
   let queueSize: Int
   let uniqueRepeatersHeard: Int
+
+  var startedAt: Date? {
+    startedAtMs.map { Date(timeIntervalSince1970: Double($0) / 1_000) }
+  }
 }
 
 struct MeshMapperSiriControls: Codable, Sendable {

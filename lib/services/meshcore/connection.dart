@@ -1039,6 +1039,22 @@ class MeshCoreConnection {
     await _write(data.toBytes());
   }
 
+  /// Completes once an outbound non-sign write would not be parked.
+  ///
+  /// [_write] queues non-sign frames behind an in-progress sign, and that wait
+  /// is deliberately unbounded — a queued command is delayed, never failed.
+  /// Signing allows five seconds per protocol phase and the chunk phase loops,
+  /// so a caller working to a deadline that simply calls a send method can have
+  /// its frame reach the wire long after that deadline, with nothing left to
+  /// check by then. Awaiting this first moves the wait to a point where
+  /// abandoning is still free and leaves no half-built transmission behind.
+  Future<void> awaitWritableState() async {
+    final gate = _signGate;
+    if (gate == null || gate.isCompleted) return;
+    debugLog('[CONN] Caller waiting out an in-progress sign before deciding');
+    await gate.future;
+  }
+
   // ============================================
   // Command Methods (ported from connection.js)
   // ============================================

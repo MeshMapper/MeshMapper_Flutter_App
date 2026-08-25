@@ -11,10 +11,17 @@ ExternalCommandAdmission resolveLastCompanionConnection({
   required bool canReconnectWithoutUserInput,
   DateTime? now,
 }) {
-  final ageRefusal = externalCommandTimestampRefusal(
-    command.issuedAt,
-    now: now,
-  );
+  // The deadline comes first: it is the instant the intent actually stops
+  // waiting, and it is set when the command reaches Dart rather than when it
+  // was created, so it can differ from the shared age rule in both directions.
+  final ageRefusal = externalCommandDeadlineRefusal(
+        command.expiresAt,
+        now: now,
+      ) ??
+      externalCommandTimestampRefusal(
+        command.issuedAt,
+        now: now,
+      );
   if (ageRefusal != null) {
     return ExternalCommandAdmission(
       disposition: ExternalCommandDisposition.refused,

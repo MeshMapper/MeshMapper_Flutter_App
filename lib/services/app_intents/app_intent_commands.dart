@@ -34,6 +34,7 @@ class AppIntentCommand {
     required this.id,
     required this.kind,
     required this.issuedAt,
+    this.expiresAt,
     this.mode,
     this.sessionId,
   });
@@ -41,6 +42,11 @@ class AppIntentCommand {
   final String id;
   final AppIntentCommandKind kind;
   final DateTime issuedAt;
+
+  /// When the App Intent stops waiting and reports failure to the person.
+  ///
+  /// Older native builds omit it; the shared age rule still bounds those.
+  final DateTime? expiresAt;
   final String? mode;
   final String? sessionId;
 
@@ -60,13 +66,20 @@ class AppIntentCommand {
     if (parsedKind == null) return null;
     final mode = map['mode'];
     final sessionId = map['sessionId'];
+    final expiresAtMs = map['expiresAtMs'];
     if (mode != null && mode is! String) return null;
     if (sessionId != null && sessionId is! String) return null;
+    if (expiresAtMs != null && expiresAtMs is! num) return null;
 
     return AppIntentCommand(
       id: id,
       kind: parsedKind,
       issuedAt: DateTime.fromMillisecondsSinceEpoch(issuedAtMs.toInt()),
+      expiresAt: expiresAtMs == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(
+              (expiresAtMs as num).toInt(),
+            ),
       mode: mode as String?,
       sessionId: sessionId as String?,
     );
@@ -80,6 +93,7 @@ class AppIntentCommand {
       source: ExternalCommandSource.siri,
       kind: sessionKind,
       issuedAt: issuedAt,
+      expiresAt: expiresAt,
       mode: mode,
       sessionId: sessionId,
     );
