@@ -265,6 +265,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   AutoMode _autoMode = AutoMode.active;
   DateTime? _idleAutoStopReference;
   static const Duration _autoStopIdleTimeout = Duration(minutes: 30);
+  // Anchor walk backing the idle auto-stop, mirroring the server's stationary
+  // guard (stationary_guard.php sg_walk, SG_RADIUS_M / SG_STREAK_N) so a polite
+  // client stops itself before the server revokes the session.
+  double? _idleAnchorLat;
+  double? _idleAnchorLon;
+  int _idleAnchorEscapeStreak = 0;
+  static const double _idleAnchorRadiusMeters = 150;
+  static const int _idleAnchorStreakRequired = 3;
   bool _isPingSending = false; // True immediately when ping button clicked
   bool _autoPingStarting =
       false; // True while an auto mode is starting (before the first notify)
@@ -1239,15 +1247,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Lazy tap-to-inspect: fetch the coverage points referencing a repeater
-  /// (hex-prefix superset) from the current zone's app endpoint. Returns `[]`
-  /// when there is no zone or on failure. The caller aggregates these into the
-  /// repeater's BIDIR/TX/RX/DISC/DEAD totals + max range.
-  Future<List<Map<String, dynamic>>> fetchRepeaterCoveragePoints({
+  /// (hex-prefix superset) from the current zone's app endpoint. The caller
+  /// aggregates these into the repeater's BIDIR/TX/RX/DISC/DEAD totals + max
+  /// range.
+  ///
+  /// Returns `null` when the points could not be fetched (no zone yet, or the
+  /// request failed) and `[]` when the zone genuinely has nothing for this
+  /// prefix. Keeping those apart is MeshMapper_Server#109: a stale zone list
+  /// leaves the previous zone's markers tappable after the zone flips, and that
+  /// must not read as "this repeater heard nothing".
+  Future<List<Map<String, dynamic>>?> fetchRepeaterCoveragePoints({
     required String prefix,
   }) {
     final zone = zoneCode;
     if (zone == null || zone.isEmpty) {
-      return Future.value(const <Map<String, dynamic>>[]);
+      debugWarn('[COVERAGE] repeater points requested with no zone, '
+          'reporting unavailable rather than empty');
+      return Future.value(null);
     }
     return _apiService.fetchRepeaterCoverage(zone: zone, prefix: prefix);
   }
@@ -1300,17 +1316,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Effective flood-traffic visibility: region veto wins over user pref.
   bool get floodTrafficEnabled =>
       !_apiService.floodDisabled && _preferences.floodTrafficEnabled;
-
-  /// One-shot flag: true when the user had flood traffic enabled and the
-  /// region forced it off on auth/zone-change. UI shows a dialog, then calls
-  /// [clearFloodDisabledAlert].
-  bool _floodDisabledAlertPending = false;
-  bool get floodDisabledAlertPending => _floodDisabledAlertPending;
-  void clearFloodDisabledAlert() {
-    if (!_floodDisabledAlertPending) return;
-    _floodDisabledAlertPending = false;
-    notifyListeners();
-  }
 
   int get minModeInterval => _apiService.minModeInterval;
   bool get enforceHopBytes => _apiService.enforceHopBytes;
@@ -2942,9 +2947,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     // Set up session error callback for auto-disconnect
-    _apiService.onSessionError = (reason, message) async {
-      debugError('[APP] Session error from API: $reason - $message');
-      await handleSessionError(reason, message);
+    _apiService.onSessionError = (reason, message, {subReason}) async {
+      debugError('[APP] Session error from API: $reason'
+          '${subReason != null ? ' ($subReason)' : ''} - $message');
+      await handleSessionError(reason, message, subReason: subReason);
+    };
+
+    // A new session id makes every wire tag already queued under the old one
+    // undeliverable (auto-reconnect preserves the queue across re-auth). Drop
+    // those pings honestly instead of uploading claims the server will skip
+    // while reporting success.
+    _apiService.onSessionIdChanged = () {
+      unawaited(_apiQueueService.dropStaleTaggedItems());
     };
 
     // Set up maintenance mode callback (for connected state)
@@ -3416,6 +3430,58 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Connection
   // ============================================
 
+  /// Derive the reported power from the radio that is connecting, before /auth
+  /// is told about it.
+  ///
+  /// _postConnectionSetup does this too, but it runs after
+  /// MeshCoreConnection.connect() returns, and /auth is Step 6 *inside* that
+  /// call. So on the first connect with a different radio the session opened
+  /// carrying the previous radio's wattage, alongside the new radio's model
+  /// string. It looked fixed on the next connect only because the preference
+  /// had been corrected by then (#426).
+  ///
+  /// Precedence matches _postConnectionSetup: the model's rating, then the
+  /// user's saved override for this radio. With neither, the power is not
+  /// configured, and saying so is what makes the app ask instead of quietly
+  /// reporting whatever the last radio used.
+  void _applyConnectingDevicePower(String? deviceName) {
+    final model = _meshCoreConnection?.deviceModel;
+    final overrideKey = _isAnonymousRenamed ? _originalDeviceName : deviceName;
+    final saved =
+        overrideKey == null ? null : _devicePowerOverrides[overrideKey];
+
+    if (saved != null) {
+      _preferences = _preferences.copyWith(
+        powerLevel: (saved['powerLevel'] as num).toDouble(),
+        txPower: (saved['txPower'] as num).toInt(),
+        autoPowerSet: false,
+        powerLevelSet: true,
+      );
+      debugLog('[MODEL] Reporting saved override for "$overrideKey": '
+          '${saved['powerLevel']}W');
+    } else if (model != null) {
+      _preferences = _preferences.copyWith(
+        powerLevel: model.power,
+        txPower: model.txPower,
+        autoPowerSet: true,
+        powerLevelSet: false,
+      );
+      debugLog(
+          '[MODEL] Reporting ${model.power}W for ${model.shortName} at auth');
+    } else {
+      // Unrecognized radio with nothing saved. Carrying the previous device's
+      // flags here would both report its wattage and suppress the prompt that
+      // asks the user to set one.
+      _preferences = _preferences.copyWith(
+        autoPowerSet: false,
+        powerLevelSet: false,
+      );
+      debugWarn('[MODEL] Unrecognized radio and no saved power, asking the '
+          'user rather than reusing the last one');
+    }
+    notifyListeners();
+  }
+
   /// Creates the two-stage auth callback for MeshCoreConnection Step 6.
   /// Shared by all transport types (BLE, TCP, USB Serial).
   Future<Map<String, dynamic>?> Function() _createAuthCallback() {
@@ -3500,6 +3566,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           'message': 'Could not retrieve device name'
         };
       }
+
+      // The radio is identified by now, so report ITS power, not whatever the
+      // last one left in preferences (#426).
+      _applyConnectingDevicePower(deviceName);
 
       // Stage 1: Try existing public_key authentication
       debugLog(
@@ -4308,7 +4378,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[CONN] Discovery drop force-enabled by regional admin');
     }
 
-    final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
     final shouldEnableFlood = !_apiService.floodDisabled;
     if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
       _preferences =
@@ -4317,10 +4386,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           ? '[CONN] Flood traffic auto-enabled (region permits)'
           : '[CONN] Flood traffic disabled by regional admin');
     }
-    if (wasFloodEnabledByUser && _apiService.floodDisabled) {
-      _floodDisabledAlertPending = true;
-    }
-
     if (_preferences.autoPingInterval < _apiService.minModeInterval) {
       _preferences =
           _preferences.copyWith(autoPingInterval: _apiService.minModeInterval);
@@ -4584,16 +4649,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _liveActivityOperation = null;
       _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
 
-      if (skipReason != null) {
-        if (_preferences.autoStopAfterIdle && _idleAutoStopReference != null) {
-          final elapsed = DateTime.now().difference(_idleAutoStopReference!);
-          if (elapsed >= _autoStopIdleTimeout) {
-            _triggerIdleAutoStop();
-          }
-        }
-      } else {
-        _idleAutoStopReference = DateTime.now();
-      }
+      _updateIdleAutoStop();
     };
 
     _pingService!.onDiscPing = (entry) {
@@ -4819,7 +4875,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _apiService.disableHeartbeat();
 
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       _finishLiveActivitySession();
 
       debugLog('[APP] Pending disable cleanup complete, cooldown running');
@@ -5426,7 +5482,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _playDisconnectAlert();
       }
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       debugLog('[AUTO] Auto-ping disabled due to disconnect');
     }
 
@@ -5507,7 +5563,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxWindowTimer.stop();
     _cooldownTimer.stop();
     _autoPingEnabled = false;
-    _idleAutoStopReference = null;
+    _resetIdleAutoStop();
 
     // Stop heartbeat
     _apiService.disableHeartbeat();
@@ -5802,7 +5858,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_autoPingEnabled) {
       await _pingService?.forceDisableAutoPing();
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
     }
 
     // End noise floor session on disconnect
@@ -6101,6 +6157,67 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Advance the idle auto-stop anchor walk by one auto-ping tick.
+  ///
+  /// Mirrors `sg_walk` in the server's stationary_guard.php: a fix within
+  /// [_idleAnchorRadiusMeters] of the anchor leaves the clock running, and only
+  /// [_idleAnchorStreakRequired] CONSECUTIVE fixes beyond it re-anchor and rearm
+  /// (isolated jitter spikes are one or two wild points; real movement is every
+  /// point far). The old rule rearmed on any ping that wasn't skipped, so GPS
+  /// jitter clearing the 25 m send filter kept the 30 minutes topped up
+  /// indefinitely and the stop never fired indoors.
+  void _updateIdleAutoStop() {
+    if (!_preferences.autoStopAfterIdle) return;
+
+    final position = _currentPosition;
+    if (position == null) return;
+
+    final anchorLat = _idleAnchorLat;
+    final anchorLon = _idleAnchorLon;
+    if (anchorLat == null || anchorLon == null) {
+      _anchorIdleAutoStop(position);
+      return;
+    }
+
+    final distance = Geolocator.distanceBetween(
+        anchorLat, anchorLon, position.latitude, position.longitude);
+
+    if (distance > _idleAnchorRadiusMeters) {
+      _idleAnchorEscapeStreak++;
+      if (_idleAnchorEscapeStreak >= _idleAnchorStreakRequired) {
+        debugLog(
+            '[AUTO] Idle anchor moved: ${distance.toStringAsFixed(0)}m out, '
+            '$_idleAnchorEscapeStreak consecutive');
+        _anchorIdleAutoStop(position);
+        return;
+      }
+    } else {
+      _idleAnchorEscapeStreak = 0;
+    }
+
+    final reference = _idleAutoStopReference;
+    if (reference != null &&
+        DateTime.now().difference(reference) >= _autoStopIdleTimeout) {
+      _triggerIdleAutoStop();
+    }
+  }
+
+  /// Re-anchor the idle walk here and restart the idle clock.
+  void _anchorIdleAutoStop(Position position) {
+    _idleAnchorLat = position.latitude;
+    _idleAnchorLon = position.longitude;
+    _idleAnchorEscapeStreak = 0;
+    _idleAutoStopReference = DateTime.now();
+  }
+
+  /// Clear the idle auto-stop clock and its anchor (auto-ping stopped).
+  void _resetIdleAutoStop() {
+    _idleAutoStopReference = null;
+    _idleAnchorLat = null;
+    _idleAnchorLon = null;
+    _idleAnchorEscapeStreak = 0;
+  }
+
   /// Auto-stop auto-ping after prolonged idle (no movement)
   void _triggerIdleAutoStop() {
     if (!_autoPingEnabled) return;
@@ -6111,7 +6228,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[AUTO] Auto-stop triggered: idle for $elapsed minutes');
     logError('Auto-ping stopped: no movement for 30 minutes',
         severity: ErrorSeverity.warning, autoSwitch: false);
-    _idleAutoStopReference = null;
+    _resetIdleAutoStop();
     toggleAutoPing(_autoMode);
   }
 
@@ -6172,7 +6289,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _startIdleDisconnectTimer();
 
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       _finishLiveActivitySession();
 
       // Clear top-heard overlay on stop
@@ -6822,7 +6939,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // 9. Update state
     _autoPingEnabled = false;
-    _idleAutoStopReference = null;
+    _resetIdleAutoStop();
     _finishLiveActivitySession();
     debugLog('[APP] Auto-ping mode stopped gracefully');
     notifyListeners();
@@ -6855,6 +6972,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _switchToOnlineMode();
   }
 
+  /// Device name recorded on an offline session.
+  ///
+  /// Mirrors the live auth path (`who:`): a session captured while Anonymous
+  /// Mode is on uploads as "Anonymous" too. Recording the real name here
+  /// leaked it on a later sync, since the mode may well be off by then.
+  String? get _offlineDeviceName => _isAnonymousRenamed
+      ? 'Anonymous'
+      : (_meshCoreConnection?.selfInfo?.name ??
+          connectedDeviceName?.replaceFirst('MeshCore-', ''));
+
   /// Save accumulated offline pings to a session file
   Future<void> _saveOfflineSession() async {
     final pings = _apiQueueService.getAndClearOfflinePings();
@@ -6867,12 +6994,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Include device info for auth during upload (use real name, not "Anonymous" — sessions upload later)
+    // Include device info for auth during upload.
     // Note: Connection already validates device name exists, so this should never be null
-    final offlineDeviceName = _isAnonymousRenamed
-        ? _originalDeviceName
-        : (_meshCoreConnection?.selfInfo?.name ??
-            connectedDeviceName?.replaceFirst('MeshCore-', ''));
+    final offlineDeviceName = _offlineDeviceName;
     // Finalize the in-progress session (created by periodic auto-save) in place
     // rather than creating a new one — otherwise the auto-saved session and this
     // final save become two identical sessions at the same time. updateCurrentSession
@@ -6905,10 +7029,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final pings = _apiQueueService.getOfflinePingsSnapshot();
     if (pings.isEmpty) return;
 
-    final offlineDeviceName = _isAnonymousRenamed
-        ? _originalDeviceName
-        : (_meshCoreConnection?.selfInfo?.name ??
-            connectedDeviceName?.replaceFirst('MeshCore-', ''));
+    final offlineDeviceName = _offlineDeviceName;
 
     _offlineSessionService.updateCurrentSession(
       pings,
@@ -7491,11 +7612,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _savePreferences();
   }
 
-  /// Set coverage overlay opacity (0.3–1.0) and persist.
-  /// MapWidget watches `preferences.coverageOverlayOpacity` and applies the
-  /// new value to the raster layer at runtime via setLayerProperties, so the
-  /// overlay fades live as the slider moves. Lower bound of 0.3 prevents the
-  /// overlay from disappearing entirely.
+  /// Set coverage overlay opacity (0.3 to 1.0) and persist.
+  /// This is UI-only state and must NOT bump mapRevision: a rebuild per slider
+  /// step would relayout the map platform view. MapWidget picks the new value
+  /// up through its direct provider listener (`_onCoverageOpacityNotify`) and
+  /// pushes it into the live fill layers via setLayerProperties, so the overlay
+  /// fades without a rebuild. A build() watcher cannot do this, because the map
+  /// sits behind the mapRevision Selector and never rebuilds here (#434).
+  /// Lower bound of 0.3 prevents the overlay from disappearing entirely.
   void setCoverageOverlayOpacity(double opacity) {
     final clamped = opacity.clamp(0.3, 1.0);
     _preferences = _preferences.copyWith(coverageOverlayOpacity: clamped);
@@ -7650,7 +7774,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Handle API error codes with user-friendly messages
   /// Returns a user-friendly message for the error code
-  String _getErrorMessage(String? reason, String? serverMessage) {
+  String _getErrorMessage(String? reason, String? serverMessage,
+      {String? subReason}) {
+    // Stationary revoke: the server's message names the actual cause and the
+    // window it measured, which the hardcoded text below cannot. Show it as-is.
+    if (reason == 'session_revoked' &&
+        subReason == 'stationary' &&
+        serverMessage != null &&
+        serverMessage.isNotEmpty) {
+      return serverMessage;
+    }
     switch (reason) {
       case 'unknown_device':
         return 'Unknown device. Please advertise yourself on the mesh using the official MeshCore app.';
@@ -7700,8 +7833,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Handle session error from wardrive/heartbeat API calls
   /// This may trigger auto-disconnect
-  Future<void> handleSessionError(String? reason, String? message) async {
-    final userMessage = _getErrorMessage(reason, message);
+  Future<void> handleSessionError(String? reason, String? message,
+      {String? subReason}) async {
+    final userMessage = _getErrorMessage(reason, message, subReason: subReason);
+    final isStationaryRevoke =
+        reason == 'session_revoked' && subReason == 'stationary';
 
     // Session ping-counter exhausted (wire tag's 11-bit cap). The session is still
     // valid here, so flush the queue under it BEFORE disconnecting: clearOnDisconnect()
@@ -7739,9 +7875,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Log error
+    // Log error. A stationary revoke is the guard working as designed (a
+    // surveyor pacing one spot trips it), so it warns rather than alarms.
     debugError('[API] Session error: $reason - $userMessage');
-    logError(userMessage, severity: ErrorSeverity.error);
+    logError(userMessage,
+        severity: isStationaryRevoke
+            ? ErrorSeverity.warning
+            : ErrorSeverity.error);
 
     // Session errors that require disconnect
     const sessionErrors = {
@@ -7771,15 +7911,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         zoneErrors.contains(reason)) {
       debugLog('[API] Session error requires disconnect: $reason');
 
-      // Preserve queued wardrive data to offline storage before disconnect clears it
-      if (sessionErrors.contains(reason)) {
+      // Preserve queued wardrive data to offline storage before disconnect clears it.
+      // NOT on a stationary revoke: those pings were earned sitting still, and
+      // preserving them just re-uploads them through the offline path later,
+      // which is exactly what the guard exists to stop. disconnect() below
+      // clears the queue, so skipping the snapshot is the drop.
+      if (isStationaryRevoke) {
+        debugLog(
+            '[SESSION] Stationary revoke: dropping ${_apiQueueService.queueSize} queued pings instead of preserving them');
+      } else if (sessionErrors.contains(reason)) {
         try {
+          // Land the per-repeater RX batches in the queue FIRST. disconnect()
+          // below flushes them too, but only after this snapshot has been
+          // taken and right before it clears the queue, so without this the
+          // best observation for every currently audible repeater is lost.
+          await _rxLogger?.flushAllBatches(trigger: 'session_expiry');
+
           final queuedPings = await _apiQueueService.extractAllAsJson();
           if (queuedPings.isNotEmpty) {
-            final offlineDeviceName = _isAnonymousRenamed
-                ? _originalDeviceName
-                : (_meshCoreConnection?.selfInfo?.name ??
-                    connectedDeviceName?.replaceFirst('MeshCore-', ''));
+            final offlineDeviceName = _offlineDeviceName;
             await _offlineSessionService.saveSession(
               queuedPings,
               devicePublicKey: _devicePublicKey,
@@ -8273,7 +8423,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cooldownTimer.stop();
     if (_autoPingEnabled) {
       _autoPingEnabled = false;
-      _idleAutoStopReference = null;
+      _resetIdleAutoStop();
       await _pingService?.forceDisableAutoPing();
       debugLog('[ZONE GRACE] Auto-ping paused');
     }
@@ -8514,7 +8664,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _cooldownTimer.stop();
       if (_autoPingEnabled) {
         _autoPingEnabled = false;
-        _idleAutoStopReference = null;
+        _resetIdleAutoStop();
         await _pingService?.forceDisableAutoPing();
         debugLog('[ZONE] Auto-ping paused for zone transfer');
       }
@@ -8756,7 +8906,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _preferences = _preferences.copyWith(discDropEnabled: true);
         debugLog('[ZONE] Discovery drop force-enabled by new zone admin');
       }
-      final wasFloodEnabledByUser = _preferences.floodTrafficEnabled;
       final shouldEnableFlood = !_apiService.floodDisabled;
       if (_preferences.floodTrafficEnabled != shouldEnableFlood) {
         _preferences =
@@ -8764,9 +8913,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog(shouldEnableFlood
             ? '[ZONE] Flood traffic auto-enabled (new zone permits)'
             : '[ZONE] Flood traffic disabled by new zone admin');
-      }
-      if (wasFloodEnabledByUser && _apiService.floodDisabled) {
-        _floodDisabledAlertPending = true;
       }
       if (_preferences.autoPingInterval < _apiService.minModeInterval) {
         _preferences = _preferences.copyWith(
@@ -9636,6 +9782,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _portalAccountService.refreshMe(force: force);
   }
 
+  /// How long the portal has told us to stay off `me`, or null when a refresh
+  /// is free to run. The Settings refresh button reads this so a rate-limited
+  /// tap says so instead of re-printing a stale device count.
+  Duration? get portalRefreshBackoff =>
+      _portalAccountService.rateLimitBackoff('me');
+
   /// Clear every persisted decline AND every sign-unsupported verdict, so both
   /// kinds of suppressed radio are offered again.
   ///
@@ -9735,6 +9887,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return const PortalLinkOutcome(PortalLinkStatus.skipped);
     }
     debugLog('[ACCOUNT] Manual link requested for ${_pkPrefix(pubkey)}');
+
+    // The local ladder below is ours to clear; a block the SERVER asked for is
+    // not. Knocking on a live 429 re-arms a fresh penalty on the portal's
+    // sliding bucket, so an impatient tap would extend the user's own lockout.
+    final blocked = _portalAccountService.linkLaneBackoff;
+    if (blocked != null) {
+      debugLog('[ACCOUNT] Manual link blocked by portal for '
+          '${blocked.inSeconds}s');
+      return PortalLinkOutcome(PortalLinkStatus.failed, retryAfter: blocked);
+    }
+
     _portalLinkDeclinedDevices.remove(pubkey);
     _portalLinkAttempts.remove(pubkey);
     _portalLinkRetryAfter.remove(pubkey);
@@ -9901,7 +10064,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   PortalLinkOutcome _recordLinkFailure(String pubkey, String reason) {
     final attempts = (_portalLinkAttempts[pubkey] ?? 0) + 1;
     _portalLinkAttempts[pubkey] = attempts;
-    final backoffSeconds = math.min(30 * (1 << (attempts - 1)), 1800);
+    var backoffSeconds = math.min(30 * (1 << (attempts - 1)), 1800);
+    // When the failure was a 429 the portal named its own wait, and its
+    // buckets re-arm on every request made during a block. Never come back
+    // sooner than it asked, even if the ladder says we could.
+    final serverBackoff = _portalAccountService.linkLaneBackoff;
+    if (serverBackoff != null && serverBackoff.inSeconds > backoffSeconds) {
+      backoffSeconds = serverBackoff.inSeconds;
+    }
     _portalLinkRetryAfter[pubkey] =
         DateTime.now().add(Duration(seconds: backoffSeconds));
     debugLog('[ACCOUNT] Link attempt $attempts failed ($reason) for '

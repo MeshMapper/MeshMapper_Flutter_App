@@ -922,11 +922,13 @@ class _DownloadRegionPage extends StatefulWidget {
 
 class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   final _nameController = TextEditingController();
+  final _nameFocus = FocusNode();
   String _selectedStyle = 'Liberty';
   double _minZoom = 6;
   double _maxZoom = 14;
   bool _submitting = false;
   String? _error;
+  String? _nameError;
 
   // Default center (Ottawa)
   static const LatLng _defaultCenter = LatLng(45.4215, -75.6972);
@@ -967,6 +969,7 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   @override
   void dispose() {
     _nameController.dispose();
+    _nameFocus.dispose();
     super.dispose();
   }
 
@@ -985,10 +988,10 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
     return LatLngBounds(southwest: sw, northeast: ne);
   }
 
-  bool get _canSubmit =>
-      _nameController.text.trim().isNotEmpty &&
-      _selectedBounds != null &&
-      !_submitting;
+  // Stays live whenever a download isn't already starting. Gating this on a
+  // name/bounds being present left the button greyed out with nothing saying
+  // why, so users read it as broken; `_startDownload` names what's missing.
+  bool get _canSubmit => !_submitting;
 
   int get _estimatedTiles {
     final bounds = _selectedBounds;
@@ -1152,15 +1155,23 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
                   // Region name
                   TextField(
                     controller: _nameController,
+                    focusNode: _nameFocus,
                     decoration: InputDecoration(
-                      labelText: 'Area Name',
+                      labelText: 'Area Name *',
                       hintText: 'e.g. Downtown Vancouver',
                       border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8)),
                       isDense: true,
                       prefixIcon: const Icon(Icons.label_outline, size: 20),
+                      errorText: _nameError,
                     ),
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (value) {
+                      setState(() {
+                        if (_nameError != null && value.trim().isNotEmpty) {
+                          _nameError = null;
+                        }
+                      });
+                    },
                   ),
                   const SizedBox(height: 12),
 
@@ -1592,11 +1603,20 @@ class _DownloadRegionPageState extends State<_DownloadRegionPage> {
   }
 
   Future<void> _startDownload() async {
+    // Both of these used to be silent early returns behind a disabled button,
+    // so a user with an unnamed area had no way to tell what was wrong.
     final bounds = _selectedBounds;
-    if (bounds == null) return;
+    if (bounds == null) {
+      setState(() => _error = 'Tap the map to place an area first.');
+      return;
+    }
 
     final name = _nameController.text.trim();
-    if (name.isEmpty) return;
+    if (name.isEmpty) {
+      setState(() => _nameError = 'Enter a name for this area');
+      _nameFocus.requestFocus();
+      return;
+    }
 
     final service = context.read<OfflineMapService>();
     final styleUrl = _downloadStyles[_selectedStyle]!;
