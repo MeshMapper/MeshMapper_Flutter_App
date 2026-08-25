@@ -159,6 +159,14 @@ the GPS puck from a **direct provider listener** (`_onPositionNotify` →
 `updateSymbol`) every tick — real-time nav, no widget rebuild. The GPS-info
 overlay rebuilds only when the map itself does.
 
+**Coverage overlay opacity does NOT bump `mapRevision`.** It is UI-only state,
+so bumping the revision would relayout the platform view once per slider step.
+`MapWidget` applies it through a **direct provider listener**
+(`_onCoverageOpacityNotify`) that pushes the value into the live fill layers via
+`setLayerProperties`. A `build()` watcher cannot serve this: the map is behind
+the `mapRevision` Selector and never rebuilds on an opacity change, so the value
+only reached MapLibre on the next full overlay rebuild.
+
 **The Selector MUST be memoized (identity-stable).** `HomeScreen.build()` uses
 `context.watch`, so it rebuilds on every notify (incl. the 2 Hz GPS one).
 provider's `Selector` invalidates its cache whenever `oldWidget != widget`

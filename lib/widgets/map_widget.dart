@@ -556,9 +556,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // would otherwise never re-run and the coverage layer would stay missing.
   String? _lastOverlayZoneCode;
   // Last coverage overlay opacity we pushed into MapLibre. Compared against
-  // the current preference in _buildMap to detect slider changes and apply
-  // them live via _applyCoverageOverlayOpacity (no layer rebuild needed).
+  // the current preference in _onCoverageOpacityNotify to detect slider
+  // changes and apply them live via _applyCoverageOverlayOpacity (no layer
+  // rebuild needed).
   double? _lastAppliedCoverageOpacity;
+  // Set while _onCoverageOpacityNotify has an apply in flight.
+  // _applyCoverageOverlayOpacity only records the new value AFTER both awaited
+  // setLayerProperties calls, and the listener runs on every provider notify
+  // (GPS at ~2 Hz, the passive-RX storm at 10-20/sec), so without this a single
+  // slider step fires duplicate platform calls and duplicate log lines for the
+  // whole round trip.
+  bool _coverageOpacityApplyInFlight = false;
   // Guard flag that coalesces multiple overlay-refresh triggers (zone and
   // pref changes) in the same frame into a single post-frame callback.
   // Without this, two watchers can schedule concurrent _refreshCoverageOverlay
@@ -827,6 +835,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // _handleGpsPosition. GPS notifies no longer bump mapRevision, so the map's
     // Selector doesn't rebuild on position.
     _patchProviderRef!.addListener(_onPositionNotify);
+    // Coverage overlay opacity is UI-only state that must not bump mapRevision
+    // (a rebuild per slider step would relayout the platform view), so it needs
+    // a direct listener too. See _onCoverageOpacityNotify.
+    _patchProviderRef!.addListener(_onCoverageOpacityNotify);
   }
 
   AppStateProvider? _patchProviderRef;
@@ -847,6 +859,44 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final appState = _patchProviderRef;
     if (appState == null || !mounted) return;
     _handleGpsPosition(appState);
+  }
+
+  /// Fires on every provider notify; pushes a changed coverage overlay opacity
+  /// straight into the live fill layers via the controller, no rebuild.
+  ///
+  /// This CANNOT be a build() watcher. The map is isolated behind the memoized
+  /// mapRevision Selector (home_screen._buildMapSelector) and the opacity
+  /// preference is UI-only state that deliberately does not bump mapRevision,
+  /// so build() never re-runs when the slider moves. The value then only
+  /// reached MapLibre on the next full overlay rebuild (#434).
+  ///
+  /// Skipped while ping focus mode is active (focus forces opacity to 0 and
+  /// _dismissPingFocus restores the preference value directly) and while a
+  /// tapped cell or an isolated repeater dims the backdrop, or this would
+  /// un-dim it mid-sheet.
+  void _onCoverageOpacityNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted) return;
+    if (!_isMapReady || !_styleLoaded) return;
+    if (_focusedPingLocation != null) return;
+    if (_coverageDimmedForCell || _coverageDimmedForRepeater) return;
+    if (_coverageOpacityApplyInFlight) return;
+    final wanted = appState.preferences.coverageOverlayOpacity;
+    if (_lastAppliedCoverageOpacity == null ||
+        _lastAppliedCoverageOpacity == wanted) {
+      return;
+    }
+    _coverageOpacityApplyInFlight = true;
+    _applyCoverageOverlayOpacity(wanted).whenComplete(() {
+      _coverageOpacityApplyInFlight = false;
+      if (!mounted) return;
+      // A slider step that landed mid-flight was dropped by the guard above.
+      // Re-check so the final value still lands when no further notify follows
+      // (e.g. sitting in Settings, not wardriving). Gated on the apply having
+      // actually succeeded: on failure _lastAppliedCoverageOpacity is unchanged
+      // and re-running would spin forever.
+      if (_lastAppliedCoverageOpacity == wanted) _onCoverageOpacityNotify();
+    });
   }
 
   @override
@@ -894,6 +944,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _patchProviderRef?.removeListener(_onPositionNotify);
+    _patchProviderRef?.removeListener(_onCoverageOpacityNotify);
     _tileLoadTimeoutTimer?.cancel();
     final controller = _mapController;
     if (controller != null) {
@@ -2068,24 +2119,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // (Session-patch application: direct provider listener
     // _onCoveragePatchNotify — see initState for why it's not a build watcher.)
 
-    // Detect coverage overlay opacity change (user dragged the slider in
-    // Settings → General) and push it to the live raster layer without
-    // rebuilding the whole overlay. Skipped while ping focus mode is active —
-    // focus forces opacity to 0 and _dismissPingFocus restores the preference
-    // value directly — and while a tapped cell dims the backdrop (_clearCellHighlight
-    // restores it on sheet close), or this would un-dim it mid-sheet.
-    final wantedOpacity = appState.preferences.coverageOverlayOpacity;
-    if (_isMapReady &&
-        _styleLoaded &&
-        _focusedPingLocation == null &&
-        !_coverageDimmedForCell &&
-        !_coverageDimmedForRepeater &&
-        _lastAppliedCoverageOpacity != null &&
-        _lastAppliedCoverageOpacity != wantedOpacity) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _applyCoverageOverlayOpacity(wantedOpacity);
-      });
-    }
+    // (Coverage overlay opacity: direct provider listener
+    // _onCoverageOpacityNotify, for the same reason. Opacity is UI-only state
+    // that must not bump mapRevision, so a build() watcher here would never
+    // run when the slider moves.)
 
     return Stack(
       children: [
@@ -3347,6 +3384,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final sourceId = _activeCoverageSourceId;
     _activeCoverageLayerId = null;
     _activeCoverageSourceId = null;
+    // No live layer means nothing is applied. Leaving this set would keep
+    // _onCoverageOpacityNotify calling into a guaranteed no-op on every notify
+    // while the overlay is off. _addCoverageOverlay sets it again.
+    _lastAppliedCoverageOpacity = null;
     if (layerId != null && sourceId != null) {
       await _removeCoverageLayerById(layerId, sourceId);
     }
