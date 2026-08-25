@@ -193,6 +193,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _liveActivitySessionActive = false;
   bool _liveActivityManualSession = false;
   String? _liveActivitySessionId;
+
+  /// When the current session began, so read-only surfaces can say "this
+  /// session" and mean it rather than "whatever is in the recent history".
+  DateTime? _liveActivitySessionStartedAt;
   DateTime? _liveActivityCycleStartedAt;
   _LiveActivityOperation? _liveActivityOperation;
   MeshCoreConnection? _meshCoreConnection;
@@ -1356,11 +1360,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _scheduleLiveActivitySync();
   }
 
-  void _startLiveActivitySession({bool manual = false}) {
+  void _startLiveActivitySession({bool manual = false, DateTime? startedAt}) {
     if (!_liveActivityService.isSupportedPlatform) return;
     if (_liveActivitySessionActive) {
       // Starting an automatic mode while a manual-ping activity is still in
       // cooldown upgrades the existing activity instead of creating a second.
+      // The boundary deliberately stays where the manual ping put it: this is
+      // one session under one ID, and the manual ping and its RX window are
+      // that session's own results, not a previous session's.
       if (!manual && _liveActivityManualSession) {
         _liveActivityManualSession = false;
         _scheduleLiveActivitySync(immediate: true);
@@ -1370,6 +1377,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveActivitySessionActive = true;
     _liveActivityManualSession = manual;
     _liveActivitySessionId = const Uuid().v4();
+    // Callers that transmit before reaching here pass the instant they began,
+    // so the session's own first observation falls inside its boundary.
+    _liveActivitySessionStartedAt = startedAt ?? DateTime.now();
     _liveActivityCycleStartedAt = _activeLiveActivityCycleStartedAt;
     _liveActivityOperation = null;
     _scheduleLiveActivitySync(immediate: true);
@@ -1397,6 +1407,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveActivityCycleStartedAt = null;
     _scheduleLiveActivitySync(immediate: true);
     _liveActivitySessionId = null;
+    _liveActivitySessionStartedAt = null;
   }
 
   void _markLiveActivityOperation(_LiveActivityOperation operation) {
@@ -1882,10 +1893,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!sessionBusy && active.allowed) AutoMode.active.name,
       if (!sessionBusy && hybrid.allowed) AutoMode.hybrid.name,
     ];
-    final uniqueHeard = recentHeard
-        .map((item) => item.entityId ?? 'unresolved:${item.displayHexId}')
-        .toSet()
-        .length;
+    final sessionStartedAt = _liveActivitySessionStartedAt;
+    final uniqueHeard = SiriSnapshotBuilder.countUniqueRepeatersHeard(
+      recentHeard,
+      sessionStartedAt,
+    );
 
     return SiriSnapshot(
       updatedAt: DateTime.now(),
@@ -1897,6 +1909,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ),
       session: SiriSessionSnapshot(
         id: _liveActivitySessionId,
+        startedAt: sessionStartedAt,
         active: _autoPingEnabled,
         starting: _autoPingStarting,
         mode: sessionBusy ? _autoMode.name : 'idle',
@@ -2091,11 +2104,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     _lastSessionCheckFailureReason = null;
+    // Re-read the clock at the checkpoint rather than capturing a decision
+    // made at admission, which is what makes this cover the awaited work in
+    // between.
+    bool cannotStillCommit() => externalCommandCannotCommit(command.expiresAt);
     try {
       switch (command.kind) {
         case ExternalSessionCommandKind.startSession:
           final mode = admission.mode!;
-          final started = await toggleAutoPing(_autoModeFromExternal(mode));
+          final started = await toggleAutoPing(
+            _autoModeFromExternal(mode),
+            shouldAbortBeforeTransmit: cannotStillCommit,
+          );
           if (!started || !_autoPingEnabled) {
             return ExternalCommandCompletion(
               success: false,
@@ -2134,7 +2154,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           );
 
         case ExternalSessionCommandKind.manualPing:
-          final sent = await sendPing();
+          final sent = await sendPing(
+            shouldAbortBeforeTransmit: cannotStillCommit,
+          );
           if (!sent) {
             return ExternalCommandCompletion(
               success: false,
@@ -2204,6 +2226,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         ),
       );
     }
+    // Admission ran before that wait, so re-check: a cold launch can spend the
+    // whole readiness budget and leave the caller already gone.
+    if (externalCommandDeadlineRefusal(command.expiresAt) != null) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other(
+          externalCommandExpiredVoiceMessage,
+        ),
+      );
+    }
     if (_isDisposed) {
       return const ExternalCommandCompletion(
         success: false,
@@ -2240,12 +2273,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           'MeshMapper is already connecting. Try again shortly.',
         ExternalCommandReasonCode.userInteractionRequired =>
           'The last companion uses USB and must be selected in MeshMapper.',
+        ExternalCommandReasonCode.commandExpired =>
+          externalCommandExpiredVoiceMessage,
         _ => admission.reason?.compactText ?? 'MeshMapper could not connect.',
       };
       return ExternalCommandCompletion(
         success: admission.disposition == ExternalCommandDisposition.noOp,
         disposition: admission.disposition,
         message: ExternalCommandReason.other(message),
+      );
+    }
+
+    // Connecting cannot be cancelled once the transport is dialling, so the
+    // deadline is enforced by not starting a reconnect that has no room left to
+    // finish. Refusing here is free; refusing halfway through is not possible.
+    if (externalCommandCannotCommit(command.expiresAt)) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other(
+          externalCommandExpiredVoiceMessage,
+        ),
       );
     }
 
@@ -5941,7 +5989,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Send a manual TX ping
-  Future<bool> sendPing() async {
+  Future<bool> sendPing({bool Function()? shouldAbortBeforeTransmit}) async {
     if (_pingService == null) return false;
     if (_isAutoReconnecting) {
       debugLog('[PING] Ignoring ping during auto-reconnect');
@@ -5969,6 +6017,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!sessionCheck) return false;
       }
 
+      // The awaited session check can outlast the deadline an external surface
+      // is holding a person on. This is the last point before RF, so an expired
+      // request stops here rather than transmitting after Siri said it failed.
+      if (shouldAbortBeforeTransmit?.call() ?? false) {
+        _lastSessionCheckFailureReason = ExternalCommandReason.commandExpired;
+        return false;
+      }
+
       // Reset idle disconnect timer (user is actively pinging)
       _startIdleDisconnectTimer();
 
@@ -5977,7 +6033,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (ownsLiveActivity) {
         _startLiveActivitySession(manual: true);
       }
-      final sent = await _pingService!.sendTxPing(manual: true);
+      final sent = await _pingService!.sendTxPing(
+        manual: true,
+        shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
+      );
+      // The gate can also fire inside the send, after its own awaited work.
+      // Without this the caller hears the generic "couldn't send the ping"
+      // instead of being told the request simply arrived too late.
+      if (!sent && _pingService!.transmitAbortedByDeadline) {
+        _lastSessionCheckFailureReason = ExternalCommandReason.commandExpired;
+      }
       keepLiveActivity = sent;
       return sent;
     } finally {
@@ -6052,7 +6117,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Toggle auto-ping mode (Active, Passive, Hybrid, or Trace)
   /// Returns false if blocked by cooldown (Active/Hybrid/Trace Mode only - Passive Mode ignores cooldown)
-  Future<bool> toggleAutoPing(AutoMode mode) async {
+  Future<bool> toggleAutoPing(
+    AutoMode mode, {
+    bool Function()? shouldAbortBeforeTransmit,
+  }) async {
     if (_pingService == null) return false;
 
     final isPassive = mode == AutoMode.passive;
@@ -6147,6 +6215,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return false;
         }
 
+        // The awaited session check can outlast the deadline an external
+        // surface is holding a person on. Stop here, before any existing mode
+        // is torn down, so an expired request never starts a session the
+        // person was already told did not start.
+        if (shouldAbortBeforeTransmit?.call() ?? false) {
+          _lastSessionCheckFailureReason = ExternalCommandReason.commandExpired;
+          return false;
+        }
+
         // Stop any existing mode first
         if (_autoPingEnabled) {
           await _pingService!.forceDisableAutoPing();
@@ -6177,13 +6254,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog(
             '[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
 
+        // Taken before the call, not after it: enableAutoPing sends and records
+        // the session's first discovery before returning, and an observation
+        // the session made must not fall outside the session's own boundary.
+        final sessionStartedAt = DateTime.now();
         final started = await _pingService!.enableAutoPing(
           passiveMode: isPassive,
           hybridMode: isHybrid,
           targetedMode: isTargeted,
           targetRepeaterId: isTargeted ? _targetRepeaterId : null,
+          shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
         );
         if (!started) {
+          if (_pingService!.transmitAbortedByDeadline) {
+            _lastSessionCheckFailureReason =
+                ExternalCommandReason.commandExpired;
+          }
           // Blocked by cooldown or already enabled
           if (_pingService!.isInCooldown()) {
             debugLog(
@@ -6198,7 +6284,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _rxLogger?.startWardriving();
         _autoPingEnabled = true;
         _idleAutoStopReference = DateTime.now();
-        _startLiveActivitySession();
+        _startLiveActivitySession(startedAt: sessionStartedAt);
 
         // Start noise floor session for graph tracking
         final sessionLabel = isPassive

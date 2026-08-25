@@ -2,8 +2,46 @@ import 'external_command_models.dart';
 
 const Duration maximumExternalCommandAge = Duration(seconds: 30);
 const Duration externalCommandFutureTolerance = Duration(seconds: 5);
+
+/// Headroom reserved at the last checkpoint before an irreversible side effect.
+///
+/// A deadline that has not quite passed is no use if the remaining work
+/// outlives it: the surface would still have given up before the radio came up.
+/// Refusing while this much is left keeps the two in the same order.
+const Duration externalCommandCommitMargin = Duration(seconds: 2);
+
 String get externalCommandExpiredReason =>
     ExternalCommandReason.commandExpired.compactText;
+
+/// Spoken form of [ExternalCommandReasonCode.commandExpired].
+///
+/// The compact label stays terse for the watch; a voice surface has room to say
+/// what to do next. Connect builds its own responses, so it reads this too
+/// rather than growing a fourth copy of the sentence.
+const String externalCommandExpiredVoiceMessage =
+    'That request took too long to reach MeshMapper. Try again.';
+
+/// Refuses a command whose issuing surface has already stopped waiting.
+ExternalCommandReason? externalCommandDeadlineRefusal(
+  DateTime? expiresAt, {
+  DateTime? now,
+}) {
+  if (expiresAt == null) return null;
+  return (now ?? DateTime.now()).isBefore(expiresAt)
+      ? null
+      : ExternalCommandReason.commandExpired;
+}
+
+/// Whether too little of the deadline is left to reach the radio in time.
+///
+/// Admission runs before the awaited session check; this runs after it, at the
+/// last point where refusing is still free.
+bool externalCommandCannotCommit(DateTime? expiresAt, {DateTime? now}) {
+  if (expiresAt == null) return false;
+  return !(now ?? DateTime.now())
+      .add(externalCommandCommitMargin)
+      .isBefore(expiresAt);
+}
 
 ExternalCommandReason? externalCommandTimestampRefusal(
   DateTime issuedAt, {
@@ -24,7 +62,8 @@ ExternalCommandReason? externalCommandAgeRefusal(
   DateTime? now,
 }) {
   if (command.kind == ExternalSessionCommandKind.stopSession) return null;
-  return externalCommandTimestampRefusal(command.issuedAt, now: now);
+  return externalCommandDeadlineRefusal(command.expiresAt, now: now) ??
+      externalCommandTimestampRefusal(command.issuedAt, now: now);
 }
 
 /// Expands compact admission labels into complete, actionable voice responses.
@@ -126,7 +165,8 @@ String _externalCommandVoiceMessage({
       "MeshMapper couldn't send the manual ping. Open the app for details.",
     ExternalCommandReasonCode.appClosing =>
       'MeshMapper is closing. Open it and try again.',
-    ExternalCommandReasonCode.commandExpired ||
+    ExternalCommandReasonCode.commandExpired =>
+      externalCommandExpiredVoiceMessage,
     ExternalCommandReasonCode.noRememberedCompanion ||
     ExternalCommandReasonCode.alreadyConnected ||
     ExternalCommandReasonCode.anotherCompanionConnected ||

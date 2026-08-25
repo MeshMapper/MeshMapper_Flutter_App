@@ -45,6 +45,7 @@ void main() {
       String source = 'siri',
       String kind = 'startSession',
       String? mode = 'passive',
+      Object? expiresAtMs,
     }) async {
       final reply = await TestDefaultBinaryMessengerBinding
           .instance.defaultBinaryMessenger
@@ -55,6 +56,7 @@ void main() {
           'source': source,
           'kind': kind,
           'issuedAtMs': DateTime.now().millisecondsSinceEpoch,
+          if (expiresAtMs != null) 'expiresAtMs': expiresAtMs,
           if (mode != null) 'mode': mode,
         })),
         null,
@@ -150,6 +152,60 @@ void main() {
       final result = await sendCommand('command-2', source: 'watch');
 
       expect(result['success'], isFalse);
+      expect(result['disposition'], 'refused');
+      expect(result['message'], 'Malformed command');
+    });
+
+    test("the intent's deadline reaches the shared session command", () async {
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      AppIntentCommand? received;
+      bridge.attachCommandHandler((command) async {
+        received = command;
+        return const ExternalCommandCompletion(
+          success: true,
+          disposition: ExternalCommandDisposition.admitted,
+        );
+      });
+
+      await sendCommand(
+        'command-deadline',
+        expiresAtMs: deadline.millisecondsSinceEpoch,
+      );
+
+      expect(
+        received?.expiresAt?.millisecondsSinceEpoch,
+        deadline.millisecondsSinceEpoch,
+      );
+      expect(
+        received?.toExternalSessionCommand()?.expiresAt,
+        received?.expiresAt,
+      );
+    });
+
+    test('an older native build sending no deadline still runs', () async {
+      AppIntentCommand? received;
+      bridge.attachCommandHandler((command) async {
+        received = command;
+        return const ExternalCommandCompletion(
+          success: true,
+          disposition: ExternalCommandDisposition.admitted,
+        );
+      });
+
+      final result = await sendCommand('command-no-deadline');
+
+      expect(received?.expiresAt, isNull);
+      expect(result['success'], isTrue);
+    });
+
+    test('a non-numeric deadline fails closed', () async {
+      bridge.attachCommandHandler((_) async => throw StateError('not called'));
+
+      final result = await sendCommand(
+        'command-bad-deadline',
+        expiresAtMs: 'soon',
+      );
+
       expect(result['disposition'], 'refused');
       expect(result['message'], 'Malformed command');
     });

@@ -8,12 +8,14 @@ ExternalSessionCommand command({
   String? mode = 'passive',
   String? sessionId,
   DateTime? issuedAt,
+  DateTime? expiresAt,
 }) =>
     ExternalSessionCommand(
       id: 'command-1',
       source: source,
       kind: kind,
       issuedAt: issuedAt ?? DateTime.fromMillisecondsSinceEpoch(100000),
+      expiresAt: expiresAt,
       mode: mode,
       sessionId: sessionId,
     );
@@ -320,6 +322,106 @@ void main() {
       );
 
       expect(admission.disposition, ExternalCommandDisposition.refused);
+    });
+  });
+
+  group("the issuing surface's deadline", () {
+    test('a passed deadline refuses a Start that is still young enough', () {
+      // Siri gives up long before the shared 30-second age rule would.
+      final admission = resolveExternalSessionTransition(
+        command: command(expiresAt: now.subtract(const Duration(seconds: 1))),
+        isSessionActive: false,
+        isSessionStarting: false,
+        currentMode: 'passive',
+        currentSessionId: 'session-a',
+        now: now,
+      );
+
+      expect(admission.disposition, ExternalCommandDisposition.refused);
+      expect(admission.reason?.compactText, externalCommandExpiredReason);
+    });
+
+    test('Stop stays exempt, because stopping is the safe direction', () {
+      final admission = resolveExternalSessionTransition(
+        command: command(
+          kind: ExternalSessionCommandKind.stopSession,
+          mode: null,
+          expiresAt: now.subtract(const Duration(seconds: 30)),
+        ),
+        isSessionActive: true,
+        isSessionStarting: false,
+        currentMode: 'passive',
+        currentSessionId: 'session-a',
+        now: now,
+      );
+
+      expect(admission.disposition, ExternalCommandDisposition.admitted);
+    });
+
+    test('a surface that names no deadline is unaffected', () {
+      final admission = resolveExternalSessionTransition(
+        command: command(),
+        isSessionActive: false,
+        isSessionStarting: false,
+        currentMode: 'passive',
+        currentSessionId: 'session-a',
+        now: now,
+      );
+
+      expect(admission.disposition, ExternalCommandDisposition.admitted);
+    });
+
+    test('the commit gate closes before the deadline, not after it', () {
+      // The awaited session check runs between admission and the radio. A
+      // deadline with less than the margin left cannot be met by work that has
+      // not started yet, so committing then would still land after Siri gave up.
+      expect(
+        externalCommandCannotCommit(
+          now.add(const Duration(seconds: 5)),
+          now: now,
+        ),
+        isFalse,
+      );
+      expect(
+        externalCommandCannotCommit(
+          now.add(externalCommandCommitMargin),
+          now: now,
+        ),
+        isTrue,
+      );
+      expect(
+        externalCommandCannotCommit(
+          now.subtract(const Duration(seconds: 1)),
+          now: now,
+        ),
+        isTrue,
+      );
+    });
+
+    test('no deadline means nothing to miss', () {
+      expect(externalCommandCannotCommit(null, now: now), isFalse);
+      expect(externalCommandDeadlineRefusal(null, now: now), isNull);
+    });
+
+    test('an expired command gets a spoken reason, not the compact label', () {
+      final expired = command(
+        expiresAt: now.subtract(const Duration(seconds: 1)),
+      );
+      final spoken = externalCommandCompletionForVoice(
+        command: expired,
+        completion: const ExternalCommandCompletion(
+          success: false,
+          disposition: ExternalCommandDisposition.refused,
+          message: ExternalCommandReason.commandExpired,
+        ),
+      );
+
+      expect(spoken.message?.compactText, externalCommandExpiredVoiceMessage);
+      expect(
+        externalCommandExpiredVoiceMessage,
+        isNot(externalCommandExpiredReason),
+        reason: 'the watch keeps the terse label; voice gets the next step',
+      );
     });
   });
 }

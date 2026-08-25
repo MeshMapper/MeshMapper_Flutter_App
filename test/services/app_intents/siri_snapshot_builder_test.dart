@@ -296,6 +296,146 @@ void main() {
     );
   });
 
+  group('unique repeaters heard is scoped to the running session', () {
+    SiriRepeaterObservation heard(String hexId, Duration ago) =>
+        SiriRepeaterObservation(
+          entityId: 'SEA|$hexId',
+          displayHexId: hexId,
+          observedAt: now.subtract(ago),
+          kind: SiriObservationKind.passiveRx,
+          direct: true,
+          hopCount: 1,
+          resolved: true,
+        );
+
+    test('a previous session\'s repeaters are not credited to this one', () {
+      final observations = [
+        heard('AAAA1111', const Duration(minutes: 2)),
+        heard('BBBB2222', const Duration(minutes: 90)),
+        heard('CCCC3333', const Duration(minutes: 100)),
+      ];
+
+      expect(
+        SiriSnapshotBuilder.countUniqueRepeatersHeard(
+          observations,
+          now.subtract(const Duration(minutes: 5)),
+        ),
+        1,
+      );
+    });
+
+    test('an observation made at the boundary belongs to the session', () {
+      // The session's own first discovery is sent and recorded before the
+      // boundary is stored, so the boundary has to be inclusive and has to be
+      // captured before that transmission — otherwise a fresh Passive session
+      // reports nothing for its opening event.
+      final startedAt = now.subtract(const Duration(minutes: 5));
+      final observations = [
+        SiriRepeaterObservation(
+          entityId: 'SEA|first',
+          displayHexId: 'AAAA1111',
+          observedAt: startedAt,
+          kind: SiriObservationKind.discovery,
+          direct: true,
+          hopCount: 1,
+          resolved: true,
+        ),
+      ];
+
+      expect(
+        SiriSnapshotBuilder.countUniqueRepeatersHeard(observations, startedAt),
+        1,
+      );
+    });
+
+    test('an observation one millisecond earlier is a previous session', () {
+      final startedAt = now.subtract(const Duration(minutes: 5));
+      final observations = [
+        SiriRepeaterObservation(
+          entityId: 'SEA|earlier',
+          displayHexId: 'BBBB2222',
+          observedAt: startedAt.subtract(const Duration(milliseconds: 1)),
+          kind: SiriObservationKind.discovery,
+          direct: true,
+          hopCount: 1,
+          resolved: true,
+        ),
+      ];
+
+      expect(
+        SiriSnapshotBuilder.countUniqueRepeatersHeard(observations, startedAt),
+        0,
+      );
+    });
+
+    test('a session that has heard nothing yet reports zero', () {
+      final observations = [heard('BBBB2222', const Duration(minutes: 90))];
+
+      expect(
+        SiriSnapshotBuilder.countUniqueRepeatersHeard(
+          observations,
+          now.subtract(const Duration(seconds: 10)),
+        ),
+        0,
+      );
+    });
+
+    test('no running session means nothing to count', () {
+      expect(
+        SiriSnapshotBuilder.countUniqueRepeatersHeard(
+          [heard('AAAA1111', const Duration(minutes: 2))],
+          null,
+        ),
+        0,
+      );
+    });
+
+    test('one repeater heard repeatedly still counts once', () {
+      final observations = [
+        heard('AAAA1111', const Duration(minutes: 1)),
+        heard('AAAA1111', const Duration(minutes: 2)),
+        heard('AAAA1111', const Duration(minutes: 3)),
+      ];
+
+      expect(
+        SiriSnapshotBuilder.countUniqueRepeatersHeard(
+          observations,
+          now.subtract(const Duration(minutes: 10)),
+        ),
+        1,
+      );
+    });
+
+    test('unresolved observations count by hex, not collapsed together', () {
+      final observations = [
+        SiriRepeaterObservation(
+          displayHexId: 'DDDD4444',
+          observedAt: now,
+          kind: SiriObservationKind.passiveRx,
+          direct: true,
+          hopCount: 1,
+          resolved: false,
+        ),
+        SiriRepeaterObservation(
+          displayHexId: 'EEEE5555',
+          observedAt: now,
+          kind: SiriObservationKind.passiveRx,
+          direct: true,
+          hopCount: 1,
+          resolved: false,
+        ),
+      ];
+
+      expect(
+        SiriSnapshotBuilder.countUniqueRepeatersHeard(
+          observations,
+          now.subtract(const Duration(minutes: 1)),
+        ),
+        2,
+      );
+    });
+  });
+
   test('non-finite radio and repeater values cannot poison the snapshot', () {
     const invalidLocation = Repeater(
       id: 'invalid-location',

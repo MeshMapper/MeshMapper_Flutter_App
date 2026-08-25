@@ -255,6 +255,7 @@ class ExternalSessionCommand {
     required this.source,
     required this.kind,
     required this.issuedAt,
+    this.expiresAt,
     this.mode,
     this.sessionId,
   });
@@ -263,6 +264,14 @@ class ExternalSessionCommand {
   final ExternalCommandSource source;
   final ExternalSessionCommandKind kind;
   final DateTime issuedAt;
+
+  /// The instant the issuing surface stops waiting for a real outcome.
+  ///
+  /// Siri resumes its App Intent with a failure once this passes, so the phone
+  /// must stop too rather than committing to the radio behind a person who was
+  /// already told it did not happen. Surfaces that wait indefinitely, such as
+  /// the watch, leave this null and fall back to [maximumExternalCommandAge].
+  final DateTime? expiresAt;
   final String? mode;
   final String? sessionId;
 

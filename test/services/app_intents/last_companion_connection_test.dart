@@ -7,10 +7,12 @@ import 'package:mesh_mapper/services/external_commands/external_session_commands
 void main() {
   final now = DateTime.fromMillisecondsSinceEpoch(100000);
 
-  AppIntentCommand command({DateTime? issuedAt}) => AppIntentCommand(
+  AppIntentCommand command({DateTime? issuedAt, DateTime? expiresAt}) =>
+      AppIntentCommand(
         id: 'connect-1',
         kind: AppIntentCommandKind.connectLastCompanion,
         issuedAt: issuedAt ?? now,
+        expiresAt: expiresAt,
       );
 
   ExternalCommandAdmission resolve({
@@ -20,9 +22,10 @@ void main() {
     bool connecting = false,
     bool unattended = true,
     DateTime? issuedAt,
+    DateTime? expiresAt,
   }) =>
       resolveLastCompanionConnection(
-        command: command(issuedAt: issuedAt),
+        command: command(issuedAt: issuedAt, expiresAt: expiresAt),
         hasRememberedCompanion: remembered,
         isConnected: connected,
         isConnectedToRememberedCompanion: connectedToRemembered,
@@ -77,5 +80,41 @@ void main() {
           ?.compactText,
       externalCommandExpiredReason,
     );
+  });
+
+  group("Connect honours the intent's deadline", () {
+    test('a passed deadline is refused even while the command is young', () {
+      // Connect's deadline is set when the command reaches Dart, so it can pass
+      // well before the shared 30-second age rule would refuse the command.
+      final admission = resolve(
+        expiresAt: now.subtract(const Duration(seconds: 1)),
+      );
+
+      expect(admission.disposition, ExternalCommandDisposition.refused);
+      expect(admission.reason?.compactText, externalCommandExpiredReason);
+    });
+
+    test('a live deadline still admits', () {
+      expect(
+        resolve(expiresAt: now.add(const Duration(seconds: 20))).disposition,
+        ExternalCommandDisposition.admitted,
+      );
+    });
+
+    test('the deadline is checked before every other refusal', () {
+      // Expiry is about whether anyone is still listening, so it outranks the
+      // state-based refusals; reporting "already connecting" to a caller that
+      // has gone would be answering a question nobody asked.
+      final admission = resolve(
+        connecting: true,
+        expiresAt: now.subtract(const Duration(seconds: 1)),
+      );
+
+      expect(admission.reason?.compactText, externalCommandExpiredReason);
+    });
+
+    test('an older native build sending no deadline is unaffected', () {
+      expect(resolve().disposition, ExternalCommandDisposition.admitted);
+    });
   });
 }

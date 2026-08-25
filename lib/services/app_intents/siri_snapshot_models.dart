@@ -30,6 +30,7 @@ class SiriConnectionSnapshot {
 class SiriSessionSnapshot {
   const SiriSessionSnapshot({
     this.id,
+    this.startedAt,
     required this.active,
     required this.starting,
     required this.mode,
@@ -47,6 +48,9 @@ class SiriSessionSnapshot {
   });
 
   final String? id;
+
+  /// The boundary "current session" means. Null when nothing is running.
+  final DateTime? startedAt;
   final bool active;
   final bool starting;
   final String mode;
@@ -64,6 +68,7 @@ class SiriSessionSnapshot {
 
   Map<String, Object?> toMap() => {
         'id': id,
+        'startedAtMs': startedAt?.millisecondsSinceEpoch,
         'active': active,
         'starting': starting,
         'mode': mode,
