@@ -89,7 +89,7 @@ class IOSMapOfflineBridge {
     // to refresh parameters on launch makes newly added Siri phrases and enum
     // synonyms available promptly after an app update.
     if #available(iOS 26.0, *) {
-      MeshMapperMutationAppShortcuts.updateAppShortcutParameters()
+      MeshMapperAppShortcuts.updateAppShortcutParameters()
     }
 
     // Register background service
