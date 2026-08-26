@@ -254,6 +254,15 @@ struct GetRecentlyHeardRepeatersIntent: AppIntent {
   }
 }
 
+/// TODO: Not currently offered as a spoken App Shortcut.
+///
+/// Spoken lookup did not work in on-device testing — the phrase was withdrawn
+/// from `MeshMapperAppShortcuts` rather than hold up the branch. The intent
+/// itself is still built into both targets and remains available in the
+/// Shortcuts app, so re-registering is a matter of restoring the `AppShortcut`
+/// entry once the disambiguation flow is understood. Suspects worth checking
+/// first: `RepeaterEntityQuery.entities(matching:)` matching against spoken
+/// text, and an empty or stale catalogue in the App Group snapshot.
 @available(iOS 26.0, *)
 struct FindMeshMapperRepeaterIntent: AppIntent {
   // Named for what it can actually search. The App Group catalog holds the
@@ -299,38 +308,4 @@ struct FindMeshMapperRepeaterIntent: AppIntent {
       dialog: "\(identity), and is currently \(status)."
     )
   }
-}
-
-@available(iOS 26.0, *)
-struct MeshMapperReadAppShortcuts: AppShortcutsProvider {
-  static var appShortcuts: [AppShortcut] {
-    AppShortcut(
-      intent: GetMeshMapperStatusIntent(),
-      phrases: [
-        "What is \(.applicationName) doing",
-        "Get \(.applicationName) status",
-      ],
-      shortTitle: "Session Status",
-      systemImageName: "waveform"
-    )
-    AppShortcut(
-      intent: GetRecentlyHeardRepeatersIntent(),
-      phrases: [
-        "What has \(.applicationName) heard",
-        "Recent repeaters in \(.applicationName)",
-      ],
-      shortTitle: "Recent Repeaters",
-      systemImageName: "dot.radiowaves.left.and.right"
-    )
-    AppShortcut(
-      intent: FindMeshMapperRepeaterIntent(),
-      phrases: [
-        "Find a recent repeater in \(.applicationName)",
-      ],
-      shortTitle: "Find Repeater",
-      systemImageName: "magnifyingglass"
-    )
-  }
-
-  static var shortcutTileColor: ShortcutTileColor { .teal }
 }

@@ -753,9 +753,25 @@ these Siri actions, and none of the app's other surfaces depend on them.
 
 Mutation intents live in the
 Runner process because session and connection changes must pass through the
-same phone-owned admission path as the watch. Read-only intents use a separate
-extension and the bounded App Group snapshot in `ios/Shared/AppIntents/`; they
-must not launch Flutter. Despite its historical `Siri` type names and
+same phone-owned admission path as the watch. Read-only intents *run* in a
+separate extension against the bounded App Group snapshot in
+`ios/Shared/AppIntents/`; they must not launch Flutter.
+
+**There is exactly one `AppShortcutsProvider`, `MeshMapperAppShortcuts`, and it
+lives in the Runner target.** App Shortcuts are indexed from the app, so a
+provider inside the App Intents extension is never registered and its phrases
+silently do nothing when spoken — no error, just a pause and no result. Apple
+additionally requires that every intent a provider names is a member of the
+*same* target as the provider, which is why the read intents and their entities
+(`MeshMapperReadIntents.swift`, `RepeaterEntity.swift`,
+`HeardRepeaterEntity.swift`) are compiled into Runner **and** the extension.
+Dual target membership is Apple's documented arrangement for an intent that
+backs an App Shortcut and must also run in an extension; a shared framework is
+explicitly not an option for these. The provider is capped at ten shortcuts —
+six are used — and exceeding it is a compile error.
+
+When adding a read intent: add its file to both targets, and add the shortcut to
+`MeshMapperAppShortcuts`, never to a second provider. Despite its historical `Siri` type names and
 `siri-snapshot.json` filename, that Foundation-only snapshot is the reusable
 low-frequency contract for future native glance surfaces.
 
@@ -889,7 +905,9 @@ catalogue bound is also the entity-lookup bound: `RepeaterEntityQuery` searches
 only the cached active/recent entries, never the full loaded repeater set, which
 is why the intent is named "Find Recent MeshMapper Repeater". Widening the
 lookup means widening the catalogue or adding a separate compact index — do not
-leave a broad name over a narrow index. Recent
+leave a broad name over a narrow index, and keep that in mind when reviving the
+withdrawn phrase, since an empty or stale catalogue is one candidate cause of
+the lookup failure. Recent
 observations are ranked and truncated before catalogue identity resolution, so
 large histories do not multiply the resolution work. A cheap scalar/revision
 preflight key suppresses rebuilds when provider notifications do not change
@@ -908,8 +926,11 @@ of every registered phrase):
 - `Siri, stop MeshMapper`.
 - `Siri, what is MeshMapper doing?` or `Siri, get MeshMapper status`.
 - `Siri, what has MeshMapper heard?` or `Siri, recent repeaters in MeshMapper`.
-- `Siri, find a recent repeater in MeshMapper` (Siri asks which repeater when
-  needed; only active/recent cached repeaters resolve).
+
+Repeater lookup by name has no spoken phrase. `FindMeshMapperRepeaterIntent`
+ships and can be used from the Shortcuts app, but spoken lookup did not work on
+device and its `AppShortcut` is withdrawn until it does — see the TODO on the
+intent. Adding the phrase back means adding the bullet back here.
 
 Mutation intents return their completion message both as Siri dialog and as a
 text output. A user-created Shortcut can pass that Result to a `Speak Text`

@@ -44,7 +44,7 @@
 		B10000000000000000000003 /* StartMeshMapperSessionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* StartMeshMapperSessionIntent.swift */; };
 		B10000000000000000000004 /* StopMeshMapperSessionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* StopMeshMapperSessionIntent.swift */; };
 		B10000000000000000000005 /* SendManualPingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* SendManualPingIntent.swift */; };
-		B10000000000000000000006 /* MeshMapperMutationAppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* MeshMapperMutationAppShortcuts.swift */; };
+		B10000000000000000000006 /* MeshMapperAppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* MeshMapperAppShortcuts.swift */; };
 		B10000000000000000000010 /* ConnectLastMeshMapperCompanionIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000011 /* ConnectLastMeshMapperCompanionIntent.swift */; };
 		B10000000000000000000007 /* MeshMapperSiriSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* MeshMapperSiriSnapshot.swift */; };
 		B10000000000000000000008 /* MeshMapperSiriSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */; };
@@ -54,6 +54,9 @@
 		B1000000000000000000000C /* MeshMapperSiriSnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */; };
 		B1000000000000000000000D /* RepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* RepeaterEntity.swift */; };
 		B1000000000000000000000E /* HeardRepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* HeardRepeaterEntity.swift */; };
+		B1000000000000000000001A /* MeshMapperReadIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* MeshMapperReadIntents.swift */; };
+		B1000000000000000000001B /* RepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* RepeaterEntity.swift */; };
+		B1000000000000000000001C /* HeardRepeaterEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* HeardRepeaterEntity.swift */; };
 		B1000000000000000000000F /* MeshMapperAppIntents.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* MeshMapperAppIntents.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -188,7 +191,7 @@
 		B20000000000000000000003 /* StartMeshMapperSessionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartMeshMapperSessionIntent.swift; sourceTree = "<group>"; };
 		B20000000000000000000004 /* StopMeshMapperSessionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopMeshMapperSessionIntent.swift; sourceTree = "<group>"; };
 		B20000000000000000000005 /* SendManualPingIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendManualPingIntent.swift; sourceTree = "<group>"; };
-		B20000000000000000000006 /* MeshMapperMutationAppShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperMutationAppShortcuts.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* MeshMapperAppShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperAppShortcuts.swift; sourceTree = "<group>"; };
 		B20000000000000000000007 /* MeshMapperSiriSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperSiriSnapshot.swift; sourceTree = "<group>"; };
 		B20000000000000000000008 /* MeshMapperSiriSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperSiriSnapshotStore.swift; sourceTree = "<group>"; };
 		B20000000000000000000009 /* RepeaterEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepeaterEntity.swift; sourceTree = "<group>"; };
@@ -392,7 +395,7 @@
 				B20000000000000000000003 /* StartMeshMapperSessionIntent.swift */,
 				B20000000000000000000004 /* StopMeshMapperSessionIntent.swift */,
 				B20000000000000000000005 /* SendManualPingIntent.swift */,
-				B20000000000000000000006 /* MeshMapperMutationAppShortcuts.swift */,
+				B20000000000000000000006 /* MeshMapperAppShortcuts.swift */,
 				B20000000000000000000011 /* ConnectLastMeshMapperCompanionIntent.swift */,
 			);
 			path = AppIntents;
@@ -756,10 +759,13 @@
 				B10000000000000000000003 /* StartMeshMapperSessionIntent.swift in Sources */,
 				B10000000000000000000004 /* StopMeshMapperSessionIntent.swift in Sources */,
 				B10000000000000000000005 /* SendManualPingIntent.swift in Sources */,
-				B10000000000000000000006 /* MeshMapperMutationAppShortcuts.swift in Sources */,
+				B10000000000000000000006 /* MeshMapperAppShortcuts.swift in Sources */,
 				B10000000000000000000010 /* ConnectLastMeshMapperCompanionIntent.swift in Sources */,
 				B10000000000000000000007 /* MeshMapperSiriSnapshot.swift in Sources */,
 				B10000000000000000000008 /* MeshMapperSiriSnapshotStore.swift in Sources */,
+				B1000000000000000000001A /* MeshMapperReadIntents.swift in Sources */,
+				B1000000000000000000001B /* RepeaterEntity.swift in Sources */,
+				B1000000000000000000001C /* HeardRepeaterEntity.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
