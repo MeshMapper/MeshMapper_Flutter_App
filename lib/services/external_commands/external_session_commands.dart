@@ -179,15 +179,16 @@ String _externalCommandVoiceMessage({
 
 /// [currentMode] is the wire name of the running mode and is what the stop path
 /// resolves back into an [ExternalSessionMode]. [currentModeLabel] is the name
-/// a person hears, which the app spells differently (Trace, not targeted); it
-/// falls back to the wire name so a caller with nothing better still reads.
+/// a person hears, which the app spells differently (Trace, not targeted). It
+/// is required: the wire name is not speakable, so falling back to it would
+/// have put the enum spelling in a spoken sentence.
 ExternalCommandAdmission resolveExternalSessionTransition({
   required ExternalSessionCommand command,
   required bool isSessionActive,
   required bool isSessionStarting,
   required String currentMode,
   required String currentSessionId,
-  String? currentModeLabel,
+  required String currentModeLabel,
   DateTime? now,
 }) {
   final ageRefusal = externalCommandAgeRefusal(command, now: now);
@@ -204,8 +205,7 @@ ExternalCommandAdmission resolveExternalSessionTransition({
         return ExternalCommandAdmission(
           disposition: ExternalCommandDisposition.noOp,
           reason: ExternalCommandReason.other(
-            'MeshMapper is already running in '
-            '${currentModeLabel ?? currentMode} mode.',
+            'MeshMapper is already running in $currentModeLabel mode.',
           ),
         );
       }
