@@ -20,7 +20,10 @@ enum MeshMapperSnapshotFreshness {
   }
 
   /// This is spoken aloud, so "1 seconds ago" is heard rather than skimmed.
-  private static func counted(_ count: Int, _ unit: String) -> String {
+  ///
+  /// Shared with the status intent's ping and repeater counts, which are read
+  /// out in the same sentence and have the same problem.
+  static func counted(_ count: Int, _ unit: String) -> String {
     "\(count) \(unit)\(count == 1 ? "" : "s")"
   }
 }
@@ -120,13 +123,29 @@ struct GetMeshMapperStatusIntent: AppIntent {
 
     let zone = snapshot.session.zoneCode.map { " in \($0)" } ?? ""
     let detail = snapshot.session.phaseDetail.map { " \($0)." } ?? ""
+    let pings = MeshMapperSnapshotFreshness.counted(
+      snapshot.session.txCount, "ping"
+    )
+    let heard = MeshMapperSnapshotFreshness.counted(
+      snapshot.session.uniqueRepeatersHeard, "unique repeater"
+    )
     return .result(
-      dialog: "\(prefix)MeshMapper was running in \(Self.modeName(snapshot.session.mode)) mode\(zone). It had sent \(snapshot.session.txCount) pings and heard \(snapshot.session.uniqueRepeatersHeard) unique repeaters. \(snapshot.session.phaseTitle).\(detail)"
+      dialog: "\(prefix)MeshMapper was running in \(Self.modeName(snapshot.session.mode)) mode\(zone). It had sent \(pings) and heard \(heard). \(snapshot.session.phaseTitle).\(detail)"
     )
   }
 
+  /// The wire mode names are not speakable. `targeted` is only ever called
+  /// Trace on screen, and `passive` is plain Passive in the app's own copy, so
+  /// capitalizing the raw value would say words no MeshMapper screen uses.
+  /// Kept in step with `AutoMode.displayName`.
   private static func modeName(_ mode: String) -> String {
-    mode == "passive" ? "Passive Discovery" : mode.capitalized
+    switch mode {
+    case "active": return "Active"
+    case "passive": return "Passive"
+    case "hybrid": return "Hybrid"
+    case "targeted": return "Trace"
+    default: return mode.capitalized
+    }
   }
 }
 
