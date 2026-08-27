@@ -1,3 +1,4 @@
+import AppIntents
 import Flutter
 import Foundation
 
@@ -7,7 +8,8 @@ enum SiriBridgeError: LocalizedError {
   case invalidResponse
   case flutter(String)
 
-  var errorDescription: String? {
+  /// The single source for what the person is told, spoken and written alike.
+  var message: String {
     switch self {
     case .appUnavailable:
       return "MeshMapper did not finish launching in time."
@@ -18,6 +20,18 @@ enum SiriBridgeError: LocalizedError {
     case .flutter(let message):
       return message
     }
+  }
+
+  var errorDescription: String? { message }
+}
+
+/// App Intents dialogs read `localizedStringResource`, not `errorDescription`.
+/// Without this conformance every error thrown out of `perform()` reaches the
+/// person as a generic system failure dialog instead of the reason above.
+@available(iOS 16.0, *)
+extension SiriBridgeError: CustomLocalizedStringResourceConvertible {
+  var localizedStringResource: LocalizedStringResource {
+    LocalizedStringResource(stringLiteral: message)
   }
 }
 
@@ -38,8 +52,8 @@ struct SiriCommand {
     /// Connecting cannot be called back once a transport is dialling, and a BLE
     /// GATT phase alone may run 15 seconds before protocol setup and
     /// authentication. Stopping is deliberately exempt from the deadline
-    /// altogether — a safe-direction command must never be abandoned because a
-    /// voice request timed out — and its teardown may queue a pending disable
+    /// altogether (a safe-direction command must never be abandoned because a
+    /// voice request timed out), and its teardown may queue a pending disable
     /// behind an RX window. Both overrun as a matter of course rather than
     /// exceptionally, so claiming cancellation would be a lie about as often as
     /// it was true.
@@ -69,7 +83,7 @@ struct SiriCommand {
 
   /// How long the intent waits for the real outcome before telling the person
   /// it failed. The same instant is handed to Dart as `expiresAtMs`, so giving
-  /// up here and giving up there are one decision rather than two — for the
+  /// up here and giving up there are one decision rather than two, for the
   /// session kinds. For `connectLastCompanion` it bounds the *response* only;
   /// see `Kind.timeoutMessage` for why, and for what is said instead.
   var responseTimeout: TimeInterval {
