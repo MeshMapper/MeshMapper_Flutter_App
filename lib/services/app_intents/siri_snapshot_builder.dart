@@ -11,7 +11,16 @@ class SiriSnapshotBuilder {
   static const int maximumRepeaters = 64;
   static const Duration maximumObservationAge = Duration(hours: 2);
 
-  static List<SiriRepeaterObservation> buildRecentHeard({
+  /// Stable identity a Siri entity is keyed on.
+  ///
+  /// The heard entity and the catalogue entity are joined on this string, so
+  /// both sides must derive it the same way. [Repeater.iata] is nullable, and a
+  /// repeater without one would otherwise be filed under two different keys and
+  /// lose its name, zone and coordinates on the heard side.
+  static String repeaterEntityId(Repeater repeater, String? zoneCode) =>
+      '${repeater.iata ?? zoneCode ?? 'GLOBAL'}|${repeater.id}';
+
+  static SiriRecentHeard buildRecentHeard({
     required List<TxLogEntry> txEntries,
     required List<RxLogEntry> rxEntries,
     required List<DiscLogEntry> discoveryEntries,
@@ -23,10 +32,14 @@ class SiriSnapshotBuilder {
   }) {
     final cutoff = (now ?? DateTime.now()).subtract(maximumObservationAge);
     final candidates = <_SiriObservationCandidate>[];
+    final repeaterCache = <String, Repeater?>{};
 
-    SiriRepeaterObservation resolve(_SiriObservationCandidate candidate) {
-      final normalizedId = candidate.displayId.toUpperCase();
-      final repeater = (candidate.identity == null
+    // The catalogue scan is the expensive part, and the same repeater is heard
+    // over and over, so the lookup is memoised on the candidate's raw identity.
+    Repeater? lookup(_SiriObservationCandidate candidate) {
+      final cacheKey = _identityKey(candidate);
+      if (repeaterCache.containsKey(cacheKey)) return repeaterCache[cacheKey];
+      final found = (candidate.identity == null
               ? null
               : ExternalSurfaceGeoBuilder.resolveRepeater(
                   repeaters: repeaters,
@@ -35,9 +48,16 @@ class SiriSnapshotBuilder {
                 )) ??
           ExternalSurfaceGeoBuilder.resolveRepeater(
             repeaters: repeaters,
-            id: normalizedId,
+            id: candidate.displayId.toUpperCase(),
             hopBytes: hopBytes,
           );
+      repeaterCache[cacheKey] = found;
+      return found;
+    }
+
+    SiriRepeaterObservation resolve(_SiriObservationCandidate candidate) {
+      final normalizedId = candidate.displayId.toUpperCase();
+      final repeater = lookup(candidate);
       final resolved = repeater != null;
       final hasDistance = resolved &&
           repeater.hasLocation &&
@@ -46,9 +66,7 @@ class SiriSnapshotBuilder {
           candidate.latitude.isFinite &&
           candidate.longitude.isFinite;
       return SiriRepeaterObservation(
-        entityId: resolved
-            ? '${repeater.iata ?? zoneCode ?? 'GLOBAL'}|${repeater.id}'
-            : null,
+        entityId: resolved ? repeaterEntityId(repeater, zoneCode) : null,
         displayHexId: normalizedId,
         name: resolved && repeater.name != 'Unknown' ? repeater.name : null,
         observedAt: candidate.observedAt,
@@ -161,16 +179,38 @@ class SiriSnapshotBuilder {
       ));
     }
 
-    // Identity resolution scans the zone catalogue. Rank and bound the cheap
-    // raw candidates first so a busy two-hour log pays that cost at most 64
-    // times rather than once per observation across all four histories.
+    // One row per distinct raw identity, carrying that repeater's most recent
+    // sighting. Collapsing the candidates before resolving keeps the catalogue
+    // scan proportional to the number of repeaters rather than the number of
+    // observations, and it is what lets the session count see past the
+    // [maximumObservations] newest events without walking the whole history
+    // again.
+    final newestByIdentity = <String, _SiriObservationCandidate>{};
+    for (final candidate in candidates) {
+      final key = _identityKey(candidate);
+      final existing = newestByIdentity[key];
+      if (existing == null ||
+          existing.observedAt.isBefore(candidate.observedAt)) {
+        newestByIdentity[key] = candidate;
+      }
+    }
+
     candidates.sort((a, b) => b.observedAt.compareTo(a.observedAt));
-    return candidates.take(maximumObservations).map(resolve).toList(
-          growable: false,
-        );
+    return SiriRecentHeard(
+      observations: candidates.take(maximumObservations).map(resolve).toList(
+            growable: false,
+          ),
+      distinctHeard:
+          newestByIdentity.values.map(resolve).toList(growable: false),
+    );
   }
 
   /// Counts distinct repeaters heard since [sessionStartedAt].
+  ///
+  /// Feed this [SiriRecentHeard.distinctHeard], not the snapshot's
+  /// [SiriRecentHeard.observations]: that list is capped at
+  /// [maximumObservations] for the wire, and counting it would cap the spoken
+  /// total at the 64 newest events instead of the whole session.
   ///
   /// [maximumObservationAge] bounds the cache, not a session: a two-hour
   /// history routinely spans several sessions, so counting all of it would let
@@ -188,9 +228,14 @@ class SiriSnapshotBuilder {
         .length;
   }
 
+  static String _identityKey(_SiriObservationCandidate candidate) =>
+      '${candidate.identity?.toUpperCase() ?? ''}|'
+      '${candidate.displayId.toUpperCase()}';
+
   static List<SiriRepeaterEntitySnapshot> buildRepeaterCatalog(
-    List<Repeater> repeaters,
-  ) {
+    List<Repeater> repeaters, {
+    String? zoneCode,
+  }) {
     final ranked = List<Repeater>.of(repeaters)
       ..sort((a, b) {
         final active = (b.isActive ? 1 : 0).compareTo(a.isActive ? 1 : 0);
@@ -204,7 +249,7 @@ class SiriSnapshotBuilder {
             repeater.lat.isFinite &&
             repeater.lon.isFinite;
         return SiriRepeaterEntitySnapshot(
-          id: '${repeater.iata ?? 'GLOBAL'}|${repeater.id}',
+          id: repeaterEntityId(repeater, zoneCode),
           name: repeater.name,
           hexId: repeater.hexId.toUpperCase(),
           zoneCode: repeater.iata,
@@ -221,6 +266,24 @@ class SiriSnapshotBuilder {
       },
     ).toList(growable: false);
   }
+}
+
+/// The two views of the same heard history the snapshot needs.
+///
+/// [observations] is what ships to the watch and to Siri, bounded so the App
+/// Group payload stays small. [distinctHeard] is the unbounded roll-up used for
+/// counting, so a long session's total is not silently capped at that bound.
+class SiriRecentHeard {
+  const SiriRecentHeard({
+    required this.observations,
+    required this.distinctHeard,
+  });
+
+  /// Newest first, capped at [SiriSnapshotBuilder.maximumObservations].
+  final List<SiriRepeaterObservation> observations;
+
+  /// One entry per distinct repeater, carrying its most recent sighting.
+  final List<SiriRepeaterObservation> distinctHeard;
 }
 
 class _SiriObservationCandidate {

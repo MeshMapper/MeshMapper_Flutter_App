@@ -227,7 +227,7 @@ class ExternalCommandReason {
         ExternalCommandReasonCode.anotherOperationInProgress =>
           'Another operation is in progress',
         ExternalCommandReasonCode.stillStartingTryStopAgain =>
-          'Still starting — try Stop again',
+          'Still starting, try Stop again',
         ExternalCommandReasonCode.sessionAlreadyEnded =>
           'That session already ended',
         ExternalCommandReasonCode.couldNotStart => 'Could not start',

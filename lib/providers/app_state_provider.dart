@@ -79,7 +79,18 @@ enum AutoMode {
   hybrid,
 
   /// Trace Mode: Zero-hop trace to specific repeater
-  targeted,
+  targeted;
+
+  /// What the app's own buttons call this mode, minus the trailing "Mode".
+  ///
+  /// The wire name is not speakable: the UI has never called `targeted`
+  /// anything but Trace, so a spoken sentence must not leak the enum name.
+  String get displayName => switch (this) {
+        AutoMode.active => 'Active',
+        AutoMode.passive => 'Passive',
+        AutoMode.hybrid => 'Hybrid',
+        AutoMode.targeted => 'Trace',
+      };
 }
 
 /// Ping type for the top-heard overlay dots
@@ -1900,7 +1911,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     ];
     final sessionStartedAt = _liveActivitySessionStartedAt;
     final uniqueHeard = SiriSnapshotBuilder.countUniqueRepeatersHeard(
-      recentHeard,
+      recentHeard.distinctHeard,
       sessionStartedAt,
     );
 
@@ -1945,8 +1956,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             ? _manualPingCooldownTimer.endTime
             : null,
       ),
-      recentHeard: recentHeard,
-      repeaters: SiriSnapshotBuilder.buildRepeaterCatalog(_repeaters),
+      recentHeard: recentHeard.observations,
+      repeaters: SiriSnapshotBuilder.buildRepeaterCatalog(
+        _repeaters,
+        zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      ),
     ).toMap();
   }
 
@@ -2051,6 +2065,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       isSessionStarting: _autoPingStarting,
       currentMode: _autoMode.name,
       currentSessionId: _liveActivitySessionId ?? 'idle',
+      currentModeLabel: _autoMode.displayName,
     );
     if (!transition.shouldExecute) return transition;
 
@@ -2231,8 +2246,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         ),
       );
     }
-    // Admission ran before that wait, so re-check: a cold launch can spend the
-    // whole readiness budget and leave the caller already gone.
+    // The deadline the coordinator stamped can expire during that wait: a cold
+    // launch can spend the whole readiness budget and leave the caller already
+    // gone. Check it before doing any further work; admission runs after this
+    // and checks it again, so an expiry landing in between is still caught.
     if (externalCommandDeadlineRefusal(command.expiresAt) != null) {
       return const ExternalCommandCompletion(
         success: false,
@@ -4676,6 +4693,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         identities: _discoveryIdentities(discPing.discoveredNodes),
       );
       _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
+      _siriObservationRevision++;
 
       _notifyMapThrottled();
     };

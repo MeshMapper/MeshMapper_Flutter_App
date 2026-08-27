@@ -77,6 +77,7 @@ void main() {
       bool starting = false,
       String currentMode = 'hybrid',
       String currentSessionId = 'session-a',
+      String? currentModeLabel,
     }) =>
         resolveExternalSessionTransition(
           command: value,
@@ -84,8 +85,33 @@ void main() {
           isSessionStarting: starting,
           currentMode: currentMode,
           currentSessionId: currentSessionId,
+          currentModeLabel: currentModeLabel,
           now: now,
         );
+
+    test('a running session is named the way the app names it, not the wire',
+        () {
+      final admission = resolve(
+        command(),
+        active: true,
+        currentMode: 'targeted',
+        currentModeLabel: 'Trace',
+      );
+
+      expect(
+        admission.reason?.compactText,
+        'MeshMapper is already running in Trace mode.',
+      );
+    });
+
+    test('a caller that supplies no label still reads', () {
+      final admission = resolve(command(), active: true);
+
+      expect(
+        admission.reason?.compactText,
+        'MeshMapper is already running in hybrid mode.',
+      );
+    });
 
     test('Siri defaults an unqualified Start to Passive Discovery', () {
       final admission = resolve(command(mode: null));
@@ -254,7 +280,7 @@ void main() {
       );
       expect(
         stoppingWhileStarting.reason?.compactText,
-        'Still starting — try Stop again',
+        'Still starting, try Stop again',
       );
     });
 
