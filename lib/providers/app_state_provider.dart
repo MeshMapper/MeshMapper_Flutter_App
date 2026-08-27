@@ -47,10 +47,17 @@ import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
 import '../services/countdown_timer_service.dart';
+import '../services/app_intents/app_intent_bridge_service.dart';
+import '../services/app_intents/app_intent_commands.dart';
+import '../services/app_intents/last_companion_connection.dart';
+import '../services/app_intents/siri_snapshot_builder.dart';
+import '../services/app_intents/siri_snapshot_models.dart';
+import '../services/external_commands/external_command_models.dart';
+import '../services/external_commands/external_session_commands.dart';
+import '../services/external_surfaces/geo/external_surface_geo_builder.dart';
 import '../services/live_activity/live_activity_models.dart';
 import '../services/live_activity/live_activity_service.dart';
 import '../services/watch/watch_bridge_service.dart';
-import '../services/watch/watch_geo_builder.dart';
 import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
@@ -146,6 +153,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   final LiveActivityService _liveActivityService = LiveActivityService();
   final WatchBridgeService _watchBridge = WatchBridgeService();
+  final AppIntentBridgeService _appIntentBridge = AppIntentBridgeService();
   bool _hasEverPairedWatch = false;
 
   /// Last position handed to the watch, kept so a dropped GPS fix leaves the
@@ -181,10 +189,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Human-readable failure from the most recent server-side session check.
   /// The bool returned by that check controls the action; this preserves the
   /// discarded explanation for a wrist action's later failure cue.
-  String? _lastSessionCheckFailureReason;
+  ExternalCommandReason? _lastSessionCheckFailureReason;
   bool _liveActivitySessionActive = false;
   bool _liveActivityManualSession = false;
   String? _liveActivitySessionId;
+
+  /// When the current session began, so read-only surfaces can say "this
+  /// session" and mean it rather than "whatever is in the recent history".
+  DateTime? _liveActivitySessionStartedAt;
   DateTime? _liveActivityCycleStartedAt;
   _LiveActivityOperation? _liveActivityOperation;
   MeshCoreConnection? _meshCoreConnection;
@@ -286,6 +298,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<RxLogEntry> _rxLogEntries = [];
   final List<DiscLogEntry> _discLogEntries = [];
   final List<TraceLogEntry> _traceLogEntries = [];
+  int _siriObservationRevision = 0;
 
   // Top repeaters overlay — updated live on each ping event
   List<({String repeaterId, double snr, OverlayPingType type})>
@@ -348,6 +361,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Remembered device for quick reconnection (mobile only)
   RememberedDevice? _rememberedDevice;
+  final Completer<void> _rememberedDeviceReady = Completer<void>();
 
   // User's original preferences before zone admin overrides (single baseline).
   // Saved on initial connect; restored before applying each new zone's policies.
@@ -532,6 +546,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Repeater markers state
   List<Repeater> _repeaters = [];
+  int _siriRepeaterCatalogRevision = 0;
   bool _repeatersLoaded = false;
   String? _repeatersLoadedForIata;
 
@@ -691,6 +706,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       hasEverPaired: _hasEverPairedWatch,
     );
   }
+
   TransportType get selectedTransport => _selectedTransport;
   ConnectionStatus get connectionStatus => _connectionStatus;
   ConnectionStep get connectionStep => _connectionStep;
@@ -788,8 +804,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final sorted = bestSnr.entries
-        .map((entry) =>
-            (repeaterId: entry.key, snr: entry.value, type: type))
+        .map((entry) => (repeaterId: entry.key, snr: entry.value, type: type))
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
     _liveActivityRepeaters = sorted.take(3).toList(growable: false);
@@ -1350,11 +1365,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _scheduleLiveActivitySync();
   }
 
-  void _startLiveActivitySession({bool manual = false}) {
+  void _startLiveActivitySession({bool manual = false, DateTime? startedAt}) {
     if (!_liveActivityService.isSupportedPlatform) return;
     if (_liveActivitySessionActive) {
       // Starting an automatic mode while a manual-ping activity is still in
       // cooldown upgrades the existing activity instead of creating a second.
+      // The boundary deliberately stays where the manual ping put it: this is
+      // one session under one ID, and the manual ping and its RX window are
+      // that session's own results, not a previous session's.
       if (!manual && _liveActivityManualSession) {
         _liveActivityManualSession = false;
         _scheduleLiveActivitySync(immediate: true);
@@ -1364,6 +1382,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveActivitySessionActive = true;
     _liveActivityManualSession = manual;
     _liveActivitySessionId = const Uuid().v4();
+    // Callers that transmit before reaching here pass the instant they began,
+    // so the session's own first observation falls inside its boundary.
+    _liveActivitySessionStartedAt = startedAt ?? DateTime.now();
     _liveActivityCycleStartedAt = _activeLiveActivityCycleStartedAt;
     _liveActivityOperation = null;
     _scheduleLiveActivitySync(immediate: true);
@@ -1391,6 +1412,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveActivityCycleStartedAt = null;
     _scheduleLiveActivitySync(immediate: true);
     _liveActivitySessionId = null;
+    _liveActivitySessionStartedAt = null;
   }
 
   void _markLiveActivityOperation(_LiveActivityOperation operation) {
@@ -1406,6 +1428,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void _scheduleLiveActivitySync({bool immediate = false}) {
     if (_isDisposed) return;
+    // Siri is local App Group state and must not depend on Watch availability.
+    _appIntentBridge.schedule(
+      _buildSiriSnapshotMap,
+      preflightKeyBuilder: _buildSiriSnapshotPreflightKey,
+      immediate: immediate,
+    );
     // The watch mirrors state even with no session running — otherwise you
     // could never start one from the wrist.
     _scheduleWatchSync(immediate: immediate);
@@ -1444,7 +1472,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  void _scheduleWatchSync({bool immediate = false, bool forceDelivery = false}) {
+  void _scheduleWatchSync(
+      {bool immediate = false, bool forceDelivery = false}) {
     if (_isDisposed || !_watchBridge.canSync) return;
     _watchBridge.schedule(
       _buildWatchSnapshot,
@@ -1569,7 +1598,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // taken from the first row. The RX slot's hash can be a different width
     // than the top rows', so a single-length index silently dropped the odd
     // row's name and distance while every other row resolved normally.
-    final repeaterByHex = WatchGeoBuilder.resolveOverlayRepeaters(
+    final repeaterByHex = ExternalSurfaceGeoBuilder.resolveOverlayRepeaters(
       repeaters: _repeaters,
       displayIds: [
         ...top.map((row) => row.repeaterId),
@@ -1577,7 +1606,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ],
       identities: _overlayIdentityById,
     );
-    final heard = WatchGeoBuilder.buildHeard(
+    final heard = ExternalSurfaceGeoBuilder.buildHeard(
       top: top,
       rxSlot: rxSlot,
       repeaterByHex: repeaterByHex,
@@ -1607,13 +1636,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     return WatchGeo(
       you: position,
-      pings: WatchGeoBuilder.buildPings(
+      pings: ExternalSurfaceGeoBuilder.buildPings(
         txPings: _txPings,
         rxPings: _rxPings,
         discLogEntries: _discLogEntries,
         traceLogEntries: _traceLogEntries,
       ),
-      repeaters: WatchGeoBuilder.buildRepeaters(
+      repeaters: ExternalSurfaceGeoBuilder.buildRepeaters(
         repeaters: _repeaters,
         heardThisCycle: heardIds,
         lat: ranking?.lat,
@@ -1621,7 +1650,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       ),
       heard: heard,
       linkedRepeaterIds: [
-        ...WatchGeoBuilder.resolveUniqueHexPrefixes(
+        ...ExternalSurfaceGeoBuilder.resolveUniqueHexPrefixes(
           repeaters: _repeaters,
           prefixes: heardIds,
         ).keys,
@@ -1698,7 +1727,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return resolved;
   }
 
-  ({bool allowed, String? reason}) get _manualPingAvailability {
+  ({bool allowed, ExternalCommandReason? reason}) get _manualPingAvailability {
     // This must remain the sole copy of the app button's gate. One caller says
     // what the wrist may offer while the other decides whether the radio may
     // transmit; letting those answers drift makes a stale watch payload unsafe.
@@ -1738,29 +1767,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Only describe a refusal that is actually happening. A reason computed
     // alongside an allowed ping would surface on the wrist as a status line
     // under two working buttons.
-    final String? reason;
+    final ExternalCommandReason? reason;
     if (allowed) {
       reason = null;
     } else if (!isConnected) {
-      reason = 'Not connected';
+      reason = ExternalCommandReason.notConnected;
     } else if (!hasGpsLock) {
-      reason = 'No GPS fix';
+      reason = const ExternalCommandReason.other('No GPS fix');
     } else if (txBlockedByOffline) {
-      reason = 'Offline Mode';
+      reason = ExternalCommandReason.offlineMode;
     } else if (txNotAllowed) {
-      reason = 'Passive Only';
+      reason = ExternalCommandReason.passiveOnly;
     } else if (!floodAllowed) {
-      reason = 'Flood Traffic Off';
+      reason = ExternalCommandReason.floodTrafficOff;
     } else if (manualPingValidation == PingValidation.manualCooldownActive ||
         cooldownActive ||
         manualCooldownActive ||
         rxWindowActive ||
         discoveryWindowActive) {
-      reason = 'Cooling down';
+      reason = ExternalCommandReason.coolingDown;
     } else if (!canPingManual) {
-      reason = manualPingValidation.message;
+      reason = _externalReasonForPingValidation(manualPingValidation);
     } else {
-      reason = 'Another operation is in progress';
+      reason = ExternalCommandReason.anotherOperationInProgress;
     }
 
     return (allowed: allowed, reason: reason);
@@ -1823,26 +1852,153 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           floodTrafficEnabled &&
           !isTxModeRunning &&
           !isTargetedModeRunning,
-      manualCooldownEndsAt: cooldownMs > 0
-          ? _manualPingCooldownTimer.endTime
-          : null,
+      manualCooldownEndsAt:
+          cooldownMs > 0 ? _manualPingCooldownTimer.endTime : null,
       // The button already renders its cooldown deadline. The handler still
       // returns this refusal to a stale tap, but duplicating it as a status
       // line would spend wrist space without adding an explanation.
       blockedReason: !_autoPingEnabled && !passiveStart.allowed
-          ? passiveStart.reason
-          : (manualPing.reason == 'Cooling down' ? null : manualPing.reason),
+          ? passiveStart.reason?.compactText
+          : (manualPing.reason?.code == ExternalCommandReasonCode.coolingDown
+              ? null
+              : manualPing.reason?.compactText),
     );
   }
 
   /// Colour of the most recent completed coverage event, matching the marker
   /// beside it rather than leaving Passive mode stuck on an old TX result.
-  WatchColor? _resolveWatchPingColor() => WatchGeoBuilder.latestPingColor(
+  WatchColor? _resolveWatchPingColor() =>
+      ExternalSurfaceGeoBuilder.latestPingColor(
         txPings: _txPings,
         rxPings: _rxPings,
         discLogEntries: _discLogEntries,
         traceLogEntries: _traceLogEntries,
       );
+
+  Map<String, Object?>? _buildSiriSnapshotMap() {
+    if (_isDisposed) return null;
+
+    final recentHeard = SiriSnapshotBuilder.buildRecentHeard(
+      txEntries: _txLogEntries,
+      rxEntries: _rxLogEntries,
+      discoveryEntries: _discLogEntries,
+      traceEntries: _traceLogEntries,
+      repeaters: _repeaters,
+      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      hopBytes: _hopBytes,
+    );
+    final phase = _resolveWatchPhase();
+    final passive = sessionStartAvailability(AutoMode.passive);
+    final active = sessionStartAvailability(AutoMode.active);
+    final hybrid = sessionStartAvailability(AutoMode.hybrid);
+    final manualPing = _manualPingAvailability;
+    final sessionBusy = _autoPingEnabled || _autoPingStarting;
+    final availableStartModes = <String>[
+      if (!sessionBusy && passive.allowed) AutoMode.passive.name,
+      if (!sessionBusy && active.allowed) AutoMode.active.name,
+      if (!sessionBusy && hybrid.allowed) AutoMode.hybrid.name,
+    ];
+    final sessionStartedAt = _liveActivitySessionStartedAt;
+    final uniqueHeard = SiriSnapshotBuilder.countUniqueRepeatersHeard(
+      recentHeard,
+      sessionStartedAt,
+    );
+
+    return SiriSnapshot(
+      updatedAt: DateTime.now(),
+      connection: SiriConnectionSnapshot(
+        isConnected: isConnected,
+        deviceName: displayDeviceName,
+        batteryPercent: _currentBatteryPercent,
+        gpsStatus: _gpsStatus.name,
+      ),
+      session: SiriSessionSnapshot(
+        id: _liveActivitySessionId,
+        startedAt: sessionStartedAt,
+        active: _autoPingEnabled,
+        starting: _autoPingStarting,
+        mode: sessionBusy ? _autoMode.name : 'idle',
+        phase: phase.phase.name,
+        phaseTitle: phase.title,
+        phaseDetail: phase.detail,
+        phaseEndsAt: phase.endsAt,
+        zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+        txCount: _pingStats.txCount,
+        rxCount: _pingStats.rxCount,
+        discoveryCount: _pingStats.discCount,
+        traceCount: _pingStats.traceCount,
+        queueSize: _queueSize,
+        uniqueRepeatersHeard: uniqueHeard,
+      ),
+      controls: SiriControlsSnapshot(
+        availableStartModes: availableStartModes,
+        canStart: !sessionBusy && passive.allowed,
+        startBlockedReason: _autoPingEnabled
+            ? 'Already running'
+            : _autoPingStarting
+                ? 'Already starting'
+                : passive.reason?.compactText,
+        canStop: _autoPingEnabled,
+        canManualPing: manualPing.allowed,
+        manualPingBlockedReason: manualPing.reason?.compactText,
+        manualCooldownEndsAt: _manualPingCooldownTimer.isRunning
+            ? _manualPingCooldownTimer.endTime
+            : null,
+      ),
+      recentHeard: recentHeard,
+      repeaters: SiriSnapshotBuilder.buildRepeaterCatalog(_repeaters),
+    ).toMap();
+  }
+
+  /// Cheap semantic projection used to avoid rebuilding the bounded App Group
+  /// snapshot on every provider notification. Log/catalog revisions cover the
+  /// expensive collections; the remaining values mirror every scalar emitted
+  /// by [_buildSiriSnapshotMap]. A five-minute bucket lets time-based repeater
+  /// staleness advance without restoring the old continuous rebuild loop.
+  String _buildSiriSnapshotPreflightKey() {
+    final phase = _resolveWatchPhase();
+    final passive = sessionStartAvailability(AutoMode.passive);
+    final active = sessionStartAvailability(AutoMode.active);
+    final hybrid = sessionStartAvailability(AutoMode.hybrid);
+    final manualPing = _manualPingAvailability;
+    final fiveMinuteBucket = DateTime.now().millisecondsSinceEpoch ~/
+        const Duration(minutes: 5).inMilliseconds;
+    return jsonEncode([
+      _siriObservationRevision,
+      _siriRepeaterCatalogRevision,
+      _hopBytes,
+      fiveMinuteBucket,
+      isConnected,
+      displayDeviceName,
+      _currentBatteryPercent,
+      _gpsStatus.name,
+      _liveActivitySessionId,
+      _autoPingEnabled,
+      _autoPingStarting,
+      _autoMode.name,
+      phase.phase.name,
+      phase.title,
+      phase.detail,
+      phase.endsAt?.millisecondsSinceEpoch,
+      zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      _pingStats.txCount,
+      _pingStats.rxCount,
+      _pingStats.discCount,
+      _pingStats.traceCount,
+      _queueSize,
+      passive.allowed,
+      passive.reason?.compactText,
+      active.allowed,
+      active.reason?.compactText,
+      hybrid.allowed,
+      hybrid.reason?.compactText,
+      manualPing.allowed,
+      manualPing.reason?.compactText,
+      _manualPingCooldownTimer.isRunning
+          ? _manualPingCooldownTimer.endTime?.millisecondsSinceEpoch
+          : null,
+    ]);
+  }
 
   /// Whether [mode] may begin now, with the reason the wearer should see.
   ///
@@ -1872,10 +2028,354 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       txBlockedByOffline: offlineMode && isConnected,
       txNotAllowed: isConnected && !txAllowed,
       floodTrafficEnabled: floodTrafficEnabled,
-      transmitValidationReason:
-          validation == PingValidation.valid ? null : validation.message,
+      transmitValidationReason: validation == PingValidation.valid
+          ? null
+          : _externalReasonForPingValidation(validation),
     );
   }
+
+  /// Applies the app's current session/radio rules to any external transport.
+  ExternalCommandAdmission admitExternalSessionCommand(
+    ExternalSessionCommand command,
+  ) {
+    if (_isDisposed) {
+      return const ExternalCommandAdmission(
+        disposition: ExternalCommandDisposition.refused,
+        reason: ExternalCommandReason.appClosing,
+      );
+    }
+
+    final transition = resolveExternalSessionTransition(
+      command: command,
+      isSessionActive: _autoPingEnabled,
+      isSessionStarting: _autoPingStarting,
+      currentMode: _autoMode.name,
+      currentSessionId: _liveActivitySessionId ?? 'idle',
+    );
+    if (!transition.shouldExecute) return transition;
+
+    switch (command.kind) {
+      case ExternalSessionCommandKind.startSession:
+        final mode = transition.mode;
+        if (mode == null) {
+          return const ExternalCommandAdmission(
+            disposition: ExternalCommandDisposition.refused,
+            reason: ExternalCommandReason.other(
+              'Unsupported start mode',
+            ),
+          );
+        }
+        final availability =
+            sessionStartAvailability(_autoModeFromExternal(mode));
+        if (!availability.allowed) {
+          return ExternalCommandAdmission(
+            disposition: ExternalCommandDisposition.refused,
+            reason: availability.reason ?? ExternalCommandReason.couldNotStart,
+            mode: mode,
+          );
+        }
+        return transition;
+
+      case ExternalSessionCommandKind.stopSession:
+        return transition;
+
+      case ExternalSessionCommandKind.manualPing:
+        final availability = _manualPingAvailability;
+        if (!availability.allowed) {
+          return ExternalCommandAdmission(
+            disposition: ExternalCommandDisposition.refused,
+            reason: availability.reason ??
+                const ExternalCommandReason.other('Ping unavailable'),
+          );
+        }
+        return transition;
+    }
+  }
+
+  /// Waits for the admitted operation's real outcome. Watch intentionally
+  /// does not await this; Siri does, so it never says "started" at admission.
+  Future<ExternalCommandCompletion> executeExternalSessionCommand(
+    ExternalSessionCommand command,
+    ExternalCommandAdmission admission,
+  ) async {
+    if (!admission.shouldExecute) {
+      return ExternalCommandCompletion(
+        success: admission.disposition == ExternalCommandDisposition.noOp,
+        disposition: admission.disposition,
+        message: admission.reason,
+        sessionId: _liveActivitySessionId,
+        mode: admission.mode,
+      );
+    }
+
+    _lastSessionCheckFailureReason = null;
+    // Re-read the clock at the checkpoint rather than capturing a decision
+    // made at admission, which is what makes this cover the awaited work in
+    // between.
+    bool cannotStillCommit() => externalCommandCannotCommit(command.expiresAt);
+    try {
+      switch (command.kind) {
+        case ExternalSessionCommandKind.startSession:
+          final mode = admission.mode!;
+          final started = await toggleAutoPing(
+            _autoModeFromExternal(mode),
+            shouldAbortBeforeTransmit: cannotStillCommit,
+          );
+          if (!started || !_autoPingEnabled) {
+            return ExternalCommandCompletion(
+              success: false,
+              disposition: ExternalCommandDisposition.refused,
+              message: _externalStartFailureReason(mode),
+              mode: mode,
+            );
+          }
+          return ExternalCommandCompletion(
+            success: true,
+            disposition: ExternalCommandDisposition.admitted,
+            message: ExternalCommandReason.other(
+              'MeshMapper started in ${mode.displayName} mode.',
+            ),
+            sessionId: _liveActivitySessionId,
+            mode: mode,
+          );
+
+        case ExternalSessionCommandKind.stopSession:
+          final stopped = await toggleAutoPing(_autoMode);
+          if (!stopped) {
+            return const ExternalCommandCompletion(
+              success: false,
+              disposition: ExternalCommandDisposition.refused,
+              message: ExternalCommandReason.couldNotStop,
+            );
+          }
+          final stopping = _autoPingEnabled || isPendingDisable;
+          return ExternalCommandCompletion(
+            success: true,
+            disposition: ExternalCommandDisposition.admitted,
+            message: ExternalCommandReason.other(
+              stopping ? 'MeshMapper is stopping.' : 'MeshMapper stopped.',
+            ),
+            sessionId: stopping ? _liveActivitySessionId : null,
+          );
+
+        case ExternalSessionCommandKind.manualPing:
+          final sent = await sendPing(
+            shouldAbortBeforeTransmit: cannotStillCommit,
+          );
+          if (!sent) {
+            return ExternalCommandCompletion(
+              success: false,
+              disposition: ExternalCommandDisposition.refused,
+              message: _lastSessionCheckFailureReason ??
+                  ExternalCommandReason.pingFailed,
+            );
+          }
+          return const ExternalCommandCompletion(
+            success: true,
+            disposition: ExternalCommandDisposition.admitted,
+            message: ExternalCommandReason.other(
+              'MeshMapper sent a manual ping.',
+            ),
+          );
+      }
+    } catch (error) {
+      debugError('[EXTERNAL] ${command.kind.name} failed: $error');
+      return ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: command.kind == ExternalSessionCommandKind.startSession
+            ? _externalStartFailureReason(admission.mode)
+            : command.kind == ExternalSessionCommandKind.stopSession
+                ? ExternalCommandReason.couldNotStop
+                : _lastSessionCheckFailureReason ??
+                    ExternalCommandReason.pingFailed,
+        mode: admission.mode,
+      );
+    }
+  }
+
+  Future<ExternalCommandCompletion> _handleSiriCommand(
+    AppIntentCommand command,
+  ) async {
+    if (command.kind == AppIntentCommandKind.connectLastCompanion) {
+      return _connectToLastCompanion(command);
+    }
+    final sessionCommand = command.toExternalSessionCommand();
+    if (sessionCommand == null) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other('Unsupported command'),
+      );
+    }
+    final admission = admitExternalSessionCommand(sessionCommand);
+    final completion =
+        await executeExternalSessionCommand(sessionCommand, admission);
+    return externalCommandCompletionForVoice(
+      command: sessionCommand,
+      completion: completion,
+    );
+  }
+
+  Future<ExternalCommandCompletion> _connectToLastCompanion(
+    AppIntentCommand command,
+  ) async {
+    try {
+      await _rememberedDeviceReady.future.timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other(
+          'MeshMapper is still starting. Open the app and try again.',
+        ),
+      );
+    }
+    // Admission ran before that wait, so re-check: a cold launch can spend the
+    // whole readiness budget and leave the caller already gone.
+    if (externalCommandDeadlineRefusal(command.expiresAt) != null) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other(
+          externalCommandExpiredVoiceMessage,
+        ),
+      );
+    }
+    if (_isDisposed) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.appClosing,
+      );
+    }
+
+    final remembered = _rememberedDevice;
+    final connectedDevice =
+        (_activeTransport ?? _bluetoothService).connectedDevice;
+    final isConnectedToRemembered = remembered != null &&
+        connectedDevice?.id == remembered.id &&
+        _selectedTransport == remembered.transportType;
+    final admission = resolveLastCompanionConnection(
+      command: command,
+      hasRememberedCompanion: remembered != null,
+      isConnected: isConnected,
+      isConnectedToRememberedCompanion: isConnectedToRemembered,
+      isConnecting: _isConnecting || _isAutoReconnecting,
+      canReconnectWithoutUserInput:
+          remembered?.transportType != TransportType.usbSerial,
+    );
+
+    if (!admission.shouldExecute) {
+      final message = switch (admission.reason?.code) {
+        ExternalCommandReasonCode.noRememberedCompanion =>
+          'MeshMapper has no remembered companion. Connect one in the app first.',
+        ExternalCommandReasonCode.alreadyConnected =>
+          'MeshMapper is already connected to ${remembered!.displayName}.',
+        ExternalCommandReasonCode.anotherCompanionConnected =>
+          'MeshMapper is already connected to ${displayDeviceName ?? connectedDevice?.name ?? 'another companion'}.',
+        ExternalCommandReasonCode.alreadyConnecting =>
+          'MeshMapper is already connecting. Try again shortly.',
+        ExternalCommandReasonCode.userInteractionRequired =>
+          'The last companion uses USB and must be selected in MeshMapper.',
+        ExternalCommandReasonCode.commandExpired =>
+          externalCommandExpiredVoiceMessage,
+        _ => admission.reason?.compactText ?? 'MeshMapper could not connect.',
+      };
+      return ExternalCommandCompletion(
+        success: admission.disposition == ExternalCommandDisposition.noOp,
+        disposition: admission.disposition,
+        message: ExternalCommandReason.other(message),
+      );
+    }
+
+    // Connecting cannot be cancelled once the transport is dialling, so the
+    // deadline is enforced by not starting a reconnect that has no room left to
+    // finish. Refusing here is free; refusing halfway through is not possible.
+    if (externalCommandCannotCommit(command.expiresAt)) {
+      return const ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other(
+          externalCommandExpiredVoiceMessage,
+        ),
+      );
+    }
+
+    try {
+      await reconnectToRememberedDevice();
+      final reconnectedDevice =
+          (_activeTransport ?? _bluetoothService).connectedDevice;
+      if (isConnected && reconnectedDevice?.id == remembered!.id) {
+        return ExternalCommandCompletion(
+          success: true,
+          disposition: ExternalCommandDisposition.admitted,
+          message: ExternalCommandReason.other(
+            'MeshMapper connected to ${remembered.displayName}.',
+          ),
+        );
+      }
+      return ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other(
+          _connectionError ??
+              'MeshMapper could not connect to ${remembered!.displayName}.',
+        ),
+      );
+    } catch (error) {
+      debugError('[SIRI] Connect to last companion failed: $error');
+      return ExternalCommandCompletion(
+        success: false,
+        disposition: ExternalCommandDisposition.refused,
+        message: ExternalCommandReason.other(
+          _connectionError ??
+              'MeshMapper could not connect to ${remembered!.displayName}.',
+        ),
+      );
+    }
+  }
+
+  static AutoMode _autoModeFromExternal(ExternalSessionMode mode) =>
+      switch (mode) {
+        ExternalSessionMode.active => AutoMode.active,
+        ExternalSessionMode.passive => AutoMode.passive,
+        ExternalSessionMode.hybrid => AutoMode.hybrid,
+      };
+
+  ExternalCommandReason _externalStartFailureReason(
+    ExternalSessionMode? mode,
+  ) {
+    final sessionReason = _lastSessionCheckFailureReason;
+    if (sessionReason != null) return sessionReason;
+    if (mode != ExternalSessionMode.passive && _cooldownTimer.isRunning) {
+      return ExternalCommandReason.coolingDown;
+    }
+    return ExternalCommandReason.couldNotStart;
+  }
+
+  ExternalCommandReason _externalReasonForPingValidation(
+    PingValidation validation,
+  ) =>
+      switch (validation) {
+        PingValidation.notConnected =>
+          ExternalCommandReason.notConnectedToDevice,
+        PingValidation.externalAntennaRequired =>
+          ExternalCommandReason.selectAntennaOptionBeforePinging,
+        PingValidation.powerLevelRequired =>
+          ExternalCommandReason.selectPowerLevelUnknownDevice,
+        PingValidation.noGpsLock => ExternalCommandReason.waitingForGpsLock,
+        PingValidation.gpsDataStale => ExternalCommandReason.gpsDataStale,
+        PingValidation.gpsInaccurate => ExternalCommandReason.gpsAccuracyLow,
+        PingValidation.cooldownActive => ExternalCommandReason.waitFiveSeconds,
+        PingValidation.manualCooldownActive =>
+          ExternalCommandReason.waitFifteenSeconds,
+        PingValidation.txNotAllowed => ExternalCommandReason.zoneAtCapacity,
+        PingValidation.valid ||
+        PingValidation.outsideGeofence ||
+        PingValidation.tooCloseToLastPing =>
+          ExternalCommandReason.other(validation.message),
+      };
 
   /// Decides whether an intent from the wrist may begin.
   ///
@@ -1888,11 +2388,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// already surface through session, phase, and ping-colour snapshots; a late
   /// failure gets its own cue so dropping completion from the ack loses nothing.
   String? _handleWatchCommand(WatchCommand command) {
-    if (_isDisposed) return 'App closing';
-
-    final kind = command.kind;
-
-    switch (kind) {
+    switch (command.kind) {
       case WatchCommandKind.requestSnapshot:
         // This command carries two intents. A genuine plea for state — after a
         // relaunch or a resume onto a retained context of unknown age — must
@@ -1907,13 +2403,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return null;
 
       case WatchCommandKind.startSession:
-        final admission = resolveWatchSessionCommandAdmission(
-          kind: kind,
-          isSessionActive: _autoPingEnabled,
-          isSessionStarting: _autoPingStarting,
-        );
-        if (admission.refusal != null) return admission.refusal;
-        if (!admission.shouldRun) return null;
         final requested = resolveWatchRequestedStartMode(
           requestedMode: command.mode,
           isConnected: isConnected,
@@ -1921,86 +2410,59 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
         if (requested.refusal != null) return requested.refusal;
         final mode = switch (requested.mode) {
-          WatchStartMode.passive => AutoMode.passive,
-          WatchStartMode.hybrid => AutoMode.hybrid,
-          null => _resolvedWatchSessionMode,
+          WatchStartMode.passive => AutoMode.passive.name,
+          WatchStartMode.hybrid => AutoMode.hybrid.name,
+          null => resolveLegacyWatchStartMode(
+              currentMode: _resolvedWatchSessionMode.name,
+              isConnected: isConnected,
+              txAllowed: txAllowed,
+            ),
         };
-        final availability = sessionStartAvailability(mode);
-        if (!availability.allowed) {
-          return availability.reason ?? 'Could not start';
-        }
-        unawaited(_runWatchStartSession(mode));
-        return null;
+        return _admitAndRunWatchCommand(command, mode: mode);
 
       case WatchCommandKind.stopSession:
-        final admission = resolveWatchSessionCommandAdmission(
-          kind: kind,
-          isSessionActive: _autoPingEnabled,
-          isSessionStarting: _autoPingStarting,
-          requestedSessionId: command.sessionId,
-          // The same value the wrist rendered, so a stop is matched against
-          // what the wearer was looking at rather than against a field only
-          // this side knows.
-          currentSessionId: _liveActivitySessionId ?? 'idle',
-        );
-        if (admission.refusal != null) return admission.refusal;
-        if (!admission.shouldRun) return null;
-        unawaited(_runWatchStopSession(_resolvedWatchSessionMode));
-        return null;
+        return _admitAndRunWatchCommand(command);
 
       case WatchCommandKind.manualPing:
-        final availability = _manualPingAvailability;
-        if (!availability.allowed) {
-          return availability.reason ?? 'Ping unavailable';
-        }
-        unawaited(_runWatchManualPing());
-        return null;
+        return _admitAndRunWatchCommand(command);
     }
   }
 
-  Future<void> _runWatchStartSession(AutoMode mode) async {
-    _lastSessionCheckFailureReason = null;
-    try {
-      final started = await toggleAutoPing(mode);
-      if (!started) {
-        _emitWatchFailure(_watchStartFailureReason(mode));
-      }
-    } catch (error) {
-      debugError('[WATCH] startSession failed after admission: $error');
-      _emitWatchFailure(_watchStartFailureReason(mode));
+  String? _admitAndRunWatchCommand(WatchCommand command, {String? mode}) {
+    final kind = switch (command.kind) {
+      WatchCommandKind.startSession => ExternalSessionCommandKind.startSession,
+      WatchCommandKind.stopSession => ExternalSessionCommandKind.stopSession,
+      WatchCommandKind.manualPing => ExternalSessionCommandKind.manualPing,
+      WatchCommandKind.requestSnapshot => throw ArgumentError.value(
+          command.kind,
+          'kind',
+          'Snapshot is a Watch transport command',
+        ),
+    };
+    final external = ExternalSessionCommand(
+      id: command.id ?? const Uuid().v4(),
+      source: ExternalCommandSource.watch,
+      kind: kind,
+      issuedAt: command.issuedAt ?? DateTime.now(),
+      mode: mode,
+      sessionId: command.sessionId,
+    );
+    final admission = admitExternalSessionCommand(external);
+    if (admission.disposition == ExternalCommandDisposition.refused) {
+      return admission.reason?.compactText;
     }
-  }
-
-  Future<void> _runWatchStopSession(AutoMode mode) async {
-    try {
-      final stopped = await toggleAutoPing(mode);
-      if (!stopped) _emitWatchFailure('Could not stop');
-    } catch (error) {
-      debugError('[WATCH] stopSession failed after admission: $error');
-      _emitWatchFailure('Could not stop');
+    if (admission.shouldExecute) {
+      unawaited(executeExternalSessionCommand(external, admission).then(
+        (completion) {
+          if (!completion.success) {
+            _emitWatchFailure(
+              completion.message?.compactText ?? 'Command failed',
+            );
+          }
+        },
+      ));
     }
-  }
-
-  String _watchStartFailureReason(AutoMode mode) {
-    final sessionReason = _lastSessionCheckFailureReason;
-    if (sessionReason != null) return sessionReason;
-    if (mode != AutoMode.passive && _cooldownTimer.isRunning) {
-      return 'Cooling down';
-    }
-    return 'Could not start';
-  }
-
-  Future<void> _runWatchManualPing() async {
-    _lastSessionCheckFailureReason = null;
-    try {
-      final sent = await sendPing();
-      if (!sent) {
-        _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
-      }
-    } catch (error) {
-      debugError('[WATCH] manualPing failed after admission: $error');
-      _emitWatchFailure(_lastSessionCheckFailureReason ?? 'Ping failed');
-    }
+    return null;
   }
 
   void _emitWatchFailure(String message) {
@@ -2208,8 +2670,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
 
-    if (_liveActivityManualSession &&
-        _manualPingCooldownTimer.isRunning) {
+    if (_liveActivityManualSession && _manualPingCooldownTimer.isRunning) {
       return (
         phase: LiveActivityPhase.cooldown,
         title: 'Cooldown',
@@ -2323,8 +2784,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           id: id,
           name: _resolveRepeaterDisplayName(id),
           snr: repeater.snr,
-          typeColor: WatchGeoBuilder.overlayTypeColor(repeater.type),
-          snrColor: WatchGeoBuilder.snrColor(repeater.snr),
+          typeColor: ExternalSurfaceGeoBuilder.overlayTypeColor(repeater.type),
+          snrColor: ExternalSurfaceGeoBuilder.snrColor(repeater.snr),
         );
       }
     }
@@ -2338,8 +2799,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           id: id,
           name: _resolveRepeaterDisplayName(id),
           snr: rx.snr,
-          typeColor: WatchGeoBuilder.overlayTypeColor(OverlayPingType.rx),
-          snrColor: WatchGeoBuilder.snrColor(rx.snr),
+          typeColor:
+              ExternalSurfaceGeoBuilder.overlayTypeColor(OverlayPingType.rx),
+          snrColor: ExternalSurfaceGeoBuilder.snrColor(rx.snr),
         );
       }
     }
@@ -2407,12 +2869,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final identity = _overlayIdentityById[displayId];
     final match = (identity == null
             ? null
-            : WatchGeoBuilder.resolveRepeater(
+            : ExternalSurfaceGeoBuilder.resolveRepeater(
                 repeaters: _repeaters,
                 id: identity,
                 hopBytes: _hopBytes,
               )) ??
-        WatchGeoBuilder.resolveRepeater(
+        ExternalSurfaceGeoBuilder.resolveRepeater(
           repeaters: _repeaters,
           id: displayId,
           hopBytes: _hopBytes,
@@ -2538,6 +3000,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (available) _scheduleWatchSync(immediate: true);
         },
       );
+    }
+    if (_appIntentBridge.isSupportedPlatform) {
+      _appIntentBridge.attachCommandHandler(_handleSiriCommand);
     }
 
     // Initialize debug logging (enabled by default, respects user preference)
@@ -3994,6 +4459,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         events: [],
       ));
       if (_txLogEntries.length > _maxLogEntries) _txLogEntries.removeAt(0);
+      _siriObservationRevision++;
 
       _notifyMapNow();
     };
@@ -4013,6 +4479,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         longitude: ping.longitude,
       ));
       if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
+      _siriObservationRevision++;
 
       _updateRxOverlaySlot(ping.repeaterId, ping.snr);
       _notifyMapThrottled();
@@ -4080,6 +4547,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             multiHopEvents: lastEntry.multiHopEvents,
           );
           _txLogEntries[_txLogEntries.length - 1] = updatedEntry;
+          _siriObservationRevision++;
           debugLog(
               '[APP] Updated TxLogEntry with ${existingEvents.length} direct, '
               '${lastEntry.multiHopEvents.length} multi-hop events (real-time)');
@@ -4153,6 +4621,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             events: lastEntry.events,
             multiHopEvents: multiHopEvents,
           );
+          _siriObservationRevision++;
 
           _updateLiveActivityRepeaters([
             ...lastEntry.events
@@ -4357,6 +4826,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             localRssi: result.localRssi,
             success: true,
           );
+          _siriObservationRevision++;
           _notifyMapNow();
         }
       }
@@ -4717,6 +5187,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           // Add to RX log entries
           _rxLogEntries.add(rxLogEntry);
           if (_rxLogEntries.length > _maxLogEntries) _rxLogEntries.removeAt(0);
+          _siriObservationRevision++;
           debugLog('[APP] Added RX log entry: repeater=${entry.repeaterId}, '
               'snr=${entry.snr ?? 'null'}, pathLen=${entry.pathLength}');
 
@@ -5574,7 +6045,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Send a manual TX ping
-  Future<bool> sendPing() async {
+  Future<bool> sendPing({bool Function()? shouldAbortBeforeTransmit}) async {
     if (_pingService == null) return false;
     if (_isAutoReconnecting) {
       debugLog('[PING] Ignoring ping during auto-reconnect');
@@ -5602,6 +6073,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!sessionCheck) return false;
       }
 
+      // The awaited session check can outlast the deadline an external surface
+      // is holding a person on. This is the last point before RF, so an expired
+      // request stops here rather than transmitting after Siri said it failed.
+      if (shouldAbortBeforeTransmit?.call() ?? false) {
+        _lastSessionCheckFailureReason = ExternalCommandReason.commandExpired;
+        return false;
+      }
+
       // Reset idle disconnect timer (user is actively pinging)
       _startIdleDisconnectTimer();
 
@@ -5610,7 +6089,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (ownsLiveActivity) {
         _startLiveActivitySession(manual: true);
       }
-      final sent = await _pingService!.sendTxPing(manual: true);
+      final sent = await _pingService!.sendTxPing(
+        manual: true,
+        shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
+      );
+      // The gate can also fire inside the send, after its own awaited work.
+      // Without this the caller hears the generic "couldn't send the ping"
+      // instead of being told the request simply arrived too late.
+      if (!sent && _pingService!.transmitAbortedByDeadline) {
+        _lastSessionCheckFailureReason = ExternalCommandReason.commandExpired;
+      }
       keepLiveActivity = sent;
       return sent;
     } finally {
@@ -5647,17 +6135,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
-  String _sessionCheckFailureMessage(String? reason, String? message) {
+  ExternalCommandReason _sessionCheckFailureMessage(
+    String? reason,
+    String? message,
+  ) {
     // `zone_full` is the server-side form of the same TX prohibition already
     // named "Passive Only" by watch controls. Reusing it avoids three wrist
     // phrasings for one condition; other presentable server text stays intact.
-    if (reason == 'zone_full') return 'Passive Only';
+    if (reason == 'zone_full') return ExternalCommandReason.passiveOnly;
 
     final serverMessage = message?.trim();
     if (serverMessage != null && serverMessage.isNotEmpty) {
-      return serverMessage;
+      return ExternalCommandReason.other(serverMessage);
     }
-    return _getErrorMessage(reason, null);
+    return ExternalCommandReason.other(_getErrorMessage(reason, null));
   }
 
   /// Set the target repeater ID for targeted mode
@@ -5743,7 +6234,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Toggle auto-ping mode (Active, Passive, Hybrid, or Trace)
   /// Returns false if blocked by cooldown (Active/Hybrid/Trace Mode only - Passive Mode ignores cooldown)
-  Future<bool> toggleAutoPing(AutoMode mode) async {
+  Future<bool> toggleAutoPing(
+    AutoMode mode, {
+    bool Function()? shouldAbortBeforeTransmit,
+  }) async {
     if (_pingService == null) return false;
 
     final isPassive = mode == AutoMode.passive;
@@ -5838,6 +6332,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return false;
         }
 
+        // The awaited session check can outlast the deadline an external
+        // surface is holding a person on. Stop here, before any existing mode
+        // is torn down, so an expired request never starts a session the
+        // person was already told did not start.
+        if (shouldAbortBeforeTransmit?.call() ?? false) {
+          _lastSessionCheckFailureReason = ExternalCommandReason.commandExpired;
+          return false;
+        }
+
         // Stop any existing mode first
         if (_autoPingEnabled) {
           await _pingService!.forceDisableAutoPing();
@@ -5868,13 +6371,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog(
             '[PING] Using interval from preferences: ${_preferences.autoPingInterval}s (${intervalMs}ms)');
 
+        // Taken before the call, not after it: enableAutoPing sends and records
+        // the session's first discovery before returning, and an observation
+        // the session made must not fall outside the session's own boundary.
+        final sessionStartedAt = DateTime.now();
         final started = await _pingService!.enableAutoPing(
           passiveMode: isPassive,
           hybridMode: isHybrid,
           targetedMode: isTargeted,
           targetRepeaterId: isTargeted ? _targetRepeaterId : null,
+          shouldAbortBeforeTransmit: shouldAbortBeforeTransmit,
         );
         if (!started) {
+          if (_pingService!.transmitAbortedByDeadline) {
+            _lastSessionCheckFailureReason =
+                ExternalCommandReason.commandExpired;
+          }
           // Blocked by cooldown or already enabled
           if (_pingService!.isInCooldown()) {
             debugLog(
@@ -5889,7 +6401,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _rxLogger?.startWardriving();
         _autoPingEnabled = true;
         _idleAutoStopReference = DateTime.now();
-        _startLiveActivitySession();
+        _startLiveActivitySession(startedAt: sessionStartedAt);
 
         // Start noise floor session for graph tracking
         final sessionLabel = isPassive
@@ -5949,6 +6461,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxPings.clear();
     _discLogEntries.clear();
     _traceLogEntries.clear();
+    _siriObservationRevision++;
     _clearOverlayState();
     _pingService?.resetStats();
     _notifyMapNow();
@@ -5960,6 +6473,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxLogEntries.clear();
     _discLogEntries.clear();
     _traceLogEntries.clear();
+    _siriObservationRevision++;
     _errorLogEntries.clear();
     _clearOverlayState();
     _notifyMapNow();
@@ -5971,6 +6485,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_discLogEntries.length > _maxLogEntries) {
       _discLogEntries.removeLast();
     }
+    _siriObservationRevision++;
     debugLog(
         '[APP] Discovery log entry added: ${entry.nodeCount} nodes discovered');
     _notifyMapNow();
@@ -5982,6 +6497,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_traceLogEntries.length > _maxLogEntries) {
       _traceLogEntries.removeLast();
     }
+    _siriObservationRevision++;
     debugLog(
         '[APP] Trace log entry added: target=${entry.targetRepeaterId}, success=${entry.success}');
 
@@ -7764,7 +8280,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         final staleHours = result['stale_repeater_hours'];
         if (staleHours is int && staleHours > 0) {
-          Repeater.staleHoursFallback = staleHours;
+          if (Repeater.staleHoursFallback != staleHours) {
+            Repeater.staleHoursFallback = staleHours;
+            _siriRepeaterCatalogRevision++;
+          }
           debugLog('[GEOFENCE] Zone stale repeater threshold: ${staleHours}h');
         }
 
@@ -7788,6 +8307,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Clear repeaters when exiting zone
         _repeaters = [];
+        _siriRepeaterCatalogRevision++;
         _repeatersLoaded = false;
         _repeatersLoadedForIata = null;
       }
@@ -8495,6 +9015,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
       if (fetchedRepeaters.isNotEmpty) {
         _repeaters = fetchedRepeaters;
+        _siriRepeaterCatalogRevision++;
         _repeatersLoaded = true;
         _repeatersLoadedForIata = iata;
         debugLog('[MAP] Loaded ${_repeaters.length} repeaters for zone $iata');
@@ -8886,13 +9407,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Load remembered device from Hive storage
   Future<void> _loadRememberedDevice() async {
-    // Skip on web - Web Bluetooth requires user interaction for each connection
-    if (kIsWeb) return;
-
-    final box = await _openBoxSafely(_rememberedDeviceBoxName);
-    if (box == null) return;
-
     try {
+      // Skip on web - Web Bluetooth requires user interaction for each connection
+      if (kIsWeb) return;
+
+      final box = await _openBoxSafely(_rememberedDeviceBoxName);
+      if (box == null) return;
+
       final json = box.get('device');
       if (json != null) {
         _rememberedDevice =
@@ -8904,6 +9425,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (e) {
       debugLog('[APP] Failed to load remembered device: $e');
+    } finally {
+      if (!_rememberedDeviceReady.isCompleted) {
+        _rememberedDeviceReady.complete();
+      }
     }
   }
 
@@ -9988,6 +10513,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _timerListenable.removeListener(_handleLiveActivityTimerChange);
     }
     _liveActivityService.dispose();
+    _appIntentBridge.dispose();
     _watchBridge.diagnostics.removeListener(_handleWatchDiagnosticsChanged);
     _watchBridge.dispose();
     WidgetsBinding.instance.removeObserver(this);

@@ -1,5 +1,5 @@
-import 'dart:math' as math;
-
+import '../external_commands/external_command_models.dart';
+import '../external_surfaces/geo/external_surface_geo_models.dart';
 import '../live_activity/live_activity_models.dart';
 import 'watch_color.dart';
 
@@ -33,11 +33,11 @@ class WatchWire {
   /// strand compatible pairs without preventing a bad decode.
   static const int version = 2;
 
-  static const int maxPings = 60;
-  static const int maxRepeaters = 20;
+  static const int maxPings = ExternalSurfaceGeoWire.maxPings;
+  static const int maxRepeaters = ExternalSurfaceGeoWire.maxRepeaters;
 
   /// Three top-SNR rows plus the RX slot, matching `_buildTopRepeatersOverlay`.
-  static const int maxHeard = 4;
+  static const int maxHeard = ExternalSurfaceGeoWire.maxHeard;
 
   /// How long a one-shot cue keeps riding outgoing snapshots.
   ///
@@ -51,7 +51,7 @@ class WatchWire {
   /// Skip a geo-only update unless the fix moved at least this far. Phase
   /// changes and new pings always go through; this only suppresses the
   /// jitter of a stationary GPS.
-  static const double minMoveMeters = 15.0;
+  static const double minMoveMeters = ExternalSurfaceGeoWire.minMoveMeters;
 
   /// True when the fix moved far enough to be worth an update on its own.
   ///
@@ -65,8 +65,13 @@ class WatchWire {
     required double lon,
     double thresholdMeters = minMoveMeters,
   }) {
-    if (lastLat == null || lastLon == null) return true;
-    return distanceMeters(lastLat, lastLon, lat, lon) >= thresholdMeters;
+    return ExternalSurfaceGeoWire.movedEnough(
+      lastLat: lastLat,
+      lastLon: lastLon,
+      lat: lat,
+      lon: lon,
+      thresholdMeters: thresholdMeters,
+    );
   }
 
   /// Great-circle distance in metres.
@@ -79,18 +84,8 @@ class WatchWire {
     double lat2,
     double lon2,
   ) {
-    const earthRadius = 6371000.0;
-    final dLat = _toRadians(lat2 - lat1);
-    final dLon = _toRadians(lon2 - lon1);
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(_toRadians(lat1)) *
-            math.cos(_toRadians(lat2)) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    return earthRadius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return ExternalSurfaceGeoWire.distanceMeters(lat1, lon1, lat2, lon2);
   }
-
-  static double _toRadians(double degrees) => degrees * math.pi / 180.0;
 }
 
 /// Start modes the phone may explicitly offer to the wrist.
@@ -110,165 +105,11 @@ enum WatchStartMode {
   }
 }
 
-class WatchPosition {
-  const WatchPosition({
-    required this.lat,
-    required this.lon,
-    required this.fixedAt,
-    this.headingDeg,
-    this.accuracyM,
-  });
-
-  final double lat;
-  final double lon;
-  final double? headingDeg;
-  final double? accuracyM;
-  final DateTime fixedAt;
-
-  Map<String, Object?> toMap() => {
-        'lat': lat,
-        'lon': lon,
-        'headingDeg': headingDeg,
-        'accuracyM': accuracyM,
-        'fixedAtMs': fixedAt.millisecondsSinceEpoch.toDouble(),
-      };
-}
-
-class WatchPing {
-  const WatchPing({
-    required this.id,
-    required this.lat,
-    required this.lon,
-    required this.kind,
-    required this.color,
-    required this.at,
-  });
-
-  final String id;
-  final double lat;
-  final double lon;
-
-  /// 'tx' | 'rx' | 'disc' | 'trace' — drives glyph choice, not colour.
-  final String kind;
-  final WatchColor color;
-  final DateTime at;
-
-  Map<String, Object?> toMap() => {
-        'id': id,
-        'lat': lat,
-        'lon': lon,
-        'kind': kind,
-        'color': color.toMap(),
-        'atMs': at.millisecondsSinceEpoch.toDouble(),
-      };
-}
-
-class WatchRepeater {
-  const WatchRepeater({
-    required this.id,
-    required this.hexId,
-    required this.name,
-    required this.lat,
-    required this.lon,
-    required this.color,
-    required this.heardThisCycle,
-  });
-
-  final String id;
-  final String hexId;
-  final String name;
-  final double lat;
-  final double lon;
-  final WatchColor color;
-  final bool heardThisCycle;
-
-  Map<String, Object?> toMap() => {
-        'id': id,
-        'hexId': hexId,
-        'name': name,
-        'lat': lat,
-        'lon': lon,
-        'color': color.toMap(),
-        'heardThisCycle': heardThisCycle,
-      };
-}
-
-/// One row of the "Top Heard" overlay.
-///
-/// Mirrors `_buildTopRepeatersOverlay` in `map_widget.dart`: a dot coloured by
-/// which kind of ping the repeater answered, the hex path-hash ID, and the SNR.
-///
-/// The **ID is the identity**, not the name. Path hashes are 1–3 bytes, so a
-/// 2-character ID frequently cannot be resolved to a single repeater — [name]
-/// is sent only when the match is unambiguous, and the watch always shows the
-/// hex.
-///
-/// There is no hop count here by design: the overlay is fed `directRepeaters`,
-/// with multi-hop events deliberately excluded.
-class WatchHeardNode {
-  const WatchHeardNode({
-    required this.id,
-    required this.typeColor,
-    required this.at,
-    this.name,
-    this.snr,
-    this.distanceM,
-    this.snrColor,
-  });
-
-  /// Uppercase hex path hash, 2/4/6 chars depending on the zone's hop bytes.
-  final String id;
-
-  /// Resolved repeater name, when the hex maps to exactly one repeater.
-  final String? name;
-  final double? snr;
-  final DateTime at;
-  final double? distanceM;
-
-  /// SNR traffic-light colour.
-  final WatchColor? snrColor;
-
-  /// Ping type the repeater answered — green flood/active, teal discovery,
-  /// cyan trace, purple most-recent RX.
-  final WatchColor typeColor;
-
-  Map<String, Object?> toMap() => {
-        'id': id,
-        'name': name,
-        'snr': snr,
-        'atMs': at.millisecondsSinceEpoch.toDouble(),
-        'distanceM': distanceM,
-        'snrColor': snrColor?.toMap(),
-        'typeColor': typeColor.toMap(),
-      };
-}
-
-class WatchGeo {
-  const WatchGeo({
-    required this.pings,
-    required this.repeaters,
-    required this.heard,
-    required this.linkedRepeaterIds,
-    this.you,
-  });
-
-  final WatchPosition? you;
-  final List<WatchPing> pings;
-  final List<WatchRepeater> repeaters;
-  final List<WatchHeardNode> heard;
-  final List<String> linkedRepeaterIds;
-
-  Map<String, Object?> toMap({bool includeMapDetail = true}) => {
-        'you': you?.toMap(),
-        'pings':
-            includeMapDetail ? pings.map((p) => p.toMap()).toList() : const [],
-        'repeaters': includeMapDetail
-            ? repeaters.map((r) => r.toMap()).toList()
-            : const [],
-        'heard': heard.map((h) => h.toMap()).toList(),
-        'linkedRepeaterIds': includeMapDetail ? linkedRepeaterIds : const [],
-      };
-}
+typedef WatchPosition = ExternalSurfacePosition;
+typedef WatchPing = ExternalSurfacePing;
+typedef WatchRepeater = ExternalSurfaceRepeater;
+typedef WatchHeardNode = ExternalSurfaceHeardNode;
+typedef WatchGeo = ExternalSurfaceGeo;
 
 /// What the wrist may do right now.
 ///
@@ -480,6 +321,8 @@ enum WatchCommandKind {
 class WatchCommand {
   const WatchCommand({
     required this.kind,
+    this.id,
+    this.issuedAt,
     this.mode,
     this.mapGeoNeeded,
     this.forceRefresh = false,
@@ -487,6 +330,8 @@ class WatchCommand {
   });
 
   final WatchCommandKind kind;
+  final String? id;
+  final DateTime? issuedAt;
   final String? mode;
 
   /// Which session a [WatchCommandKind.stopSession] means, taken from the
@@ -541,6 +386,25 @@ WatchRequestedStartModeResolution resolveWatchRequestedStartMode({
     return (mode: null, refusal: 'Passive Only');
   }
   return (mode: mode, refusal: null);
+}
+
+/// Mode used when an older watch sends the pre-mode-picker generic Start.
+///
+/// Trace is deliberately absent from the shared external-command model: it
+/// requires a phone-selected target. Falling back to Passive keeps an older
+/// watch usable after the phone last ran Trace without silently targeting a
+/// stale repeater. Other established modes retain the legacy behaviour.
+String resolveLegacyWatchStartMode({
+  required String currentMode,
+  required bool isConnected,
+  required bool txAllowed,
+}) {
+  if (!isConnected || !txAllowed || currentMode == 'targeted') {
+    return 'passive';
+  }
+  return const {'active', 'passive', 'hybrid'}.contains(currentMode)
+      ? currentMode
+      : 'passive';
 }
 
 /// Whether Settings should offer the watch diagnostics screen.
@@ -603,9 +467,10 @@ List<WatchStartMode> resolveAvailableWatchStartModes({
         WatchStartMode.hybrid,
     ];
 
-typedef WatchCommandAdmission = ({bool shouldRun, String? refusal});
-
-typedef SessionStartAvailability = ({bool allowed, String? reason});
+typedef SessionStartAvailability = ({
+  bool allowed,
+  ExternalCommandReason? reason,
+});
 
 /// One start-admission rule shared by the wrist snapshot and command handler.
 ///
@@ -638,92 +503,60 @@ SessionStartAvailability resolveSessionStartAvailability({
   required bool txBlockedByOffline,
   required bool txNotAllowed,
   required bool floodTrafficEnabled,
-  required String? transmitValidationReason,
+  required ExternalCommandReason? transmitValidationReason,
 }) {
-  if (!isConnected) return (allowed: false, reason: 'Not connected');
-  if (isPendingDisable) return (allowed: false, reason: 'Still stopping');
-  if (isTargetedRunning) {
-    return (allowed: false, reason: 'Trace session active');
+  if (!isConnected) {
+    return (allowed: false, reason: ExternalCommandReason.notConnected);
   }
-  if (isAutoStarting) return (allowed: false, reason: 'Already starting');
+  if (isPendingDisable) {
+    return (allowed: false, reason: ExternalCommandReason.stillStopping);
+  }
+  if (isTargetedRunning) {
+    return (allowed: false, reason: ExternalCommandReason.traceSessionActive);
+  }
+  if (isAutoStarting) {
+    return (allowed: false, reason: ExternalCommandReason.alreadyStarting);
+  }
   if (!antennaConfigured) {
-    return (allowed: false, reason: 'Select antenna option');
+    return (allowed: false, reason: ExternalCommandReason.selectAntennaOption);
   }
   if (!powerConfigured) {
-    return (allowed: false, reason: 'Select power level');
+    return (allowed: false, reason: ExternalCommandReason.selectPowerLevel);
   }
 
   // Timing guards: every mode reaches the radio, so every mode waits.
-  if (cooldownActive) return (allowed: false, reason: 'Cooling down');
-  if (isPingSending) return (allowed: false, reason: 'Ping in progress');
+  if (cooldownActive) {
+    return (allowed: false, reason: ExternalCommandReason.coolingDown);
+  }
+  if (isPingSending) {
+    return (allowed: false, reason: ExternalCommandReason.pingInProgress);
+  }
   if (rxWindowActive) {
-    return (allowed: false, reason: 'Listening for ping response');
+    return (
+      allowed: false,
+      reason: ExternalCommandReason.listeningForPingResponse,
+    );
   }
 
   if (!isTransmitMode) return (allowed: true, reason: null);
 
-  if (txBlockedByOffline) return (allowed: false, reason: 'Offline Mode');
-  if (txNotAllowed) return (allowed: false, reason: 'Passive Only');
+  if (txBlockedByOffline) {
+    return (allowed: false, reason: ExternalCommandReason.offlineMode);
+  }
+  if (txNotAllowed) {
+    return (allowed: false, reason: ExternalCommandReason.passiveOnly);
+  }
   // True whether the wearer turned flood traffic off or a regional admin did;
   // the phone's own gate is the same single effective value, and the wearer's
   // next step — look at the phone, where Settings says which it was — is the
   // same either way.
   if (!floodTrafficEnabled) {
-    return (allowed: false, reason: 'Flood Traffic Off');
+    return (allowed: false, reason: ExternalCommandReason.floodTrafficOff);
   }
   if (transmitValidationReason != null) {
     return (allowed: false, reason: transmitValidationReason);
   }
   return (allowed: true, reason: null);
-}
-
-/// Resolve the wrist's single Start/Stop control without racing the phone's
-/// asynchronous start transaction. A second Start is the same intent and can
-/// disappear harmlessly; Stop is the opposite intent, so claiming success
-/// before there is a running session would lie to the wearer.
-///
-/// [requestedSessionId] is the session the wrist meant, and is compared against
-/// [currentSessionId] before a stop is admitted. Both are needed because a stop
-/// is deliberately exempt from the transmit-age window: it can arrive
-/// arbitrarily late, and "stop the session" is only unambiguous while there is
-/// one session it could mean. A null request is an older watch build and keeps
-/// the previous behaviour.
-WatchCommandAdmission resolveWatchSessionCommandAdmission({
-  required WatchCommandKind kind,
-  required bool isSessionActive,
-  required bool isSessionStarting,
-  String? requestedSessionId,
-  String? currentSessionId,
-}) {
-  switch (kind) {
-    case WatchCommandKind.startSession:
-      return (
-        shouldRun: !isSessionActive && !isSessionStarting,
-        refusal: null,
-      );
-    case WatchCommandKind.stopSession:
-      if (isSessionStarting && !isSessionActive) {
-        return (
-          shouldRun: false,
-          refusal: 'Still starting — try Stop again',
-        );
-      }
-      // Checked only once there is a session to stop. With none running the
-      // stop stays the harmless no-op it has always been, rather than becoming
-      // a refusal for a session that is already over.
-      if (isSessionActive &&
-          requestedSessionId != null &&
-          requestedSessionId != currentSessionId) {
-        return (
-          shouldRun: false,
-          refusal: 'That session already ended',
-        );
-      }
-      return (shouldRun: isSessionActive, refusal: null);
-    case WatchCommandKind.manualPing:
-    case WatchCommandKind.requestSnapshot:
-      throw ArgumentError.value(kind, 'kind', 'Expected Start or Stop');
-  }
 }
 
 /// The shared resolver's Starting fallback is correct for a Live Activity,

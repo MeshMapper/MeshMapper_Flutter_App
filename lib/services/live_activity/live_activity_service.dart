@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../utils/debug_logger_io.dart';
+import '../external_surfaces/external_surface_publisher.dart';
 import 'live_activity_models.dart';
 
 typedef LiveActivitySnapshotBuilder = LiveActivitySnapshot? Function();
@@ -27,8 +28,27 @@ class LiveActivityService {
     @visibleForTesting
     Duration minimumNonUrgentInterval = defaultMinimumNonUrgentInterval,
   })  : _channel = channel ?? const MethodChannel('meshmapper/live_activity'),
-        _unavailableRetryDelay = unavailableRetryDelay,
-        _minimumNonUrgentInterval = minimumNonUrgentInterval;
+        _unavailableRetryDelay = unavailableRetryDelay {
+    _publisher =
+        ExternalSurfacePublisher<LiveActivitySnapshot, Map<String, Object?>>(
+      debounceDelay: _debounceDelay,
+      minimumNonUrgentInterval: minimumNonUrgentInterval,
+      isEnabled: () => isSupportedPlatform && !_hostCannotHostActivities,
+      preflightPolicy: ExternalSurfacePreflightPolicy.throttleAgainstLastBuild,
+      payloadBuilder: (snapshot) => snapshot.toMap(),
+      fingerprintBuilder: (payload) {
+        final fingerprint = Map<String, Object?>.from(payload)
+          ..remove('updatedAt');
+        return jsonEncode(fingerprint);
+      },
+      urgencyKeyBuilder: (snapshot) => snapshot.urgencyKey,
+      publish: _publishSnapshot,
+      clear: _endCurrentActivity,
+      onQueueError: (error) {
+        debugError('[LIVE ACTIVITY] Update queue failed: $error');
+      },
+    );
+  }
 
   static const Duration _debounceDelay = Duration(milliseconds: 200);
 
@@ -58,30 +78,11 @@ class LiveActivityService {
 
   final MethodChannel _channel;
   final Duration _unavailableRetryDelay;
-  final Duration _minimumNonUrgentInterval;
-
-  Timer? _scheduledUpdate;
-  LiveActivitySnapshotBuilder? _pendingSnapshotBuilder;
-  LiveActivityUrgencyKeyBuilder? _pendingUrgencyKeyBuilder;
-  DateTime? _lastBuiltAt;
-  String? _lastPayload;
-  String? _lastUrgencyKey;
-
-  /// The preflight key as of the last build, kept apart from [_lastUrgencyKey]
-  /// because the two are different projections: this one omits the ping colour
-  /// so it can be produced without walking a ping history.
-  String? _lastPreflightUrgencyKey;
-  DateTime? _lastSentAt;
+  late final ExternalSurfacePublisher<LiveActivitySnapshot,
+      Map<String, Object?>> _publisher;
   String? _unavailableSessionId;
   DateTime? _unavailableRetryAt;
-
-  /// Set when a flush was deferred for a reason unrelated to how much changed —
-  /// ActivityKit reporting itself unavailable, or refusing a `request` from the
-  /// background. Those retries must not be swallowed by the build floor below,
-  /// which would otherwise reason "nothing urgent moved" and never re-ask.
-  bool _bypassBuildFloor = false;
   bool _disposed = false;
-  bool _didReconcileNativeState = false;
 
   /// Set once native reports a condition that cannot change while this process
   /// lives: an OS without ActivityKit, or a host with no such channel at all.
@@ -91,7 +92,6 @@ class LiveActivityService {
   /// channel round trip apiece, on devices that were never going to show
   /// anything.
   bool _hostCannotHostActivities = false;
-  Future<void> _operationChain = Future<void>.value();
 
   bool get isSupportedPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
@@ -102,69 +102,18 @@ class LiveActivityService {
     bool immediate = false,
   }) {
     if (_disposed || !isSupportedPlatform || _hostCannotHostActivities) return;
-
-    _pendingSnapshotBuilder = snapshotBuilder;
-    _pendingUrgencyKeyBuilder = urgencyKeyBuilder;
-    _scheduledUpdate?.cancel();
-
-    if (immediate) {
-      _enqueueFlush();
-      return;
-    }
-
-    _scheduledUpdate = Timer(_debounceDelay, _enqueueFlush);
-  }
-
-  void _enqueueFlush() {
-    _operationChain = _operationChain.then((_) => _flush()).catchError(
-      (Object error) {
-        debugError('[LIVE ACTIVITY] Update queue failed: $error');
-      },
+    _publisher.schedule(
+      snapshotBuilder,
+      preflightKeyBuilder: urgencyKeyBuilder,
+      immediate: immediate,
     );
   }
 
-  Future<void> _flush() async {
-    _scheduledUpdate?.cancel();
-    _scheduledUpdate = null;
-
-    if (_disposed || !isSupportedPlatform || _hostCannotHostActivities) return;
-
-    // The 500 ms countdown listenable drives this at ~2 Hz for a whole session,
-    // and building a snapshot resolves the latest ping colour by walking the
-    // TX, RX, discovery and trace logs — up to 500 entries each — only for the
-    // result to be discarded as a duplicate. So decide whether this flush can
-    // wait *before* constructing or encoding anything, from a key that reads
-    // scalars off the provider. Mirrors `WatchBridgeService._flush`.
-    final pendingUrgencyKey = _pendingUrgencyKeyBuilder?.call();
-    final endAlreadyDelivered =
-        pendingUrgencyKey == null && _lastPayload == null;
-    if (endAlreadyDelivered && _didReconcileNativeState) return;
-
-    final predictedUrgent = pendingUrgencyKey != _lastPreflightUrgencyKey;
-    final lastBuiltAt = _lastBuiltAt;
-    if (!_bypassBuildFloor && !predictedUrgent && lastBuiltAt != null) {
-      final elapsed = DateTime.now().difference(lastBuiltAt);
-      if (elapsed < _minimumNonUrgentInterval) {
-        // The deferral keeps any outstanding bypass, so a retry that is waiting
-        // on this floor still gets its turn rather than being dropped.
-        _scheduledUpdate = Timer(
-          _minimumNonUrgentInterval - elapsed,
-          _enqueueFlush,
-        );
-        return;
-      }
-    }
-
-    _bypassBuildFloor = false;
-    _lastBuiltAt = DateTime.now();
-    _lastPreflightUrgencyKey = pendingUrgencyKey;
-    final snapshot = _pendingSnapshotBuilder?.call();
-    if (snapshot == null) {
-      if (_lastPayload == null && _didReconcileNativeState) return;
-      await _endCurrentActivity(immediate: _lastPayload == null);
-      return;
-    }
-
+  Future<ExternalSurfacePublishResult> _publishSnapshot(
+    ExternalSurfacePublication<LiveActivitySnapshot, Map<String, Object?>>
+        publication,
+  ) async {
+    final snapshot = publication.snapshot;
     if (_unavailableSessionId == snapshot.sessionId) {
       final retryAt = _unavailableRetryAt;
       final now = DateTime.now();
@@ -172,9 +121,9 @@ class LiveActivityService {
         // Authorization can be enabled in Settings while this session is
         // running. One scheduled retry makes that recover without asking
         // ActivityKit on every high-frequency provider notification.
-        _bypassBuildFloor = true;
-        _scheduledUpdate = Timer(retryAt.difference(now), _enqueueFlush);
-        return;
+        return ExternalSurfacePublishResult.rejected(
+          retryAfter: retryAt.difference(now),
+        );
       }
       _unavailableSessionId = null;
       _unavailableRetryAt = null;
@@ -183,61 +132,39 @@ class LiveActivityService {
       _unavailableRetryAt = null;
     }
 
-    final payload = snapshot.toMap();
-    // updatedAt is metadata for ActivityKit's stale date, not a visible state
-    // change. Excluding it from the fingerprint prevents 500 ms countdown
-    // timer ticks from causing native updates; SwiftUI renders countdowns from
-    // the absolute phaseEndsAt deadline instead.
-    final fingerprintPayload = Map<String, Object?>.from(payload)
-      ..remove('updatedAt');
-    final encoded = jsonEncode(fingerprintPayload);
-    if (encoded == _lastPayload) return;
-
-    final urgent = snapshot.urgencyKey != _lastUrgencyKey;
-    final lastSentAt = _lastSentAt;
-    if (!urgent && lastSentAt != null) {
-      final elapsed = DateTime.now().difference(lastSentAt);
-      if (elapsed < _minimumNonUrgentInterval) {
-        _scheduledUpdate = Timer(
-          _minimumNonUrgentInterval - elapsed,
-          _enqueueFlush,
-        );
-        return;
-      }
-    }
-
     try {
-      final result = await _channel.invokeMethod<Object?>('sync', payload);
-      _didReconcileNativeState = true;
+      final result =
+          await _channel.invokeMethod<Object?>('sync', publication.payload);
       if (result == unsupportedHost) {
         _stopForUnsupportedHost('iOS 16.2 is required for Live Activities');
-        return;
+        return const ExternalSurfacePublishResult.disable();
       }
       if (result == false) {
         _unavailableSessionId = snapshot.sessionId;
         _unavailableRetryAt = DateTime.now().add(_unavailableRetryDelay);
-        _bypassBuildFloor = true;
-        _scheduledUpdate = Timer(_unavailableRetryDelay, _enqueueFlush);
         debugLog('[LIVE ACTIVITY] Live Activities are unavailable or disabled');
-        return;
+        return ExternalSurfacePublishResult.rejected(
+          retryAfter: _unavailableRetryDelay,
+        );
       }
       _unavailableSessionId = null;
       _unavailableRetryAt = null;
-      _lastPayload = encoded;
-      _lastUrgencyKey = snapshot.urgencyKey;
-      _lastSentAt = DateTime.now();
+      return const ExternalSurfacePublishResult.published();
     } on MissingPluginException {
       // A host with no such channel — a non-iOS test host, or an iOS project
       // generated before this feature existed. Neither gains one at runtime,
       // so this is the same permanent condition as an OS below 16.2.
       _stopForUnsupportedHost('no Live Activity channel on this host');
+      return const ExternalSurfacePublishResult.disable();
     } on PlatformException catch (error) {
       debugError(
         '[LIVE ACTIVITY] ActivityKit sync failed: '
         '${error.code}: ${error.message}',
       );
+      return const ExternalSurfacePublishResult.rejected();
     } catch (error) {
       debugError('[LIVE ACTIVITY] Unexpected sync failure: $error');
+      return const ExternalSurfacePublishResult.rejected();
     }
   }
 
@@ -246,14 +173,9 @@ class LiveActivityService {
   void _stopForUnsupportedHost(String reason) {
     if (_hostCannotHostActivities) return;
     _hostCannotHostActivities = true;
-    _didReconcileNativeState = true;
-    _scheduledUpdate?.cancel();
-    _scheduledUpdate = null;
-    _pendingSnapshotBuilder = null;
-    _pendingUrgencyKeyBuilder = null;
+    _publisher.disable();
     _unavailableSessionId = null;
     _unavailableRetryAt = null;
-    _bypassBuildFloor = false;
     debugLog('[LIVE ACTIVITY] Disabled for this session: $reason');
   }
 
@@ -273,24 +195,14 @@ class LiveActivityService {
     } catch (error) {
       debugError('[LIVE ACTIVITY] Unexpected end failure: $error');
     } finally {
-      _didReconcileNativeState = true;
-      _lastPayload = null;
-      _lastUrgencyKey = null;
-      _lastPreflightUrgencyKey = null;
-      _lastSentAt = null;
-      _lastBuiltAt = null;
       _unavailableSessionId = null;
       _unavailableRetryAt = null;
-      _bypassBuildFloor = false;
     }
   }
 
   void dispose() {
     _disposed = true;
-    _scheduledUpdate?.cancel();
-    _scheduledUpdate = null;
-    _pendingSnapshotBuilder = null;
-    _pendingUrgencyKeyBuilder = null;
+    _publisher.dispose();
     _unavailableRetryAt = null;
   }
 }
