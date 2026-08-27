@@ -72,7 +72,8 @@ void main() {
     await queue.flushQueue();
 
     expect(
-      harness.wardrivePosts, hasLength(2),
+      harness.wardrivePosts,
+      hasLength(2),
       reason: 'both flushes should have tried the network. If the second was '
           'skipped, the first failure started the backoff ladder, which means '
           'a dead socket is being counted as a server rejection',
@@ -95,7 +96,8 @@ void main() {
 
     expect(queue.queueSize, 1, reason: 'the sample is still held in the queue');
     expect(
-      queue.failedItems, isEmpty,
+      queue.failedItems,
+      isEmpty,
       reason: 'nothing in the app ever reads failedItems or resets retryCount, '
           'so an item that lands here is coverage the user will never get',
     );

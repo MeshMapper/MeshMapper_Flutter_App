@@ -1344,8 +1344,7 @@ class PingService {
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = Timer(_pendingDisableTimeoutDelay, () async {
       if (!_pendingDisable) return; // the window drained it, nothing to do
-      debugWarn(
-          '[PING] Pending disable never drained after '
+      debugWarn('[PING] Pending disable never drained after '
           '${_pendingDisableTimeoutDelay.inSeconds}s (no RX window arrived) - forcing it');
       // The ping this was waiting on is gone. Leaving this set would keep the
       // ping controls locked out until a restart.

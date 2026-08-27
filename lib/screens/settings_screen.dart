@@ -2827,8 +2827,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         // inside the block only re-arms a fresh penalty.
         final wait = outcome.retryAfter;
         if (wait != null) {
-          AppToast.warning(context,
-              'Too many attempts. Try again in ${_waitLabel(wait)}.');
+          AppToast.warning(
+              context, 'Too many attempts. Try again in ${_waitLabel(wait)}.');
         } else {
           AppToast.error(context, 'Could not link right now — try again later');
         }
