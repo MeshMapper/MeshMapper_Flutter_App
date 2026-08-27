@@ -9,7 +9,7 @@ import 'external_surface_geo_models.dart';
 /// Pure builders for geography shared by native external surfaces.
 ///
 /// Kept free of provider and platform dependencies so the caps, decimation,
-/// and colour resolution can be unit-tested directly — those are exactly the
+/// and colour resolution can be unit-tested directly; those are exactly the
 /// rules that would otherwise only fail on a wrist, in a car, at speed.
 class ExternalSurfaceGeoBuilder {
   ExternalSurfaceGeoBuilder._();
@@ -251,9 +251,9 @@ class ExternalSurfaceGeoBuilder {
 
   /// Resolve one identifier to a repeater, or null when it is not unambiguous.
   ///
-  /// Tries exact identity first — the catalogue's short ID, its hex ID, or the
+  /// Tries exact identity first (the catalogue's short ID, its hex ID, or the
   /// hex truncated to the zone's hop width, which is the form an overlay row is
-  /// labelled with — and only then a unique prefix relation.
+  /// labelled with) and only then a unique prefix relation.
   ///
   /// **A repeater with no `hexId` is never a prefix candidate.** The API omits
   /// `hex_id` often enough that `Repeater.fromJson` defaults it to the empty
@@ -366,7 +366,7 @@ class ExternalSurfaceGeoBuilder {
   /// The "Top Heard" overlay rows: up to three top-SNR repeaters from the
   /// latest ping, then the current RX slot.
   ///
-  /// Order is deliberate rather than a global SNR sort — it matches the map
+  /// Order is deliberate rather than a global SNR sort: it matches the map
   /// overlay, where the RX slot is a distinct trailing row rather than a
   /// competitor for the top three.
   static List<ExternalSurfaceHeardNode> buildHeard({
