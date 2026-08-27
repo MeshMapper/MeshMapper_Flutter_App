@@ -81,6 +81,13 @@ MESHMAPPER_API_KEY=<your-key> ./Build.sh
 ./set_whats_new.sh --notes-file notes.txt
 ```
 
+The upload export uses explicit App Store profiles from
+`ios/ExportOptionsUpload.plist`. The Runner profile must include the App Group
+entitlement, and the App Intents extension needs its own profile with the same
+group. When either target's capabilities change, regenerate and reinstall the
+named profiles before exporting; an existing profile is not automatically
+updated by adding the developer-portal capability.
+
 ### Debug Logging
 - Web: Add `?debug=1` to URL to enable debug logging in browser console
 - Mobile: Debug logging enabled in debug builds via `kDebugMode`; disabled in release builds
@@ -738,6 +745,205 @@ or `"unsupported"`. `false` means *not right now* — authorization is off, or
 30 s backoff. `"unsupported"` (and a `MissingPluginException`) means this host
 can never show one, and Dart stops asking for the rest of the process rather
 than running a guaranteed-fail retry loop all session.
+
+**App Intents, Siri, and future Apple surfaces.** Every App Intent in this app
+is iOS 26+: the extension has a 26.0 deployment target and the Runner intent
+types are annotated `@available(iOS 26.0, *)`. Devices below that get none of
+these Siri actions, and none of the app's other surfaces depend on them.
+
+Mutation intents live in the
+Runner process because session and connection changes must pass through the
+same phone-owned admission path as the watch. Read-only intents *run* in a
+separate extension against the bounded App Group snapshot in
+`ios/Shared/AppIntents/`; they must not launch Flutter.
+
+**There is exactly one `AppShortcutsProvider`, `MeshMapperAppShortcuts`, and it
+lives in the Runner target.** App Shortcuts are indexed from the app, so a
+provider inside the App Intents extension is never registered and its phrases
+silently do nothing when spoken — no error, just a pause and no result. Apple
+additionally requires that every intent a provider names is a member of the
+*same* target as the provider, which is why the read intents and their entities
+(`MeshMapperReadIntents.swift`, `RepeaterEntity.swift`,
+`HeardRepeaterEntity.swift`) are compiled into Runner **and** the extension.
+Dual target membership is Apple's documented arrangement for an intent that
+backs an App Shortcut and must also run in an extension; a shared framework is
+explicitly not an option for these. The provider is capped at ten shortcuts —
+six are used — and exceeding it is a compile error.
+
+When adding a read intent: add its file to both targets, and add the shortcut to
+`MeshMapperAppShortcuts`, never to a second provider. Despite its historical `Siri` type names and
+`siri-snapshot.json` filename, that Foundation-only snapshot is the reusable
+low-frequency contract for future native glance surfaces.
+
+Keep future targets separated by lifecycle:
+
+- A widget may read the App Group snapshot directly and add only optional,
+  bounded fields to wire version 1. A meaning change or removal requires a
+  coordinated version bump.
+- The last valid snapshot deliberately survives Runner termination. Read
+  intents qualify it by age; process teardown is not proof that a background
+  session stopped, and `dispose()` is not a reliable iOS lifecycle callback.
+- Adopt `IndexedEntity` only with an explicit owner that calls
+  `indexAppEntities` and removes stale entries. Conformance alone does not put
+  repeaters in Spotlight.
+- A CarPlay map scene needs its own native scene/target, entitlement and
+  foreground lifecycle. It may bootstrap from the shared snapshot, but live
+  location/map updates need a dedicated bridge rather than polling the Siri
+  file or importing `SiriIntentCoordinator`.
+- Every added target gets its own bundle ID, App Group entitlement and explicit
+  App Store provisioning-profile entry. Do not put target-specific frameworks
+  or lifecycle into the shared snapshot model.
+- Native controls express intent; Dart remains the owner of connection,
+  session and radio-policy admission.
+
+**One deadline, both sides.** `SiriIntentCoordinator` stops waiting after
+`SiriCommand.responseTimeout` (10 s, or 30 s for Connect) and tells the person
+it failed. That same instant travels to Dart as `expiresAtMs`, so giving up is
+one decision rather than two, and it is rechecked at three points:
+
+1. Admission refuses an already-expired command outright.
+2. `toggleAutoPing`/`sendPing` recheck after the awaited session check, before
+   any existing mode is torn down.
+3. `PingService` rechecks in `sendTxPing` and `_sendDiscoveryRequest` after
+   **both** of the unbounded waits that precede a transmission, and before any
+   of the early returns that follow — not just before the BLE call. Nothing
+   between that check and the wire awaits, so it is the send instant in
+   wall-clock terms while leaving no `TxPing`/`DiscLogEntry` record and no
+   consumed wire-tag counter behind for a transmission never made.
+
+   Both details are load-bearing, and each was got wrong once:
+
+   - **Ahead of the early returns.** The `null`-position and "too close to last
+     discovery" returns call `_scheduleNextDiscovery()` and report success, so a
+     check below them lets a GPS fix that crossed the deadline start a session
+     that transmits on the next tick anyway.
+   - **After the write gate, not just after GPS.** `MeshCoreConnection._write`
+     parks non-sign frames behind an in-progress `CMD_SIGN` — five seconds per
+     phase, chunk phase looping — and that wait is unbounded by design ("delayed,
+     never failed"). It sits *inside* the send call, past everything a caller can
+     check. `awaitWritableState()` exists so a deadline-carrying caller takes
+     that wait where abandoning is still free; it is awaited only on that path,
+     so ordinary pings keep queuing exactly as before.
+
+Point 3 is the one that matters: Passive and Hybrid await a GPS fix *inside*
+`enableAutoPing`, so points 1 and 2 alone would let the radio key up after Siri
+had already reported cancellation. When the gate fires there,
+`_abandonAutoPingStart()` unwinds the half-started session and `enableAutoPing`
+returns false, so the session does not come up either. Active mode's initial
+ping is awaited only when a gate is supplied, so the ordinary start path keeps
+its existing fire-and-forget timing.
+
+`PingService.transmitAbortedByDeadline` distinguishes "the caller had already
+given up" from the ordinary reasons a send is skipped — cooldown, failed
+validation, no GPS. It is reset on entry to every gated path, and both the start
+and the manual-ping paths read it so the refusal says the request arrived too
+late rather than the generic "couldn't send the ping".
+
+The gate reaches only the session's *first* transmission; later pings come from
+timers and belong to the session, not to the surface that started it. Checks 1
+and 2 also close `externalCommandCommitMargin` early, because work that has not
+begun cannot finish inside a deadline that is nearly gone. Stop stays exempt
+throughout; stopping is the safe direction, and a safe-direction command must
+never be abandoned because a voice request timed out. A surface that sends no
+`expiresAtMs`, such as the watch, still falls back to the shared 30-second
+`maximumExternalCommandAge`.
+
+**Connect's 30 seconds is a response deadline, not a cancellation guarantee.**
+This is the one mutation where the two differ, and the difference is deliberate.
+
+Up to the point of dialling, Connect behaves like the rest:
+`resolveLastCompanionConnection` checks `expiresAt` ahead of the age rule and
+ahead of every state-based refusal, `_connectToLastCompanion` rechecks after the
+10-second readiness wait (admission ran before it, and a cold launch can spend
+that whole budget), and it requires `externalCommandCommitMargin` before
+dialling. Refusing there is free and avoids pointless transport churn.
+
+Once dialling starts there is no way back: `connectToDevice`/`connectViaTcp`
+have no cancellation seam, and a BLE GATT phase alone may run 15 seconds before
+protocol setup and authentication. A reconnect begun with ~20 seconds left can
+therefore finish after the intent has given up — that is ordinary, not an edge
+case, which is why the preflight margin is a sanity check rather than a
+guarantee. Such a reconnect is deliberately left connected: it transmits nothing
+on the mesh, starts no session, and is what the person asked for; tearing it
+down would only make them wait out another cold reconnect.
+
+Because of that, `SiriCommand.Kind.timeoutMessage` is per-kind, and the rule is
+that only a kind which really is cancelled may say so:
+
+| Kind | On timeout | Why |
+| --- | --- | --- |
+| Start, Manual Ping | "…the request was cancelled" | True: Dart holds the same deadline and checks it before every RF send. |
+| Connect | "…may still be connecting" | No cancellation seam once a transport is dialling. |
+| Stop | "…may still be stopping" | Deliberately deadline-exempt, and teardown may queue a pending disable behind an RX window. |
+
+**Adding a kind means deciding which column it belongs in.** Connect earns the
+first wording only if `connectToDevice`/`connectViaTcp` gain a cancellation
+seam; Stop only if it is made cancellable, which it should not be. Until then,
+do not change either message back.
+
+**"Current session" needs a session boundary.** The observation history is
+bounded at two hours, which routinely spans several sessions. `session.startedAt`
+carries the running session's start so the Recent Repeaters intent can filter
+against it, and `uniqueRepeatersHeard` counts only observations at or after it;
+with nothing running both report empty rather than borrowing the previous
+session's results.
+
+The boundary must be captured *before* the session's first transmission, not
+after it: `enableAutoPing()` sends and records the opening discovery before it
+returns, so taking the timestamp afterwards would push a Passive or Hybrid
+session's own first observation outside its boundary. `toggleAutoPing` therefore
+reads the clock before the call and passes it to `_startLiveActivitySession`,
+and the filter is inclusive of that instant. A manual ping that is later upgraded
+to an automatic mode deliberately keeps its original boundary — that is one
+session under one ID, and the manual ping and its RX window are that session's
+own results. Any surface that says "current" or "this session" must also
+check `updatedAt` against `MeshMapperSnapshotFreshness.currentClaimLimit` — the
+snapshot deliberately outlives Runner and can be days old.
+
+The snapshot contains at most 64 recent observations and 64 repeaters. That
+catalogue bound is also the entity-lookup bound: `RepeaterEntityQuery` searches
+only the cached active/recent entries, never the full loaded repeater set, which
+is why the intent is named "Find Recent MeshMapper Repeater". Widening the
+lookup means widening the catalogue or adding a separate compact index — do not
+leave a broad name over a narrow index, and keep that in mind when reviving the
+withdrawn phrase, since an empty or stale catalogue is one candidate cause of
+the lookup failure. Recent
+observations are ranked and truncated before catalogue identity resolution, so
+large histories do not multiply the resolution work. A cheap scalar/revision
+preflight key suppresses rebuilds when provider notifications do not change
+the native projection. Preserve both bounds and the preflight path when adding
+fields for another Apple surface.
+
+The built-in voice phrases are refreshed at app launch. After installing an
+update, open MeshMapper once, then use any of these forms (the app name is part
+of every registered phrase):
+
+- `Siri, reconnect MeshMapper` or `Siri, connect MeshMapper to the last device`.
+- `Siri, start MeshMapper` defaults to Passive Discovery.
+- `Siri, start a Passive Discovery session in MeshMapper`.
+- `Siri, start Active mode in MeshMapper`.
+- `Siri, start Hybrid mapping with MeshMapper`.
+- `Siri, stop MeshMapper`.
+- `Siri, what is MeshMapper doing?` or `Siri, get MeshMapper status`.
+- `Siri, what has MeshMapper heard?` or `Siri, recent repeaters in MeshMapper`.
+
+Repeater lookup by name has no spoken phrase. `FindMeshMapperRepeaterIntent`
+ships and can be used from the Shortcuts app, but spoken lookup did not work on
+device and its `AppShortcut` is withdrawn until it does — see the TODO on the
+intent. Adding the phrase back means adding the bullet back here.
+
+Mutation intents return their completion message both as Siri dialog and as a
+text output. A user-created Shortcut can pass that Result to a `Speak Text`
+action when explicit audio is required. Direct Siri invocations normally speak
+the dialog, but iOS still honors the system Siri Responses setting; select
+Prefer Spoken Responses when voice feedback is required even in Silent mode.
+
+Connect and Start require device authentication and may bring the app forward.
+Connect reuses the last remembered BLE/TCP companion; USB still requires an
+in-app selection. Connect can also outlast Siri's 30-second wait — a slow radio
+may finish connecting after Siri has stopped listening, which is why its timeout
+says the app may still be connecting rather than that the request was cancelled. Starting does not silently change companions or reconnect —
+ask to connect first when MeshMapper is disconnected.
 
 ### BLE Service UUIDs (MeshCore Companion Protocol)
 - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`

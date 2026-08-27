@@ -1,3 +1,4 @@
+import AppIntents
 import Flutter
 import MapLibre
 import UIKit
@@ -69,6 +70,8 @@ class IOSMapOfflineBridge {
   private let mapOfflineBridge = IOSMapOfflineBridge()
   private let liveActivityManager = LiveActivityManager()
   private let watchSessionManager = WatchSessionManager()
+  private let siriIntentCoordinator = SiriIntentCoordinator.shared
+  private let siriSnapshotStore = MeshMapperSiriSnapshotStore.shared
 
   override func application(
     _ application: UIApplication,
@@ -81,6 +84,13 @@ class IOSMapOfflineBridge {
     }
 
     GeneratedPluginRegistrant.register(with: self)
+
+    // App Shortcut metadata is extracted at build time, but asking the system
+    // to refresh parameters on launch makes newly added Siri phrases and enum
+    // synonyms available promptly after an app update.
+    if #available(iOS 26.0, *) {
+      MeshMapperAppShortcuts.updateAppShortcutParameters()
+    }
 
     // Register background service
     SwiftFlutterBackgroundServicePlugin.taskIdentifier = "net.meshmapper.app.background"
@@ -140,6 +150,36 @@ class IOSMapOfflineBridge {
         self.watchSessionManager.handle(call, result: result)
       }
       watchSessionManager.attach(channel: watchChannel)
+
+      // Method channel: App Intents. Mutation intents invoke Dart through this
+      // channel; Dart publishes a separate App Group snapshot for read-only
+      // intents that must not launch Flutter.
+      let appIntentChannel = FlutterMethodChannel(
+        name: "meshmapper/app_intents",
+        binaryMessenger: controller.binaryMessenger
+      )
+      appIntentChannel.setMethodCallHandler { [weak self] call, result in
+        guard let self = self else {
+          result(FlutterError(code: "unavailable", message: "bridge deallocated", details: nil))
+          return
+        }
+        switch call.method {
+        case "publishSnapshot":
+          do {
+            try self.siriSnapshotStore.writeFlutterPayload(call.arguments)
+            result(nil)
+          } catch {
+            result(FlutterError(
+              code: "snapshot_write_failed",
+              message: error.localizedDescription,
+              details: nil
+            ))
+          }
+        default:
+          result(FlutterMethodNotImplemented)
+        }
+      }
+      siriIntentCoordinator.attach(channel: appIntentChannel)
 
       // Method channel: MapLibre tile cache management. Mirrors the Android
       // handler in MainActivity.kt. Dart's TileCacheService calls into these
