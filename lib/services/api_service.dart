@@ -14,7 +14,13 @@ import '../utils/debug_logger_io.dart';
 /// we simply never got an answer. The queue must not spend a retry on it, or a
 /// drive through a dead zone burns the whole ladder and strands the pings
 /// (#437).
-enum UploadResult { success, retryable, unreachable, sessionError, nonRetryable }
+enum UploadResult {
+  success,
+  retryable,
+  unreachable,
+  sessionError,
+  nonRetryable
+}
 
 /// The request never reached the server: no coverage, DNS failure, connection
 /// reset, TLS handshake, or a timeout waiting for the first byte.

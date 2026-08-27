@@ -269,7 +269,8 @@ class _MainScaffoldState extends State<MainScaffold> {
     final message = switch (code) {
       'denied' || 'access_denied' => 'Sign-in cancelled',
       'expired' => 'That sign-in expired — please try again',
-      'timeout' || 'network' =>
+      'timeout' ||
+      'network' =>
         'Could not reach MyMeshMapper — check your connection',
       'code_invalid' => 'That sign-in link was already used — please try again',
       _ => 'Sign-in did not finish — please try again',

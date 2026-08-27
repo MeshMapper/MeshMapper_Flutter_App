@@ -182,8 +182,8 @@ void main() {
       // The exchange answers with the identity but no pubkeys, so the account
       // card would read "0 device(s)" until the next radio connect ran `me`.
       await seedPending('st4te');
-      final service = buildService(recordingClient((request) =>
-          request.url.queryParameters['action'] == 'me'
+      final service = buildService(recordingClient(
+          (request) => request.url.queryParameters['action'] == 'me'
               ? http.Response(
                   jsonEncode({
                     'ok': true,
@@ -945,8 +945,8 @@ void main() {
 
     test('a 429 on me blocks the next refresh even when it is forced',
         () async {
-      final service =
-          await signedIn(recordingClient((_) => rateLimited(retryAfter: '600')));
+      final service = await signedIn(
+          recordingClient((_) => rateLimited(retryAfter: '600')));
 
       expect(await service.refreshMe(), isFalse);
       expect(requests.length, 1);
@@ -961,8 +961,8 @@ void main() {
     });
 
     test('a 429 is not a sign-out', () async {
-      final service =
-          await signedIn(recordingClient((_) => rateLimited(retryAfter: '600')));
+      final service = await signedIn(
+          recordingClient((_) => rateLimited(retryAfter: '600')));
 
       await service.refreshMe();
 
@@ -975,7 +975,8 @@ void main() {
 
       await service.refreshMe();
 
-      expectBackoff(service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
+      expectBackoff(
+          service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
     });
 
     test('an unparseable Retry-After falls back to the default', () async {
@@ -984,7 +985,8 @@ void main() {
 
       await service.refreshMe();
 
-      expectBackoff(service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
+      expectBackoff(
+          service.rateLimitBackoff('me'), PortalApi.defaultRetryAfter);
     });
 
     test('an absurd Retry-After is clamped', () async {
@@ -997,8 +999,8 @@ void main() {
     });
 
     test('logout does not retry a 429', () async {
-      final service =
-          await signedIn(recordingClient((_) => rateLimited(retryAfter: '300')));
+      final service = await signedIn(
+          recordingClient((_) => rateLimited(retryAfter: '300')));
 
       await service.logout();
 
@@ -1007,8 +1009,8 @@ void main() {
     });
 
     test('a 429 on nonce backs the whole link lane off', () async {
-      final service =
-          await signedIn(recordingClient((_) => rateLimited(retryAfter: '120')));
+      final service = await signedIn(
+          recordingClient((_) => rateLimited(retryAfter: '120')));
 
       expect(await service.requestNonce('A' * 64), isNull);
 
@@ -1016,8 +1018,8 @@ void main() {
     });
 
     test('a blocked route is not knocked on a second time', () async {
-      final service =
-          await signedIn(recordingClient((_) => rateLimited(retryAfter: '120')));
+      final service = await signedIn(
+          recordingClient((_) => rateLimited(retryAfter: '120')));
 
       expect(await service.requestNonce('A' * 64), isNull);
       expect(callsTo('nonce'), 1);
