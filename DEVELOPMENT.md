@@ -760,15 +760,15 @@ separate extension against the bounded App Group snapshot in
 **There is exactly one `AppShortcutsProvider`, `MeshMapperAppShortcuts`, and it
 lives in the Runner target.** App Shortcuts are indexed from the app, so a
 provider inside the App Intents extension is never registered and its phrases
-silently do nothing when spoken — no error, just a pause and no result. Apple
+silently do nothing when spoken: no error, just a pause and no result. Apple
 additionally requires that every intent a provider names is a member of the
 *same* target as the provider, which is why the read intents and their entities
 (`MeshMapperReadIntents.swift`, `RepeaterEntity.swift`,
 `HeardRepeaterEntity.swift`) are compiled into Runner **and** the extension.
 Dual target membership is Apple's documented arrangement for an intent that
 backs an App Shortcut and must also run in an extension; a shared framework is
-explicitly not an option for these. The provider is capped at ten shortcuts —
-six are used — and exceeding it is a compile error.
+explicitly not an option for these. The provider is capped at ten shortcuts
+(five are used), and exceeding it is a compile error.
 
 When adding a read intent: add its file to both targets, and add the shortcut to
 `MeshMapperAppShortcuts`, never to a second provider. Despite its historical `Siri` type names and
@@ -806,7 +806,7 @@ one decision rather than two, and it is rechecked at three points:
    any existing mode is torn down.
 3. `PingService` rechecks in `sendTxPing` and `_sendDiscoveryRequest` after
    **both** of the unbounded waits that precede a transmission, and before any
-   of the early returns that follow — not just before the BLE call. Nothing
+   of the early returns that follow, not just before the BLE call. Nothing
    between that check and the wire awaits, so it is the send instant in
    wall-clock terms while leaving no `TxPing`/`DiscLogEntry` record and no
    consumed wire-tag counter behind for a transmission never made.
@@ -818,8 +818,8 @@ one decision rather than two, and it is rechecked at three points:
      check below them lets a GPS fix that crossed the deadline start a session
      that transmits on the next tick anyway.
    - **After the write gate, not just after GPS.** `MeshCoreConnection._write`
-     parks non-sign frames behind an in-progress `CMD_SIGN` — five seconds per
-     phase, chunk phase looping — and that wait is unbounded by design ("delayed,
+     parks non-sign frames behind an in-progress `CMD_SIGN` (five seconds per
+     phase, chunk phase looping), and that wait is unbounded by design ("delayed,
      never failed"). It sits *inside* the send call, past everything a caller can
      check. `awaitWritableState()` exists so a deadline-carrying caller takes
      that wait where abandoning is still free; it is awaited only on that path,
@@ -834,15 +834,16 @@ ping is awaited only when a gate is supplied, so the ordinary start path keeps
 its existing fire-and-forget timing.
 
 `PingService.transmitAbortedByDeadline` distinguishes "the caller had already
-given up" from the ordinary reasons a send is skipped — cooldown, failed
+given up" from the ordinary reasons a send is skipped: cooldown, failed
 validation, no GPS. It is reset on entry to every gated path, and both the start
 and the manual-ping paths read it so the refusal says the request arrived too
 late rather than the generic "couldn't send the ping".
 
 The gate reaches only the session's *first* transmission; later pings come from
-timers and belong to the session, not to the surface that started it. Checks 1
-and 2 also close `externalCommandCommitMargin` early, because work that has not
-begun cannot finish inside a deadline that is nearly gone. Stop stays exempt
+timers and belong to the session, not to the surface that started it. Checks 2
+and 3 also close `externalCommandCommitMargin` early, because work that has not
+begun cannot finish inside a deadline that is nearly gone; check 1 applies no
+margin and refuses only a command that has already expired. Stop stays exempt
 throughout; stopping is the safe direction, and a safe-direction command must
 never be abandoned because a voice request timed out. A surface that sends no
 `expiresAtMs`, such as the watch, still falls back to the shared 30-second
@@ -852,16 +853,17 @@ never be abandoned because a voice request timed out. A surface that sends no
 This is the one mutation where the two differ, and the difference is deliberate.
 
 Up to the point of dialling, Connect behaves like the rest:
-`resolveLastCompanionConnection` checks `expiresAt` ahead of the age rule and
-ahead of every state-based refusal, `_connectToLastCompanion` rechecks after the
-10-second readiness wait (admission ran before it, and a cold launch can spend
-that whole budget), and it requires `externalCommandCommitMargin` before
-dialling. Refusing there is free and avoids pointless transport churn.
+`_connectToLastCompanion` checks the deadline as soon as the 10-second readiness
+wait ends (a cold launch can spend that whole budget before admission has even
+run), `resolveLastCompanionConnection` then checks `expiresAt` ahead of the age
+rule and ahead of every state-based refusal, and it requires
+`externalCommandCommitMargin` before dialling. Refusing there is free and avoids
+pointless transport churn.
 
 Once dialling starts there is no way back: `connectToDevice`/`connectViaTcp`
 have no cancellation seam, and a BLE GATT phase alone may run 15 seconds before
 protocol setup and authentication. A reconnect begun with ~20 seconds left can
-therefore finish after the intent has given up — that is ordinary, not an edge
+therefore finish after the intent has given up; that is ordinary, not an edge
 case, which is why the preflight margin is a sanity check rather than a
 guarantee. Such a reconnect is deliberately left connected: it transmits nothing
 on the mesh, starts no session, and is what the person asked for; tearing it
@@ -894,17 +896,17 @@ returns, so taking the timestamp afterwards would push a Passive or Hybrid
 session's own first observation outside its boundary. `toggleAutoPing` therefore
 reads the clock before the call and passes it to `_startLiveActivitySession`,
 and the filter is inclusive of that instant. A manual ping that is later upgraded
-to an automatic mode deliberately keeps its original boundary — that is one
+to an automatic mode deliberately keeps its original boundary: that is one
 session under one ID, and the manual ping and its RX window are that session's
 own results. Any surface that says "current" or "this session" must also
-check `updatedAt` against `MeshMapperSnapshotFreshness.currentClaimLimit` — the
+check `updatedAt` against `MeshMapperSnapshotFreshness.currentClaimLimit`; the
 snapshot deliberately outlives Runner and can be days old.
 
 The snapshot contains at most 64 recent observations and 64 repeaters. That
 catalogue bound is also the entity-lookup bound: `RepeaterEntityQuery` searches
 only the cached active/recent entries, never the full loaded repeater set, which
 is why the intent is named "Find Recent MeshMapper Repeater". Widening the
-lookup means widening the catalogue or adding a separate compact index — do not
+lookup means widening the catalogue or adding a separate compact index. Do not
 leave a broad name over a narrow index, and keep that in mind when reviving the
 withdrawn phrase, since an empty or stale catalogue is one candidate cause of
 the lookup failure. Recent
@@ -929,8 +931,8 @@ of every registered phrase):
 
 Repeater lookup by name has no spoken phrase. `FindMeshMapperRepeaterIntent`
 ships and can be used from the Shortcuts app, but spoken lookup did not work on
-device and its `AppShortcut` is withdrawn until it does — see the TODO on the
-intent. Adding the phrase back means adding the bullet back here.
+device and its `AppShortcut` is withdrawn until it does (see the TODO on the
+intent). Adding the phrase back means adding the bullet back here.
 
 Mutation intents return their completion message both as Siri dialog and as a
 text output. A user-created Shortcut can pass that Result to a `Speak Text`
@@ -940,10 +942,11 @@ Prefer Spoken Responses when voice feedback is required even in Silent mode.
 
 Connect and Start require device authentication and may bring the app forward.
 Connect reuses the last remembered BLE/TCP companion; USB still requires an
-in-app selection. Connect can also outlast Siri's 30-second wait — a slow radio
+in-app selection. Connect can also outlast Siri's 30-second wait: a slow radio
 may finish connecting after Siri has stopped listening, which is why its timeout
-says the app may still be connecting rather than that the request was cancelled. Starting does not silently change companions or reconnect —
-ask to connect first when MeshMapper is disconnected.
+says the app may still be connecting rather than that the request was cancelled.
+Starting does not silently change companions or reconnect; ask to connect first
+when MeshMapper is disconnected.
 
 ### BLE Service UUIDs (MeshCore Companion Protocol)
 - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
@@ -1061,6 +1064,8 @@ debugError('[API] Failed to post batch: $error');
 |-----|-------------|
 | `[BLE]` | Bluetooth connection and device communication |
 | `[CONN]` | MeshCore connection protocol operations |
+| `[SIRI]` | Siri App Intents bridge and snapshot publishing |
+| `[EXTERNAL]` | External command execution (shared Siri/watch lane) |
 | `[GPS]` | GPS/geolocation operations |
 | `[PING]` | Ping sending and validation |
 | `[API QUEUE]` | API queue operations (batch posting) |
@@ -1231,6 +1236,13 @@ All API endpoints may return maintenance mode:
 - `lib/services/watch/watch_color.dart` - Wire colour projection shared with the phone map
 - `lib/services/live_activity/live_activity_service.dart` - ActivityKit bridge: preflight urgency, throttle, dedupe, unavailable backoff
 - `lib/services/live_activity/live_activity_models.dart` - Live Activity snapshot model and urgency keys
+- `lib/services/external_surfaces/external_surface_publisher.dart` - Shared publish pipeline (preflight dedupe, throttle, retry) behind watch, Live Activity, and Siri snapshots
+- `lib/services/external_surfaces/geo/external_surface_geo_builder.dart` - Ping/repeater/heard geography for external surfaces, with wire caps (was watch_geo_builder)
+- `lib/services/external_commands/external_session_commands.dart` - Shared Siri/watch session-command admission and deadline rules
+- `lib/services/external_commands/external_command_models.dart` - External command wire model, refusal reasons, and voice copy
+- `lib/services/app_intents/app_intent_bridge_service.dart` - Siri method channel: command decode, dedupe, snapshot publish
+- `lib/services/app_intents/siri_snapshot_builder.dart` - App Group snapshot content (recent heard, repeater catalogue, counts)
+- `lib/services/app_intents/last_companion_connection.dart` - Connect-last-companion admission for the Siri intent
 - `lib/screens/watch_diagnostics_screen.dart` - Watch transport diagnostics (Settings)
 - `lib/services/meshcore/packet_validator.dart` - Packet validation and carpeater filtering
 - `lib/models/noise_floor_session.dart` - Noise floor session data models

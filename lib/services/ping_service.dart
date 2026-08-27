@@ -522,7 +522,7 @@ class PingService {
   /// Set when a deadline gate refused a transmission.
   ///
   /// Lets a caller tell "the radio never keyed up because I had already given
-  /// up" apart from the ordinary reasons a send is skipped — cooldown, failed
+  /// up" apart from the ordinary reasons a send is skipped: cooldown, failed
   /// validation, no GPS. Only the former abandons a start or earns a spoken
   /// "took too long"; the rest keep their own reasons. Reset on entry to every
   /// gated path, so it always describes the send just attempted.
@@ -538,7 +538,7 @@ class PingService {
   bool _deadlinePassed(bool Function()? shouldAbortBeforeTransmit) {
     if (!(shouldAbortBeforeTransmit?.call() ?? false)) return false;
     _transmitAbortedByDeadline = true;
-    debugLog('[PING] Deadline passed before transmit — not sending');
+    debugLog('[PING] Deadline passed before transmit, not sending');
     return true;
   }
 
@@ -579,7 +579,7 @@ class PingService {
       }
 
       // The transport parks a non-sign write behind an in-progress sign, and
-      // that wait is unbounded — it would happen inside the send call below,
+      // that wait is unbounded. It would happen inside the send call below,
       // after the TxPing record exists and past everything checkable here. Take
       // it now, while abandoning still costs nothing.
       if (shouldAbortBeforeTransmit != null) {
@@ -1108,7 +1108,7 @@ class PingService {
   /// @param targetRepeaterId - Repeater ID hex string (required when targetedMode=true)
   /// @param shouldAbortBeforeTransmit - Deadline gate for an external caller
   ///
-  /// The gate lets an external surface holding a person on a deadline — Siri —
+  /// The gate lets an external surface holding a person on a deadline (Siri)
   /// abandon the start if that deadline passes before the session's first
   /// transmission. A session must never come up after the surface has already
   /// reported that it did not.
@@ -1216,7 +1216,7 @@ class PingService {
   /// pending-disable handling: nothing was transmitted, so there is no RX
   /// window to let finish and no cooldown to earn.
   Future<void> _abandonAutoPingStart() async {
-    debugLog('[AUTO] Abandoning start — caller gave up before first transmit');
+    debugLog('[AUTO] Abandoning start: caller gave up before first transmit');
     _autoTimer?.cancel();
     _autoTimer = null;
     _skipReason = null;
