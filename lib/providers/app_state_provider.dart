@@ -7883,9 +7883,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // surveyor pacing one spot trips it), so it warns rather than alarms.
     debugError('[API] Session error: $reason - $userMessage');
     logError(userMessage,
-        severity: isStationaryRevoke
-            ? ErrorSeverity.warning
-            : ErrorSeverity.error);
+        severity:
+            isStationaryRevoke ? ErrorSeverity.warning : ErrorSeverity.error);
 
     // Session errors that require disconnect
     const sessionErrors = {
