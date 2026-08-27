@@ -11,10 +11,17 @@ enum MeshMapperSnapshotFreshness {
 
   static func relativeAge(_ age: TimeInterval) -> String {
     let seconds = max(Int(age), 0)
-    if seconds < 60 { return "\(seconds) seconds ago" }
-    if seconds < 60 * 60 { return "\(seconds / 60) minutes ago" }
-    if seconds < 24 * 60 * 60 { return "\(seconds / (60 * 60)) hours ago" }
-    return "\(seconds / (24 * 60 * 60)) days ago"
+    if seconds < 60 { return "\(counted(seconds, "second")) ago" }
+    if seconds < 60 * 60 { return "\(counted(seconds / 60, "minute")) ago" }
+    if seconds < 24 * 60 * 60 {
+      return "\(counted(seconds / (60 * 60), "hour")) ago"
+    }
+    return "\(counted(seconds / (24 * 60 * 60), "day")) ago"
+  }
+
+  /// This is spoken aloud, so "1 seconds ago" is heard rather than skimmed.
+  private static func counted(_ count: Int, _ unit: String) -> String {
+    "\(count) \(unit)\(count == 1 ? "" : "s")"
   }
 }
 
@@ -256,7 +263,7 @@ struct GetRecentlyHeardRepeatersIntent: AppIntent {
 
 /// TODO: Not currently offered as a spoken App Shortcut.
 ///
-/// Spoken lookup did not work in on-device testing — the phrase was withdrawn
+/// Spoken lookup did not work in on-device testing, so the phrase was withdrawn
 /// from `MeshMapperAppShortcuts` rather than hold up the branch. The intent
 /// itself is still built into both targets and remains available in the
 /// Shortcuts app, so re-registering is a matter of restoring the `AppShortcut`
@@ -272,6 +279,11 @@ struct FindMeshMapperRepeaterIntent: AppIntent {
   static let description = IntentDescription(
     "Looks up one of the active or recently heard repeaters MeshMapper has cached, and says how current that reading is."
   )
+  // Unlocking is not required because nothing private is read. This answers
+  // from the cached catalog of publicly broadcast repeater identities, and
+  // never touches the user's location or their session activity. The two read
+  // intents above do gate: both speak what this device has been doing, which
+  // is the part worth keeping behind the lock screen.
   static var authenticationPolicy: IntentAuthenticationPolicy { .alwaysAllowed }
   static var supportedModes: IntentModes { .background }
 
