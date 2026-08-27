@@ -18,7 +18,7 @@ void main() {
     iata: 'SEA',
   );
 
-  List<SiriRepeaterObservation> build({
+  SiriRecentHeard buildHeard({
     List<TxLogEntry> tx = const [],
     List<RxLogEntry> rx = const [],
     List<DiscLogEntry> discovery = const [],
@@ -35,6 +35,21 @@ void main() {
         hopBytes: 2,
         now: now,
       );
+
+  List<SiriRepeaterObservation> build({
+    List<TxLogEntry> tx = const [],
+    List<RxLogEntry> rx = const [],
+    List<DiscLogEntry> discovery = const [],
+    List<TraceLogEntry> trace = const [],
+    List<Repeater> repeaters = const [capitolHill],
+  }) =>
+      buildHeard(
+        tx: tx,
+        rx: rx,
+        discovery: discovery,
+        trace: trace,
+        repeaters: repeaters,
+      ).observations;
 
   test('direct TX resolves only an unambiguous identity and uses event GPS',
       () {
@@ -296,6 +311,132 @@ void main() {
     );
   });
 
+  test('the unique count sees repeaters older than the 64 newest events', () {
+    // 80 distinct repeaters, each heard once, newest first. The wire list keeps
+    // the 64 newest; the count has to answer for the whole session, so the 16
+    // that fall off the end must still be credited.
+    final repeaters = List.generate(
+      80,
+      (index) => Repeater(
+        id: 'database-$index',
+        hexId: (0x10000000 + index).toRadixString(16).toUpperCase(),
+        name: 'Repeater $index',
+        lat: 47.6,
+        lon: -122.3,
+        lastHeard: 1787535900,
+        enabled: 1,
+        iata: 'SEA',
+      ),
+    );
+    final entries = [
+      for (var index = 0; index < repeaters.length; index++)
+        RxLogEntry(
+          timestamp: now.subtract(Duration(seconds: index)),
+          repeaterId: repeaters[index].hexId,
+          pathLength: 1,
+          header: 0,
+          latitude: 47.6,
+          longitude: -122.3,
+        ),
+    ];
+
+    final heard = buildHeard(rx: entries, repeaters: repeaters);
+
+    expect(heard.observations, hasLength(64));
+    expect(
+      SiriSnapshotBuilder.countUniqueRepeatersHeard(
+        heard.observations,
+        now.subtract(const Duration(minutes: 5)),
+      ),
+      64,
+      reason: 'the capped wire list is exactly what used to be counted',
+    );
+    expect(
+      SiriSnapshotBuilder.countUniqueRepeatersHeard(
+        heard.distinctHeard,
+        now.subtract(const Duration(minutes: 5)),
+      ),
+      80,
+    );
+  });
+
+  test('a repeater heard only outside the session is not counted', () {
+    final entries = [
+      RxLogEntry(
+        timestamp: now.subtract(const Duration(minutes: 90)),
+        repeaterId: '4E5D82AA',
+        pathLength: 1,
+        header: 0,
+        latitude: 47.6,
+        longitude: -122.3,
+      ),
+    ];
+
+    final heard = buildHeard(rx: entries);
+
+    expect(heard.distinctHeard, hasLength(1));
+    expect(
+      SiriSnapshotBuilder.countUniqueRepeatersHeard(
+        heard.distinctHeard,
+        now.subtract(const Duration(minutes: 5)),
+      ),
+      0,
+    );
+  });
+
+  test('a repeater with no IATA keys the same on both sides of the join', () {
+    const zoneless = Repeater(
+      id: 'database-999',
+      hexId: '77889900',
+      name: 'Zoneless',
+      lat: 47.6,
+      lon: -122.3,
+      lastHeard: 1787535900,
+      enabled: 1,
+    );
+    final heard = buildHeard(
+      rx: [
+        RxLogEntry(
+          timestamp: now,
+          repeaterId: '77889900',
+          pathLength: 1,
+          header: 0,
+          latitude: 47.6,
+          longitude: -122.3,
+        ),
+      ],
+      repeaters: const [zoneless],
+    );
+    final catalog = SiriSnapshotBuilder.buildRepeaterCatalog(
+      const [zoneless],
+      zoneCode: 'SEA',
+    );
+
+    expect(heard.observations.single.entityId, 'SEA|database-999');
+    expect(catalog.single.id, heard.observations.single.entityId);
+  });
+
+  test('a repeater with no IATA and no zone falls back to GLOBAL', () {
+    const zoneless = Repeater(
+      id: 'database-999',
+      hexId: '77889900',
+      name: 'Zoneless',
+      lat: 47.6,
+      lon: -122.3,
+      lastHeard: 1787535900,
+      enabled: 1,
+    );
+
+    expect(
+      SiriSnapshotBuilder.repeaterEntityId(zoneless, null),
+      'GLOBAL|database-999',
+    );
+    expect(
+      SiriSnapshotBuilder.buildRepeaterCatalog(const [zoneless]).single.id,
+      'GLOBAL|database-999',
+    );
+  });
+
   group('unique repeaters heard is scoped to the running session', () {
     SiriRepeaterObservation heard(String hexId, Duration ago) =>
         SiriRepeaterObservation(
@@ -327,7 +468,7 @@ void main() {
     test('an observation made at the boundary belongs to the session', () {
       // The session's own first discovery is sent and recorded before the
       // boundary is stored, so the boundary has to be inclusive and has to be
-      // captured before that transmission — otherwise a fresh Passive session
+      // captured before that transmission; otherwise a fresh Passive session
       // reports nothing for its opening event.
       final startedAt = now.subtract(const Duration(minutes: 5));
       final observations = [
