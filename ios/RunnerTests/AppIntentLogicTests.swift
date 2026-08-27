@@ -15,7 +15,7 @@ final class AppIntentLogicTests: XCTestCase {
 
   func testCommandCarriesTheSameDeadlineTheIntentWaitsOn() {
     // Dart must be able to stop for the same reason, and at the same instant,
-    // that the intent stops waiting — otherwise a slow start reaches the radio
+    // that the intent stops waiting; otherwise a slow start reaches the radio
     // after the person has already been told it failed.
     let command = SiriCommand(kind: .startSession, mode: "active")
     let expiresAt = Date().addingTimeInterval(command.responseTimeout)

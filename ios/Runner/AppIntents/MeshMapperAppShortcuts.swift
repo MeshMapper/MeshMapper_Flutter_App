@@ -3,7 +3,7 @@ import AppIntents
 /// The app's single `AppShortcutsProvider`.
 ///
 /// Both the provider and every intent it names must be members of the app
-/// target — an `AppShortcutsProvider` inside the App Intents extension is never
+/// target: an `AppShortcutsProvider` inside the App Intents extension is never
 /// indexed, so its phrases silently do nothing when spoken. The read intents
 /// are therefore compiled into Runner as well as the extension, which is
 /// Apple's documented arrangement for an intent that backs an App Shortcut and
@@ -71,7 +71,7 @@ struct MeshMapperAppShortcuts: AppShortcutsProvider {
     )
     // TODO: Re-register FindMeshMapperRepeaterIntent once spoken repeater
     // lookup works. The intent, RepeaterEntity and RepeaterEntityQuery are all
-    // still built and shipped — only the spoken phrase is withdrawn, because a
+    // still built and shipped; only the spoken phrase is withdrawn, because a
     // registered phrase that fails is worse than one that was never offered.
     // Restore the AppShortcut here, and its bullet in DEVELOPMENT.md's phrase
     // list, in the same change.

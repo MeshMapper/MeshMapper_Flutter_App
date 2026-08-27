@@ -3,6 +3,8 @@ import AppIntents
 @available(iOS 26.0, *)
 struct StopMeshMapperSessionIntent: AppIntent {
   static let title: LocalizedStringResource = "Stop MeshMapper Session"
+  // Stopping is the safe direction: it only ends transmissions, exposes
+  // nothing, and must stay reachable from a locked phone mid-drive.
   static var authenticationPolicy: IntentAuthenticationPolicy { .alwaysAllowed }
   static var supportedModes: IntentModes {
     [.background, .foreground(.dynamic)]
