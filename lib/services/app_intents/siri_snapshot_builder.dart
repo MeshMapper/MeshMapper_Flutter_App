@@ -17,8 +17,14 @@ class SiriSnapshotBuilder {
   /// both sides must derive it the same way. [Repeater.iata] is nullable, and a
   /// repeater without one would otherwise be filed under two different keys and
   /// lose its name, zone and coordinates on the heard side.
-  static String repeaterEntityId(Repeater repeater, String? zoneCode) =>
-      '${repeater.iata ?? zoneCode ?? 'GLOBAL'}|${repeater.id}';
+  ///
+  /// **This string must never depend on session state.** Shortcuts persists a
+  /// chosen RepeaterEntity by its identifier and resolves it back by exact
+  /// match, so an id that folded in the live session's zone would flip between
+  /// connects and zones (`SEA|x` one drive, `GLOBAL|x` the next) and silently
+  /// break every saved shortcut that named that repeater.
+  static String repeaterEntityId(Repeater repeater) =>
+      '${repeater.iata ?? 'GLOBAL'}|${repeater.id}';
 
   static SiriRecentHeard buildRecentHeard({
     required List<TxLogEntry> txEntries,
@@ -26,7 +32,6 @@ class SiriSnapshotBuilder {
     required List<DiscLogEntry> discoveryEntries,
     required List<TraceLogEntry> traceEntries,
     required List<Repeater> repeaters,
-    required String? zoneCode,
     int? hopBytes,
     DateTime? now,
   }) {
@@ -66,7 +71,7 @@ class SiriSnapshotBuilder {
           candidate.latitude.isFinite &&
           candidate.longitude.isFinite;
       return SiriRepeaterObservation(
-        entityId: resolved ? repeaterEntityId(repeater, zoneCode) : null,
+        entityId: resolved ? repeaterEntityId(repeater) : null,
         displayHexId: normalizedId,
         name: resolved && repeater.name != 'Unknown' ? repeater.name : null,
         observedAt: candidate.observedAt,
@@ -195,14 +200,82 @@ class SiriSnapshotBuilder {
       }
     }
 
+    // The count only needs an identity and a timestamp, so the distinct roll-up
+    // stays lightweight: no names, no coordinates and above all no haversine
+    // per row, none of which any caller of it reads. Resolution comes from the
+    // same memo the wire list uses, so nothing is looked up twice.
+    final resolvedHeard = <String, Repeater>{};
+    final unresolvedHeard = <String, _SiriObservationCandidate>{};
+    for (final entry in newestByIdentity.entries) {
+      final repeater = lookup(entry.value);
+      if (repeater != null) {
+        resolvedHeard[entry.key] = repeater;
+      } else {
+        unresolvedHeard[entry.key] = entry.value;
+      }
+    }
+
+    // A repeater met by discovery carries a full public key and resolves; the
+    // same repeater met by TX echo or passive RX carries only a short path
+    // hash, which is ambiguous against the whole catalogue and so resolves to
+    // nothing. Counted raw that is one repeater twice. Re-run the same prefix
+    // relation against only the repeaters actually heard in this set: that
+    // narrower field is usually unambiguous, and where it is not the row stays
+    // on its own rather than being attached to a guess.
+    final heardRepeaters = <String, Repeater>{};
+    for (final repeater in resolvedHeard.values) {
+      heardRepeaters[repeater.id] = repeater;
+    }
+    final heardList = heardRepeaters.values.toList(growable: false);
+
+    final distinct = <SiriHeardIdentity>[
+      for (final entry in resolvedHeard.entries)
+        SiriHeardIdentity(
+          key: repeaterEntityId(entry.value),
+          observedAt: newestByIdentity[entry.key]!.observedAt,
+        ),
+      for (final entry in unresolvedHeard.entries)
+        SiriHeardIdentity(
+          key: _collapsedKey(
+                candidate: entry.value,
+                heardRepeaters: heardList,
+                hopBytes: hopBytes,
+              ) ??
+              'unresolved:${entry.value.displayId.toUpperCase()}',
+          observedAt: entry.value.observedAt,
+        ),
+    ];
+
     candidates.sort((a, b) => b.observedAt.compareTo(a.observedAt));
     return SiriRecentHeard(
       observations: candidates.take(maximumObservations).map(resolve).toList(
             growable: false,
           ),
-      distinctHeard:
-          newestByIdentity.values.map(resolve).toList(growable: false),
+      distinctHeard: List<SiriHeardIdentity>.unmodifiable(distinct),
     );
+  }
+
+  /// The entity id of the already-heard repeater this row unambiguously
+  /// belongs to, or null when nothing in the heard set claims it outright.
+  static String? _collapsedKey({
+    required _SiriObservationCandidate candidate,
+    required List<Repeater> heardRepeaters,
+    required int? hopBytes,
+  }) {
+    if (heardRepeaters.isEmpty) return null;
+    final match = (candidate.identity == null
+            ? null
+            : ExternalSurfaceGeoBuilder.resolveRepeater(
+                repeaters: heardRepeaters,
+                id: candidate.identity!,
+                hopBytes: hopBytes,
+              )) ??
+        ExternalSurfaceGeoBuilder.resolveRepeater(
+          repeaters: heardRepeaters,
+          id: candidate.displayId.toUpperCase(),
+          hopBytes: hopBytes,
+        );
+    return match == null ? null : repeaterEntityId(match);
   }
 
   /// Counts distinct repeaters heard since [sessionStartedAt].
@@ -217,13 +290,13 @@ class SiriSnapshotBuilder {
   /// a session that has heard nothing report the previous one's repeaters.
   /// A null start means no session is running, which counts as none.
   static int countUniqueRepeatersHeard(
-    List<SiriRepeaterObservation> observations,
+    List<SiriHeardIdentity> heard,
     DateTime? sessionStartedAt,
   ) {
     if (sessionStartedAt == null) return 0;
-    return observations
+    return heard
         .where((item) => !item.observedAt.isBefore(sessionStartedAt))
-        .map((item) => item.entityId ?? 'unresolved:${item.displayHexId}')
+        .map((item) => item.key)
         .toSet()
         .length;
   }
@@ -233,9 +306,8 @@ class SiriSnapshotBuilder {
       '${candidate.displayId.toUpperCase()}';
 
   static List<SiriRepeaterEntitySnapshot> buildRepeaterCatalog(
-    List<Repeater> repeaters, {
-    String? zoneCode,
-  }) {
+    List<Repeater> repeaters,
+  ) {
     final ranked = List<Repeater>.of(repeaters)
       ..sort((a, b) {
         final active = (b.isActive ? 1 : 0).compareTo(a.isActive ? 1 : 0);
@@ -249,7 +321,7 @@ class SiriSnapshotBuilder {
             repeater.lat.isFinite &&
             repeater.lon.isFinite;
         return SiriRepeaterEntitySnapshot(
-          id: repeaterEntityId(repeater, zoneCode),
+          id: repeaterEntityId(repeater),
           name: repeater.name,
           hexId: repeater.hexId.toUpperCase(),
           zoneCode: repeater.iata,
@@ -283,7 +355,23 @@ class SiriRecentHeard {
   final List<SiriRepeaterObservation> observations;
 
   /// One entry per distinct repeater, carrying its most recent sighting.
-  final List<SiriRepeaterObservation> distinctHeard;
+  final List<SiriHeardIdentity> distinctHeard;
+}
+
+/// One distinct repeater heard, reduced to what the session count reads.
+///
+/// Deliberately not a [SiriRepeaterObservation]: this list is unbounded, it is
+/// rebuilt on every snapshot publish, and nothing downstream reads a name, a
+/// signal figure or a distance from it. Resolving those (a haversine per row)
+/// for a number that only needs distinct identities was pure waste.
+class SiriHeardIdentity {
+  const SiriHeardIdentity({required this.key, required this.observedAt});
+
+  /// The repeater's entity id, or `unresolved:<hex>` when the catalogue and
+  /// the rest of the heard set both fail to claim the hash.
+  final String key;
+
+  final DateTime observedAt;
 }
 
 class _SiriObservationCandidate {

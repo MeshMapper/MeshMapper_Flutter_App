@@ -1826,12 +1826,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
 
   String get _resolvedWatchSessionModeTitle =>
-      switch (_resolvedWatchSessionMode) {
-        AutoMode.active => 'Active',
-        AutoMode.passive => 'Passive',
-        AutoMode.hybrid => 'Hybrid',
-        AutoMode.targeted => 'Trace',
-      };
+      _resolvedWatchSessionMode.displayName;
 
   WatchControls _buildWatchControls() {
     final cooldownMs = _manualPingCooldownTimer.remainingMs;
@@ -1895,7 +1890,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       discoveryEntries: _discLogEntries,
       traceEntries: _traceLogEntries,
       repeaters: _repeaters,
-      zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       hopBytes: _hopBytes,
     );
     final phase = _resolveWatchPhase();
@@ -1957,10 +1951,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             : null,
       ),
       recentHeard: recentHeard.observations,
-      repeaters: SiriSnapshotBuilder.buildRepeaterCatalog(
-        _repeaters,
-        zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
-      ),
+      repeaters: SiriSnapshotBuilder.buildRepeaterCatalog(_repeaters),
     ).toMap();
   }
 
@@ -2850,12 +2841,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String get _liveActivityModeTitle {
     if (_liveActivityManualSession) return 'Manual';
-    return switch (_autoMode) {
-      AutoMode.active => 'Active',
-      AutoMode.passive => 'Passive',
-      AutoMode.hybrid => 'Hybrid',
-      AutoMode.targeted => 'Trace',
-    };
+    return _autoMode.displayName;
   }
 
   String get _liveActivityGpsLabel => switch (_gpsStatus) {

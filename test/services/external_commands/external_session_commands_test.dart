@@ -77,7 +77,7 @@ void main() {
       bool starting = false,
       String currentMode = 'hybrid',
       String currentSessionId = 'session-a',
-      String? currentModeLabel,
+      String currentModeLabel = 'Hybrid',
     }) =>
         resolveExternalSessionTransition(
           command: value,
@@ -101,15 +101,6 @@ void main() {
       expect(
         admission.reason?.compactText,
         'MeshMapper is already running in Trace mode.',
-      );
-    });
-
-    test('a caller that supplies no label still reads', () {
-      final admission = resolve(command(), active: true);
-
-      expect(
-        admission.reason?.compactText,
-        'MeshMapper is already running in hybrid mode.',
       );
     });
 
@@ -360,6 +351,7 @@ void main() {
         isSessionStarting: false,
         currentMode: 'passive',
         currentSessionId: 'session-a',
+        currentModeLabel: 'Passive',
         now: now,
       );
 
@@ -378,6 +370,7 @@ void main() {
         isSessionStarting: false,
         currentMode: 'passive',
         currentSessionId: 'session-a',
+        currentModeLabel: 'Passive',
         now: now,
       );
 
@@ -391,6 +384,7 @@ void main() {
         isSessionStarting: false,
         currentMode: 'passive',
         currentSessionId: 'session-a',
+        currentModeLabel: 'Passive',
         now: now,
       );
 

@@ -31,7 +31,6 @@ void main() {
         discoveryEntries: discovery,
         traceEntries: trace,
         repeaters: repeaters,
-        zoneCode: 'SEA',
         hopBytes: 2,
         now: now,
       );
@@ -342,15 +341,12 @@ void main() {
 
     final heard = buildHeard(rx: entries, repeaters: repeaters);
 
-    expect(heard.observations, hasLength(64));
     expect(
-      SiriSnapshotBuilder.countUniqueRepeatersHeard(
-        heard.observations,
-        now.subtract(const Duration(minutes: 5)),
-      ),
-      64,
-      reason: 'the capped wire list is exactly what used to be counted',
+      heard.observations,
+      hasLength(64),
+      reason: 'the capped wire list is what used to be counted, and it lies',
     );
+    expect(heard.distinctHeard, hasLength(80));
     expect(
       SiriSnapshotBuilder.countUniqueRepeatersHeard(
         heard.distinctHeard,
@@ -407,16 +403,13 @@ void main() {
       ],
       repeaters: const [zoneless],
     );
-    final catalog = SiriSnapshotBuilder.buildRepeaterCatalog(
-      const [zoneless],
-      zoneCode: 'SEA',
-    );
+    final catalog = SiriSnapshotBuilder.buildRepeaterCatalog(const [zoneless]);
 
-    expect(heard.observations.single.entityId, 'SEA|database-999');
+    expect(heard.observations.single.entityId, 'GLOBAL|database-999');
     expect(catalog.single.id, heard.observations.single.entityId);
   });
 
-  test('a repeater with no IATA and no zone falls back to GLOBAL', () {
+  test('a repeater with no IATA is keyed GLOBAL, never the live zone', () {
     const zoneless = Repeater(
       id: 'database-999',
       hexId: '77889900',
@@ -427,8 +420,10 @@ void main() {
       enabled: 1,
     );
 
+    // Shortcuts resolves a saved RepeaterEntity by exact id, so this string
+    // must not move when the session's zone does.
     expect(
-      SiriSnapshotBuilder.repeaterEntityId(zoneless, null),
+      SiriSnapshotBuilder.repeaterEntityId(zoneless),
       'GLOBAL|database-999',
     );
     expect(
@@ -437,16 +432,118 @@ void main() {
     );
   });
 
+  test('one repeater met by discovery and by short-hash echo counts once', () {
+    // Discovery carries the full public key and resolves; the TX echo carries
+    // only the 2-byte path hash, which is ambiguous against the catalogue and
+    // resolves to nothing. Counted raw that is the same radio twice.
+    final at = now.subtract(const Duration(minutes: 1));
+    final heard = buildHeard(
+      discovery: [
+        DiscLogEntry(
+          timestamp: at,
+          latitude: 47.6,
+          longitude: -122.3,
+          discoveredNodes: [
+            DiscoveredNodeEntry(
+              repeaterId: '4E5D',
+              nodeType: 'REPEATER',
+              localSnr: 6,
+              localRssi: -80,
+              remoteSnr: 4,
+              pubkeyHex:
+                  '4E5D82AA00000000000000000000000000000000000000000000000000000000',
+            ),
+          ],
+        ),
+      ],
+      tx: [
+        TxLogEntry(
+          timestamp: at.add(const Duration(seconds: 10)),
+          latitude: 47.6,
+          longitude: -122.3,
+          power: 1,
+          events: [RxEvent(repeaterId: '4E5D', snr: 5.0, rssi: -82)],
+        ),
+      ],
+    );
+
+    expect(heard.distinctHeard, hasLength(2));
+    expect(
+      SiriSnapshotBuilder.countUniqueRepeatersHeard(
+        heard.distinctHeard,
+        now.subtract(const Duration(minutes: 5)),
+      ),
+      1,
+    );
+  });
+
+  test('an ambiguous hash stays its own entry rather than being guessed at',
+      () {
+    const twin = Repeater(
+      id: 'database-456',
+      hexId: '4E5DFFFF',
+      name: 'Twin',
+      lat: 47.63,
+      lon: -122.33,
+      lastHeard: 1787535900,
+      enabled: 1,
+      iata: 'SEA',
+    );
+    final at = now.subtract(const Duration(minutes: 1));
+    final heard = buildHeard(
+      repeaters: const [capitolHill, twin],
+      discovery: [
+        DiscLogEntry(
+          timestamp: at,
+          latitude: 47.6,
+          longitude: -122.3,
+          discoveredNodes: [
+            DiscoveredNodeEntry(
+              repeaterId: '4E5D',
+              nodeType: 'REPEATER',
+              localSnr: 6,
+              localRssi: -80,
+              remoteSnr: 4,
+              pubkeyHex:
+                  '4E5D82AA00000000000000000000000000000000000000000000000000000000',
+            ),
+            DiscoveredNodeEntry(
+              repeaterId: '4E5D',
+              nodeType: 'REPEATER',
+              localSnr: 4,
+              localRssi: -90,
+              remoteSnr: 2,
+              pubkeyHex:
+                  '4E5DFFFF00000000000000000000000000000000000000000000000000000000',
+            ),
+          ],
+        ),
+      ],
+      tx: [
+        TxLogEntry(
+          timestamp: at.add(const Duration(seconds: 10)),
+          latitude: 47.6,
+          longitude: -122.3,
+          power: 1,
+          events: [RxEvent(repeaterId: '4E5D', snr: 5.0, rssi: -82)],
+        ),
+      ],
+    );
+
+    expect(
+      SiriSnapshotBuilder.countUniqueRepeatersHeard(
+        heard.distinctHeard,
+        now.subtract(const Duration(minutes: 5)),
+      ),
+      3,
+      reason: 'both twins plus the hash that could be either',
+    );
+  });
+
   group('unique repeaters heard is scoped to the running session', () {
-    SiriRepeaterObservation heard(String hexId, Duration ago) =>
-        SiriRepeaterObservation(
-          entityId: 'SEA|$hexId',
-          displayHexId: hexId,
+    SiriHeardIdentity heard(String hexId, Duration ago) => SiriHeardIdentity(
+          key: 'SEA|$hexId',
           observedAt: now.subtract(ago),
-          kind: SiriObservationKind.passiveRx,
-          direct: true,
-          hopCount: 1,
-          resolved: true,
         );
 
     test('a previous session\'s repeaters are not credited to this one', () {
@@ -472,15 +569,7 @@ void main() {
       // reports nothing for its opening event.
       final startedAt = now.subtract(const Duration(minutes: 5));
       final observations = [
-        SiriRepeaterObservation(
-          entityId: 'SEA|first',
-          displayHexId: 'AAAA1111',
-          observedAt: startedAt,
-          kind: SiriObservationKind.discovery,
-          direct: true,
-          hopCount: 1,
-          resolved: true,
-        ),
+        SiriHeardIdentity(key: 'SEA|first', observedAt: startedAt),
       ];
 
       expect(
@@ -492,14 +581,9 @@ void main() {
     test('an observation one millisecond earlier is a previous session', () {
       final startedAt = now.subtract(const Duration(minutes: 5));
       final observations = [
-        SiriRepeaterObservation(
-          entityId: 'SEA|earlier',
-          displayHexId: 'BBBB2222',
+        SiriHeardIdentity(
+          key: 'SEA|earlier',
           observedAt: startedAt.subtract(const Duration(milliseconds: 1)),
-          kind: SiriObservationKind.discovery,
-          direct: true,
-          hopCount: 1,
-          resolved: true,
         ),
       ];
 
@@ -549,22 +633,8 @@ void main() {
 
     test('unresolved observations count by hex, not collapsed together', () {
       final observations = [
-        SiriRepeaterObservation(
-          displayHexId: 'DDDD4444',
-          observedAt: now,
-          kind: SiriObservationKind.passiveRx,
-          direct: true,
-          hopCount: 1,
-          resolved: false,
-        ),
-        SiriRepeaterObservation(
-          displayHexId: 'EEEE5555',
-          observedAt: now,
-          kind: SiriObservationKind.passiveRx,
-          direct: true,
-          hopCount: 1,
-          resolved: false,
-        ),
+        SiriHeardIdentity(key: 'unresolved:DDDD4444', observedAt: now),
+        SiriHeardIdentity(key: 'unresolved:EEEE5555', observedAt: now),
       ];
 
       expect(
