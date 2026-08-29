@@ -25,6 +25,7 @@ import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
 import '../utils/repeater_format.dart';
+import '../utils/map_style_errors.dart';
 import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
 import 'repeater_id_chip.dart';
@@ -604,8 +605,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// multi-await sequences whose ready-flags are checked before the first
   /// await; two of them interleaving (the zone-transfer rebuild racing the
   /// post-upload patch refresh) double-added the patch source and crashed at
-  /// a region boundary (#495). Entry points enqueue; the *Locked bodies and
-  /// the helpers they call must never enqueue, or they deadlock the gate.
+  /// a region boundary (#495), and the same class of race froze the GPS puck
+  /// when its duplicate install failed permanently (#482). Entry points
+  /// enqueue; the *Locked bodies and the helpers they call must never
+  /// enqueue, or they deadlock the gate.
   final SerialTaskGate _coverageGate = SerialTaskGate();
 
   // Tap-to-highlight overlay: a fill layer painting the clicked cell's
@@ -1593,7 +1596,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         appState.preferences.gpsMarkerStyle,
       );
       if (gpsVersion != _lastGpsSyncVersion) {
-        _lastGpsSyncVersion = gpsVersion;
+        // NOT recorded here: _syncGpsSymbol records the version of what it
+        // actually pushed. Recording eagerly marked dropped updates (in-flight
+        // skip, failed install) as applied, and with GpsService's
+        // distanceFilter there is no periodic tick to paper over the gap, so
+        // the puck stayed wherever the drop left it until the next real
+        // movement (#482).
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           if (!mounted) return;
           if (_gpsSyncInFlight) return;
@@ -3034,15 +3042,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // — that double-sync was racing the first sync's symbol refs and
         // throwing "you can only set existing annotations" errors twice.
         _lastMarkerDataVersion = _computeMarkerDataVersion(appState);
-        // Same idea for the GPS-only sync gate: _syncAllAnnotations already
-        // ran _syncGpsSymbol, so capture the current GPS version to keep the
-        // next build from scheduling a redundant updateSymbol call.
-        _lastGpsSyncVersion = Object.hash(
-          appState.currentPosition?.latitude,
-          appState.currentPosition?.longitude,
-          _computedHeading,
-          appState.preferences.gpsMarkerStyle,
-        );
+        // The GPS-only sync gate needs no capture here: _syncAllAnnotations
+        // ran _syncGpsSymbol, which records the version itself when its push
+        // lands (and deliberately doesn't when it bails, so the build-driven
+        // sync retries).
         if (mounted) setState(() {});
       }
     } finally {
@@ -4781,6 +4784,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       try {
         await _mapController!
             .setGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+        _recordGpsSyncVersion(appState, null);
       } catch (e) {
         debugError('[MAP] clear gps puck failed: $e');
       }
@@ -4799,9 +4803,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _buildGpsPuckFeatureCollection(
             pos.latitude, pos.longitude, style, iconRotate),
       );
+      _recordGpsSyncVersion(appState, pos);
     } catch (e) {
       debugError('[MAP] update gps puck failed: $e');
     }
+  }
+
+  /// Mark the puck as in sync with [pos] (null = cleared). Only called once a
+  /// push has actually landed; a bailed or failed sync leaves the version
+  /// unrecorded so the next provider notify retries it (#482).
+  void _recordGpsSyncVersion(AppStateProvider appState, Position? pos) {
+    _lastGpsSyncVersion = Object.hash(
+      pos?.latitude,
+      pos?.longitude,
+      _computedHeading,
+      appState.preferences.gpsMarkerStyle,
+    );
   }
 
   /// One-Point FeatureCollection for the GPS puck source. `iconImage` and
@@ -4833,7 +4850,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// order, with no symbol-sort-key contention. enableInteraction:false so taps
   /// pass through to the repeaters/clusters underneath. Mirrors
   /// [_ensureCoverageLinesLayer].
-  Future<bool> _ensureGpsPuckLayer() async {
+  /// Gated entry point; see [_coverageGate].
+  Future<bool> _ensureGpsPuckLayer() =>
+      _coverageGate.run(_ensureGpsPuckLayerLocked);
+
+  Future<bool> _ensureGpsPuckLayerLocked() async {
     if (_gpsPuckLayerInstalled) return true;
     if (_mapController == null) return false;
     try {
@@ -4860,6 +4881,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _gpsPuckLayerInstalled = true;
       return true;
     } catch (e) {
+      // "Already exists" means a previous install's native objects survived a
+      // silently-failed teardown. Adopt them: the layer's paint properties are
+      // constant data-driven expressions, so the existing layer is identical
+      // to the one this add would have created, and the caller's
+      // setGeoJsonSource repositions it. Reporting failure here left the
+      // installed-flag false for the life of the map session while the stale
+      // layer kept rendering the last pushed position (#482).
+      if (mapStyleObjectAlreadyExists(e)) {
+        debugWarn('[MAP] gps-puck layer already present, adopting it: $e');
+        _gpsPuckLayerInstalled = true;
+        return true;
+      }
       debugError('[MAP] gps-puck layer create failed: $e');
       return false;
     }
