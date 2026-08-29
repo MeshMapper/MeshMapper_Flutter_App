@@ -293,6 +293,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     .updatePreferences(prefs.copyWith(showTopRepeaters: value));
               },
             ),
+            // Live Activities are iOS-only, so the switch would be inert
+            // anywhere else.
+            if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS)
+              SwitchListTile(
+                secondary: const Icon(Icons.badge),
+                title: const Text('Repeater Names on Live Activity'),
+                subtitle: Text(prefs.liveActivityShowNames
+                    ? 'Named rows on CarPlay and watch'
+                    : 'Compact grid fits more repeaters'),
+                value: prefs.liveActivityShowNames,
+                onChanged: (value) {
+                  appState.updatePreferences(
+                      prefs.copyWith(liveActivityShowNames: value));
+                },
+              ),
           ]),
 
           // Ping Settings

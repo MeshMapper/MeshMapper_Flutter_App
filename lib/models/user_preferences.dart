@@ -94,6 +94,10 @@ class UserPreferences {
   /// Show top 3 repeaters by SNR on the map during wardriving
   final bool showTopRepeaters;
 
+  /// Live Activity heard rows show resolved repeater names (fewer, named
+  /// rows). When false the card packs a two-column hex grid instead.
+  final bool liveActivityShowNames;
+
   /// Coverage marker style on the map (dot, pin, diamond)
   final String markerStyle;
 
@@ -165,6 +169,7 @@ class UserPreferences {
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
+    this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
     this.colorVisionType = 'none',
@@ -214,6 +219,7 @@ class UserPreferences {
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
+      liveActivityShowNames: (json['liveActivityShowNames'] as bool?) ?? true,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
       colorVisionType: (json['colorVisionType'] as String?) ?? 'none',
@@ -276,6 +282,7 @@ class UserPreferences {
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
       'showTopRepeaters': showTopRepeaters,
+      'liveActivityShowNames': liveActivityShowNames,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
       'colorVisionType': colorVisionType,
@@ -323,6 +330,7 @@ class UserPreferences {
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
     bool? showTopRepeaters,
+    bool? liveActivityShowNames,
     String? markerStyle,
     String? gpsMarkerStyle,
     String? colorVisionType,
@@ -371,6 +379,8 @@ class UserPreferences {
           minPingDistanceMeters ?? this.minPingDistanceMeters,
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
+      liveActivityShowNames:
+          liveActivityShowNames ?? this.liveActivityShowNames,
       markerStyle: markerStyle ?? this.markerStyle,
       gpsMarkerStyle: gpsMarkerStyle ?? this.gpsMarkerStyle,
       colorVisionType: colorVisionType ?? this.colorVisionType,
@@ -448,6 +458,7 @@ class UserPreferences {
         other.minPingDistanceMeters == minPingDistanceMeters &&
         other.autoStopAfterIdle == autoStopAfterIdle &&
         other.showTopRepeaters == showTopRepeaters &&
+        other.liveActivityShowNames == liveActivityShowNames &&
         other.markerStyle == markerStyle &&
         other.gpsMarkerStyle == gpsMarkerStyle &&
         other.colorVisionType == colorVisionType &&
@@ -493,6 +504,7 @@ class UserPreferences {
       minPingDistanceMeters,
       autoStopAfterIdle,
       showTopRepeaters,
+      liveActivityShowNames,
       markerStyle,
       gpsMarkerStyle,
       colorVisionType,

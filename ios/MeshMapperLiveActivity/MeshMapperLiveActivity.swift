@@ -137,120 +137,131 @@ private struct MeshMapperLockScreenContent: View {
   }
 }
 
-/// The watch Smart Stack card.
+/// The small activity family card: the watch Smart Stack and, on iOS 26,
+/// the CarPlay dashboard.
 ///
-/// **It is a widget-sized card, not a lock-screen banner**: 152x69.5 pt on a
-/// 40 mm watch through 191x81.5 pt on a 49 mm one, per the HIG's watchOS
-/// widget dimensions.
+/// **The layout is a band over rows.** A slate band carries the session's
+/// status facts (phase on the left, mode and zone in the middle, noise floor
+/// and battery pinned to the far right, each beside its app icon) above a
+/// hairline divider, and the body below is up to three named repeater rows.
 ///
-/// **One header line, then the observations.** The phase names itself on the
-/// left; mode, latest outcome and zone sit at the right of that same line,
-/// where they cost no line of their own. Everything under it is the map page's
-/// Top Heard block — `[type dot] [hex ID] [SNR]` in two columns, column-major,
-/// four observations deep.
+/// **Width decides how much the band spells out.** The watch card is
+/// 152–191 pt wide per the HIG's watchOS widget dimensions; CarPlay's is
+/// wider. Past 200 pt the band adds the mode word, the battery percentage and
+/// a live countdown, and the body seats a third row; under it the icons carry
+/// the middle, the battery keeps only its glyph (until it runs low), and two
+/// rows fit.
 ///
-/// **What it deliberately no longer carries.** The countdown is gone: a
-/// `Text(timerInterval:)` is redrawn by the system every second it is visible,
-/// and the display is where this app's marginal energy goes on the wrist — a
-/// measured 80 % of it. The phase title already says what is happening, and
-/// the exact second it ends is not a wrist-glance fact. The heard-summary line
-/// went with it, and the session counters that shared it. `repeatersAreCurrent`
-/// still reaches the wearer as the grid's opacity, which is where that fact was
-/// already carried on cards too narrow to spell it out.
+/// **The energy rules are inherited, not relaxed.** Nothing here holds state
+/// or animates, and the ticking countdown is width-gated to the wide layout:
+/// a `Text(timerInterval:)` is redrawn by the system every second it is
+/// visible, and on the wrist that redraw was measured at 80 % of this app's
+/// display energy. `repeatersAreCurrent` still reaches the reader as the
+/// rows' opacity.
 ///
-/// **Both dimensions are measured rather than assumed.** This view is rendered
-/// by the iOS extension and mirrored to the wrist, so `WKInterfaceDevice`
-/// screen bounds — which size the equivalent panel in `MapPage` — are not
-/// reachable from here. The `GeometryReader` hands the row solver the card's
-/// real width *and* the height left under the header, so the type is as large
-/// as the smaller of the two allows. Height alone cannot enlarge it: at these
-/// widths the rows are width-bound, which is why freeing two lines buys
-/// headroom for the cap rather than bigger type on its own.
+/// **The name is the only elastic element in a row.** The hex ID stays the
+/// observation's identity (a 1-byte hash is frequently ambiguous) and the SNR
+/// keeps its width and alignment, so a long resolved name truncates between
+/// them rather than disturbing either.
 @available(iOSApplicationExtension 18.0, *)
 private struct MeshMapperSmallActivityContent: View {
   let state: MeshMapperActivityAttributes.ContentState
   let isStale: Bool
 
-  /// Matches the map panel's own insets. The card has rounded corners the
-  /// system draws, so the horizontal value is clearance, not decoration.
-  private static let horizontalPadding: CGFloat = 8
-  private static let verticalPadding: CGFloat = 5
-  private static let headerSpacing: CGFloat = 4
-  /// The 13 pt semibold title's line height, pinned rather than measured so
-  /// the height the row solver is given and the height the header actually
-  /// takes cannot drift apart.
-  private static let headerHeight: CGFloat = 16
+  /// Watch cards top out at 191 pt; anything wider is a surface (CarPlay)
+  /// that can afford the spelled-out band and the third row.
+  private static let wideThreshold: CGFloat = 200
+
+  /// Width past which the band can afford the spelled-out mode word on top
+  /// of everything else it carries.
+  private static let modeWordThreshold: CGFloat = 280
 
   var body: some View {
     GeometryReader { geo in
-      let layout = MeshMapperHeardLayout(
-        contentWidth: geo.size.width - 2 * Self.horizontalPadding,
-        contentHeight: geo.size.height - 2 * Self.verticalPadding
-          - Self.headerHeight - Self.headerSpacing,
-        repeaters: state.repeaters
-      )
-      VStack(alignment: .leading, spacing: Self.headerSpacing) {
-        headerLine
-          .frame(height: Self.headerHeight)
-        MeshMapperHeardGrid(state: state, layout: layout)
+      let isWide = geo.size.width >= Self.wideThreshold
+      let showsModeWord = geo.size.width >= Self.modeWordThreshold
+      VStack(alignment: .leading, spacing: 0) {
+        headerBand(isWide: isWide, showsModeWord: showsModeWord)
+        heardRows(isWide: isWide, width: geo.size.width)
           // Rows from a finished cycle are still worth showing, but they are
-          // not a claim about now. With the summary line gone this opacity is
-          // the only thing left saying so, which it already was on the cards
-          // that never had room for the words.
+          // not a claim about now; the dimming is that statement.
           .opacity(state.repeatersAreCurrent ? 1 : 0.55)
+          .padding(.horizontal, isWide ? 12 : 7)
+          .padding(.vertical, isWide ? 6 : 4)
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       }
-      .padding(.horizontal, Self.horizontalPadding)
-      .padding(.vertical, Self.verticalPadding)
     }
     .foregroundStyle(.white)
   }
 
-  /// Phase on the left, session identity on the right.
-  ///
-  /// Staleness replaces the phase title rather than sitting beside it, as it
-  /// does in the map panel: a phase that nobody is refreshing should not keep
-  /// announcing itself, and the swap costs no width the right side needs.
-  private var headerLine: some View {
-    HStack(spacing: 4) {
+  // MARK: Header band
+
+  private func headerBand(isWide: Bool, showsModeWord: Bool) -> some View {
+    HStack(spacing: isWide ? 5 : 2) {
       if isStale {
         Label("Update delayed", systemImage: "exclamationmark.triangle.fill")
-          .font(.system(size: 12, weight: .semibold))
+          .font(.system(size: isWide ? 12 : 11, weight: .semibold))
           .foregroundStyle(.orange)
           .lineLimit(1)
           .minimumScaleFactor(0.85)
       } else {
-        Text(state.phaseTitle)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(.white.opacity(state.phaseDeadlineHasLapsed ? 0.45 : 1))
+        Text(state.bandPhaseTitle)
+          .font(.system(size: isWide ? 13 : 11, weight: .semibold))
+          .foregroundStyle(
+            state.phaseColor.opacity(state.phaseDeadlineHasLapsed ? 0.45 : 1)
+          )
           .lineLimit(1)
-          // Shrink before truncating. Sharing the line with the mode leaves
-          // "Listening…" about four points short on a 40 mm card, and a title
-          // clipped to "Liste…" reads as a different word; a title one point
-          // smaller reads as the same one.
-          .minimumScaleFactor(0.8)
+          // Shrink before truncating: a title clipped to "Liste…" reads as a
+          // different word; a title one point smaller reads as the same one.
+          .minimumScaleFactor(0.7)
           .truncationMode(.tail)
+          .layoutPriority(1)
+        // The system draws and ticks this itself; no ActivityKit updates.
+        // Wide cards only: on the wrist a ticking timer was measured at 80 %
+        // of this app's display energy, so the watch keeps the title alone.
+        if isWide, state.activeCountdownRange != nil {
+          MeshMapperCountdown(
+            state: state,
+            font: .system(size: 12, weight: .semibold).monospacedDigit()
+          )
+          .foregroundStyle(.secondary)
+          .fixedSize()
+        }
       }
       Spacer(minLength: 4)
-      trailingIdentity
+      middleIdentity(isWide: isWide, showsModeWord: showsModeWord)
+      Spacer(minLength: 4)
+      trailingHealth(isWide: isWide, showsModeWord: showsModeWord)
+    }
+    .padding(.horizontal, isWide ? 12 : 7)
+    .padding(.vertical, isWide ? 6 : 4)
+    .background(MeshMapperPalette.surface)
+    .overlay(alignment: .bottom) {
+      Rectangle()
+        .fill(MeshMapperPalette.hairline)
+        .frame(height: 0.5)
     }
   }
 
-  /// Mode, latest outcome and zone — the facts that used to own the bottom
-  /// line. They are `fixedSize` so the phase title, which can be truncated
-  /// without becoming wrong, is what gives way on a narrow card.
-  private var trailingIdentity: some View {
-    HStack(spacing: 4) {
-      Text(state.mode.uppercased())
-        .font(.system(size: 10, weight: .bold))
-        .tracking(0.3)
-      MeshMapperOutcomeDot(state: state, diameter: 6)
+  /// Mode and zone, each beside the icon the app itself uses for it. Narrow
+  /// cards drop the mode word and let the icon carry it.
+  private func middleIdentity(isWide: Bool, showsModeWord: Bool) -> some View {
+    HStack(spacing: isWide ? 4 : 3) {
+      Image(systemName: state.modeSymbol)
+        .font(.system(size: isWide ? 9 : 6, weight: .bold))
+      if showsModeWord {
+        Text(state.mode.uppercased())
+          .font(.system(size: 10, weight: .bold))
+          .tracking(0.3)
+      }
       if let zone = state.zoneCode {
+        Image(systemName: "mappin.and.ellipse")
+          .font(.system(size: isWide ? 9 : 6, weight: .bold))
         Text(zone)
-          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .font(.system(size: isWide ? 10 : 7, weight: .semibold, design: .monospaced))
       } else if !state.isConnected {
         Text("Disconnected")
-          .font(.system(size: 10, weight: .semibold))
+          .font(.system(size: isWide ? 10 : 8, weight: .semibold))
           .foregroundStyle(.orange)
       }
     }
@@ -258,159 +269,179 @@ private struct MeshMapperSmallActivityContent: View {
     .lineLimit(1)
     .fixedSize(horizontal: true, vertical: false)
   }
-}
 
-/// The map panel's Top Heard block, rendered from Live Activity state.
-///
-/// Rows are `[type dot] [hex ID] [SNR]` and read down the left column before
-/// the right, matching `MapPage.statusPanel`. The hex path hash stays primary
-/// and unabbreviated: a 1-byte hash is frequently ambiguous, so it — not a
-/// resolved name — is the observation's identity, and names are dropped here
-/// rather than truncated.
-@available(iOSApplicationExtension 18.0, *)
-private struct MeshMapperHeardGrid: View {
-  let state: MeshMapperActivityAttributes.ContentState
-  let layout: MeshMapperHeardLayout
+  /// Noise floor and companion battery, pinned to the band's far right. Both
+  /// are optional payload fields, so a radio that has not answered a stats
+  /// poll simply leaves the slot empty.
+  private func trailingHealth(isWide: Bool, showsModeWord: Bool) -> some View {
+    HStack(spacing: isWide ? 4 : 3) {
+      if let noiseFloor = state.noiseFloorDbm {
+        HStack(spacing: 2) {
+          Image(systemName: "waveform")
+            .font(.system(size: isWide ? 9 : 6, weight: .bold))
+          Text("\(noiseFloor)")
+            .font(.system(size: isWide ? 10 : 7, weight: .bold, design: .monospaced))
+        }
+        .foregroundStyle(Self.noiseFloorColor(noiseFloor))
+      }
+      if let battery = state.companionBatteryPct {
+        HStack(spacing: 2) {
+          Image(systemName: Self.batterySymbol(battery))
+            .font(.system(size: isWide ? 10 : 7, weight: .semibold))
+          // The number earns its width only on the widest tier; below it
+          // the glyph is enough until the battery is actually in trouble.
+          if showsModeWord || battery < 20 {
+            Text("\(battery)")
+              .font(.system(size: isWide ? 10 : 7, weight: .bold, design: .monospaced))
+          }
+        }
+        .foregroundStyle(battery < 20 ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+      }
+    }
+    .lineLimit(1)
+    .fixedSize(horizontal: true, vertical: false)
+  }
 
-  var body: some View {
+  /// The noise floor graph's own thresholds: quiet green to -100 dBm, busy
+  /// orange to -90, loud red past it.
+  private static func noiseFloorColor(_ dbm: Int) -> Color {
+    if dbm <= -100 { return .green }
+    if dbm <= -90 { return .orange }
+    return .red
+  }
+
+  private static func batterySymbol(_ percent: Int) -> String {
+    switch percent {
+    case 90...: return "battery.100"
+    case 60..<90: return "battery.75"
+    case 35..<60: return "battery.50"
+    case 10..<35: return "battery.25"
+    default: return "battery.0"
+    }
+  }
+
+  // MARK: Heard rows
+
+  @ViewBuilder
+  private func heardRows(isWide: Bool, width: CGFloat) -> some View {
     if state.repeaters.isEmpty {
       HStack(spacing: 6) {
         // A failed ping produces no rows, so its colour needs its own mark;
         // absence alone cannot distinguish failure from no attempt yet.
         MeshMapperOutcomeDot(state: state, diameter: 6)
-        Text("Nothing heard")
-          .font(.system(size: 11))
+        Text(state.repeaterEmptyLabel)
+          .font(.system(size: isWide ? 12 : 11))
           .foregroundStyle(.secondary)
           .lineLimit(1)
           .minimumScaleFactor(0.75)
       }
-    } else if layout.usesTwoColumns {
-      HStack(alignment: .top, spacing: MeshMapperHeardLayout.columnGap) {
-        column(Array(rows.prefix(2)))
-        column(Array(rows.dropFirst(2)))
+    } else if state.showRepeaterNames ?? true {
+      VStack(alignment: .leading, spacing: isWide ? 3 : 2) {
+        ForEach(state.repeaters.prefix(isWide ? 3 : 2)) { repeater in
+          namedRow(repeater, isWide: isWide)
+        }
       }
     } else {
-      column(rows)
+      hexGrid(isWide: isWide, width: width)
     }
   }
 
-  /// Four rows are what two columns hold; one column keeps the two it can show
-  /// without pushing the lines below it off the card.
-  private var rows: [MeshMapperActivityAttributes.HeardRepeater] {
-    Array(state.repeaters.prefix(layout.usesTwoColumns ? 4 : 2))
-  }
+  /// The nameless alternative behind the Settings switch: `[dot hex SNR]`
+  /// packed two columns wide, column-major, four observations deep, the
+  /// layout the card shipped with before names arrived. More repeaters per
+  /// glance, no identity beyond the hex.
+  ///
+  /// Font and column count are solved from the measured width: rigid rows at
+  /// a fixed size overflowed the 40 mm card as soon as 3-byte path mode
+  /// produced 6-character IDs.
+  private func hexGrid(isWide: Bool, width: CGFloat) -> some View {
+    let rows = Array(state.repeaters.prefix(4))
+    let columnGap: CGFloat = isWide ? 16 : 8
+    let contentWidth = width - 2 * (isWide ? 12 : 7)
+    let idChars = CGFloat(rows.map { $0.id.count }.max() ?? 2)
+    let snrChars = CGFloat(
+      rows.map { Self.formattedRowSnr($0.snr, signed: false).count }.max() ?? 4
+    )
+    // Advance of one semibold monospaced character is about 0.62 em; the dot
+    // and its two gaps consume about 12 points of each column.
+    let columnWidth = (contentWidth - columnGap) / 2 - 2
+    let widthBound = (columnWidth - 12) / (0.62 * (idChars + snrChars))
+    // Below 8 points the type stops paying for itself and one clearer column
+    // wins. Truncating the ID is never the trade: the ID is the identity.
+    let usesTwoColumns = widthBound >= 8
+    let cap: CGFloat = isWide ? 13 : 10
+    let fontSize = min(max(usesTwoColumns ? widthBound : cap, 8), cap)
 
-  private func column(
-    _ repeaters: [MeshMapperActivityAttributes.HeardRepeater]
-  ) -> some View {
-    VStack(alignment: .leading, spacing: MeshMapperHeardLayout.rowGap) {
-      ForEach(repeaters) { row($0) }
+    return HStack(alignment: .top, spacing: columnGap) {
+      hexColumn(Array(rows.prefix(2)), isWide: isWide, fontSize: fontSize)
+      if usesTwoColumns, rows.count > 2 {
+        hexColumn(Array(rows.dropFirst(2)), isWide: isWide, fontSize: fontSize)
+      }
     }
   }
 
-  /// Content-sized on purpose, so the row's intrinsic measurement stays equal
-  /// to the width model that chose the font and the column count.
-  private func row(
-    _ repeater: MeshMapperActivityAttributes.HeardRepeater
+  private func hexColumn(
+    _ repeaters: [MeshMapperActivityAttributes.HeardRepeater],
+    isWide: Bool,
+    fontSize: CGFloat
   ) -> some View {
-    HStack(spacing: 3) {
+    VStack(alignment: .leading, spacing: isWide ? 3 : 2) {
+      ForEach(repeaters) { repeater in
+        HStack(spacing: isWide ? 5 : 3) {
+          Circle()
+            .fill(repeater.typeColor.map(Color.init) ?? state.outcomeColor)
+            .frame(width: isWide ? 6 : 5, height: isWide ? 6 : 5)
+          Text(repeater.id.uppercased())
+            .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
+          Text(Self.formattedRowSnr(repeater.snr, signed: false))
+            .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
+            .foregroundStyle(repeater.snrColor.map(Color.init) ?? .secondary)
+        }
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(repeater.accessibilitySummary)
+      }
+    }
+  }
+
+  /// `[type dot] [hex] [name] … [SNR]`.
+  private func namedRow(
+    _ repeater: MeshMapperActivityAttributes.HeardRepeater,
+    isWide: Bool
+  ) -> some View {
+    HStack(spacing: isWide ? 6 : 4) {
       Circle()
         .fill(repeater.typeColor.map(Color.init) ?? state.outcomeColor)
-        .frame(width: 6, height: 6)
+        .frame(width: isWide ? 6 : 5, height: isWide ? 6 : 5)
       Text(repeater.id.uppercased())
-        .font(
-          .system(size: layout.rowFontSize, weight: .semibold, design: .monospaced)
-        )
-      // No unit and no plus sign, as on the map panel: the column is all SNR,
-      // and "dB" on every row costs the width a fourth observation needs.
-      Text(repeater.snr, format: .number.precision(.fractionLength(1)))
-        .font(
-          .system(size: layout.rowFontSize, weight: .semibold, design: .monospaced)
-        )
+        .font(.system(size: isWide ? 13 : 10, weight: .semibold, design: .monospaced))
+        .fixedSize()
+      if let name = repeater.resolvedName {
+        Text(name)
+          .font(.system(size: isWide ? 12 : 9))
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          // The one element that gives way when the row runs out of width.
+          .layoutPriority(-1)
+      }
+      Spacer(minLength: 4)
+      Text(Self.formattedRowSnr(repeater.snr, signed: isWide))
+        .font(.system(size: isWide ? 13 : 10, weight: .semibold, design: .monospaced))
         .foregroundStyle(repeater.snrColor.map(Color.init) ?? .secondary)
-        // Fixed width so SNRs line up down a column despite varying digits.
-        .frame(width: layout.rowFontSize * layout.snrWidthEm, alignment: .trailing)
+        .fixedSize()
     }
     .lineLimit(1)
-    .fixedSize()
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(repeater.accessibilitySummary)
   }
-}
 
-/// Column count and row font, solved from the card's measured width the way
-/// `MapPage` solves them from the watch's screen bounds.
-@available(iOSApplicationExtension 18.0, *)
-private struct MeshMapperHeardLayout {
-  /// A stable gutter keeps the width equation and the rendered columns in
-  /// agreement; deriving it from card size would silently spend the room the
-  /// font calculation just recovered on the smallest watch.
-  static let columnGap: CGFloat = 8
-  /// Vertical gap between the two rows of a column.
-  static let rowGap: CGFloat = 2
-  /// Advance of one semibold monospaced character, in ems. Closer to 0.62 than
-  /// the nominal 0.6, measured off the rendered row.
-  private static let charAdvance: CGFloat = 0.62
-  /// A rendered line box against its nominal point size, for the height bound.
-  private static let lineHeightRatio: CGFloat = 1.25
-
-  let usesTwoColumns: Bool
-  let rowFontSize: CGFloat
-  /// Width of the aligned SNR column, in ems of `rowFontSize`. Solved from the
-  /// widest value actually present rather than from the widest one possible:
-  /// a fixed five-character reservation charged every card for "-12.4" when
-  /// the data was "2.1", and that reservation was the single largest consumer
-  /// of the width the type needed.
-  let snrWidthEm: CGFloat
-
-  init(
-    contentWidth: CGFloat,
-    contentHeight: CGFloat,
-    repeaters: [MeshMapperActivityAttributes.HeardRepeater]
-  ) {
-    let idChars = CGFloat(repeaters.map(\.id.count).max() ?? 2)
-    let snrChars = CGFloat(repeaters.map { Self.snrCharacterCount($0.snr) }.max() ?? 4)
-    snrWidthEm = Self.charAdvance * snrChars
-
-    let columnWidth = (contentWidth - Self.columnGap) / 2 - 2
-    // The constants mirror the row: dot and its two gaps consume 12 pt, and
-    // both text runs advance at `charAdvance`. Two points of slack put
-    // measurement error on smaller type rather than on a row that overflows.
-    let widthBound =
-      (columnWidth - 12) / (Self.charAdvance * idChars + snrWidthEm)
-
-    // Eight points is the wrist's measured glanceability floor and is
-    // inherited unchanged — below it the extra width stops paying for itself
-    // and one clearer column wins. Truncating the ID is never the trade,
-    // because the ID is the identity.
-    usesTwoColumns = widthBound >= 8
-
-    // Two rows deep either way: two columns hold four, one column keeps the
-    // two it can show. Type that overflows this is the defect the card was
-    // rebuilt to fix, so the height is a bound and not a preference.
-    let heightBound =
-      (contentHeight - Self.rowGap) / 2 / Self.lineHeightRatio
-
-    // Raised now that the header is the only line above the grid. The card is
-    // wider than the app's panel and has no map beneath it to stay clear of,
-    // so the same arm's-length reading distance affords larger type here; the
-    // ladder still steps down as the ID lengthens, because a longer ID spends
-    // the same width on identity that the size would otherwise take.
-    let cap: CGFloat = idChars > 4 ? 14 : idChars > 2 ? 15 : 16
-    let bound = min(usesTwoColumns ? widthBound : cap, heightBound)
-    rowFontSize = min(max(bound, 8), cap)
-  }
-
-  /// Characters in an SNR as the row formats it: one fraction digit, its
-  /// separator, the integer digits, and a minus sign when there is one. The
-  /// monospaced face advances all of them equally, so counting them is the
-  /// same measurement the ID gets.
-  private static func snrCharacterCount(
-    _ snr: Double
-  ) -> Int {
-    let magnitude = abs(snr)
-    let integerDigits = magnitude < 10 ? 1 : magnitude < 100 ? 2 : 3
-    return integerDigits + 2 + (snr < 0 ? 1 : 0)
+  /// No unit, as on the map panel: the column is all SNR, and "dB" on every
+  /// row costs width the name needs. The narrow card also drops the plus sign.
+  private static func formattedRowSnr(_ snr: Double, signed: Bool) -> String {
+    let value = snr.formatted(.number.precision(.fractionLength(1)))
+    return signed && snr >= 0 ? "+\(value)" : value
   }
 }
 
@@ -725,8 +756,14 @@ private struct MeshMapperCountdown: View {
 }
 
 private enum MeshMapperPalette {
-  static let background = Color(red: 0.055, green: 0.075, blue: 0.105)
-  static let accent = Color.accentColor
+  /// slate-900, the app's main dark background.
+  static let background = Color(red: 0.059, green: 0.090, blue: 0.165)
+  /// slate-800, the app's card and panel surface, used for the small card's band.
+  static let surface = Color(red: 0.118, green: 0.161, blue: 0.231)
+  /// slate-700, the app's border colour, used for the band's divider.
+  static let hairline = Color(red: 0.200, green: 0.255, blue: 0.333)
+  /// emerald-600, the app's primary.
+  static let accent = Color(red: 0.020, green: 0.588, blue: 0.412)
 }
 
 extension MeshMapperActivityAttributes.ContentState {
@@ -784,6 +821,28 @@ extension MeshMapperActivityAttributes.ContentState {
       return "Nothing heard"
     default:
       return "Nothing heard in the last cycle"
+    }
+  }
+
+  /// The phase title without its trailing ellipsis, for the small card's
+  /// band: the countdown beside it already says "in progress", and the dots
+  /// are what pushed the longest title into truncating on tight cards.
+  fileprivate var bandPhaseTitle: String {
+    var trimmed = phaseTitle
+    while trimmed.hasSuffix("\u{2026}") || trimmed.hasSuffix(".") {
+      trimmed.removeLast()
+    }
+    return trimmed.isEmpty ? phaseTitle : trimmed
+  }
+
+  /// The app's own per-mode icon as an SF Symbol: swap arrows for Hybrid,
+  /// a paperplane for Active's send, an ear for Passive, a scope for Trace.
+  fileprivate var modeSymbol: String {
+    switch mode.lowercased() {
+    case "hybrid": return "arrow.left.arrow.right"
+    case "passive": return "ear"
+    case "trace", "targeted": return "scope"
+    default: return "paperplane.fill"
     }
   }
 
@@ -874,6 +933,8 @@ extension MeshMapperActivityAttributes.ContentState {
       pingColor: .init(r: 0.20, g: 0.84, b: 0.45),
       isConnected: true,
       zoneCode: "SEA",
+      noiseFloorDbm: -102,
+      companionBatteryPct: 80,
       txCount: 42,
       rxCount: 318,
       discoveryCount: 8,
@@ -928,6 +989,8 @@ extension MeshMapperActivityAttributes.ContentState {
       pingColor: .init(r: 0.94, g: 0.28, b: 0.25),
       isConnected: true,
       zoneCode: "SEA",
+      noiseFloorDbm: -96,
+      companionBatteryPct: 15,
       txCount: 17,
       rxCount: 3,
       discoveryCount: 0,
@@ -938,6 +1001,24 @@ extension MeshMapperActivityAttributes.ContentState {
       repeatersAreCurrent: true,
       updatedAt: Date()
     )
+  }
+
+  fileprivate static var previewGridMode: Self {
+    var state = previewRunningWithResponses
+    state.showRepeaterNames = false
+    // The widest rows the grid can be handed: 6-character IDs from 3-byte
+    // path mode with double-digit negative SNRs. The solver must fit these
+    // on a 40 mm card without clipping.
+    state.repeaters = state.repeaters.enumerated().map { index, repeater in
+      MeshMapperActivityAttributes.HeardRepeater(
+        id: repeater.id + String(format: "%02X", index),
+        name: repeater.name,
+        snr: index == 2 ? -12.4 : repeater.snr,
+        typeColor: repeater.typeColor,
+        snrColor: repeater.snrColor
+      )
+    }
+    return state
   }
 
   fileprivate static var previewLapsedDeadline: Self {
@@ -1045,6 +1126,7 @@ enum MeshMapperActivityRenderHarness {
       ("responses", .previewRunningWithResponses),
       ("none-heard", .previewRunningWithNoneHeard),
       ("lapsed", .previewLapsedDeadline),
+      ("grid", .previewGridMode),
     ]
 
     var written: [String] = []
@@ -1077,6 +1159,19 @@ enum MeshMapperActivityRenderHarness {
             written.append(path)
           }
         }
+        // The wide layouts CarPlay renders; the exact CarPlay size is not
+        // published, so these bracket the threshold: icon-only mode at 250,
+        // the spelled-out mode word at 320.
+        for width in [CGFloat(250), CGFloat(320)] {
+          if let path = render(
+            MeshMapperSmallActivityContent(state: state, isStale: false)
+              .frame(width: width, height: 100)
+              .background(MeshMapperPalette.background),
+            named: "small-carplay\(Int(width))-\(name)", in: directory
+          ) {
+            written.append(path)
+          }
+        }
       }
     }
     return written
@@ -1105,5 +1200,9 @@ enum MeshMapperActivityRenderHarness {
 
 #Preview("Lapsed deadline") {
   MeshMapperActivityPreview(state: .previewLapsedDeadline)
+}
+
+#Preview("Grid mode (names off)") {
+  MeshMapperActivityPreview(state: .previewGridMode)
 }
 #endif

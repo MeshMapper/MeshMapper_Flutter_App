@@ -138,6 +138,9 @@ final class LiveActivityManager {
       pingColor: resolvedColor(payload["pingColor"]),
       isConnected: payload["isConnected"] as? Bool ?? false,
       zoneCode: boundedString(payload["zoneCode"], maxLength: 12),
+      noiseFloorDbm: boundedInteger(payload["noiseFloorDbm"], min: -200, max: 100),
+      companionBatteryPct: boundedInteger(payload["companionBatteryPct"], min: 0, max: 100),
+      showRepeaterNames: payload["showRepeaterNames"] as? Bool,
       txCount: nonnegativeInteger(payload["txCount"]),
       rxCount: nonnegativeInteger(payload["rxCount"]),
       discoveryCount: nonnegativeInteger(payload["discoveryCount"]),
@@ -282,6 +285,13 @@ final class LiveActivityManager {
     if let number = value as? NSNumber { return max(number.intValue, 0) }
     if let value = value as? Int { return max(value, 0) }
     return 0
+  }
+
+  private func boundedInteger(_ value: Any?, min minValue: Int, max maxValue: Int) -> Int? {
+    guard let value = finiteNumber(value) else { return nil }
+    // Clamp in Double space first: Int(hugeFiniteDouble) is a runtime trap.
+    let clamped = Swift.min(Swift.max(value, Double(minValue)), Double(maxValue))
+    return Int(clamped)
   }
 
   private func positiveInteger(_ value: Any?) -> Int? {
