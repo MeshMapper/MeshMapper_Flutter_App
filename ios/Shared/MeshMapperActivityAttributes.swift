@@ -31,6 +31,14 @@ struct MeshMapperActivityAttributes: ActivityAttributes {
     var pingColor: ResolvedColor?
     var isConnected: Bool
     var zoneCode: String?
+    /// Bucketed to 2 dBm steps by the phone so poll jitter never mints an
+    /// update. Defaulted so payloads from an app without the field still
+    /// decode.
+    var noiseFloorDbm: Int? = nil
+    /// Companion radio battery, bucketed to 5 percent steps by the phone.
+    var companionBatteryPct: Int? = nil
+    /// The Settings switch: named rows (true) or the two-column hex grid.
+    var showRepeaterNames: Bool? = nil
     var txCount: Int
     var rxCount: Int
     var discoveryCount: Int

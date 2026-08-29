@@ -1480,6 +1480,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phaseDurationMs: _phaseDurationMsFor(phase.endsAt),
       isConnected: isConnected,
       zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      showRepeaterNames: _preferences.liveActivityShowNames,
     );
   }
 
@@ -2560,6 +2561,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       pingColor: pingColor,
       isConnected: isConnected,
       zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
+      noiseFloorDbm: _bucketedNoiseFloorDbm(),
+      companionBatteryPct: _bucketedCompanionBatteryPct(),
+      showRepeaterNames: _preferences.liveActivityShowNames,
       txCount: _pingStats.txCount,
       rxCount: _pingStats.rxCount,
       discoveryCount: _pingStats.discCount,
@@ -2570,6 +2574,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       repeatersAreCurrent: repeaterState.isCurrent,
       updatedAt: DateTime.now(),
     );
+  }
+
+  /// 2 dBm steps so ambient jitter on the 5 second poll never changes the
+  /// Live Activity payload fingerprint; the exact value stays a phone fact.
+  int? _bucketedNoiseFloorDbm() {
+    final noiseFloor = _currentNoiseFloor;
+    if (noiseFloor == null) return null;
+    return (noiseFloor / 2).round() * 2;
+  }
+
+  /// 5 percent steps so routine drain never changes the Live Activity payload
+  /// fingerprint; the exact value stays a phone-screen fact.
+  int? _bucketedCompanionBatteryPct() {
+    final percent = _currentBatteryPercent;
+    if (percent == null) return null;
+    return ((percent / 5).round() * 5).clamp(0, 100);
   }
 
   ({
@@ -7466,6 +7486,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Update user preferences
   void updatePreferences(UserPreferences preferences) {
+    final liveActivityLayoutChanged =
+        preferences.liveActivityShowNames != _preferences.liveActivityShowNames;
     debugLog(
         '[APP] Preferences updated: externalAntennaSet=${preferences.externalAntennaSet}, '
         'externalAntenna=${preferences.externalAntenna}, autoPowerSet=${preferences.autoPowerSet}');
@@ -7527,6 +7549,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Marker-style / GPS-marker prefs can change here — bump the map.
     _notifyMapNow();
+    // The Live Activity row layout follows a preference now. Only that flip
+    // schedules a sync (the snapshot build walks the full ping history, too
+    // expensive for unrelated toggles), and the flag sits in the urgency key,
+    // which is what carries it past the 15 second non-urgent floor.
+    if (liveActivityLayoutChanged) {
+      _scheduleLiveActivitySync(immediate: true);
+    }
     _savePreferences();
   }
 

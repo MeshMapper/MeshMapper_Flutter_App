@@ -98,6 +98,9 @@ class LiveActivitySnapshot {
     this.phaseDurationMs,
     this.pingColor,
     this.zoneCode,
+    this.noiseFloorDbm,
+    this.companionBatteryPct,
+    this.showRepeaterNames = true,
   });
 
   final String sessionId;
@@ -110,6 +113,18 @@ class LiveActivitySnapshot {
   final WatchColor? pingColor;
   final bool isConnected;
   final String? zoneCode;
+
+  /// Latest radio noise floor in whole dBm, for the Live Activity header.
+  /// Null when the radio has not answered a stats poll yet.
+  final int? noiseFloorDbm;
+
+  /// Companion radio battery, already bucketed to 5 percent steps so routine
+  /// drain does not change the payload fingerprint on every poll.
+  final int? companionBatteryPct;
+
+  /// Whether the small card spells out resolved repeater names (fewer, named
+  /// rows) or packs the two-column hex grid. Mirrors the Settings switch.
+  final bool showRepeaterNames;
   final int txCount;
   final int rxCount;
   final int discoveryCount;
@@ -131,6 +146,10 @@ class LiveActivitySnapshot {
         if (pingColor != null) 'pingColor': pingColor!.toMap(),
         'isConnected': isConnected,
         'zoneCode': zoneCode,
+        if (noiseFloorDbm != null) 'noiseFloorDbm': noiseFloorDbm,
+        if (companionBatteryPct != null)
+          'companionBatteryPct': companionBatteryPct,
+        'showRepeaterNames': showRepeaterNames,
         'txCount': txCount,
         'rxCount': rxCount,
         'discoveryCount': discoveryCount,
@@ -154,6 +173,7 @@ class LiveActivitySnapshot {
           phaseDurationMs: phaseDurationMs,
           isConnected: isConnected,
           zoneCode: zoneCode,
+          showRepeaterNames: showRepeaterNames,
         ),
         pingColor?.r ?? '',
         pingColor?.g ?? '',
@@ -182,6 +202,9 @@ class LiveActivitySnapshot {
     required int? phaseDurationMs,
     required bool isConnected,
     required String? zoneCode,
+    // Urgent because it is a user gesture: the wearer just flipped a display
+    // switch and is looking at the card to see it change.
+    bool showRepeaterNames = true,
   }) =>
       [
         sessionId,
@@ -213,5 +236,6 @@ class LiveActivitySnapshot {
         phaseDurationMs ?? 0,
         isConnected,
         zoneCode ?? '',
+        showRepeaterNames,
       ].join('|');
 }

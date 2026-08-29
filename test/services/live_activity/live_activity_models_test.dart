@@ -40,6 +40,7 @@ void main() {
       'phaseEndsAt': phaseEndsAt.millisecondsSinceEpoch,
       'isConnected': true,
       'zoneCode': 'JKG',
+      'showRepeaterNames': true,
       'txCount': 42,
       'rxCount': 318,
       'discoveryCount': 8,
