@@ -122,11 +122,10 @@ class PingService {
   // Pending disable flag - when true, disable will execute after RX window ends
   bool _pendingDisable = false;
 
-  // Backstop for the flag above. It is drained at exactly one point (the end of
-  // the RX window) while _pingInProgress is cleared on ~18 paths, so a ping that
-  // ends without ever arming a window (validation reject, no GPS fix, failed
-  // send) parks the disable forever and auto mode keeps its timer and keeps
-  // pinging after the user stopped it (#476).
+  // Last-resort backstop for the flag above. Every path that ends a ping
+  // lifecycle (RX/discovery/trace window end, validation skip, failed send)
+  // drains the flag itself (#496); this timer only remains for paths nobody
+  // has thought of, so a stranded disable can never outlive it (#476).
   Timer? _pendingDisableTimeout;
 
   /// How long to wait for the real window completion before forcing a parked
@@ -861,6 +860,16 @@ class PingService {
       debugLog('[PING] Ping operation failed: $e');
       _pingInProgress = false;
       return false;
+    } finally {
+      // A ping that ended without arming an RX window (validation skip, no
+      // GPS, failed send, any early return above) is the end of the lifecycle
+      // a queued disable was waiting on. Drain it here rather than leaving it
+      // for the timeout backstop, which locked the controls for the whole
+      // 12s wait (#496). A successful send leaves _pingInProgress true until
+      // _endRxListeningWindow, which does its own drain.
+      if (!_pingInProgress && _pendingDisable) {
+        await _executePendingDisable('ping ended without RX window');
+      }
     }
   }
 
@@ -1308,6 +1317,7 @@ class PingService {
     _pendingDisable = false;
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = null;
+    final wasPassive = _passiveModeEnabled;
     final wasHybrid = _hybridModeEnabled;
     final wasTargeted = _targetedModeEnabled;
     _autoPingEnabled = false;
@@ -1317,8 +1327,8 @@ class PingService {
     _nextPingIsDiscovery = true;
     _autoTimer?.cancel();
     _autoTimer = null;
-    // Clean up discovery infrastructure if hybrid was enabled
-    if (wasHybrid) {
+    // Clean up discovery infrastructure if passive or hybrid was enabled
+    if (wasPassive || wasHybrid) {
       _stopDiscoveryMode();
     }
     // Clean up targeted infrastructure if targeted was enabled
@@ -1577,12 +1587,16 @@ class PingService {
     } catch (e) {
       _pingInProgress = false;
       debugError('[DISC] Failed to send discovery request: $e');
+      if (_pendingDisable) {
+        await _executePendingDisable('discovery send failed');
+        return;
+      }
       _scheduleNextDiscovery();
     }
   }
 
   /// Handle discovery window completion
-  void _handleDiscoveryWindowComplete(List<DiscoveredNode> nodes) {
+  Future<void> _handleDiscoveryWindowComplete(List<DiscoveredNode> nodes) async {
     _discoveryWindowCountdown.stop();
     final position = _discoveryStartPosition;
     if (position == null) {
@@ -1590,6 +1604,10 @@ class PingService {
       // Notify about discovery failure for noise floor graph
       onDiscoveryWindowComplete?.call(false);
       _lastDiscPing = null;
+      if (_pendingDisable) {
+        await _executePendingDisable('after discovery window');
+        return;
+      }
       _scheduleNextDiscovery();
       return;
     }
@@ -1647,6 +1665,10 @@ class PingService {
         '[DISC] Discovery window complete: ${nodes.length} nodes${discoverySuccess ? ', queued ${nodes.length} API payloads' : ''}');
 
     _lastDiscPing = null;
+    if (_pendingDisable) {
+      await _executePendingDisable('after discovery window');
+      return;
+    }
     _scheduleNextDiscovery();
   }
 
@@ -1881,12 +1903,16 @@ class PingService {
     } catch (e) {
       _pingInProgress = false;
       debugError('[TRACE] Failed to send trace: $e');
+      if (_pendingDisable) {
+        await _executePendingDisable('trace send failed');
+        return;
+      }
       _scheduleNextTargetedPing();
     }
   }
 
   /// Handle trace window completion
-  void _handleTraceWindowComplete(TraceResult? result) {
+  Future<void> _handleTraceWindowComplete(TraceResult? result) async {
     _discoveryWindowCountdown.stop();
     final position = _lastTargetedPosition;
     final targetId = _targetRepeaterId ?? '';
@@ -1923,6 +1949,10 @@ class PingService {
     // Notify for noise floor graph and log updates
     onTraceWindowComplete?.call(result);
 
+    if (_pendingDisable) {
+      await _executePendingDisable('after trace window');
+      return;
+    }
     _scheduleNextTargetedPing();
   }
 
