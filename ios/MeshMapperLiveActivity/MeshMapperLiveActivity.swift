@@ -204,9 +204,9 @@ private struct MeshMapperSmallActivityContent: View {
           .foregroundStyle(.orange)
           .lineLimit(1)
           .minimumScaleFactor(0.85)
-      } else {
+      } else if isWide {
         Text(state.bandPhaseTitle)
-          .font(.system(size: isWide ? 13 : 11, weight: .semibold))
+          .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(
             state.phaseColor.opacity(state.phaseDeadlineHasLapsed ? 0.45 : 1)
           )
@@ -227,6 +227,21 @@ private struct MeshMapperSmallActivityContent: View {
           .foregroundStyle(.secondary)
           .fixedSize()
         }
+      } else {
+        // The watch band: the logo carries identity and a single word carries
+        // state. A forward-looking title like "Next ping" read as orphaned
+        // there with no countdown beside it, which testers called out.
+        MeshMapperLogoMark(size: 14)
+        Text(state.narrowStatusWord)
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(
+            state.phaseColor.opacity(state.phaseDeadlineHasLapsed ? 0.45 : 1)
+          )
+          .lineLimit(1)
+          // "Listening" is the longest word and the only one that needs the
+          // deeper floor; the short outcome words render at full size.
+          .minimumScaleFactor(0.65)
+          .layoutPriority(1)
       }
       Spacer(minLength: 4)
       middleIdentity(isWide: isWide, showsModeWord: showsModeWord)
@@ -247,21 +262,29 @@ private struct MeshMapperSmallActivityContent: View {
   /// cards drop the mode word and let the icon carry it.
   private func middleIdentity(isWide: Bool, showsModeWord: Bool) -> some View {
     HStack(spacing: isWide ? 4 : 3) {
-      Image(systemName: state.modeSymbol)
-        .font(.system(size: isWide ? 9 : 6, weight: .bold))
+      // The mode icon earns its place only beside the wide band's title; on
+      // the watch the logo owns identity and the zone reads better bigger.
+      if isWide {
+        Image(systemName: state.modeSymbol)
+          .font(.system(size: 9, weight: .bold))
+      }
       if showsModeWord {
         Text(state.mode.uppercased())
           .font(.system(size: 10, weight: .bold))
           .tracking(0.3)
       }
       if let zone = state.zoneCode {
-        Image(systemName: "mappin.and.ellipse")
-          .font(.system(size: isWide ? 9 : 6, weight: .bold))
+        // The pin is the least informative pixel on the 40 mm card, and its
+        // width is exactly what "Listening" needs to render unclipped.
+        if isWide {
+          Image(systemName: "mappin.and.ellipse")
+            .font(.system(size: 9, weight: .bold))
+        }
         Text(zone)
-          .font(.system(size: isWide ? 10 : 7, weight: .semibold, design: .monospaced))
+          .font(.system(size: isWide ? 10 : 9, weight: .semibold, design: .monospaced))
       } else if !state.isConnected {
         Text("Disconnected")
-          .font(.system(size: isWide ? 10 : 8, weight: .semibold))
+          .font(.system(size: isWide ? 10 : 9, weight: .semibold))
           .foregroundStyle(.orange)
       }
     }
@@ -278,21 +301,22 @@ private struct MeshMapperSmallActivityContent: View {
       if let noiseFloor = state.noiseFloorDbm {
         HStack(spacing: 2) {
           Image(systemName: "waveform")
-            .font(.system(size: isWide ? 9 : 6, weight: .bold))
+            .font(.system(size: isWide ? 9 : 8, weight: .bold))
           Text("\(noiseFloor)")
-            .font(.system(size: isWide ? 10 : 7, weight: .bold, design: .monospaced))
+            .font(.system(size: isWide ? 10 : 9, weight: .bold, design: .monospaced))
         }
         .foregroundStyle(Self.noiseFloorColor(noiseFloor))
       }
       if let battery = state.companionBatteryPct {
         HStack(spacing: 2) {
           Image(systemName: Self.batterySymbol(battery))
-            .font(.system(size: isWide ? 10 : 7, weight: .semibold))
+            .font(.system(size: isWide ? 10 : 9, weight: .semibold))
           // The number earns its width only on the widest tier; below it
-          // the glyph is enough until the battery is actually in trouble.
-          if showsModeWord || battery < 20 {
+          // the glyph is the signal, turning red when the battery is in
+          // trouble, and the number's width belongs to the status word.
+          if showsModeWord {
             Text("\(battery)")
-              .font(.system(size: isWide ? 10 : 7, weight: .bold, design: .monospaced))
+              .font(.system(size: isWide ? 10 : 9, weight: .bold, design: .monospaced))
           }
         }
         .foregroundStyle(battery < 20 ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
@@ -518,6 +542,30 @@ private struct MeshMapperPhaseProgress: View {
 
   /// Matches the linear `ProgressView` track this stands in for.
   private static let trackHeight: CGFloat = 4
+}
+
+/// The app mark for the watch band. Falls back to a drawn monogram when the
+/// asset cannot load, so the slot never renders empty.
+private struct MeshMapperLogoMark: View {
+  let size: CGFloat
+
+  var body: some View {
+    if let image = UIImage(named: "LiveActivityLogo") {
+      Image(uiImage: image)
+        .resizable()
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+    } else {
+      RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+        .fill(MeshMapperPalette.accent)
+        .frame(width: size, height: size)
+        .overlay {
+          Text("MM")
+            .font(.system(size: size * 0.42, weight: .heavy))
+            .foregroundStyle(.white)
+        }
+    }
+  }
 }
 
 private struct MeshMapperStatusLabel: View {
@@ -833,6 +881,27 @@ extension MeshMapperActivityAttributes.ContentState {
       trimmed.removeLast()
     }
     return trimmed.isEmpty ? phaseTitle : trimmed
+  }
+
+  /// One word of state for the watch band, where the full title has no room
+  /// and a countdown-less "Next ping" reads as a question. Waiting phases say
+  /// what just happened instead of promising a time.
+  fileprivate var narrowStatusWord: String {
+    switch phase {
+    case "sending": return "Sending"
+    case "discovering": return "Discovery"
+    case "tracing": return "Tracing"
+    case "listening", "listening_discovery", "listening_trace": return "Listening"
+    case "waiting", "waiting_discovery", "waiting_trace", "cooldown": return "Sent"
+    case "skipped": return "Skipped"
+    case "waiting_for_gps": return "No GPS"
+    case "paused_outside_zone": return "Paused"
+    case "disconnected": return "Offline"
+    case "tx_blocked": return "Blocked"
+    case "stopping", "stopped": return "Stopped"
+    case "starting": return "Starting"
+    default: return bandPhaseTitle
+    }
   }
 
   /// The app's own per-mode icon as an SF Symbol: swap arrows for Hybrid,

@@ -32,6 +32,7 @@
 		A10000000000000000000002 /* MeshMapperActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* MeshMapperActivityAttributes.swift */; };
 		A10000000000000000000003 /* MeshMapperActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* MeshMapperActivityAttributes.swift */; };
 		A10000000000000000000004 /* MeshMapperLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* MeshMapperLiveActivity.swift */; };
+		A10000000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* Assets.xcassets */; };
 		A10000000000000000000005 /* MeshMapperLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* MeshMapperLiveActivityBundle.swift */; };
 		A10000000000000000000006 /* MeshMapperLiveActivityExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* MeshMapperLiveActivityExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A40A14B14EA7033DDEF33B80 /* WatchSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178C77B846A00943CD881203 /* WatchSessionClient.swift */; };
@@ -177,6 +178,7 @@
 		A20000000000000000000001 /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* MeshMapperActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperActivityAttributes.swift; sourceTree = "<group>"; };
 		A20000000000000000000003 /* MeshMapperLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperLiveActivity.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000004 /* MeshMapperLiveActivityBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapperLiveActivityBundle.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000000000000000000006 /* MeshMapperLiveActivityExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MeshMapperLiveActivityExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -381,6 +383,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000003 /* MeshMapperLiveActivity.swift */,
+				A20000000000000000000009 /* Assets.xcassets */,
 				A20000000000000000000004 /* MeshMapperLiveActivityBundle.swift */,
 				A20000000000000000000005 /* Info.plist */,
 			);
@@ -610,6 +613,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000009 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
