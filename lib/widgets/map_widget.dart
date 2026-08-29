@@ -25,6 +25,7 @@ import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
 import '../utils/repeater_format.dart';
+import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
 import 'repeater_id_chip.dart';
 import 'rx_path_chain.dart';
@@ -598,6 +599,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const String _patchSourceId = 'meshmapper-coverage-patch';
   static const String _patchLayerId = 'meshmapper-coverage-patch-layer';
   bool _patchLayerReady = false;
+
+  /// Serializes every coverage overlay/patch style mutation. These flows are
+  /// multi-await sequences whose ready-flags are checked before the first
+  /// await; two of them interleaving (the zone-transfer rebuild racing the
+  /// post-upload patch refresh) double-added the patch source and crashed at
+  /// a region boundary (#495). Entry points enqueue; the *Locked bodies and
+  /// the helpers they call must never enqueue, or they deadlock the gate.
+  final SerialTaskGate _coverageGate = SerialTaskGate();
 
   // Tap-to-highlight overlay: a fill layer painting the clicked cell's
   // (2·blob+1)² block (3×3 Detailed / 1 cell Simplified), centred on the tapped
@@ -3083,7 +3092,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Add MeshMapper coverage raster overlay as a MapLibre source+layer.
   /// Allocates fresh suffixed IDs each call to avoid native collisions.
-  Future<void> _addCoverageOverlay(AppStateProvider appState) async {
+  /// Gated entry point; see [_coverageGate].
+  Future<void> _addCoverageOverlay(AppStateProvider appState) =>
+      _coverageGate.run(() => _addCoverageOverlayLocked(appState));
+
+  Future<void> _addCoverageOverlayLocked(AppStateProvider appState) async {
     if (_mapController == null || !_showMeshMapperOverlay) {
       debugLog(
           '[MAP] Coverage overlay add skipped: controller=${_mapController != null}, showOverlay=$_showMeshMapperOverlay');
@@ -3102,6 +3115,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final prefs = appState.preferences;
     final zone = appState.zoneCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
+
+    // Replace, never stack: if an overlay is already up (double-triggered
+    // add, resume racing a rebuild), tear it down first or the old
+    // source+layer pair leaks untracked on the map.
+    if (_activeCoverageSourceId != null) {
+      await _removeCoverageOverlayLocked();
+    }
 
     final sourceId = _nextCoverageSourceId();
     final layerId = _coverageLayerIdFor(sourceId);
@@ -3289,7 +3309,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Read the palette before any await so context isn't used across an async gap.
     final cvd = context.read<AppStateProvider>().preferences.colorVisionType;
     final colors = CoverageTilePalette.colorsForStatus(cvd, st);
-    if (!await _ensureCellHighlightLayer()) return;
+    if (!await _coverageGate.run(_ensureCellHighlightLayer)) return;
     try {
       // setLayerProperties serializes with skipNulls:false (resets omitted
       // fields to spec defaults), so resend all three fill props together.
@@ -3379,7 +3399,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Remove the active coverage overlay source and layer (if any) and clear
   /// the tracked IDs. Called by the mapTilesEnabled-toggle teardown and on
   /// style reload — it does NOT participate in the double-buffer swap path.
-  Future<void> _removeCoverageOverlay() async {
+  /// Gated entry point; see [_coverageGate].
+  Future<void> _removeCoverageOverlay() =>
+      _coverageGate.run(_removeCoverageOverlayLocked);
+
+  Future<void> _removeCoverageOverlayLocked() async {
     final layerId = _activeCoverageLayerId;
     final sourceId = _activeCoverageSourceId;
     _activeCoverageLayerId = null;
@@ -3530,7 +3554,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Push the latest session patch into the map: update the GeoJSON source
   /// (flash-free, in-place) and extend the base-layer filter. Nothing else on
   /// the map changes — this is the live-update path for the user's own pings.
-  Future<void> _applyCoveragePatch(AppStateProvider appState) async {
+  /// Gated entry point; see [_coverageGate].
+  Future<void> _applyCoveragePatch(AppStateProvider appState) =>
+      _coverageGate.run(() => _applyCoveragePatchLocked(appState));
+
+  Future<void> _applyCoveragePatchLocked(AppStateProvider appState) async {
     if (_mapController == null) return;
     final baseLayerId = _activeCoverageLayerId;
     if (baseLayerId == null) {
@@ -3554,6 +3582,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// never as a live-refresh path (that's the session patch's job), so the
   /// brief remove/add gap is acceptable.
   Future<void> _refreshCoverageOverlay(AppStateProvider appState) async {
+    // Two gate entries, not one: another queued op landing between them (a
+    // patch apply, a toggle) still sees a consistent overlay either way.
     await _removeCoverageOverlay();
     await _addCoverageOverlay(appState);
   }
