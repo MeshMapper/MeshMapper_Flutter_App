@@ -136,6 +136,7 @@ final class LiveActivityManager {
       phaseEndsAt: date(payload["phaseEndsAt"]),
       phaseDurationMs: positiveInteger(payload["phaseDurationMs"]),
       pingColor: resolvedColor(payload["pingColor"]),
+      modeColor: resolvedColor(payload["modeColor"]),
       isConnected: payload["isConnected"] as? Bool ?? false,
       zoneCode: boundedString(payload["zoneCode"], maxLength: 12),
       noiseFloorDbm: boundedInteger(payload["noiseFloorDbm"], min: -200, max: 100),

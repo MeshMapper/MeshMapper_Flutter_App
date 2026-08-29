@@ -29,6 +29,9 @@ struct MeshMapperActivityAttributes: ActivityAttributes {
     var phaseEndsAt: Date?
     var phaseDurationMs: Int?
     var pingColor: ResolvedColor?
+    /// The running mode's identity color, phone-resolved from the active
+    /// ping palette. Tints the lock screen's phase progress bar.
+    var modeColor: ResolvedColor? = nil
     var isConnected: Bool
     var zoneCode: String?
     /// Bucketed to 2 dBm steps by the phone so poll jitter never mints an

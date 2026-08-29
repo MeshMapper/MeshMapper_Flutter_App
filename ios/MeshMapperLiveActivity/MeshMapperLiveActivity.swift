@@ -527,9 +527,11 @@ private struct MeshMapperPhaseProgress: View {
         EmptyView()
       }
       .progressViewStyle(.linear)
-      // Progress says how far through the phase we are. Outcome has quieter,
-      // dedicated dots elsewhere and must not recolour the whole track.
-      .tint(MeshMapperPalette.accent)
+      // The bar wears the running mode's identity color, phone-resolved from
+      // the same ping palette as the app's markers (so CVD palettes carry
+      // over). Outcome still lives in the dots: a failed ping must not turn
+      // the whole track red, which is why this is mode, not result.
+      .tint(state.modeColor.map(Color.init) ?? MeshMapperPalette.accent)
     } else {
       // A durable state — disconnected, stopped, waiting for GPS — has no
       // deadline to draw. The empty track keeps the block's height fixed, so
@@ -1000,6 +1002,7 @@ extension MeshMapperActivityAttributes.ContentState {
       phaseEndsAt: Date().addingTimeInterval(42),
       phaseDurationMs: 60_000,
       pingColor: .init(r: 0.20, g: 0.84, b: 0.45),
+      modeColor: .init(r: 0.30, g: 0.69, b: 0.31),
       isConnected: true,
       zoneCode: "SEA",
       noiseFloorDbm: -102,
@@ -1056,6 +1059,7 @@ extension MeshMapperActivityAttributes.ContentState {
       phaseEndsAt: Date().addingTimeInterval(25),
       phaseDurationMs: 60_000,
       pingColor: .init(r: 0.94, g: 0.28, b: 0.25),
+      modeColor: .init(r: 0.30, g: 0.69, b: 0.31),
       isConnected: true,
       zoneCode: "SEA",
       noiseFloorDbm: -96,
