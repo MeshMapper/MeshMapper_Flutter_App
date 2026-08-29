@@ -1872,6 +1872,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
+  /// The running mode's identity color from the active ping palette, for the
+  /// Live Activity's progress bar. Hybrid follows the half of the cycle that
+  /// is on the air, so the bar says which ping type is running right now.
+  WatchColor? _resolveLiveActivityModeColor(LiveActivityPhase phase) {
+    switch (phase) {
+      case LiveActivityPhase.discovering:
+      case LiveActivityPhase.listeningDiscovery:
+      case LiveActivityPhase.waitingDiscovery:
+        return WatchColor.fromColor(PingColors.discSuccess);
+      case LiveActivityPhase.tracing:
+      case LiveActivityPhase.listeningTrace:
+      case LiveActivityPhase.waitingTrace:
+        return WatchColor.fromColor(PingColors.traceSuccess);
+      default:
+        break;
+    }
+    return switch (_liveActivityModeTitle.toLowerCase()) {
+      'passive' => WatchColor.fromColor(PingColors.discSuccess),
+      'trace' => WatchColor.fromColor(PingColors.traceSuccess),
+      _ => WatchColor.fromColor(PingColors.txSuccess),
+    };
+  }
+
   /// Colour of the most recent completed coverage event, matching the marker
   /// beside it rather than leaving Passive mode stuck on an old TX result.
   WatchColor? _resolveWatchPingColor() =>
@@ -2559,6 +2582,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       phaseEndsAt: phase.endsAt,
       phaseDurationMs: phaseDurationMs,
       pingColor: pingColor,
+      modeColor: _resolveLiveActivityModeColor(phase.phase),
       isConnected: isConnected,
       zoneCode: zoneCode ?? _sessionZoneCode ?? _preferences.iataCode,
       noiseFloorDbm: _bucketedNoiseFloorDbm(),

@@ -97,6 +97,7 @@ class LiveActivitySnapshot {
     this.phaseEndsAt,
     this.phaseDurationMs,
     this.pingColor,
+    this.modeColor,
     this.zoneCode,
     this.noiseFloorDbm,
     this.companionBatteryPct,
@@ -111,6 +112,11 @@ class LiveActivitySnapshot {
   final DateTime? phaseEndsAt;
   final int? phaseDurationMs;
   final WatchColor? pingColor;
+
+  /// The running mode's identity color from the active ping palette, tinting
+  /// the lock screen's progress bar the way the app colors that ping type.
+  final WatchColor? modeColor;
+
   final bool isConnected;
   final String? zoneCode;
 
@@ -144,6 +150,7 @@ class LiveActivitySnapshot {
         'phaseEndsAt': phaseEndsAt?.millisecondsSinceEpoch,
         if (phaseDurationMs != null) 'phaseDurationMs': phaseDurationMs,
         if (pingColor != null) 'pingColor': pingColor!.toMap(),
+        if (modeColor != null) 'modeColor': modeColor!.toMap(),
         'isConnected': isConnected,
         'zoneCode': zoneCode,
         if (noiseFloorDbm != null) 'noiseFloorDbm': noiseFloorDbm,
