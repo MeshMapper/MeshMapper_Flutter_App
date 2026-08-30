@@ -14,7 +14,7 @@ import 'package:mesh_mapper/services/ping_service.dart';
 import 'package:mesh_mapper/services/wakelock_service.dart';
 
 /// #496: a disable queued while a ping is in flight must be executed by
-/// whatever ends that ping's lifecycle — skip, failure, or listening window —
+/// whatever ends that ping's lifecycle (skip, failure, or listening window),
 /// never left for the 12s timeout backstop (or, on v1.3.0, the next ping).
 ///
 /// The production capture: the user's stop landed during an auto ping's GPS
@@ -269,6 +269,35 @@ void main() {
 
       expect(ping.pendingDisable, isFalse,
           reason: 'the trace window end must drain the queued disable');
+      expect(ping.autoPingEnabled, isFalse);
+      ping.dispose();
+    });
+  });
+
+  test('a throwing provider callback cannot escape the disable drain', () {
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final discGate = Completer<Uint8List>();
+      conn.discoveryGate = discGate;
+      final ping = _buildService(gps, conn)
+        ..onPendingDisableComplete =
+            (() async => throw Exception('provider teardown failed'));
+
+      ping.enableAutoPing(passiveMode: true);
+      async.flushMicrotasks();
+      ping.disableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pendingDisable, isTrue);
+
+      discGate.complete(Uint8List(4));
+      async.flushMicrotasks();
+
+      // The window-complete drain runs from a void tracker callback: nothing
+      // awaits it, so an escaping error would be an unhandled async error.
+      async.elapse(const Duration(seconds: 8));
+
+      expect(ping.pendingDisable, isFalse);
       expect(ping.autoPingEnabled, isFalse);
       ping.dispose();
     });

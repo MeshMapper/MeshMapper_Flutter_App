@@ -1338,8 +1338,15 @@ class PingService {
     // Start cooldown immediately
     _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
     debugLog('[PING] Pending disable complete, cooldown started');
-    // Notify AppStateProvider to update its state and cleanup
-    await onPendingDisableComplete?.call();
+    // Notify AppStateProvider to update its state and cleanup. Several callers
+    // run from void tracker callbacks or timer-driven send paths where nothing
+    // awaits this method, so an escaping error here would go unhandled. The
+    // local teardown above is already done by this point.
+    try {
+      await onPendingDisableComplete?.call();
+    } catch (e) {
+      debugError('[PING] Pending disable provider cleanup failed: $e');
+    }
   }
 
   /// Guarantee a parked disable is drained even when the RX window that was
