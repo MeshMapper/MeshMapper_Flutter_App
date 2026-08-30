@@ -4850,9 +4850,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// order, with no symbol-sort-key contention. enableInteraction:false so taps
   /// pass through to the repeaters/clusters underneath. Mirrors
   /// [_ensureCoverageLinesLayer].
-  /// Gated entry point; see [_coverageGate].
-  Future<bool> _ensureGpsPuckLayer() =>
-      _coverageGate.run(_ensureGpsPuckLayerLocked);
+  /// Gated entry point; see [_coverageGate]. Skips the gate entirely once
+  /// installed so a slow coverage mutation cannot stall the per-tick GPS sync.
+  Future<bool> _ensureGpsPuckLayer() => _gpsPuckLayerInstalled
+      ? Future.value(true)
+      : _coverageGate.run(_ensureGpsPuckLayerLocked);
 
   Future<bool> _ensureGpsPuckLayerLocked() async {
     if (_gpsPuckLayerInstalled) return true;
@@ -4864,35 +4866,43 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       try {
         await _mapController!.removeSource(_gpsPuckSourceId);
       } catch (_) {}
-      await _mapController!
-          .addGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
-      await _mapController!.addSymbolLayer(
-        _gpsPuckSourceId,
-        _gpsPuckLayerId,
-        const SymbolLayerProperties(
-          iconImage: ['get', 'iconImage'],
-          iconRotate: ['get', 'iconRotate'],
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-        ),
-        // No belowLayerId => topmost, above all coverage pings and repeaters.
-        enableInteraction: false,
-      );
+      // "Already exists" on either add means a previous install's native
+      // object survived a silently-failed teardown. Adopt it PER OBJECT: the
+      // layer's paint properties are constant data-driven expressions, so an
+      // existing object is identical to the one the add would have created,
+      // and the caller's setGeoJsonSource repositions it. Reporting failure
+      // here left the installed-flag false for the life of the map session
+      // while the stale layer kept rendering the last pushed position (#482).
+      // The adopt must not cover both adds at once: removeLayer succeeding
+      // while removeSource fails would otherwise adopt the surviving source
+      // and never re-add the layer, leaving no arrow at all.
+      try {
+        await _mapController!
+            .addGeoJsonSource(_gpsPuckSourceId, _emptyFeatureCollection());
+      } catch (e) {
+        if (!mapStyleObjectAlreadyExists(e)) rethrow;
+        debugWarn('[MAP] gps-puck source already present, adopting it: $e');
+      }
+      try {
+        await _mapController!.addSymbolLayer(
+          _gpsPuckSourceId,
+          _gpsPuckLayerId,
+          const SymbolLayerProperties(
+            iconImage: ['get', 'iconImage'],
+            iconRotate: ['get', 'iconRotate'],
+            iconAllowOverlap: true,
+            iconIgnorePlacement: true,
+          ),
+          // No belowLayerId => topmost, above all coverage pings and repeaters.
+          enableInteraction: false,
+        );
+      } catch (e) {
+        if (!mapStyleObjectAlreadyExists(e)) rethrow;
+        debugWarn('[MAP] gps-puck layer already present, adopting it: $e');
+      }
       _gpsPuckLayerInstalled = true;
       return true;
     } catch (e) {
-      // "Already exists" means a previous install's native objects survived a
-      // silently-failed teardown. Adopt them: the layer's paint properties are
-      // constant data-driven expressions, so the existing layer is identical
-      // to the one this add would have created, and the caller's
-      // setGeoJsonSource repositions it. Reporting failure here left the
-      // installed-flag false for the life of the map session while the stale
-      // layer kept rendering the last pushed position (#482).
-      if (mapStyleObjectAlreadyExists(e)) {
-        debugWarn('[MAP] gps-puck layer already present, adopting it: $e');
-        _gpsPuckLayerInstalled = true;
-        return true;
-      }
       debugError('[MAP] gps-puck layer create failed: $e');
       return false;
     }
@@ -6068,7 +6078,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
             ),
           ),
-          // Distance since last TX ping (like wardrive.js)
+          // Distance since the last ping of any type (TX, discovery, trace)
           if (hasGps && distanceFromLastPing != null) ...[
             const SizedBox(width: 12),
             const Icon(
