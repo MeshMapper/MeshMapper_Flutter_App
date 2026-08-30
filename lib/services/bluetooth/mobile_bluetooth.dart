@@ -9,12 +9,13 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../models/connection_state.dart';
 import '../../utils/debug_logger_io.dart';
 import '../meshcore/protocol_constants.dart';
+import 'ble_connect_retry_policy.dart';
 import 'bluetooth_service.dart';
 
 /// Mobile Bluetooth implementation using flutter_blue_plus
 /// For Android and iOS platforms
 class MobileBluetoothService implements BluetoothService {
-  // Retry constants for Android BLE error 133 (GATT_ERROR)
+  // Retry constants for transient connect failures (see ble_connect_retry_policy.dart)
   static const int _maxRetries = 3;
   static const Duration _retryDelay = Duration(milliseconds: 500);
 
@@ -422,63 +423,63 @@ class MobileBluetoothService implements BluetoothService {
         _updateStatus(ConnectionStatus.connected);
         return; // Success - exit retry loop
       } catch (e, stackTrace) {
-        final errorStr = e.toString();
+        final action = classifyBleConnectFailure(
+          errorString: e.toString(),
+          isIos: Platform.isIOS,
+          attempt: attempt,
+          maxRetries: _maxRetries,
+        );
 
-        // Check for Android error 133 (GATT_ERROR) - a well-known Android BLE stack issue
-        // that typically succeeds on retry
-        final isError133 =
-            Platform.isAndroid && errorStr.contains('android-code: 133');
+        if (action == BleConnectFailureAction.abortForBondError) {
+          debugLog('[BLE] Bond error (apple-code 14/15) on attempt $attempt');
+          await removeBond(deviceId);
+          // On iOS, removeBond() is a no-op (not supported by Core Bluetooth).
+          // Don't burn internal retries against stale bond keys: they will all
+          // fail the same way and each hangs for the full connect timeout.
+          // Rethrow immediately so the auto-reconnect system can apply a longer
+          // delay (giving iOS time to resolve) or inform the user.
+          debugWarn(
+              '[BLE] iOS bond error, skipping internal retries (stale keys cannot be cleared programmatically)');
+          await _cleanupFailedAttempt();
+          _updateStatus(ConnectionStatus.error);
+          rethrow;
+        }
 
-        // Check for iOS apple-code 14 (Peer removed pairing information) or
-        // apple-code 15 (Failed to encrypt the connection) — both indicate stale bond keys
-        final isBondError = Platform.isIOS &&
-            (errorStr.contains('apple-code: 14') ||
-                errorStr.contains('apple-code: 15') ||
-                errorStr.contains('Peer removed pairing information'));
-
-        if ((isError133 || isBondError) && attempt < _maxRetries) {
-          if (isBondError) {
-            debugLog('[BLE] Bond error (apple-code 14/15) on attempt $attempt');
-            await removeBond(deviceId);
-            // On iOS, removeBond() is a no-op (not supported by Core Bluetooth).
-            // Don't burn internal retries against stale bond keys — they will all
-            // fail the same way and each hangs for the full connect timeout.
-            // Rethrow immediately so the auto-reconnect system can apply a longer
-            // delay (giving iOS time to resolve) or inform the user.
-            debugWarn(
-                '[BLE] iOS bond error — skipping internal retries (stale keys cannot be cleared programmatically)');
-            try {
-              await _bleDevice?.disconnect();
-            } catch (_) {}
-            _bleDevice = null;
-            _rxCharacteristic = null;
-            _txCharacteristic = null;
-            _updateStatus(ConnectionStatus.error);
-            rethrow;
-          } else {
-            debugLog(
-                '[BLE] Error 133 on attempt $attempt, retrying after delay...');
-            await Future.delayed(_retryDelay);
-          }
-          // Force cleanup before retry
-          try {
-            await _bleDevice?.disconnect();
-          } catch (e) {
-            debugWarn('[BLE] Failed to disconnect before retry: $e');
-          }
-          _bleDevice = null;
-          _rxCharacteristic = null;
-          _txCharacteristic = null;
+        if (action == BleConnectFailureAction.retry) {
+          debugLog(
+              '[BLE] Attempt $attempt failed, retrying after delay... ($e)');
+          await _cleanupFailedAttempt();
+          await Future.delayed(_retryDelay);
           continue; // Retry
         }
 
-        // Final attempt failed or non-retryable error
+        // Final attempt failed
         debugLog('[BLE] Connection error: $e');
         debugLog('[BLE] Stack trace: $stackTrace');
         _updateStatus(ConnectionStatus.error);
         rethrow;
       }
     }
+  }
+
+  /// Tear down a failed connect attempt without emitting a disconnected event.
+  /// The state subscription is cancelled BEFORE the disconnect: attempts that
+  /// fail after the GATT link is up (discovery, notifications) have the
+  /// listener installed, and letting it fire _handleDisconnection would emit
+  /// 'disconnected' and start full provider cleanup mid-retry.
+  Future<void> _cleanupFailedAttempt() async {
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
+    await _notificationSubscription?.cancel();
+    _notificationSubscription = null;
+    try {
+      await _bleDevice?.disconnect();
+    } catch (e) {
+      debugWarn('[BLE] Failed to disconnect failed attempt: $e');
+    }
+    _bleDevice = null;
+    _rxCharacteristic = null;
+    _txCharacteristic = null;
   }
 
   void _handleDisconnection() {
