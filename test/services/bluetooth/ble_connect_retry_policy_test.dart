@@ -166,5 +166,12 @@ void main() {
     test('does not rerun after a user-requested disconnect', () {
       expect(rerun(userRequestedDisconnect: true), isFalse);
     });
+
+    test('never reruns an attempt superseded by a newer connect', () {
+      expect(
+        rerun(error: 'Exception: Connection attempt superseded'),
+        isFalse,
+      );
+    });
   });
 }

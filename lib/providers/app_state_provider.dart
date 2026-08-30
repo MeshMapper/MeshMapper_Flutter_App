@@ -443,6 +443,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
+
+  /// Bumped by every transport connect entry point. A connection attempt that
+  /// finds its captured generation stale has been superseded by a newer
+  /// attempt and must not touch shared provider state (#500 review).
+  int _connectGeneration = 0;
   bool _isAutoReconnecting = false;
 
   // ============================================
@@ -3866,6 +3871,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _isConnecting = true;
+    final myGeneration = ++_connectGeneration;
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -3890,7 +3896,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         await _apiQueueService.clearBeforeConnect();
 
         debugLog('[APP] Connecting BLE transport to ${device.id}');
-        await _bluetoothService.connect(device.id);
+        // During auto-reconnect the internal retry loop is capped to one
+        // attempt: the reconnect ladder retries on its own, and a 3x15s
+        // internal loop would eat the whole 30s reconnect budget in one call.
+        await _bluetoothService.connect(device.id,
+            maxAttempts: _isAutoReconnecting ? 1 : null);
         transportConnectedAt = DateTime.now();
         _activeTransport = _bluetoothService;
         debugLog('[APP] Creating new MeshCoreConnection');
@@ -3976,6 +3986,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _isConnecting = false;
         return;
       } catch (e) {
+        if (myGeneration != _connectGeneration) {
+          // A newer connection attempt owns the transport and the shared
+          // provider state; this stale attempt must not touch either.
+          debugLog('[CONN] Superseded connection attempt failed, ignoring: $e');
+          return;
+        }
         final sinceTransportConnect = transportConnectedAt == null
             ? null
             : DateTime.now().difference(transportConnectedAt);
@@ -4004,11 +4020,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (cleanupInFlight != null) {
           await cleanupInFlight;
         }
-        if (_isConnecting) {
-          // The cleanup reset this flag; true means a newer connection attempt
-          // started while waiting. Let it own the transport.
+        if (myGeneration != _connectGeneration) {
           debugLog(
-              '[CONN] Skipping workflow re-run: another connection is in progress');
+              '[CONN] Skipping workflow re-run: a newer connection attempt owns the transport');
+          return;
+        }
+        if (_isConnecting) {
+          // No disconnect-event cleanup ran for this failure: the transport is
+          // still up (e.g. _postConnectionSetup threw on a live link), so
+          // there is nothing safe to re-run on top of. Hand the error to the
+          // normal failure path instead of swallowing it.
+          await _handleConnectionError(e);
           return;
         }
         _isConnecting = true;
@@ -4035,6 +4057,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _isConnecting = true;
+    _connectGeneration++; // invalidate any pending BLE workflow re-run
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -4151,6 +4174,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _isConnecting = true;
+    _connectGeneration++; // invalidate any pending BLE workflow re-run
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -4287,6 +4311,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _isConnecting = true;
+    _connectGeneration++; // invalidate any pending BLE workflow re-run
     _connectionStep = ConnectionStep.transportConnecting;
     _connectionError = null;
     _isAuthError = false;
@@ -5553,10 +5578,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// In-flight full-cleanup future so a connection workflow re-run (#500)
   /// can wait for the disconnect-event cleanup to settle before reconnecting.
+  /// Cleared on completion so a long-finished cleanup is never mistaken for
+  /// one belonging to the current failure.
   Future<void>? _fullCleanupInFlight;
 
   Future<void> _fullDisconnectCleanup() {
-    final cleanup = _fullDisconnectCleanupImpl();
+    late final Future<void> cleanup;
+    cleanup = _fullDisconnectCleanupImpl().whenComplete(() {
+      if (identical(_fullCleanupInFlight, cleanup)) {
+        _fullCleanupInFlight = null;
+      }
+    });
     _fullCleanupInFlight = cleanup;
     return cleanup;
   }
