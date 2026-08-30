@@ -29,6 +29,7 @@ import '../services/audio_service.dart';
 import '../services/background_service.dart';
 import '../services/debug_file_logger.dart';
 import '../services/offline_session_service.dart';
+import '../services/bluetooth/ble_connect_retry_policy.dart';
 import '../services/bluetooth/bluetooth_service.dart';
 import '../services/transport/android_serial_service.dart';
 import '../services/transport/companion_transport.dart';
@@ -3869,103 +3870,154 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isAuthError = false;
     _isNetworkError = false;
     notifyListeners();
-    try {
-      // Clean up any previous connection first
-      if (_meshCoreConnection != null) {
-        debugLog('[APP] Disposing previous MeshCoreConnection');
-        _meshCoreConnection!.dispose();
-        _meshCoreConnection = null;
-      }
 
-      // ALWAYS START FRESH - clear any stale pings before connecting
-      await _apiQueueService.clearBeforeConnect();
+    // #500: a handshake that dies right after the transport connects gets one
+    // automatic re-run of the whole workflow, the same thing the manual re-tap
+    // that users report always works would do.
+    var workflowRerunUsed = false;
+    while (true) {
+      DateTime? transportConnectedAt;
+      try {
+        // Clean up any previous connection first
+        if (_meshCoreConnection != null) {
+          debugLog('[APP] Disposing previous MeshCoreConnection');
+          _meshCoreConnection!.dispose();
+          _meshCoreConnection = null;
+        }
 
-      debugLog('[APP] Connecting BLE transport to ${device.id}');
-      await _bluetoothService.connect(device.id);
-      _activeTransport = _bluetoothService;
-      debugLog('[APP] Creating new MeshCoreConnection');
-      _meshCoreConnection = MeshCoreConnection(transport: _bluetoothService);
+        // ALWAYS START FRESH - clear any stale pings before connecting
+        await _apiQueueService.clearBeforeConnect();
 
-      if (!_preferences.offlineMode) {
-        _meshCoreConnection!.onRequestAuth = _createAuthCallback();
-      } else {
-        _meshCoreConnection!.onRequestAuth = null;
-        debugLog('[APP] Offline mode: skipping API auth');
-      }
+        debugLog('[APP] Connecting BLE transport to ${device.id}');
+        await _bluetoothService.connect(device.id);
+        transportConnectedAt = DateTime.now();
+        _activeTransport = _bluetoothService;
+        debugLog('[APP] Creating new MeshCoreConnection');
+        _meshCoreConnection = MeshCoreConnection(transport: _bluetoothService);
 
-      // Listen for step changes
-      _meshCoreConnection!.stepStream.listen((step) {
-        _connectionStep = step;
-        if (step == ConnectionStep.connected) {
-          // Update device info
-          _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
-          _firmwareVersionString =
-              _meshCoreConnection!.deviceInfo?.firmwareVersionString;
-          _deviceModel = _meshCoreConnection!.deviceModel;
-          _devicePublicKey = _meshCoreConnection!.devicePublicKey;
+        if (!_preferences.offlineMode) {
+          _meshCoreConnection!.onRequestAuth = _createAuthCallback();
+        } else {
+          _meshCoreConnection!.onRequestAuth = null;
+          debugLog('[APP] Offline mode: skipping API auth');
+        }
+
+        // Listen for step changes
+        _meshCoreConnection!.stepStream.listen((step) {
+          _connectionStep = step;
+          if (step == ConnectionStep.connected) {
+            // Update device info
+            _manufacturerString = _meshCoreConnection!.deviceInfo?.manufacturer;
+            _firmwareVersionString =
+                _meshCoreConnection!.deviceInfo?.firmwareVersionString;
+            _deviceModel = _meshCoreConnection!.deviceModel;
+            _devicePublicKey = _meshCoreConnection!.devicePublicKey;
+            debugLog(
+                '[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
+
+            // Persist device info for bug reports when disconnected
+            // Use original name (not "Anonymous") for bug report identification
+            var lastDeviceName = _isAnonymousRenamed
+                ? _originalDeviceName
+                : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName);
+            if (lastDeviceName != null) {
+              lastDeviceName = lastDeviceName.replaceFirst('MeshCore-', '');
+            }
+            // Cascade guard: never persist "Anonymous" as the last connected device
+            if (lastDeviceName == 'Anonymous' && _devicePublicKey != null) {
+              lastDeviceName =
+                  _deviceRealNames[_devicePublicKey!] ?? lastDeviceName;
+            }
+            if (lastDeviceName != null &&
+                lastDeviceName.isNotEmpty &&
+                _devicePublicKey != null) {
+              _saveLastConnectedDevice(lastDeviceName, _devicePublicKey!);
+            }
+
+            // In offline mode, fetch signed contact URI for later registration during upload
+            if (_preferences.offlineMode && _meshCoreConnection != null) {
+              _meshCoreConnection!.exportContact().then((uri) {
+                _offlineContactUri = uri;
+                debugLog('[OFFLINE] Stored contact URI for offline session');
+              }).catchError((e) {
+                debugWarn('[OFFLINE] Failed to get contact URI: $e');
+              });
+            }
+          }
+          notifyListeners();
+        });
+
+        // Listen for noise floor updates — only rebuild UI when value changes
+        _noiseFloorSubscription =
+            _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
+          _recordNoiseFloorSample(noiseFloor);
+          if (noiseFloor != _currentNoiseFloor) {
+            _currentNoiseFloor = noiseFloor;
+            notifyListeners();
+          }
+        });
+
+        // Listen for battery updates — only rebuild UI when value changes
+        _batterySubscription =
+            _meshCoreConnection!.batteryStream.listen((batteryPercent) {
+          if (batteryPercent != _currentBatteryPercent) {
+            _currentBatteryPercent = batteryPercent;
+            notifyListeners();
+          }
+        });
+
+        // Execute connection workflow (transport already connected above)
+        final connectionResult = await _meshCoreConnection!.connect(
+          _deviceModelService.models,
+        );
+
+        await _postConnectionSetup(connectionResult, device);
+        _isConnecting = false;
+        return;
+      } catch (e) {
+        final sinceTransportConnect = transportConnectedAt == null
+            ? null
+            : DateTime.now().difference(transportConnectedAt);
+        if (!shouldRerunConnectionWorkflow(
+          transportConnected: transportConnectedAt != null,
+          sinceTransportConnect: sinceTransportConnect,
+          errorString: e.toString(),
+          isAutoReconnecting: _isAutoReconnecting,
+          userRequestedDisconnect: _userRequestedDisconnect,
+          alreadyRerun: workflowRerunUsed,
+        )) {
+          await _handleConnectionError(e);
+          return;
+        }
+        workflowRerunUsed = true;
+        debugLog(
+            '[CONN] Handshake died ${sinceTransportConnect!.inSeconds}s after transport connect, re-running connection workflow once: $e');
+        // The failed run's transport disconnect emits a 'disconnected' event
+        // whose listener starts _fullDisconnectCleanup. That event was queued
+        // before this timer, and microtasks drain before timers fire, so after
+        // the delay the tracked future (if any) is the cleanup for THIS
+        // failure. Waiting it out means the cleanup cannot tear down the
+        // re-run's fresh connection.
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        final cleanupInFlight = _fullCleanupInFlight;
+        if (cleanupInFlight != null) {
+          await cleanupInFlight;
+        }
+        if (_isConnecting) {
+          // The cleanup reset this flag; true means a newer connection attempt
+          // started while waiting. Let it own the transport.
           debugLog(
-              '[APP] Device public key stored: ${_devicePublicKey?.substring(0, 16) ?? 'null'}...');
-
-          // Persist device info for bug reports when disconnected
-          // Use original name (not "Anonymous") for bug report identification
-          var lastDeviceName = _isAnonymousRenamed
-              ? _originalDeviceName
-              : (_meshCoreConnection!.selfInfo?.name ?? connectedDeviceName);
-          if (lastDeviceName != null) {
-            lastDeviceName = lastDeviceName.replaceFirst('MeshCore-', '');
-          }
-          // Cascade guard: never persist "Anonymous" as the last connected device
-          if (lastDeviceName == 'Anonymous' && _devicePublicKey != null) {
-            lastDeviceName =
-                _deviceRealNames[_devicePublicKey!] ?? lastDeviceName;
-          }
-          if (lastDeviceName != null &&
-              lastDeviceName.isNotEmpty &&
-              _devicePublicKey != null) {
-            _saveLastConnectedDevice(lastDeviceName, _devicePublicKey!);
-          }
-
-          // In offline mode, fetch signed contact URI for later registration during upload
-          if (_preferences.offlineMode && _meshCoreConnection != null) {
-            _meshCoreConnection!.exportContact().then((uri) {
-              _offlineContactUri = uri;
-              debugLog('[OFFLINE] Stored contact URI for offline session');
-            }).catchError((e) {
-              debugWarn('[OFFLINE] Failed to get contact URI: $e');
-            });
-          }
+              '[CONN] Skipping workflow re-run: another connection is in progress');
+          return;
         }
+        _isConnecting = true;
+        _connectionStep = ConnectionStep.transportConnecting;
+        _connectionError = null;
+        // The disconnect cleanup cleared the BLE scan cache; restore the
+        // device name for the re-run.
+        _bluetoothService.cacheDeviceInfo(device);
         notifyListeners();
-      });
-
-      // Listen for noise floor updates — only rebuild UI when value changes
-      _noiseFloorSubscription =
-          _meshCoreConnection!.noiseFloorStream.listen((noiseFloor) {
-        _recordNoiseFloorSample(noiseFloor);
-        if (noiseFloor != _currentNoiseFloor) {
-          _currentNoiseFloor = noiseFloor;
-          notifyListeners();
-        }
-      });
-
-      // Listen for battery updates — only rebuild UI when value changes
-      _batterySubscription =
-          _meshCoreConnection!.batteryStream.listen((batteryPercent) {
-        if (batteryPercent != _currentBatteryPercent) {
-          _currentBatteryPercent = batteryPercent;
-          notifyListeners();
-        }
-      });
-
-      // Execute connection workflow (transport already connected above)
-      final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.models,
-      );
-
-      await _postConnectionSetup(connectionResult, device);
-      _isConnecting = false;
-    } catch (e) {
-      await _handleConnectionError(e);
+      }
     }
   }
 
@@ -5498,7 +5550,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pendingPathHashWarning = null;
   }
 
-  Future<void> _fullDisconnectCleanup() async {
+  /// In-flight full-cleanup future so a connection workflow re-run (#500)
+  /// can wait for the disconnect-event cleanup to settle before reconnecting.
+  Future<void>? _fullCleanupInFlight;
+
+  Future<void> _fullDisconnectCleanup() {
+    final cleanup = _fullDisconnectCleanupImpl();
+    _fullCleanupInFlight = cleanup;
+    return cleanup;
+  }
+
+  Future<void> _fullDisconnectCleanupImpl() async {
     _finishLiveActivitySession();
     // Guard against double cleanup (e.g., reconnect timeout + BLE disconnect event)
     if (_connectionStep == ConnectionStep.disconnected) {
