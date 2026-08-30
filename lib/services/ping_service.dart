@@ -1584,6 +1584,10 @@ class PingService {
 
       // Update last discovery position for 25m check
       _lastDiscoveryPosition = position;
+
+      // Follow with the display anchor so the map's distance readout tracks
+      // discovery pings too, not just TX (#501)
+      _gpsService.markActivityPosition(position);
     } catch (e) {
       _pingInProgress = false;
       debugError('[DISC] Failed to send discovery request: $e');
@@ -1900,6 +1904,10 @@ class PingService {
 
       // Update last targeted position for 25m check
       _lastTargetedPosition = position;
+
+      // Follow with the display anchor so the map's distance readout tracks
+      // traces too, not just TX (#501)
+      _gpsService.markActivityPosition(position);
     } catch (e) {
       _pingInProgress = false;
       debugError('[TRACE] Failed to send trace: $e');

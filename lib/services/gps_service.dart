@@ -49,6 +49,13 @@ class GpsService {
   GpsStatus _status = GpsStatus.permissionDenied;
   Position? _lastPosition;
   Position? _lastPingPosition;
+
+  /// Last ping of ANY type (TX, discovery, trace) for the map's
+  /// distance-to-previous-ping readout (#501). Kept separate from
+  /// _lastPingPosition, the TX skip anchor: feeding discovery/trace positions
+  /// into that would change canPingAtPosition() and let a Hybrid discovery
+  /// skip the following TX ping at walking pace.
+  Position? _lastActivityPosition;
   StreamSubscription<Position>? _positionSubscription;
 
   /// GPS Simulator for testing
@@ -315,9 +322,29 @@ class GpsService {
     return distanceFromLastPing(position) >= _configuredMinDistance;
   }
 
-  /// Mark current position as ping location
+  /// Mark current position as TX ping location (skip anchor + readout)
   void markPingPosition(Position position) {
     _lastPingPosition = position;
+    _lastActivityPosition = position;
+  }
+
+  /// Mark a non-TX ping (discovery, trace) for the distance readout only.
+  /// Does NOT move the TX skip anchor used by canPingAtPosition().
+  void markActivityPosition(Position position) {
+    _lastActivityPosition = position;
+  }
+
+  /// Calculate distance from the last ping of any type, for display
+  double distanceFromLastActivity(Position current) {
+    if (_lastActivityPosition == null) {
+      return double.infinity;
+    }
+    return Geolocator.distanceBetween(
+      _lastActivityPosition!.latitude,
+      _lastActivityPosition!.longitude,
+      current.latitude,
+      current.longitude,
+    );
   }
 
   /// Check if GPS position is fresh enough for manual pings (< 60s old)

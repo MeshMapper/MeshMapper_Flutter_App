@@ -1348,10 +1348,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int get offlinePingCount => _apiQueueService.offlinePingCount;
   OfflineSessionService get offlineSessionService => _offlineSessionService;
 
-  /// Distance in meters from last TX ping position (like wardrive.js)
+  /// Distance in meters from the last ping of any type (TX, discovery,
+  /// trace). Display only; the TX skip logic reads its own anchor (#501).
   double? get distanceFromLastPing {
     if (_currentPosition == null) return null;
-    final dist = _gpsService.distanceFromLastPing(_currentPosition!);
+    final dist = _gpsService.distanceFromLastActivity(_currentPosition!);
     return dist == double.infinity ? null : dist;
   }
 
