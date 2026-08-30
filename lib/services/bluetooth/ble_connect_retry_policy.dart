@@ -80,5 +80,8 @@ bool shouldRerunConnectionWorkflow({
   if (errorString.contains('has been disposed')) {
     return false;
   }
+  if (errorString.contains('superseded')) {
+    return false;
+  }
   return true;
 }

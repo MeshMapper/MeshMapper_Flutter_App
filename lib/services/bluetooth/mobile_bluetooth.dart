@@ -275,12 +275,24 @@ class MobileBluetoothService implements BluetoothService {
     // arrives after a new MeshCoreConnection is created and disposes it incorrectly.
   }
 
+  /// Bumped by every connect() call. A loop whose epoch is stale has been
+  /// superseded by a newer connect and must stop retrying without touching
+  /// the shared device state (_bleDevice, characteristics, subscriptions).
+  int _connectEpoch = 0;
+
   @override
-  Future<void> connect(String deviceId) async {
+  Future<void> connect(String deviceId, {int? maxAttempts}) async {
+    final epoch = ++_connectEpoch;
+    final requested = maxAttempts ?? _maxRetries;
+    final attemptLimit =
+        requested < 1 ? 1 : (requested > _maxRetries ? _maxRetries : requested);
     int attempt = 0;
 
-    while (attempt < _maxRetries) {
+    while (attempt < attemptLimit) {
       attempt++;
+      if (epoch != _connectEpoch) {
+        throw Exception('Connection attempt superseded');
+      }
       try {
         debugLog('[BLE] Connection attempt $attempt/$_maxRetries to $deviceId');
         _updateStatus(ConnectionStatus.connecting);
@@ -419,15 +431,23 @@ class MobileBluetoothService implements BluetoothService {
               '[BLE] Device name: $deviceName (from scan: ${scannedDevice != null}, platformName: ${_bleDevice!.platformName})');
         }
 
+        if (epoch != _connectEpoch) {
+          throw Exception('Connection attempt superseded');
+        }
         debugLog('[BLE] Connection complete');
         _updateStatus(ConnectionStatus.connected);
         return; // Success - exit retry loop
       } catch (e, stackTrace) {
+        if (epoch != _connectEpoch) {
+          // A newer connect() owns the shared device state; retrying or
+          // cleaning up here would stomp its fields mid-attempt.
+          rethrow;
+        }
         final action = classifyBleConnectFailure(
           errorString: e.toString(),
           isIos: Platform.isIOS,
           attempt: attempt,
-          maxRetries: _maxRetries,
+          maxRetries: attemptLimit,
         );
 
         if (action == BleConnectFailureAction.abortForBondError) {
