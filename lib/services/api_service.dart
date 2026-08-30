@@ -74,6 +74,20 @@ class ApiService {
   /// Heartbeat buffer - schedule heartbeat 1 minute before session expiry
   static const Duration heartbeatBuffer = Duration(minutes: 1);
 
+  /// Minimum spacing between heartbeat sends. expires_at is server-clock while
+  /// the delay math runs on the device clock, so a device running further
+  /// ahead of the server than TTL minus [heartbeatBuffer] sees every freshly
+  /// extended expiry as already due. Without this floor the "expired, send
+  /// immediately" path re-fired the next heartbeat straight from the success
+  /// response, one POST per network round trip (361k requests in 64 minutes
+  /// from a single device on 2026-08-29).
+  static const Duration minHeartbeatSpacing = Duration(seconds: 30);
+
+  /// Circuit breaker: hard cap on scheduled heartbeat sends per minute,
+  /// independent of the spacing floor. Tripping it pauses the heartbeat lane
+  /// for a minute instead of letting any future bug storm the server.
+  static const int maxHeartbeatsPerMinute = 6;
+
   final http.Client _client;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
@@ -88,6 +102,10 @@ class ApiService {
 
   int _heartbeatRetryCount = 0;
   static const int _maxHeartbeatRetries = 5;
+  bool _heartbeatInFlight = false;
+  DateTime? _lastHeartbeatSentAt;
+  DateTime? _heartbeatWindowStart;
+  int _heartbeatWindowCount = 0;
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
@@ -854,11 +872,30 @@ class ApiService {
     final secondsUntilHeartbeat =
         secondsUntilExpiry - heartbeatBuffer.inSeconds;
 
-    if (secondsUntilHeartbeat <= 0) {
+    // Pacing floor (see minHeartbeatSpacing): a heartbeat may go out at most
+    // once per floor interval, no matter how expired the expiry reads. This
+    // is what stops a fast device clock from turning every success response
+    // into the trigger for the next send.
+    final lastSent = _lastHeartbeatSentAt;
+    final floorSeconds = lastSent == null
+        ? 0
+        : minHeartbeatSpacing.inSeconds -
+            DateTime.now().difference(lastSent).inSeconds;
+    final delaySeconds = max(secondsUntilHeartbeat, max(floorSeconds, 0));
+
+    if (delaySeconds <= 0) {
       // Session is about to expire or already expired - send heartbeat immediately
       debugWarn(
           '[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
       _sendScheduledHeartbeat();
+    } else if (secondsUntilHeartbeat <= 0) {
+      debugWarn(
+          '[HEARTBEAT] Session expires in ${secondsUntilExpiry}s but a heartbeat '
+          'just went out, next in ${delaySeconds}s');
+      _heartbeatTimer = Timer(Duration(seconds: delaySeconds), () {
+        debugLog('[HEARTBEAT] Timer fired, sending keepalive');
+        _sendScheduledHeartbeat();
+      });
     } else {
       debugLog(
           '[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
@@ -872,9 +909,46 @@ class ApiService {
 
   /// Send scheduled heartbeat with GPS coordinates
   Future<void> _sendScheduledHeartbeat() async {
-    // Get GPS coordinates from provider (matching wardrive.js behavior)
-    final coords = _gpsProvider?.call();
-    final result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
+    // One send in flight at a time. scheduleHeartbeat() cancels pending
+    // timers but cannot cancel an already-awaiting send, so without this
+    // guard every re-entrant caller (upload success, per-ping session check)
+    // stacked another concurrent send chain that never died. Skipping is
+    // safe: the in-flight send's own response schedules the next heartbeat.
+    if (_heartbeatInFlight) {
+      debugLog('[HEARTBEAT] Send already in flight, skipping duplicate');
+      return;
+    }
+
+    // Circuit breaker (see maxHeartbeatsPerMinute): if the lane somehow still
+    // runs hot, pause it for a minute rather than storm the server.
+    final now = DateTime.now();
+    final windowStart = _heartbeatWindowStart;
+    if (windowStart == null ||
+        now.difference(windowStart) >= const Duration(minutes: 1)) {
+      _heartbeatWindowStart = now;
+      _heartbeatWindowCount = 0;
+    }
+    if (_heartbeatWindowCount >= maxHeartbeatsPerMinute) {
+      debugError(
+          '[HEARTBEAT] Circuit breaker tripped: $maxHeartbeatsPerMinute sends '
+          'inside a minute, pausing heartbeats for 60s');
+      _heartbeatRetryTimer?.cancel();
+      _heartbeatRetryTimer =
+          Timer(const Duration(seconds: 60), _sendScheduledHeartbeat);
+      return;
+    }
+    _heartbeatWindowCount++;
+    _heartbeatInFlight = true;
+    _lastHeartbeatSentAt = now;
+
+    Map<String, dynamic>? result;
+    try {
+      // Get GPS coordinates from provider (matching wardrive.js behavior)
+      final coords = _gpsProvider?.call();
+      result = await sendHeartbeat(lat: coords?.lat, lon: coords?.lon);
+    } finally {
+      _heartbeatInFlight = false;
+    }
 
     if (result?['success'] == true) {
       debugLog('[HEARTBEAT] Heartbeat successful');

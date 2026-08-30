@@ -360,7 +360,7 @@ Sound notifications for TX pings and RX observations, configurable on/off.
 Prevents session timeout during long wardriving sessions by periodically refreshing the session expiry.
 
 - **Trigger**: Enabled when auto-ping mode starts (`enableHeartbeat()`), disabled on disconnect or leaving auto mode
-- **Timing**: Heartbeat fires **1 minute before** session `expires_at`. If already expired, sends immediately.
+- **Timing**: Heartbeat fires **1 minute before** session `expires_at`. If already expired, sends immediately, but never more than one send per 30s (`minHeartbeatSpacing`). The floor matters because `expires_at` is server-clock while the delay math runs on the device clock: a device clock 4+ minutes fast (server TTL is 300s) makes every fresh expiry read as already due, and without the floor the "send immediately" path re-fired one POST per network round trip (the 2026-08-29 storm: 361k POSTs in 64 minutes from one device). An in-flight guard keeps re-entrant `scheduleHeartbeat` callers (upload success, per-ping session check) from stacking concurrent send chains, and a circuit breaker (`maxHeartbeatsPerMinute` = 6) pauses the lane for 60s as a backstop. Regression tests: `test/services/api_service_heartbeat_test.dart`.
 - **Mechanism**: POST to `/wardrive-api.php/wardrive` with `heartbeat: true` flag and optional GPS coordinates
 - **Response**: Returns updated `expires_at`, which schedules the next heartbeat
 - **Flow**: Auth response sets initial `expires_at` → each wardrive POST or heartbeat updates it → timer reschedules automatically
