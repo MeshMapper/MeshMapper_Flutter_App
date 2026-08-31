@@ -58,7 +58,11 @@ import '../services/external_commands/external_session_commands.dart';
 import '../services/external_surfaces/geo/external_surface_geo_builder.dart';
 import '../services/live_activity/live_activity_models.dart';
 import '../services/live_activity/live_activity_service.dart';
+import '../services/auto/android_auto_service.dart';
+import '../services/auto/car_map_channel.dart';
 import '../services/watch/watch_bridge_service.dart';
+import '../widgets/map_widget.dart'
+    show MapStyleExtension, gpsMarkerFacesHeading;
 import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
@@ -166,6 +170,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final LiveActivityService _liveActivityService = LiveActivityService();
   final WatchBridgeService _watchBridge = WatchBridgeService();
   final AppIntentBridgeService _appIntentBridge = AppIntentBridgeService();
+  final AndroidAutoService _androidAuto = AndroidAutoService();
   bool _hasEverPairedWatch = false;
 
   /// Last position handed to the watch, kept so a dropped GPS fix leaves the
@@ -624,6 +629,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Save offline pings immediately on pause to prevent data loss if OS kills app
       if (_preferences.offlineMode && _apiQueueService.offlinePingCount > 0) {
         _autoSaveOfflinePings();
+      }
+    } else if (state == AppLifecycleState.detached) {
+      // The engine now outlives MainActivity (see MeshMapperEngine), so the
+      // Activity going away no longer tears anything down on its own. Swiping
+      // the app from Recents with no session running used to end the process and
+      // with it the BLE link; it now leaves the radio connected to a device
+      // nobody is watching, draining both batteries until something else
+      // disconnects it.
+      //
+      // Deliberately conditional on there being no session: a wardriving run is
+      // pinned by flutter_background_service's foreground service and is
+      // *expected* to outlive the UI — that is the whole point of it, and of the
+      // Android Auto surface that can now drive it with no Activity at all.
+      if (!_autoPingEnabled) {
+        debugLog('[APP] Detached with no session — releasing connection');
+        unawaited(disconnect());
+      } else {
+        debugLog('[APP] Detached during a session — keeping connection');
       }
     }
   }
@@ -1455,6 +1478,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // The watch mirrors state even with no session running — otherwise you
     // could never start one from the wrist.
     _scheduleWatchSync(immediate: immediate);
+    _androidAuto.schedule(immediate: immediate);
     if (!_liveActivityService.isSupportedPlatform) return;
     _liveActivityService.schedule(
       _buildLiveActivitySnapshot,
@@ -2504,6 +2528,61 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
+  /// A tap on the head unit, admitted exactly as a wrist tap or a Siri phrase
+  /// is.
+  ///
+  /// The only car-specific work is resolving the start mode. The strip shows
+  /// one button and no mode picker — choosing a mode is setup, which the
+  /// distraction rules forbid while driving — so the command arrives with none
+  /// and inherits whatever the status row is already promising. That has to
+  /// happen here rather than inside [resolveExternalSessionTransition]: the
+  /// shared resolver refuses a modeless start on purpose, and teaching it a
+  /// third surface's default would put a phone preference inside the rules
+  /// every surface shares.
+  ExternalCommandReason? _handleAutoCommand(ExternalSessionCommand command) {
+    var admitted = command;
+    if (command.kind == ExternalSessionCommandKind.startSession &&
+        command.mode == null) {
+      final requested = resolveWatchRequestedStartMode(
+        requestedMode: null,
+        isConnected: isConnected,
+        txAllowed: txAllowed,
+      );
+      final refusal = requested.refusal;
+      if (refusal != null) return ExternalCommandReason.other(refusal);
+      admitted = ExternalSessionCommand(
+        id: command.id,
+        source: command.source,
+        kind: command.kind,
+        issuedAt: command.issuedAt,
+        expiresAt: command.expiresAt,
+        mode: resolveLegacyWatchStartMode(
+          currentMode: _resolvedWatchSessionMode.name,
+          isConnected: isConnected,
+          txAllowed: txAllowed,
+        ),
+        sessionId: command.sessionId,
+      );
+    }
+
+    final admission = admitExternalSessionCommand(admitted);
+    if (admission.disposition == ExternalCommandDisposition.refused) {
+      return admission.reason;
+    }
+    if (admission.shouldExecute) {
+      unawaited(executeExternalSessionCommand(admitted, admission).then(
+        (completion) {
+          if (!completion.success) {
+            _emitWatchFailure(
+              completion.message?.compactText ?? 'Command failed',
+            );
+          }
+        },
+      ));
+    }
+    return null;
+  }
+
   void _emitWatchFailure(String message) {
     if (_isDisposed) return;
     _watchCue = WatchHapticCue(
@@ -2513,6 +2592,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       message: message,
     );
     _scheduleWatchSync(immediate: true);
+    _androidAuto.schedule(immediate: true);
   }
 
   void _handleWatchDiagnosticsChanged() {
@@ -3041,6 +3121,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_liveActivityService.isSupportedPlatform) {
       _timerListenable.addListener(_handleLiveActivityTimerChange);
       _timerListenerAttached = true;
+    }
+    if (_androidAuto.isSupportedPlatform) {
+      _androidAuto.attach(
+        snapshotBuilder: _buildWatchSnapshot,
+        commandHandler: _handleAutoCommand,
+        onRefusal: (reason) => _emitWatchFailure(reason.compactText),
+        carMapSettingsBuilder: () => CarMapSettings.from(
+          styleUrl:
+              MapStyleExtension.fromString(_preferences.mapStyle).styleUrl,
+          zoneCode: zoneCode,
+          tilesEnabled: _preferences.mapTilesEnabled,
+          gridSize: _preferences.coverageGridSize,
+          colorVisionType: _preferences.colorVisionType,
+          opacity: _preferences.coverageOverlayOpacity,
+          mapAlwaysNorth: _preferences.mapAlwaysNorth,
+          mapRotationLocked: _preferences.mapRotationLocked,
+          markerStyle: _preferences.gpsMarkerStyle,
+          markerFacesHeading:
+              gpsMarkerFacesHeading(_preferences.gpsMarkerStyle),
+          nodeName: displayDeviceName,
+        ),
+      );
     }
     if (_watchBridge.isSupportedPlatform) {
       _watchBridge.diagnostics.addListener(_handleWatchDiagnosticsChanged);
@@ -10667,6 +10769,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _appIntentBridge.dispose();
     _watchBridge.diagnostics.removeListener(_handleWatchDiagnosticsChanged);
     _watchBridge.dispose();
+    _androidAuto.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _adapterStateSubscription?.cancel();
     _connectionSubscription?.cancel();

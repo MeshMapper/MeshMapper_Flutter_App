@@ -78,4 +78,7 @@ dependencies {
     // OfflineManager for the tile cache MethodChannel handlers. Version must
     // match maplibre_gl-0.25.0's transitive dep.
     implementation("org.maplibre.gl:android-sdk:12.3.1")
+
+    // Android for Cars App Library.
+    implementation("androidx.car.app:app:1.7.0")
 }

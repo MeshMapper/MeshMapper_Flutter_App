@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares MeshMapper as a templated car app. -->
+<automotiveApp xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses name="template" />
+</automotiveApp>

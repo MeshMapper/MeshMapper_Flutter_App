@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -67,9 +68,16 @@ void main() async {
   }
   debugLog('[APP] Noise floor session adapters registered');
 
-  // Request permissions on startup for mobile platforms
+  // Deferred rather than awaited. MeshMapperEngine starts this isolate before
+  // any Activity attaches — an Android Auto head unit can start the process with
+  // none at all — and permission_handler needs an Activity to raise its dialog
+  // from. The first frame is the earliest point one is guaranteed. In a headless
+  // car start no frame is produced, which is exactly when we should not prompt;
+  // this callback stays pending and fires if the user later opens the app.
   if (!kIsWeb) {
-    await _requestPermissions();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_requestPermissions());
+    });
   }
 
   // Clean up any orphaned background service from a previous session
@@ -111,13 +119,20 @@ Future<String> _loadInitialThemeMode() async {
 Future<void> _requestPermissions() async {
   debugLog('[APP] Requesting permissions...');
 
-  if (Platform.isIOS) {
-    // iOS: Use Geolocator for location (permission_handler is unreliable on iOS)
-    // and trigger Core Bluetooth to prompt for Bluetooth permission
-    await _requestiOSPermissions();
-  } else {
-    // Android: Use permission_handler
-    await _requestAndroidPermissions();
+  try {
+    if (Platform.isIOS) {
+      // iOS: Use Geolocator for location (permission_handler is unreliable on iOS)
+      // and trigger Core Bluetooth to prompt for Bluetooth permission
+      await _requestiOSPermissions();
+    } else {
+      // Android: Use permission_handler
+      await _requestAndroidPermissions();
+    }
+  } catch (e) {
+    // Never fatal. A permission we could not ask for surfaces later as a
+    // capability the user can grant from Settings; taking startup down over it
+    // would cost far more than the missing prompt.
+    debugLog('[APP] Permission request failed (non-fatal): $e');
   }
 }
 

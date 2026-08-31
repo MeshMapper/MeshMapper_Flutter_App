@@ -17,6 +17,15 @@
     <!-- USB host for USB OTG serial connections -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
+    <!-- Android Auto templated app support. Not required. -->
+    <uses-feature android:name="android.software.car.app.library" android:required="false" />
+
+    <!-- Drawing the car map.
+         ACCESS_SURFACE is what lets the app take the surface;
+         MAP_TEMPLATES is what lets it ask for a template with a map region. -->
+    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
+
     <!-- Internet for API uploads -->
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -31,8 +40,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:label="MeshMapper"
-        android:name="${applicationName}"
+        android:label="MeshMapper DEV"
+        android:name=".MeshMapperApplication"
         android:icon="@mipmap/ic_launcher"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules">
@@ -72,6 +81,24 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- Android Auto. The car surface is the coverage map plus a glance at
+             session state, counters, and one-touch start/stop. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="7" />
+
+        <service
+            android:name="com.oguzhnatly.flutter_android_auto.AndroidAutoService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.POI" />
+            </intent-filter>
+        </service>
 
         <!-- Background service for continuous wardriving -->
         <service

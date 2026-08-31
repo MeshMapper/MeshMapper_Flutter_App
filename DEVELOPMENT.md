@@ -986,6 +986,7 @@ when MeshMapper is disconnected.
 ### Android
 - Requires permissions: Bluetooth, Location (for BLE scanning)
 - minSdkVersion: 24 (Flutter's `flutter.minSdkVersion` default; MapLibre GL needs 23+)
+- Supports Android Auto. Testing needs Desktop Head Unit, and can not be tested against a physical head unit.
 - Background location permission for continuous tracking
 - Uses `flutter_blue_plus` package
 - URL scheme `meshmapper-auth` (host `callback`) registered on MainActivity via a VIEW/DEFAULT/BROWSABLE intent-filter — the portal sign-in return. The bare `meshmapper://` scheme is deliberately NOT registered: it is a paste-only clipboard format (`docs/CUSTOM_API_ENDPOINT.md`).
@@ -1004,6 +1005,7 @@ Key packages used in this project:
 
 - `flutter_blue_plus`: Mobile Bluetooth (Android/iOS)
 - `flutter_web_bluetooth`: Web Bluetooth (Chrome/Edge)
+- `flutter_carplay`: Android Auto templates — **vendored & patched**, see below
 - `geolocator`: GPS/Location
 - `maplibre_gl`: Map rendering (MapLibre GL vector tiles via OpenFreeMap) — **vendored & patched**, see below
 - `hive`: Local storage
@@ -1040,6 +1042,115 @@ burning. See the `_canAnimateCamera` getter and `_onMapIdle`.
 
 **On upgrade:** re-apply the `MESHMAPPER GUARD` blocks to the new plugin version (or drop the
 override if upstream gains an equivalent guard).
+
+### Vendored `flutter_carplay` (`third_party/flutter_carplay`)
+
+Consumed from an in-repo copy of the pub.dev `1.6.5` release via `dependency_overrides`, **not**
+from pub. Despite the name it is used for its **Android Auto** half only — CarPlay is not shipped.
+Three deltas from upstream, each tagged `DELTA` in the vendored source:
+
+- **DELTA A** (`third_party/flutter_carplay/pubspec.yaml`): the `ios:` plugin platform entry and
+  the whole `ios/` directory are removed. Upstream would link `SwiftFlutterCarplayPlugin` into the
+  App Store build — a CarPlay scene-delegate and entitlement surface we neither want nor hold
+  Apple's CarPlay entitlement for. The Dart `AA*` classes are pure Dart plus a MethodChannel and
+  still compile on iOS, where `AndroidAutoService.isSupportedPlatform` is false.
+- **DELTA B** (`AndroidAutoService.kt`): adds `FAAEngineProvider`, letting the host app supply the
+  engine. Upstream builds a bare headless `FlutterEngine` whenever the cache is empty, which in
+  this app is the **wrong** engine — ours owns the USB serial and tile cache channels (see
+  `MeshMapperEngine.kt`), and two engines means two copies of every plugin fighting over this
+  plugin's own static template state.
+- **DELTA C** (`AndroidAutoService.kt`): `createHostValidator()` no longer returns
+  `ALLOW_ALL_HOSTS_VALIDATOR` unconditionally. Android documents that as debug-only — it lets any
+  app on the device bind the service and drive the car surface — so release builds validate against
+  the car-app library's bundled host allowlist. Debug builds keep the permissive path, which is
+  what the Desktop Head Unit needs.
+- **DELTA D** (`FlutterAndroidAutoPlugin.kt`, `AndroidAutoService.kt`, `Session.kt`,
+  `lib/aa_models/map/`): adds `MapWithContentTemplate`, its map action strip
+  (`MapController` + `AAMapAction` + an `onMapActionPressed` event), and a `FAASurfaceProvider`
+  hook. It also makes `AAPaneTemplate`'s title optional: upstream requires a
+  non-empty one, but `PaneTemplate.Builder.build()` does not — it validates only rows and
+  actions — and the title is what draws the header. Upstream
+  supports six templates, none of which can show a map. The hook lets the host app supply the
+  `SurfaceCallback`, so MeshMapper's MapLibre renderer lives in the app rather than teaching the
+  plugin about a map SDK — the same shape as DELTA B.
+
+`example/`, `previews/` and `test/` are not vendored.
+
+**On upgrade:** re-apply all three deltas.
+
+### Android Auto (`lib/services/auto/`)
+
+The coverage map on the head unit, plus a glance at session state, counters, and one-touch
+start/stop. Category is **POI** (`androidx.car.app.category.POI`), because drawing a map is limited
+to the navigation, POI and weather categories.
+
+```bash
+adb shell cmd package query-services -a androidx.car.app.CarAppService | grep -A3 meshmapper
+```
+
+Expect `AndroidAutoService`, `exported=true`, `enabled=true`, and
+`Category: "androidx.car.app.category.IOT"`.
+
+**One-time phone setup.** In the Android Auto settings screen, tap the version header 10× to unlock
+developer mode, then from the ⋮ menu:
+
+- **Unknown sources** — ON. Required. An unpublished car app is *not listed at all* without it.
+- **Start head unit server**.
+
+**After every install of a changed build** — including every `flutter run` — restart the Android
+Auto session so it rescans:
+
+```bash
+adb shell am force-stop com.google.android.projection.gearhead
+```
+
+Not a superstition. Android Auto builds its car-app list by querying `PackageManager` when a
+session starts and caches it; `dumpsys package com.google.android.projection.gearhead` shows it
+registers only `MY_PACKAGE_REPLACED` (for itself) and **no** `PACKAGE_ADDED`/`PACKAGE_CHANGED`
+receiver for other packages. It therefore cannot notice a car app installed after it started. A
+freshly installed or updated MeshMapper stays invisible until Android Auto is restarted.
+
+**Connect:**
+
+```bash
+adb forward tcp:5277 tcp:5277
+$ANDROID_HOME/extras/google/auto/desktop-head-unit   # ~/Android/Sdk/extras/google/auto/
+```
+
+The phone screen must be unlocked. MeshMapper appears in the DHU launcher and opens to the four-row
+pane — briefly a loading spinner first if Dart has not published a template yet, since the plugin's
+`MainScreen.onGetTemplate` falls back to a loading `ListTemplate`.
+
+**`flutter run` and the DHU.** The DHU is **not** a Flutter device: it never appears in
+`flutter devices` and is never a `flutter run` target. `flutter run` targets the phone; the car pane
+is drawn by that same isolate.
+
+**Order matters.** Run `flutter run` *first*, then connect the DHU: `MainActivity` creates the
+engine, `flutter run` attaches to it, and `FAAEngineProvider` (DELTA B) hands that same engine to
+the car service — so **hot reload reaches the pane**. Connect the DHU first and Dart starts headless
+in a process `flutter run` never launched; use `flutter attach` to pick it up.
+
+Debug builds accept any car host, because DELTA C keeps `ALLOW_ALL_HOSTS_VALIDATOR` for debuggable
+builds — that is what lets the DHU bind. Release builds validate against the car-app library's
+bundled allowlist, which Android Auto is on, so the DHU works there too.
+
+**The two checks that matter:**
+
+- **Template quota.** Turn on **Developer settings → Enable debug overlay** and watch the template
+  counter across a full auto-ping session. If counter updates consume steps, the row layout is
+  wrong — see the fixed-layout contract above.
+- **One engine.** Cold start with `adb shell am force-stop net.meshmapper.app`, then connect.
+  `[APP] MeshMapper starting...` must appear in logcat **exactly once**. Twice means a second engine
+  and the `MeshMapperEngine` ownership rule has a hole.
+
+**Logs:** `adb logcat -s CarApp.H CarApp.H.Dis flutter`, after
+`adb shell setprop log.tag.CarApp.H.Dis VERBOSE`.
+
+**Play submission:** car support needs Google's Android Auto review, declared in Play Console →
+*Declare car compatibility* → POI. While a car submission is under review, subsequent app updates
+are blocked — so ship it in its own release, not bundled with an urgent fix. Everything
+car-specific is one `<service>` block in the manifest plus `lib/services/auto/`; deleting the
+service element disables the surface without touching Dart.
 
 ## Development Workflow Requirements
 
@@ -1236,13 +1347,22 @@ All API endpoints may return maintenance mode:
 - `lib/services/watch/watch_color.dart` - Wire colour projection shared with the phone map
 - `lib/services/live_activity/live_activity_service.dart` - ActivityKit bridge: preflight urgency, throttle, dedupe, unavailable backoff
 - `lib/services/live_activity/live_activity_models.dart` - Live Activity snapshot model and urgency keys
-- `lib/services/external_surfaces/external_surface_publisher.dart` - Shared publish pipeline (preflight dedupe, throttle, retry) behind watch, Live Activity, and Siri snapshots
+- `lib/services/external_surfaces/external_surface_publisher.dart` - Shared publish pipeline (preflight dedupe, throttle, retry) behind watch, Live Activity, Siri snapshots, and the Android Auto pane
 - `lib/services/external_surfaces/geo/external_surface_geo_builder.dart` - Ping/repeater/heard geography for external surfaces, with wire caps (was watch_geo_builder)
-- `lib/services/external_commands/external_session_commands.dart` - Shared Siri/watch session-command admission and deadline rules
+- `lib/services/external_commands/external_session_commands.dart` - Shared Siri/watch/car session-command admission and deadline rules
 - `lib/services/external_commands/external_command_models.dart` - External command wire model, refusal reasons, and voice copy
 - `lib/services/app_intents/app_intent_bridge_service.dart` - Siri method channel: command decode, dedupe, snapshot publish
 - `lib/services/app_intents/siri_snapshot_builder.dart` - App Group snapshot content (recent heard, repeater catalogue, counts)
 - `lib/services/app_intents/last_companion_connection.dart` - Connect-last-companion admission for the Siri intent
+- `lib/services/auto/android_auto_service.dart` - Android Auto surface: connection lifecycle, pane publisher, serialized map sync, action routing
+- `lib/services/auto/auto_glance_view.dart` - Pure WatchSnapshot to head-unit-pane projection (fixed 4-row layout)
+- `lib/services/auto/car_map_channel.dart` - Dart side of the car map: camera, style and coverage overlay, deduped
+- `android/app/src/main/kotlin/net/meshmapper/app/MeshMapperCarMap.kt` - Native MapLibre map on the car Surface (VirtualDisplay + Presentation)
+- `android/app/src/main/kotlin/net/meshmapper/app/MeshMapperCarMapChannel.kt` - Holds the renderer and bridges it to Dart
+- `android/app/src/main/kotlin/net/meshmapper/app/CarMapCoverage.kt` - Tile URL plus finished paint expressions, as Dart describes them
+- `android/app/src/main/kotlin/net/meshmapper/app/CarMapTimerBar.kt` - The depleting next-ping bar, animated locally from a deadline
+- `android/app/src/main/kotlin/net/meshmapper/app/MeshMapperEngine.kt` - Sole owner of the process FlutterEngine and its app-scoped channels
+- `android/app/src/main/kotlin/net/meshmapper/app/MeshMapperApplication.kt` - Installs the engine factory the car service uses
 - `lib/screens/watch_diagnostics_screen.dart` - Watch transport diagnostics (Settings)
 - `lib/services/meshcore/packet_validator.dart` - Packet validation and carpeater filtering
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
