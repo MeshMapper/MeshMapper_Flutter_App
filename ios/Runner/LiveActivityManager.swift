@@ -11,6 +11,12 @@ import Foundation
 enum MeshMapperLiveActivityStatus {
   /// This OS cannot host a Live Activity at all, at any point in this session.
   static let unsupported = "unsupported"
+  /// A new activity was requested and ActivityKit accepted it.
+  static let created = "created"
+  /// The session's existing activity took this update.
+  static let updated = "updated"
+  /// The user or system dismissed this session's activity; it stays gone.
+  static let dismissed = "dismissed"
 }
 
 final class LiveActivityManager {
@@ -48,8 +54,9 @@ final class LiveActivityManager {
       Task { @MainActor in
         do {
           let parsed = try parse(payload)
-          try await sync(attributes: parsed.attributes, state: parsed.state)
-          result(true)
+          let outcome = try await sync(
+            attributes: parsed.attributes, state: parsed.state)
+          result(outcome)
         } catch ActivityAuthorizationError.visibility {
           // ActivityKit only permits `request` from a foreground app, and a
           // session can begin backgrounded — auto-ping is restored after a BLE
@@ -160,7 +167,7 @@ final class LiveActivityManager {
   private func sync(
     attributes: MeshMapperActivityAttributes,
     state: MeshMapperActivityAttributes.ContentState
-  ) async throws {
+  ) async throws -> String {
     let activities = Activity<MeshMapperActivityAttributes>.activities
     let matching = activities.filter { $0.attributes.sessionID == attributes.sessionID }
     let unrelated = activities.filter { $0.attributes.sessionID != attributes.sessionID }
@@ -180,13 +187,13 @@ final class LiveActivityManager {
       for duplicate in matching.dropFirst() {
         await end(duplicate, keepSummaryFor: 0)
       }
-      return
+      return MeshMapperLiveActivityStatus.updated
     }
 
     // A missing activity with the same session ID means the user or system
     // dismissed it. Don't recreate it until MeshMapper starts a new session.
     if requestedSessionID == attributes.sessionID {
-      return
+      return MeshMapperLiveActivityStatus.dismissed
     }
 
     requestedSessionID = attributes.sessionID
@@ -200,6 +207,7 @@ final class LiveActivityManager {
       requestedSessionID = nil
       throw error
     }
+    return MeshMapperLiveActivityStatus.created
   }
 
   @available(iOS 16.2, *)
