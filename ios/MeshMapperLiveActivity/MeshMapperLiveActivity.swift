@@ -147,17 +147,17 @@ private struct MeshMapperLockScreenContent: View {
 ///
 /// **Width decides how much the band spells out.** The watch card is
 /// 152–191 pt wide per the HIG's watchOS widget dimensions; CarPlay's is
-/// wider. Past 200 pt the band adds the mode word, the battery percentage and
-/// a live countdown, and the body seats a third row; under it the icons carry
-/// the middle, the battery keeps only its glyph (until it runs low), and two
-/// rows fit.
+/// wider. Past 200 pt the band adds the mode word and the battery percentage,
+/// and the body seats a third row; under it the icons carry the middle, the
+/// battery keeps only its glyph (until it runs low), and two rows fit.
 ///
-/// **The energy rules are inherited, not relaxed.** Nothing here holds state
-/// or animates, and the ticking countdown is width-gated to the wide layout:
-/// a `Text(timerInterval:)` is redrawn by the system every second it is
-/// visible, and on the wrist that redraw was measured at 80 % of this app's
-/// display energy. `repeatersAreCurrent` still reaches the reader as the
-/// rows' opacity.
+/// **No ticking countdown in this family, on any width.** A
+/// `Text(timerInterval:)` is redrawn by the system every second it is
+/// visible: on the wrist that redraw was measured at 80 % of this app's
+/// display energy, and the iOS 26.6 CarPlay dashboard renders the whole card
+/// as a blank tile whenever the state carries one, recovering only in the
+/// phases without a deadline. Nothing here holds state or animates, and
+/// `repeatersAreCurrent` still reaches the reader as the rows' opacity.
 ///
 /// **The name is the only elastic element in a row.** The hex ID stays the
 /// observation's identity (a 1-byte hash is frequently ambiguous) and the SNR
@@ -216,17 +216,9 @@ private struct MeshMapperSmallActivityContent: View {
           .minimumScaleFactor(0.7)
           .truncationMode(.tail)
           .layoutPriority(1)
-        // The system draws and ticks this itself; no ActivityKit updates.
-        // Wide cards only: on the wrist a ticking timer was measured at 80 %
-        // of this app's display energy, so the watch keeps the title alone.
-        if isWide, state.activeCountdownRange != nil {
-          MeshMapperCountdown(
-            state: state,
-            font: .system(size: 12, weight: .semibold).monospacedDigit()
-          )
-          .foregroundStyle(.secondary)
-          .fixedSize()
-        }
+        // No countdown beside the title: the CarPlay dashboard blanks the
+        // whole card while the state carries an auto-updating timer. See the
+        // type comment.
       } else {
         // The watch band: the logo carries identity and a single word carries
         // state. A forward-looking title like "Next ping" read as orphaned
