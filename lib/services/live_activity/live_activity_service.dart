@@ -76,12 +76,25 @@ class LiveActivityService {
   /// authorization backoff exists for.
   static const String unsupportedHost = 'unsupported';
 
+  /// Native's answer when ActivityKit accepted a brand-new activity.
+  static const String activityCreated = 'created';
+
+  /// Native's answer when the session's existing activity took the update.
+  static const String activityUpdated = 'updated';
+
+  /// Native's answer when the session's activity is gone because the user or
+  /// system dismissed it. Native refuses to recreate it for the same session,
+  /// so every later sync repeats this outcome.
+  static const String activityDismissed = 'dismissed';
+
   final MethodChannel _channel;
   final Duration _unavailableRetryDelay;
   late final ExternalSurfacePublisher<LiveActivitySnapshot,
       Map<String, Object?>> _publisher;
   String? _unavailableSessionId;
   DateTime? _unavailableRetryAt;
+  String? _createdLoggedSessionId;
+  String? _dismissalLoggedSessionId;
   bool _disposed = false;
 
   /// Set once native reports a condition that cannot change while this process
@@ -147,6 +160,7 @@ class LiveActivityService {
           retryAfter: _unavailableRetryDelay,
         );
       }
+      _logSyncOutcome(result, snapshot.sessionId);
       _unavailableSessionId = null;
       _unavailableRetryAt = null;
       return const ExternalSurfacePublishResult.published();
@@ -167,6 +181,25 @@ class LiveActivityService {
       return const ExternalSurfacePublishResult.rejected();
     }
   }
+
+  /// One line per session for the outcomes that decide whether anything is on
+  /// screen. Success used to be silent, which made a "no activity appeared"
+  /// report indistinguishable from a healthy session in a submitted log.
+  void _logSyncOutcome(Object? result, String sessionId) {
+    if (result == activityCreated && _createdLoggedSessionId != sessionId) {
+      _createdLoggedSessionId = sessionId;
+      debugLog(
+          '[LIVE ACTIVITY] Activity created (session ${_shortSessionId(sessionId)})');
+    } else if (result == activityDismissed &&
+        _dismissalLoggedSessionId != sessionId) {
+      _dismissalLoggedSessionId = sessionId;
+      debugLog(
+          '[LIVE ACTIVITY] Activity was dismissed; not recreating for session ${_shortSessionId(sessionId)}');
+    }
+  }
+
+  String _shortSessionId(String sessionId) =>
+      sessionId.length <= 8 ? sessionId : sessionId.substring(0, 8);
 
   /// Stop asking, permanently. Nothing about the condition can change without
   /// the app being relaunched, at which point this starts out false again.
