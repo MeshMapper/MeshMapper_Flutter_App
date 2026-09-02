@@ -667,6 +667,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ]),
 
+          // Visibility is one-way on purpose: after an unpair the section
+          // stays reachable, because that failure is when it is most useful.
+          if (appState.shouldShowWatchDiagnostics)
+            _buildSection(context, 'Apple Watch', [
+              ListTile(
+                leading: const Icon(Icons.watch_outlined),
+                title: const Text('Watch Connectivity'),
+                subtitle: const Text('Inspect pairing and delivery state'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        WatchDiagnosticsScreen(bridge: appState.watchBridge),
+                  ),
+                ),
+              ),
+            ]),
+
           // Data Management
           _buildSection(context, 'Data', [
             ListTile(
@@ -1265,24 +1284,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ]),
 
-          // Pairing history is one-way: after an unpair this remains at the
-          // bottom of Settings because that failure is when it is most useful.
-          if (appState.shouldShowWatchDiagnostics)
-            _buildSection(context, 'Apple Watch', [
-              ListTile(
-                leading: const Icon(Icons.watch_outlined),
-                title: const Text('Watch Connectivity'),
-                subtitle: const Text('Inspect pairing and delivery state'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        WatchDiagnosticsScreen(bridge: appState.watchBridge),
-                  ),
-                ),
-              ),
-            ]),
         ],
       ),
     );
