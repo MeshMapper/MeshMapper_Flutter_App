@@ -115,9 +115,9 @@ final class LiveActivityManager {
     }
 
     let repeaterPayloads = payload["repeaters"] as? [Any] ?? []
-    // Four, because the watch Smart Stack card draws them two columns by two
-    // rows. The lock screen and the island still take fewer.
-    let repeaters = repeaterPayloads.prefix(4).compactMap {
+    // Six, because the wide (CarPlay) card's hex grid draws two columns by
+    // three rows. Narrower surfaces trim their own.
+    let repeaters = repeaterPayloads.prefix(6).compactMap {
       rawItem -> MeshMapperActivityAttributes.HeardRepeater? in
       guard let item = rawItem as? [String: Any],
         let id = boundedString(item["id"], maxLength: 16),

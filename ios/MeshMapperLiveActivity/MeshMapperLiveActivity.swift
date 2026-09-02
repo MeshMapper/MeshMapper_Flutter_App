@@ -148,8 +148,16 @@ private struct MeshMapperLockScreenContent: View {
 /// **Width decides how much the band spells out.** The watch card is
 /// 152–191 pt wide per the HIG's watchOS widget dimensions; CarPlay's is
 /// wider. Past 200 pt the band adds the mode word and the battery percentage,
-/// and the body seats a third row; under it the icons carry the middle, the
-/// battery keeps only its glyph (until it runs low), and two rows fit.
+/// and the body targets three rows (the hex grid three per column, six in
+/// all); under it the icons carry the middle, the battery keeps only its
+/// glyph (until it runs low), and two rows fit.
+///
+/// **Height decides the row type size.** CarPlay picks the canvas it renders
+/// the card into, and it is not the same canvas every drive; fixed row fonts
+/// clipped the last row whenever the canvas came up short. The body solves
+/// its row font (and the grid its depth) from the measured box, so the
+/// target rows always land whole: smaller-but-complete, never
+/// bigger-but-clipped.
 ///
 /// **No ticking countdown in this family, on any width.** A
 /// `Text(timerInterval:)` is redrawn by the system every second it is
@@ -182,16 +190,50 @@ private struct MeshMapperSmallActivityContent: View {
       let showsModeWord = geo.size.width >= Self.modeWordThreshold
       VStack(alignment: .leading, spacing: 0) {
         headerBand(isWide: isWide, showsModeWord: showsModeWord)
-        heardRows(isWide: isWide, width: geo.size.width)
-          // Rows from a finished cycle are still worth showing, but they are
-          // not a claim about now; the dimming is that statement.
-          .opacity(state.repeatersAreCurrent ? 1 : 0.55)
-          .padding(.horizontal, isWide ? 12 : 7)
-          .padding(.vertical, isWide ? 6 : 4)
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The rows solve their font from this measured box: CarPlay varies
+        // the canvas it renders the card into between drives, and fixed row
+        // sizes clipped the last row whenever the canvas came up short.
+        GeometryReader { rowsBox in
+          heardRows(isWide: isWide, size: rowsBox.size)
+            // Rows from a finished cycle are still worth showing, but they are
+            // not a claim about now; the dimming is that statement.
+            .opacity(state.repeatersAreCurrent ? 1 : 0.55)
+        }
+        .padding(.horizontal, isWide ? 12 : 7)
+        .padding(.vertical, isWide ? 6 : 4)
       }
     }
     .foregroundStyle(.white)
+  }
+
+  // MARK: Row solving
+
+  /// Generous line height for SF at a given point size: ascender, descender
+  /// and the row's breathing room.
+  private static let rowLineFactor: CGFloat = 1.3
+
+  /// Below this the type stops paying for itself; a row that cannot render at
+  /// 8 pt whole is a row the card should not attempt.
+  private static let minRowFont: CGFloat = 8
+
+  /// How many of [target] rows fit [height] with every row whole at the
+  /// readability floor. Clipping the last row is the defect this guards.
+  private static func rowsThatFit(
+    target: Int, height: CGFloat, gap: CGFloat
+  ) -> Int {
+    let minRow = minRowFont * rowLineFactor
+    let fit = Int((height + gap) / (minRow + gap))
+    return max(1, min(target, fit))
+  }
+
+  /// The largest row font that seats [count] rows in [height], clamped to the
+  /// tier's cap and the readability floor.
+  private static func rowFont(
+    count: Int, height: CGFloat, gap: CGFloat, cap: CGFloat
+  ) -> CGFloat {
+    guard count > 0 else { return cap }
+    let rowHeight = (height - gap * CGFloat(count - 1)) / CGFloat(count)
+    return min(max(rowHeight / rowLineFactor, minRowFont), cap)
   }
 
   // MARK: Header band
@@ -339,7 +381,7 @@ private struct MeshMapperSmallActivityContent: View {
   // MARK: Heard rows
 
   @ViewBuilder
-  private func heardRows(isWide: Bool, width: CGFloat) -> some View {
+  private func heardRows(isWide: Bool, size: CGSize) -> some View {
     if state.repeaters.isEmpty {
       HStack(spacing: 6) {
         // A failed ping produces no rows, so its colour needs its own mark;
@@ -352,46 +394,58 @@ private struct MeshMapperSmallActivityContent: View {
           .minimumScaleFactor(0.75)
       }
     } else if state.showRepeaterNames ?? true {
-      VStack(alignment: .leading, spacing: isWide ? 3 : 2) {
-        ForEach(state.repeaters.prefix(isWide ? 3 : 2)) { repeater in
-          namedRow(repeater, isWide: isWide)
+      let gap: CGFloat = isWide ? 3 : 2
+      let count = Self.rowsThatFit(
+        target: isWide ? 3 : 2, height: size.height, gap: gap)
+      let font = Self.rowFont(
+        count: count, height: size.height, gap: gap, cap: isWide ? 13 : 10)
+      VStack(alignment: .leading, spacing: gap) {
+        ForEach(state.repeaters.prefix(count)) { repeater in
+          namedRow(repeater, isWide: isWide, fontSize: font)
         }
       }
     } else {
-      hexGrid(isWide: isWide, width: width)
+      hexGrid(isWide: isWide, size: size)
     }
   }
 
   /// The nameless alternative behind the Settings switch: `[dot hex SNR]`
-  /// packed two columns wide, column-major, four observations deep, the
-  /// layout the card shipped with before names arrived. More repeaters per
-  /// glance, no identity beyond the hex.
+  /// packed two columns wide, column-major, up to three observations deep per
+  /// column on the wide card (six total) and two on the watch. More repeaters
+  /// per glance, no identity beyond the hex.
   ///
-  /// Font and column count are solved from the measured width: rigid rows at
-  /// a fixed size overflowed the 40 mm card as soon as 3-byte path mode
-  /// produced 6-character IDs.
-  private func hexGrid(isWide: Bool, width: CGFloat) -> some View {
-    let rows = Array(state.repeaters.prefix(4))
+  /// Font, column count and depth are solved from the measured box: rigid
+  /// rows at a fixed size overflowed the 40 mm card as soon as 3-byte path
+  /// mode produced 6-character IDs, and overflow the wide card whenever
+  /// CarPlay hands it a short canvas.
+  private func hexGrid(isWide: Bool, size: CGSize) -> some View {
+    let gap: CGFloat = isWide ? 3 : 2
+    let perColumn = Self.rowsThatFit(
+      target: isWide ? 3 : 2, height: size.height, gap: gap)
+    let rows = Array(state.repeaters.prefix(perColumn * 2))
     let columnGap: CGFloat = isWide ? 16 : 8
-    let contentWidth = width - 2 * (isWide ? 12 : 7)
     let idChars = CGFloat(rows.map { $0.id.count }.max() ?? 2)
     let snrChars = CGFloat(
       rows.map { Self.formattedRowSnr($0.snr, signed: false).count }.max() ?? 4
     )
     // Advance of one semibold monospaced character is about 0.62 em; the dot
     // and its two gaps consume about 12 points of each column.
-    let columnWidth = (contentWidth - columnGap) / 2 - 2
+    let columnWidth = (size.width - columnGap) / 2 - 2
     let widthBound = (columnWidth - 12) / (0.62 * (idChars + snrChars))
     // Below 8 points the type stops paying for itself and one clearer column
     // wins. Truncating the ID is never the trade: the ID is the identity.
     let usesTwoColumns = widthBound >= 8
     let cap: CGFloat = isWide ? 13 : 10
-    let fontSize = min(max(usesTwoColumns ? widthBound : cap, 8), cap)
+    let heightBound = Self.rowFont(
+      count: perColumn, height: size.height, gap: gap, cap: cap)
+    let fontSize = min(
+      max(usesTwoColumns ? min(widthBound, heightBound) : heightBound, 8), cap)
 
     return HStack(alignment: .top, spacing: columnGap) {
-      hexColumn(Array(rows.prefix(2)), isWide: isWide, fontSize: fontSize)
-      if usesTwoColumns, rows.count > 2 {
-        hexColumn(Array(rows.dropFirst(2)), isWide: isWide, fontSize: fontSize)
+      hexColumn(Array(rows.prefix(perColumn)), isWide: isWide, fontSize: fontSize)
+      if usesTwoColumns, rows.count > perColumn {
+        hexColumn(
+          Array(rows.dropFirst(perColumn)), isWide: isWide, fontSize: fontSize)
       }
     }
   }
@@ -421,21 +475,23 @@ private struct MeshMapperSmallActivityContent: View {
     }
   }
 
-  /// `[type dot] [hex] [name] … [SNR]`.
+  /// `[type dot] [hex] [name] … [SNR]`. The font arrives height-solved so the
+  /// row column always lands whole.
   private func namedRow(
     _ repeater: MeshMapperActivityAttributes.HeardRepeater,
-    isWide: Bool
+    isWide: Bool,
+    fontSize: CGFloat
   ) -> some View {
     HStack(spacing: isWide ? 6 : 4) {
       Circle()
         .fill(repeater.typeColor.map(Color.init) ?? state.outcomeColor)
         .frame(width: isWide ? 6 : 5, height: isWide ? 6 : 5)
       Text(repeater.id.uppercased())
-        .font(.system(size: isWide ? 13 : 10, weight: .semibold, design: .monospaced))
+        .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
         .fixedSize()
       if let name = repeater.resolvedName {
         Text(name)
-          .font(.system(size: isWide ? 12 : 9))
+          .font(.system(size: max(fontSize - 1, 7)))
           .foregroundStyle(.secondary)
           .lineLimit(1)
           .truncationMode(.tail)
@@ -444,7 +500,7 @@ private struct MeshMapperSmallActivityContent: View {
       }
       Spacer(minLength: 4)
       Text(Self.formattedRowSnr(repeater.snr, signed: isWide))
-        .font(.system(size: isWide ? 13 : 10, weight: .semibold, design: .monospaced))
+        .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
         .foregroundStyle(repeater.snrColor.map(Color.init) ?? .secondary)
         .fixedSize()
     }
@@ -1083,6 +1139,24 @@ extension MeshMapperActivityAttributes.ContentState {
         snrColor: repeater.snrColor
       )
     }
+    // Five and six, because the wide card's grid is two columns by three
+    // rows and a four-entry sample cannot show the rank it must seat.
+    state.repeaters += [
+      .init(
+        id: "C4D904",
+        name: nil,
+        snr: 4.2,
+        typeColor: .init(r: 0.22, g: 0.80, b: 0.78),
+        snrColor: .init(r: 0.34, g: 0.90, b: 0.44)
+      ),
+      .init(
+        id: "77A005",
+        name: nil,
+        snr: -1.3,
+        typeColor: .init(r: 0.64, g: 0.42, b: 0.94),
+        snrColor: .init(r: 0.96, g: 0.76, b: 0.22)
+      ),
+    ]
     return state
   }
 
@@ -1225,16 +1299,21 @@ enum MeshMapperActivityRenderHarness {
           }
         }
         // The wide layouts CarPlay renders; the exact CarPlay size is not
-        // published, so these bracket the threshold: icon-only mode at 250,
-        // the spelled-out mode word at 320.
+        // published and varies between drives, so these bracket both axes:
+        // icon-only mode at 250 wide, the spelled-out mode word at 320, and
+        // heights where the row solver must shrink (80) or the caps rule
+        // (100).
         for width in [CGFloat(250), CGFloat(320)] {
-          if let path = render(
-            MeshMapperSmallActivityContent(state: state, isStale: false)
-              .frame(width: width, height: 100)
-              .background(MeshMapperPalette.background),
-            named: "small-carplay\(Int(width))-\(name)", in: directory
-          ) {
-            written.append(path)
+          for height in [CGFloat(80), CGFloat(100)] {
+            if let path = render(
+              MeshMapperSmallActivityContent(state: state, isStale: false)
+                .frame(width: width, height: height)
+                .background(MeshMapperPalette.background),
+              named: "small-carplay\(Int(width))x\(Int(height))-\(name)",
+              in: directory
+            ) {
+              written.append(path)
+            }
           }
         }
       }
