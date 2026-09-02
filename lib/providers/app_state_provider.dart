@@ -2881,10 +2881,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (totalCount < repeaters.length) totalCount = repeaters.length;
 
     return (
-      // Four so the watch Smart Stack card's two-by-two grid fills, which also
-      // lets the RX slot survive alongside the three top-SNR rows the way the
-      // map overlay shows them. Surfaces that want fewer trim their own.
-      repeaters: repeaters.take(4).toList(growable: false),
+      // Six so the CarPlay card's two-by-three hex grid fills, which also
+      // lets the RX slot survive alongside the top-SNR rows the way the map
+      // overlay shows them. Surfaces that want fewer (the watch's two-by-two,
+      // the lock screen's three) trim their own.
+      repeaters: repeaters.take(6).toList(growable: false),
       totalCount: totalCount,
       isCurrent: hasCurrent,
     );
