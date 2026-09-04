@@ -640,6 +640,12 @@ class ApiQueueService {
         // flush cadence is the pacing; there is nothing to back off from.
         debugLog(
             '[API QUEUE] Upload deferred: ${items.length} items held, no route to server');
+      } else if (result == UploadResult.held) {
+        // The server's storm brake is running for this session and named its
+        // own wait; the batch never left. Same rule as unreachable: no retry
+        // spent, the timer comes back once the hold has run.
+        debugLog(
+            '[API QUEUE] Upload held: ${items.length} items wait out the server backoff');
       } else {
         // Mark items as retried
         for (final item in hiveItems) {

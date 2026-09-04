@@ -270,7 +270,7 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
 - **Batch Size**: Max 50 messages, auto-flush at 10 items or 30 seconds
 - **Payload Format**: `[{type:"TX"|"RX"|"DISC", ...}]` — TX/RX include `heard_repeats`; DISC includes `repeater_id`, `node_type`, `local_snr`, `local_rssi`, `remote_snr`, `public_key`
 - **Authentication**: API key in JSON body (NOT query string)
-- **Retry Logic**: Exponential backoff on failures
+- **Retry Logic**: Exponential backoff on failures. A 429 storm-brake answer holds the whole queue for the server's `Retry-After` without spending a retry (see Session Heartbeat)
 
 ### Offline Mode
 
@@ -361,6 +361,7 @@ Prevents session timeout during long wardriving sessions by periodically refresh
 
 - **Trigger**: Enabled when auto-ping mode starts (`enableHeartbeat()`), disabled on disconnect or leaving auto mode
 - **Timing**: Heartbeat fires **1 minute before** session `expires_at`. If already expired, sends immediately, but never more than one send per 30s (`minHeartbeatSpacing`). The floor matters because `expires_at` is server-clock while the delay math runs on the device clock: a device clock 4+ minutes fast (server TTL is 300s) makes every fresh expiry read as already due, and without the floor the "send immediately" path re-fired one POST per network round trip (the 2026-08-29 storm: 361k POSTs in 64 minutes from one device). An in-flight guard keeps re-entrant `scheduleHeartbeat` callers (upload success, per-ping session check) from stacking concurrent send chains, and a circuit breaker (`maxHeartbeatsPerMinute` = 6) pauses the lane for 60s as a backstop. Regression tests: `test/services/api_service_heartbeat_test.dart`.
+- **Storm brake (429)**: a `rate_limited` answer from `/wardrive` carries `Retry-After` (75s by default) and keeps the session valid (server contract: `docs/APP_API.md` Appendix C item 9, "a 429 is not a sign-out"). `ApiService` parses it into one per-session hold, `wardriveBackoff`, that every sender on that door respects: `uploadBatch` returns `UploadResult.held` (no retry spent), `checkSessionValid` skips the post and reports the last known verdict so the ping itself proceeds, and the keepalive reschedules after the hold instead of going quiet. The brake re-arms its penalty on every blocked hit, so one lane knocking through it would keep all of them locked out. Without the keepalive reschedule, a braked session lapsed while the car was stopped (no ping or upload restarted the lane), the next post got a 401 and the app re-minted a fresh session id, which is exactly what the brake must not cause (VLC-20260903-0002). A new session id drops the hold. Tests: `test/services/api_service_rate_limit_test.dart`.
 - **Mechanism**: POST to `/wardrive-api.php/wardrive` with `heartbeat: true` flag and optional GPS coordinates
 - **Response**: Returns updated `expires_at`, which schedules the next heartbeat
 - **Flow**: Auth response sets initial `expires_at` → each wardrive POST or heartbeat updates it → timer reschedules automatically
