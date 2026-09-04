@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/repeater.dart';
@@ -14,10 +15,16 @@ import '../utils/debug_logger_io.dart';
 /// we simply never got an answer. The queue must not spend a retry on it, or a
 /// drive through a dead zone burns the whole ladder and strands the pings
 /// (#437).
+///
+/// [held] means the batch never left: the server's storm brake is running for
+/// this session (a 429 `rate_limited` with `Retry-After`, see
+/// [ApiService.wardriveBackoff]). Like [unreachable] it says nothing about the
+/// data and must not spend a retry.
 enum UploadResult {
   success,
   retryable,
   unreachable,
+  held,
   sessionError,
   nonRetryable
 }
@@ -88,6 +95,13 @@ class ApiService {
   /// for a minute instead of letting any future bug storm the server.
   static const int maxHeartbeatsPerMinute = 6;
 
+  /// Fallback when a 429 from the wardrive door carries no usable
+  /// `Retry-After`: the server's default penalty (60s) plus its 15s margin.
+  static const Duration defaultWardriveRetryAfter = Duration(seconds: 75);
+
+  /// Longest hold a `Retry-After` header can impose on the wardrive door.
+  static const Duration maxWardriveRetryAfter = Duration(hours: 1);
+
   final http.Client _client;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
@@ -106,6 +120,7 @@ class ApiService {
   DateTime? _lastHeartbeatSentAt;
   DateTime? _heartbeatWindowStart;
   int _heartbeatWindowCount = 0;
+  DateTime? _wardriveBlockedUntil;
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
@@ -494,6 +509,9 @@ class ApiService {
           // upload, so tell the listener to drop those pings.
           final previousSessionId = _sessionId;
           _sessionId = data['session_id'] as String?;
+          // The storm brake is keyed on the session id, so a hold belongs to
+          // the session that earned it.
+          if (previousSessionId != _sessionId) _wardriveBlockedUntil = null;
           if (previousSessionId != null &&
               _sessionId != null &&
               previousSessionId != _sessionId) {
@@ -600,6 +618,51 @@ class ApiService {
     }
   }
 
+  /// Time left on the server's storm brake for this session's wardrive door,
+  /// or null when nothing is held.
+  ///
+  /// A 429 `rate_limited` from `/wardrive` (data batch or heartbeat) parks
+  /// every sender on that door until the server's `Retry-After` has run: the
+  /// batch upload, the keepalive and the per-ping session check alike. The
+  /// brake re-arms its penalty on every blocked hit, so one lane knocking
+  /// through the penalty would keep all of them locked out. The session
+  /// itself stays valid under a brake (APP_API.md, Appendix C item 9).
+  ///
+  /// Deadline math uses `clock.now()` so the fake-async tests can run the
+  /// hold down; in production that is `DateTime.now()`.
+  Duration? get wardriveBackoff {
+    final until = _wardriveBlockedUntil;
+    if (until == null) return null;
+    final left = until.difference(clock.now());
+    if (left <= Duration.zero) {
+      _wardriveBlockedUntil = null;
+      return null;
+    }
+    return left;
+  }
+
+  /// Parse a `Retry-After` header as delta-seconds.
+  ///
+  /// Missing, non-numeric or non-positive values fall back to
+  /// [defaultWardriveRetryAfter] rather than to no backoff at all; anything
+  /// longer than [maxWardriveRetryAfter] is clamped to it. HTTP-date values
+  /// are not used by the wardrive API and take the default.
+  static Duration parseRetryAfter(String? raw) {
+    final seconds = int.tryParse(raw?.trim() ?? '');
+    if (seconds == null || seconds <= 0) return defaultWardriveRetryAfter;
+    final wait = Duration(seconds: seconds);
+    return wait > maxWardriveRetryAfter ? maxWardriveRetryAfter : wait;
+  }
+
+  /// Record a 429 from the wardrive door as a hold on every sender.
+  void _noteWardriveRateLimit(http.Response response, String lane) {
+    final wait = parseRetryAfter(response.headers['retry-after']);
+    _wardriveBlockedUntil = clock.now().add(wait);
+    debugWarn(
+        '[API] /wardrive-api.php/wardrive ($lane) rate limited by the server: '
+        'holding every wardrive send for ${wait.inSeconds}s');
+  }
+
   /// Submit wardrive data batch to API
   /// Matches submitWardriveData() in wardrive.js
   ///
@@ -637,6 +700,9 @@ class ApiService {
             '[API] /wardrive-api.php/wardrive returned HTTP ${response.statusCode}');
         debugError(
             '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+      }
+      if (response.statusCode == 429) {
+        _noteWardriveRateLimit(response, 'data');
       }
 
       Map<String, dynamic> data;
@@ -722,6 +788,9 @@ class ApiService {
         debugError(
             '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
       }
+      if (response.statusCode == 429) {
+        _noteWardriveRateLimit(response, 'heartbeat');
+      }
 
       Map<String, dynamic> data;
       try {
@@ -778,6 +847,17 @@ class ApiService {
         reason: 'no_session',
         message: 'No active session'
       );
+    }
+
+    // Server backoff (see wardriveBackoff): the brake keeps the session
+    // valid, and the check itself is a wardrive post that would re-arm the
+    // penalty. Let the action proceed on the last known verdict.
+    final hold = wardriveBackoff;
+    if (hold != null) {
+      debugWarn(
+          '[SESSION] Server backoff has ${hold.inSeconds}s left, skipping the '
+          'check; session assumed still valid');
+      return (isValid: true, reason: null, message: null);
     }
 
     debugLog('[SESSION] Checking session validity via heartbeat...');
@@ -866,8 +946,10 @@ class ApiService {
 
     if (!_heartbeatEnabled) return;
 
-    // Calculate when to send heartbeat (1 minute before expiry)
-    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    // Calculate when to send heartbeat (1 minute before expiry). The lane's
+    // clock reads go through clock.now() (DateTime.now() in production) so
+    // the fake-async regression tests see the same timeline the device does.
+    final now = clock.now().millisecondsSinceEpoch ~/ 1000;
     final secondsUntilExpiry = expiresAt - now;
     final secondsUntilHeartbeat =
         secondsUntilExpiry - heartbeatBuffer.inSeconds;
@@ -880,31 +962,38 @@ class ApiService {
     final floorSeconds = lastSent == null
         ? 0
         : minHeartbeatSpacing.inSeconds -
-            DateTime.now().difference(lastSent).inSeconds;
-    final delaySeconds = max(secondsUntilHeartbeat, max(floorSeconds, 0));
+            clock.now().difference(lastSent).inSeconds;
+    // Server backoff (see wardriveBackoff): while the storm brake's
+    // Retry-After runs, the keepalive waits it out like every other sender on
+    // the wardrive door. Rounded up so the send lands after the hold clears.
+    final hold = wardriveBackoff;
+    final holdSeconds = hold == null ? 0 : (hold.inMilliseconds + 999) ~/ 1000;
+    final delaySeconds =
+        max(secondsUntilHeartbeat, max(max(floorSeconds, holdSeconds), 0));
 
     if (delaySeconds <= 0) {
       // Session is about to expire or already expired - send heartbeat immediately
       debugWarn(
           '[HEARTBEAT] Session expires in ${secondsUntilExpiry}s, sending immediately');
       _sendScheduledHeartbeat();
+      return;
+    }
+
+    if (holdSeconds > 0 && holdSeconds >= secondsUntilHeartbeat) {
+      debugWarn('[HEARTBEAT] Server asked us to back off, next keepalive in '
+          '${delaySeconds}s (session expires in ${secondsUntilExpiry}s)');
     } else if (secondsUntilHeartbeat <= 0) {
       debugWarn(
           '[HEARTBEAT] Session expires in ${secondsUntilExpiry}s but a heartbeat '
           'just went out, next in ${delaySeconds}s');
-      _heartbeatTimer = Timer(Duration(seconds: delaySeconds), () {
-        debugLog('[HEARTBEAT] Timer fired, sending keepalive');
-        _sendScheduledHeartbeat();
-      });
     } else {
       debugLog(
           '[HEARTBEAT] Scheduling in ${secondsUntilHeartbeat}s (session expires in ${secondsUntilExpiry}s)');
-
-      _heartbeatTimer = Timer(Duration(seconds: secondsUntilHeartbeat), () {
-        debugLog('[HEARTBEAT] Timer fired, sending keepalive');
-        _sendScheduledHeartbeat();
-      });
     }
+    _heartbeatTimer = Timer(Duration(seconds: delaySeconds), () {
+      debugLog('[HEARTBEAT] Timer fired, sending keepalive');
+      _sendScheduledHeartbeat();
+    });
   }
 
   /// Send scheduled heartbeat with GPS coordinates
@@ -919,9 +1008,22 @@ class ApiService {
       return;
     }
 
+    // Server backoff (see wardriveBackoff): a timer armed before the 429
+    // landed must not knock on the closed door, since every blocked hit
+    // re-arms the penalty. Come back once the hold has run.
+    final hold = wardriveBackoff;
+    if (hold != null) {
+      debugWarn(
+          '[HEARTBEAT] Server backoff has ${hold.inSeconds}s left, deferring keepalive');
+      _heartbeatRetryTimer?.cancel();
+      _heartbeatRetryTimer =
+          Timer(hold + const Duration(seconds: 1), _sendScheduledHeartbeat);
+      return;
+    }
+
     // Circuit breaker (see maxHeartbeatsPerMinute): if the lane somehow still
     // runs hot, pause it for a minute rather than storm the server.
-    final now = DateTime.now();
+    final now = clock.now();
     final windowStart = _heartbeatWindowStart;
     if (windowStart == null ||
         now.difference(windowStart) >= const Duration(minutes: 1)) {
@@ -996,6 +1098,14 @@ class ApiService {
       } else if (reason == 'outside_zone') {
         // Preserve session — backend auto-transfers on zone re-entry
         await onSessionError?.call(reason, message);
+      } else if (reason == 'rate_limited') {
+        // The storm brake keeps the session valid and names its own wait
+        // (APP_API.md, Appendix C item 9). Going quiet here instead is what
+        // let a braked session lapse while the car was stopped: nothing
+        // restarted the lane, the next post got a 401, and the app minted a
+        // fresh session id, which is exactly what the brake must not cause.
+        final expiresAt = _sessionExpiresAt;
+        if (expiresAt != null) scheduleHeartbeat(expiresAt);
       } else {
         _onSessionExpiring?.call();
       }
@@ -1022,6 +1132,7 @@ class ApiService {
     _heartbeatRetryTimer?.cancel();
     _heartbeatRetryTimer = null;
     _heartbeatRetryCount = 0;
+    _wardriveBlockedUntil = null;
     debugLog('[API] Session cleared');
   }
 
@@ -1094,6 +1205,15 @@ class ApiService {
   /// Triggers onSessionError callback for session-related errors
   Future<UploadResult> uploadBatch(List<Map<String, dynamic>> pings) async {
     if (pings.isEmpty) return UploadResult.success;
+
+    // Server backoff (see wardriveBackoff): do not knock while the storm
+    // brake's Retry-After runs. Not a verdict on the data, so not a retry.
+    final hold = wardriveBackoff;
+    if (hold != null) {
+      debugLog(
+          '[API] Upload batch held: server backoff has ${hold.inSeconds}s left');
+      return UploadResult.held;
+    }
 
     try {
       final result = await submitWardriveData(pings);
