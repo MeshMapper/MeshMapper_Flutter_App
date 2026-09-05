@@ -246,6 +246,13 @@ class RecentCoverageService {
           tile.fetchedAt = _now();
           debugLog(
               '[COVERAGE] Recent tile $key loaded: ${tile.cells!.length} covered cells');
+        } catch (e) {
+          // The fetch is injected and the decode reads a foreign body, so
+          // either can throw. This lane runs off a GPS listener during a
+          // wardrive: it must never throw into its caller. Same outcome as a
+          // null answer, including the retry hold already stamped above.
+          debugWarn(
+              '[COVERAGE] Recent tile $key failed, keeping ${tile.loaded ? 'the previous set' : 'nothing'}: $e');
         } finally {
           tile.loading = false;
         }

@@ -80,6 +80,7 @@ class _Fetches {
   final calls = <({String zone, int x, int y, int gsize, int days})>[];
   final answers = <String, Uint8List?>{}; // 'x/y' -> body (null = failure)
   Completer<void>? gate; // when set, fetches wait on it
+  Object? throwNext; // when set, the next call throws it instead of answering
 
   Future<Uint8List?> call({
     required String zone,
@@ -90,6 +91,11 @@ class _Fetches {
   }) async {
     calls.add((zone: zone, x: x, y: y, gsize: gsize, days: days));
     if (gate != null) await gate!.future;
+    final boom = throwNext;
+    if (boom != null) {
+      throwNext = null;
+      throw boom;
+    }
     return answers['$x/$y'];
   }
 }
@@ -175,6 +181,35 @@ void main() {
       now = now.add(const Duration(seconds: 30));
       fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
       await svc.onPosition(lat, lon);
+      expect(fetches.calls.length, 2);
+      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
+    });
+
+    test('a throwing fetch is a failed fetch, not a rejected future', () async {
+      fetches.throwNext = StateError('the fetch blew up');
+      // An unhandled throw here fails the test: onPosition runs off the GPS
+      // listener and must never reject.
+      await svc.onPosition(lat, lon);
+      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
+      expect(fetches.calls.length, 1);
+
+      now = now.add(const Duration(seconds: 10));
+      await svc.onPosition(lat + 0.002, lon); // moved > 100 m
+      expect(fetches.calls.length, 1, reason: 'inside the retry hold');
+
+      now = now.add(const Duration(seconds: 30));
+      fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
+      await svc.onPosition(lat, lon);
+      expect(fetches.calls.length, 2);
+      expect(svc.isCovered(lat, lon), RecentCoverage.covered);
+    });
+
+    test('a throwing refresh keeps the old set', () async {
+      fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
+      await svc.onPosition(lat, lon);
+      now = now.add(const Duration(minutes: 6));
+      fetches.throwNext = StateError('the fetch blew up');
+      await svc.onPosition(lat + 0.002, lon);
       expect(fetches.calls.length, 2);
       expect(svc.isCovered(lat, lon), RecentCoverage.covered);
     });
