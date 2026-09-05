@@ -537,10 +537,10 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   `linkLaneBackoff` (the longer of nonce/link). Three consumers:
   `refreshMe(force: true)` skips the LOCAL hourly throttle but NEVER a server
   block, and the Settings refresh button says how long to wait instead of
-  reprinting a stale device count; `logout` does not retry into a 429 and accepts
-  the orphaned server token; `_recordLinkFailure` takes the longer of its own
-  30s..8m ladder and the server's value. A 429 is never a sign-out: 401 +
-  `token_invalid` stays the only signed-out signal.
+  claiming a refresh that never happened; `logout` does not retry into a 429
+  and accepts the orphaned server token; `_recordLinkFailure` takes the longer
+  of its own 30s..8m ladder and the server's value. A 429 is never a sign-out:
+  401 + `token_invalid` stays the only signed-out signal.
 - **Account page overview**: `me` also answers `overview: {points, weekly, grid,
   awards:[{name, description}]}`, the portal Overview tab's numbers, summed
   server-side over each companion's primary so a grouped radio counts once. The
