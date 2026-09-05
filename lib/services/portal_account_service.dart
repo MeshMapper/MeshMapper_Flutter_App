@@ -343,6 +343,7 @@ class PortalAccountService {
   String? _token;
   PortalAccount? _account;
   List<LinkedPubkey> _linkedPubkeys = const [];
+  PortalOverview? _overview;
   DateTime? _lastMeAt;
   PendingPkce? _pendingPkce;
   String? _lastCode;
@@ -391,6 +392,10 @@ class PortalAccountService {
   PortalAccount? get account => _account;
   List<LinkedPubkey> get linkedPubkeys => List.unmodifiable(_linkedPubkeys);
 
+  /// Account-wide totals from the last `me`, or null when unknown: never
+  /// fetched, signed out, or a server that does not send the block yet.
+  PortalOverview? get overview => _overview;
+
   /// Restore the identity cached in Hive so the UI has a name before any
   /// network call happens.
   void hydrateAccount(PortalAccount account) => _account = account;
@@ -403,17 +408,30 @@ class PortalAccountService {
   /// pubkey. Only membership is restored — label/name/points are `me` data and
   /// are refilled by the next `refreshMe`. Deliberately does NOT fire
   /// `onAccountChanged`: this runs during load, before any listener cares.
-  void hydrateLinkedPubkeys(List<String> pubkeys) {
-    _linkedPubkeys = pubkeys
-        .where((pubkey) => pubkey.isNotEmpty)
-        .map((pubkey) => LinkedPubkey(
-              pubkey: pubkey.toUpperCase(),
-              label: '',
-              name: '',
-              points: 0,
-            ))
+  void hydrateLinkedPubkeys(List<String> pubkeys) => hydrateLinkedCompanions(
+        pubkeys
+            .where((pubkey) => pubkey.isNotEmpty)
+            .map((pubkey) => LinkedPubkey(
+                  pubkey: pubkey.toUpperCase(),
+                  label: '',
+                  name: '',
+                  points: 0,
+                ))
+            .toList(growable: false),
+      );
+
+  /// Restore the cached companions WITH label, name and points, so the
+  /// Account page is filled on a cold start. Same load-bearing role as
+  /// [hydrateLinkedPubkeys] (which now delegates here) and, like it, does NOT
+  /// fire `onAccountChanged`.
+  void hydrateLinkedCompanions(List<LinkedPubkey> companions) {
+    _linkedPubkeys = companions
+        .where((companion) => companion.pubkey.isNotEmpty)
         .toList(growable: false);
   }
+
+  /// Restore the cached overview from Hive. Does NOT fire `onAccountChanged`.
+  void hydrateOverview(PortalOverview? overview) => _overview = overview;
 
   Future<void> init() async {
     _token = await _store.readToken();
@@ -889,7 +907,13 @@ class PortalAccountService {
           .whereType<LinkedPubkey>()
           .toList(growable: false);
     }
-    _log('me ok: ${_linkedPubkeys.length} linked device(s)');
+    // Absent on a server that predates the block. Null hides the card; it
+    // never prints zeros for an account that may well have points.
+    _overview = PortalOverview.fromJson(response.json['overview']);
+    final overview = _overview;
+    _log('me ok: ${_linkedPubkeys.length} linked device(s), overview='
+        '${overview == null ? 'absent' : '${overview.points} pts, '
+            '${overview.grid} squares, ${overview.awards.length} award(s)'}');
     onAccountChanged?.call();
     return true;
   }
@@ -1005,6 +1029,7 @@ class PortalAccountService {
     _token = null;
     _account = null;
     _linkedPubkeys = const [];
+    _overview = null;
     _lastMeAt = null;
     await _store.deleteToken();
     await _store.deletePendingPkce();
