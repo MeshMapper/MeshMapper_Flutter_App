@@ -60,6 +60,11 @@ class PingService {
   /// Current configured min ping distance (for validation messages)
   static int currentMinDistance = 25;
 
+  /// Skip reason reported when Smart Pinging held an auto send back because
+  /// the square is already covered. Read by the countdown and the Live
+  /// Activity, so it is named here rather than repeated as a literal.
+  static const String skipReasonRecentlyCovered = 'recently covered';
+
   final GpsService _gpsService;
   final MeshCoreConnection _connection;
   final ApiQueueService _apiQueue;
@@ -672,7 +677,7 @@ class PingService {
             if (validation == PingValidation.tooCloseToLastPing) {
               _skipReason = 'too close';
             } else if (validation == PingValidation.recentlyCovered) {
-              _skipReason = 'recently covered';
+              _skipReason = skipReasonRecentlyCovered;
               debugLog(
                   '[PING] Auto ping skipped: square recently covered');
             }
@@ -1582,7 +1587,7 @@ class PingService {
     if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
         RecentCoverage.covered) {
       debugLog('[DISC] Square recently covered, skipping discovery request');
-      _skipReason = 'recently covered';
+      _skipReason = skipReasonRecentlyCovered;
       _pingInProgress = false;
       _scheduleNextDiscovery();
       return;
