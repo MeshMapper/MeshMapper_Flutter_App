@@ -287,9 +287,12 @@ Trace mode and the auto-mode start check are untouched. On by default with a 14 
   is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not used.
 - **Lookup** (`RecentCoverageService`, `lib/services/recent_coverage_service.dart`): keeps
   every z13 tile within 500 m of the phone loaded (one tile mid-tile, up to four at a corner),
-  re-evaluated after 100 m of movement, refetched after 5 minutes, one fetch in flight at a
+  re-evaluated after 100 m of movement, refetched after 5 minutes at the next 100 m of movement
+  (a stationary phone does not refresh), one fetch in flight at a
   time, an exception from the fetch or the decoder is caught and treated as a failed fetch,
-  failed fetches retried no sooner than 30 s and never clearing a loaded tile. Cells this
+  failed fetches retried no sooner than 30 s and never clearing a loaded tile. A tile that comes
+  back carrying any cell other than green or cyan is treated as unfiltered (a region server
+  without the `f_*` filter support) and ignored, so the lookup stays `unknown` there. Cells this
   session covered itself (a heard TX, an answered discovery) are marked covered at once
   (`markCovered`). `isCovered` is synchronous and returns `covered`, `clear` or `unknown`.
 - **Fail open**: `unknown` (no tile yet), a fetch failure, Offline Mode, no zone, or the
@@ -301,7 +304,8 @@ Trace mode and the auto-mode start check are untouched. On by default with a 14 
   shows "Skipped", the Live Activity detail reads "Recently covered, skipped", and the next
   attempt is scheduled at the normal interval.
 - **Lifecycle**: `_syncRecentCoverage()` runs at connect, on zone transfer, on every
-  preference change (switch, window, coverage grid) and switched off on every terminal
+  preference change (switch, window, coverage grid), on the Offline Mode switch in either
+  direction, and on every zone check, and switched off on every terminal
   disconnect path (`_syncRecentCoverage(sessionEnded: true)` in the user-disconnect reset and
   in `_fullDisconnectCleanupImpl`), which also empties the cache. The sync gates on
   `hasApiSession` rather than `isConnected`, because the connected step is mirrored

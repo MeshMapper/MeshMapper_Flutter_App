@@ -678,8 +678,11 @@ class PingService {
               _skipReason = 'too close';
             } else if (validation == PingValidation.recentlyCovered) {
               _skipReason = skipReasonRecentlyCovered;
-              debugLog(
-                  '[PING] Auto ping skipped: square recently covered');
+            } else {
+              // Anything else clears it, so a stale "recently covered" from
+              // the previous attempt cannot ride into the countdown and the
+              // Live Activity.
+              _skipReason = null;
             }
             if (_hybridModeEnabled) {
               _scheduleNextHybridPing();

@@ -12,10 +12,11 @@ enum RecentCoverage {
   /// this session). Auto mode skips the send.
   covered,
 
-  /// The cell is known and has no such result. Send.
+  /// The cell is known and has no such result, or the feature is inactive.
+  /// Send.
   clear,
 
-  /// No tile has loaded for this spot yet, or the feature is off. Send.
+  /// No tile has loaded for this spot yet. Send.
   unknown,
 }
 
@@ -51,7 +52,10 @@ typedef RecentTileFetch = Future<Uint8List?> Function({
 ({int x, int y}) recentCoverageTile(double lat, double lon) =>
     _tileAt(lat, lon, kRecentCoverageZoom);
 
-/// Every z13 tile intersecting a box [meters] wide around the fix.
+/// Every z13 tile under a box that reaches [meters] in each direction from
+/// the fix, so 2 * [meters] across. It samples the four corners, which is
+/// exact as long as the box is narrower than one tile (true of the 500 m
+/// prefetch at z13 below about 78 degrees of latitude).
 Set<({int x, int y})> recentCoverageTilesWithin(
     double lat, double lon, double meters) {
   final dLat = meters / 111000.0;
