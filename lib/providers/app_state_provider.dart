@@ -5748,6 +5748,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _isAnonymousRenamed = false;
     _originalDeviceName = null;
+    _syncRecentCoverage(sessionEnded: true);
 
     _clearOverlayState();
 
@@ -6264,7 +6265,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _userOriginalHybridMode = null;
     _userOriginalDiscDrop = null;
     _userOriginalFloodTraffic = null;
-    _recentCoverage.clear();
+    _syncRecentCoverage(sessionEnded: true);
 
     // Clear zone transfer state
     _sessionZoneCode = null;
@@ -7945,12 +7946,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Push the effective Smart Pinging settings into the lookup. Active only
   /// with a live session in a known zone and not in Offline Mode (no server
   /// to ask). Safe to call often: an unchanged configuration keeps the cache.
-  void _syncRecentCoverage() {
+  ///
+  /// Pass [sessionEnded] on a disconnect path to force the lookup off. The
+  /// GPS stream outlives the session and would otherwise keep fetching tiles
+  /// forever, and the release call can fail, leaving hasApiSession stale.
+  void _syncRecentCoverage({bool sessionEnded = false}) {
     _recentCoverage.configure(
       zone: zoneCode,
       gridSize: _preferences.coverageGridSize,
       days: smartPingDays,
-      enabled: smartPingEnabled && hasApiSession && !_preferences.offlineMode,
+      enabled: !sessionEnded &&
+          smartPingEnabled &&
+          hasApiSession &&
+          !_preferences.offlineMode,
     );
     final p = _currentPosition;
     if (p != null && _recentCoverage.isActive) {
