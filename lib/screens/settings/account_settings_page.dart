@@ -194,7 +194,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
       case PortalLinkStatus.alreadyLinkedOtherAccount:
         AppToast.error(context, 'This radio is linked to a different account');
       case PortalLinkStatus.unauthorized:
-        AppToast.error(context, 'Signed out — please sign in again');
+        AppToast.error(context, 'Signed out. Please sign in again');
       case PortalLinkStatus.skipped:
       case PortalLinkStatus.failed:
         // A manual tap deserves feedback even though the automatic path is
@@ -205,7 +205,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
           AppToast.warning(
               context, 'Too many attempts. Try again in ${_waitLabel(wait)}.');
         } else {
-          AppToast.error(context, 'Could not link right now — try again later');
+          AppToast.error(context, 'Could not link right now. Try again later');
         }
     }
   }
