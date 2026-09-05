@@ -83,4 +83,47 @@ void main() {
     expect(imperial.extras, metric.extras);
     expect(imperial.detail, isNot(metric.detail));
   });
+
+  group('airborneCauseText', () {
+    test('altitude gate names the altitude', () {
+      expect(
+          airborneCauseText(
+            gate: AirborneGate.altitude,
+            altitudeMeters: 10000,
+            speedMetersPerSecond: 50 / 3.6,
+            isImperial: false,
+          ),
+          'Your altitude is 10000m.');
+    });
+
+    test('speed gate names the speed', () {
+      expect(
+          airborneCauseText(
+            gate: AirborneGate.speed,
+            altitudeMeters: 100,
+            speedMetersPerSecond: 300 / 3.6,
+            isImperial: false,
+          ),
+          'You are moving at 300 km/h.');
+    });
+
+    test('imperial units are honoured', () {
+      expect(
+          airborneCauseText(
+            gate: AirborneGate.altitude,
+            altitudeMeters: 10000,
+            speedMetersPerSecond: null,
+            isImperial: true,
+          ),
+          'Your altitude is 32808ft.');
+      expect(
+          airborneCauseText(
+            gate: AirborneGate.speed,
+            altitudeMeters: null,
+            speedMetersPerSecond: 300 / 3.6,
+            isImperial: true,
+          ),
+          'You are moving at 186 mph.');
+    });
+  });
 }

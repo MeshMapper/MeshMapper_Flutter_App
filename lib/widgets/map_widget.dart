@@ -11,6 +11,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:provider/provider.dart';
 
+import 'gps_info_chip.dart';
+
 import '../models/log_entry.dart';
 import '../models/noise_floor_session.dart';
 import '../models/ping_data.dart';
@@ -1782,7 +1784,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildGpsInfoOverlay(appState),
+                // Rebuilt per fix through its own Selector, never with the
+                // map: build() here runs only on mapRevision bumps, which
+                // left the chip frozen between pings while disconnected.
+                Selector<AppStateProvider, GpsChipReadings>(
+                  selector: (_, state) => GpsChipReadings.from(
+                    position: state.currentPosition,
+                    distanceFromLastPing: state.distanceFromLastPing,
+                    isImperial: state.preferences.isImperial,
+                  ),
+                  builder: (_, readings, __) =>
+                      GpsInfoChip(readings: readings),
+                ),
                 if (appState.preferences.showTopRepeaters) ...[
                   const SizedBox(height: 6),
                   _buildTopRepeatersOverlay(appState),
@@ -5984,7 +5997,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     );
   }
 
-  /// GPS info overlay (top-left corner)
   /// Top heard repeaters overlay (bottom-right of map)
   Widget _buildTopRepeatersOverlay(AppStateProvider appState) {
     final topRepeaters = appState.topRepeatersBySnr;
@@ -6044,90 +6056,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// SNR color (delegates to active palette)
   static Color _snrColor(double snr) => PingColors.snrColor(snr);
-
-  Widget _buildGpsInfoOverlay(AppStateProvider appState) {
-    final position = appState.currentPosition;
-    final hasGps = position != null;
-    final distanceFromLastPing = appState.distanceFromLastPing;
-    // Altitude of the fix when the phone knows it: what every upload now
-    // carries and what the airborne block reads, so the user can see it.
-    final altitude = hasGps ? GpsService.altitudeOrNull(position) : null;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // GPS Status
-          Icon(
-            hasGps ? Icons.gps_fixed : Icons.gps_off,
-            size: 14,
-            color: hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            hasGps
-                ? formatMeters(position.accuracy,
-                    isImperial: appState.preferences.isImperial)
-                : 'No GPS',
-            style: TextStyle(
-              fontSize: 11,
-              fontFamily: 'monospace',
-              color:
-                  hasGps ? _getAccuracyColor(position.accuracy) : Colors.grey,
-            ),
-          ),
-          // Distance since the last ping of any type (TX, discovery, trace)
-          if (hasGps && distanceFromLastPing != null) ...[
-            const SizedBox(width: 12),
-            const Icon(
-              Icons.straighten,
-              size: 12,
-              color: Colors.white70,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              formatMeters(distanceFromLastPing,
-                  isImperial: appState.preferences.isImperial),
-              style: const TextStyle(
-                fontSize: 11,
-                fontFamily: 'monospace',
-                color: Colors.white70,
-              ),
-            ),
-          ],
-          if (altitude != null) ...[
-            const SizedBox(width: 12),
-            const Icon(
-              Icons.height,
-              size: 12,
-              color: Colors.white70,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              formatMeters(altitude,
-                  isImperial: appState.preferences.isImperial),
-              style: const TextStyle(
-                fontSize: 11,
-                fontFamily: 'monospace',
-                color: Colors.white70,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Color _getAccuracyColor(double accuracy) {
-    if (accuracy <= 10) return PingColors.signalGood;
-    if (accuracy <= 30) return PingColors.signalMedium;
-    return PingColors.signalBad;
-  }
 
   /// Map controls. Single vertical column in portrait; in landscape the taller
   /// set is split into two columns so the lower icons don't run off the short
