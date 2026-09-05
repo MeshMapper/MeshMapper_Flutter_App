@@ -138,6 +138,102 @@ class LinkedPubkey {
       points: (json['points'] as num?)?.toInt() ?? 0,
     );
   }
+
+  /// Hive cache shape (`portal_companions`).
+  Map<String, dynamic> toCache() => {
+        'pubkey': pubkey,
+        'label': label,
+        'name': name,
+        'points': points,
+      };
+
+  /// Hive hands back `Map<dynamic, dynamic>`, hence the loose parameter type.
+  static LinkedPubkey? fromCache(Map<dynamic, dynamic> cache) {
+    final pubkey = cache['pubkey'];
+    if (pubkey is! String || pubkey.isEmpty) return null;
+    final points = cache['points'];
+    return LinkedPubkey(
+      pubkey: pubkey.toUpperCase(),
+      label: cache['label'] is String ? cache['label'] as String : '',
+      name: cache['name'] is String ? cache['name'] as String : '',
+      points: points is num ? points.toInt() : 0,
+    );
+  }
+}
+
+/// One award the portal granted to any of the account's companions.
+class PortalAward {
+  final String name;
+  final String description;
+
+  const PortalAward({required this.name, required this.description});
+
+  /// Wire and cache share one shape: `{name, description}`. An award without
+  /// a name is dropped, a missing description reads as empty.
+  static PortalAward? fromJson(Map<dynamic, dynamic> json) {
+    final name = json['name'];
+    if (name is! String || name.isEmpty) return null;
+    final description = json['description'];
+    return PortalAward(
+      name: name,
+      description: description is String ? description : '',
+    );
+  }
+
+  Map<String, dynamic> toCache() => {'name': name, 'description': description};
+}
+
+/// The account-wide totals the portal's Overview tab shows (`me` -> `overview`).
+///
+/// The server sums points over each companion's primary, exactly as the
+/// portal does, so a radio filed under a group counts once. The app never adds
+/// up the per-companion points itself: that sum is wrong for grouped radios.
+class PortalOverview {
+  final int points;
+  final int weekly;
+  final int grid;
+  final List<PortalAward> awards;
+
+  const PortalOverview({
+    required this.points,
+    required this.weekly,
+    required this.grid,
+    required this.awards,
+  });
+
+  /// Null when the block is missing or not an object. An older server does
+  /// not send it, and the UI hides the card rather than printing zeros.
+  ///
+  /// Type CHECKS, not casts: the same hostile-shape guard the token exchange
+  /// uses. A string where a number belongs reads as zero.
+  static PortalOverview? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final rawAwards = json['awards'];
+    return PortalOverview(
+      points: _int(json['points']),
+      weekly: _int(json['weekly']),
+      grid: _int(json['grid']),
+      awards: rawAwards is List
+          ? rawAwards
+              .whereType<Map>()
+              .map(PortalAward.fromJson)
+              .whereType<PortalAward>()
+              .toList(growable: false)
+          : const [],
+    );
+  }
+
+  static int _int(Object? value) => value is num ? value.toInt() : 0;
+
+  /// Hive cache shape (`portal_overview`), the same keys as the wire.
+  Map<String, dynamic> toCache() => {
+        'points': points,
+        'weekly': weekly,
+        'grid': grid,
+        'awards': awards.map((award) => award.toCache()).toList(),
+      };
+
+  static PortalOverview? fromCache(Object? cache) => fromJson(cache);
 }
 
 /// Outcome of an `action=link` POST.

@@ -1042,6 +1042,93 @@ void main() {
       expect(callsTo('unlink'), 1);
     });
   });
+
+  group('PortalOverview', () {
+    test('parses the wire block and skips awards without a name', () {
+      final overview = PortalOverview.fromJson({
+        'points': 1234,
+        'weekly': 56,
+        'grid': 789,
+        'awards': [
+          {'name': 'First 100', 'description': 'Mapped 100 grid squares'},
+          {'name': 'Quiet', 'description': null},
+          {'description': 'no name'},
+          'not a map',
+        ],
+      });
+      expect(overview, isNotNull);
+      expect(overview!.points, 1234);
+      expect(overview.weekly, 56);
+      expect(overview.grid, 789);
+      expect(overview.awards.map((a) => a.name), ['First 100', 'Quiet']);
+      expect(overview.awards[1].description, '');
+    });
+
+    test('a missing or malformed block is null, not zeros', () {
+      // Null means "unknown": an older server does not send the block, and
+      // the page hides the card instead of printing zeros.
+      expect(PortalOverview.fromJson(null), isNull);
+      expect(PortalOverview.fromJson([1, 2]), isNull);
+      expect(PortalOverview.fromJson('overview'), isNull);
+    });
+
+    test('wrong-typed numbers and awards fall back to zero and empty', () {
+      final overview = PortalOverview.fromJson({
+        'points': 'many',
+        'grid': null,
+        'awards': 'none',
+      });
+      expect(overview, isNotNull);
+      expect(overview!.points, 0);
+      expect(overview.weekly, 0);
+      expect(overview.grid, 0);
+      expect(overview.awards, isEmpty);
+    });
+
+    test('survives a cache round trip', () {
+      final original = PortalOverview.fromJson({
+        'points': 5,
+        'weekly': 1,
+        'grid': 2,
+        'awards': [
+          {'name': 'A', 'description': 'B'}
+        ],
+      })!;
+      // Hive hands back Map<dynamic, dynamic>, so round-trip through that.
+      final restored = PortalOverview.fromCache(
+          Map<dynamic, dynamic>.from(original.toCache()));
+      expect(restored, isNotNull);
+      expect(restored!.points, 5);
+      expect(restored.weekly, 1);
+      expect(restored.grid, 2);
+      expect(restored.awards.single.name, 'A');
+      expect(restored.awards.single.description, 'B');
+    });
+  });
+
+  group('LinkedPubkey cache', () {
+    test('round-trips label, name and points and uppercases the key', () {
+      final original = LinkedPubkey(
+          pubkey: 'a' * 64, label: 'Stick', name: 'Spark', points: 42);
+      final restored = LinkedPubkey.fromCache(
+          Map<dynamic, dynamic>.from(original.toCache()));
+      expect(restored, isNotNull);
+      expect(restored!.pubkey, 'A' * 64);
+      expect(restored.label, 'Stick');
+      expect(restored.name, 'Spark');
+      expect(restored.points, 42);
+    });
+
+    test('a cache entry without a pubkey is dropped', () {
+      expect(LinkedPubkey.fromCache({'name': 'x'}), isNull);
+    });
+
+    test('a wrong-typed points value reads as zero', () {
+      final restored =
+          LinkedPubkey.fromCache({'pubkey': 'A' * 64, 'points': 'lots'});
+      expect(restored!.points, 0);
+    });
+  });
 }
 
 /// A store whose `readPendingPkce` parks until [openGate] is called, so a test
