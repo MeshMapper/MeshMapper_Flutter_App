@@ -44,6 +44,7 @@ import '../services/meshcore/connection.dart';
 import '../services/meshcore/crypto_service.dart';
 import '../services/meshcore/packet_validator.dart'
     show PacketValidator, ChannelInfo;
+import '../services/meshcore/regional_carpeater_filter.dart';
 import '../services/meshcore/rx_logger.dart';
 import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
@@ -589,6 +590,44 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _siriRepeaterCatalogRevision = 0;
   bool _repeatersLoaded = false;
   String? _repeatersLoadedForIata;
+
+  // ============================================
+  // Regional CARpeaters (the region's shared list from /auth)
+  // ============================================
+
+  /// Box key for the cached list; replaced in full on every auth, read at
+  /// startup so Offline Mode has the last copy.
+  static const String _regionalCarpeatersKey = 'regional_carpeaters';
+  List<String> _regionalCarpeaters = const [];
+  RegionalCarpeaterFilter _regionalCarpeaterFilter = RegionalCarpeaterFilter();
+
+  /// The cap refusal message, parked for MainScaffold to toast once.
+  String? _carpeaterCapNotice;
+
+  /// Every CARpeater key the region shares (the user's own included).
+  List<String> get regionalCarpeaters => List.unmodifiable(_regionalCarpeaters);
+  int get regionalCarpeaterCount => _regionalCarpeaters.length;
+  String? get carpeaterCapNotice => _carpeaterCapNotice;
+
+  /// The user's own CARpeater as the server and the trackers see it: only
+  /// while the switch is on. With the switch off, their own key in the
+  /// regional list gets the plain drop like anyone else's.
+  String? get _ownCarpeaterKey =>
+      _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null;
+
+  /// Display name of the zone repeater whose full public key is [key].
+  String? repeaterNameForKey(String key) {
+    final wanted = key.toUpperCase();
+    for (final r in _repeaters) {
+      if (r.hexId.toUpperCase() == wanted) return r.name.isEmpty ? null : r.name;
+    }
+    return null;
+  }
+
+  /// Drained by MainScaffold after it has shown the toast.
+  void clearCarpeaterCapNotice() {
+    _carpeaterCapNotice = null;
+  }
 
   // Regional boundary polygons (from /border API — always displayed on map)
   List<Map<String, dynamic>> _regionBorders = [];
@@ -3004,6 +3043,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_apiQueueService.dropStaleTaggedItems());
     };
 
+    _apiService.onRegionalCarpeaters = (keys, error) {
+      unawaited(_onRegionalCarpeaters(keys, error));
+    };
+
     // Set up maintenance mode callback (for connected state)
     _apiService.onMaintenanceMode = (message, url) {
       debugLog('[MAINTENANCE] Callback triggered: $message');
@@ -3129,6 +3172,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Load user preferences
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
+    await _loadRegionalCarpeaters();
     await _loadWatchPairingPreference();
     await _loadDeviceAntennaPreferences();
     await _loadDevicePowerOverrides();
@@ -4560,6 +4604,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         return false;
       },
+      isRegionalCarpeaterKey: (String pubkeyHex) =>
+          _regionalCarpeaterFilter.matchesKey(pubkeyHex),
     );
 
     _pingService!.unifiedRxHandler = _unifiedRxHandler;
@@ -5124,6 +5170,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null;
     debugLog(
         '[APP] TxTracker.carpeaterPrefix set to ${_txTracker!.carpeaterPrefix ?? 'null'}');
+    _txTracker!.isRegionalCarpeater =
+        (String hopHex) => _regionalCarpeaterFilter.matchesHop(hopHex);
 
     // Log TX carpeater drops to error log (without navigating to error tab)
     _txTracker!.onCarpeaterDrop = (String repeaterId, String reason) {
@@ -5138,6 +5186,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // CARpeater prefix for pass-through (replaces shouldIgnoreRepeater)
       carpeaterPrefix:
           _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null,
+      isRegionalCarpeater: (String hopHex) =>
+          _regionalCarpeaterFilter.matchesHop(hopHex),
       // Immediate observation callback - fires when packet is first validated
       // Creates pin IMMEDIATELY for NEW repeaters (first time in current batch)
       onObservation: (observation) {
@@ -7780,7 +7830,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _syncRssiFilterSetting(preferences.disableRssiFilter);
 
     // Propagate CARpeater prefix to live trackers
-    _syncCarpeaterPrefix();
+    _syncCarpeaterFilter();
 
     // A full key set by hand or from the picker answers the re-entry prompt.
     if (_preferences.carpeaterPublicKey != null && _carpeaterReentryPending) {
@@ -7838,18 +7888,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Propagate carpeaterPrefix to live TxTracker and RxLogger
-  void _syncCarpeaterPrefix() {
-    final prefix =
-        _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null;
-    if (_txTracker != null) {
-      _txTracker!.carpeaterPrefix = prefix;
-      debugLog('[APP] Synced TxTracker.carpeaterPrefix = ${prefix ?? 'null'}');
-    }
-    if (_rxLogger != null) {
-      _rxLogger!.carpeaterPrefix = prefix;
-      debugLog('[APP] Synced RxLogger.carpeaterPrefix = ${prefix ?? 'null'}');
-    }
+  /// Push the user's own CARpeater and the regional list into the API
+  /// service and the live trackers. Called after every preference change,
+  /// every auth answer and at startup. The trackers' regional closures read
+  /// [_regionalCarpeaterFilter] live, so only the own key needs pushing.
+  void _syncCarpeaterFilter() {
+    final own = _ownCarpeaterKey;
+    _apiService.carpeaterKey = own;
+    _regionalCarpeaterFilter =
+        RegionalCarpeaterFilter(keys: _regionalCarpeaters, ownKey: own);
+    debugLog(
+        '[APP] CARpeater filter: own=${_pkPrefix(own)}, regional=${_regionalCarpeaters.length}, dropped=${_regionalCarpeaterFilter.dropSet.length}');
+    if (_txTracker != null) _txTracker!.carpeaterPrefix = own;
+    if (_rxLogger != null) _rxLogger!.carpeaterPrefix = own;
   }
 
   /// Push the effective Smart Pinging settings into the lookup. Active only
@@ -9916,6 +9967,49 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _preferencesLoaded = true;
     notifyListeners();
+  }
+
+  Future<void> _loadRegionalCarpeaters() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box != null) {
+      try {
+        _regionalCarpeaters =
+            RegionalCarpeaterFilter.sanitize(box.get(_regionalCarpeatersKey));
+        debugLog(
+            '[APP] Loaded ${_regionalCarpeaters.length} cached regional CARpeaters');
+      } catch (e) {
+        debugError('[APP] Failed to load regional CARpeaters: $e');
+        _regionalCarpeaters = const [];
+      }
+    }
+    _syncCarpeaterFilter();
+  }
+
+  /// Every auth answer lands here: replace the cache in full, rebuild the
+  /// filter, and surface a cap refusal. A missing field arrives as an empty
+  /// list and clears the cache, by design.
+  Future<void> _onRegionalCarpeaters(List<String> keys, String? error) async {
+    _regionalCarpeaters = List.unmodifiable(keys);
+    _syncCarpeaterFilter();
+    if (error == 'max_reached') {
+      const message =
+          'You have reported the maximum number of CARpeaters. Contact your regional admin to delete old ones.';
+      logError('CARpeater not shared\n$message',
+          severity: ErrorSeverity.warning, autoSwitch: false);
+      _carpeaterCapNotice = message;
+    } else if (error != null) {
+      // The app validates before sending, so an `invalid` here is a bug.
+      debugError('[APP] Server refused the CARpeater key: $error');
+    }
+    notifyListeners();
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      await box.put(_regionalCarpeatersKey, _regionalCarpeaters);
+      await box.flush();
+    } catch (e) {
+      debugError('[APP] Failed to cache regional CARpeaters: $e');
+    }
   }
 
   Future<void> _loadWatchPairingPreference() async {

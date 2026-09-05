@@ -45,6 +45,10 @@ class RxLogger {
   /// to report the underlying repeater with null SNR/RSSI
   String? carpeaterPrefix;
 
+  /// Regional CARpeater check (the region's shared list). A delivering hop
+  /// that matches is a plain drop, unlike the user's own, which is stripped.
+  bool Function(String hopHex)? isRegionalCarpeater;
+
   RxLogger({
     required this.onRxEntry,
     this.onObservation,
@@ -53,6 +57,7 @@ class RxLogger {
     this.onCarpeaterDrop,
     this.onNoGpsDrop,
     this.carpeaterPrefix,
+    this.isRegionalCarpeater,
   });
 
   /// Start passive RX wardriving
@@ -112,6 +117,14 @@ class RxLogger {
             '[RX LOG] CARpeater pass-through: stripped $lastHopHex, reporting underlying repeater $repeaterId');
       } else {
         repeaterId = lastHopHex;
+      }
+
+      // Regional CARpeaters (the shared list) are a plain drop, on the hop
+      // we are about to credit, after the own-CARpeater strip. Debug log
+      // only, never the error log.
+      if (isRegionalCarpeater != null && isRegionalCarpeater!(repeaterId)) {
+        debugLog('[RX LOG] ❌ DROPPED: $repeaterId is a regional CARpeater');
+        return false;
       }
 
       // Get current GPS location

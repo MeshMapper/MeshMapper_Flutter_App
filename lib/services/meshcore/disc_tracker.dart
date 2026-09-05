@@ -20,6 +20,10 @@ class DiscTracker {
   /// Callback to check if a repeater should be ignored (carpeater filter)
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// Regional CARpeater check on the full 32-byte key a discovery response
+  /// carries. A match is a plain drop.
+  final bool Function(String pubkeyHex)? isRegionalCarpeaterKey;
+
   /// When true, skip RSSI carpeater check (user setting)
   final bool disableRssiFilter;
 
@@ -36,6 +40,7 @@ class DiscTracker {
 
   DiscTracker(
       {this.shouldIgnoreRepeater,
+      this.isRegionalCarpeaterKey,
       this.disableRssiFilter = false,
       this.hopBytes = 1});
 
@@ -150,6 +155,13 @@ class DiscTracker {
 
       // Get repeater ID (first N hex chars based on hopBytes setting)
       final repeaterId = pubkeyHex.substring(0, hopBytes * 2);
+
+      // Regional CARpeaters (the shared list), matched on the full key.
+      if (isRegionalCarpeaterKey != null && isRegionalCarpeaterKey!(pubkeyHex)) {
+        debugLog(
+            '[DISC] ❌ DROPPED: ${pubkeyHex.substring(0, 8)} is a regional CARpeater');
+        return false;
+      }
 
       // Check if this repeater should be ignored (user carpeater filter)
       if (shouldIgnoreRepeater != null && shouldIgnoreRepeater!(repeaterId)) {
