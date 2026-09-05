@@ -8,7 +8,7 @@ import '../../utils/public_key.dart';
 /// else's is a plain drop: a packet through someone else's car says nothing
 /// about coverage at this phone's position.
 ///
-/// A path hop is matched on its own width (2, 4 or 6 hex, whatever the
+/// A path hop is matched on its own width (2 to 8 hex, whatever the
 /// region's hop byte setting produces), a discovery response on the full key.
 /// The instance is immutable; the provider builds a new one on every auth
 /// answer and every preference change.
@@ -51,7 +51,7 @@ class RegionalCarpeaterFilter {
     return out.toList()..sort();
   }
 
-  /// True when a path hop (2, 4 or 6 hex) is the prefix of a dropped key.
+  /// True when a path hop (2 to 8 hex) is the prefix of a dropped key.
   bool matchesHop(String hopHex) {
     final hop = hopHex.trim().toUpperCase();
     if (hop.isEmpty || hop.length > 64 || !_hexOnly.hasMatch(hop)) {

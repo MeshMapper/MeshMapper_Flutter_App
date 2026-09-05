@@ -679,7 +679,14 @@ class ApiService {
                 : null;
         debugLog('[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
             '${_lastCarpeaterError != null ? ', carpeater refused: $_lastCarpeaterError' : ''}');
-        onRegionalCarpeaters?.call(_regionalCarpeaters, _lastCarpeaterError);
+        // Nothing on this lane may fail a connection: a throw from the
+        // listener would otherwise land in the outer catch and read as a
+        // network failure.
+        try {
+          onRegionalCarpeaters?.call(_regionalCarpeaters, _lastCarpeaterError);
+        } catch (e) {
+          debugError('[AUTH] regional carpeaters listener threw: $e');
+        }
       } else if (reason == 'disconnect') {
         // Only clear shared session when no explicit sessionId was provided
         // (explicit sessionId means caller manages its own session lifecycle)

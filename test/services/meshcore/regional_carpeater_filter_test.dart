@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/meshcore/regional_carpeater_filter.dart';
 
-/// The region's shared CARpeater list. A path hop (2, 4 or 6 hex) matches on
+/// The region's shared CARpeater list. A path hop (2 to 8 hex) matches on
 /// its own width, a discovery key matches exactly, and the user's own key is
 /// counted but never dropped (it keeps the pass-through behaviour).
 void main() {

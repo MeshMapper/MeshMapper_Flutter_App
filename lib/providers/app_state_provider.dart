@@ -5179,7 +5179,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _txTracker!.carpeaterPrefix =
         _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null;
     debugLog(
-        '[APP] TxTracker.carpeaterPrefix set to ${_txTracker!.carpeaterPrefix ?? 'null'}');
+        '[APP] TxTracker.carpeaterPrefix set to ${_pkPrefix(_txTracker!.carpeaterPrefix)}');
     _txTracker!.isRegionalCarpeater =
         (String hopHex) => _regionalCarpeaterFilter.matchesHop(hopHex);
 
@@ -10012,11 +10012,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _regionalCarpeaters = List.unmodifiable(keys);
     _syncCarpeaterFilter();
     if (error == 'max_reached') {
-      const message =
-          'You have reported the maximum number of CARpeaters. Contact your regional admin to delete old ones.';
-      logError('CARpeater not shared\n$message',
-          severity: ErrorSeverity.warning, autoSwitch: false);
-      _carpeaterCapNotice = message;
+      debugLog('[APP] CARpeater not shared: the region is at its cap');
+      // Auto-reconnect re-auths on every BLE flap, so a user parked at the cap
+      // would get the entry and the toast again on every one. The line above
+      // keeps the refusal in the log either way.
+      if (!_isAutoReconnecting) {
+        const message =
+            'You have reported the maximum number of CARpeaters. Contact your regional admin to delete old ones.';
+        logError('CARpeater not shared\n$message',
+            severity: ErrorSeverity.warning, autoSwitch: false);
+        _carpeaterCapNotice = message;
+      }
     } else if (error != null) {
       // The app validates before sending, so an `invalid` here is a bug.
       debugError('[APP] Server refused the CARpeater key: $error');
