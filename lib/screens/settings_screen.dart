@@ -11,8 +11,8 @@ import 'settings/data_settings_page.dart';
 import 'settings/developer_settings_page.dart';
 import 'settings/general_settings_page.dart';
 import 'settings/map_settings_page.dart';
-import 'settings/pinging_settings_page.dart';
 import 'settings/settings_section_card.dart';
+import 'settings/wardriving_settings_page.dart';
 import 'watch_diagnostics_screen.dart';
 
 /// Settings tab: one row per settings folder, each opening its own page.
@@ -49,20 +49,20 @@ class SettingsScreen extends StatelessWidget {
             _FolderTile(
               icon: Icons.tune,
               title: 'General',
-              subtitle: 'Theme, units, sounds, background location',
+              subtitle: 'Appearance, sounds, background location',
               builder: (_) => const GeneralSettingsPage(),
             ),
             _FolderTile(
               icon: Icons.map_outlined,
               title: 'Map',
-              subtitle: 'Offline maps, coverage overlay, markers',
+              subtitle: 'Map tiles, coverage overlay, markers',
               builder: (_) => const MapSettingsPage(),
             ),
             _FolderTile(
               icon: Icons.cell_tower,
-              title: 'Pinging',
-              subtitle: 'Intervals, smart pinging, modes, filters, radio',
-              builder: (_) => const PingingSettingsPage(),
+              title: 'Wardriving',
+              subtitle: 'Auto-ping, privacy, CARpeater filter, modes, radio',
+              builder: (_) => const WardrivingSettingsPage(),
             ),
             _FolderTile(
               icon: Icons.storage,

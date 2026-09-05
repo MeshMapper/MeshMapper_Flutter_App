@@ -31,7 +31,7 @@ class DeveloperSettingsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
-          SettingsSectionCard(children: [
+          SettingsSectionCard(title: 'Developer Mode', children: [
             SwitchListTile(
               secondary: const Icon(Icons.developer_mode),
               title: const Text('Developer Mode'),
@@ -41,6 +41,8 @@ class DeveloperSettingsPage extends StatelessWidget {
                 appState.setDeveloperMode(value);
               },
             ),
+          ]),
+          SettingsSectionCard(title: 'GPS Simulator', children: [
             SwitchListTile(
               secondary: Icon(
                 Icons.gps_fixed,

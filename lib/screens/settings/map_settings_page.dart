@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart'
-    show kIsWeb, defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -27,7 +26,7 @@ class MapSettingsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
-          SettingsSectionCard(children: [
+          SettingsSectionCard(title: 'Map Tiles', children: [
             if (!kIsWeb)
               ListTile(
                 leading: const Icon(Icons.download_for_offline),
@@ -56,6 +55,8 @@ class MapSettingsPage extends StatelessWidget {
                     .updatePreferences(prefs.copyWith(mapTilesEnabled: !value));
               },
             ),
+          ]),
+          SettingsSectionCard(title: 'Coverage Overlay', children: [
             if (prefs.mapTilesEnabled)
               ListTile(
                 leading: const Icon(Icons.opacity),
@@ -89,6 +90,8 @@ class MapSettingsPage extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _showColorVisionSelector(context, appState),
             ),
+          ]),
+          SettingsSectionCard(title: 'Markers', children: [
             ListTile(
               leading: const Icon(Icons.place),
               title: const Text('Map Marker Style'),
@@ -114,21 +117,6 @@ class MapSettingsPage extends StatelessWidget {
                     .updatePreferences(prefs.copyWith(showTopRepeaters: value));
               },
             ),
-            // Live Activities are iOS-only, so the switch would be inert
-            // anywhere else.
-            if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS)
-              SwitchListTile(
-                secondary: const Icon(Icons.badge),
-                title: const Text('Repeater Names on Live Activity'),
-                subtitle: Text(prefs.liveActivityShowNames
-                    ? 'Named rows on CarPlay and watch'
-                    : 'Compact grid fits more repeaters'),
-                value: prefs.liveActivityShowNames,
-                onChanged: (value) {
-                  appState.updatePreferences(
-                      prefs.copyWith(liveActivityShowNames: value));
-                },
-              ),
           ]),
         ],
       ),

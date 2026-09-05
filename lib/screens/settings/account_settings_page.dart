@@ -25,7 +25,7 @@ class AccountSettingsPage extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
           if (isAutoMode) const AutoPingLockBanner(),
-          SettingsSectionCard(children: [
+          SettingsSectionCard(title: 'Account', children: [
             if (!appState.isPortalLoggedIn)
               ListTile(
                 leading: const Icon(Icons.account_circle_outlined),
@@ -41,6 +41,16 @@ class AccountSettingsPage extends StatelessWidget {
                 title: Text(appState.portalAccount?.displayName ?? 'Signed in'),
                 subtitle: Text('@${appState.portalAccount?.username ?? ''}'),
               ),
+              ListTile(
+                leading: const Icon(Icons.logout, color: Colors.orange),
+                title: const Text('Sign Out'),
+                subtitle: const Text('Keeps your linked devices on the server'),
+                onTap: () => _showPortalSignOutConfirmation(context, appState),
+              ),
+            ],
+          ]),
+          if (appState.isPortalLoggedIn)
+            SettingsSectionCard(title: 'Devices', children: [
               ListTile(
                 leading: Icon(
                   appState.isCurrentDeviceLinked ? Icons.link : Icons.link_off,
@@ -90,14 +100,7 @@ class AccountSettingsPage extends StatelessWidget {
                       'devices'),
                   onTap: () => _resetPortalDeclines(context, appState),
                 ),
-              ListTile(
-                leading: const Icon(Icons.logout, color: Colors.orange),
-                title: const Text('Sign Out'),
-                subtitle: const Text('Keeps your linked devices on the server'),
-                onTap: () => _showPortalSignOutConfirmation(context, appState),
-              ),
-            ],
-          ]),
+            ]),
         ],
       ),
     );
