@@ -186,9 +186,9 @@ class PacketValidator {
   }
 
   /// Check if a hop hex string matches a stored CARpeater ID using prefix truncation.
-  /// The stored ID is always 3-byte (6 hex chars). Incoming hop IDs vary by the
-  /// packet's path hash size (1, 2, or 3 bytes). Compares the shorter prefix.
-  /// Also handles legacy shorter stored IDs from before the 3-byte requirement.
+  /// The stored value is the CARpeater's full public key (64 hex). Incoming
+  /// hop IDs are 2, 4 or 6 hex depending on the packet's path hash size, so
+  /// the comparison runs on the shorter of the two.
   static bool isCarpeaterIdMatch(String hopHex, String storedId) {
     final hop = hopHex.toUpperCase();
     final stored = storedId.toUpperCase();

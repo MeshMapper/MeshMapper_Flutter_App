@@ -1,3 +1,5 @@
+import '../utils/public_key.dart';
+
 /// User preferences for wardriving configuration
 /// Reference: Settings in wardrive.js
 class UserPreferences {
@@ -19,8 +21,9 @@ class UserPreferences {
   /// Ignore carpeater signals (RSSI ≥ -30 dBm)
   final bool ignoreCarpeater;
 
-  /// Repeater ID to ignore (hex string, e.g., "FF")
-  final String? ignoreRepeaterId;
+  /// Full public key (upper-case 64 hex) of the user's own CARpeater, or
+  /// null. Shared with the server on auth while [ignoreCarpeater] is on.
+  final String? carpeaterPublicKey;
 
   /// Power was auto-set based on device model (not manually selected)
   final bool autoPowerSet;
@@ -152,7 +155,7 @@ class UserPreferences {
     this.externalAntennaSet = false,
     this.autoPingInterval = 30,
     this.ignoreCarpeater = false,
-    this.ignoreRepeaterId,
+    this.carpeaterPublicKey,
     this.autoPowerSet = false,
     this.powerLevelSet = false,
     this.offlineMode = false,
@@ -202,7 +205,8 @@ class UserPreferences {
       externalAntennaSet: (json['externalAntennaSet'] as bool?) ?? false,
       autoPingInterval: (json['autoPingInterval'] as int?) ?? 30,
       ignoreCarpeater: (json['ignoreCarpeater'] as bool?) ?? false,
-      ignoreRepeaterId: json['ignoreRepeaterId'] as String?,
+      carpeaterPublicKey:
+          normalizePublicKey(json['carpeaterPublicKey'] as String?),
       autoPowerSet: (json['autoPowerSet'] as bool?) ?? false,
       powerLevelSet: (json['powerLevelSet'] as bool?) ?? false,
       offlineMode: false, // Never persist - always off by default
@@ -256,6 +260,28 @@ class UserPreferences {
     );
   }
 
+  /// JSON key the pre-share versions wrote the 6-hex CARpeater prefix under.
+  static const String legacyCarpeaterJsonKey = 'ignoreRepeaterId';
+
+  /// Strips the old 6-hex CARpeater prefix out of a stored preferences map.
+  ///
+  /// Returns the cleaned map and whether a prefix was actually there. The
+  /// prefix is not kept in any form: the filter needs the full public key
+  /// now, and the switch is turned off with it so an unshared prefix can
+  /// never be reported. A map without the legacy key is returned untouched.
+  static ({Map<String, dynamic> json, bool wiped}) stripLegacyCarpeater(
+      Map<String, dynamic> json) {
+    if (!json.containsKey(legacyCarpeaterJsonKey)) {
+      return (json: json, wiped: false);
+    }
+    final legacy = json[legacyCarpeaterJsonKey];
+    final wiped = legacy is String && legacy.isNotEmpty;
+    final cleaned = Map<String, dynamic>.from(json)
+      ..remove(legacyCarpeaterJsonKey);
+    if (wiped) cleaned['ignoreCarpeater'] = false;
+    return (json: cleaned, wiped: wiped);
+  }
+
   /// Migrate the legacy 'pacman' gps marker id to 'chomper' after the rename.
   static String _migrateGpsMarkerStyle(String? value) {
     if (value == null) return 'arrow';
@@ -272,7 +298,7 @@ class UserPreferences {
       'externalAntennaSet': externalAntennaSet,
       'autoPingInterval': autoPingInterval,
       'ignoreCarpeater': ignoreCarpeater,
-      'ignoreRepeaterId': ignoreRepeaterId,
+      'carpeaterPublicKey': carpeaterPublicKey,
       'autoPowerSet': autoPowerSet,
       'powerLevelSet': powerLevelSet,
       // offlineMode intentionally not persisted - always off on app start
@@ -322,7 +348,8 @@ class UserPreferences {
     bool? externalAntennaSet,
     int? autoPingInterval,
     bool? ignoreCarpeater,
-    String? ignoreRepeaterId,
+    String? carpeaterPublicKey,
+    bool clearCarpeaterPublicKey = false,
     bool? autoPowerSet,
     bool? powerLevelSet,
     bool? offlineMode,
@@ -369,7 +396,9 @@ class UserPreferences {
       externalAntennaSet: externalAntennaSet ?? this.externalAntennaSet,
       autoPingInterval: autoPingInterval ?? this.autoPingInterval,
       ignoreCarpeater: ignoreCarpeater ?? this.ignoreCarpeater,
-      ignoreRepeaterId: ignoreRepeaterId ?? this.ignoreRepeaterId,
+      carpeaterPublicKey: clearCarpeaterPublicKey
+          ? null
+          : (carpeaterPublicKey ?? this.carpeaterPublicKey),
       autoPowerSet: autoPowerSet ?? this.autoPowerSet,
       powerLevelSet: powerLevelSet ?? this.powerLevelSet,
       offlineMode: offlineMode ?? this.offlineMode,
@@ -455,7 +484,7 @@ class UserPreferences {
         other.externalAntennaSet == externalAntennaSet &&
         other.autoPingInterval == autoPingInterval &&
         other.ignoreCarpeater == ignoreCarpeater &&
-        other.ignoreRepeaterId == ignoreRepeaterId &&
+        other.carpeaterPublicKey == carpeaterPublicKey &&
         other.autoPowerSet == autoPowerSet &&
         other.offlineMode == offlineMode &&
         other.iataCode == iataCode &&
@@ -503,7 +532,7 @@ class UserPreferences {
       externalAntennaSet,
       autoPingInterval,
       ignoreCarpeater,
-      ignoreRepeaterId,
+      carpeaterPublicKey,
       autoPowerSet,
       offlineMode,
       iataCode,

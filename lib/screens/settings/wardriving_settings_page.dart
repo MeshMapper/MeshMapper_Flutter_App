@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../../models/connection_state.dart';
 import '../../models/user_preferences.dart';
 import '../../providers/app_state_provider.dart';
+import '../../utils/debug_logger_io.dart';
+import '../../utils/public_key.dart';
 import '../../widgets/app_toast.dart';
 import 'settings_section_card.dart';
 
@@ -136,15 +138,15 @@ class WardrivingSettingsPage extends StatelessWidget {
               secondary: const Icon(Icons.filter_alt),
               title: const Text('CARpeater Filter'),
               subtitle: Text(
-                  prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
-                      ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
-                      : 'Tap to set CARpeater repeater ID'),
+                  prefs.ignoreCarpeater && prefs.carpeaterPublicKey != null
+                      ? 'Pass-through: ${prefs.carpeaterPublicKey!.substring(0, 8)}'
+                      : 'Tap to set your CARpeater'),
               value: prefs.ignoreCarpeater,
               onChanged: isAutoMode
                   ? null
                   : (value) {
-                      if (value && prefs.ignoreRepeaterId == null) {
-                        _showRepeaterIdDialog(context, appState);
+                      if (value && prefs.carpeaterPublicKey == null) {
+                        _showCarpeaterKeyDialog(context, appState);
                       } else {
                         appState.updatePreferences(
                             prefs.copyWith(ignoreCarpeater: value));
@@ -154,15 +156,15 @@ class WardrivingSettingsPage extends StatelessWidget {
             if (prefs.ignoreCarpeater)
               ListTile(
                 leading: const SizedBox(width: 24),
-                title: const Text('CARpeater ID'),
-                subtitle: Text(prefs.ignoreRepeaterId != null
-                    ? '0x${prefs.ignoreRepeaterId}'
+                title: const Text('My CARpeater'),
+                subtitle: Text(prefs.carpeaterPublicKey != null
+                    ? prefs.carpeaterPublicKey!.substring(0, 8)
                     : 'Not set'),
                 trailing: const Icon(Icons.chevron_right),
                 enabled: !isAutoMode,
                 onTap: isAutoMode
                     ? null
-                    : () => _showRepeaterIdDialog(context, appState),
+                    : () => _showCarpeaterKeyDialog(context, appState),
               ),
             SwitchListTile(
               secondary: const Icon(Icons.shield_outlined),
@@ -960,36 +962,33 @@ class WardrivingSettingsPage extends StatelessWidget {
     );
   }
 
-  void _showRepeaterIdDialog(BuildContext context, AppStateProvider appState) {
-    const maxHexChars = 6;
-    const hintText = 'FFFFFF';
-
+  void _showCarpeaterKeyDialog(BuildContext context, AppStateProvider appState) {
     final controller = TextEditingController(
-      text: appState.preferences.ignoreRepeaterId ?? '',
+      text: appState.preferences.carpeaterPublicKey ?? '',
     );
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('CARpeater Repeater ID'),
+        title: const Text('My CARpeater'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Enter the full 3-byte repeater ID (6 hex digits):'),
+            const Text('Enter the full public key of your CARpeater:'),
             const SizedBox(height: 16),
             TextField(
               controller: controller,
               decoration: const InputDecoration(
-                labelText: 'CARpeater ID',
-                hintText: hintText,
-                prefixText: '0x',
+                labelText: 'Public key',
+                hintText: '64 hex characters',
                 border: OutlineInputBorder(),
               ),
-              maxLength: maxHexChars,
+              maxLength: 64,
+              maxLines: 2,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
               textCapitalization: TextCapitalization.characters,
               onChanged: (value) {
-                // Keep only valid hex characters
                 final filtered =
                     value.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
                 if (filtered != value) {
@@ -1002,13 +1001,10 @@ class WardrivingSettingsPage extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Enter all 6 hex digits of your CARpeater\'s ID. '
-              'The app will automatically truncate to match your region\'s hop byte size (1, 2, or 3 bytes). '
-              'Multi-hop packets through your CARpeater will be stripped to report the underlying repeater.',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[600],
-              ),
+              'The key is shared with MeshMapper so every wardriver in your '
+              'region filters it too. Packets through your own CARpeater are '
+              'stripped to credit the repeater behind it.',
+              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
             ),
           ],
         ),
@@ -1019,25 +1015,28 @@ class WardrivingSettingsPage extends StatelessWidget {
           ),
           TextButton(
             onPressed: () {
-              final value = controller.text.trim().toUpperCase();
-              final isValidHex = value.isEmpty ||
-                  (value.length == maxHexChars &&
-                      RegExp(r'^[0-9A-F]+$').hasMatch(value));
-
-              if (isValidHex) {
-                // Enable ignoreCarpeater when setting a repeater ID
-                // Store in uppercase for consistency
-                appState.updatePreferences(
-                  appState.preferences.copyWith(
-                    ignoreRepeaterId: value.isEmpty ? null : value,
-                    ignoreCarpeater: value.isNotEmpty, // Enable if ID is set
-                  ),
-                );
+              final text = controller.text.trim();
+              if (text.isEmpty) {
+                appState.updatePreferences(appState.preferences.copyWith(
+                  clearCarpeaterPublicKey: true,
+                  ignoreCarpeater: false,
+                ));
+                debugLog('[SETTINGS] CARpeater key cleared');
                 Navigator.pop(context);
-              } else {
-                AppToast.warning(
-                    context, 'Please enter exactly 6 hex digits (3-byte ID).');
+                return;
               }
+              final key = normalizePublicKey(text);
+              if (key == null) {
+                AppToast.warning(
+                    context, 'Enter the full 64-character public key.');
+                return;
+              }
+              appState.updatePreferences(appState.preferences.copyWith(
+                carpeaterPublicKey: key,
+                ignoreCarpeater: true,
+              ));
+              debugLog('[SETTINGS] CARpeater key set: ${key.substring(0, 8)}');
+              Navigator.pop(context);
             },
             child: const Text('Save'),
           ),

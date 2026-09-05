@@ -4554,9 +4554,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       traceHopBytes: _traceHopBytes,
       shouldIgnoreRepeater: (String repeaterId) {
         final prefs = _preferences;
-        if (prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null) {
+        if (prefs.ignoreCarpeater && prefs.carpeaterPublicKey != null) {
           return PacketValidator.isCarpeaterIdMatch(
-              repeaterId, prefs.ignoreRepeaterId!);
+              repeaterId, prefs.carpeaterPublicKey!);
         }
         return false;
       },
@@ -5121,7 +5121,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Set CARpeater prefix for pass-through (replaces shouldIgnoreRepeater)
     _txTracker!.carpeaterPrefix =
-        _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
+        _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null;
     debugLog(
         '[APP] TxTracker.carpeaterPrefix set to ${_txTracker!.carpeaterPrefix ?? 'null'}');
 
@@ -5137,7 +5137,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxLogger = RxLogger(
       // CARpeater prefix for pass-through (replaces shouldIgnoreRepeater)
       carpeaterPrefix:
-          _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null,
+          _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null,
       // Immediate observation callback - fires when packet is first validated
       // Creates pin IMMEDIATELY for NEW repeaters (first time in current batch)
       onObservation: (observation) {
@@ -7782,6 +7782,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Propagate CARpeater prefix to live trackers
     _syncCarpeaterPrefix();
 
+    // A full key set by hand or from the picker answers the re-entry prompt.
+    if (_preferences.carpeaterPublicKey != null && _carpeaterReentryPending) {
+      unawaited(dismissCarpeaterReentry());
+    }
+
     // Propagate min ping distance to GpsService and PingService
     _gpsService
         .setMinPingDistance(preferences.minPingDistanceMeters.toDouble());
@@ -7836,7 +7841,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Propagate carpeaterPrefix to live TxTracker and RxLogger
   void _syncCarpeaterPrefix() {
     final prefix =
-        _preferences.ignoreCarpeater ? _preferences.ignoreRepeaterId : null;
+        _preferences.ignoreCarpeater ? _preferences.carpeaterPublicKey : null;
     if (_txTracker != null) {
       _txTracker!.carpeaterPrefix = prefix;
       debugLog('[APP] Synced TxTracker.carpeaterPrefix = ${prefix ?? 'null'}');
@@ -9683,6 +9688,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const String _rememberedDeviceBoxName = 'remembered_device';
   static const String _preferencesBoxName = 'user_preferences';
 
+  /// Set when the pre-share 6-hex CARpeater prefix was wiped at load. Cleared
+  /// when the user sets a full key or says they have no CARpeater. Persisted
+  /// under [_carpeaterReentryKey] so the prompt survives a restart.
+  static const String _carpeaterReentryKey = 'carpeater_reentry_pending';
+  bool _carpeaterReentryPending = false;
+
+  /// True while the user still owes a full CARpeater key after the update.
+  bool get carpeaterReentryPending => _carpeaterReentryPending;
+
+  /// The user set a key, or said they have no CARpeater. Forget the prompt.
+  Future<void> dismissCarpeaterReentry() async {
+    if (!_carpeaterReentryPending) return;
+    _carpeaterReentryPending = false;
+    debugLog('[APP] CARpeater re-entry prompt dismissed');
+    notifyListeners();
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      await box.put(_carpeaterReentryKey, false);
+    } catch (e) {
+      debugError('[APP] Failed to persist CARpeater re-entry flag: $e');
+    }
+  }
+
   /// Open Hive box with timeout and automatic recovery from corruption
   Future<Box<dynamic>?> _openBoxSafely(String boxName) async {
     const timeout = Duration(seconds: 5);
@@ -9849,12 +9878,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final json = box.get('preferences');
       if (json != null) {
-        _preferences =
-            UserPreferences.fromJson(Map<String, dynamic>.from(json));
+        // The pre-share 6-hex prefix is wiped, not migrated: the filter needs
+        // the full key now, and the user is asked for it after the next
+        // connect (MainScaffold shows the prompt).
+        final stripped = UserPreferences.stripLegacyCarpeater(
+            Map<String, dynamic>.from(json));
+        _preferences = UserPreferences.fromJson(stripped.json);
+        if (stripped.wiped) {
+          debugLog(
+              '[APP] Legacy CARpeater prefix wiped; the filter needs the full key now');
+          _carpeaterReentryPending = true;
+          await box.put(_carpeaterReentryKey, true);
+          await box.put('preferences', _preferences.toJson());
+        } else {
+          _carpeaterReentryPending = box.get(_carpeaterReentryKey) == true;
+        }
         debugLog(
             '[APP] Loaded preferences: interval=${_preferences.autoPingInterval}s, '
             'ignoreCarpeater=${_preferences.ignoreCarpeater}, '
-            'ignoreRepeaterId=${_preferences.ignoreRepeaterId}');
+            'carpeaterKey=${_pkPrefix(_preferences.carpeaterPublicKey)}');
 
         // Apply saved min ping distance to GpsService and PingService
         _gpsService
