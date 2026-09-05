@@ -63,6 +63,7 @@ import '../services/watch/watch_bridge_service.dart';
 import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
+import '../services/recent_coverage_service.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
 import '../utils/ping_colors.dart';
@@ -382,6 +383,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool? _userOriginalHybridMode;
   bool? _userOriginalDiscDrop;
   bool? _userOriginalFloodTraffic;
+
+  /// Smart Pinging lookup. Configured from the effective settings by
+  /// [_syncRecentCoverage]; fed positions by the GPS listener and the
+  /// auto-ping hook; asked by PingService through checkRecentCoverage.
+  late final RecentCoverageService _recentCoverage = RecentCoverageService(
+    fetchTile: _apiService.fetchRecentCoverageTile,
+  );
 
   // Debug logs state (non-persistent, always starts false)
   bool _debugLogsEnabled = false;
@@ -1325,6 +1333,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isApiRxOnlyMode => hasApiSession && !txAllowed && rxAllowed;
   bool get enforceHybrid => _apiService.enforceHybrid;
   bool get enforceDiscDrop => _apiService.enforceDiscDrop;
+
+  /// Smart Pinging forced on by the regional admin (auth `smart_ping`).
+  bool get enforceSmartPing => _apiService.enforceSmartPing;
+
+  /// Effective Smart Pinging switch: the admin's veto wins over the user.
+  bool get smartPingEnabled =>
+      _apiService.enforceSmartPing || _preferences.smartPingEnabled;
+
+  /// Effective window in days: the server's when enforced, else the user's.
+  int get smartPingDays => _apiService.enforceSmartPing
+      ? _apiService.apiSmartPingDays
+      : _preferences.smartPingDays;
   bool get discDropEnabled =>
       _preferences.discDropEnabled || _apiService.enforceDiscDrop;
 
@@ -2747,7 +2767,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (
           phase: LiveActivityPhase.skipped,
           title: 'Ping skipped',
-          detail: 'Move at least ${PingService.currentMinDistance} m',
+          detail: _autoPingTimer.skipReason == 'recently covered'
+              ? 'Recently covered, skipped'
+              : 'Move at least ${PingService.currentMinDistance} m',
           endsAt: _autoPingTimer.endTime,
         );
       }
@@ -3264,6 +3286,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _gpsPositionSubscription =
         _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
+      // Smart Pinging: keep the tiles around the phone loaded. Throttled
+      // inside the service (100 m), so this is cheap per tick.
+      unawaited(
+          _recentCoverage.onPosition(position.latitude, position.longitude));
       // Do NOT bump mapRevision here. Position drives the camera/puck/coords
       // directly (MapWidget._onPositionNotify listener + a Selector on the
       // GPS-info overlay) — all real-time — WITHOUT rebuilding the map, which
@@ -4524,6 +4550,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[CONN] Hybrid mode force-enabled by regional admin');
     }
 
+    _syncRecentCoverage();
+
     if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
       _preferences = _preferences.copyWith(discDropEnabled: true);
       debugLog('[CONN] Discovery drop force-enabled by regional admin');
@@ -4660,7 +4688,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     };
 
+    _pingService!.checkRecentCoverage = _recentCoverage.isCovered;
+
     _pingService!.onEchoReceived = (txPing, repeater, isNew) {
+      _recentCoverage.markCovered(txPing.latitude, txPing.longitude);
       debugLog('[APP] ========== ECHO CALLBACK RECEIVED ==========');
       debugLog(
           '[APP] Real-time echo: ${repeater.repeaterId} (SNR: ${repeater.snr ?? 'null'}, isNew: $isNew)');
@@ -4801,6 +4832,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
 
       _updateIdleAutoStop();
+      // Smart Pinging: same reason as the airborne check below, feed the fix
+      // this ping just took so the tiles stay loaded in the background.
+      final fix = _gpsService.lastPosition;
+      if (fix != null) {
+        unawaited(_recentCoverage.onPosition(fix.latitude, fix.longitude));
+      }
       // On iOS the position stream goes quiet in the background; the fresh
       // fix each ping takes is the only sample then, and this hook runs after it.
       _checkAirborne();
@@ -4812,6 +4849,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onDiscNodeDiscovered = (discPing, nodeEntry, isNew) {
+      _recentCoverage.markCovered(discPing.latitude, discPing.longitude);
       debugLog(
           '[APP] Real-time disc node: ${nodeEntry.repeaterId}, isNew=$isNew');
       if (isNew) {
@@ -6226,6 +6264,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _userOriginalHybridMode = null;
     _userOriginalDiscDrop = null;
     _userOriginalFloodTraffic = null;
+    _recentCoverage.clear();
 
     // Clear zone transfer state
     _sessionZoneCode = null;
@@ -7843,6 +7882,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .setMinPingDistance(preferences.minPingDistanceMeters.toDouble());
     PingService.currentMinDistance = preferences.minPingDistanceMeters;
 
+    // Smart Pinging follows the user's switch, window and coverage grid.
+    _syncRecentCoverage();
+
     // Marker-style / GPS-marker prefs can change here — bump the map.
     _notifyMapNow();
     // The Live Activity row layout follows a preference now. Only that flip
@@ -7897,6 +7939,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_rxLogger != null) {
       _rxLogger!.carpeaterPrefix = prefix;
       debugLog('[APP] Synced RxLogger.carpeaterPrefix = ${prefix ?? 'null'}');
+    }
+  }
+
+  /// Push the effective Smart Pinging settings into the lookup. Active only
+  /// with a live session in a known zone and not in Offline Mode (no server
+  /// to ask). Safe to call often: an unchanged configuration keeps the cache.
+  void _syncRecentCoverage() {
+    _recentCoverage.configure(
+      zone: zoneCode,
+      gridSize: _preferences.coverageGridSize,
+      days: smartPingDays,
+      enabled: smartPingEnabled && hasApiSession && !_preferences.offlineMode,
+    );
+    final p = _currentPosition;
+    if (p != null && _recentCoverage.isActive) {
+      unawaited(_recentCoverage.onPosition(p.latitude, p.longitude));
     }
   }
 
@@ -9248,6 +9306,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog(
             '[ZONE] Auto-ping interval bumped to ${_apiService.minModeInterval}s by new zone admin');
       }
+
+      _syncRecentCoverage();
 
       // 16. Reconfigure path hash mode if new zone requires different hop bytes
       await _configurePathHashMode();
