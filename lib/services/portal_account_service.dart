@@ -223,7 +223,8 @@ class PortalOverview {
     );
   }
 
-  static int _int(Object? value) => value is num ? value.toInt() : 0;
+  static int _int(Object? value) =>
+      value is num && value.isFinite ? value.toInt() : 0;
 
   /// Hive cache shape (`portal_overview`), the same keys as the wire.
   Map<String, dynamic> toCache() => {
@@ -427,6 +428,12 @@ class PortalAccountService {
   void hydrateLinkedCompanions(List<LinkedPubkey> companions) {
     _linkedPubkeys = companions
         .where((companion) => companion.pubkey.isNotEmpty)
+        .map((companion) => LinkedPubkey(
+              pubkey: companion.pubkey.toUpperCase(),
+              label: companion.label,
+              name: companion.name,
+              points: companion.points,
+            ))
         .toList(growable: false);
   }
 
@@ -701,11 +708,12 @@ class PortalAccountService {
     onAccountChanged?.call();
     onSignInComplete?.call(true, null);
 
-    // The exchange carries the identity but NOT the pubkeys, so the account
-    // card would sit at "0 device(s) on this account" until the next radio
-    // connect happened to run `me`. Pull the list now so a fresh sign-in shows
-    // the user it worked. Deliberately AFTER the callbacks above: the sign-in
-    // is already a success, and a failed list must not colour it.
+    // The exchange carries the identity but NOT the pubkeys, so the Settings
+    // account page would list no companions and no overview until the next
+    // radio connect happened to run `me`. Pull the list now so a fresh
+    // sign-in shows the user it worked. Deliberately AFTER the callbacks
+    // above: the sign-in is already a success, and a failed list must not
+    // colour it.
     await refreshMe();
   }
 
@@ -882,6 +890,10 @@ class PortalAccountService {
     _lastMeAt = DateTime.now();
 
     final response = await _post('me', const {});
+    if (_token == null) {
+      _log('me: answer arrived after sign-out, dropped');
+      return false;
+    }
     if (_isTokenInvalid(response)) {
       await _forceSignOut('token_invalid');
       return false;
