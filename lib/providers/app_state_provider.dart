@@ -4563,6 +4563,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_carpeaterReentryPending && !_isAutoReconnecting) {
       _carpeaterReentryPromptDue = true;
       debugLog('[APP] CARpeater re-entry prompt due after connect');
+      // The connected step already notified (it is emitted inside connect(),
+      // which is awaited before this runs), and nothing after this line does.
+      // Without this the dialog would wait on an unrelated subsystem.
+      notifyListeners();
     }
 
     if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
