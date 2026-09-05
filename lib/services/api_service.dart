@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
+import 'meshcore/regional_carpeater_filter.dart';
 
 /// Result of a batch upload attempt
 ///
@@ -132,6 +133,14 @@ class ApiService {
   bool _enforceSmartPing = false;
   int _apiSmartPingDays = 14;
 
+  /// The user's own CARpeater key, sent as `carpeater` on connect and
+  /// register auths, never on an offline-mode auth. Null while the CARpeater
+  /// switch is off or no full key is set. Owned by AppStateProvider.
+  String? carpeaterKey;
+
+  List<String> _regionalCarpeaters = const [];
+  String? _lastCarpeaterError;
+
   /// Callback to get current GPS coordinates for heartbeat
   /// Returns (lat, lon) or null if GPS is not available
   ({double lat, double lon})? Function()? _gpsProvider;
@@ -166,6 +175,19 @@ class ApiService {
   /// The Smart Pinging window (days) the server sent; only binding when
   /// [enforceSmartPing] is true. 14 when the field is missing or invalid.
   int get apiSmartPingDays => _apiSmartPingDays;
+
+  /// Every CARpeater key the region shares, replaced in full on every auth.
+  /// Upper-case 64 hex, sorted. Empty when the server sent none or predates
+  /// the feature.
+  List<String> get regionalCarpeaters => List.unmodifiable(_regionalCarpeaters);
+
+  /// `carpeater_error` from the last connect/register answer (`max_reached`
+  /// or `invalid`), or null when the key was accepted or none was sent.
+  String? get lastCarpeaterError => _lastCarpeaterError;
+
+  /// Fired after every connect/register success with the region's list and
+  /// the refusal code, if any. The provider replaces its cache from this.
+  void Function(List<String> keys, String? error)? onRegionalCarpeaters;
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -466,6 +488,12 @@ class ApiService {
         if (iataCode != null) payload['iata'] = iataCode;
         if (model != null) payload['model'] = model;
         if (radioFreq != null) payload['radio_freq'] = radioFreq;
+        // The user's own CARpeater, shared with the region. Never on an
+        // offline-mode auth: that one bypasses the zone gate and would file
+        // the key under the upload zone, not the zone the car drives in.
+        if (carpeaterKey != null && !offlineMode) {
+          payload['carpeater'] = carpeaterKey;
+        }
         payload['coords'] = {
           'lat': lat,
           'lng': lon, // Convert lon → lng for API
@@ -631,6 +659,22 @@ class ApiService {
           // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
           // (not on initial auth, since heartbeat is only for auto mode)
         }
+
+        // Regional CARpeater list: a full replace on every auth, so an entry
+        // an admin deleted (or retention aged out) leaves this phone at the
+        // next auth. Missing on an older server means an empty list. Read
+        // even on a skipSessionStore auth (the offline upload), because the
+        // handoff says every auth replaces it.
+        _regionalCarpeaters =
+            RegionalCarpeaterFilter.sanitize(data['carpeaters']);
+        final carpeaterError = data['carpeater_error'];
+        _lastCarpeaterError =
+            carpeaterError is String && carpeaterError.isNotEmpty
+                ? carpeaterError
+                : null;
+        debugLog('[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
+            '${_lastCarpeaterError != null ? ', carpeater refused: $_lastCarpeaterError' : ''}');
+        onRegionalCarpeaters?.call(_regionalCarpeaters, _lastCarpeaterError);
       } else if (reason == 'disconnect') {
         // Only clear shared session when no explicit sessionId was provided
         // (explicit sessionId means caller manages its own session lifecycle)
