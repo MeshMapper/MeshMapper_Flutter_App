@@ -19,6 +19,8 @@ class AccountSettingsPage extends StatefulWidget {
 }
 
 class _AccountSettingsPageState extends State<AccountSettingsPage> {
+  bool _refreshing = false;
+
   @override
   void initState() {
     super.initState();
@@ -51,9 +53,17 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         actions: [
           if (appState.isPortalLoggedIn)
             IconButton(
-              icon: const Icon(Icons.refresh),
+              icon: _refreshing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh),
               tooltip: 'Refresh',
-              onPressed: () => _refreshPortalAccount(context, appState),
+              onPressed: _refreshing
+                  ? null
+                  : () => _refreshPortalAccount(context, appState),
             ),
         ],
       ),
@@ -219,7 +229,10 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
 
   Future<void> _refreshPortalAccount(
       BuildContext context, AppStateProvider appState) async {
+    setState(() => _refreshing = true);
     final ok = await appState.refreshPortalAccount(force: true);
+    if (!mounted) return;
+    setState(() => _refreshing = false);
     if (!context.mounted) return;
     // A rate-limited refresh makes no request, so the toast below would claim
     // a refresh that never happened, which reads as a dead button and invites
