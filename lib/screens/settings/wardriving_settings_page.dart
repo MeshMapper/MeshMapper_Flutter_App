@@ -7,6 +7,7 @@ import '../../providers/app_state_provider.dart';
 import '../../utils/debug_logger_io.dart';
 import '../../utils/public_key.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/repeater_picker_sheet.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: Wardriving.
@@ -139,7 +140,8 @@ class WardrivingSettingsPage extends StatelessWidget {
               title: const Text('CARpeater Filter'),
               subtitle: Text(
                   prefs.ignoreCarpeater && prefs.carpeaterPublicKey != null
-                      ? 'Pass-through: ${prefs.carpeaterPublicKey!.substring(0, 8)}'
+                      ? 'Pass-through: '
+                          '${_carpeaterLabel(appState, prefs.carpeaterPublicKey!)}'
                       : 'Tap to set your CARpeater'),
               value: prefs.ignoreCarpeater,
               onChanged: isAutoMode
@@ -158,7 +160,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                 leading: const SizedBox(width: 24),
                 title: const Text('My CARpeater'),
                 subtitle: Text(prefs.carpeaterPublicKey != null
-                    ? prefs.carpeaterPublicKey!.substring(0, 8)
+                    ? _carpeaterLabel(appState, prefs.carpeaterPublicKey!)
                     : 'Not set'),
                 trailing: const Icon(Icons.chevron_right),
                 enabled: !isAutoMode,
@@ -166,6 +168,20 @@ class WardrivingSettingsPage extends StatelessWidget {
                     ? null
                     : () => _showCarpeaterKeyDialog(context, appState),
               ),
+            ListTile(
+              leading: const Icon(Icons.groups_outlined),
+              title: const Text('Regional CARpeaters'),
+              subtitle: Text(appState.regionalCarpeaterCount == 0
+                  ? 'None shared for your region yet'
+                  : 'Filtering ${appState.regionalCarpeaterCount} regional '
+                      'CARpeater${appState.regionalCarpeaterCount == 1 ? '' : 's'}'),
+              trailing: appState.regionalCarpeaterCount == 0
+                  ? null
+                  : const Icon(Icons.chevron_right),
+              onTap: appState.regionalCarpeaterCount == 0
+                  ? null
+                  : () => _showRegionalCarpeaters(context, appState),
+            ),
             SwitchListTile(
               secondary: const Icon(Icons.shield_outlined),
               title: const Text('Disable RSSI Filter'),
@@ -962,86 +978,185 @@ class WardrivingSettingsPage extends StatelessWidget {
     );
   }
 
-  void _showCarpeaterKeyDialog(BuildContext context, AppStateProvider appState) {
-    final controller = TextEditingController(
-      text: appState.preferences.carpeaterPublicKey ?? '',
-    );
-
+  /// The region's shared CARpeater list, read-only. The regional admin owns it.
+  void _showRegionalCarpeaters(
+      BuildContext context, AppStateProvider appState) {
+    final own = appState.preferences.carpeaterPublicKey;
+    final keys = appState.regionalCarpeaters;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('My CARpeater'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Enter the full public key of your CARpeater:'),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(
-                labelText: 'Public key',
-                hintText: '64 hex characters',
-                border: OutlineInputBorder(),
+        title: const Text('Regional CARpeaters'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Shared by wardrivers in your region and always filtered, '
+                'even with your own CARpeater filter off. Your regional '
+                'admin manages the list.',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
               ),
-              maxLength: 64,
-              maxLines: 2,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-              textCapitalization: TextCapitalization.characters,
-              onChanged: (value) {
-                final filtered =
-                    value.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
-                if (filtered != value) {
-                  controller.value = controller.value.copyWith(
-                    text: filtered,
-                    selection: TextSelection.collapsed(offset: filtered.length),
-                  );
-                }
-              },
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'The key is shared with MeshMapper so every wardriver in your '
-              'region filters it too. Packets through your own CARpeater are '
-              'stripped to credit the repeater behind it.',
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: keys.length,
+                  itemBuilder: (context, i) {
+                    final key = keys[i];
+                    final name = appState.repeaterNameForKey(key);
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(name ?? 'Unknown repeater'),
+                      subtitle: Text(key.substring(0, 16),
+                          style: const TextStyle(fontFamily: 'monospace')),
+                      trailing: key == own ? const Text('Mine') : null,
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final text = controller.text.trim();
-              if (text.isEmpty) {
-                appState.updatePreferences(appState.preferences.copyWith(
-                  clearCarpeaterPublicKey: true,
-                  ignoreCarpeater: false,
-                ));
-                debugLog('[SETTINGS] CARpeater key cleared');
-                Navigator.pop(context);
-                return;
-              }
-              final key = normalizePublicKey(text);
-              if (key == null) {
-                AppToast.warning(
-                    context, 'Enter the full 64-character public key.');
-                return;
-              }
-              appState.updatePreferences(appState.preferences.copyWith(
-                carpeaterPublicKey: key,
-                ignoreCarpeater: true,
-              ));
-              debugLog('[SETTINGS] CARpeater key set: ${key.substring(0, 8)}');
-              Navigator.pop(context);
-            },
-            child: const Text('Save'),
+            child: const Text('Close'),
           ),
         ],
       ),
     );
   }
+
+  void _showCarpeaterKeyDialog(BuildContext context, AppStateProvider appState) {
+    final controller = TextEditingController(
+      text: appState.preferences.carpeaterPublicKey ?? '',
+    );
+    final hasList = appState.repeaters.isNotEmpty;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('My CARpeater'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              OutlinedButton.icon(
+                icon: const Icon(Icons.search),
+                label: const Text('Choose from repeater list'),
+                onPressed: hasList
+                    ? () async {
+                        final picked = await showRepeaterPicker(context);
+                        if (!context.mounted) return;
+                        if (picked == null) return;
+                        final key = normalizePublicKey(picked.hexId);
+                        if (key == null) {
+                          AppToast.warning(
+                              context,
+                              'That repeater has no full key in the list. '
+                              'Paste it instead.');
+                          return;
+                        }
+                        setState(() => controller.text = key);
+                        debugLog('[SETTINGS] CARpeater picked from list: '
+                            '${key.substring(0, 8)}');
+                      }
+                    : null,
+              ),
+              if (!hasList)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 4),
+                  child: Text(
+                    'Connect once to load the repeater list, or paste the key below.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Public key',
+                  hintText: '64 hex characters',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                textCapitalization: TextCapitalization.characters,
+                onChanged: (value) {
+                  // Drop a pasted '0x' or '!' prefix first. The hex filter
+                  // keeps the '0' of '0x', which would leave a 65-character
+                  // key that never validates.
+                  final stripped =
+                      value.replaceFirst(RegExp(r'^\s*(0[xX]|!)'), '');
+                  final filtered = stripped
+                      .toUpperCase()
+                      .replaceAll(RegExp(r'[^0-9A-F]'), '');
+                  if (filtered != value) {
+                    controller.value = controller.value.copyWith(
+                      text: filtered,
+                      selection:
+                          TextSelection.collapsed(offset: filtered.length),
+                    );
+                  }
+                },
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'The key is shared with MeshMapper so every wardriver in your '
+                'region filters it too. Packets through your own CARpeater are '
+                'stripped to credit the repeater behind it.',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                final text = controller.text.trim();
+                if (text.isEmpty) {
+                  appState.updatePreferences(appState.preferences.copyWith(
+                    clearCarpeaterPublicKey: true,
+                    ignoreCarpeater: false,
+                  ));
+                  debugLog('[SETTINGS] CARpeater key cleared');
+                  Navigator.pop(context);
+                  return;
+                }
+                final key = normalizePublicKey(text);
+                if (key == null) {
+                  AppToast.warning(
+                      context, 'Enter the full 64-character public key.');
+                  return;
+                }
+                appState.updatePreferences(appState.preferences.copyWith(
+                  carpeaterPublicKey: key,
+                  ignoreCarpeater: true,
+                ));
+                debugLog(
+                    '[SETTINGS] CARpeater key set: ${key.substring(0, 8)}');
+                Navigator.pop(context);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Name (ABCD1234)" when the zone list knows the key, else the 8-hex prefix.
+String _carpeaterLabel(AppStateProvider appState, String key) {
+  final name = appState.repeaterNameForKey(key);
+  final short = key.substring(0, 8);
+  return name != null ? '$name ($short)' : short;
 }
