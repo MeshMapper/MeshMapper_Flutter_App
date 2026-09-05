@@ -364,6 +364,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : () => _showDistanceSelector(context, appState),
             ),
             SwitchListTile(
+              secondary: const Icon(Icons.auto_awesome),
+              title: const Text('Smart Pinging'),
+              subtitle: appState.enforceSmartPing
+                  ? const Text(
+                      'Set by Regional Admin. Skips squares that already have recent coverage.',
+                      style: TextStyle(color: Colors.amber),
+                    )
+                  : const Text(
+                      'Skip squares that already have recent coverage'),
+              value: appState.smartPingEnabled,
+              onChanged: (isAutoMode || appState.enforceSmartPing)
+                  ? null
+                  : (value) {
+                      appState.updatePreferences(
+                          prefs.copyWith(smartPingEnabled: value));
+                    },
+            ),
+            if (appState.smartPingEnabled)
+              ListTile(
+                leading: const Icon(Icons.history),
+                title: const Text('Skip squares covered within'),
+                subtitle: Text(appState.enforceSmartPing
+                    ? '${appState.smartPingDays} days (set by Regional Admin)'
+                    : _smartPingDaysLabel(prefs.smartPingDays)),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !isAutoMode && !appState.enforceSmartPing,
+                onTap: (isAutoMode || appState.enforceSmartPing)
+                    ? null
+                    : () => _showSmartPingDaysSelector(context, appState),
+              ),
+            SwitchListTile(
               secondary: const Icon(Icons.timer_off),
               title: const Text('Auto-Stop After Idle'),
               subtitle:
@@ -2181,6 +2212,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }
             },
             child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _smartPingDaysLabel(int days) => days == 1 ? '1 day' : '$days days';
+
+  void _showSmartPingDaysSelector(
+      BuildContext context, AppStateProvider appState) {
+    final current = appState.preferences.smartPingDays;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Skip squares covered within'),
+        content: RadioGroup<int>(
+          groupValue: current,
+          onChanged: (value) {
+            if (value != null) {
+              appState.updatePreferences(
+                appState.preferences.copyWith(smartPingDays: value),
+              );
+              Navigator.pop(context);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: SmartPingDays.values
+                .map((days) => RadioListTile<int>(
+                      title: Text(
+                        _smartPingDaysLabel(days),
+                        style: const TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.bold),
+                      ),
+                      value: days,
+                    ))
+                .toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
           ),
         ],
       ),
