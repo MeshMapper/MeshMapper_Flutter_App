@@ -456,7 +456,7 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   WebView would see the user's password) and the portal deep-links back
   `meshmapper-auth://callback?code=…&state=…`. The exchange answers with the
   identity but NOT the linked pubkeys, so it is followed by one `me` call:
-  without it the Settings account card reads "0 device(s) on this account"
+  without it the Settings account page lists no companions and no overview
   until the next radio connect happens to refresh it. That call runs AFTER
   `onSignInComplete`, so a device list that fails never colours the sign-in.
 - **Scheme**: `meshmapper-auth` (host `callback`), registered in
@@ -541,10 +541,27 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   the orphaned server token; `_recordLinkFailure` takes the longer of its own
   30s..8m ladder and the server's value. A 429 is never a sign-out: 401 +
   `token_invalid` stays the only signed-out signal.
+- **Account page overview**: `me` also answers `overview: {points, weekly, grid,
+  awards:[{name, description}]}`, the portal Overview tab's numbers, summed
+  server-side over each companion's primary so a grouped radio counts once. The
+  app never adds up the per-companion points itself. The block is absent on a
+  server that predates it; the app reads that as unknown (`PortalOverview`
+  null) and hides the Overview card rather than show zeros. The Account page
+  lists every linked companion from `portalCompanions` (name, else label, else
+  "Companion"; the key; a points pill above zero), runs the throttled `refreshMe`
+  when opened, and forces one after a successful link so the totals catch up.
+  `AppStateProvider.refreshPortalAccount` returns true only when the portal
+  answered and the cache was replaced, so the app bar refresh says "Account
+  refreshed" on true and "Could not refresh right now" otherwise, with the
+  rate-limit toast still taking precedence. Widgets:
+  `lib/screens/settings/account_overview_widgets.dart`.
 - **Persistence** (Hive `user_preferences`): `portal_account_info`,
-  `portal_linked_pubkeys` (UPPER hex), `portal_link_declined_devices`,
-  `portal_sign_unsupported_devices`. Sign-out clears the first two and keeps the
-  last two — those are device preferences, not account data.
+  `portal_linked_pubkeys` (UPPER hex), `portal_companions` (the same radios with
+  label, name and points), `portal_overview`, `portal_link_declined_devices`,
+  `portal_sign_unsupported_devices`. Sign-out clears the first four and keeps the
+  last two, which are device preferences, not account data. On the first launch
+  after the update only `portal_linked_pubkeys` exists; the load falls back to
+  it and the next `me` fills the rest.
 - **Logging**: everything is `[ACCOUNT]`, routed through a redactor that strips
   any live token / verifier / state / code, and `DebugFileLogger.scrubSecrets()`
   strips credential shapes from every line written to a log FILE (debug logging
