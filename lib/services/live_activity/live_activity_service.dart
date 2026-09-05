@@ -47,6 +47,10 @@ class LiveActivityService {
       onQueueError: (error) {
         debugError('[LIVE ACTIVITY] Update queue failed: $error');
       },
+      onHeld: (remaining) {
+        debugLog('[LIVE ACTIVITY] Update held ${_seconds(remaining)}s '
+            'behind the non-urgent floor');
+      },
     );
   }
 
@@ -95,6 +99,7 @@ class LiveActivityService {
   DateTime? _unavailableRetryAt;
   String? _createdLoggedSessionId;
   String? _dismissalLoggedSessionId;
+  DateTime? _lastPublishLoggedAt;
   bool _disposed = false;
 
   /// Set once native reports a condition that cannot change while this process
@@ -161,6 +166,7 @@ class LiveActivityService {
         );
       }
       _logSyncOutcome(result, snapshot.sessionId);
+      _logPublish(publication);
       _unavailableSessionId = null;
       _unavailableRetryAt = null;
       return const ExternalSurfacePublishResult.published();
@@ -201,6 +207,48 @@ class LiveActivityService {
   String _shortSessionId(String sessionId) =>
       sessionId.length <= 8 ? sessionId : sessionId.substring(0, 8);
 
+  /// One line per update that reached ActivityKit, so a submitted log can say
+  /// what the card was told and when. A CarPlay tile that holds old rows while
+  /// these lines show newer ones went stale on the dashboard, not in the app;
+  /// before this line existed the two were indistinguishable.
+  void _logPublish(
+    ExternalSurfacePublication<LiveActivitySnapshot, Map<String, Object?>>
+        publication,
+  ) {
+    final now = DateTime.now();
+    final last = _lastPublishLoggedAt;
+    _lastPublishLoggedAt = now;
+    debugLog('[LIVE ACTIVITY] ${describePublish(
+      publication.snapshot,
+      urgent: publication.urgent,
+      sinceLast: last == null ? null : now.difference(last),
+    )}');
+  }
+
+  /// The published line's text: phase, whether it bypassed the floor, the
+  /// rows as `id:snr`, the current flag, the noise floor and the gap since the
+  /// previous publish (absent on the first).
+  @visibleForTesting
+  static String describePublish(
+    LiveActivitySnapshot snapshot, {
+    required bool urgent,
+    required Duration? sinceLast,
+  }) {
+    final rows = snapshot.repeaters.isEmpty
+        ? 'none'
+        : snapshot.repeaters
+            .map((row) => '${row.id}:${row.snr.toStringAsFixed(1)}')
+            .join(',');
+    final gap = sinceLast == null ? '' : ' +${_seconds(sinceLast)}s';
+    return 'Published ${snapshot.phase.wireValue}'
+        '${urgent ? ' (urgent)' : ''} rows=$rows '
+        'current=${snapshot.repeatersAreCurrent} '
+        'noise=${snapshot.noiseFloorDbm ?? '?'}$gap';
+  }
+
+  static String _seconds(Duration duration) =>
+      (duration.inMilliseconds / 1000).toStringAsFixed(1);
+
   /// Stop asking, permanently. Nothing about the condition can change without
   /// the app being relaunched, at which point this starts out false again.
   void _stopForUnsupportedHost(String reason) {
@@ -230,6 +278,7 @@ class LiveActivityService {
     } finally {
       _unavailableSessionId = null;
       _unavailableRetryAt = null;
+      _lastPublishLoggedAt = null;
     }
   }
 
