@@ -1190,9 +1190,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Cached portal identity, or null when signed out.
   PortalAccount? get portalAccount => _portalAccount;
 
-  /// How many radios this account owns (from the last `me` refresh).
-  int get portalLinkedDeviceCount => _portalLinkedPubkeys.length;
-
   /// Every companion linked to the account, for the Account page's list.
   List<LinkedPubkey> get portalCompanions =>
       List.unmodifiable(_portalCompanions);
@@ -10263,6 +10260,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (pubkey == null) return false;
     final ok = await _portalAccountService.unlinkDevice(pubkey);
     if (ok) {
+      // Belt and braces: the service already mirrored both lists through
+      // onAccountChanged before returning, so these normally find nothing.
       _portalLinkedPubkeys.remove(pubkey);
       _portalCompanions.removeWhere((entry) => entry.pubkey == pubkey);
       await _savePortalAccountState();

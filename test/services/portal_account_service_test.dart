@@ -818,7 +818,7 @@ void main() {
       final service =
           buildService(recordingClient((_) => http.Response('{}', 500)));
       service.hydrateLinkedCompanions([
-        LinkedPubkey(pubkey: 'A' * 64, label: 'L', name: 'N', points: 3),
+        LinkedPubkey(pubkey: 'a' * 64, label: 'L', name: 'N', points: 3),
         const LinkedPubkey(pubkey: '', label: '', name: '', points: 0),
       ]);
       expect(service.linkedPubkeys.single.pubkey, 'A' * 64);
@@ -1189,6 +1189,15 @@ void main() {
       expect(overview.weekly, 0);
       expect(overview.grid, 0);
       expect(overview.awards, isEmpty);
+    });
+
+    test('a non-finite number reads as zero instead of throwing', () {
+      final overview = PortalOverview.fromJson({
+        'points': double.infinity,
+        'grid': double.nan,
+      });
+      expect(overview!.points, 0);
+      expect(overview.grid, 0);
     });
 
     test('survives a cache round trip', () {
