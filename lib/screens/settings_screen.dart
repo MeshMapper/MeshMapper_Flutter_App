@@ -1033,8 +1033,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: Slider(
                     value: appState.gpsSimulatorSpeed,
                     min: 10,
-                    max: 120,
-                    divisions: 11,
+                    max: 300,
+                    divisions: 29,
                     label: formatSpeed(appState.gpsSimulatorSpeed,
                         isImperial: prefs.isImperial),
                     onChanged: (value) {
@@ -1043,6 +1043,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   trailing: Text(
                     formatSpeed(appState.gpsSimulatorSpeed,
+                        isImperial: prefs.isImperial),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                ListTile(
+                  leading: const SizedBox(width: 24),
+                  title: const Text('Simulation Altitude'),
+                  subtitle: Slider(
+                    value: appState.gpsSimulatorAltitude,
+                    min: 0,
+                    max: 12000,
+                    divisions: 12,
+                    label: formatMeters(appState.gpsSimulatorAltitude,
+                        isImperial: prefs.isImperial),
+                    onChanged: (value) {
+                      appState.setGpsSimulatorAltitude(value);
+                    },
+                  ),
+                  trailing: Text(
+                    formatMeters(appState.gpsSimulatorAltitude,
                         isImperial: prefs.isImperial),
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),

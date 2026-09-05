@@ -38,6 +38,7 @@ Every ping object contains a `type` field that determines which additional field
 | `timestamp` | `integer` | Unix timestamp in seconds |
 | `external_antenna` | `boolean` | Whether an external antenna is connected to the device |
 | `noisefloor` | `integer\|null` | Ambient noise floor in dBm (e.g., -103). Null if unavailable. |
+| `altitude` | `integer\|absent` | Altitude of the fix in whole meters (e.g., `123`). Absent when the phone did not know its altitude. iOS reports height above mean sea level. Android usually reports height above the WGS84 ellipsoid, but Android 14 and later substitutes mean sea level when the fix carries it, so one device can report either. The two references can differ by up to about 100 m. |
 | `power` | `string\|null` | Radio TX power formatted as `"X.Xw"` (e.g., `"0.3w"`, `"1.0w"`, `"2.0w"`). Null if unavailable. |
 | `contact` | `string\|absent` | First 8 hex chars of the wardriver's MeshCore device public key (e.g., `"D873B1F2"`). Only present when the user enables "Include Contact Key" in settings. Useful for cross-referencing with MQTT observer data. |
 | `iata` | `string\|absent` | MeshMapper zone code (e.g., `"RDU"`, `"MSP"`, `"YOW"`). Present when the wardriver is in a zone. |
@@ -58,6 +59,7 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "lat": 45.26974,
   "lon": -75.77746,
   "noisefloor": -103,
+  "altitude": 84,
   "heard_repeats": "4e(12.25),77(8.50)",
   "timestamp": 1768762843,
   "external_antenna": false,
@@ -75,6 +77,7 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "lat": 45.27001,
   "lon": -75.77802,
   "noisefloor": -101,
+  "altitude": 86,
   "heard_repeats": "None",
   "timestamp": 1768762873,
   "external_antenna": false,

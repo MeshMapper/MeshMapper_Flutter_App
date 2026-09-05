@@ -22,6 +22,7 @@ import '../models/log_entry.dart';
 import '../models/remembered_device.dart';
 import '../models/repeater.dart';
 import '../models/user_preferences.dart';
+import '../services/airborne_release.dart';
 import '../services/api_queue_service.dart';
 import '../utils/mvt_cells.dart';
 import '../services/api_service.dart';
@@ -2303,6 +2304,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       isConnecting: _isConnecting || _isAutoReconnecting,
       canReconnectWithoutUserInput:
           remembered?.transportType != TransportType.usbSerial,
+      isAirborne: _gpsService.isAirborne,
     );
 
     if (!admission.shouldExecute) {
@@ -2410,6 +2412,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         PingValidation.manualCooldownActive =>
           ExternalCommandReason.waitFifteenSeconds,
         PingValidation.txNotAllowed => ExternalCommandReason.zoneAtCapacity,
+        PingValidation.airborne => ExternalCommandReason.airborne,
         PingValidation.valid ||
         PingValidation.outsideGeofence ||
         PingValidation.tooCloseToLastPing =>
@@ -3245,6 +3248,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _gpsStatus = _gpsService.status; // Sync initial status
     debugLog('[INIT] Initial GPS status: $_gpsStatus');
 
+    // Airborne latch flips. Offline Mode is the one path that could carry
+    // in-flight rows to the server (the online queue is dropped by the session
+    // end), so the offline recording pauses for as long as the latch is set;
+    // the Connection screen's "Airborne" state refreshes on the same flip.
+    _gpsService.onAirborneChanged = (airborne) {
+      if (_isDisposed) return;
+      _apiQueueService.setOfflineRecordingPaused(airborne);
+      notifyListeners();
+    };
+
     debugLog('[INIT] Setting up GPS position listener...');
     await _gpsPositionSubscription?.cancel();
     _gpsPositionSubscription =
@@ -3265,6 +3278,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Save last position for next app launch (already throttled to 30s)
       _saveLastPosition(position.latitude, position.longitude);
 
+      // Airborne block: end the session and skip the rest of this tick so it
+      // cannot fall into a zone check or an RX distance flush on the way out.
+      if (await _checkAirborne()) return;
+
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
       if (_inZone == null && !_preferences.offlineMode) {
@@ -3281,8 +3298,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Check zone every 100m movement (while disconnected)
       // This allows users to know if they've entered/exited a zone while moving
       // Skip zone checks when offline mode is enabled
+      // Not while airborne: at cruise every fix is 100 m from the last, and
+      // this branch would ask the server about zones once a second for hours.
       if (!isConnected &&
           !_preferences.offlineMode &&
+          !_gpsService.isAirborne &&
           _shouldRecheckZone(position)) {
         // Throttle log to once per 30s to avoid spam while driving
         final now = DateTime.now();
@@ -3871,6 +3891,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Connection already in progress, ignoring duplicate tap');
       return;
     }
+    if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     final myGeneration = ++_connectGeneration;
     _connectionStep = ConnectionStep.transportConnecting;
@@ -4057,6 +4078,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Connection already in progress, ignoring duplicate tap');
       return;
     }
+    if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
     _connectionStep = ConnectionStep.transportConnecting;
@@ -4174,6 +4196,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Connection already in progress, ignoring duplicate tap');
       return;
     }
+    if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
     _connectionStep = ConnectionStep.transportConnecting;
@@ -4311,6 +4334,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[APP] Connection already in progress, ignoring duplicate tap');
       return;
     }
+    if (_refuseConnectIfAirborne()) return;
     _isConnecting = true;
     _connectGeneration++; // invalidate any pending BLE workflow re-run
     _connectionStep = ConnectionStep.transportConnecting;
@@ -4776,6 +4800,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _autoPingTimer.startWithSkipReason(intervalMs, skipReason);
 
       _updateIdleAutoStop();
+      // On iOS the position stream goes quiet in the background; the fresh
+      // fix each ping takes is the only sample then, and this hook runs after it.
+      _checkAirborne();
     };
 
     _pingService!.onDiscPing = (entry) {
@@ -5339,6 +5366,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             externalAntenna: _preferences.externalAntenna,
             noiseFloor: _meshCoreConnection?.lastNoiseFloor,
             power: _preferences.powerLevel,
+            altitude: entry.alt,
           );
 
           // Update UI (throttled — dense mesh RX must not churn the map)
@@ -5352,7 +5380,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       getGpsLocation: () {
         final pos = _gpsService.lastPosition;
         if (pos == null) return null;
-        return (lat: pos.latitude, lon: pos.longitude);
+        return (
+          lat: pos.latitude,
+          lon: pos.longitude,
+          alt: GpsService.altitudeOrNull(pos),
+        );
       },
 
       // Log carpeater drops to error log (without navigating to error tab)
@@ -5583,9 +5615,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// one belonging to the current failure.
   Future<void>? _fullCleanupInFlight;
 
-  Future<void> _fullDisconnectCleanup() {
+  Future<void> _fullDisconnectCleanup({
+    Map<String, dynamic>? releaseExtras,
+    bool flushQueue = true,
+  }) {
     late final Future<void> cleanup;
-    cleanup = _fullDisconnectCleanupImpl().whenComplete(() {
+    cleanup = _fullDisconnectCleanupImpl(
+      releaseExtras: releaseExtras,
+      flushQueue: flushQueue,
+    ).whenComplete(() {
       if (identical(_fullCleanupInFlight, cleanup)) {
         _fullCleanupInFlight = null;
       }
@@ -5594,7 +5632,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return cleanup;
   }
 
-  Future<void> _fullDisconnectCleanupImpl() async {
+  Future<void> _fullDisconnectCleanupImpl({
+    Map<String, dynamic>? releaseExtras,
+    bool flushQueue = true,
+  }) async {
     _finishLiveActivitySession();
     // Guard against double cleanup (e.g., reconnect timeout + BLE disconnect event)
     if (_connectionStep == ConnectionStep.disconnected) {
@@ -5637,13 +5678,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxLogger?.stopWardriving(trigger: 'ble_disconnect');
 
     // Force upload any pending items BEFORE releasing session
-    if (_apiService.hasSession) {
+    if (flushQueue && _apiService.hasSession) {
       debugLog('[CONN] Flushing API queue before session release');
       try {
         await _apiQueueService.forceUploadWithHoldWait();
       } catch (e) {
         debugError('[CONN] Failed to flush API queue: $e');
       }
+    } else if (_apiService.hasSession) {
+      debugLog('[CONN] Dropping the preserved API queue without a flush');
     }
 
     // Clear any remaining items and stop batch timer
@@ -5656,6 +5699,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         await _apiService.requestAuth(
           reason: 'disconnect',
           publicKey: _devicePublicKey!,
+          extras: releaseExtras,
         );
         debugLog('[CONN] API session released successfully');
       } catch (e) {
@@ -5743,6 +5787,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     notifyListeners();
 
+    // Airborne block: never retry into a flight. This sits below the prep so
+    // the abandonment sees the same state as a timeout or max-attempts one
+    // (foreground service stopped, RX-side objects disposed); at the top of
+    // the method _fullDisconnectCleanup would have left both behind.
+    if (_gpsService.isAirborne) {
+      debugLog('[CONN] Not auto-reconnecting: GPS says aircraft');
+      _abandonAutoReconnectForAirborne();
+      return;
+    }
+
     // Start overall timeout (30 seconds)
     _reconnectTimeoutTimer = Timer(const Duration(seconds: 30), () {
       debugLog('[CONN] Auto-reconnect timed out after 30s');
@@ -5775,6 +5829,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Delay before attempting reconnection
     _reconnectTimer = Timer(delay, () async {
       if (!_isAutoReconnecting) return; // Cancelled while waiting
+      if (_gpsService.isAirborne) {
+        debugLog('[CONN] Auto-reconnect abandoned: GPS says aircraft');
+        _abandonAutoReconnectForAirborne();
+        return;
+      }
 
       try {
         debugLog(
@@ -5924,8 +5983,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _abandonAutoReconnect();
   }
 
-  /// Abandon auto-reconnect and do full cleanup
-  void _abandonAutoReconnect() {
+  /// Abandon auto-reconnect and do full cleanup. [releaseExtras] rides on the
+  /// session release; [flushQueue] false drops the preserved queue instead of
+  /// uploading it first.
+  void _abandonAutoReconnect({
+    Map<String, dynamic>? releaseExtras,
+    bool flushQueue = true,
+  }) {
     // Cancel timers
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
@@ -5955,12 +6019,29 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _originalDeviceName = null;
 
     // Do full disconnect cleanup (releases API session, etc.)
-    _fullDisconnectCleanup();
+    _fullDisconnectCleanup(releaseExtras: releaseExtras, flushQueue: flushQueue);
     notifyListeners();
   }
 
+  /// Abandon a reconnect because the phone is in an aircraft: the same alert,
+  /// error-log entry and release telemetry as _endSessionForAirborne, and the
+  /// preserved queue is dropped rather than flushed, as disconnect() does.
+  void _abandonAutoReconnectForAirborne() {
+    final info = _airborneReleaseInfo();
+    debugError(
+        '[GPS] Airborne detected (${info.detail}), abandoning auto-reconnect');
+    // _abandonAutoReconnect only alerts when auto-ping was running.
+    if (!_autoPingWasEnabled) _playDisconnectAlert();
+    logError(
+        'Session ended: wardriving from an aircraft is not allowed\n${info.detail}');
+    _abandonAutoReconnect(releaseExtras: info.extras, flushQueue: false);
+  }
+
   /// Disconnect from current device
-  Future<void> disconnect() async {
+  Future<void> disconnect({
+    bool closeApp = true,
+    Map<String, dynamic>? releaseExtras,
+  }) async {
     _finishLiveActivitySession();
     // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
     _userRequestedDisconnect = true;
@@ -6033,6 +6114,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         await _apiService.requestAuth(
           reason: 'disconnect',
           publicKey: _devicePublicKey!,
+          extras: releaseExtras,
         );
         debugLog('[APP] API session released successfully');
       } catch (e) {
@@ -6158,8 +6240,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     notifyListeners();
 
-    // Auto-exit app if preference is enabled (Android only)
-    if (_preferences.closeAppAfterDisconnect && Platform.isAndroid) {
+    // Auto-exit app if preference is enabled (Android only). The airborne
+    // block passes closeApp: false so its explanation stays on screen.
+    if (closeApp && _preferences.closeAppAfterDisconnect && Platform.isAndroid) {
       debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
       // Small delay to ensure cleanup completes
       Future.delayed(const Duration(milliseconds: 500), () {
@@ -6374,6 +6457,85 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         severity: ErrorSeverity.warning, autoSwitch: false);
     _resetIdleAutoStop();
     toggleAutoPing(_autoMode);
+  }
+
+  bool _airborneEndInFlight = false;
+
+  /// Whether the GPS service currently holds the airborne latch.
+  bool get isAirborne => _gpsService.isAirborne;
+
+  /// Airborne block, level-triggered: end the session whenever the GPS says
+  /// aircraft while a session is live. Level rather than edge so a connect
+  /// that started before the latch is caught on the first fix after it
+  /// completes. Returns true when it ended a session.
+  Future<bool> _checkAirborne() async {
+    if (!_gpsService.isAirborne || !isConnected || _airborneEndInFlight) {
+      return false;
+    }
+    // The step flips to connected from the workflow's step callback while
+    // _postConnectionSetup is still running against the live link; a
+    // disconnect inside that window nulls objects the setup is about to use.
+    // The next fix, a second later, catches it.
+    if (_isConnecting) return false;
+    // A zone transfer re-acquires a session after its awaits with no
+    // cancellation check, so a disconnect underneath it would be undone.
+    // Transfers finish in seconds and the next fix re-fires this.
+    if (_isZoneTransferInProgress) {
+      debugLog(
+          '[GPS] Airborne, deferring the session end until the zone transfer completes');
+      return false;
+    }
+    await _endSessionForAirborne();
+    return true;
+  }
+
+  /// End the session because the phone is in an aircraft. Same shape as
+  /// _triggerIdleAutoStop, but goes all the way to disconnect().
+  Future<void> _endSessionForAirborne() async {
+    // Before the first await: GPS ticks overlap and disconnect() is not
+    // re-entrant. Cleared in finally because disconnect() can throw mid-way.
+    _airborneEndInFlight = true;
+    try {
+      final info = _airborneReleaseInfo();
+      debugError('[GPS] Airborne detected (${info.detail}), ending session');
+      _playDisconnectAlert();
+      logError(
+          'Session ended: wardriving from an aircraft is not allowed\n${info.detail}');
+      // Whatever is still queued is the last 30 s before detection, the part
+      // most likely contaminated: disconnect() drops it. Offline Mode keeps
+      // the whole drive, as it does for any disconnect.
+      await disconnect(closeApp: false, releaseExtras: info.extras);
+    } catch (e) {
+      debugError('[GPS] Airborne session end failed: $e');
+    } finally {
+      _airborneEndInFlight = false;
+    }
+  }
+
+  /// The readings of the fix that set the latch, as user-facing text in the
+  /// user's units and as the telemetry the session release carries. See
+  /// airborneReleaseInfo for the wire contract.
+  ({String detail, Map<String, dynamic> extras}) _airborneReleaseInfo() {
+    final altitude = _gpsService.airborneAltitude;
+    return airborneReleaseInfo(
+      gate: _gpsService.airborneGate ??
+          (altitude != null ? AirborneGate.altitude : AirborneGate.speed),
+      altitudeMeters: altitude,
+      speedMetersPerSecond: _gpsService.airborneSpeed,
+      isImperial: _preferences.isImperial,
+    );
+  }
+
+  /// Airborne block at the front door. True when the connect must not start.
+  ///
+  /// Sets no connectionError on purpose: the Connection screen's Airborne
+  /// panel already explains the refusal, and an error message set here would
+  /// outlive the landing (it is only cleared by the next connect attempt).
+  bool _refuseConnectIfAirborne() {
+    if (!_gpsService.isAirborne) return false;
+    debugWarn('[APP] Connect refused: GPS says aircraft');
+    notifyListeners();
+    return true;
   }
 
   /// Toggle auto-ping mode (Active, Passive, Hybrid, or Trace)
@@ -9413,6 +9575,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Simulator state tracking
   double _gpsSimulatorSpeed = 50.0;
+  double _gpsSimulatorAltitude = 100.0;
   SimulatorPattern _gpsSimulatorPattern = SimulatorPattern.randomWalk;
 
   /// Check if GPS simulator is enabled
@@ -9420,6 +9583,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Get current simulator speed
   double get gpsSimulatorSpeed => _gpsSimulatorSpeed;
+
+  /// Get current simulator altitude (meters)
+  double get gpsSimulatorAltitude => _gpsSimulatorAltitude;
 
   /// Get current simulator pattern
   SimulatorPattern get gpsSimulatorPattern => _gpsSimulatorPattern;
@@ -9429,6 +9595,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[APP] Enabling GPS simulator');
     _gpsService.enableSimulator(
       speed: _gpsSimulatorSpeed,
+      altitude: _gpsSimulatorAltitude,
       pattern: _gpsSimulatorPattern,
     );
     notifyListeners();
@@ -9446,6 +9613,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _gpsSimulatorSpeed = speed;
     if (_gpsService.isSimulatorEnabled) {
       _gpsService.configureSimulator(speed: speed);
+    }
+    notifyListeners();
+  }
+
+  /// Set GPS simulator altitude (meters); lets the airborne block be
+  /// exercised on a desk.
+  void setGpsSimulatorAltitude(double altitude) {
+    _gpsSimulatorAltitude = altitude;
+    if (_gpsService.isSimulatorEnabled) {
+      _gpsService.configureSimulator(altitude: altitude);
     }
     notifyListeners();
   }

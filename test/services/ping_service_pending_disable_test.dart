@@ -42,6 +42,9 @@ class _FakeGps implements GpsService {
   bool isAccuracyAcceptableForPing(Position position) => true;
 
   @override
+  bool get isAirborne => false;
+
+  @override
   bool canPingAtPosition(Position position) => !tooClose;
 
   @override

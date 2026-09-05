@@ -13,15 +13,16 @@ import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/ping_service.dart';
 import 'package:mesh_mapper/services/wakelock_service.dart';
 
-/// #501: only the TX path updated the shared display anchor, so the map's
-/// distance-to-previous-ping readout stayed at the session start in Trace and
-/// Passive modes. Discovery and trace sends must mark the display-only
-/// activity anchor (and must NOT touch the TX skip anchor).
+/// A trace send must take a fresh GPS fix like TX and discovery do. On iOS in
+/// the background the position stream is quiet, so the fresh fix each ping
+/// takes is the only sample that feeds the airborne latch; a trace session
+/// that reads the cached position would never be ended by the block.
 
 class _FakeGps implements GpsService {
   Position? position;
+  Position? fresh;
+  int freshCalls = 0;
   final List<Position> activityMarks = [];
-  final List<Position> pingMarks = [];
 
   @override
   GpsStatus get status => GpsStatus.locked;
@@ -31,8 +32,10 @@ class _FakeGps implements GpsService {
 
   @override
   Future<Position?> getFreshPosition(
-          {Duration timeout = const Duration(seconds: 3)}) =>
-      Future.value(position);
+      {Duration timeout = const Duration(seconds: 3)}) {
+    freshCalls++;
+    return Future.value(fresh ?? position);
+  }
 
   @override
   bool isAccuracyAcceptableForPing(Position position) => true;
@@ -47,7 +50,7 @@ class _FakeGps implements GpsService {
   double get configuredMinDistance => 25.0;
 
   @override
-  void markPingPosition(Position position) => pingMarks.add(position);
+  void markPingPosition(Position position) {}
 
   @override
   void markActivityPosition(Position position) => activityMarks.add(position);
@@ -82,9 +85,6 @@ class _FakeConnection implements MeshCoreConnection {
 
   @override
   Stream<Uint8List> get traceDataStream => const Stream.empty();
-
-  @override
-  Future<Uint8List> sendDiscoveryRequest() => Future.value(Uint8List(4));
 
   @override
   Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes,
@@ -146,36 +146,23 @@ PingService _buildService(_FakeGps gps, _FakeConnection conn) => PingService(
     );
 
 void main() {
-  test('a successful discovery send marks the display anchor', () {
+  test('a trace send takes a fresh fix and traces from it', () {
     fakeAsync((async) {
-      final gps = _FakeGps()..position = _pos(45.0, -75.0);
-      final conn = _FakeConnection();
-      final ping = _buildService(gps, conn);
-
-      ping.enableAutoPing(passiveMode: true);
-      async.flushMicrotasks();
-
-      expect(gps.activityMarks, [gps.position],
-          reason: 'the readout must follow the discovery position');
-      expect(gps.pingMarks, isEmpty,
-          reason: 'a discovery must not move the TX skip anchor');
-      ping.dispose();
-    });
-  });
-
-  test('a successful trace send marks the display anchor', () {
-    fakeAsync((async) {
-      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final cached = _pos(45.0, -75.0);
+      final fresh = _pos(45.1, -75.1);
+      final gps = _FakeGps()
+        ..position = cached
+        ..fresh = fresh;
       final conn = _FakeConnection();
       final ping = _buildService(gps, conn);
 
       ping.enableAutoPing(targetedMode: true, targetRepeaterId: '4e');
       async.flushMicrotasks();
 
-      expect(gps.activityMarks, [gps.position],
-          reason: 'the readout must follow the trace position');
-      expect(gps.pingMarks, isEmpty,
-          reason: 'a trace must not move the TX skip anchor');
+      expect(gps.freshCalls, 1,
+          reason: 'the trace must ask the hardware for a fresh fix');
+      expect(gps.activityMarks, [fresh],
+          reason: 'the trace must be stamped with the fresh fix, not the cache');
       ping.dispose();
     });
   });

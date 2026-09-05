@@ -344,6 +344,12 @@ class PingService {
       return PingValidation.noGpsLock;
     }
 
+    // Airborne block: the provider ends the session, this only closes the
+    // few-second window before the transport is gone.
+    if (_gpsService.isAirborne) {
+      return PingValidation.airborne;
+    }
+
     // Note: GPS freshness check removed - 25m movement check is sufficient
     // If user hasn't moved, old position is still valid
 
@@ -410,6 +416,12 @@ class PingService {
       return PingValidation.noGpsLock;
     }
 
+    // Airborne block: the provider ends the session, this only closes the
+    // few-second window before the transport is gone.
+    if (_gpsService.isAirborne) {
+      return PingValidation.airborne;
+    }
+
     // Check GPS accuracy (< 100m)
     if (!_gpsService.isAccuracyAcceptableForPing(position)) {
       return PingValidation.gpsInaccurate;
@@ -459,6 +471,12 @@ class PingService {
     final position = _gpsService.lastPosition;
     if (position == null) {
       return PingValidation.noGpsLock;
+    }
+
+    // Airborne block: the provider ends the session, this only closes the
+    // few-second window before the transport is gone.
+    if (_gpsService.isAirborne) {
+      return PingValidation.airborne;
     }
 
     // Note: GPS freshness check removed - 25m movement check is sufficient
@@ -962,6 +980,7 @@ class PingService {
         pingCounter:
             _pendingTxPingCounter, // null in coords mode → server coords path
         wireTag: _pendingTxWireTag, // null in coords mode → server coords path
+        altitude: GpsService.altitudeOrNull(txPosition),
       );
       debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
 
@@ -980,6 +999,7 @@ class PingService {
             externalAntenna: getExternalAntenna?.call() ?? false,
             noiseFloor: _pendingTxNoiseFloor,
             power: getPowerLevel?.call(),
+            altitude: GpsService.altitudeOrNull(txPosition),
           );
         }
         debugLog(
@@ -1644,6 +1664,7 @@ class PingService {
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
           power: getPowerLevel?.call(),
+          altitude: GpsService.altitudeOrNull(position),
         );
       }
 
@@ -1662,6 +1683,7 @@ class PingService {
           externalAntenna: getExternalAntenna?.call() ?? false,
           noiseFloor: _pendingTxNoiseFloor,
           power: getPowerLevel?.call(),
+          altitude: GpsService.altitudeOrNull(position),
         );
         debugLog('[DISC] Discovery drop queued (no response)');
       }
@@ -1827,8 +1849,10 @@ class PingService {
       return;
     }
 
-    // Check GPS
-    final position = _gpsService.lastPosition;
+    // Request a fresh GPS position before the trace (same rationale as TX
+    // auto-ping and discovery). On iOS in the background the position stream
+    // is quiet, so this is also the only fix that feeds the airborne latch.
+    final position = await _gpsService.getFreshPosition();
     if (position == null) {
       debugLog('[TRACE] No GPS position, skipping trace');
       _pingInProgress = false;
@@ -1948,6 +1972,7 @@ class PingService {
         externalAntenna: getExternalAntenna?.call() ?? false,
         noiseFloor: _pendingTxNoiseFloor,
         power: getPowerLevel?.call(),
+        altitude: GpsService.altitudeOrNull(position),
       );
 
       // Update stats
@@ -2069,6 +2094,9 @@ enum PingValidation {
 
   /// TX not allowed by API (zone at capacity)
   txNotAllowed,
+
+  /// GPS says the phone is in an aircraft (altitude or speed gate)
+  airborne,
 }
 
 extension PingValidationExtension on PingValidation {
@@ -2098,6 +2126,8 @@ extension PingValidationExtension on PingValidation {
         return 'Wait 15 seconds between manual pings';
       case PingValidation.txNotAllowed:
         return 'Zone at TX capacity (Passive Only)';
+      case PingValidation.airborne:
+        return 'Wardriving from an aircraft is not allowed';
     }
   }
 }

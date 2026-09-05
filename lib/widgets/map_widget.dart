@@ -6049,6 +6049,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final position = appState.currentPosition;
     final hasGps = position != null;
     final distanceFromLastPing = appState.distanceFromLastPing;
+    // Altitude of the fix when the phone knows it: what every upload now
+    // carries and what the airborne block reads, so the user can see it.
+    final altitude = hasGps ? GpsService.altitudeOrNull(position) : null;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -6089,6 +6092,24 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             const SizedBox(width: 4),
             Text(
               formatMeters(distanceFromLastPing,
+                  isImperial: appState.preferences.isImperial),
+              style: const TextStyle(
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: Colors.white70,
+              ),
+            ),
+          ],
+          if (altitude != null) ...[
+            const SizedBox(width: 12),
+            const Icon(
+              Icons.height,
+              size: 12,
+              color: Colors.white70,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              formatMeters(altitude,
                   isImperial: appState.preferences.isImperial),
               style: const TextStyle(
                 fontSize: 11,

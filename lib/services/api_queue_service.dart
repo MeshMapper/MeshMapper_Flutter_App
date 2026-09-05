@@ -38,6 +38,15 @@ class ApiQueueService {
   bool offlineMode = false;
   final List<Map<String, dynamic>> _offlinePings = [];
 
+  /// Airborne block for Offline Mode. While set, accepted fixes are NOT
+  /// appended to the offline recording: an offline upload is the one path
+  /// that could carry in-flight rows to the server after the forced app
+  /// upgrade (the online queue is dropped by the session end), and the server
+  /// owner chose the app as the only control on it. Driven by the provider on
+  /// every latch flip; logged once on pause and once on resume, never per row.
+  bool _offlineRecordingPaused = false;
+  int _offlineRowsDroppedWhilePaused = 0;
+
   // RX buffer for grouping by repeater
   final Map<String, List<ApiQueueItem>> _rxBuffer = {};
 
@@ -61,6 +70,32 @@ class ApiQueueService {
 
   /// Number of pings accumulated in current offline session
   int get offlinePingCount => _offlinePings.length;
+
+  /// Whether the airborne pause is holding the offline recording.
+  bool get isOfflineRecordingPaused => _offlineRecordingPaused;
+
+  /// Pause or resume the offline recording (see [_offlineRecordingPaused]).
+  void setOfflineRecordingPaused(bool paused) {
+    if (paused == _offlineRecordingPaused) return;
+    _offlineRecordingPaused = paused;
+    if (paused) {
+      _offlineRowsDroppedWhilePaused = 0;
+      if (offlineMode) {
+        debugWarn(
+            '[OFFLINE] Recording paused: airborne (no rows until the latch clears)');
+      }
+    } else if (offlineMode) {
+      debugLog(
+          '[OFFLINE] Recording resumed ($_offlineRowsDroppedWhilePaused rows dropped while airborne)');
+    }
+  }
+
+  /// True when the airborne pause swallowed this offline row.
+  bool _dropOfflineRowIfPaused() {
+    if (!_offlineRecordingPaused) return false;
+    _offlineRowsDroppedWhilePaused++;
+    return true;
+  }
 
   ApiQueueService({required ApiService apiService}) : _apiService = apiService;
 
@@ -243,6 +278,7 @@ class ApiQueueService {
     double? power,
     int? pingCounter,
     String? wireTag,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromTx(
       latitude: latitude,
@@ -254,10 +290,12 @@ class ApiQueueService {
       power: power,
       pingCounter: pingCounter,
       wireTag: wireTag,
+      altitude: altitude,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] TX enqueued (offline): $heardRepeats');
       return;
@@ -292,6 +330,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromRx(
       latitude: latitude,
@@ -301,10 +340,12 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       return;
     }
@@ -337,6 +378,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromDisc(
       latitude: latitude,
@@ -351,10 +393,12 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] DISC enqueued (offline): $repeaterId');
       return;
@@ -390,6 +434,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromTrace(
       latitude: latitude,
@@ -402,10 +447,12 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] TRACE enqueued (offline): $repeaterId');
       return;
@@ -437,6 +484,7 @@ class ApiQueueService {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) async {
     final item = ApiQueueItem.fromDiscDrop(
       latitude: latitude,
@@ -445,10 +493,12 @@ class ApiQueueService {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
     if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
       _offlinePings.add(item.toApiJson());
       debugLog('[API QUEUE] DISC drop enqueued (offline)');
       return;

@@ -23,8 +23,9 @@ class RxLogger {
   /// Callback for immediate observation (fires before batching, for real-time UI)
   final void Function(RxObservation)? onObservation;
 
-  /// GPS location provider
-  final ({double lat, double lon})? Function() getGpsLocation;
+  /// GPS location provider. `alt` is meters or null when the phone did not
+  /// know its altitude; it rides along to the API entry, nothing else reads it.
+  final ({double lat, double lon, double? alt})? Function() getGpsLocation;
 
   /// Function to check if a repeater ID should be ignored
   /// Returns true if the repeater should be filtered out
@@ -183,6 +184,7 @@ class RxLogger {
         header: metadata.header,
         lat: gpsLocation.lat,
         lon: gpsLocation.lon,
+        alt: gpsLocation.alt,
         timestamp: DateTime.now(),
         metadata: metadata,
         displayHops: displayHops,
@@ -235,7 +237,7 @@ class RxLogger {
     required int? rssi,
     required int pathLength,
     required int header,
-    required ({double lat, double lon}) currentLocation,
+    required ({double lat, double lon, double? alt}) currentLocation,
     required PacketMetadata metadata,
     required List<String> displayHops,
   }) async {
@@ -255,6 +257,7 @@ class RxLogger {
           header: header,
           lat: currentLocation.lat,
           lon: currentLocation.lon,
+          alt: currentLocation.alt,
           timestamp: DateTime.now(),
           metadata: metadata,
           displayHops: displayHops,
@@ -292,6 +295,7 @@ class RxLogger {
           header: header,
           lat: buffer.firstLocation.lat, // Keep original location
           lon: buffer.firstLocation.lon, // Keep original location
+          alt: buffer.firstLocation.alt, // and its altitude
           timestamp: DateTime.now(),
           metadata: metadata,
           displayHops: displayHops,
@@ -394,6 +398,7 @@ class RxLogger {
       repeaterId: repeaterId,
       lat: best.lat,
       lon: best.lon,
+      alt: best.alt,
       snr: best.snr,
       rssi: best.rssi,
       pathLength: best.pathLength,
@@ -485,7 +490,7 @@ class RxLogger {
 
 /// Batch buffer for a single repeater
 class RxBatch {
-  final ({double lat, double lon}) firstLocation;
+  final ({double lat, double lon, double? alt}) firstLocation;
   RxObservation bestObservation;
   Timer? timeoutTimer;
 
@@ -505,6 +510,9 @@ class RxObservation {
   final int header;
   final double lat;
   final double lon;
+
+  /// Altitude in meters at [lat],[lon], null when unknown.
+  final double? alt;
   final DateTime timestamp;
   final PacketMetadata metadata;
 
@@ -520,6 +528,7 @@ class RxObservation {
     required this.header,
     required this.lat,
     required this.lon,
+    this.alt,
     required this.timestamp,
     required this.metadata,
     this.displayHops = const [],
@@ -531,6 +540,9 @@ class RxApiEntry {
   final String repeaterId;
   final double lat;
   final double lon;
+
+  /// Altitude in meters at [lat],[lon], null when unknown.
+  final double? alt;
   final double? snr; // Null for CARpeater pass-through
   final int? rssi; // Null for CARpeater pass-through
   final int pathLength;
@@ -545,6 +557,7 @@ class RxApiEntry {
     required this.repeaterId,
     required this.lat,
     required this.lon,
+    this.alt,
     this.snr,
     this.rssi,
     required this.pathLength,

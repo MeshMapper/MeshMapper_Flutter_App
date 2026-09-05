@@ -29,6 +29,21 @@ class GpsService {
   /// Reference: getValidGpsForZoneCheck() in wardrive.js
   static const double maxAccuracyMetersForZoneCheck = 50.0;
 
+  /// Airborne block: a fix whose altitude, less its own vertical error, is
+  /// above this counts as in the air. Higher than any road or town on Earth,
+  /// well under airliner cruise (9 to 12 km).
+  static const double airborneAltitudeMeters = 6000.0;
+
+  /// Airborne block: ground speed above this (250 km/h) counts as in the air.
+  /// Catches take-off, approach and most small aircraft. A high-speed train
+  /// trips it too; that is accepted.
+  static const double airborneSpeedMetersPerSecond = 250.0 / 3.6;
+
+  /// Consecutive fixes needed to set or clear the airborne latch. One wild
+  /// fix is GPS jitter, three in a row is real (same idea as the provider's
+  /// idle-anchor streak).
+  static const int airborneStreakRequired = 3;
+
   /// Configured minimum ping distance (user-adjustable, clamped to minDistanceMeters floor)
   double _configuredMinDistance = minDistanceMeters;
 
@@ -58,6 +73,23 @@ class GpsService {
   Position? _lastActivityPosition;
   StreamSubscription<Position>? _positionSubscription;
 
+  /// Airborne latch state. See [trackAirborne].
+  int _airborneStreak = 0;
+  int _groundStreak = 0;
+  bool _airborne = false;
+  AirborneGate? _airborneGate;
+  double? _airborneAltitude;
+  double? _airborneSpeed;
+
+  /// Fires once per latch flip (set, cleared, or reset while set). The
+  /// provider pauses the Offline Mode recording on it and refreshes the UI.
+  void Function(bool airborne)? onAirborneChanged;
+
+  /// Platform timestamp of the last fix the latch counted. The stream and
+  /// [getFreshPosition] can both hand over the same physical fix; it must
+  /// count once or the streak is met by two real fixes instead of three.
+  DateTime? _lastTrackedFixTime;
+
   /// GPS Simulator for testing
   GpsSimulatorService? _simulator;
   StreamSubscription<Position>? _simulatorSubscription;
@@ -86,6 +118,128 @@ class GpsService {
 
   /// Last ping position
   Position? get lastPingPosition => _lastPingPosition;
+
+  /// Whether the latest [airborneStreakRequired] fixes in a row said "in the
+  /// air". Read by the ping validators, the connect entry points and the
+  /// provider's position listener.
+  bool get isAirborne => _airborne;
+
+  /// Which test set the latch, null while it is clear. Kept apart from the
+  /// two readings because the release call's `airborne_gate` must keep
+  /// meaning "the test that fired".
+  AirborneGate? get airborneGate => _airborneGate;
+
+  /// Altitude in meters of the fix that set the latch, null while the latch
+  /// is clear or when that fix carried no altitude. Recorded for BOTH gates:
+  /// a speed-gate fire is told apart from a high-speed train by its altitude.
+  double? get airborneAltitude => _airborneAltitude;
+
+  /// Ground speed in m/s of the fix that set the latch, null while the latch
+  /// is clear or when that fix carried no speed. Recorded for BOTH gates.
+  double? get airborneSpeed => _airborneSpeed;
+
+  /// The altitude a fix actually carries, or null when the platform had none.
+  ///
+  /// geolocator reports a missing altitude as 0.0 with 0.0 accuracy on both
+  /// platforms. Android also omits the accuracy on fixes that DO carry an
+  /// altitude, so the accuracy alone cannot decide; only the 0/0 pair means
+  /// unknown.
+  static double? altitudeOrNull(Position position) {
+    if (position.altitude == 0.0 && position.altitudeAccuracy == 0.0) {
+      return null;
+    }
+    return position.altitude;
+  }
+
+  /// The ground speed a fix actually carries in m/s, or null when the
+  /// platform had none. Same shape as [altitudeOrNull]: geolocator reports a
+  /// missing speed as 0.0 with 0.0 accuracy, and only that pair means unknown.
+  static double? speedOrNull(Position position) {
+    if (position.speed == 0.0 && position.speedAccuracy == 0.0) {
+      return null;
+    }
+    return position.speed;
+  }
+
+  /// Pure gate: does this single fix look like it came from an aircraft?
+  ///
+  /// The altitude test subtracts the fix's own vertical error first, so a
+  /// shaky reading has to be well clear of the line. Unknown altitude and
+  /// unknown speed arrive as 0.0 and never qualify (fail open).
+  static bool positionLooksAirborne(Position position) {
+    final altitudeFloor = position.altitude - position.altitudeAccuracy;
+    return altitudeFloor > airborneAltitudeMeters ||
+        position.speed > airborneSpeedMetersPerSecond;
+  }
+
+  /// Feed one accepted fix into the airborne latch.
+  ///
+  /// Every path that accepts a fix (the position stream, the simulator and
+  /// [getFreshPosition]) calls this. Three consecutive airborne fixes set the
+  /// latch, three consecutive ground fixes clear it; a fix of the other kind
+  /// restarts the count. Logged only on a flip, never per fix.
+  void trackAirborne(Position position) {
+    if (position.timestamp == _lastTrackedFixTime) return;
+    _lastTrackedFixTime = position.timestamp;
+
+    if (positionLooksAirborne(position)) {
+      _groundStreak = 0;
+      _airborneStreak++;
+      if (!_airborne && _airborneStreak >= airborneStreakRequired) {
+        _airborne = true;
+        final altitudeFloor = position.altitude - position.altitudeAccuracy;
+        _airborneGate = altitudeFloor > airborneAltitudeMeters
+            ? AirborneGate.altitude
+            : AirborneGate.speed;
+        // Both readings of the latching fix, each null when unknown.
+        _airborneAltitude = altitudeOrNull(position);
+        _airborneSpeed = speedOrNull(position);
+        final altitudeText = _airborneAltitude == null
+            ? 'unknown'
+            : '${_airborneAltitude!.toStringAsFixed(0)} m '
+                '(accuracy ${position.altitudeAccuracy.toStringAsFixed(0)} m)';
+        final speedText = _airborneSpeed == null
+            ? 'unknown'
+            : '${(_airborneSpeed! * 3.6).toStringAsFixed(0)} km/h';
+        debugWarn('[GPS] Airborne latch set by ${_airborneGate!.name}: '
+            'altitude $altitudeText, speed $speedText');
+        onAirborneChanged?.call(true);
+      }
+      return;
+    }
+
+    _airborneStreak = 0;
+    _groundStreak++;
+    if (_airborne && _groundStreak >= airborneStreakRequired) {
+      _airborne = false;
+      _airborneGate = null;
+      _airborneAltitude = null;
+      _airborneSpeed = null;
+      debugLog(
+          '[GPS] Airborne latch cleared after $airborneStreakRequired ground fixes');
+      onAirborneChanged?.call(false);
+    }
+  }
+
+  /// Forget the airborne latch and both streaks.
+  ///
+  /// Called whenever the fix source restarts (real stream or simulator). The
+  /// real stream only fires on movement, so a phone left on a desk after a
+  /// simulated flight would otherwise stay locked out until it moved 30 m.
+  void resetAirborne() {
+    final wasAirborne = _airborne;
+    if (wasAirborne) {
+      debugLog('[GPS] Airborne latch reset (fix source restarted)');
+    }
+    _airborneStreak = 0;
+    _groundStreak = 0;
+    _airborne = false;
+    _airborneGate = null;
+    _airborneAltitude = null;
+    _airborneSpeed = null;
+    _lastTrackedFixTime = null;
+    if (wasAirborne) onAirborneChanged?.call(false);
+  }
 
   void _updateStatus(GpsStatus status) {
     if (_status != status) {
@@ -184,6 +338,7 @@ class GpsService {
   /// Permission requests are handled by the disclosure flow in MainScaffold.
   Future<void> startWatching() async {
     debugLog('[GPS] startWatching() called, current status: $_status');
+    resetAirborne();
 
     // Ensure only one active position stream subscription exists.
     // startWatching() can be called multiple times (e.g. after permission flow).
@@ -263,6 +418,7 @@ class GpsService {
           return;
         }
         _lastPosition = position;
+        trackAirborne(position);
         _positionController.add(position);
 
         // GPS signal acquired
@@ -432,6 +588,7 @@ class GpsService {
         return _lastPosition;
       }
       _lastPosition = position;
+      trackAirborne(position);
       return position;
     } catch (e) {
       debugLog('[GPS] Fresh position request failed, using cached: $e');
@@ -484,6 +641,7 @@ class GpsService {
     double? startLatitude,
     double? startLongitude,
     double speed = 50.0,
+    double altitude = 100.0,
     SimulatorPattern pattern = SimulatorPattern.randomWalk,
   }) {
     if (_simulatorEnabled) return;
@@ -492,12 +650,14 @@ class GpsService {
 
     // Stop real GPS
     stopWatching();
+    resetAirborne();
 
     // Configure and start simulator
     simulator.configure(
       latitude: startLatitude,
       longitude: startLongitude,
       speed: speed,
+      altitude: altitude,
       pattern: pattern,
     );
 
@@ -509,6 +669,7 @@ class GpsService {
         return;
       }
       _lastPosition = position;
+      trackAirborne(position);
       _positionController.add(position);
 
       // Simulator position acquired
@@ -522,6 +683,7 @@ class GpsService {
     final seed = simulator.currentPosition;
     if (seed != null && isValidLatLng(seed.latitude, seed.longitude)) {
       _lastPosition = seed;
+      trackAirborne(seed);
       _positionController.add(seed);
     }
 
@@ -540,18 +702,21 @@ class GpsService {
     _simulatorSubscription = null;
     _simulatorEnabled = false;
 
-    // Restart real GPS
+    // Restart real GPS (its first statement resets the airborne latch, so a
+    // simulated flight never outlives the simulator)
     startWatching();
   }
 
-  /// Configure simulator parameters (speed, pattern)
+  /// Configure simulator parameters (speed, altitude, pattern, heading)
   void configureSimulator({
     double? speed,
+    double? altitude,
     SimulatorPattern? pattern,
     double? heading,
   }) {
     simulator.configure(
       speed: speed,
+      altitude: altitude,
       pattern: pattern,
       heading: heading,
     );
@@ -566,3 +731,6 @@ class GpsService {
     _positionController.close();
   }
 }
+
+/// Which airborne test set the latch. See [GpsService.airborneGate].
+enum AirborneGate { altitude, speed }

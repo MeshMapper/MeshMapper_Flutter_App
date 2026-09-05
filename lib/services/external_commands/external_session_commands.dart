@@ -167,6 +167,8 @@ String _externalCommandVoiceMessage({
       'MeshMapper is closing. Open it and try again.',
     ExternalCommandReasonCode.commandExpired =>
       externalCommandExpiredVoiceMessage,
+    ExternalCommandReasonCode.airborne =>
+      "MeshMapper won't wardrive from an aircraft. Try again on the ground.",
     ExternalCommandReasonCode.noRememberedCompanion ||
     ExternalCommandReasonCode.alreadyConnected ||
     ExternalCommandReasonCode.anotherCompanionConnected ||
