@@ -730,6 +730,112 @@ void main() {
       expect(service.account, isNull);
     });
 
+    String meBodyWithOverview() => jsonEncode({
+          'ok': true,
+          'user': {'id': 7, 'username': 'sparkgap'},
+          'pubkeys': [
+            {
+              'pubkey': 'a' * 64,
+              'label': 'Stick',
+              'name': 'Spark',
+              'points': 42,
+            }
+          ],
+          'overview': {
+            'points': 1234,
+            'weekly': 56,
+            'grid': 789,
+            'awards': [
+              {'name': 'First 100', 'description': 'Mapped 100 grid squares'}
+            ],
+          },
+        });
+
+    test('me parses the overview block and exposes it', () async {
+      final service = await signedIn(recordingClient(
+          (_) => http.Response(meBodyWithOverview(), 200)));
+
+      expect(await service.refreshMe(force: true), isTrue);
+      expect(service.overview, isNotNull);
+      expect(service.overview!.points, 1234);
+      expect(service.overview!.grid, 789);
+      expect(service.overview!.awards.single.name, 'First 100');
+      // The per-companion identity still lands beside it.
+      expect(service.linkedPubkeys.single.name, 'Spark');
+      expect(service.linkedPubkeys.single.points, 42);
+    });
+
+    test('me without an overview block leaves it null', () async {
+      final service = await signedIn(
+          recordingClient((_) => http.Response(meBody(const []), 200)));
+
+      expect(await service.refreshMe(force: true), isTrue);
+      expect(service.overview, isNull);
+    });
+
+    test('me with an overview that is not an object leaves it null',
+        () async {
+      final body = jsonEncode({
+        'ok': true,
+        'user': {'id': 7, 'username': 'sparkgap'},
+        'pubkeys': const [],
+        'overview': [1, 2, 3],
+      });
+      final service =
+          await signedIn(recordingClient((_) => http.Response(body, 200)));
+
+      expect(await service.refreshMe(force: true), isTrue);
+      expect(service.overview, isNull);
+    });
+
+    test('a later me without the block clears a held overview', () async {
+      var answer = http.Response(meBodyWithOverview(), 200);
+      final service = await signedIn(recordingClient((_) => answer));
+      await service.refreshMe(force: true);
+      expect(service.overview, isNotNull);
+
+      answer = http.Response(meBody(const []), 200);
+      await service.refreshMe(force: true);
+      expect(service.overview, isNull,
+          reason: 'a server that stopped sending the block means unknown');
+    });
+
+    test('token_invalid on me clears the overview with the sign-out',
+        () async {
+      var answer = http.Response(meBodyWithOverview(), 200);
+      final service = await signedIn(recordingClient((_) => answer));
+      await service.refreshMe(force: true);
+      expect(service.overview, isNotNull);
+
+      answer = http.Response('{"error":"token_invalid"}', 401);
+      await service.refreshMe(force: true);
+      expect(service.isSignedIn, isFalse);
+      expect(service.overview, isNull);
+      expect(service.linkedPubkeys, isEmpty);
+    });
+
+    test('hydrateLinkedCompanions restores label, name and points', () {
+      final service =
+          buildService(recordingClient((_) => http.Response('{}', 500)));
+      service.hydrateLinkedCompanions([
+        LinkedPubkey(pubkey: 'A' * 64, label: 'L', name: 'N', points: 3),
+        const LinkedPubkey(pubkey: '', label: '', name: '', points: 0),
+      ]);
+      expect(service.linkedPubkeys.single.pubkey, 'A' * 64);
+      expect(service.linkedPubkeys.single.label, 'L');
+      expect(service.linkedPubkeys.single.name, 'N');
+      expect(service.linkedPubkeys.single.points, 3);
+    });
+
+    test('hydrateOverview seeds the overview without a network call', () {
+      final service =
+          buildService(recordingClient((_) => http.Response('{}', 500)));
+      service.hydrateOverview(const PortalOverview(
+          points: 9, weekly: 0, grid: 1, awards: []));
+      expect(service.overview!.points, 9);
+      expect(requests, isEmpty);
+    });
+
     test('a successful link lands in the cache exactly once', () async {
       final service = await signedIn(routedClient({
         'link': http.Response(
