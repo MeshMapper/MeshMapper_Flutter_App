@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -5,21 +7,55 @@ import '../../providers/app_state_provider.dart';
 import '../../services/portal_account_service.dart';
 import '../../utils/debug_logger_io.dart';
 import '../../widgets/app_toast.dart';
+import 'account_overview_widgets.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: MeshMapper Account.
-class AccountSettingsPage extends StatelessWidget {
+class AccountSettingsPage extends StatefulWidget {
   const AccountSettingsPage({super.key});
+
+  @override
+  State<AccountSettingsPage> createState() => _AccountSettingsPageState();
+}
+
+class _AccountSettingsPageState extends State<AccountSettingsPage> {
+  @override
+  void initState() {
+    super.initState();
+    // Opening the page is the natural moment to catch up on points and
+    // awards. Non-forced: the service's once-an-hour throttle bounds the
+    // writes this makes to the portal's auth DB, and it returns at once when
+    // signed out.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final appState = context.read<AppStateProvider>();
+      if (appState.isPortalLoggedIn) {
+        debugLog('[ACCOUNT] Account page opened, refreshing');
+        unawaited(appState.refreshPortalAccount());
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
     final isAutoMode = appState.autoPingEnabled;
+    final connectedPubkey =
+        appState.isConnected ? appState.devicePublicKey?.toUpperCase() : null;
+    final overview = appState.portalOverview;
 
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 40,
         title: const Text('MeshMapper Account', style: TextStyle(fontSize: 18)),
+        actions: [
+          if (appState.isPortalLoggedIn)
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh',
+              onPressed: () => _refreshPortalAccount(context, appState),
+            ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
@@ -49,6 +85,11 @@ class AccountSettingsPage extends StatelessWidget {
               ),
             ],
           ]),
+          if (appState.isPortalLoggedIn && overview != null)
+            AccountOverviewCard(
+              overview: overview,
+              companionCount: appState.portalCompanions.length,
+            ),
           if (appState.isPortalLoggedIn)
             SettingsSectionCard(title: 'Devices', children: [
               ListTile(
@@ -84,14 +125,20 @@ class AccountSettingsPage extends StatelessWidget {
                             child: const Text('Link now'),
                           ),
               ),
-              ListTile(
-                leading: const Icon(Icons.devices_other),
-                title: const Text('Linked Devices'),
-                subtitle: Text(
-                    '${appState.portalLinkedDeviceCount} device(s) on this account'),
-                trailing: const Icon(Icons.refresh),
-                onTap: () => _refreshPortalAccount(context, appState),
-              ),
+              const Divider(height: 1),
+              if (appState.portalCompanions.isEmpty)
+                const ListTile(
+                  leading: Icon(Icons.devices_other),
+                  title: Text('No companions linked yet'),
+                  subtitle: Text(
+                      'Link a radio so its wardriving counts toward your account'),
+                )
+              else
+                for (final companion in appState.portalCompanions)
+                  CompanionTile(
+                    companion: companion,
+                    isConnected: companion.pubkey == connectedPubkey,
+                  ),
               if (appState.hasPortalLinkResets)
                 ListTile(
                   leading: const Icon(Icons.replay),
@@ -183,8 +230,7 @@ class AccountSettingsPage extends StatelessWidget {
           'Too many refreshes. Try again in ${_formatBackoff(backoff)}.');
       return;
     }
-    AppToast.simple(
-        context, '${appState.portalLinkedDeviceCount} linked device(s)');
+    AppToast.simple(context, 'Account refreshed');
   }
 
   /// Rounded up: telling someone to wait "0 minutes" is worse than telling
