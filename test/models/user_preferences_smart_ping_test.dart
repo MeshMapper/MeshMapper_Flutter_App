@@ -6,7 +6,8 @@ void main() {
     const prefs = UserPreferences();
     expect(prefs.smartPingEnabled, isTrue);
     expect(prefs.smartPingDays, 14);
-    expect(SmartPingDays.values, [1, 3, 7, 14, 30]);
+    expect(SmartPingDays.min, 1);
+    expect(SmartPingDays.max, 365);
     expect(SmartPingDays.defaultDays, 14);
   });
 
@@ -18,11 +19,14 @@ void main() {
     expect(back, prefs);
   });
 
-  test('missing or invalid json falls back to the defaults', () {
+  test('any window from 1 to 365 is kept; missing or out of range falls back', () {
     expect(UserPreferences.fromJson({}).smartPingEnabled, isTrue);
     expect(UserPreferences.fromJson({}).smartPingDays, 14);
-    expect(UserPreferences.fromJson({'smartPingDays': 9}).smartPingDays, 14);
+    expect(UserPreferences.fromJson({'smartPingDays': 9}).smartPingDays, 9);
+    expect(UserPreferences.fromJson({'smartPingDays': 365}).smartPingDays, 365);
     expect(UserPreferences.fromJson({'smartPingDays': 0}).smartPingDays, 14);
+    expect(UserPreferences.fromJson({'smartPingDays': 400}).smartPingDays, 14);
+    expect(UserPreferences.fromJson({'smartPingDays': -2}).smartPingDays, 14);
   });
 
   test('copyWith changes only what it is given', () {

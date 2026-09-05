@@ -59,7 +59,7 @@ class UserPreferences {
   /// bidir or disc result. See DEVELOPMENT.md "Smart Pinging".
   final bool smartPingEnabled;
 
-  /// Smart Pinging window in days (one of [SmartPingDays.values]).
+  /// Smart Pinging window in days ([SmartPingDays.min] to [SmartPingDays.max]).
   final int smartPingDays;
 
   /// Map auto-follow GPS position
@@ -217,11 +217,7 @@ class UserPreferences {
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
       smartPingDays: switch ((json['smartPingDays'] as num?)?.toInt()) {
-        1 => 1,
-        3 => 3,
-        7 => 7,
-        14 => 14,
-        30 => 30,
+        final int d when d >= SmartPingDays.min && d <= SmartPingDays.max => d,
         _ => SmartPingDays.defaultDays,
       },
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
@@ -584,8 +580,10 @@ class MinPingDistance {
   static const int min = 25;
 }
 
-/// Smart Pinging window options (days). Mirrors the server's admin dropdown.
+/// Smart Pinging window bounds (days). Any whole number in the range is
+/// accepted; an enforced window from the regional admin uses the same range.
 class SmartPingDays {
-  static const List<int> values = [1, 3, 7, 14, 30];
+  static const int min = 1;
+  static const int max = 365;
   static const int defaultDays = 14;
 }
