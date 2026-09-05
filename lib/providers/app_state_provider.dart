@@ -2767,7 +2767,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return (
           phase: LiveActivityPhase.skipped,
           title: 'Ping skipped',
-          detail: _autoPingTimer.skipReason == 'recently covered'
+          detail: _autoPingTimer.skipReason ==
+                  PingService.skipReasonRecentlyCovered
               ? 'Recently covered, skipped'
               : 'Move at least ${PingService.currentMinDistance} m',
           endsAt: _autoPingTimer.endTime,

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -33,6 +34,11 @@ class _FakeGps implements GpsService {
 
   @override
   bool canPingAtPosition(Position position) => !tooClose;
+
+  @override
+  Future<Position?> getFreshPosition(
+          {Duration timeout = const Duration(seconds: 3)}) async =>
+      position;
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -142,6 +148,28 @@ void main() {
     final gps = _FakeGps()..position = _pos();
     final ping = _build(gps, RecentCoverage.covered)..checkRecentCoverage = null;
     expect(ping.canPing(), PingValidation.valid);
+  });
+
+  test('an auto attempt in a covered cell names the skip reason', () async {
+    final gps = _FakeGps()..position = _pos();
+    final ping = _build(gps, RecentCoverage.covered);
+    final scheduled = <String?>[];
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (intervalMs, reason) {
+      scheduled.add(reason);
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    // Active Mode sends its first auto ping straight away, and that attempt
+    // runs the auto validator. Nothing is transmitted: the covered cell
+    // returns before the send, so the fake radio is never asked to write.
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    expect(ping.skipReason, PingService.skipReasonRecentlyCovered);
+    expect(scheduled, [PingService.skipReasonRecentlyCovered]);
+
+    await ping.disableAutoPing();
   });
 
   test('too close wins over covered', () {
