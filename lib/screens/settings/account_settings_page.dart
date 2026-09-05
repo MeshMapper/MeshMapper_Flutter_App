@@ -219,10 +219,10 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
 
   Future<void> _refreshPortalAccount(
       BuildContext context, AppStateProvider appState) async {
-    await appState.refreshPortalAccount(force: true);
+    final ok = await appState.refreshPortalAccount(force: true);
     if (!context.mounted) return;
-    // A rate-limited refresh makes no request, so the count below would be the
-    // same stale number every tap, which reads as a dead button and invites
+    // A rate-limited refresh makes no request, so the toast below would claim
+    // a refresh that never happened, which reads as a dead button and invites
     // more tapping. Every tap during a block extends it server-side.
     final backoff = appState.portalRefreshBackoff;
     if (backoff != null) {
@@ -230,7 +230,11 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
           'Too many refreshes. Try again in ${_formatBackoff(backoff)}.');
       return;
     }
-    AppToast.simple(context, 'Account refreshed');
+    if (ok) {
+      AppToast.simple(context, 'Account refreshed');
+    } else {
+      AppToast.error(context, 'Could not refresh right now');
+    }
   }
 
   /// Rounded up: telling someone to wait "0 minutes" is worse than telling
