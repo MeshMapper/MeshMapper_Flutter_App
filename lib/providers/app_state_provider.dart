@@ -57,6 +57,7 @@ import '../services/app_intents/siri_snapshot_models.dart';
 import '../services/external_commands/external_command_models.dart';
 import '../services/external_commands/external_session_commands.dart';
 import '../services/external_surfaces/geo/external_surface_geo_builder.dart';
+import '../services/live_activity/live_activity_heard.dart';
 import '../services/live_activity/live_activity_models.dart';
 import '../services/live_activity/live_activity_service.dart';
 import '../services/watch/watch_bridge_service.dart';
@@ -314,10 +315,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<TraceLogEntry> _traceLogEntries = [];
   int _siriObservationRevision = 0;
 
-  // Top repeaters overlay — updated live on each ping event
+  // Top repeaters overlay, updated live on each ping event. The map's Top
+  // Heard box, the watch's heard rows and the Live Activity's rows all read
+  // this one list, so the three surfaces cannot disagree.
   List<({String repeaterId, double snr, OverlayPingType type})>
       _topRepeatersOverlay = [];
   DateTime? _topRepeatersOverlayUpdatedAt;
+
+  /// How many repeaters the latest ping heard in all, beyond the three the
+  /// overlay keeps. The Live Activity's "HEARD NOW n" header counts them.
+  int _topRepeatersOverlayTotalCount = 0;
 
   /// The fullest identity known for each overlay row, keyed by the display hash
   /// the row is shown under.
@@ -334,12 +341,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   ({String repeaterId, double snr})? _rxOverlaySlot;
   Timer? _rxOverlayWindowTimer;
 
-  // Live Activity repeater snapshot. Kept separate from the map overlay so the
-  // system presentation cannot change existing in-app overlay behaviour.
-  List<({String repeaterId, double snr, OverlayPingType type})>
-      _liveActivityRepeaters = [];
-  int _liveActivityRepeaterTotalCount = 0;
-  DateTime? _liveActivityRepeatersUpdatedAt;
+  // When the RX slot last changed, for the Live Activity's current-or-last
+  // distinction. The rows themselves come from the overlay above.
   DateTime? _liveActivityRxUpdatedAt;
 
   // Targeted mode state
@@ -794,7 +797,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   ({String repeaterId, double snr})? get rxOverlaySlot => _rxOverlaySlot;
 
   /// Update the top repeaters overlay with results from the latest TX/DISC/Trace ping.
-  /// Replaces all 3 slots entirely (no carryover from previous pings).
+  /// Replaces all 3 slots entirely (no carryover from previous pings). Only a
+  /// ping that heard something calls this, so a silent ping leaves the last
+  /// heard set in place on the map, the watch and the Live Activity alike.
   /// - Parameter identities: display hash to the fullest identity this ping
   ///   carried for it, for the ping types that carry more than a path byte.
   void _updateTopRepeaters(
@@ -813,29 +818,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         .toList()
       ..sort((a, b) => b.snr.compareTo(a.snr));
     _topRepeatersOverlay = fresh.take(3).toList();
+    _topRepeatersOverlayTotalCount = fresh.length;
     _topRepeatersOverlayUpdatedAt = DateTime.now();
   }
 
-  void _updateLiveActivityRepeaters(
-      Iterable<({String repeaterId, double snr})> current,
-      OverlayPingType type) {
-    final bestSnr = <String, double>{};
-    for (final repeater in current) {
-      if (!repeater.snr.isFinite) continue;
-      final id = repeater.repeaterId.toUpperCase();
-      final previous = bestSnr[id];
-      if (previous == null || repeater.snr > previous) {
-        bestSnr[id] = repeater.snr;
-      }
-    }
-
-    final sorted = bestSnr.entries
-        .map((entry) => (repeaterId: entry.key, snr: entry.value, type: type))
-        .toList()
-      ..sort((a, b) => b.snr.compareTo(a.snr));
-    _liveActivityRepeaters = sorted.take(3).toList(growable: false);
-    _liveActivityRepeaterTotalCount = sorted.length;
-    _liveActivityRepeatersUpdatedAt = DateTime.now();
+  /// A successful trace's target, as an overlay row. 4-byte trace IDs are
+  /// shortened to 3 bytes (6 hex chars) to fit the overlay, while the full ID
+  /// still travels as the row's identity: shortening it is a presentation
+  /// decision, and resolving the name from the shortened form threw away a
+  /// byte of certainty for no reason.
+  void _updateTraceTopRepeater(String targetRepeaterId, double localSnr) {
+    final id = targetRepeaterId.toUpperCase();
+    final displayId = id.length > 6 ? id.substring(0, 6) : id;
+    _updateTopRepeaters(
+      [(repeaterId: displayId, snr: localSnr)],
+      OverlayPingType.trace,
+      identities: {displayId: id},
+    );
   }
 
   /// Display hash to full public key, for the discovery nodes that published
@@ -882,14 +881,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Clear all overlay state (top 3 + RX slot).
   void _clearOverlayState() {
     _topRepeatersOverlay = [];
+    _topRepeatersOverlayTotalCount = 0;
     _topRepeatersOverlayUpdatedAt = null;
     _overlayIdentityById = const {};
     _rxOverlaySlot = null;
     _rxOverlayWindowTimer?.cancel();
     _rxOverlayWindowTimer = null;
-    _liveActivityRepeaters = [];
-    _liveActivityRepeaterTotalCount = 0;
-    _liveActivityRepeatersUpdatedAt = null;
     _liveActivityRxUpdatedAt = null;
   }
 
@@ -2844,79 +2841,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
+  /// The Live Activity's rows are the map's Top Heard box, the same list the
+  /// watch mirrors, so the three surfaces cannot disagree. The ordering, the
+  /// RX slot and the current-or-last rule live in [buildLiveActivityHeard].
   ({
     List<LiveActivityRepeater> repeaters,
     int totalCount,
     bool isCurrent,
-  }) _buildLiveActivityRepeaters() {
-    final cycleStartedAt = _liveActivityCycleStartedAt;
-    final topIsCurrent = cycleStartedAt != null &&
-        _liveActivityRepeatersUpdatedAt != null &&
-        !_liveActivityRepeatersUpdatedAt!.isBefore(cycleStartedAt);
-    final rxIsCurrent = cycleStartedAt != null &&
-        _liveActivityRxUpdatedAt != null &&
-        !_liveActivityRxUpdatedAt!.isBefore(cycleStartedAt);
-    final hasCurrent = topIsCurrent || rxIsCurrent;
-
-    final includeTop = !hasCurrent || topIsCurrent;
-    final includeRx = !hasCurrent || rxIsCurrent;
-    final repeatersById = <String, LiveActivityRepeater>{};
-
-    if (includeTop) {
-      for (final repeater in _liveActivityRepeaters) {
-        if (!repeater.snr.isFinite) continue;
-        final id = repeater.repeaterId.toUpperCase();
-        repeatersById[id] = LiveActivityRepeater(
-          id: id,
-          name: _resolveRepeaterDisplayName(id),
-          snr: repeater.snr,
-          typeColor: ExternalSurfaceGeoBuilder.overlayTypeColor(repeater.type),
-          snrColor: ExternalSurfaceGeoBuilder.snrColor(repeater.snr),
-        );
-      }
-    }
-
-    final rx = _rxOverlaySlot;
-    if (includeRx && rx != null && rx.snr.isFinite) {
-      final id = rx.repeaterId.toUpperCase();
-      final existing = repeatersById[id];
-      if (existing == null || rx.snr > existing.snr) {
-        repeatersById[id] = LiveActivityRepeater(
-          id: id,
-          name: _resolveRepeaterDisplayName(id),
-          snr: rx.snr,
-          typeColor:
-              ExternalSurfaceGeoBuilder.overlayTypeColor(OverlayPingType.rx),
-          snrColor: ExternalSurfaceGeoBuilder.snrColor(rx.snr),
-        );
-      }
-    }
-
-    final repeaters = repeatersById.values.toList()
-      ..sort((a, b) => b.snr.compareTo(a.snr));
-
-    var totalCount = includeTop ? _liveActivityRepeaterTotalCount : 0;
-    if (includeRx &&
-        rx != null &&
-        rx.snr.isFinite &&
-        !_liveActivityRepeaters.any(
-          (entry) =>
-              entry.repeaterId.toUpperCase() == rx.repeaterId.toUpperCase(),
-        )) {
-      totalCount++;
-    }
-    if (totalCount < repeaters.length) totalCount = repeaters.length;
-
-    return (
-      // Six so the CarPlay card's two-by-three hex grid fills, which also
-      // lets the RX slot survive alongside the top-SNR rows the way the map
-      // overlay shows them. Surfaces that want fewer (the watch's two-by-two,
-      // the lock screen's three) trim their own.
-      repeaters: repeaters.take(6).toList(growable: false),
-      totalCount: totalCount,
-      isCurrent: hasCurrent,
-    );
-  }
+  }) _buildLiveActivityRepeaters() => buildLiveActivityHeard(
+        top: _topRepeatersOverlay,
+        topTotalCount: _topRepeatersOverlayTotalCount,
+        rxSlot: _rxOverlaySlot,
+        topAt: _topRepeatersOverlayUpdatedAt,
+        rxAt: _liveActivityRxUpdatedAt,
+        cycleStartedAt: _liveActivityCycleStartedAt,
+        nameFor: _resolveRepeaterDisplayName,
+      );
 
   String get _liveActivityModeTitle {
     if (_liveActivityManualSession) return 'Manual';
@@ -4744,15 +4684,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                   ))
               .toList(growable: false);
           _updateTopRepeaters(directRepeaters, OverlayPingType.tx);
-          _updateLiveActivityRepeaters([
-            ...directRepeaters,
-            ...lastEntry.multiHopEvents
-                .where((event) => event.snr != null)
-                .map((event) => (
-                      repeaterId: event.repeaterId.toUpperCase(),
-                      snr: event.snr!,
-                    )),
-          ], OverlayPingType.tx);
 
           debugLog('[APP] Calling notifyListeners() to update UI');
           _notifyMapThrottled();
@@ -4807,21 +4738,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           );
           _siriObservationRevision++;
 
-          _updateLiveActivityRepeaters([
-            ...lastEntry.events
-                .where((event) => event.snr != null)
-                .map((event) => (
-                      repeaterId: event.repeaterId.toUpperCase(),
-                      snr: event.snr!,
-                    )),
-            ...multiHopEvents
-                .where((event) => event.snr != null)
-                .map((event) => (
-                      repeaterId: event.repeaterId.toUpperCase(),
-                      snr: event.snr!,
-                    )),
-          ], OverlayPingType.tx);
-
           _notifyMapThrottled();
         }
       }
@@ -4869,7 +4785,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         OverlayPingType.disc,
         identities: _discoveryIdentities(discPing.discoveredNodes),
       );
-      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
       _siriObservationRevision++;
 
       _notifyMapThrottled();
@@ -4880,7 +4795,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? allRepeaters;
-      final heardRepeaters = <({String repeaterId, double snr})>[];
 
       if (_txLogEntries.isNotEmpty) {
         final lastTx = _txLogEntries.last;
@@ -4907,21 +4821,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (directRepeaters.isNotEmpty || multiHopRepeaters.isNotEmpty) {
           allRepeaters = [...directRepeaters, ...multiHopRepeaters];
         }
-
-        heardRepeaters.addAll(lastTx.events
-            .where((event) => event.snr?.isFinite ?? false)
-            .map((event) => (
-                  repeaterId: event.repeaterId.toUpperCase(),
-                  snr: event.snr!,
-                )));
-        heardRepeaters.addAll(multiHopEchoes
-            .where((event) => event.snr?.isFinite ?? false)
-            .map((event) => (
-                  repeaterId: event.repeaterId.toUpperCase(),
-                  snr: event.snr!,
-                )));
       }
-      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.tx);
 
       final PingEventType eventType;
       if (directSuccess) {
@@ -4945,7 +4845,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? repeaters;
-      final heardRepeaters = <({String repeaterId, double snr})>[];
 
       if (_discLogEntries.isNotEmpty) {
         final lastDisc = _discLogEntries.first;
@@ -4961,14 +4860,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
                   ))
               .toList();
         }
-        heardRepeaters.addAll(lastDisc.discoveredNodes
-            .where((node) => node.localSnr.isFinite)
-            .map((node) => (
-                  repeaterId: node.repeaterId.toUpperCase(),
-                  snr: node.localSnr,
-                )));
       }
-      _updateLiveActivityRepeaters(heardRepeaters, OverlayPingType.disc);
 
       PingEventType eventType;
       if (success) {
@@ -5022,17 +4914,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             success: true,
           );
           _siriObservationRevision++;
+          // The Top Heard box learns the target here, at the window's close.
+          // The entry handed to _addTraceLogEntry at send time is not yet a
+          // success, so the overlay update there never fired for a live trace.
+          _updateTraceTopRepeater(result.targetRepeaterId, result.localSnr);
           _notifyMapNow();
         }
       }
-
-      final traceSnr = result?.localSnr;
-      _updateLiveActivityRepeaters(
-        result != null && result.success && traceSnr != null
-            ? [(repeaterId: result.targetRepeaterId, snr: traceSnr)]
-            : const [],
-        OverlayPingType.trace,
-      );
 
       recordPingEvent(
         result != null && result.success
@@ -6863,21 +6751,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog(
         '[APP] Trace log entry added: target=${entry.targetRepeaterId}, success=${entry.success}');
 
-    // Update top repeaters overlay with successful trace result
-    if (entry.success && entry.localSnr != null) {
-      // Truncate 4-byte trace IDs to 3 bytes (6 hex chars) to fit overlay.
-      // The untruncated ID still travels as the row's identity: shortening it
-      // is a presentation decision, and resolving the name from the shortened
-      // form threw away a byte of certainty for no reason.
-      final id = entry.targetRepeaterId.toUpperCase();
-      final displayId = id.length > 6 ? id.substring(0, 6) : id;
-      _updateTopRepeaters(
-        [(repeaterId: displayId, snr: entry.localSnr!)],
-        OverlayPingType.trace,
-        identities: {displayId: id},
-      );
-    }
-
+    // The entry arrives unfinished; the Top Heard box learns the target when
+    // the window closes, in onTraceWindowComplete.
     _notifyMapNow();
   }
 
