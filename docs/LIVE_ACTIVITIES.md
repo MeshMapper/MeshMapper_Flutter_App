@@ -6,9 +6,9 @@ MeshMapper starts one read-only Live Activity while an automatic wardriving sess
 
 - Current mode and phase (`Sending`, `Listening`, `Next ping`, `Cooldown`, GPS/zone/reconnect states)
 - System-rendered countdowns based on absolute timer deadlines
-- The strongest repeaters from the current or latest completed cycle, sorted by SNR
+- The map's Top Heard rows: the latest ping's top three repeaters by SNR plus the current passive RX slot, the same list the watch shows. Rows heard before the latest send stay on the card dimmed as last heard; a silent ping does not wipe them
 - TX/RX counters, upload queue, zone, connection state, and stale-update warnings
-- Lock Screen, Dynamic Island, and an iOS 18 small-family layout — primarily the paired watch's Smart Stack card, and CarPlay on supported systems
+- Lock Screen, Dynamic Island, and one iOS 18 small-family layout shared by the paired watch's Smart Stack card and the CarPlay dashboard. CarPlay's canvas overlaps the watch card sizes and nothing names the surface, so the card solves its row count and font from the measured height instead of guessing
 
 ## Architecture
 
@@ -22,7 +22,7 @@ No push server or App Group is required. The Live Activity does not replace the 
 ## Platform requirements
 
 - Live Activity: iOS 16.2 or later
-- Small supplemental activity family (watch Smart Stack): iOS 18 or later
+- Small supplemental activity family (watch Smart Stack, CarPlay dashboard): iOS 18 or later
 - CarPlay presentation of Live Activities: iOS 26 or later
 - A physical iPhone is recommended for final background, Dynamic Island, and CarPlay validation; the Smart Stack card needs a paired watch
 

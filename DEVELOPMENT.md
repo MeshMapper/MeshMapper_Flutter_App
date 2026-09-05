@@ -771,6 +771,17 @@ minimal probe struct *before* attempting the full decode, so a payload that a
 future breaking change makes undecodable still reaches the "update the iPhone
 app" prompt instead of going silently stale.
 
+**One heard list.** The map's Top Heard box (`_topRepeatersOverlay`, the
+latest ping's top three by SNR, plus the passive RX slot) is the single source
+for the watch's heard rows (`ExternalSurfaceGeoBuilder.buildHeard`) and the
+Live Activity's rows (`buildLiveActivityHeard` in
+`lib/services/live_activity/live_activity_heard.dart`). It is replaced only by a
+ping that heard something (direct TX echoes, discovery nodes, a successful trace
+at its window's close), so a silent ping leaves the last heard set in place on
+all three; the Live Activity marks rows from before the latest send as last
+heard rather than wiping them. Multi-hop echoes are not in it. The Live Activity
+used to keep a private list with other rules and drifted from the map.
+
 **Geography caps** — `maxPings` 60, `maxRepeaters` 20, `maxHeard` 4. Applied by
 `WatchGeoBuilder` on the sending side, after merging every source and sorting by
 recency, so a busy TX history cannot erase discovery or trace markers.
@@ -1156,7 +1167,7 @@ debugError('[API] Failed to post batch: $error');
 | `[SCAN]` | BLE device scanning |
 | `[WAKELOCK]` | Wake lock acquisition/release |
 | `[WATCH]` | WatchConnectivity bridge: availability, snapshot delivery, wrist commands |
-| `[LIVE ACTIVITY]` | ActivityKit bridge: sync, end, and authorization failures |
+| `[LIVE ACTIVITY]` | ActivityKit bridge: sync, end, authorization failures, one line per publish and per held window |
 | `[ACCOUNT]` | MyMeshMapper portal sign-in and companion device linking |
 
 Never log without a tag.
@@ -1294,6 +1305,7 @@ All API endpoints may return maintenance mode:
 - `lib/services/watch/watch_geo_builder.dart` - Ping/repeater/heard geography for the wrist, with wire caps
 - `lib/services/watch/watch_color.dart` - Wire colour projection shared with the phone map
 - `lib/services/live_activity/live_activity_service.dart` - ActivityKit bridge: preflight urgency, throttle, dedupe, unavailable backoff
+- `lib/services/live_activity/live_activity_heard.dart` - The Live Activity's heard rows, read from the map's Top Heard box (shared with the watch)
 - `lib/services/live_activity/live_activity_models.dart` - Live Activity snapshot model and urgency keys
 - `lib/services/external_surfaces/external_surface_publisher.dart` - Shared publish pipeline (preflight dedupe, throttle, retry) behind watch, Live Activity, and Siri snapshots
 - `lib/services/external_surfaces/geo/external_surface_geo_builder.dart` - Ping/repeater/heard geography for external surfaces, with wire caps (was watch_geo_builder)
