@@ -242,6 +242,17 @@ class RecentCoverageService {
           }
           final cells =
               body.isEmpty ? const <CoverageCell>[] : decodeCoverageCells(body);
+          // The tile is asked for green and cyan only, so an honoured filter
+          // cannot answer with anything else. A region server that predates
+          // the f_* filters serves the whole cached tile with a 200 instead,
+          // and taking those cells as covered would stop auto pings across
+          // the region. Leave the tile unloaded so the lookup stays unknown
+          // and the ping goes out. The retry hold above already applies.
+          if (cells.any((c) => c.st > 2)) {
+            debugWarn(
+                '[COVERAGE] Recent tile $key came back unfiltered (a cell that is not green or cyan), ignoring it');
+            continue;
+          }
           tile.cells = cells.map((c) => '${c.i},${c.j}').toSet();
           tile.fetchedAt = _now();
           debugLog(
