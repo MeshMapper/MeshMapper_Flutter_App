@@ -129,6 +129,8 @@ class ApiService {
   bool _floodDisabled = false;
   int _minModeInterval = 15;
   int _apiHopBytes = 1;
+  bool _enforceSmartPing = false;
+  int _apiSmartPingDays = 14;
 
   /// Callback to get current GPS coordinates for heartbeat
   /// Returns (lat, lon) or null if GPS is not available
@@ -157,6 +159,13 @@ class ApiService {
 
   /// Whether hop bytes are enforced by regional admin (only 2 or 3 enforces)
   bool get enforceHopBytes => _apiHopBytes > 1;
+
+  /// Whether Smart Pinging is forced on by the regional admin.
+  bool get enforceSmartPing => _enforceSmartPing;
+
+  /// The Smart Pinging window (days) the server sent; only binding when
+  /// [enforceSmartPing] is true. 14 when the field is missing or invalid.
+  int get apiSmartPingDays => _apiSmartPingDays;
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -604,6 +613,19 @@ class ApiService {
             }
           } else {
             _apiHopBytes = 1;
+          }
+
+          // Parse smart_ping / smart_ping_days from auth response. Absent on a
+          // server that predates the feature: not enforced, 14 days.
+          _enforceSmartPing = data['smart_ping'] == true;
+          final smartDays = data['smart_ping_days'];
+          _apiSmartPingDays =
+              (smartDays is int && smartDays >= 1 && smartDays <= 365)
+                  ? smartDays
+                  : 14;
+          if (_enforceSmartPing) {
+            debugLog(
+                '[API] Regional admin enforces smart pinging: $_apiSmartPingDays day window');
           }
 
           // Note: Heartbeat is enabled by AppStateProvider when auto mode starts
@@ -1134,6 +1156,8 @@ class ApiService {
     _floodDisabled = false;
     _minModeInterval = 15;
     _apiHopBytes = 1;
+    _enforceSmartPing = false;
+    _apiSmartPingDays = 14;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _heartbeatRetryTimer?.cancel();
@@ -1204,6 +1228,59 @@ class ApiService {
       debugWarn(
           '[API]   Tile $z/$x/$y fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
       return (changed: null, body: null);
+    }
+  }
+
+  /// Fetch one z13 coverage tile filtered to the cells that have a green
+  /// (bidir / TX heard) or cyan (disc / trace) result inside the last [days]
+  /// days. Smart Pinging decodes it into "recently covered" grid cells
+  /// (`lib/services/recent_coverage_service.dart`). Contract:
+  /// MeshMapper_Server/docs/VECTOR_TILES.md, "Coverage filters".
+  ///
+  /// Returns the uncompressed MVT bytes on 200, an EMPTY list on 204 (the
+  /// server has nothing covered in this tile: a real answer), and null when
+  /// the request could not be answered (network, timeout, non-2xx).
+  Future<Uint8List?> fetchRecentCoverageTile({
+    required String zone,
+    required int x,
+    required int y,
+    required int gsize,
+    required int days,
+  }) async {
+    const z = 13;
+    final url =
+        Uri.https('${zone.toLowerCase()}.meshmapper.net', '/vector_tile.php', {
+      'z': '$z',
+      'x': '$x',
+      'y': '$y',
+      'gsize': '$gsize',
+      'f_days': '$days',
+      'f_types': 'green,cyan',
+    });
+    final sw = Stopwatch()..start();
+    debugLog(
+        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&f_days=$days&f_types=green,cyan (zone ${zone.toLowerCase()})');
+    try {
+      final response =
+          await _client.get(url).timeout(const Duration(seconds: 8));
+      final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
+      if (response.statusCode == 204) {
+        debugLog(
+            '[COVERAGE]   Recent tile $z/$x/$y: nothing covered (204) in ${secs}s');
+        return Uint8List(0);
+      }
+      if (response.statusCode != 200) {
+        debugWarn(
+            '[COVERAGE]   Recent tile $z/$x/$y HTTP ${response.statusCode} in ${secs}s');
+        return null;
+      }
+      debugLog(
+          '[COVERAGE]   Recent tile $z/$x/$y: ${response.bodyBytes.length}B in ${secs}s');
+      return response.bodyBytes;
+    } catch (e) {
+      debugWarn(
+          '[COVERAGE]   Recent tile $z/$x/$y fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+      return null;
     }
   }
 
