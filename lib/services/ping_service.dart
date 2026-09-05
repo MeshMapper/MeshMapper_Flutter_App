@@ -17,6 +17,7 @@ import 'meshcore/trace_tracker.dart';
 import 'meshcore/tx_tracker.dart';
 import 'meshcore/wire_tag_codec.dart';
 import 'meshcore/unified_rx_handler.dart';
+import 'recent_coverage_service.dart';
 import 'wakelock_service.dart';
 
 /// Ping service for TX/RX ping orchestration
@@ -58,6 +59,11 @@ class PingService {
 
   /// Current configured min ping distance (for validation messages)
   static int currentMinDistance = 25;
+
+  /// Skip reason reported when Smart Pinging held an auto send back because
+  /// the square is already covered. Read by the countdown and the Live
+  /// Activity, so it is named here rather than repeated as a literal.
+  static const String skipReasonRecentlyCovered = 'recently covered';
 
   final GpsService _gpsService;
   final MeshCoreConnection _connection;
@@ -158,6 +164,12 @@ class PingService {
 
   /// Callback to get the power level in watts (0.3, 0.6, 1.0, 2.0) from user preferences
   double Function()? getPowerLevel;
+
+  /// Smart Pinging: whether the cell under a fix already has recent coverage.
+  /// Consulted by the auto TX validator and the auto discovery path only.
+  /// Null (or [RecentCoverage.unknown]) never blocks. Wired by the provider
+  /// to [RecentCoverageService.isCovered].
+  RecentCoverage Function(double lat, double lon)? checkRecentCoverage;
 
   /// Callback to check if discovery drop is enabled (failed discoveries → API)
   bool Function()? getDiscDropEnabled;
@@ -368,6 +380,14 @@ class PingService {
     // Check minimum distance from last ping
     if (!_gpsService.canPingAtPosition(position)) {
       return PingValidation.tooCloseToLastPing;
+    }
+
+    // Smart Pinging: skip a square that already has a recent bidir or disc
+    // result. After the distance check so a fix that is both reports too
+    // close, and only here (auto): manual pings always send.
+    if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+        RecentCoverage.covered) {
+      return PingValidation.recentlyCovered;
     }
 
     // Check cooldown (5 seconds between pings)
@@ -656,6 +676,13 @@ class PingService {
           if (_autoPingEnabled && !_passiveModeEnabled) {
             if (validation == PingValidation.tooCloseToLastPing) {
               _skipReason = 'too close';
+            } else if (validation == PingValidation.recentlyCovered) {
+              _skipReason = skipReasonRecentlyCovered;
+            } else {
+              // Anything else clears it, so a stale "recently covered" from
+              // the previous attempt cannot ride into the countdown and the
+              // Live Activity.
+              _skipReason = null;
             }
             if (_hybridModeEnabled) {
               _scheduleNextHybridPing();
@@ -1559,6 +1586,16 @@ class PingService {
       }
     }
 
+    // Smart Pinging: a covered square gets no discovery request either.
+    if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+        RecentCoverage.covered) {
+      debugLog('[DISC] Square recently covered, skipping discovery request');
+      _skipReason = skipReasonRecentlyCovered;
+      _pingInProgress = false;
+      _scheduleNextDiscovery();
+      return;
+    }
+
     // Clear skip reason since we're proceeding
     _skipReason = null;
 
@@ -2097,6 +2134,9 @@ enum PingValidation {
 
   /// GPS says the phone is in an aircraft (altitude or speed gate)
   airborne,
+
+  /// Smart Pinging: the square already has a recent bidir or disc result
+  recentlyCovered,
 }
 
 extension PingValidationExtension on PingValidation {
@@ -2128,6 +2168,8 @@ extension PingValidationExtension on PingValidation {
         return 'Zone at TX capacity (Passive Only)';
       case PingValidation.airborne:
         return 'Wardriving from an aircraft is not allowed';
+      case PingValidation.recentlyCovered:
+        return 'Square recently covered, skipped';
     }
   }
 }

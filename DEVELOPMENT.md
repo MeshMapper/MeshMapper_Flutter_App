@@ -266,6 +266,56 @@ All modes also passively listen for RX packets via `RxLogger`, adding additional
 - **Airborne block** (`GpsService.positionLooksAirborne`): a fix counts as in the air when its altitude, less its own vertical accuracy, is above 6,000 m (higher than any road on Earth, below airliner cruise) OR its ground speed is above 250 km/h (catches take-off, approach and most small aircraft; a high-speed train trips it too, by design). Three consecutive airborne fixes set `GpsService.isAirborne`, three consecutive ground fixes clear it, and one fix of the other kind restarts the count. The latch records which test fired (`airborneGate`) and BOTH readings of the fix that set it (`airborneAltitude`, `airborneSpeed`, each null when unknown; `speedOrNull` mirrors `altitudeOrNull`), and reports every flip once through `onAirborneChanged`. Unknown altitude and speed arrive from geolocator as 0.0 and never qualify (fail open). Every accepted fix feeds the latch (`trackAirborne`): the position stream, the simulator and `getFreshPosition()`, which TX, discovery and trace sends all take. A fix handed over twice (stream plus fresh read, same platform timestamp) counts once, so the streak really is three distinct fixes. The latch resets whenever the fix source restarts (`startWatching`, `enableSimulator`), because the stream only fires on movement and a phone left on a desk after a simulated flight would otherwise stay locked out. `GpsService.altitudeOrNull` is the shared "does this fix know its altitude" test (only the 0.0/0.0 pair means unknown; Android omits the accuracy on fixes that do carry an altitude).
 - **What the block does**: `AppStateProvider._checkAirborne()` is level-triggered from the position listener and from the auto-ping scheduling hook (on iOS the position stream is quiet in the background, so the fresh fix each ping takes is the only sample then). With a live session it calls `_endSessionForAirborne()`: disconnect alert, error-log entry with the altitude or speed in the user's units, then `disconnect(closeApp: false, releaseExtras: ...)`, the normal user-disconnect path (auto-ping off, RX logging off, queue cleared, offline session kept in Offline Mode, API session released, no auto-reconnect). It defers while a zone transfer is in progress, since that flow re-acquires a session after its awaits with no cancellation check. The listener returns early on that tick so it cannot run a zone check on the way out, and the 100 m zone recheck while disconnected is skipped while airborne (a flight would otherwise POST once a second for hours). The four connect entry points refuse via `_refuseConnectIfAirborne()` (which sets no `connectionError`: the Connection screen's Airborne panel outranks the error card, and a message set there would survive the landing until the next attempt), the Connection screen disables Connect and shows "Airborne" with the reading that set the latch (`airborneCause`, "Your altitude is 10000m." or "You are moving at 300 km/h."), the map's GPS chip shows the fix's altitude when known, `PingValidation.airborne` blocks all three validators, Siri and the watch get `ExternalCommandReasonCode.airborne`, and auto-reconnect abandons instead of retrying into a flight (same alert, error-log entry and release telemetry, preserved queue dropped; the check sits below the reconnect prep so the foreground service and RX-side objects are torn down first). The check skips while `_isConnecting`, because the step flips to connected before `_postConnectionSetup` finishes and a disconnect inside that window would null objects the setup still uses; the next fix catches it. The release call carries `disconnect_cause: airborne`, `airborne_gate` (the test that fired) and `airborne_value` (its reading, raw meters or km/h), plus `airborne_alt_m` and `airborne_speed_kmh`, BOTH readings of the fix that set the latch (each omitted when the platform did not know it, metric ints regardless of the unit setting), so a speed-gate fire can be told apart from a high-speed train; built by the pure `airborneReleaseInfo` in `lib/services/airborne_release.dart` and logged by the server. In Offline Mode the offline recording is paused for as long as the latch is set (`ApiQueueService.setOfflineRecordingPaused`, driven by `GpsService.onAirborneChanged`, logged once on pause and once on resume), so the RX flush at disconnect and any straggler row cannot land in the offline file; the server owner chose the app as the only control on that path. Known gaps: a small aircraft below both limits passes. Thresholds are compiled in (server-delivered limits and a server-side guard were considered and left out). Logged under `[GPS]`, `[APP]`, `[CONN]`.
 
+### Smart Pinging
+
+Auto mode skips TX pings and discovery requests in a grid square that already has a recent
+bidir (green) or disc (cyan) result. RX logging is never skipped (it is free). Manual pings,
+Trace mode and the auto-mode start check are untouched. On by default with a 14 day window.
+
+- **Settings** (Ping Settings): `smartPingEnabled` (default true) and `smartPingDays`
+  (1, 3, 7, 14, 30; default 14, `SmartPingDays`). The window tile is hidden while the switch
+  is off.
+- **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int). When
+  `smart_ping` is true the switch is locked on and the window is the server's; otherwise the
+  user's own values apply. The preference is never overwritten: `AppStateProvider`
+  exposes effective getters (`smartPingEnabled`, `smartPingDays`, `enforceSmartPing`), the
+  `discDropEnabled` pattern. A missing or invalid field means not enforced, 14 days
+  (`ApiService.enforceSmartPing`, `apiSmartPingDays`).
+- **Data source**: `vector_tile.php?z=13&gsize=<grid>&f_days=<days>&f_types=green,cyan`
+  (`ApiService.fetchRecentCoverageTile`), decoded by `decodeCoverageCells`. The square is the
+  cell of the user's Coverage Grid setting (300 m or 100 m), so what is skipped matches what
+  is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not used.
+- **Lookup** (`RecentCoverageService`, `lib/services/recent_coverage_service.dart`): keeps
+  every z13 tile within 500 m of the phone loaded (one tile mid-tile, up to four at a corner),
+  re-evaluated after 100 m of movement, refetched after 5 minutes at the next 100 m of movement
+  (a stationary phone does not refresh), one fetch in flight at a
+  time, an exception from the fetch or the decoder is caught and treated as a failed fetch,
+  failed fetches retried no sooner than 30 s and never clearing a loaded tile. A tile that comes
+  back carrying any cell other than green or cyan is treated as unfiltered (a region server
+  without the `f_*` filter support) and ignored, so the lookup stays `unknown` there. Cells this
+  session covered itself (a heard TX, an answered discovery) are marked covered at once
+  (`markCovered`). `isCovered` is synchronous and returns `covered`, `clear` or `unknown`.
+- **Fail open**: `unknown` (no tile yet), a fetch failure, Offline Mode, no zone, or the
+  feature off all let the ping go out.
+- **The skip**: `PingService.checkRecentCoverage` (wired to `isCovered`) is consulted by
+  `canPing()` after the distance check (too close wins) and by the auto discovery path next to
+  its distance check. It yields `PingValidation.recentlyCovered` and the skip reason
+  `'recently covered'`, which rides the existing `onAutoPingScheduled` hook: the countdown
+  shows "Skipped", the Live Activity detail reads "Recently covered, skipped", and the next
+  attempt is scheduled at the normal interval.
+- **Lifecycle**: `_syncRecentCoverage()` runs at connect, on zone transfer, on every
+  preference change (switch, window, coverage grid), on the Offline Mode switch in either
+  direction, and on every zone check, and switched off on every terminal
+  disconnect path (`_syncRecentCoverage(sessionEnded: true)` in the user-disconnect reset and
+  in `_fullDisconnectCleanupImpl`), which also empties the cache. The sync gates on
+  `hasApiSession` rather than `isConnected`, because the connected step is mirrored
+  asynchronously from the connection's step stream and may not have landed when the
+  post-connection setup runs. The GPS position stream never stops, so a lookup left active
+  after disconnect would keep fetching tiles with no session. Auto-reconnect keeps the session
+  and re-syncs through `_postConnectionSetup`, so the cache survives a BLE flap. Positions come
+  from the GPS listener and from the auto-ping hook (iOS background).
+- Logged under `[COVERAGE]` (tiles, session marks) and `[PING]` / `[DISC]` (skips).
+
 ### API Queue System
 
 Three data flows (TX pings, RX observations, Discovery results) merge into unified API batch queue:
@@ -1223,6 +1273,7 @@ All API endpoints may return maintenance mode:
 - `lib/services/transport/web_serial_service.dart` - USB Serial transport for Web (Web Serial API)
 - `lib/services/ping_service.dart` - TX/RX/Discovery ping orchestration
 - `lib/services/gps_service.dart` - GPS tracking and geofencing
+- `lib/services/recent_coverage_service.dart` - Smart Pinging lookup: recently covered cells from filtered z13 tiles
 - `lib/services/airborne_release.dart` - Pure builder for the airborne session-end text and release telemetry
 - `lib/services/api_queue_service.dart` - Persistent upload queue
 - `lib/services/device_model_service.dart` - Device model identification
