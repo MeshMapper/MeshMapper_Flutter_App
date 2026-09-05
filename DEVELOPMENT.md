@@ -273,8 +273,9 @@ bidir (green) or disc (cyan) result. RX logging is never skipped (it is free). M
 Trace mode and the auto-mode start check are untouched. On by default with a 14 day window.
 
 - **Settings** (Ping Settings): `smartPingEnabled` (default true) and `smartPingDays`
-  (1, 3, 7, 14, 30; default 14, `SmartPingDays`). The window tile is hidden while the switch
-  is off.
+  (any whole number of days from 1 to 365, typed into a number field; default 14; bounds in
+  `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
+  hidden while the switch is off.
 - **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int). When
   `smart_ping` is true the switch is locked on and the window is the server's; otherwise the
   user's own values apply. The preference is never overwritten: `AppStateProvider`

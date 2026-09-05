@@ -2222,39 +2222,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _showSmartPingDaysSelector(
       BuildContext context, AppStateProvider appState) {
-    final current = appState.preferences.smartPingDays;
+    final controller = TextEditingController(
+        text: appState.preferences.smartPingDays.toString());
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Skip squares covered within'),
-        content: RadioGroup<int>(
-          groupValue: current,
-          onChanged: (value) {
-            if (value != null) {
-              appState.updatePreferences(
-                appState.preferences.copyWith(smartPingDays: value),
-              );
-              Navigator.pop(context);
-            }
-          },
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: SmartPingDays.values
-                .map((days) => RadioListTile<int>(
-                      title: Text(
-                        _smartPingDaysLabel(days),
-                        style: const TextStyle(
-                            fontSize: 17, fontWeight: FontWeight.bold),
-                      ),
-                      value: days,
-                    ))
-                .toList(),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          decoration: const InputDecoration(
+            suffixText: 'days',
+            helperText: '${SmartPingDays.min} to ${SmartPingDays.max} days',
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = int.tryParse(controller.text.trim());
+              if (value != null &&
+                  value >= SmartPingDays.min &&
+                  value <= SmartPingDays.max) {
+                appState.updatePreferences(
+                  appState.preferences.copyWith(smartPingDays: value),
+                );
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('Save'),
           ),
         ],
       ),
