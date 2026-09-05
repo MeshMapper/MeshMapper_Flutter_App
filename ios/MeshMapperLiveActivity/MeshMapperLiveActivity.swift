@@ -145,19 +145,23 @@ private struct MeshMapperLockScreenContent: View {
 /// and battery pinned to the far right, each beside its app icon) above a
 /// hairline divider, and the body below is up to three named repeater rows.
 ///
-/// **Width decides how much the band spells out.** The watch card is
-/// 152–191 pt wide per the HIG's watchOS widget dimensions; CarPlay's is
-/// wider. Past 200 pt the band adds the mode word and the battery percentage,
-/// and the body targets three rows (the hex grid three per column, six in
-/// all); under it the icons carry the middle, the battery keeps only its
-/// glyph (until it runs low), and two rows fit.
+/// **Width decides how much the band spells out, and nothing else.** The
+/// watch card is 152 to 191 pt wide per the HIG's watchOS widget dimensions.
+/// Past 200 pt the band adds the mode word and the battery percentage; under
+/// it the icons carry the middle and the battery keeps only its glyph (until
+/// it runs low). Width says nothing about the surface: CarPlay has laid this
+/// card out both wider than 200 pt and, on a 2026-09-05 drive, at about
+/// 190 x 67 pt, squarely inside the watch range, and no environment value
+/// names the surface. So the body never takes its row count from the width.
 ///
-/// **Height decides the row type size.** CarPlay picks the canvas it renders
-/// the card into, and it is not the same canvas every drive; fixed row fonts
-/// clipped the last row whenever the canvas came up short. The body solves
-/// its row font (and the grid its depth) from the measured box, so the
-/// target rows always land whole: smaller-but-complete, never
-/// bigger-but-clipped.
+/// **Height decides the row count and the row type size.** CarPlay picks the
+/// canvas it renders the card into, and it is not the same canvas every
+/// drive. Fixed row fonts clipped the last row whenever the canvas came up
+/// short, and a fixed two-row target for narrow cards dropped a third row
+/// that had room. The body targets three rows on every width and solves how
+/// many of them seat whole, and at what font, from the measured box (the grid
+/// its depth the same way): smaller-but-complete, never bigger-but-clipped,
+/// and never fewer than the canvas can hold.
 ///
 /// **No ticking countdown in this family, on any width.** A
 /// `Text(timerInterval:)` is redrawn by the system every second it is
@@ -176,9 +180,13 @@ private struct MeshMapperSmallActivityContent: View {
   let state: MeshMapperActivityAttributes.ContentState
   let isStale: Bool
 
-  /// Watch cards top out at 191 pt; anything wider is a surface (CarPlay)
-  /// that can afford the spelled-out band and the third row.
+  /// Watch cards top out at 191 pt; anything wider can afford the spelled-out
+  /// band. It decides the band only: CarPlay renders below this too.
   private static let wideThreshold: CGFloat = 200
+
+  /// Rows the body asks for on every width. The measured height decides how
+  /// many of them land (`rowsThatFit`), never the width.
+  private static let targetRows = 3
 
   /// Width past which the band can afford the spelled-out mode word on top
   /// of everything else it carries.
@@ -396,7 +404,7 @@ private struct MeshMapperSmallActivityContent: View {
     } else if state.showRepeaterNames ?? true {
       let gap: CGFloat = isWide ? 3 : 2
       let count = Self.rowsThatFit(
-        target: isWide ? 3 : 2, height: size.height, gap: gap)
+        target: Self.targetRows, height: size.height, gap: gap)
       let font = Self.rowFont(
         count: count, height: size.height, gap: gap, cap: isWide ? 13 : 10)
       VStack(alignment: .leading, spacing: gap) {
@@ -411,8 +419,8 @@ private struct MeshMapperSmallActivityContent: View {
 
   /// The nameless alternative behind the Settings switch: `[dot hex SNR]`
   /// packed two columns wide, column-major, up to three observations deep per
-  /// column on the wide card (six total) and two on the watch. More repeaters
-  /// per glance, no identity beyond the hex.
+  /// column wherever the height seats them (six total). More repeaters per
+  /// glance, no identity beyond the hex.
   ///
   /// Font, column count and depth are solved from the measured box: rigid
   /// rows at a fixed size overflowed the 40 mm card as soon as 3-byte path
@@ -421,7 +429,7 @@ private struct MeshMapperSmallActivityContent: View {
   private func hexGrid(isWide: Bool, size: CGSize) -> some View {
     let gap: CGFloat = isWide ? 3 : 2
     let perColumn = Self.rowsThatFit(
-      target: isWide ? 3 : 2, height: size.height, gap: gap)
+      target: Self.targetRows, height: size.height, gap: gap)
     let rows = Array(state.repeaters.prefix(perColumn * 2))
     let columnGap: CGFloat = isWide ? 16 : 8
     let idChars = CGFloat(rows.map { $0.id.count }.max() ?? 2)
@@ -1298,22 +1306,24 @@ enum MeshMapperActivityRenderHarness {
             written.append(path)
           }
         }
-        // The wide layouts CarPlay renders; the exact CarPlay size is not
+        // The canvases CarPlay has been seen to render; the exact size is not
         // published and varies between drives, so these bracket both axes:
-        // icon-only mode at 250 wide, the spelled-out mode word at 320, and
-        // heights where the row solver must shrink (80) or the caps rule
-        // (100).
-        for width in [CGFloat(250), CGFloat(320)] {
-          for height in [CGFloat(80), CGFloat(100)] {
-            if let path = render(
-              MeshMapperSmallActivityContent(state: state, isStale: false)
-                .frame(width: width, height: height)
-                .background(MeshMapperPalette.background),
-              named: "small-carplay\(Int(width))x\(Int(height))-\(name)",
-              in: directory
-            ) {
-              written.append(path)
-            }
+        // the narrow 190 x 68 measured on 2026-09-05 (inside the watch range,
+        // where three rows must still land), icon-only mode at 250 wide, the
+        // spelled-out mode word at 320, and heights where the row solver must
+        // shrink (80) or the caps rule (100).
+        let carPlaySizes: [(width: CGFloat, height: CGFloat)] = [
+          (190, 68), (250, 80), (250, 100), (320, 80), (320, 100),
+        ]
+        for size in carPlaySizes {
+          if let path = render(
+            MeshMapperSmallActivityContent(state: state, isStale: false)
+              .frame(width: size.width, height: size.height)
+              .background(MeshMapperPalette.background),
+            named: "small-carplay\(Int(size.width))x\(Int(size.height))-\(name)",
+            in: directory
+          ) {
+            written.append(path)
           }
         }
       }
