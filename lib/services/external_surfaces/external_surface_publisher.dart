@@ -91,6 +91,7 @@ class ExternalSurfacePublisher<TSnapshot, TPayload> {
     ExternalSurfaceClear? clear,
     ExternalSurfaceCandidateGate<TSnapshot, TPayload>? candidateGate,
     void Function(Object error)? onQueueError,
+    void Function(Duration remaining)? onHeld,
     bool restartDebounce = true,
     bool immediateBypassesMinimumInterval = false,
   })  : _debounceDelay = debounceDelay,
@@ -104,6 +105,7 @@ class ExternalSurfacePublisher<TSnapshot, TPayload> {
         _clear = clear,
         _candidateGate = candidateGate,
         _onQueueError = onQueueError,
+        _onHeld = onHeld,
         _restartDebounce = restartDebounce,
         _immediateBypassesMinimumInterval = immediateBypassesMinimumInterval;
 
@@ -118,6 +120,12 @@ class ExternalSurfacePublisher<TSnapshot, TPayload> {
   final ExternalSurfaceClear? _clear;
   final ExternalSurfaceCandidateGate<TSnapshot, TPayload>? _candidateGate;
   final void Function(Object error)? _onQueueError;
+
+  /// Told once per held window, with the time left on the floor, when a
+  /// non-urgent update is deferred. Once, because ordinary notifies re-arm
+  /// the floor timer several times a second and a report per re-arm would
+  /// drown the log it exists for. The window closes on the next publish.
+  final void Function(Duration remaining)? _onHeld;
   final bool _restartDebounce;
   final bool _immediateBypassesMinimumInterval;
 
@@ -132,6 +140,7 @@ class ExternalSurfacePublisher<TSnapshot, TPayload> {
   Future<void> _operationChain = Future<void>.value();
   bool _forceDelivery = false;
   bool _bypassBuildFloor = false;
+  bool _heldReported = false;
   bool _didReconcileEmptyState = false;
   bool _disabled = false;
   bool _disposed = false;
@@ -285,6 +294,7 @@ class ExternalSurfacePublisher<TSnapshot, TPayload> {
         _lastPublishedUrgencyKey = urgencyKey;
         _lastBuiltPreflightKey = preflightKey;
         _lastPublishedAt = DateTime.now();
+        _heldReported = false;
         _didReconcileEmptyState = false;
         break;
       case ExternalSurfacePublishDisposition.rejected:
@@ -301,11 +311,13 @@ class ExternalSurfacePublisher<TSnapshot, TPayload> {
     if (anchor == null) return false;
     final elapsed = DateTime.now().difference(anchor);
     if (elapsed >= _minimumNonUrgentInterval) return false;
+    final remaining = _minimumNonUrgentInterval - elapsed;
     _scheduledUpdate?.cancel();
-    _scheduledUpdate = Timer(
-      _minimumNonUrgentInterval - elapsed,
-      _enqueueFlush,
-    );
+    _scheduledUpdate = Timer(remaining, _enqueueFlush);
+    if (!_heldReported) {
+      _heldReported = true;
+      _onHeld?.call(remaining);
+    }
     return true;
   }
 
@@ -324,6 +336,7 @@ class ExternalSurfacePublisher<TSnapshot, TPayload> {
     _lastBuiltPreflightKey = null;
     _lastBuiltAt = null;
     _lastPublishedAt = null;
+    _heldReported = false;
     _didReconcileEmptyState = reconciledEmptyState;
   }
 
