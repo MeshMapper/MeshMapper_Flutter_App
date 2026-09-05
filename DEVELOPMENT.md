@@ -272,7 +272,7 @@ Auto mode skips TX pings and discovery requests in a grid square that already ha
 bidir (green) or disc (cyan) result. RX logging is never skipped (it is free). Manual pings,
 Trace mode and the auto-mode start check are untouched. On by default with a 14 day window.
 
-- **Settings** (Ping Settings): `smartPingEnabled` (default true) and `smartPingDays`
+- **Settings** (Settings → Pinging → Ping Settings): `smartPingEnabled` (default true) and `smartPingDays`
   (any whole number of days from 1 to 365, typed into a number field; default 14; bounds in
   `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
   hidden while the switch is off.
@@ -333,7 +333,7 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
 
 - **Storage**: SharedPreferences with key `offline_sessions` — JSON-encoded list of session objects
 - **Session Format**: Each session has a filename (`YYYY-MM-DD.json`), creation timestamp, ping count, device info, and the wardrive data payload
-- **Upload**: Sessions can be uploaded via Settings screen when connectivity is restored
+- **Upload**: Sessions can be uploaded from Settings → Data when connectivity is restored
 - **Non-persistent**: Offline mode is never persisted — always off on app restart. Users must re-enable if needed.
 - **Maintenance integration**: When maintenance mode is detected while disconnected, the UI suggests using Offline Mode
 - **Airborne pause**: while the airborne latch is set, no fix is appended to the offline recording (`ApiQueueService.setOfflineRecordingPaused`); the session itself ends through the normal airborne block. See GPS & Zone Validation.
@@ -398,7 +398,7 @@ Two-service system for capturing debug logs and submitting bug reports.
 3. **Upload File**: POST multipart to `upload_url` — splits large files at newline boundaries, uploads chunks sequentially with retry (3 attempts, exponential backoff)
 4. **Complete Upload** (90-100%): POST `/upload-complete` with issue reference
 
-- **Accessible via**: Settings screen
+- **Accessible via**: Settings → About & Support
 - **Files**: `lib/services/debug_file_logger.dart`, `lib/services/debug_submit_service.dart`
 
 ### Audio Service
@@ -554,7 +554,7 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   `lib/services/portal_account_service.dart`, `lib/services/link_decision.dart`,
   `lib/services/meshcore/connection.dart` (`sign()`, `_write()`),
   `lib/providers/app_state_provider.dart`, `lib/screens/main_scaffold.dart`,
-  `lib/screens/settings_screen.dart`.
+  `lib/screens/settings/account_settings_page.dart`.
 
 ### Coverage Overlay (vector tiles)
 
@@ -1272,6 +1272,8 @@ All API endpoints may return maintenance mode:
 
 - `lib/main.dart` - App entry point, platform detection, theme
 - `lib/providers/app_state_provider.dart` - Global state management
+- `lib/screens/settings_screen.dart` - Settings tab: one row per settings folder, each opening a page under `lib/screens/settings/`
+- `lib/screens/settings/` - Settings folder pages (General, Map, Pinging, Data, MeshMapper Account, API Endpoints, About & Support, Developer Tools) plus the shared section card and auto-ping lock banner
 - `lib/services/meshcore/connection.dart` - 9-step connection workflow, MeshCore protocol
 - `lib/services/meshcore/unified_rx_handler.dart` - Packet routing (TX vs RX)
 - `lib/services/meshcore/tx_tracker.dart` - Repeater echo detection (7s window)
