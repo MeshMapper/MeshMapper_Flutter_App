@@ -144,7 +144,7 @@ See [`DEVELOPMENT.md`](DEVELOPMENT.md) for detailed architecture documentation a
 
 Use the [MeshMapper Project issue tracker](https://github.com/MeshMapper/MeshMapper_Project/issues) for bugs, feature requests, and questions. Please include:
 
-- App version (shown in Settings)
+- App version (shown in Settings → About & Support)
 - Platform (Android/iOS/Web) and OS version
 - Steps to reproduce
 - Debug logs if applicable (`?debug=1` on web, or logcat/console output on mobile)
