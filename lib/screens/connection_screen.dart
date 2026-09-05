@@ -165,6 +165,13 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       return _buildConnectedInfo(context, appState);
     }
 
+    // Airborne block outranks a connect error: the device list's Airborne
+    // panel says why Connect is off and when it comes back, where the error
+    // card would title it "Connection Failed".
+    if (appState.isAirborne) {
+      return _buildDeviceList(context, appState);
+    }
+
     // Show error
     if (appState.connectionError != null) {
       return _buildError(context, appState);
@@ -255,6 +262,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
     final canConnect = appState.connectionStep == ConnectionStep.disconnected &&
         !appState.isAutoReconnecting &&
+        !appState.isAirborne &&
         (!appState.maintenanceMode || appState.offlineMode) &&
         (appState.offlineMode || appState.inZone == true);
 
@@ -1446,8 +1454,13 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     String? iataCode;
     Color locationColor;
 
-    // Offline mode: show greyed out with "-"
-    if (appState.offlineMode) {
+    // Airborne block applies in every mode, so it comes first
+    if (appState.isAirborne) {
+      locationIcon = Icons.airplanemode_active;
+      locationText = 'Airborne';
+      locationColor = Colors.red;
+      // Offline mode: show greyed out with "-"
+    } else if (appState.offlineMode) {
       locationIcon = Icons.gps_off;
       locationText = '-';
       locationColor = Colors.grey;
@@ -1769,9 +1782,23 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   }
 
   Widget _buildDeviceList(BuildContext context, AppStateProvider appState) {
-    // Offline mode bypasses both zone and maintenance checks
-    final canConnect = appState.offlineMode ||
-        (appState.inZone == true && !appState.maintenanceMode);
+    // Offline mode bypasses both zone and maintenance checks, never the
+    // airborne block
+    final canConnect = !appState.isAirborne &&
+        (appState.offlineMode ||
+            (appState.inZone == true && !appState.maintenanceMode));
+
+    // Airborne block applies in every mode, so it comes before maintenance
+    if (appState.isAirborne) {
+      return _buildMessageContent(
+        context: context,
+        icon: Icons.airplanemode_active,
+        iconColor: Colors.red.withValues(alpha: 0.7),
+        title: 'Airborne',
+        message: 'Wardriving from an aircraft is not allowed.\n\n'
+            'MeshMapper will let you connect again once you are back on the ground.',
+      );
+    }
 
     // Show maintenance message (takes priority over zone checks)
     if (appState.maintenanceMode && !appState.offlineMode) {

@@ -21,6 +21,7 @@ void main() {
     bool connectedToRemembered = false,
     bool connecting = false,
     bool unattended = true,
+    bool airborne = false,
     DateTime? issuedAt,
     DateTime? expiresAt,
   }) =>
@@ -31,11 +32,23 @@ void main() {
         isConnectedToRememberedCompanion: connectedToRemembered,
         isConnecting: connecting,
         canReconnectWithoutUserInput: unattended,
+        isAirborne: airborne,
         now: now,
       );
 
   test('admits an unattended reconnect to the remembered companion', () {
     expect(resolve().disposition, ExternalCommandDisposition.admitted);
+  });
+
+  test('refuses while the phone looks airborne, and says why', () {
+    final result = resolve(airborne: true);
+
+    expect(result.disposition, ExternalCommandDisposition.refused);
+    expect(result.reason?.code, ExternalCommandReasonCode.airborne);
+    expect(
+      result.reason?.compactText,
+      'Wardriving from an aircraft is not allowed',
+    );
   });
 
   test('already connected to the remembered companion is a no-op', () {

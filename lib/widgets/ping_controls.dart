@@ -165,6 +165,10 @@ class PingControls extends StatelessWidget {
           blockingHint = 'Select power level in Connect tab';
           blockingIcon = Icons.bolt;
           blockingColor = Colors.orange;
+        } else if (validation == PingValidation.airborne) {
+          blockingHint = 'Airborne, wardriving blocked';
+          blockingIcon = Icons.airplanemode_active;
+          blockingColor = Colors.red;
         } else if (validation == PingValidation.noGpsLock) {
           blockingHint = 'Waiting for GPS lock...';
           blockingIcon = Icons.gps_off;

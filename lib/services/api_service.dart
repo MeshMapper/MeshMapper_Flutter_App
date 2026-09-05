@@ -414,6 +414,7 @@ class ApiService {
     bool offlineMode = false,
     bool skipSessionStore = false,
     String? sessionId,
+    Map<String, dynamic>? extras,
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -434,6 +435,12 @@ class ApiService {
       // Add offline_mode flag for offline session uploads
       if (offlineMode) {
         payload['offline_mode'] = true;
+      }
+
+      // Caller-supplied telemetry (the airborne block's release call). The
+      // server keys off `reason` alone and ignores keys it does not know.
+      if (extras != null) {
+        payload.addAll(extras);
       }
 
       // For connect/register: add device metadata and GPS coords

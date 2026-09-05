@@ -9,6 +9,7 @@ ExternalCommandAdmission resolveLastCompanionConnection({
   required bool isConnectedToRememberedCompanion,
   required bool isConnecting,
   required bool canReconnectWithoutUserInput,
+  required bool isAirborne,
   DateTime? now,
 }) {
   // The deadline comes first: it is the instant the intent actually stops
@@ -32,6 +33,14 @@ ExternalCommandAdmission resolveLastCompanionConnection({
     return const ExternalCommandAdmission(
       disposition: ExternalCommandDisposition.refused,
       reason: ExternalCommandReason.noRememberedCompanion,
+    );
+  }
+  // The connect entry points refuse while the GPS says aircraft; say so here
+  // instead of letting the refusal surface as a generic "could not connect".
+  if (isAirborne) {
+    return const ExternalCommandAdmission(
+      disposition: ExternalCommandDisposition.refused,
+      reason: ExternalCommandReason.airborne,
     );
   }
   if (isConnected) {

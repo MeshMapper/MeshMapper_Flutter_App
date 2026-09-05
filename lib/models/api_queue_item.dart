@@ -64,6 +64,14 @@ class ApiQueueItem extends HiveObject {
   @HiveField(17)
   final String? wireTag;
 
+  /// Altitude of the fix in meters, null when the phone did not know it.
+  /// iOS reports height above mean sea level. Android usually reports height
+  /// above the WGS84 ellipsoid, but Android 14+ substitutes mean sea level
+  /// when the fix carries it, so one device can report either. The two differ
+  /// by the local geoid separation (up to ~100 m).
+  @HiveField(18)
+  final double? altitude;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -78,6 +86,7 @@ class ApiQueueItem extends HiveObject {
     this.power,
     this.pingCounter,
     this.wireTag,
+    this.altitude,
   });
 
   /// Create from TX ping
@@ -92,6 +101,7 @@ class ApiQueueItem extends HiveObject {
     double? power,
     int? pingCounter,
     String? wireTag,
+    double? altitude,
   }) {
     return ApiQueueItem(
       type: 'TX',
@@ -106,6 +116,7 @@ class ApiQueueItem extends HiveObject {
       power: power,
       pingCounter: pingCounter,
       wireTag: wireTag,
+      altitude: altitude,
     );
   }
 
@@ -119,6 +130,7 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) {
     return ApiQueueItem(
       type: 'RX',
@@ -130,6 +142,7 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
   }
 
@@ -148,6 +161,7 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) {
     // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
     final heardRepeats =
@@ -162,6 +176,7 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
   }
 
@@ -178,6 +193,7 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) {
     final heardRepeats =
         '$repeaterId:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
@@ -191,6 +207,7 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
   }
 
@@ -202,6 +219,7 @@ class ApiQueueItem extends HiveObject {
     required bool externalAntenna,
     int? noiseFloor,
     double? power,
+    double? altitude,
   }) {
     return ApiQueueItem(
       type: 'DISC',
@@ -213,6 +231,7 @@ class ApiQueueItem extends HiveObject {
       externalAntenna: externalAntenna,
       noiseFloor: noiseFloor,
       power: power,
+      altitude: altitude,
     );
   }
 
@@ -234,6 +253,7 @@ class ApiQueueItem extends HiveObject {
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+        if (altitude != null) 'altitude': altitude!.round(),
       };
     }
 
@@ -250,6 +270,7 @@ class ApiQueueItem extends HiveObject {
           'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
           'external_antenna': externalAntenna,
           'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+          if (altitude != null) 'altitude': altitude!.round(),
         };
       }
 
@@ -270,6 +291,7 @@ class ApiQueueItem extends HiveObject {
             1000, // Unix timestamp in seconds
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
+        if (altitude != null) 'altitude': altitude!.round(),
       };
     }
 
@@ -287,6 +309,8 @@ class ApiQueueItem extends HiveObject {
       // absence (coords mode / RX) is the unchanged-from-today coords path.
       if (pingCounter != null) 'ping_counter': pingCounter,
       if (wireTag != null) 'wire_tag': wireTag,
+      // Whole meters, omitted when the phone did not know its altitude.
+      if (altitude != null) 'altitude': altitude!.round(),
     };
   }
 

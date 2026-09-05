@@ -90,6 +90,7 @@ enum ExternalCommandReasonCode {
   anotherCompanionConnected,
   alreadyConnecting,
   userInteractionRequired,
+  airborne,
   other,
 }
 
@@ -188,6 +189,8 @@ class ExternalCommandReason {
   static const userInteractionRequired = ExternalCommandReason.known(
     ExternalCommandReasonCode.userInteractionRequired,
   );
+  static const airborne =
+      ExternalCommandReason.known(ExternalCommandReasonCode.airborne);
 
   final ExternalCommandReasonCode code;
   final String? rawText;
@@ -244,6 +247,8 @@ class ExternalCommandReason {
         ExternalCommandReasonCode.alreadyConnecting => 'Already connecting',
         ExternalCommandReasonCode.userInteractionRequired =>
           'User interaction required',
+        ExternalCommandReasonCode.airborne =>
+          'Wardriving from an aircraft is not allowed',
         ExternalCommandReasonCode.other => rawText ?? '',
       };
 }
