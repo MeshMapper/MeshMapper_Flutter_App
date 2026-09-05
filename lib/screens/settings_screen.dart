@@ -386,7 +386,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 leading: const Icon(Icons.history),
                 title: const Text('Skip squares covered within'),
                 subtitle: Text(appState.enforceSmartPing
-                    ? '${appState.smartPingDays} days (set by Regional Admin)'
+                    ? '${_smartPingDaysLabel(appState.smartPingDays)} (set by Regional Admin)'
                     : _smartPingDaysLabel(prefs.smartPingDays)),
                 trailing: const Icon(Icons.chevron_right),
                 enabled: !isAutoMode && !appState.enforceSmartPing,
