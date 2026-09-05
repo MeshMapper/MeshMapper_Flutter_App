@@ -12,6 +12,24 @@ import 'gps_service.dart';
 /// high-speed-rail regions; a speed-gate fire that carries only its speed
 /// cannot be told from a train, one that carries the altitude too can. Metric
 /// ints regardless of the unit setting: the server range-gates and casts.
+/// The one-line cause shown on the Connect screen while the latch is set:
+/// the reading of the test that fired, in the user's units.
+String airborneCauseText({
+  required AirborneGate gate,
+  required double? altitudeMeters,
+  required double? speedMetersPerSecond,
+  required bool isImperial,
+}) {
+  switch (gate) {
+    case AirborneGate.altitude:
+      final text = formatMeters(altitudeMeters ?? 0, isImperial: isImperial);
+      return 'Your altitude is $text.';
+    case AirborneGate.speed:
+      final kmh = (speedMetersPerSecond ?? 0) * 3.6;
+      return 'You are moving at ${formatSpeed(kmh, isImperial: isImperial)}.';
+  }
+}
+
 ({String detail, Map<String, dynamic> extras}) airborneReleaseInfo({
   required AirborneGate gate,
   required double? altitudeMeters,

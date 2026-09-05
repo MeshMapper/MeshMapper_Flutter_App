@@ -1795,8 +1795,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         icon: Icons.airplanemode_active,
         iconColor: Colors.red.withValues(alpha: 0.7),
         title: 'Airborne',
-        message: 'Wardriving from an aircraft is not allowed.\n\n'
-            'MeshMapper will let you connect again once you are back on the ground.',
+        message: '${appState.airborneCause ?? ''}\n\n'
+                'Wardriving from an aircraft is not allowed.\n\n'
+                'MeshMapper will let you connect again once you are back on the ground.'
+            .trimLeft(),
       );
     }
 

@@ -6464,6 +6464,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Whether the GPS service currently holds the airborne latch.
   bool get isAirborne => _gpsService.isAirborne;
 
+  /// What set the latch, for the Connect screen: "Your altitude is 10000m."
+  /// or "You are moving at 300 km/h." Null while the latch is clear.
+  String? get airborneCause {
+    final gate = _gpsService.airborneGate;
+    if (!_gpsService.isAirborne || gate == null) return null;
+    return airborneCauseText(
+      gate: gate,
+      altitudeMeters: _gpsService.airborneAltitude,
+      speedMetersPerSecond: _gpsService.airborneSpeed,
+      isImperial: _preferences.isImperial,
+    );
+  }
+
   /// Airborne block, level-triggered: end the session whenever the GPS says
   /// aircraft while a session is live. Level rather than edge so a connect
   /// that started before the latch is caught on the first fix after it
