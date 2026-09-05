@@ -7035,6 +7035,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _bordersLoadedForZone = null;
       debugLog('[GEOFENCE] Cleared zone data for offline mode');
 
+      // Smart Pinging has no server to ask in Offline Mode.
+      _syncRecentCoverage();
+
       debugLog('[APP] Successfully switched to offline mode');
       return (success: true, error: null);
     } catch (e) {
@@ -7243,6 +7246,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Track session zone for zone-to-zone transfer detection
       _sessionZoneCode = zoneCode;
+
+      // Smart Pinging follows the new session and zone.
+      _syncRecentCoverage();
 
       debugLog('[APP] Successfully switched to online mode');
       return (success: true, error: null);
@@ -8665,12 +8671,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             !_isZoneTransferInProgress) {
           _currentZone = newZone;
           _nearestZone = null;
+          _syncRecentCoverage();
           await _handleZoneTransfer(newZoneCode, newZoneName);
           return;
         }
 
         _currentZone = newZone;
         _nearestZone = null;
+        // The lookup is keyed on the zone, so re-sync whenever it moves.
+        _syncRecentCoverage();
 
         final staleHours = result['stale_repeater_hours'];
         if (staleHours is int && staleHours > 0) {
@@ -8692,6 +8701,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _regionBorders = [];
         _bordersLoadedForZone = null;
         _currentZone = null;
+        _syncRecentCoverage();
         _nearestZone = result['nearest_zone'] as Map<String, dynamic>?;
         final nearestName = _nearestZone?['name'] ?? 'Unknown';
         final distanceKm =
