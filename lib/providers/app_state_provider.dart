@@ -3287,10 +3287,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _gpsPositionSubscription =
         _gpsService.positionStream.listen((position) async {
       _currentPosition = position;
-      // Smart Pinging: keep the tiles around the phone loaded. Throttled
-      // inside the service (100 m), so this is cheap per tick.
-      unawaited(
-          _recentCoverage.onPosition(position.latitude, position.longitude));
       // Do NOT bump mapRevision here. Position drives the camera/puck/coords
       // directly (MapWidget._onPositionNotify listener + a Selector on the
       // GPS-info overlay) — all real-time — WITHOUT rebuilding the map, which
@@ -3298,6 +3294,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // notifyListeners() reaches those position watchers; the map's Selector
       // (keyed on mapRevision) stays cached.
       notifyListeners();
+
+      // Smart Pinging: keep the tiles around the phone loaded. Throttled
+      // inside the service (100 m), so this is cheap per tick.
+      unawaited(
+          _recentCoverage.onPosition(position.latitude, position.longitude));
 
       // Diagnostic: catch a stuck countdown timer (the intermittent ping-control
       // lockout) in the foreground. Throttled to 5s; logs only when stuck.
