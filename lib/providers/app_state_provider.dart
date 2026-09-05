@@ -473,6 +473,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// UPPER 64-hex pubkeys this account owns (mirrors `portal_linked_pubkeys`).
   List<String> _portalLinkedPubkeys = [];
 
+  /// The companions behind [_portalLinkedPubkeys] with the label, name and
+  /// points `me` reports (mirrors Hive `portal_companions`). Server order:
+  /// newest link first.
+  List<LinkedPubkey> _portalCompanions = [];
+
+  /// Account totals and awards from the last `me` (mirrors Hive
+  /// `portal_overview`). Null until a server that sends the block answers.
+  PortalOverview? _portalOverview;
+
   /// UPPER pubkey -> declined. Persisted; survives sign-out (device pref).
   Map<String, bool> _portalLinkDeclinedDevices = {};
 
@@ -522,6 +531,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   static const String _portalAccountKey = 'portal_account_info';
   static const String _portalLinkedPubkeysKey = 'portal_linked_pubkeys';
+  static const String _portalCompanionsKey = 'portal_companions';
+  static const String _portalOverviewKey = 'portal_overview';
   static const String _portalDeclinedKey = 'portal_link_declined_devices';
   static const String _portalSignUnsupportedKey =
       'portal_sign_unsupported_devices';
@@ -1181,6 +1192,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// How many radios this account owns (from the last `me` refresh).
   int get portalLinkedDeviceCount => _portalLinkedPubkeys.length;
+
+  /// Every companion linked to the account, for the Account page's list.
+  List<LinkedPubkey> get portalCompanions =>
+      List.unmodifiable(_portalCompanions);
+
+  /// Account totals and awards, or null when unknown. Null hides the
+  /// Overview card: an older server does not send the block, and zeros would
+  /// be a lie for an account that has points.
+  PortalOverview? get portalOverview => _portalOverview;
 
   /// True when at least one radio is suppressed from the link prompt — either
   /// the user declined it or it was judged unable to sign. Both are cleared by
@@ -2943,17 +2963,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _portalAccountService.deviceLabelProvider = _portalDeviceLabel;
     _portalAccountService.onAccountChanged = () {
       _portalAccount = _portalAccountService.account;
-      _portalLinkedPubkeys = _portalAccountService.linkedPubkeys
+      _portalCompanions = _portalAccountService.linkedPubkeys.toList();
+      _portalLinkedPubkeys = _portalCompanions
           .map((entry) => entry.pubkey.toUpperCase())
           .toList();
+      _portalOverview = _portalAccountService.overview;
       unawaited(_savePortalAccountState());
-      // Account state is NOT map state — plain notify only (Critical Rule 9).
+      // Account state is NOT map state: plain notify only (Critical Rule 9).
       notifyListeners();
     };
     _portalAccountService.onSignedOut = (reason) {
       debugLog('[ACCOUNT] Signed out ($reason) — clearing the cached identity');
       _portalAccount = null;
       _portalLinkedPubkeys = [];
+      _portalCompanions = [];
+      _portalOverview = null;
       // Declines and sign-unsupported are DEVICE preferences, not account
       // data: they deliberately survive a sign-out.
       unawaited(_savePortalAccountState());
@@ -9977,16 +10001,31 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
+      final rawCompanions = box.get(_portalCompanionsKey);
       final rawLinked = box.get(_portalLinkedPubkeysKey);
-      if (rawLinked is List) {
+      if (rawCompanions is List) {
+        _portalCompanions = rawCompanions
+            .whereType<Map>()
+            .map(LinkedPubkey.fromCache)
+            .whereType<LinkedPubkey>()
+            .toList();
+        _portalLinkedPubkeys =
+            _portalCompanions.map((entry) => entry.pubkey).toList();
+        // The service is the single source of truth for this list, and
+        // onAccountChanged mirrors it back WHOLESALE. Seed it too, or the
+        // first link/unlink would publish a list built from an empty cache
+        // and wipe every radio linked before this launch.
+        _portalAccountService.hydrateLinkedCompanions(_portalCompanions);
+      } else if (rawLinked is List) {
+        // First launch after the update: only the membership list exists.
+        // The next `me` fills in labels, names and points.
         _portalLinkedPubkeys =
             rawLinked.map((entry) => entry.toString().toUpperCase()).toList();
-        // The service is the single source of truth for this list —
-        // onAccountChanged mirrors it back WHOLESALE. Seed it too, or the first
-        // link/unlink would publish a list built from an empty cache and wipe
-        // every radio linked before this launch.
         _portalAccountService.hydrateLinkedPubkeys(_portalLinkedPubkeys);
       }
+
+      _portalOverview = PortalOverview.fromCache(box.get(_portalOverviewKey));
+      _portalAccountService.hydrateOverview(_portalOverview);
 
       final rawDeclined = box.get(_portalDeclinedKey);
       if (rawDeclined is Map) {
@@ -10005,6 +10044,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[ACCOUNT] Loaded state: '
           'account=${_portalAccount?.username ?? 'none'}, '
           'linked=${_portalLinkedPubkeys.length}, '
+          'companions=${_portalCompanions.length}, '
+          'overview=${_portalOverview == null ? 'none' : 'cached'}, '
           'declined=${_portalLinkDeclinedDevices.length}, '
           'signUnsupported=${_portalSignUnsupportedDevices.length}');
     } catch (e) {
@@ -10024,6 +10065,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         await box.put(_portalAccountKey, account.toCache());
       }
       await box.put(_portalLinkedPubkeysKey, _portalLinkedPubkeys);
+      await box.put(_portalCompanionsKey,
+          _portalCompanions.map((entry) => entry.toCache()).toList());
+      final overview = _portalOverview;
+      if (overview == null) {
+        await box.delete(_portalOverviewKey);
+      } else {
+        await box.put(_portalOverviewKey, overview.toCache());
+      }
       await box.put(_portalDeclinedKey, _portalLinkDeclinedDevices);
       await box.put(_portalSignUnsupportedKey, _portalSignUnsupportedDevices);
       await box.flush();
@@ -10210,6 +10259,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final ok = await _portalAccountService.unlinkDevice(pubkey);
     if (ok) {
       _portalLinkedPubkeys.remove(pubkey);
+      _portalCompanions.removeWhere((entry) => entry.pubkey == pubkey);
       await _savePortalAccountState();
       notifyListeners();
     }
@@ -10298,6 +10348,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _portalBadSignatureStrikes.remove(pubkey);
         _portalSignUnsupportedDevices.remove(pubkey);
         await _savePortalAccountState();
+        // The overview only moves on `me`: the link answer carries the new
+        // radio's own points, not the account total or its awards. Forced,
+        // because a link is rare and the user is looking at the page.
+        unawaited(_portalAccountService.refreshMe(force: true));
         notifyListeners();
         return PortalLinkOutcome(
           PortalLinkStatus.linked,
