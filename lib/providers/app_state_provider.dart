@@ -10022,6 +10022,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _portalLinkedPubkeys =
             rawLinked.map((entry) => entry.toString().toUpperCase()).toList();
         _portalAccountService.hydrateLinkedPubkeys(_portalLinkedPubkeys);
+        // Mirror the service's placeholder list so the very first save writes
+        // matching keys; an empty portal_companions would win the next load
+        // and wipe the membership this branch just restored.
+        _portalCompanions = _portalAccountService.linkedPubkeys.toList();
       }
 
       _portalOverview = PortalOverview.fromCache(box.get(_portalOverviewKey));
