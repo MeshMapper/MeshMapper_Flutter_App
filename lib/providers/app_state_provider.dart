@@ -10128,14 +10128,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _portalAccountService.logout();
   }
 
-  /// Refresh the identity and linked-device list (throttled to 1/hour).
-  Future<void> refreshPortalAccount({bool force = false}) async {
-    await _portalAccountService.refreshMe(force: force);
-  }
+  /// Refresh the identity, linked companions and overview (throttled to
+  /// 1/hour unless forced). True when the portal answered and the cache was
+  /// replaced; false when the call was throttled, rate limited, or failed.
+  Future<bool> refreshPortalAccount({bool force = false}) =>
+      _portalAccountService.refreshMe(force: force);
 
   /// How long the portal has told us to stay off `me`, or null when a refresh
   /// is free to run. The Settings refresh button reads this so a rate-limited
-  /// tap says so instead of re-printing a stale device count.
+  /// tap says so instead of claiming a refresh that never happened.
   Duration? get portalRefreshBackoff =>
       _portalAccountService.rateLimitBackoff('me');
 
