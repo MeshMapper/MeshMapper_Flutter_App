@@ -55,6 +55,13 @@ class UserPreferences {
   /// Hybrid mode enabled (alternates Active + Discovery pings)
   final bool hybridModeEnabled;
 
+  /// Smart Pinging: auto mode skips squares that already have a recent
+  /// bidir or disc result. See DEVELOPMENT.md "Smart Pinging".
+  final bool smartPingEnabled;
+
+  /// Smart Pinging window in days (one of [SmartPingDays.values]).
+  final int smartPingDays;
+
   /// Map auto-follow GPS position
   final bool mapAutoFollow;
 
@@ -157,6 +164,8 @@ class UserPreferences {
     this.themeMode = 'dark',
     this.unitSystem = 'metric',
     this.hybridModeEnabled = true,
+    this.smartPingEnabled = true,
+    this.smartPingDays = SmartPingDays.defaultDays,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
@@ -206,6 +215,15 @@ class UserPreferences {
       themeMode: (json['themeMode'] as String?) ?? 'dark',
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
+      smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
+      smartPingDays: switch ((json['smartPingDays'] as num?)?.toInt()) {
+        1 => 1,
+        3 => 3,
+        7 => 7,
+        14 => 14,
+        30 => 30,
+        _ => SmartPingDays.defaultDays,
+      },
       mapAutoFollow: (json['mapAutoFollow'] as bool?) ?? false,
       mapAlwaysNorth: (json['mapAlwaysNorth'] as bool?) ?? true,
       mapRotationLocked: (json['mapRotationLocked'] as bool?) ?? false,
@@ -270,6 +288,8 @@ class UserPreferences {
       'themeMode': themeMode,
       'unitSystem': unitSystem,
       'hybridModeEnabled': hybridModeEnabled,
+      'smartPingEnabled': smartPingEnabled,
+      'smartPingDays': smartPingDays,
       'mapAutoFollow': mapAutoFollow,
       'mapAlwaysNorth': mapAlwaysNorth,
       'mapRotationLocked': mapRotationLocked,
@@ -318,6 +338,8 @@ class UserPreferences {
     String? themeMode,
     String? unitSystem,
     bool? hybridModeEnabled,
+    bool? smartPingEnabled,
+    int? smartPingDays,
     bool? mapAutoFollow,
     bool? mapAlwaysNorth,
     bool? mapRotationLocked,
@@ -365,6 +387,8 @@ class UserPreferences {
       themeMode: themeMode ?? this.themeMode,
       unitSystem: unitSystem ?? this.unitSystem,
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
+      smartPingEnabled: smartPingEnabled ?? this.smartPingEnabled,
+      smartPingDays: smartPingDays ?? this.smartPingDays,
       mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
@@ -446,6 +470,8 @@ class UserPreferences {
         other.themeMode == themeMode &&
         other.unitSystem == unitSystem &&
         other.hybridModeEnabled == hybridModeEnabled &&
+        other.smartPingEnabled == smartPingEnabled &&
+        other.smartPingDays == smartPingDays &&
         other.mapAutoFollow == mapAutoFollow &&
         other.mapAlwaysNorth == mapAlwaysNorth &&
         other.mapRotationLocked == mapRotationLocked &&
@@ -492,6 +518,8 @@ class UserPreferences {
       themeMode,
       unitSystem,
       hybridModeEnabled,
+      smartPingEnabled,
+      smartPingDays,
       mapAutoFollow,
       mapAlwaysNorth,
       mapRotationLocked,
@@ -554,4 +582,10 @@ class AutoPingInterval {
 /// Minimum ping distance (meters)
 class MinPingDistance {
   static const int min = 25;
+}
+
+/// Smart Pinging window options (days). Mirrors the server's admin dropdown.
+class SmartPingDays {
+  static const List<int> values = [1, 3, 7, 14, 30];
+  static const int defaultDays = 14;
 }
