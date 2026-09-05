@@ -2415,7 +2415,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         PingValidation.airborne => ExternalCommandReason.airborne,
         PingValidation.valid ||
         PingValidation.outsideGeofence ||
-        PingValidation.tooCloseToLastPing =>
+        PingValidation.tooCloseToLastPing ||
+        PingValidation.recentlyCovered =>
           ExternalCommandReason.other(validation.message),
       };
 
