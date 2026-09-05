@@ -4559,6 +4559,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _syncRecentCoverage();
 
+    // The repeater list is loaded by now, so the picker in Settings works.
+    if (_carpeaterReentryPending && !_isAutoReconnecting) {
+      _carpeaterReentryPromptDue = true;
+      debugLog('[APP] CARpeater re-entry prompt due after connect');
+    }
+
     if (_apiService.enforceDiscDrop && !_preferences.discDropEnabled) {
       _preferences = _preferences.copyWith(discDropEnabled: true);
       debugLog('[CONN] Discovery drop force-enabled by regional admin');
@@ -9761,6 +9767,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       debugError('[APP] Failed to persist CARpeater re-entry flag: $e');
     }
+  }
+
+  /// Set at the end of a fresh connect while the re-entry flag is pending;
+  /// MainScaffold shows the dialog once and acknowledges it. Never set on an
+  /// auto-reconnect: a BLE flap mid-drive must not pop a dialog.
+  bool _carpeaterReentryPromptDue = false;
+  bool get carpeaterReentryPromptDue => _carpeaterReentryPromptDue;
+
+  void acknowledgeCarpeaterReentryPrompt() {
+    _carpeaterReentryPromptDue = false;
   }
 
   /// Open Hive box with timeout and automatic recovery from corruption

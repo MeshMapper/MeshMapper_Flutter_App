@@ -16,6 +16,7 @@ import 'home_screen.dart';
 import 'log_screen.dart';
 import 'connection_screen.dart';
 import 'settings_screen.dart';
+import 'settings/wardriving_settings_page.dart';
 import 'graph_screen.dart';
 
 /// Main scaffold with bottom navigation
@@ -30,6 +31,8 @@ class _MainScaffoldState extends State<MainScaffold> {
   int _selectedIndex = 0;
   bool _hasCheckedDisclosure = false;
   bool _hasShownLocationSettingsPrompt = false;
+  bool _carpeaterPromptOpen = false;
+  bool _carpeaterNoticeOpen = false;
   bool _linkPromptDialogOpen = false;
   bool _signInErrorToastOpen = false;
 
@@ -282,6 +285,45 @@ class _MainScaffoldState extends State<MainScaffold> {
     }
   }
 
+  void _showCarpeaterReentryDialog() {
+    final appState = context.read<AppStateProvider>();
+    debugLog('[APP] Showing the CARpeater re-entry prompt');
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('CARpeater filter reset'),
+        content: const Text(
+          'Your CARpeater filter now needs the full public key of your '
+          'CARpeater. The key is shared with MeshMapper so every wardriver '
+          'in your region filters it too.\n\n'
+          'Pick it from the repeater list or paste the key in Settings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              appState.dismissCarpeaterReentry();
+            },
+            child: const Text("I don't use a CARpeater"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => const WardrivingSettingsPage(),
+              ));
+            },
+            child: const Text('Open settings'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
@@ -337,6 +379,31 @@ class _MainScaffoldState extends State<MainScaffold> {
         if (code == null) return;
         appState.clearPortalSignInError();
         _showPortalSignInError(code);
+      });
+    }
+
+    // The CARpeater re-entry prompt is raised by the provider at the end of a
+    // connect and shown here, whichever tab the user is on.
+    if (appState.carpeaterReentryPromptDue && !_carpeaterPromptOpen) {
+      _carpeaterPromptOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _carpeaterPromptOpen = false;
+        if (!mounted) return;
+        if (!appState.carpeaterReentryPromptDue) return;
+        appState.acknowledgeCarpeaterReentryPrompt();
+        _showCarpeaterReentryDialog();
+      });
+    }
+
+    if (appState.carpeaterCapNotice != null && !_carpeaterNoticeOpen) {
+      _carpeaterNoticeOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _carpeaterNoticeOpen = false;
+        if (!mounted) return;
+        final message = appState.carpeaterCapNotice;
+        if (message == null) return;
+        appState.clearCarpeaterCapNotice();
+        AppToast.error(context, message);
       });
     }
 
