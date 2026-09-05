@@ -198,6 +198,11 @@ class ApiService {
     sanitized.remove('session_id');
     sanitized.remove('public_key');
     sanitized.remove('contact_uri');
+    // The user's own CARpeater key (request) and the region's whole list
+    // (response) are public keys, and a log file ships with bug reports. The
+    // auth lane logs its own count instead.
+    sanitized.remove('carpeater');
+    sanitized.remove('carpeaters');
     return sanitized;
   }
 
