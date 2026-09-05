@@ -12,7 +12,10 @@ import 'package:mesh_mapper/utils/mvt_cells.dart';
 
 /// Builds a minimal single-layer MVT whose only properties are i, j and st,
 /// one feature per (i, j) pair, matching what decodeCoverageCells reads.
-Uint8List tileWithCells(List<(int, int)> cells) {
+/// [statuses] gives the st of each cell in order; every cell is st 1 (green)
+/// when it is left out.
+Uint8List tileWithCells(List<(int, int)> cells, {List<int>? statuses}) {
+  final st = statuses ?? List<int>.filled(cells.length, 1);
   final out = <int>[];
   void varint(List<int> b, int v) {
     while (v >= 128) {
@@ -43,6 +46,7 @@ Uint8List tileWithCells(List<(int, int)> cells) {
     numbers.add(c.$2);
   }
   numbers.add(1);
+  numbers.addAll(st);
   final valueIndex = <int, int>{};
   for (final n in numbers) {
     final v = <int>[];
@@ -53,7 +57,8 @@ Uint8List tileWithCells(List<(int, int)> cells) {
   }
   // features (field 2)
   var id = 1;
-  for (final c in cells) {
+  for (var k = 0; k < cells.length; k++) {
+    final c = cells[k];
     final f = <int>[];
     varint(f, 1 * 8 + 0); // id
     varint(f, id++);
@@ -63,7 +68,7 @@ Uint8List tileWithCells(List<(int, int)> cells) {
     varint(tags, 1);
     varint(tags, valueIndex[c.$2]!);
     varint(tags, 2);
-    varint(tags, valueIndex[1]!);
+    varint(tags, valueIndex[st[k]]!);
     bytesField(f, 2, tags);
     varint(f, 3 * 8 + 0); // type polygon
     varint(f, 3);
@@ -261,6 +266,18 @@ void main() {
       fetches.gate!.complete();
       await pending;
       expect(fetches.calls.length, 2);
+    });
+
+    test('a tile that came back unfiltered is ignored', () async {
+      // f_types=green,cyan can only answer st 1 or 2. A region server without
+      // the f_* filter support serves the whole cached tile with a 200, and
+      // treating those cells as covered would stop auto pings region-wide.
+      fetches.answers['2373/2933'] = tileWithCells(
+          [cellOf(lat, lon), cellOf(lat + 0.003, lon)],
+          statuses: [1, 5]);
+      await svc.onPosition(lat, lon);
+      expect(svc.loadedTileCount, 0);
+      expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
     });
 
     test('a session mark is covered at once, even with no tile', () {
