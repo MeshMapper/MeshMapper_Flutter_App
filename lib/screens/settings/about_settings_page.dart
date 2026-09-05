@@ -109,6 +109,37 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
               onTap: () => _onVersionTap(appState),
             ),
           ]),
+          SettingsSectionCard(title: 'Links', children: [
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.github),
+              title: const Text('GitHub'),
+              subtitle: const Text('View issues and source code'),
+              onTap: () => _launchUrl(
+                  'https://github.com/MeshMapper/MeshMapper_Project'),
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.discord),
+              title: const Text('Discord'),
+              subtitle: const Text('Join our community chat'),
+              onTap: () => _launchUrl('https://discord.gg/D26P6c6QmG'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.groups),
+              title: const Text('Community'),
+              subtitle: const Text(
+                  'Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
+              onTap: () => _launchUrl('https://ottawamesh.ca/'),
+            ),
+            // Buy Me a Coffee — external donation links are fine on Android/Web
+            // but violate Apple guideline 3.1.1 on iOS, so omit it on iOS.
+            if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS)
+              ListTile(
+                leading: const Icon(Icons.coffee),
+                title: const Text('Buy us a coffee'),
+                subtitle: const Text('Support MeshMapper development'),
+                onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
+              ),
+          ]),
           SettingsSectionCard(title: 'Support', children: [
             ListTile(
               leading: const Icon(Icons.feedback_outlined),
@@ -261,37 +292,6 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
                   }),
               ],
             ],
-          ]),
-          SettingsSectionCard(title: 'Links', children: [
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.github),
-              title: const Text('GitHub'),
-              subtitle: const Text('View issues and source code'),
-              onTap: () => _launchUrl(
-                  'https://github.com/MeshMapper/MeshMapper_Project'),
-            ),
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.discord),
-              title: const Text('Discord'),
-              subtitle: const Text('Join our community chat'),
-              onTap: () => _launchUrl('https://discord.gg/D26P6c6QmG'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.groups),
-              title: const Text('Community'),
-              subtitle: const Text(
-                  'Built with contributions from the Greater Ottawa Mesh Radio Enthusiasts community'),
-              onTap: () => _launchUrl('https://ottawamesh.ca/'),
-            ),
-            // Buy Me a Coffee — external donation links are fine on Android/Web
-            // but violate Apple guideline 3.1.1 on iOS, so omit it on iOS.
-            if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS)
-              ListTile(
-                leading: const Icon(Icons.coffee),
-                title: const Text('Buy us a coffee'),
-                subtitle: const Text('Support MeshMapper development'),
-                onTap: () => _launchUrl('https://buymeacoffee.com/meshmapper'),
-              ),
           ]),
         ],
       ),
