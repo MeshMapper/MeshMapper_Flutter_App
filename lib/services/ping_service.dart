@@ -78,6 +78,9 @@ class PingService {
   final AudioService? _audioService;
   final bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// Regional CARpeater check handed to every DiscTracker (full key).
+  final bool Function(String pubkeyHex)? isRegionalCarpeaterKey;
+
   /// Number of bytes per hop in path hash (1, 2, or 3). Passed to DiscTracker for repeater ID length.
   int _hopBytes;
 
@@ -257,6 +260,7 @@ class PingService {
     TxTracker? txTracker,
     AudioService? audioService,
     this.shouldIgnoreRepeater,
+    this.isRegionalCarpeaterKey,
     this.disableRssiFilter = false,
     int hopBytes = 1,
     int traceHopBytes = 1,
@@ -1461,6 +1465,7 @@ class PingService {
     // Create and configure discovery tracker
     final tracker = DiscTracker(
       shouldIgnoreRepeater: shouldIgnoreRepeater,
+      isRegionalCarpeaterKey: isRegionalCarpeaterKey,
       disableRssiFilter: disableRssiFilter,
       hopBytes: _hopBytes,
     );

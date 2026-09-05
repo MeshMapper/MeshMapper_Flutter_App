@@ -47,6 +47,10 @@ class TxTracker {
   /// Returns true if the repeater should be filtered out
   bool Function(String repeaterId)? shouldIgnoreRepeater;
 
+  /// Regional CARpeater check (the region's shared list). A hop that matches
+  /// is a plain drop, unlike the user's own CARpeater, which is stripped.
+  bool Function(String hopHex)? isRegionalCarpeater;
+
   /// When true, skip RSSI carpeater check (user setting)
   bool disableRssiFilter = false;
 
@@ -178,6 +182,21 @@ class TxTracker {
         debugLog(
             '[TX LOG] Multi-hop echo (pathHashCount=${metadata.pathHashCount}): '
             'reporting repeater=$pathHex, path=${displayHops.join(' → ')}');
+      }
+
+      // Regional CARpeaters (the shared list) are a plain drop, checked on
+      // the repeater about to be credited AFTER the own-CARpeater strip: a
+      // packet can arrive as someone else's CARpeater into ours, and the
+      // strip would otherwise credit the other car. The first hop is checked
+      // too, because a CARpeater that heard our ping says nothing about fixed
+      // coverage. Debug log only: a car followed for ten minutes would flood
+      // the error log.
+      if (isRegionalCarpeater != null &&
+          (isRegionalCarpeater!(pathHex) ||
+              isRegionalCarpeater!(metadata.firstHopHex!))) {
+        debugLog(
+            '[TX LOG] ❌ DROPPED: echo via regional CARpeater (first=${metadata.firstHopHex}, credited=$pathHex)');
+        return TxEchoResult.notEcho;
       }
 
       // VALIDATION STEP 2: Check user carpeater filter
