@@ -132,12 +132,17 @@ class RecentCoverageService {
 
   /// Apply the effective settings. Any change of zone, grid or window drops
   /// the cache, since the cells it holds answer a different question.
+  ///
+  /// Called on every zone check (every 100 m while disconnected), so an
+  /// identical reconfigure is silent: it logs only when the zone, grid,
+  /// window or the active state actually moved.
   void configure({
     required String? zone,
     required int gridSize,
     required int days,
     required bool enabled,
   }) {
+    final wasActive = isActive;
     final changed = zone != _zone || gridSize != _gridSize || days != _days;
     _zone = zone;
     _gridSize = gridSize;
@@ -146,8 +151,10 @@ class RecentCoverageService {
     if (changed || !isActive) {
       clear();
     }
-    debugLog(
-        '[COVERAGE] Smart pinging ${isActive ? 'active' : 'inactive'}: zone=${zone ?? '-'} grid=${gridSize}m window=${days}d enabled=$enabled');
+    if (changed || isActive != wasActive) {
+      debugLog(
+          '[COVERAGE] Smart pinging ${isActive ? 'active' : 'inactive'}: zone=${zone ?? '-'} grid=${gridSize}m window=${days}d enabled=$enabled');
+    }
   }
 
   /// Drop every tile and session mark.
