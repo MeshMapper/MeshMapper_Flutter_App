@@ -25,7 +25,7 @@ class GeneralSettingsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
-          SettingsSectionCard(children: [
+          SettingsSectionCard(title: 'Appearance', children: [
             SwitchListTile(
               secondary: Icon(
                 prefs.themeMode == 'dark' ? Icons.dark_mode : Icons.light_mode,
@@ -38,7 +38,6 @@ class GeneralSettingsPage extends StatelessWidget {
                 appState.setThemeMode(isDark ? 'dark' : 'light');
               },
             ),
-            if (!kIsWeb) _BackgroundModeToggle(appState: appState),
             SwitchListTile(
               secondary: Icon(
                 prefs.isImperial ? Icons.square_foot : Icons.straighten,
@@ -51,6 +50,9 @@ class GeneralSettingsPage extends StatelessWidget {
                 appState.setUnitSystem(isImperial ? 'imperial' : 'metric');
               },
             ),
+          ]),
+
+          SettingsSectionCard(title: 'Sounds', children: [
             SwitchListTile(
               secondary: Icon(
                   appState.isSoundEnabled ? Icons.volume_up : Icons.volume_off),
@@ -86,6 +88,30 @@ class GeneralSettingsPage extends StatelessWidget {
               ),
             ],
           ]),
+
+          // Background location needs an OS permission the web build cannot hold.
+          if (!kIsWeb)
+            SettingsSectionCard(title: 'Location', children: [
+              _BackgroundModeToggle(appState: appState),
+            ]),
+
+          // Live Activities are iOS-only, so the switch would be inert
+          // anywhere else.
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS)
+            SettingsSectionCard(title: 'Live Activity', children: [
+              SwitchListTile(
+                secondary: const Icon(Icons.badge),
+                title: const Text('Repeater Names on Live Activity'),
+                subtitle: Text(prefs.liveActivityShowNames
+                    ? 'Named rows on CarPlay and watch'
+                    : 'Compact grid fits more repeaters'),
+                value: prefs.liveActivityShowNames,
+                onChanged: (value) {
+                  appState.updatePreferences(
+                      prefs.copyWith(liveActivityShowNames: value));
+                },
+              ),
+            ]),
 
           // Exit Options (Android only)
           if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)

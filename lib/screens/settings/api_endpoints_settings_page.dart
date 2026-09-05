@@ -26,12 +26,14 @@ class ApiEndpointsSettingsPage extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
           if (isAutoMode) const AutoPingLockBanner(),
-          SettingsSectionCard(children: [
-            const ListTile(
+          const SettingsSectionCard(title: 'MeshMapper', children: [
+            ListTile(
               leading: Icon(Icons.cloud_done, color: Colors.green),
               title: Text('MeshMapper API'),
               subtitle: Text('Always active'),
             ),
+          ]),
+          SettingsSectionCard(title: 'Custom Endpoint', children: [
             SwitchListTile(
               secondary: const Icon(Icons.api),
               title: const Text('Custom API Endpoint'),

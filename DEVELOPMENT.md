@@ -272,7 +272,7 @@ Auto mode skips TX pings and discovery requests in a grid square that already ha
 bidir (green) or disc (cyan) result. RX logging is never skipped (it is free). Manual pings,
 Trace mode and the auto-mode start check are untouched. On by default with a 14 day window.
 
-- **Settings** (Settings → Pinging → Ping Settings): `smartPingEnabled` (default true) and `smartPingDays`
+- **Settings** (Settings → Wardriving → Auto-Ping): `smartPingEnabled` (default true) and `smartPingDays`
   (any whole number of days from 1 to 365, typed into a number field; default 14; bounds in
   `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
   hidden while the switch is off.
@@ -1273,7 +1273,7 @@ All API endpoints may return maintenance mode:
 - `lib/main.dart` - App entry point, platform detection, theme
 - `lib/providers/app_state_provider.dart` - Global state management
 - `lib/screens/settings_screen.dart` - Settings tab: one row per settings folder, each opening a page under `lib/screens/settings/`
-- `lib/screens/settings/` - Settings folder pages (General, Map, Pinging, Data, MeshMapper Account, API Endpoints, About & Support, Developer Tools) plus the shared section card and auto-ping lock banner
+- `lib/screens/settings/` - Settings folder pages (General, Map, Wardriving, Data, MeshMapper Account, API Endpoints, About & Support, Developer Tools) plus the shared section card and auto-ping lock banner
 - `lib/services/meshcore/connection.dart` - 9-step connection workflow, MeshCore protocol
 - `lib/services/meshcore/unified_rx_handler.dart` - Packet routing (TX vs RX)
 - `lib/services/meshcore/tx_tracker.dart` - Repeater echo detection (7s window)

@@ -28,7 +28,7 @@ class DataSettingsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
-          SettingsSectionCard(children: [
+          SettingsSectionCard(title: 'Current Session', children: [
             ListTile(
               leading: const Icon(Icons.cloud_queue),
               title: const Text('Queued Pings'),

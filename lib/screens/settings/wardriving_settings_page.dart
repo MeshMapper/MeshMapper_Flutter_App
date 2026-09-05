@@ -7,9 +7,9 @@ import '../../providers/app_state_provider.dart';
 import '../../widgets/app_toast.dart';
 import 'settings_section_card.dart';
 
-/// Settings folder: Pinging.
-class PingingSettingsPage extends StatelessWidget {
-  const PingingSettingsPage({super.key});
+/// Settings folder: Wardriving.
+class WardrivingSettingsPage extends StatelessWidget {
+  const WardrivingSettingsPage({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -20,15 +20,15 @@ class PingingSettingsPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 40,
-        title: const Text('Pinging', style: TextStyle(fontSize: 18)),
+        title: const Text('Wardriving', style: TextStyle(fontSize: 18)),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
           if (isAutoMode) const AutoPingLockBanner(),
 
-          // Ping Settings
-          SettingsSectionCard(title: 'Ping Settings', children: [
+          // Privacy
+          SettingsSectionCard(title: 'Privacy', children: [
             SwitchListTile(
               secondary: const Icon(Icons.visibility_off),
               title: const Text('Anonymous Mode'),
@@ -60,6 +60,10 @@ class PingingSettingsPage extends StatelessWidget {
               value: prefs.broadcastCoords,
               onChanged: (value) => appState.setBroadcastCoords(value),
             ),
+          ]),
+
+          // Auto-ping timing
+          SettingsSectionCard(title: 'Auto-Ping', children: [
             ListTile(
               leading: const Icon(Icons.timer),
               title: const Text('Auto-Ping Interval'),
@@ -122,6 +126,60 @@ class PingingSettingsPage extends StatelessWidget {
                   : (value) {
                       appState.updatePreferences(
                           prefs.copyWith(autoStopAfterIdle: value));
+                    },
+            ),
+          ]),
+
+          // CARpeater filtering
+          SettingsSectionCard(title: 'CARpeater', children: [
+            SwitchListTile(
+              secondary: const Icon(Icons.filter_alt),
+              title: const Text('CARpeater Filter'),
+              subtitle: Text(
+                  prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
+                      ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
+                      : 'Tap to set CARpeater repeater ID'),
+              value: prefs.ignoreCarpeater,
+              onChanged: isAutoMode
+                  ? null
+                  : (value) {
+                      if (value && prefs.ignoreRepeaterId == null) {
+                        _showRepeaterIdDialog(context, appState);
+                      } else {
+                        appState.updatePreferences(
+                            prefs.copyWith(ignoreCarpeater: value));
+                      }
+                    },
+            ),
+            if (prefs.ignoreCarpeater)
+              ListTile(
+                leading: const SizedBox(width: 24),
+                title: const Text('CARpeater ID'),
+                subtitle: Text(prefs.ignoreRepeaterId != null
+                    ? '0x${prefs.ignoreRepeaterId}'
+                    : 'Not set'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !isAutoMode,
+                onTap: isAutoMode
+                    ? null
+                    : () => _showRepeaterIdDialog(context, appState),
+              ),
+            SwitchListTile(
+              secondary: const Icon(Icons.shield_outlined),
+              title: const Text('Disable RSSI Filter'),
+              subtitle: Text(prefs.disableRssiFilter
+                  ? 'Allows all signal strengths'
+                  : 'Drops signals stronger than -30 dBm'),
+              value: prefs.disableRssiFilter,
+              onChanged: isAutoMode
+                  ? null
+                  : (value) {
+                      if (value) {
+                        _showDisableRssiFilterConfirmation(context, appState);
+                      } else {
+                        appState.updatePreferences(
+                            prefs.copyWith(disableRssiFilter: false));
+                      }
                     },
             ),
           ]),
@@ -219,60 +277,6 @@ class PingingSettingsPage extends StatelessWidget {
                       } else {
                         appState.updatePreferences(
                             prefs.copyWith(discDropEnabled: false));
-                      }
-                    },
-            ),
-          ]),
-
-          // Filtering
-          SettingsSectionCard(title: 'Filtering', children: [
-            SwitchListTile(
-              secondary: const Icon(Icons.filter_alt),
-              title: const Text('CARpeater Filter'),
-              subtitle: Text(
-                  prefs.ignoreCarpeater && prefs.ignoreRepeaterId != null
-                      ? 'Pass-through: stripping 0x${prefs.ignoreRepeaterId}'
-                      : 'Tap to set CARpeater repeater ID'),
-              value: prefs.ignoreCarpeater,
-              onChanged: isAutoMode
-                  ? null
-                  : (value) {
-                      if (value && prefs.ignoreRepeaterId == null) {
-                        _showRepeaterIdDialog(context, appState);
-                      } else {
-                        appState.updatePreferences(
-                            prefs.copyWith(ignoreCarpeater: value));
-                      }
-                    },
-            ),
-            if (prefs.ignoreCarpeater)
-              ListTile(
-                leading: const SizedBox(width: 24),
-                title: const Text('CARpeater ID'),
-                subtitle: Text(prefs.ignoreRepeaterId != null
-                    ? '0x${prefs.ignoreRepeaterId}'
-                    : 'Not set'),
-                trailing: const Icon(Icons.chevron_right),
-                enabled: !isAutoMode,
-                onTap: isAutoMode
-                    ? null
-                    : () => _showRepeaterIdDialog(context, appState),
-              ),
-            SwitchListTile(
-              secondary: const Icon(Icons.shield_outlined),
-              title: const Text('Disable RSSI Filter'),
-              subtitle: Text(prefs.disableRssiFilter
-                  ? 'Allows all signal strengths'
-                  : 'Drops signals stronger than -30 dBm'),
-              value: prefs.disableRssiFilter,
-              onChanged: isAutoMode
-                  ? null
-                  : (value) {
-                      if (value) {
-                        _showDisableRssiFilterConfirmation(context, appState);
-                      } else {
-                        appState.updatePreferences(
-                            prefs.copyWith(disableRssiFilter: false));
                       }
                     },
             ),
