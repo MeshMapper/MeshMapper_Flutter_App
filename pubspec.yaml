@@ -4,7 +4,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.3.0 <4.0.0'
+  sdk: '>=3.6.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -45,6 +45,7 @@ dependencies:
   app_links: ^6.3.0
   # Keychain / Android Keystore storage for the portal app token
   flutter_secure_storage: ^9.2.0
+  flutter_carplay: ^1.6.5
 
 dev_dependencies:
   flutter_test:
@@ -63,9 +64,27 @@ dev_dependencies:
 # an uncaught C++ std::domain_error (SIGABRT) when it is degenerate/zero-sized.
 # That throw cannot be caught from Dart, so the fix must live in the plugin.
 # Re-apply the guard when bumping maplibre_gl. See DEVELOPMENT.md.
+# Vendored, patched copy of flutter_carplay 1.6.5, used for its Android Auto
+# half only. Three deltas from the upstream pub.dev release, all marked "DELTA"
+# in the vendored source:
+#   A. The `ios:` plugin platform entry and the ios/ directory are removed.
+#      MeshMapper ships on the App Store; upstream would link
+#      SwiftFlutterCarplayPlugin into Runner for a CarPlay surface we neither
+#      want nor hold Apple's entitlement for.
+#   B. AndroidAutoService gains FAAEngineProvider, so the app can supply the
+#      engine. Upstream builds a bare headless one when the cache is empty,
+#      which in this app is the wrong engine — ours owns the USB serial and
+#      tile cache channels (see MeshMapperEngine.kt).
+#   C. createHostValidator no longer returns ALLOW_ALL_HOSTS_VALIDATOR in
+#      release builds; that is debug-only per Android's docs and lets any app
+#      on the device drive the car surface.
+# example/, previews/ and test/ are not vendored. Re-apply all three deltas when
+# bumping flutter_carplay. See DEVELOPMENT.md.
 dependency_overrides:
   maplibre_gl:
     path: third_party/maplibre_gl
+  flutter_carplay:
+    path: third_party/flutter_carplay
 
 flutter_launcher_icons:
   android: true
@@ -83,3 +102,9 @@ flutter:
     - assets/wardrive.png
     - assets/transmitted_packet.mp3
     - assets/received_packet.mp3
+    # Android Auto map action strip icons. The strip is icon-only —
+    # ACTIONS_CONSTRAINTS_MAP leaves maxCustomTitles at 0 — so these are not
+    # decoration, they are the buttons. White on transparent so the host tints
+    # them to its own theme.
+    - assets/car_start.png
+    - assets/car_stop.png

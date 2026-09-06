@@ -1,5 +1,6 @@
 package net.meshmapper.app
 
+import android.content.Context
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -9,13 +10,13 @@ import org.maplibre.android.offline.OfflineRegionStatus
 import java.io.File
 
 class MainActivity : FlutterActivity() {
-    private var usbService: MeshMapperUsbService? = null
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        MeshMapperEngine.obtain(context)
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-
-        usbService = MeshMapperUsbService(this)
-        usbService!!.configureFlutterEngine(flutterEngine)
 
         // MapLibre tile cache management. Mirrors AppDelegate.swift's iOS
         // implementation. Called from Dart's TileCacheService by the Offline
@@ -96,8 +97,4 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    override fun onDestroy() {
-        usbService?.dispose()
-        super.onDestroy()
-    }
 }

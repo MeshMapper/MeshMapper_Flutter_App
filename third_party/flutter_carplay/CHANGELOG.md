@@ -1,0 +1,202 @@
+## 1.6.5 - 2026-08-21
+
+- Fix Android Auto list template startup by validating selectable lists before they reach the host (#120) (ty @JulianBissekkou)
+- Complete Android Auto method-channel calls when coroutine handlers throw (#133, #134) (ty @JulianBissekkou)
+- Restore the README star history chart (#135)
+
+## 1.6.4 - 2026-07-06
+
+- Move the Android Auto message template docs into the Android Auto API usage section (#129) (ty @EArminjon)
+
+## 1.6.3 - 2026-06-22
+
+- Fix Android Auto example release launches by allowing root template refresh before the car screen is attached (#127, #128) (ty @deandreamatias)
+- Keep the Android Auto selectable list demo in its own template so it follows host validation rules (#128)
+
+## 1.6.2 - 2026-06-16
+
+- Support setting `CPSearchTemplate` as the CarPlay root template.
+- Add a Search Template row to the example app and a README preview image.
+- Document CarPlay entitlement options while keeping parking as the example default for Point of Interest support.
+
+## 1.6.1 - 2026-06-15
+
+- Fix Swift Package Manager builds by keeping `FCPSearchTemplate.swift` inside the SwiftPM source path (#123, #124) (ty @Gabriellsp)
+- Reject unsupported `CPSearchTemplate` root templates before CarPlay receives an invalid root template.
+
+## 1.6.0 - 2026-06-13
+
+- Add Swift Package Manager support for iOS package consumers (#111) (ty @justinbeatz)
+- Keep `FCPImageTint.swift` in the SwiftPM source path and align CocoaPods source files with the new package layout (#111) (ty @justinbeatz)
+
+## 1.5.1
+
+- Fix CarPlay tab templates when the same list item ID appears in multiple tabs (#121) (ty @Gabriellsp)
+
+## 1.5.0
+
+- Add Android Auto alert, grid, and tab bar templates (#102) (ty @Gabriellsp)
+- Add Android Auto modal alert presentation and dismissal APIs (#102) (ty @Gabriellsp)
+- Add Android Auto list loading messages and empty view titles (#102) (ty @Gabriellsp)
+
+## 1.4.0
+
+- Add `CPSearchTemplate` support for CarPlay search flows (#96) (ty @sINFdorako)
+- Add Android Auto list item, section, and template IDs, including selection and toggle handling (#105) (ty @JulianBissekkou)
+- Add Flutter asset SVG support across CarPlay and Android Auto image fields (#112) (ty @JulianBissekkou)
+- Add Android Auto `AAMessageTemplate` and `AALongMessageTemplate` support with update APIs (#116) (ty @JulianBissekkou)
+- Add Android Auto `AAPaneTemplate` support with update APIs (#119) (ty @JulianBissekkou)
+- Clarify the difference between Android Auto and Android Automotive OS in the README (#115) (ty @JulianBissekkou)
+
+## 1.3.3
+
+- Expose `onPop` callbacks on pushed CarPlay templates (#106) (ty @sINFdorako)
+- Add Android Auto list item, section, and template IDs (#103) (ty @JulianBissekkou)
+
+## 1.3.2
+
+- Avoid iOS crash around image management (#101) (ty @EArminjon)
+
+## 1.3.1
+
+- Fix crash on iOS 18 and earlier when `CPListImageRowItem` is truncated by the host and fewer image slots are available than requested (#98) (ty @EArminjon)
+- Add update methods for CPInformationTemplate items and actions (#97) (ty @sINFdorako)
+- Document `CPListImageRowItem` support and `CPInformationTemplate` update methods in the README
+- Update the security policy supported versions to include `1.3.x`
+
+## 1.3.0
+
+- Implement CPListImageRowItem with full support for cardElements, condensedElements, elements, gridElements, and imageGridElements (#94) (ty @EArminjon)
+- Support individual update for CPListImageRowItem and CPListImageRowItemElement
+- Expose tabTitle, systemIcon, and showsTabBadges on CPTabBarTemplate
+- Rename enums and classes to be 1:1 with Apple documentation (breaking change)
+- Rework UUID logic to allow custom elementId on all models
+- Expose convenient update methods on CPListItem and other templates
+- Improve image loading error handling with proper error callbacks
+- Fix app crash when images are empty string
+- Add missing GridButton handler as optional (not required)
+- Update uuid dependency to 4.5.3
+
+## 1.2.11
+
+- Fix `List<CPTemplate>` is not a subtype of `Iterable<CPListTemplate>` in `updateTemplates` (#92) (ty @EArminjon)
+- Fix failed cast on `updateCPListItem` when item is not in root template (#91) (ty @RedC4ke)
+
+## 1.2.10
+
+- Add `@objc(FlutterCarPlaySceneDelegate)` annotation for iOS 26 compatibility (#87)
+
+This enables apps to reference the delegate class as `flutter_carplay.FlutterCarPlaySceneDelegate` in their scene manifest configuration. Required for runtime class discovery via `NSClassFromString`. Thanks @APIUM!
+
+## 1.2.9
+
+- Add missing `@available(iOS 14.0, *)` annotations to `makeUIImage` and `loadUIImageAsync` (#84)
+
+These functions reference `SwiftFlutterCarplayPlugin` which requires iOS 14.0+, so Swift requires the availability annotation to propagate. This was missing since v1.2.5.
+
+## 1.2.8
+
+- Fix build failure on Xcode without iOS 26 SDK (follow up to #84)
+
+The v1.2.7 fix using `#if compiler(>=6.0)` didn't work because Swift 6.0 shipped with Xcode 16 (iOS 18), before iOS 26. Now uses dynamic selector invocation to avoid compile time symbol lookup for `updateImage`.
+
+## 1.2.7
+
+- Fix build failure on Xcode versions without iOS 26 SDK (#84)
+
+The `CPGridButton.updateImage()` API introduced in 1.2.5 is only available in iOS 26+. This caused compile errors on older Xcode versions since `#available` only handles runtime checks, not compile time SDK availability. iOS 26 specific code is now wrapped in `#if compiler(>=6.0)` to ensure older toolchains skip it entirely.
+
+- Fix type mismatch in `updateTabBarTemplates` that prevented compilation
+
+## 1.2.6
+
+- Fix compatibility with Dart's `--obfuscate` flag by using explicit type checks instead of `runtimeType.toString()` (fixes #28)
+- Add security policy (SECURITY.md)
+
+## 1.2.5
+
+- Fix main thread image loading crash for CPListItem and CPGridButton in https://github.com/oguzhnatly/flutter_carplay/pull/79 (ty @EArminjon)
+
+This fixes a crash caused by creating UIImage on background threads. Network images are now loaded asynchronously using URLSession, and placeholder images are shown until the actual image loads. For iOS 26+, CPGridButton uses the new `updateImage()` API for async updates.
+
+## 1.2.4
+
+- Fix file URI percent encoding for album art paths with spaces in https://github.com/oguzhnatly/flutter_carplay/pull/82 (ty @APIUM)
+- Add `sectionIndexEnabled` option to CPListTemplate for hiding section index letters in https://github.com/oguzhnatly/flutter_carplay/pull/83 (ty @APIUM)
+
+## 1.2.3
+
+- Update tab bar template to support mixed template types in https://github.com/oguzhnatly/flutter_carplay/pull/81
+
+This enhances the tab bar template by enabling support for multiple template types (not just list templates) as tab bar children. Supported template types: CPListTemplate, CPPointOfInterestTemplate, CPGridTemplate, CPInformationTemplate (ty @shihabkandil).
+
+## 1.2.2
+
+**Issues:**
+Calling `updateTemplates` or `updateSections` updates the layout correctly when the CarPlay is already active, but fail to do when CarPlay not yet started. Using `updateTemplates` or `updateSections` doesn’t refresh ListItem's handler properly, causing missing callbacks. This results in items showing a loading indicator for several seconds because the end event never fires. 
+
+It's been updated by @EArminjon in https://github.com/oguzhnatly/flutter_carplay/pull/77
+
+**Fixes :**
+- Ensure `updateTemplate` and `updateSections` correctly refresh all relevant data and update the `final _super.handler`.
+- Reformatted the code.
+- Reuse existing `CPTemplate` instances instead of recreating them.
+- Renamed variables to improve clarity.
+
+## 1.2.1
+
+- Update tabBar templates in https://github.com/oguzhnatly/flutter_carplay/pull/71
+
+This allow updating a tabBar without removing entire stack. This is useful to add, update or remove tabs.
+
+**Bug fixes :**
+- Ensure that updateSections only recreate necessary entries.
+- Ensure that updateSections take and memorise new entries (by using List.from).
+
+## 1.2.0
+
+- Add early support for Android Auto under a new controller `FlutterAndroidAuto`. Not all features are supported yet, see the README for more details. ([#71](https://github.com/oguzhnatly/flutter_carplay/pull/71)) (ty @EArminjon).
+- History have been reworked to ensure that all templates are well ordered, presents and synchronized.
+- Rename some classes to avoid confusion between Android Auto and CarPlay (breaking change)
+  - `CPConnectionStatusTypes` -> `ConnectionStatusTypes`
+  - `CPEnumUtils` -> `EnumUtils`
+
+## 1.1.3
+
+- Documentation and packaging improvements
+- Automated publishing setup with GitHub Actions
+
+## 1.1.1
+
+- Add automated publishing support to pub.dev
+
+## 1.1.0
+
+- Add showNowPlaying, it can be called multiple times safely ([#33](https://github.com/oguzhnatly/flutter_carplay/issues/33)) (ty @vanlooverenkoen, @EArminjon)
+- Add support for HTTP(s) images (ty @vanlooverenkoen)
+- Add support to launch CarPlay without manually launch the iOS app ([#25](https://github.com/oguzhnatly/flutter_carplay/pull/25)) (ty @vanlooverenkoen)
+- Update the iOS integration and its doc to fix various issues ([#17](https://github.com/oguzhnatly/flutter_carplay/issues/17), [#35](https://github.com/oguzhnatly/flutter_carplay/issues/35), [#38](https://github.com/oguzhnatly/flutter_carplay/issues/38), [#61](https://github.com/oguzhnatly/flutter_carplay/issues/61), [#67](https://github.com/oguzhnatly/flutter_carplay/issues/67)) (ty @EArminjon, @snipd-mikel)
+
+## 1.0.3
+
+- Build fix for the issue [#7](https://github.com/oguzhnatly/flutter_carplay/issues/7)
+
+## 1.0.2+1
+
+- Point Of Interest and Information Template added. Previews added to README.md.
+
+## 1.0.2
+
+- Point Of Interest and Information Template added.
+
+## 1.0.1
+
+- CarPlay List Template issue #4 fixed.
+
+## 1.0.0+1
+
+- Initial release of Flutter Apple CarPlay Package. Previews added to README.md.
+
+## 1.0.0
+
+- Initial release of Flutter Apple CarPlay Package.

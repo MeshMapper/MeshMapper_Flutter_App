@@ -46,6 +46,23 @@ const _satelliteStyleJson =
 /// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
 const _defaultFontStack = ['Noto Sans Regular'];
 
+Future<Uint8List> renderGpsMarkerPng(String style) => _renderPainterToPng(
+      _gpsMarkerPainter(style),
+      const Size(48, 48),
+    );
+
+bool gpsMarkerFacesHeading(String style) =>
+    style == 'arrow' || style == 'walk' || style == 'chomper';
+
+CustomPainter _gpsMarkerPainter(String style) => switch (style) {
+      'car' => const _CarMarkerPainter(),
+      'bike' => const _BikeMarkerPainter(),
+      'boat' => const _BoatMarkerPainter(),
+      'walk' => const _WalkMarkerPainter(),
+      'chomper' => const _ChomperMarkerPainter(),
+      _ => const _ArrowPainter(),
+    };
+
 /// Image-name constants for the marker bitmaps registered via
 /// `controller.addImage()` and referenced by `SymbolOptions.iconImage`.
 ///
