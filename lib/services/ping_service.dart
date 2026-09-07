@@ -1654,6 +1654,12 @@ class PingService {
       return;
     }
 
+    // Latch before the first await, not after the checks below it. The fresh
+    // fix can take up to the GPS timeout, and maybeSendBankedPing() runs on
+    // every fix: it would read an idle service and dispatch a TX on top of
+    // this discovery. Every return past this point clears the flag again.
+    _pingInProgress = true;
+
     // Request fresh GPS position before discovery (same rationale as TX auto-ping)
     final position = await _gpsService.getFreshPosition();
 
@@ -1713,8 +1719,7 @@ class PingService {
     _skipReason = null;
     _bankedPing = null;
 
-    // Signal "Sending..." to UI (matches TX flow which sets flag before setup work)
-    _pingInProgress = true;
+    // Signal "Sending..." to UI (the flag itself was latched above)
     onPingProgressChanged?.call();
 
     // Note: Zone validation is now handled server-side by the API

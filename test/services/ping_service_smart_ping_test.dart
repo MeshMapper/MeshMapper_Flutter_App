@@ -45,10 +45,17 @@ class _FakeGps implements GpsService {
   @override
   void markActivityPosition(Position position) {}
 
+  /// Held open by the test to stand in for the wait a real fresh fix takes,
+  /// up to the 3s GPS timeout on a phone.
+  Completer<void>? freshPositionGate;
+
   @override
   Future<Position?> getFreshPosition(
-          {Duration timeout = const Duration(seconds: 3)}) async =>
-      position;
+      {Duration timeout = const Duration(seconds: 3)}) async {
+    final gate = freshPositionGate;
+    if (gate != null) await gate.future;
+    return position;
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -506,6 +513,58 @@ void main() {
 
     // Let that release land before tearing down, so the timers it arms belong
     // to a live session and go away with it.
+    await tester.pump();
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+  });
+
+  testWidgets('an in flight discovery holds the banked ping', (tester) async {
+    // The window this covers: a discovery request is past its guards but still
+    // waiting on its own fresh fix. The GPS stream calls maybeSendBankedPing on
+    // every fix, so a bank released in that gap would transmit on top of the
+    // discovery, doubling the airtime and running both listening windows at
+    // once.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final discoveryWindow = DiscoveryWindowTimer();
+    final ping =
+        _buildWith(gps, coverage, discoveryWindowTimer: discoveryWindow);
+
+    // Hybrid opens on discovery, which the covered square banks, and hands the
+    // next leg to TX.
+    await ping.enableAutoPing(hybridMode: true);
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    // The TX leg lands in the same covered square, so the bank is a TX ping
+    // and the leg after it is discovery again.
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    // Hold that discovery's fresh fix open.
+    gps.freshPositionGate = Completer<void>();
+    await tester.pump(const Duration(seconds: 24));
+    expect(ping.pingInProgress, isTrue,
+        reason: 'the discovery is under way, waiting on its fix');
+
+    // A fix lands in a clear square while the discovery is still waiting.
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos(lat: 45.01)), isFalse,
+        reason: 'a banked ping must not go out on top of a live discovery');
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    // Control: let that discovery finish into a covered square, so it banks
+    // itself and leaves nothing in flight. The very same clear square now
+    // releases, which is what makes the refusal above about the discovery and
+    // not about one of the other guards.
+    coverage.answer = RecentCoverage.covered;
+    gps.freshPositionGate!.complete();
+    await tester.pump();
+    expect(ping.pingInProgress, isFalse);
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos(lat: 45.01)), isTrue);
+
     await tester.pump();
     await ping.forceDisableAutoPing();
     discoveryWindow.stop();

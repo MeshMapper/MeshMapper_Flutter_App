@@ -110,11 +110,11 @@ class WardrivingSettingsPage extends StatelessWidget {
               ),
               subtitle: appState.enforceSmartPing
                   ? const Text(
-                      'Set by Regional Admin. Skips squares that already have recent coverage.',
+                      'Set by Regional Admin. Defers pings in squares that already have recent coverage.',
                       style: TextStyle(color: Colors.amber),
                     )
                   : const Text(
-                      'Skip squares that already have recent coverage'),
+                      'Defer pings in squares that already have recent coverage'),
               value: appState.smartPingEnabled,
               onChanged: (isAutoMode || appState.enforceSmartPing)
                   ? null
@@ -639,7 +639,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               SizedBox(height: 4),
               Text(
-                'Covered square → ping deferred → fresh square → ping sent',
+                'Covered square \u2192 ping deferred \u2192 fresh square \u2192 ping sent',
                 style: TextStyle(fontSize: 13, fontFamily: 'monospace'),
               ),
               SizedBox(height: 12),
@@ -663,10 +663,10 @@ class WardrivingSettingsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               SizedBox(height: 4),
               Text(
-                '• Manual pings\n'
-                '• Trace mode\n'
-                '• Passive listening, which is free coverage\n'
-                '• Anywhere coverage data cannot be loaded',
+                '\u2022 Manual pings\n'
+                '\u2022 Trace mode\n'
+                '\u2022 Listening to other mesh traffic, which is free coverage\n'
+                '\u2022 Anywhere coverage data cannot be loaded',
                 style: TextStyle(fontSize: 13),
               ),
             ],
