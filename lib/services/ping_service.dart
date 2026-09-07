@@ -2284,7 +2284,7 @@ extension PingValidationExtension on PingValidation {
       case PingValidation.airborne:
         return 'Wardriving from an aircraft is not allowed';
       case PingValidation.recentlyCovered:
-        return 'Square recently covered, skipped';
+        return 'Square recently covered, deferred';
     }
   }
 }
