@@ -7,6 +7,14 @@ import '../services/ping_service.dart';
 import '../utils/debug_logger_io.dart';
 import 'repeater_picker_sheet.dart';
 
+/// The countdown word for a paused auto ping. Smart Pinging holds a ping back
+/// rather than dropping it, so that case reads "Deferred"; the 25 m distance
+/// rule still reads "Skipped".
+String _pausedWord(String? skipReason) =>
+    skipReason == PingService.skipReasonRecentlyCovered
+        ? 'Deferred'
+        : 'Skipped';
+
 /// Fields the ping-control widgets depend on for their enabled/label state.
 /// Used with `context.select` so the controls rebuild ONLY when one of these
 /// changes — not on every GPS / noise-floor / battery `notifyListeners()`
@@ -282,7 +290,7 @@ class PingControls extends StatelessWidget {
                                                   ? 'Listening ${rxWindowRemaining}s' // TX RX window
                                                   : autoPingWaiting
                                                       ? (autoPingSkipped
-                                                          ? 'Skipped ${autoPingRemaining}s'
+                                                          ? '${_pausedWord(appState.autoPingTimer.skipReason)} ${autoPingRemaining}s'
                                                           : 'Next ping ${autoPingRemaining}s')
                                                       : hybridEnabled
                                                           ? 'Hybrid Mode'
@@ -343,7 +351,7 @@ class PingControls extends StatelessWidget {
                             ? 'Listening ${discoveryWindowRemaining}s' // During discovery listening window
                             : autoPingWaiting
                                 ? (autoPingSkipped
-                                    ? 'Skipped ${autoPingRemaining}s'
+                                    ? '${_pausedWord(appState.autoPingTimer.skipReason)} ${autoPingRemaining}s'
                                     : 'Next Disc ${autoPingRemaining}s') // Waiting for next discovery
                                 : 'Passive Mode') // Initial state before first discovery
                         : isTxModeRunning || isPendingDisable
@@ -1088,6 +1096,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             cooldownRemaining: cooldownRemaining,
             isExpandedDuringCooldown: activeModeExpanded && cooldownActive,
             isSkipped: autoPingSkipped,
+            skipReason: appState.autoPingTimer.skipReason,
             discoveryWindowActive: discoveryWindowActive,
             discoveryWindowRemaining: discoveryWindowRemaining,
           ),
@@ -1127,6 +1136,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             cooldownRemaining: cooldownRemaining,
             isExpandedDuringCooldown: passiveModeExpanded && cooldownActive,
             isSkipped: autoPingSkipped,
+            skipReason: appState.autoPingTimer.skipReason,
           ),
           color: isPassiveModeRunning
               ? const Color(0xFF22C55E) // green-500
@@ -1285,6 +1295,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required int cooldownRemaining,
     required bool isExpandedDuringCooldown,
     required bool isSkipped,
+    required String? skipReason,
     bool discoveryWindowActive = false,
     int discoveryWindowRemaining = 0,
   }) {
@@ -1318,7 +1329,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       if (autoPingWaiting) {
         return showFullText
             ? (isSkipped
-                ? 'Skipped ${autoPingRemaining}s'
+                ? '${_pausedWord(skipReason)} ${autoPingRemaining}s'
                 : 'Waiting ${autoPingRemaining}s')
             : '${autoPingRemaining}s';
       }
@@ -1345,6 +1356,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     required int cooldownRemaining,
     required bool isExpandedDuringCooldown,
     required bool isSkipped,
+    required String? skipReason,
   }) {
     if (isPassiveModeRunning) {
       if (discoveryWindowActive) {
@@ -1355,7 +1367,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       if (autoPingWaiting) {
         return showFullText
             ? (isSkipped
-                ? 'Skipped ${autoPingRemaining}s'
+                ? '${_pausedWord(skipReason)} ${autoPingRemaining}s'
                 : 'Waiting ${autoPingRemaining}s')
             : '${autoPingRemaining}s';
       }

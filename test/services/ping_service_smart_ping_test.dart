@@ -167,7 +167,7 @@ void main() {
     expect(ping.canPingManual(), PingValidation.valid);
     expect(ping.canStartAutoMode(), PingValidation.valid);
     expect(PingValidation.recentlyCovered.message,
-        'Square recently covered, skipped');
+        'Square recently covered, deferred');
   });
 
   test('clear and unknown both let the ping go', () {

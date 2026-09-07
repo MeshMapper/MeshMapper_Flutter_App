@@ -2816,13 +2816,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     if (_autoPingTimer.isRunning) {
+      final deferred =
+          _autoPingTimer.skipReason == PingService.skipReasonRecentlyCovered;
       if (_autoPingTimer.skipReason != null) {
         return (
-          phase: LiveActivityPhase.skipped,
-          title: 'Ping skipped',
-          detail: _autoPingTimer.skipReason ==
-                  PingService.skipReasonRecentlyCovered
-              ? 'Recently covered, skipped'
+          phase: deferred
+              ? LiveActivityPhase.deferred
+              : LiveActivityPhase.skipped,
+          title: deferred ? 'Deferred' : 'Ping skipped',
+          detail: deferred
+              ? 'Recently covered, waiting for a fresh square'
               : 'Move at least ${PingService.currentMinDistance} m',
           endsAt: _autoPingTimer.endTime,
         );
