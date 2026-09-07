@@ -89,7 +89,25 @@ class WardrivingSettingsPage extends StatelessWidget {
             ),
             SwitchListTile(
               secondary: const Icon(Icons.auto_awesome),
-              title: const Text('Smart Pinging'),
+              title: Row(
+                children: [
+                  const Flexible(
+                      child: Text('Smart Pinging',
+                          overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    onPressed: () => _showSmartPingInfo(context),
+                    icon: Icon(
+                      Icons.info_outline,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
               subtitle: appState.enforceSmartPing
                   ? const Text(
                       'Set by Regional Admin. Skips squares that already have recent coverage.',
@@ -585,6 +603,74 @@ class WardrivingSettingsPage extends StatelessWidget {
               style: TextStyle(fontSize: 13),
             ),
           ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSmartPingInfo(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.auto_awesome, size: 24),
+            SizedBox(width: 8),
+            Text('Smart Pinging'),
+          ],
+        ),
+        content: const SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Holds back pings in squares that already have recent coverage, so your airtime goes where it adds something new.',
+                style: TextStyle(fontSize: 14),
+              ),
+              SizedBox(height: 12),
+              Text('How it works:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              SizedBox(height: 4),
+              Text(
+                'Covered square → ping deferred → fresh square → ping sent',
+                style: TextStyle(fontSize: 13, fontFamily: 'monospace'),
+              ),
+              SizedBox(height: 12),
+              Text('Deferred, not lost:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              SizedBox(height: 4),
+              Text(
+                'A deferred ping is kept and sent as soon as you reach a square with no recent coverage, then the interval restarts. Only one ping is ever held, and the countdown reads "Deferred" while it waits.',
+                style: TextStyle(fontSize: 13),
+              ),
+              SizedBox(height: 12),
+              Text('What counts as covered:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              SizedBox(height: 4),
+              Text(
+                'A square with a two-way (green) or discovery (cyan) result inside your chosen window. Squares match your Coverage Grid setting, so what is deferred is what is already painted on the map.',
+                style: TextStyle(fontSize: 13),
+              ),
+              SizedBox(height: 12),
+              Text('Never deferred:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              SizedBox(height: 4),
+              Text(
+                '• Manual pings\n'
+                '• Trace mode\n'
+                '• Passive listening, which is free coverage\n'
+                '• Anywhere coverage data cannot be loaded',
+                style: TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
