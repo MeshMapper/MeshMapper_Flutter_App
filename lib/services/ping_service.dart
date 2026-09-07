@@ -329,6 +329,71 @@ class PingService {
     _bankedPing = null;
   }
 
+  /// Release the deferred ping if this fix has landed in a square with no
+  /// recent coverage. Returns true when a ping was actually sent.
+  ///
+  /// Called on every GPS tick (every 10 m of movement), so it returns on the
+  /// first line in the ordinary case. The interval timer stays armed as the
+  /// backstop until this cancels it.
+  bool maybeSendBankedPing(Position position) {
+    final banked = _bankedPing;
+    if (banked == null) return false;
+    if (!_autoPingEnabled || _targetedModeEnabled) return false;
+    if (_pendingDisable || _pingInProgress) return false;
+    if (_connection.currentStep != ConnectionStep.connected) return false;
+    if (isInCooldown()) return false;
+
+    // Only a definite 'clear' releases. 'unknown' means no tile has loaded
+    // here and the interval tick already fails open; 'clear' is also the
+    // answer once Smart Pinging is off, which is why the provider drops the
+    // bank when the lookup goes inactive.
+    if (checkRecentCoverage?.call(position.latitude, position.longitude) !=
+        RecentCoverage.clear) {
+      return false;
+    }
+    if (!_bankedDistanceSatisfied(banked, position)) return false;
+
+    _bankedPing = null;
+    _skipReason = null;
+    _autoTimer?.cancel();
+    _autoTimer = null;
+    _discoveryTimer?.cancel();
+    _discoveryTimer = null;
+
+    // Set rather than toggle: hybrid flips this in its timer callback, which
+    // did not run on this path and has already flipped past the deferred
+    // ping. Pinning it to the opposite of what fires keeps the alternation
+    // right however many deferrals came before.
+    if (banked == BankedPingType.discovery) {
+      _nextPingIsDiscovery = false;
+      debugLog('[DISC] Releasing banked discovery into a clear square');
+      unawaited(_sendDiscoveryRequest());
+    } else {
+      _nextPingIsDiscovery = true;
+      debugLog('[PING] Releasing banked TX ping into a clear square');
+      unawaited(_sendAutoPing());
+    }
+    return true;
+  }
+
+  /// The banked ping still owes the minimum distance its own send path
+  /// enforces. Releasing into a violation would only re-skip inside the send,
+  /// resetting the countdown and spending a GPS read for nothing.
+  bool _bankedDistanceSatisfied(BankedPingType banked, Position position) {
+    if (banked == BankedPingType.tx) {
+      return _gpsService.canPingAtPosition(position);
+    }
+    final last = _lastDiscoveryPosition;
+    if (last == null) return true;
+    return Geolocator.distanceBetween(
+          last.latitude,
+          last.longitude,
+          position.latitude,
+          position.longitude,
+        ) >=
+        _gpsService.configuredMinDistance;
+  }
+
   /// Get the manual ping cooldown timer (for UI display)
   ManualPingCooldownTimer get manualPingCooldownTimer =>
       _manualPingCooldownTimer;
