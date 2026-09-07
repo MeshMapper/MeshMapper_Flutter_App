@@ -1660,6 +1660,12 @@ class PingService {
     // this discovery. Every return past this point clears the flag again.
     _pingInProgress = true;
 
+    // Whether this attempt got as far as arming a listening window. Unlike
+    // sendTxPing, the success path below clears _pingInProgress as soon as the
+    // window is running, so the flag alone cannot tell an armed window from an
+    // attempt that bowed out. The finally needs that distinction.
+    var armedWindow = false;
+
     try {
       // Request fresh GPS position before discovery (same rationale as TX auto-ping)
       final position = await _gpsService.getFreshPosition();
@@ -1765,6 +1771,7 @@ class PingService {
             .start(_discoveryListeningWindow.inMilliseconds);
 
         // Clear pingInProgress now that discovery window is active
+        armedWindow = true;
         _pingInProgress = false;
 
         // Update last discovery position for 25m check
@@ -1783,16 +1790,23 @@ class PingService {
         _scheduleNextDiscovery();
       }
     } finally {
-      // Mirrors sendTxPing (#496): a discovery that ended without arming a
-      // listening window (the deadline, no GPS, the 25 m rule, a Smart Ping
-      // deferral) is the end of the lifecycle a queued disable was waiting
-      // on. The latch above now covers the fresh fix wait too, so a Stop
-      // pressed in that gap parks a disable that would otherwise sit out the
-      // 12s backstop while the re-armed leg went on the air. A successful
-      // send leaves _pingInProgress true until the discovery window, which
-      // drains it there, and the send-failure catch has drained already by
-      // the time this runs, so at most one drain happens on any path.
-      if (!_pingInProgress && _pendingDisable) {
+      // #496 on the discovery side: an attempt that bowed out without arming
+      // a window (the deadline, no GPS, the 25 m rule, a Smart Ping deferral)
+      // is the end of the lifecycle a queued disable was waiting on. The
+      // latch above now covers the fresh fix wait too, so a Stop pressed in
+      // that gap parks a disable that would otherwise sit out the 12s
+      // backstop while the re-armed leg went on the air.
+      //
+      // [armedWindow] is what keeps this off the success path, which is NOT
+      // ours to drain: _handleDiscoveryWindowComplete owns it once the window
+      // is running. Draining here instead would run _stopDiscoveryMode() on a
+      // live window and dispose the DiscTracker, which cancels its timer
+      // without firing onWindowComplete, so every answer to a request already
+      // on the air would be thrown away.
+      //
+      // The send-failure catch drains on its own, and _executePendingDisable
+      // clears _pendingDisable first, so at most one drain runs on any path.
+      if (!armedWindow && !_pingInProgress && _pendingDisable) {
         await _executePendingDisable('discovery ended without window');
       }
     }
