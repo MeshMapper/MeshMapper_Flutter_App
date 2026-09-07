@@ -36,6 +36,15 @@ class _FakeGps implements GpsService {
   bool canPingAtPosition(Position position) => !tooClose;
 
   @override
+  double get configuredMinDistance => 25.0;
+
+  /// A successful discovery send calls this last. Left unimplemented it throws
+  /// inside the send's try block, so the send is logged as a failure while a
+  /// test that only checks the return value still reads as if it succeeded.
+  @override
+  void markActivityPosition(Position position) {}
+
+  @override
   Future<Position?> getFreshPosition(
           {Duration timeout = const Duration(seconds: 3)}) async =>
       position;
@@ -106,9 +115,9 @@ class _FakeWakelock implements WakelockService {
   Future<void> dispose() async {}
 }
 
-Position _pos() => Position(
-      latitude: 45.0,
-      longitude: -75.0,
+Position _pos({double lat = 45.0, double lon = -75.0}) => Position(
+      latitude: lat,
+      longitude: lon,
       timestamp: DateTime.now(),
       accuracy: 5.0,
       altitude: 0.0,
@@ -125,7 +134,15 @@ class _Coverage {
   _Coverage(this.answer);
 }
 
-PingService _buildWith(_FakeGps gps, _Coverage coverage) => PingService(
+/// [discoveryWindowTimer] is passed in only by the fake-clock tests, which
+/// have to stop its 500 ms ticker themselves: it self-cancels off the wall
+/// clock, which a pumped test never advances.
+PingService _buildWith(
+  _FakeGps gps,
+  _Coverage coverage, {
+  DiscoveryWindowTimer? discoveryWindowTimer,
+}) =>
+    PingService(
       gpsService: gps,
       connection: _FakeConnection(),
       apiQueue: _FakeApiQueue(),
@@ -133,7 +150,7 @@ PingService _buildWith(_FakeGps gps, _Coverage coverage) => PingService(
       cooldownTimer: CooldownTimer(),
       manualPingCooldownTimer: ManualPingCooldownTimer(),
       rxWindowTimer: RxWindowTimer(),
-      discoveryWindowTimer: DiscoveryWindowTimer(),
+      discoveryWindowTimer: discoveryWindowTimer ?? DiscoveryWindowTimer(),
       deviceId: 'TEST',
     )..checkRecentCoverage = (lat, lon) => coverage.answer;
 
@@ -312,6 +329,12 @@ void main() {
     coverage.answer = RecentCoverage.clear;
     expect(ping.maybeSendBankedPing(_pos()), isTrue);
     expect(ping.bankedPing, isNull);
+    expect(ping.skipReason, isNull,
+        reason: 'the deferral left this set to the recently covered reason');
+    // Proof the ping was really dispatched and not just dropped: sendTxPing
+    // raises this flag before its first await, so it is already true by the
+    // time the release returns.
+    expect(ping.pingInProgress, isTrue);
 
     await ping.forceDisableAutoPing();
   });
@@ -383,8 +406,10 @@ void main() {
     final gps = _FakeGps()..position = _pos();
     final coverage = _Coverage(RecentCoverage.covered);
     final ping = _buildWith(gps, coverage);
+    final scheduled = <int>[];
     final fired = Completer<void>();
-    ping.onAutoPingScheduled = (_, __) {
+    ping.onAutoPingScheduled = (intervalMs, __) {
+      scheduled.add(intervalMs);
       if (!fired.isCompleted) fired.complete();
     };
 
@@ -393,9 +418,100 @@ void main() {
     expect(ping.bankedPing, BankedPingType.discovery);
 
     coverage.answer = RecentCoverage.clear;
+    final scheduledAtRelease = scheduled.length;
     expect(ping.maybeSendBankedPing(_pos()), isTrue);
     expect(ping.bankedPing, isNull);
+    expect(ping.skipReason, isNull,
+        reason: 'the deferral left this set to the recently covered reason');
+
+    // Proof the ping was really dispatched: the tracker only starts listening
+    // once the radio has answered the request.
+    await Future<void>.delayed(Duration.zero);
+    expect(ping.isDiscoveryListening, isTrue);
+
+    // And proof it took the success path rather than the catch, which is easy
+    // to land in by accident when a fake throws: a failed send reschedules on
+    // the spot, a successful one waits out its window first.
+    expect(scheduled.length, scheduledAtRelease,
+        reason: 'a successful send schedules nothing until its window closes');
 
     await ping.forceDisableAutoPing();
+  });
+
+  // The two below need a second discovery, which is 37s of timers away in real
+  // time. testWidgets runs the body on a fake clock, so tester.pump() buys that
+  // wait for nothing.
+
+  testWidgets('the 25m rule gates a banked discovery too', (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.clear);
+    final discoveryWindow = DiscoveryWindowTimer();
+    final ping =
+        _buildWith(gps, coverage, discoveryWindowTimer: discoveryWindow);
+
+    // A clear square, so the opening discovery really goes out and anchors the
+    // distance rule at 45.0, -75.0.
+    await ping.enableAutoPing(passiveMode: true);
+    await tester.pump(const Duration(seconds: 8)); // the 7s listening window
+
+    // A kilometre north and now covered, so the next discovery banks instead
+    // of sending. The anchor stays where the first one went out.
+    gps.position = _pos(lat: 45.01);
+    coverage.answer = RecentCoverage.covered;
+    await tester.pump(const Duration(seconds: 31)); // the 30s interval
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    // Back on top of that anchor. The square is clear, so the distance rule is
+    // the only thing left that can hold the bank.
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos()), isFalse);
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    // The same bank releases a kilometre out, which is what makes the refusal
+    // above about distance and nothing else.
+    expect(ping.maybeSendBankedPing(_pos(lat: 45.01)), isTrue);
+
+    // Let that release land before tearing down, so the timers it arms belong
+    // to a live session and go away with it.
+    await tester.pump();
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+  });
+
+  testWidgets('a released hybrid discovery leaves TX as the next leg',
+      (tester) async {
+    // Hybrid announces its next leg through the interval it schedules: the
+    // wait is the ping interval less that leg's listening window, 5s for TX
+    // and 7s for discovery. That is the only view of the alternation from
+    // outside the class.
+    const txLegWaitMs = 25000;
+    const discoveryLegWaitMs = 23000;
+
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final discoveryWindow = DiscoveryWindowTimer();
+    final ping =
+        _buildWith(gps, coverage, discoveryWindowTimer: discoveryWindow);
+    final scheduled = <int>[];
+    ping.onAutoPingScheduled = (intervalMs, _) => scheduled.add(intervalMs);
+
+    // Hybrid opens on discovery, and the covered square banks it. Hybrid has
+    // already moved the flag on to TX by the time enableAutoPing returns,
+    // which is exactly the state the release must not toggle.
+    await ping.enableAutoPing(hybridMode: true);
+    expect(ping.bankedPing, BankedPingType.discovery);
+    expect(scheduled, [discoveryLegWaitMs]);
+
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos()), isTrue);
+
+    // The leg after the released discovery is scheduled when its 7s window
+    // closes.
+    await tester.pump(const Duration(seconds: 8));
+    expect(scheduled.last, txLegWaitMs,
+        reason: 'a released discovery must hand the next leg to TX');
+
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
   });
 }

@@ -330,7 +330,10 @@ class PingService {
   }
 
   /// Release the deferred ping if this fix has landed in a square with no
-  /// recent coverage. Returns true when a ping was actually sent.
+  /// recent coverage. Returns true when a ping was actually dispatched.
+  ///
+  /// Dispatched, not delivered: both send paths take their own fresh fix and
+  /// re-validate, so a released ping can still be skipped inside the send.
   ///
   /// Called on every GPS tick (every 10 m of movement), so it returns on the
   /// first line in the ordinary case. The interval timer stays armed as the
