@@ -331,8 +331,12 @@ untouched. On by default with a 14 day window.
 - **Clearing the bank**: a ping that proceeds to send clears it, and so do auto-mode start,
   stop, mode switch and `dispose()`. `clearBankedPing()` clears it from `_syncRecentCoverage`
   when the lookup goes inactive, because with the lookup off `isCovered` answers `clear` for
-  every fix and would otherwise release the hold on the next GPS tick. Every other skip leaves
-  the bank alone, the 25 m `'too close'` skip included: that ping is still owed.
+  every fix and would otherwise release the hold on the next GPS tick. Every other skip of a
+  scheduled attempt leaves the bank alone, the 25 m `'too close'` skip included: that ping is
+  still owed. A released ping is the exception, because it leaves the bank before it is
+  dispatched: if its own fresh fix then fails the 25 m check it skips as `'too close'` and is
+  not re-banked, so that one deferral is lost (pre-branch behaviour, and not worth the extra
+  state to recover).
 - **"Deferred", not "Skipped"**: the word applies only to this hold. The countdown labels pick
   it from the skip reason (`_pausedWord` in `lib/widgets/ping_controls.dart`), so the 25 m
   distance skip still reads "Skipped". The shared phase title is the bare word `Deferred` with
