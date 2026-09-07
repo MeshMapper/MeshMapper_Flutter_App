@@ -618,6 +618,54 @@ void main() {
     discoveryWindow.stop();
   });
 
+  testWidgets('a Stop during a successful send waits for the window',
+      (tester) async {
+    // The other half of the drain: once the request is on the air the window
+    // is not the send's to tear down. Draining here would dispose the
+    // DiscTracker, which cancels its timer without firing onWindowComplete, so
+    // every answer to that request would be dropped.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final discoveryWindow = DiscoveryWindowTimer();
+    final cooldown = CooldownTimer();
+    final ping = _buildWith(gps, coverage,
+        discoveryWindowTimer: discoveryWindow, cooldownTimer: cooldown);
+    final windowResults = <bool>[];
+    ping.onDiscoveryWindowComplete = windowResults.add;
+
+    // The opening discovery banks in the covered square and arms the interval.
+    await ping.enableAutoPing(passiveMode: true);
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    // Hold the next discovery's fresh fix open and press Stop inside the gap.
+    gps.freshPositionGate = Completer<void>();
+    await tester.pump(const Duration(seconds: 31));
+    expect(await ping.disableAutoPing(), isTrue);
+    expect(ping.pendingDisable, isTrue);
+
+    // This time the square is clear, so the request really goes out.
+    coverage.answer = RecentCoverage.clear;
+    gps.freshPositionGate!.complete();
+    await tester.pump();
+
+    expect(ping.isDiscoveryListening, isTrue,
+        reason: 'a queued disable must not tear down a live window');
+    expect(ping.autoPingEnabled, isTrue);
+    expect(ping.pendingDisable, isTrue,
+        reason: 'the window completion owns this drain, not the send');
+
+    // The window runs to the end, reports its result, and drains there.
+    await tester.pump(const Duration(seconds: 8));
+    expect(windowResults, [false],
+        reason: 'the window completed instead of being disposed');
+    expect(ping.pendingDisable, isFalse);
+    expect(ping.autoPingEnabled, isFalse);
+    expect(ping.isDiscoveryListening, isFalse);
+
+    cooldown.stop();
+    discoveryWindow.stop();
+  });
+
   testWidgets('a released hybrid discovery leaves TX as the next leg',
       (tester) async {
     // Hybrid announces its next leg through the interval it schedules: the
