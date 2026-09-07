@@ -113,7 +113,13 @@ Position _pos() => Position(
       speedAccuracy: 1.0,
     );
 
-PingService _build(_FakeGps gps, RecentCoverage answer) => PingService(
+/// A coverage answer the test can change after the service is built.
+class _Coverage {
+  RecentCoverage answer;
+  _Coverage(this.answer);
+}
+
+PingService _buildWith(_FakeGps gps, _Coverage coverage) => PingService(
       gpsService: gps,
       connection: _FakeConnection(),
       apiQueue: _FakeApiQueue(),
@@ -123,7 +129,10 @@ PingService _build(_FakeGps gps, RecentCoverage answer) => PingService(
       rxWindowTimer: RxWindowTimer(),
       discoveryWindowTimer: DiscoveryWindowTimer(),
       deviceId: 'TEST',
-    )..checkRecentCoverage = (lat, lon) => answer;
+    )..checkRecentCoverage = (lat, lon) => coverage.answer;
+
+PingService _build(_FakeGps gps, RecentCoverage answer) =>
+    _buildWith(gps, _Coverage(answer));
 
 void main() {
   test('a covered cell blocks the auto validator only', () {
@@ -178,5 +187,74 @@ void main() {
       ..tooClose = true;
     expect(_build(gps, RecentCoverage.covered).canPing(),
         PingValidation.tooCloseToLastPing);
+  });
+
+  test('a deferred auto TX ping is banked', () async {
+    final gps = _FakeGps()..position = _pos();
+    final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    expect(ping.bankedPing, BankedPingType.tx);
+    await ping.disableAutoPing();
+  });
+
+  test('a too close skip leaves the bank alone', () async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    // Stationary in the covered square: the distance check now wins.
+    gps.tooClose = true;
+    expect(ping.canPing(), PingValidation.tooCloseToLastPing);
+    expect(ping.bankedPing, BankedPingType.tx,
+        reason: 'a distance skip must not discard a Smart Ping deferral');
+
+    await ping.disableAutoPing();
+  });
+
+  test('stopping auto mode empties the bank', () async {
+    final gps = _FakeGps()..position = _pos();
+    final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    await ping.disableAutoPing();
+    expect(ping.bankedPing, isNull);
+  });
+
+  test('clearBankedPing empties the bank', () async {
+    final gps = _FakeGps()..position = _pos();
+    final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    ping.clearBankedPing();
+    expect(ping.bankedPing, isNull);
+    await ping.disableAutoPing();
   });
 }
