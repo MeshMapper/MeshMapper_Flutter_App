@@ -19,6 +19,7 @@ import 'package:mesh_mapper/services/wakelock_service.dart';
 class _FakeGps implements GpsService {
   Position? position;
   bool tooClose = false;
+  bool airborne = false;
 
   @override
   GpsStatus get status => GpsStatus.locked;
@@ -27,7 +28,7 @@ class _FakeGps implements GpsService {
   Position? get lastPosition => position;
 
   @override
-  bool get isAirborne => false;
+  bool get isAirborne => airborne;
 
   @override
   bool isAccuracyAcceptableForPing(Position position) => true;
@@ -334,6 +335,38 @@ void main() {
     // Proof the ping was really dispatched and not just dropped: sendTxPing
     // raises this flag before its first await, so it is already true by the
     // time the release returns.
+    expect(ping.pingInProgress, isTrue);
+
+    await ping.forceDisableAutoPing();
+  });
+
+  test('airborne holds the bank on a clear square', () async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    // Everything else says release: the square is clear and the distance is
+    // satisfied. Only the latch stands in the way.
+    coverage.answer = RecentCoverage.clear;
+    gps.airborne = true;
+    expect(ping.maybeSendBankedPing(_pos()), isFalse);
+    expect(ping.bankedPing, BankedPingType.tx,
+        reason: 'a refused release must leave the ping banked');
+    expect(ping.pingInProgress, isFalse);
+
+    // Landing releases it. Proves the refusal above was the airborne guard
+    // and not one of the other early returns.
+    gps.airborne = false;
+    expect(ping.maybeSendBankedPing(_pos()), isTrue);
+    expect(ping.bankedPing, isNull);
     expect(ping.pingInProgress, isTrue);
 
     await ping.forceDisableAutoPing();
