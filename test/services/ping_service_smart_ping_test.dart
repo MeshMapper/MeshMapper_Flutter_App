@@ -208,18 +208,31 @@ void main() {
     final gps = _FakeGps()..position = _pos();
     final coverage = _Coverage(RecentCoverage.covered);
     final ping = _buildWith(gps, coverage);
-    final fired = Completer<void>();
-    ping.onAutoPingScheduled = (_, __) {
-      if (!fired.isCompleted) fired.complete();
+    final reasons = <String?>[];
+    var scheduled = Completer<void>();
+    ping.onAutoPingScheduled = (_, reason) {
+      reasons.add(reason);
+      if (!scheduled.isCompleted) scheduled.complete();
     };
 
     await ping.enableAutoPing();
-    await fired.future.timeout(const Duration(seconds: 5));
+    await scheduled.future.timeout(const Duration(seconds: 5));
     expect(ping.bankedPing, BankedPingType.tx);
 
-    // Stationary in the covered square: the distance check now wins.
+    // Stationary in the covered square. sendTxPing(manual: false) is the very
+    // call the auto timer makes, so this runs the real auto send path rather
+    // than the pure validator: the distance check comes first, so the attempt
+    // skips as 'too close' and never reaches the coverage check that armed
+    // the bank. Driving it directly beats waiting out the 30s interval.
+    scheduled = Completer<void>();
     gps.tooClose = true;
-    expect(ping.canPing(), PingValidation.tooCloseToLastPing);
+    await ping.sendTxPing(manual: false);
+    await scheduled.future.timeout(const Duration(seconds: 5));
+
+    // The skip reason is the proof the send path really took that branch: a
+    // test that only asked canPing() would pass without ever running it.
+    expect(ping.skipReason, 'too close');
+    expect(reasons.last, 'too close');
     expect(ping.bankedPing, BankedPingType.tx,
         reason: 'a distance skip must not discard a Smart Ping deferral');
 
@@ -242,6 +255,24 @@ void main() {
     expect(ping.bankedPing, isNull);
   });
 
+  test('a deferred passive discovery is banked', () async {
+    final gps = _FakeGps()..position = _pos();
+    final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    // Passive Mode sends its first discovery request straight away, and the
+    // covered square returns before the radio is asked for anything.
+    await ping.enableAutoPing(passiveMode: true);
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    expect(ping.bankedPing, BankedPingType.discovery);
+    expect(ping.skipReason, PingService.skipReasonRecentlyCovered);
+    await ping.disableAutoPing();
+  });
+
   test('clearBankedPing empties the bank', () async {
     final gps = _FakeGps()..position = _pos();
     final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
@@ -252,6 +283,7 @@ void main() {
 
     await ping.enableAutoPing();
     await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.tx);
 
     ping.clearBankedPing();
     expect(ping.bankedPing, isNull);
