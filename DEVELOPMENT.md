@@ -322,10 +322,11 @@ untouched. On by default with a 14 day window.
   minimum-distance rule the send path enforces, measured against the last TX or the last
   discovery to match the banked type. The release is refused while auto mode is off, in
   targeted (Trace) mode, with a disable pending, with a ping already in progress, with the
-  radio not connected, during the manual cooldown, and while the airborne latch is set
-  (checked here as well as by the caller, because the discovery send path has no airborne
-  check of its own the way a TX send does through `canPing()`). On release it cancels the
-  pending auto and discovery timers and sets `_nextPingIsDiscovery` explicitly rather than
+  radio not connected, during the 5 second auto-ping cooldown that follows a TX
+  (`isInCooldown()`, not the separate 15 second manual-tap cooldown), and while the airborne
+  latch is set (checked here as well as by the caller, because the discovery send path has no
+  airborne check of its own the way a TX send does through `canPing()`). On release it cancels
+  the pending auto and discovery timers and sets `_nextPingIsDiscovery` explicitly rather than
   toggling it, so Hybrid's alternation stays correct however many deferrals came first.
 - **Clearing the bank**: a ping that proceeds to send clears it, and so do auto-mode start,
   stop, mode switch and `dispose()`. `clearBankedPing()` clears it from `_syncRecentCoverage`
