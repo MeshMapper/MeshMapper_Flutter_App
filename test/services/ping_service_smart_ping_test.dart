@@ -72,8 +72,14 @@ class _FakeConnection implements MeshCoreConnection {
   Stream<Uint8List> get traceDataStream => const Stream.empty();
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnimplementedError('MeshCoreConnection.${invocation.memberName}');
+  dynamic noSuchMethod(Invocation invocation) {
+    // A released banked discovery reaches the real send path, unlike the
+    // deferral tests where validation returns first.
+    if (invocation.memberName == #sendDiscoveryRequest) {
+      return Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4]));
+    }
+    throw UnimplementedError('MeshCoreConnection.${invocation.memberName}');
+  }
 }
 
 class _FakeApiQueue implements ApiQueueService {
@@ -288,5 +294,108 @@ void main() {
     ping.clearBankedPing();
     expect(ping.bankedPing, isNull);
     await ping.disableAutoPing();
+  });
+
+  test('a clear square releases the banked TX ping', () async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos()), isTrue);
+    expect(ping.bankedPing, isNull);
+
+    await ping.forceDisableAutoPing();
+  });
+
+  test('a still covered square holds the bank', () async {
+    final gps = _FakeGps()..position = _pos();
+    final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    expect(ping.maybeSendBankedPing(_pos()), isFalse);
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    await ping.disableAutoPing();
+  });
+
+  test('unknown coverage does not release the bank', () async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    coverage.answer = RecentCoverage.unknown;
+    expect(ping.maybeSendBankedPing(_pos()), isFalse,
+        reason: 'no tile loaded here; the interval tick fails open instead');
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    await ping.disableAutoPing();
+  });
+
+  test('the 25m rule still gates a banked release', () async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    coverage.answer = RecentCoverage.clear;
+    gps.tooClose = true;
+    expect(ping.maybeSendBankedPing(_pos()), isFalse);
+    expect(ping.bankedPing, BankedPingType.tx);
+
+    await ping.disableAutoPing();
+  });
+
+  test('an empty bank releases nothing', () {
+    final gps = _FakeGps()..position = _pos();
+    final ping = _buildWith(gps, _Coverage(RecentCoverage.clear));
+    expect(ping.maybeSendBankedPing(_pos()), isFalse);
+  });
+
+  test('a clear square releases the banked discovery', () async {
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing(passiveMode: true);
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos()), isTrue);
+    expect(ping.bankedPing, isNull);
+
+    await ping.forceDisableAutoPing();
   });
 }
