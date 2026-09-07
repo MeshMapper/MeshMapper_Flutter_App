@@ -268,14 +268,17 @@ All modes also passively listen for RX packets via `RxLogger`, adding additional
 
 ### Smart Pinging
 
-Auto mode skips TX pings and discovery requests in a grid square that already has a recent
-bidir (green) or disc (cyan) result. RX logging is never skipped (it is free). Manual pings,
-Trace mode and the auto-mode start check are untouched. On by default with a 14 day window.
+Auto mode defers TX pings and discovery requests in a grid square that already has a recent
+bidir (green) or disc (cyan) result. A deferred ping is held rather than dropped: it waits in a
+one-slot bank and goes out at the first fix in a square with no recent coverage. RX logging is
+never deferred (it is free). Manual pings, Trace mode and the auto-mode start check are
+untouched. On by default with a 14 day window.
 
 - **Settings** (Settings → Wardriving → Auto-Ping): `smartPingEnabled` (default true) and `smartPingDays`
   (any whole number of days from 1 to 365, typed into a number field; default 14; bounds in
   `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
-  hidden while the switch is off.
+  hidden while the switch is off. An (i) button beside the switch opens `_showSmartPingInfo`,
+  a dialog explaining the deferral in user-facing words.
 - **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int). When
   `smart_ping` is true the switch is locked on and the window is the server's; otherwise the
   user's own values apply. The preference is never overwritten: `AppStateProvider`
@@ -284,7 +287,7 @@ Trace mode and the auto-mode start check are untouched. On by default with a 14 
   (`ApiService.enforceSmartPing`, `apiSmartPingDays`).
 - **Data source**: `vector_tile.php?z=13&gsize=<grid>&f_days=<days>&f_types=green,cyan`
   (`ApiService.fetchRecentCoverageTile`), decoded by `decodeCoverageCells`. The square is the
-  cell of the user's Coverage Grid setting (300 m or 100 m), so what is skipped matches what
+  cell of the user's Coverage Grid setting (300 m or 100 m), so what is deferred matches what
   is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not used.
 - **Lookup** (`RecentCoverageService`, `lib/services/recent_coverage_service.dart`): keeps
   every z13 tile within 500 m of the phone loaded (one tile mid-tile, up to four at a corner),
@@ -298,12 +301,44 @@ Trace mode and the auto-mode start check are untouched. On by default with a 14 
   (`markCovered`). `isCovered` is synchronous and returns `covered`, `clear` or `unknown`.
 - **Fail open**: `unknown` (no tile yet), a fetch failure, Offline Mode, no zone, or the
   feature off all let the ping go out.
-- **The skip**: `PingService.checkRecentCoverage` (wired to `isCovered`) is consulted by
+- **The deferral**: `PingService.checkRecentCoverage` (wired to `isCovered`) is consulted by
   `canPing()` after the distance check (too close wins) and by the auto discovery path next to
   its distance check. It yields `PingValidation.recentlyCovered` and the skip reason
-  `'recently covered'`, which rides the existing `onAutoPingScheduled` hook: the countdown
-  shows "Skipped", the Live Activity detail reads "Recently covered, skipped", and the next
-  attempt is scheduled at the normal interval.
+  `'recently covered'` (`PingService.skipReasonRecentlyCovered`), which rides the existing
+  `onAutoPingScheduled` hook, and it banks the ping instead of dropping it. The interval timer
+  is untouched: the next attempt is still scheduled at the normal interval, so the timer stays
+  the backstop for a phone that never reaches a clear square.
+- **The bank**: one slot. `PingService._bankedPing` holds a `BankedPingType`, either `tx`
+  (Active or Hybrid) or `discovery` (Passive or Hybrid), readable through `bankedPing`. A
+  later deferral overwrites an earlier one, so what eventually goes out is whichever type was
+  most recently due. `maybeSendBankedPing(position)` releases it and returns true when it
+  dispatched one. Dispatched rather than delivered: both send paths take their own fresh fix
+  and re-validate, so a released ping can still be stopped inside the send. The GPS position
+  listener in `AppStateProvider` calls it on every fix, placed after the airborne early return,
+  and on a true it also clears the countdown's skip reason so the label does not keep reading
+  "Deferred" while the released ping is going out.
+- **What lets a banked ping go**: the fix must answer `RecentCoverage.clear` (`unknown` is not
+  enough, and the interval tick already fails open there) and must satisfy the same 25 m
+  minimum-distance rule the send path enforces, measured against the last TX or the last
+  discovery to match the banked type. The release is refused while auto mode is off, in
+  targeted (Trace) mode, with a disable pending, with a ping already in progress, with the
+  radio not connected, during the manual cooldown, and while the airborne latch is set
+  (checked here as well as by the caller, because the discovery send path has no airborne
+  check of its own the way a TX send does through `canPing()`). On release it cancels the
+  pending auto and discovery timers and sets `_nextPingIsDiscovery` explicitly rather than
+  toggling it, so Hybrid's alternation stays correct however many deferrals came first.
+- **Clearing the bank**: a ping that proceeds to send clears it, and so do auto-mode start,
+  stop, mode switch and `dispose()`. `clearBankedPing()` clears it from `_syncRecentCoverage`
+  when the lookup goes inactive, because with the lookup off `isCovered` answers `clear` for
+  every fix and would otherwise release the hold on the next GPS tick. Every other skip leaves
+  the bank alone, the 25 m `'too close'` skip included: that ping is still owed.
+- **"Deferred", not "Skipped"**: the word applies only to this hold. The countdown labels pick
+  it from the skip reason (`_pausedWord` in `lib/widgets/ping_controls.dart`), so the 25 m
+  distance skip still reads "Skipped". The shared phase title is the bare word `Deferred` with
+  the detail "Recently covered, waiting for a fresh square", carried by
+  `LiveActivityPhase.deferred` (wire value `deferred`) and labelled natively in
+  `ios/MeshMapperLiveActivity/MeshMapperLiveActivity.swift`, which reuses the skipped phase's
+  icon and colour.
 - **Lifecycle**: `_syncRecentCoverage()` runs at connect, on zone transfer, on every
   preference change (switch, window, coverage grid), on the Offline Mode switch in either
   direction, and on every zone check, and switched off on every terminal
@@ -315,7 +350,8 @@ Trace mode and the auto-mode start check are untouched. On by default with a 14 
   after disconnect would keep fetching tiles with no session. Auto-reconnect keeps the session
   and re-syncs through `_postConnectionSetup`, so the cache survives a BLE flap. Positions come
   from the GPS listener and from the auto-ping hook (iOS background).
-- Logged under `[COVERAGE]` (tiles, session marks) and `[PING]` / `[DISC]` (skips).
+- Logged under `[COVERAGE]` (tiles, session marks) and `[PING]` / `[DISC]` (deferrals,
+  releases and drops).
 
 ### API Queue System
 
