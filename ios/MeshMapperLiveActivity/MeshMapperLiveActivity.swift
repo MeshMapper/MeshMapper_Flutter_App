@@ -952,6 +952,7 @@ extension MeshMapperActivityAttributes.ContentState {
     case "listening", "listening_discovery", "listening_trace": return "Listening"
     case "waiting", "waiting_discovery", "waiting_trace", "cooldown": return "Sent"
     case "skipped": return "Skipped"
+    case "deferred": return "Deferred"
     case "waiting_for_gps": return "No GPS"
     case "paused_outside_zone": return "Paused"
     case "disconnected": return "Offline"
@@ -980,7 +981,7 @@ extension MeshMapperActivityAttributes.ContentState {
     case "tracing": return "scope"
     case "listening", "listening_discovery", "listening_trace": return "waveform"
     case "waiting", "waiting_discovery", "waiting_trace", "cooldown": return "timer"
-    case "skipped": return "forward.end.fill"
+    case "skipped", "deferred": return "forward.end.fill"
     case "stopping", "stopped": return "stop.circle.fill"
     case "waiting_for_gps": return "location.slash.fill"
     case "paused_outside_zone": return "map.fill"
@@ -1005,7 +1006,7 @@ extension MeshMapperActivityAttributes.ContentState {
     case "sending", "discovering", "tracing": return .blue
     case "listening", "listening_discovery", "listening_trace": return .teal
     case "waiting", "waiting_discovery", "waiting_trace", "cooldown": return .cyan
-    case "skipped", "waiting_for_gps", "paused_outside_zone": return .orange
+    case "skipped", "deferred", "waiting_for_gps", "paused_outside_zone": return .orange
     case "disconnected", "tx_blocked": return .red
     case "stopped": return .gray
     default: return .white
