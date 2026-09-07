@@ -346,6 +346,13 @@ class PingService {
     if (_connection.currentStep != ConnectionStep.connected) return false;
     if (isInCooldown()) return false;
 
+    // Checked here rather than trusted to the caller. The provider calls this
+    // after its airborne early return, but _checkAirborne has fall-through
+    // cases (a zone transfer in progress among them) that leave the latch set,
+    // and the discovery send path has no airborne check of its own the way a
+    // TX send does through canPing().
+    if (_gpsService.isAirborne) return false;
+
     // Only a definite 'clear' releases. 'unknown' means no tile has loaded
     // here and the interval tick already fails open; 'clear' is also the
     // answer once Smart Pinging is off, which is why the provider drops the
