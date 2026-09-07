@@ -149,6 +149,13 @@ class PingService {
   // Skip reason for display during auto mode countdown
   String? _skipReason;
 
+  /// The single deferred ping waiting for a square with no recent coverage.
+  ///
+  /// Smart Pinging holds a ping back rather than dropping it. Only one is ever
+  /// held: a later deferral overwrites an earlier one, so what goes out is
+  /// whatever was most recently due.
+  BankedPingType? _bankedPing;
+
   // Discovery tracking
   DiscLogEntry? _lastDiscPing;
   DiscTracker? _discTracker;
@@ -307,6 +314,20 @@ class PingService {
 
   /// Get current skip reason (for auto mode display)
   String? get skipReason => _skipReason;
+
+  /// The deferred ping waiting on a fresh square, if any.
+  BankedPingType? get bankedPing => _bankedPing;
+
+  /// Drop the deferred ping.
+  ///
+  /// The provider calls this when Smart Pinging goes inactive. The lookup
+  /// answers [RecentCoverage.clear] for every fix once it is off, which would
+  /// otherwise release the bank on the next GPS tick.
+  void clearBankedPing() {
+    if (_bankedPing == null) return;
+    debugLog('[PING] Banked ping dropped');
+    _bankedPing = null;
+  }
 
   /// Get the manual ping cooldown timer (for UI display)
   ManualPingCooldownTimer get manualPingCooldownTimer =>
@@ -682,6 +703,10 @@ class PingService {
               _skipReason = 'too close';
             } else if (validation == PingValidation.recentlyCovered) {
               _skipReason = skipReasonRecentlyCovered;
+              // Hold the ping rather than drop it. Released by
+              // maybeSendBankedPing() on the first fix in a fresh square.
+              _bankedPing = BankedPingType.tx;
+              debugLog('[PING] TX ping deferred, banked for a clear square');
             } else {
               // Anything else clears it, so a stale "recently covered" from
               // the previous attempt cannot ride into the countdown and the
@@ -700,6 +725,7 @@ class PingService {
 
       // Clear skip reason on successful validation
       _skipReason = null;
+      _bankedPing = null;
 
       final position = _gpsService.lastPosition;
       if (position == null) {
@@ -1209,6 +1235,7 @@ class PingService {
 
     // Clear any previous skip reason
     _skipReason = null;
+    _bankedPing = null;
     _transmitAbortedByDeadline = false;
 
     _autoPingEnabled = true;
@@ -1280,6 +1307,7 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
     _skipReason = null;
+    _bankedPing = null;
 
     if (_passiveModeEnabled || _hybridModeEnabled) {
       _stopDiscoveryMode();
@@ -1331,6 +1359,7 @@ class PingService {
 
     // Clear skip reason
     _skipReason = null;
+    _bankedPing = null;
 
     // Clean up discovery infrastructure if passive or hybrid was enabled
     if (_passiveModeEnabled || _hybridModeEnabled) {
@@ -1378,6 +1407,7 @@ class PingService {
     _nextPingIsDiscovery = true;
     _autoTimer?.cancel();
     _autoTimer = null;
+    _bankedPing = null;
     // Clean up discovery infrastructure if passive or hybrid was enabled
     if (wasPassive || wasHybrid) {
       _stopDiscoveryMode();
@@ -1436,6 +1466,7 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
     _skipReason = null;
+    _bankedPing = null;
     _autoPingEnabled = false;
     _passiveModeEnabled = false;
     _hybridModeEnabled = false;
@@ -1594,8 +1625,10 @@ class PingService {
     // Smart Pinging: a covered square gets no discovery request either.
     if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
         RecentCoverage.covered) {
-      debugLog('[DISC] Square recently covered, skipping discovery request');
       _skipReason = skipReasonRecentlyCovered;
+      _bankedPing = BankedPingType.discovery;
+      debugLog(
+          '[DISC] Square recently covered, discovery deferred and banked');
       _pingInProgress = false;
       _scheduleNextDiscovery();
       return;
@@ -1603,6 +1636,7 @@ class PingService {
 
     // Clear skip reason since we're proceeding
     _skipReason = null;
+    _bankedPing = null;
 
     // Signal "Sending..." to UI (matches TX flow which sets flag before setup work)
     _pingInProgress = true;
@@ -2092,6 +2126,7 @@ class PingService {
     _autoTimer = null;
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = null;
+    _bankedPing = null;
     _stopDiscoveryMode();
     _stopTargetedMode();
     _wakelockService.dispose();
@@ -2177,4 +2212,13 @@ extension PingValidationExtension on PingValidation {
         return 'Square recently covered, skipped';
     }
   }
+}
+
+/// Which kind of auto ping is sitting in the Smart Pinging bank.
+enum BankedPingType {
+  /// A deferred TX ping (Active or Hybrid mode).
+  tx,
+
+  /// A deferred discovery request (Passive or Hybrid mode).
+  discovery,
 }
