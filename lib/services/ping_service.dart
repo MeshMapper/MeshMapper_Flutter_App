@@ -1660,125 +1660,141 @@ class PingService {
     // this discovery. Every return past this point clears the flag again.
     _pingInProgress = true;
 
-    // Request fresh GPS position before discovery (same rationale as TX auto-ping)
-    final position = await _gpsService.getFreshPosition();
+    try {
+      // Request fresh GPS position before discovery (same rationale as TX auto-ping)
+      final position = await _gpsService.getFreshPosition();
 
-    // As in sendTxPing: the transport parks a non-sign write behind an
-    // in-progress sign, so take that wait here rather than inside the send.
-    if (shouldAbortBeforeTransmit != null) {
-      await _connection.awaitWritableState();
-    }
+      // As in sendTxPing: the transport parks a non-sign write behind an
+      // in-progress sign, so take that wait here rather than inside the send.
+      if (shouldAbortBeforeTransmit != null) {
+        await _connection.awaitWritableState();
+      }
 
-    // Ahead of every early return below, not just of the send: those returns
-    // schedule a retry, so a caller that has already given up would otherwise
-    // get a session that transmits on the next tick anyway.
-    if (_deadlinePassed(shouldAbortBeforeTransmit)) {
-      _pingInProgress = false;
-      return;
-    }
+      // Ahead of every early return below, not just of the send: those returns
+      // schedule a retry, so a caller that has already given up would otherwise
+      // get a session that transmits on the next tick anyway.
+      if (_deadlinePassed(shouldAbortBeforeTransmit)) {
+        _pingInProgress = false;
+        return;
+      }
 
-    if (position == null) {
-      debugLog('[DISC] No GPS position, skipping discovery request');
-      _pingInProgress = false;
-      _scheduleNextDiscovery();
-      return;
-    }
-
-    // Check minimum distance from last discovery (25m)
-    final lastDiscPos = _lastDiscoveryPosition;
-    if (lastDiscPos != null) {
-      final distance = Geolocator.distanceBetween(
-        lastDiscPos.latitude,
-        lastDiscPos.longitude,
-        position.latitude,
-        position.longitude,
-      );
-      if (distance < _gpsService.configuredMinDistance) {
-        debugLog(
-            '[DISC] Too close to last discovery (${distance.toStringAsFixed(1)}m < ${_gpsService.configuredMinDistance.toInt()}m), skipping');
-        _skipReason = 'too close';
+      if (position == null) {
+        debugLog('[DISC] No GPS position, skipping discovery request');
         _pingInProgress = false;
         _scheduleNextDiscovery();
         return;
       }
-    }
 
-    // Smart Pinging: a covered square gets no discovery request either.
-    if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
-        RecentCoverage.covered) {
-      _skipReason = skipReasonRecentlyCovered;
-      _bankedPing = BankedPingType.discovery;
-      debugLog(
-          '[DISC] Square recently covered, discovery deferred and banked');
-      _pingInProgress = false;
-      _scheduleNextDiscovery();
-      return;
-    }
+      // Check minimum distance from last discovery (25m)
+      final lastDiscPos = _lastDiscoveryPosition;
+      if (lastDiscPos != null) {
+        final distance = Geolocator.distanceBetween(
+          lastDiscPos.latitude,
+          lastDiscPos.longitude,
+          position.latitude,
+          position.longitude,
+        );
+        if (distance < _gpsService.configuredMinDistance) {
+          debugLog(
+              '[DISC] Too close to last discovery (${distance.toStringAsFixed(1)}m < ${_gpsService.configuredMinDistance.toInt()}m), skipping');
+          _skipReason = 'too close';
+          _pingInProgress = false;
+          _scheduleNextDiscovery();
+          return;
+        }
+      }
 
-    // Clear skip reason since we're proceeding
-    _skipReason = null;
-    _bankedPing = null;
-
-    // Signal "Sending..." to UI (the flag itself was latched above)
-    onPingProgressChanged?.call();
-
-    // Note: Zone validation is now handled server-side by the API
-
-    // Store position at discovery start
-    _discoveryStartPosition = position;
-
-    // Capture noise floor
-    final noiseFloor = _connection.lastNoiseFloor;
-    _pendingTxNoiseFloor = noiseFloor;
-
-    // Create disc ping entry IMMEDIATELY (mirrors TX flow)
-    final discPing = DiscLogEntry(
-      timestamp: DateTime.now(),
-      latitude: position.latitude,
-      longitude: position.longitude,
-      noiseFloor: noiseFloor,
-      discoveredNodes: [],
-    );
-    _lastDiscPing = discPing;
-    debugLog('[DISC] Created DiscLogEntry, ready for node tracking');
-    onDiscPing?.call(discPing);
-
-    debugLog(
-        '[DISC] Sending discovery request at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
-
-    try {
-      // Play transmit sound immediately before sending
-      _audioService?.playTransmitSound();
-
-      // Send discovery request and get tag
-      final tag = await _connection.sendDiscoveryRequest();
-
-      // Start tracking with the tag
-      _discTracker?.startTracking(
-        tag: tag,
-        windowDuration: _discoveryListeningWindow,
-      );
-
-      // Start discovery window countdown display (5 seconds)
-      _discoveryWindowCountdown.start(_discoveryListeningWindow.inMilliseconds);
-
-      // Clear pingInProgress now that discovery window is active
-      _pingInProgress = false;
-
-      // Update last discovery position for 25m check
-      _lastDiscoveryPosition = position;
-
-      // Follow with the display anchor so the map's distance readout tracks
-      // discovery pings too, not just TX (#501)
-      _gpsService.markActivityPosition(position);
-    } catch (e) {
-      _pingInProgress = false;
-      debugError('[DISC] Failed to send discovery request: $e');
-      if (_pendingDisable) {
-        await _executePendingDisable('discovery send failed');
+      // Smart Pinging: a covered square gets no discovery request either.
+      if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
+          RecentCoverage.covered) {
+        _skipReason = skipReasonRecentlyCovered;
+        _bankedPing = BankedPingType.discovery;
+        debugLog(
+            '[DISC] Square recently covered, discovery deferred and banked');
+        _pingInProgress = false;
+        _scheduleNextDiscovery();
         return;
       }
-      _scheduleNextDiscovery();
+
+      // Clear skip reason since we're proceeding
+      _skipReason = null;
+      _bankedPing = null;
+
+      // Signal "Sending..." to UI (the flag itself was latched above)
+      onPingProgressChanged?.call();
+
+      // Note: Zone validation is now handled server-side by the API
+
+      // Store position at discovery start
+      _discoveryStartPosition = position;
+
+      // Capture noise floor
+      final noiseFloor = _connection.lastNoiseFloor;
+      _pendingTxNoiseFloor = noiseFloor;
+
+      // Create disc ping entry IMMEDIATELY (mirrors TX flow)
+      final discPing = DiscLogEntry(
+        timestamp: DateTime.now(),
+        latitude: position.latitude,
+        longitude: position.longitude,
+        noiseFloor: noiseFloor,
+        discoveredNodes: [],
+      );
+      _lastDiscPing = discPing;
+      debugLog('[DISC] Created DiscLogEntry, ready for node tracking');
+      onDiscPing?.call(discPing);
+
+      debugLog(
+          '[DISC] Sending discovery request at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
+
+      try {
+        // Play transmit sound immediately before sending
+        _audioService?.playTransmitSound();
+
+        // Send discovery request and get tag
+        final tag = await _connection.sendDiscoveryRequest();
+
+        // Start tracking with the tag
+        _discTracker?.startTracking(
+          tag: tag,
+          windowDuration: _discoveryListeningWindow,
+        );
+
+        // Start discovery window countdown display (5 seconds)
+        _discoveryWindowCountdown
+            .start(_discoveryListeningWindow.inMilliseconds);
+
+        // Clear pingInProgress now that discovery window is active
+        _pingInProgress = false;
+
+        // Update last discovery position for 25m check
+        _lastDiscoveryPosition = position;
+
+        // Follow with the display anchor so the map's distance readout tracks
+        // discovery pings too, not just TX (#501)
+        _gpsService.markActivityPosition(position);
+      } catch (e) {
+        _pingInProgress = false;
+        debugError('[DISC] Failed to send discovery request: $e');
+        if (_pendingDisable) {
+          await _executePendingDisable('discovery send failed');
+          return;
+        }
+        _scheduleNextDiscovery();
+      }
+    } finally {
+      // Mirrors sendTxPing (#496): a discovery that ended without arming a
+      // listening window (the deadline, no GPS, the 25 m rule, a Smart Ping
+      // deferral) is the end of the lifecycle a queued disable was waiting
+      // on. The latch above now covers the fresh fix wait too, so a Stop
+      // pressed in that gap parks a disable that would otherwise sit out the
+      // 12s backstop while the re-armed leg went on the air. A successful
+      // send leaves _pingInProgress true until the discovery window, which
+      // drains it there, and the send-failure catch has drained already by
+      // the time this runs, so at most one drain happens on any path.
+      if (!_pingInProgress && _pendingDisable) {
+        await _executePendingDisable('discovery ended without window');
+      }
     }
   }
 
