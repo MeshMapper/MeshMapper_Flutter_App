@@ -3316,6 +3316,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // cannot fall into a zone check or an RX distance flush on the way out.
       if (await _checkAirborne()) return;
 
+      // Smart Pinging: a deferred ping is released the moment the phone
+      // reaches a square with no recent coverage, instead of waiting out the
+      // rest of the interval. Cheap: it returns immediately when the bank is
+      // empty, which is the ordinary case. Placed after the airborne return
+      // so a flight can never release one.
+      //
+      // Dropping the countdown's skip reason on release keeps the label
+      // honest. PingService clears its own, but the copy the countdown and
+      // the Live Activity read only refreshes when the scheduler next fires,
+      // which is after the send completes. For an auto session the phase
+      // resolver has no "sending" branch, so without this the UI keeps
+      // reading "Deferred" for as long as the fresh GPS read takes, up to
+      // three seconds, while the released ping is going out.
+      if (_pingService?.maybeSendBankedPing(position) ?? false) {
+        _autoPingTimer.skipReason = null;
+        notifyListeners();
+      }
+
       // Check zone on first GPS lock (when _inZone is null)
       // Skip zone checks when offline mode is enabled
       if (_inZone == null && !_preferences.offlineMode) {
@@ -7933,6 +7951,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final p = _currentPosition;
     if (p != null && _recentCoverage.isActive) {
       unawaited(_recentCoverage.onPosition(p.latitude, p.longitude));
+    }
+    // With the lookup off, isCovered answers 'clear' for every fix, which
+    // would release a held ping on the next GPS tick. Nothing may sit in the
+    // bank once Smart Pinging is not the thing holding it.
+    if (!_recentCoverage.isActive) {
+      _pingService?.clearBankedPing();
     }
   }
 
