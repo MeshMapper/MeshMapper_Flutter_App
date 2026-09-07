@@ -142,20 +142,21 @@ class _Coverage {
   _Coverage(this.answer);
 }
 
-/// [discoveryWindowTimer] is passed in only by the fake-clock tests, which
-/// have to stop its 500 ms ticker themselves: it self-cancels off the wall
-/// clock, which a pumped test never advances.
+/// [discoveryWindowTimer] and [cooldownTimer] are passed in only by the
+/// fake-clock tests, which have to stop their 500 ms tickers themselves: they
+/// self-cancel off the wall clock, which a pumped test never advances.
 PingService _buildWith(
   _FakeGps gps,
   _Coverage coverage, {
   DiscoveryWindowTimer? discoveryWindowTimer,
+  CooldownTimer? cooldownTimer,
 }) =>
     PingService(
       gpsService: gps,
       connection: _FakeConnection(),
       apiQueue: _FakeApiQueue(),
       wakelockService: _FakeWakelock(),
-      cooldownTimer: CooldownTimer(),
+      cooldownTimer: cooldownTimer ?? CooldownTimer(),
       manualPingCooldownTimer: ManualPingCooldownTimer(),
       rxWindowTimer: RxWindowTimer(),
       discoveryWindowTimer: discoveryWindowTimer ?? DiscoveryWindowTimer(),
@@ -567,6 +568,53 @@ void main() {
 
     await tester.pump();
     await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+  });
+
+  testWidgets('a Stop during the GPS gap drains at the early return',
+      (tester) async {
+    // Issue #496 on the discovery side. Now that the latch is taken before the
+    // fresh fix, a Stop pressed during that read parks a disable, so the
+    // returns below it have to drain it themselves: the 12s backstop is too
+    // late, and in Hybrid at the 15s interval the re-armed leg would go on the
+    // air before it fired.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final discoveryWindow = DiscoveryWindowTimer();
+    // The drain starts the auto-ping cooldown, whose ticker outlives the test
+    // unless the test can stop it.
+    final cooldown = CooldownTimer();
+    final ping = _buildWith(gps, coverage,
+        discoveryWindowTimer: discoveryWindow, cooldownTimer: cooldown);
+
+    // The opening discovery banks in the covered square and arms the 30s
+    // interval, leaving nothing in flight.
+    await ping.enableAutoPing(passiveMode: true);
+    expect(ping.pingInProgress, isFalse);
+
+    // Hold the next discovery's fresh fix open, then press Stop inside the gap.
+    gps.freshPositionGate = Completer<void>();
+    await tester.pump(const Duration(seconds: 31));
+    expect(ping.pingInProgress, isTrue);
+
+    expect(await ping.disableAutoPing(), isTrue);
+    expect(ping.pendingDisable, isTrue,
+        reason: 'the latch makes Stop queue instead of running');
+    expect(ping.autoPingEnabled, isTrue);
+
+    // Let the fix land. The square is still covered, so the discovery takes
+    // the deferral return, which arms no listening window and therefore owes
+    // the drain.
+    gps.freshPositionGate!.complete();
+    await tester.pump();
+
+    // The clock has not moved since the disable was queued, so this can only
+    // be the early return and not the 12s backstop.
+    expect(ping.pendingDisable, isFalse);
+    expect(ping.autoPingEnabled, isFalse);
+    expect(ping.bankedPing, isNull);
+
+    cooldown.stop();
     discoveryWindow.stop();
   });
 
