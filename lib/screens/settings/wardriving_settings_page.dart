@@ -126,7 +126,7 @@ class WardrivingSettingsPage extends StatelessWidget {
             if (appState.smartPingEnabled)
               ListTile(
                 leading: const Icon(Icons.history),
-                title: const Text('Skip squares covered within'),
+                title: const Text('Defer pings in squares covered within'),
                 subtitle: Text(appState.enforceSmartPing
                     ? '${_smartPingDaysLabel(appState.smartPingDays)} (set by Regional Admin)'
                     : _smartPingDaysLabel(prefs.smartPingDays)),
@@ -1030,7 +1030,7 @@ class WardrivingSettingsPage extends StatelessWidget {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Skip squares covered within'),
+        title: const Text('Defer pings in squares covered within'),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.number,
