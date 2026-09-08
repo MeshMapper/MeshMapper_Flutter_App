@@ -27,6 +27,7 @@ SessionStatus resolveSessionStatus({
   required bool txAllowed,
   required bool isManualSession,
   required bool isPingSending,
+  required bool isPingInProgress,
   required bool isRxWindowRunning,
   required StatusDeadline? rxWindow,
   required bool isDiscoveryWindowRunning,
@@ -36,6 +37,8 @@ SessionStatus resolveSessionStatus({
   required bool isAutoPingRunning,
   required String? autoPingSkipReason,
   required StatusDeadline? autoPing,
+  required bool isSharedCooldownRunning,
+  required StatusDeadline? sharedCooldown,
   required SessionOperation? operation,
   required bool isSessionStarting,
   required bool isSessionActive,
@@ -76,15 +79,31 @@ SessionStatus resolveSessionStatus({
   }
 
   // Ranks 8 to 18, in order. Each observation names the lane it belongs to.
+  //
+  // [onGlance] is false for the two states the phone already shows and the
+  // Live Activity, watch and Siri do not. The model records them because the
+  // buttons need them; the glance answer skips them so this commit changes
+  // nothing anyone can see. Flipping either to true is the whole of that
+  // disagreement's fix, and the phase table will show it as a diff.
   final observations = <({
     StatusLane lane,
     SessionActivity activity,
-    StatusDeadline? deadline
+    StatusDeadline? deadline,
+    bool onGlance,
   })>[];
 
-  void see(StatusLane lane, SessionActivity activity,
-          [StatusDeadline? deadline]) =>
-      observations.add((lane: lane, activity: activity, deadline: deadline));
+  void see(
+    StatusLane lane,
+    SessionActivity activity, {
+    StatusDeadline? deadline,
+    bool onGlance = true,
+  }) =>
+      observations.add((
+        lane: lane,
+        activity: activity,
+        deadline: deadline,
+        onGlance: onGlance
+      ));
 
   if (isManualSession && isPingSending) {
     see(StatusLane.manual, SessionActivity.sending);
@@ -103,17 +122,25 @@ SessionStatus resolveSessionStatus({
       autoMode == AutoMode.targeted
           ? SessionActivity.listeningTrace
           : SessionActivity.listeningDiscovery,
-      discoveryWindow,
+      deadline: discoveryWindow,
     );
   }
 
   if (isRxWindowRunning) {
     final lane = isManualSession ? StatusLane.manual : StatusLane.txAuto;
-    see(lane, SessionActivity.listening, rxWindow);
+    see(lane, SessionActivity.listening, deadline: rxWindow);
+  }
+
+  // An auto ping that has been asked for but has not transmitted yet. The
+  // phone has always shown this; the glance surfaces have not, because their
+  // only route to "sending" is a latch set at the moment of transmit, several
+  // seconds later. That is the auto-session sending gap.
+  if (isPingInProgress && !isRxWindowRunning && !isDiscoveryWindowRunning) {
+    see(StatusLane.txAuto, SessionActivity.sending, onGlance: false);
   }
 
   if (isManualSession && isManualCooldownRunning) {
-    see(StatusLane.manual, SessionActivity.cooldown, manualCooldown);
+    see(StatusLane.manual, SessionActivity.cooldown, deadline: manualCooldown);
   }
 
   if (isAutoPingRunning) {
@@ -127,7 +154,7 @@ SessionStatus resolveSessionStatus({
             AutoMode.targeted => SessionActivity.waitingTrace,
             _ => SessionActivity.waiting,
           };
-    see(lane, activity, autoPing);
+    see(lane, activity, deadline: autoPing);
   }
 
   if (operation != null) {
@@ -147,12 +174,22 @@ SessionStatus resolveSessionStatus({
     see(lane, activity);
   }
 
+  // The five second cooldown that follows stopping a TX mode. Three buttons
+  // count it down and no glance surface has ever known about it: for those
+  // five seconds the watch says "Ready, no session running" while the phone
+  // says "Cooldown 5s".
+  if (isSharedCooldownRunning) {
+    see(StatusLane.txAuto, SessionActivity.cooldown,
+        deadline: sharedCooldown, onGlance: false);
+  }
+
   // Ranks 19 and 20: nothing is happening yet, or nothing is happening now.
   final resting = isSessionStarting || !isSessionActive
       ? SessionActivity.starting
       : SessionActivity.active;
 
   final first = observations.isEmpty ? null : observations.first;
+  final firstOnGlance = observations.where((o) => o.onGlance).firstOrNull;
 
   LaneStatus viewFor(StatusLane lane) {
     for (final o in observations) {
@@ -173,9 +210,9 @@ SessionStatus resolveSessionStatus({
   }
 
   return (
-    activity: first?.activity ?? resting,
-    owner: first?.lane,
-    deadline: first?.deadline,
+    activity: firstOnGlance?.activity ?? resting,
+    owner: firstOnGlance?.lane,
+    deadline: firstOnGlance?.deadline,
     manual: viewFor(StatusLane.manual),
     txAuto: viewFor(StatusLane.txAuto),
     discovery: viewFor(StatusLane.discovery),
