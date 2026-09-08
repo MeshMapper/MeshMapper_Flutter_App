@@ -8,38 +8,37 @@ import '../services/status/ping_control_labels.dart';
 import '../utils/debug_logger_io.dart';
 import 'repeater_picker_sheet.dart';
 
-/// The facts every ping-control layout reads, gathered once.
-///
-/// All three layouts derived these identically inline; sharing the builder is
-/// what lets the three of them stop disagreeing by accident.
-PingControlFacts _factsOf(AppStateProvider s) {
+/// The render-only facts every ping-control layout reads: the offline / zone
+/// blocks, the Hybrid word, which mode is running, and whether a stop is
+/// pending. Everything else a button shows comes from [AppStateProvider.sessionStatus],
+/// the one model the glance surfaces read too, so the phone cannot drift from
+/// what the watch and the Live Activity say. Timers and countdowns come from
+/// that model's per-lane deadlines, not from here.
+PingRenderFacts _renderFactsOf(AppStateProvider s) {
+  final prefs = s.preferences;
+  return (
+    txBlockedByOffline: s.offlineMode && s.isConnected,
+    txNotAllowed: s.isConnected && !s.txAllowed,
+    hybridEnabled: prefs.hybridModeEnabled,
+    isTxModeRunning: s.autoPingEnabled &&
+        (s.autoMode == AutoMode.active || s.autoMode == AutoMode.hybrid),
+    isPassiveModeRunning: s.autoPingEnabled && s.autoMode == AutoMode.passive,
+    isTargetedRunning: s.isTargetedModeRunning,
+    isPendingDisable: s.isPendingDisable,
+  );
+}
+
+/// The three flags the blocking hint needs that are not session state: whether
+/// the radio is connected and whether the antenna and power are declared. The
+/// hint is a projection of the ping validators, which the model deliberately
+/// does not carry, so it stays on facts.
+PingHintFacts _hintFactsOf(AppStateProvider s) {
   final prefs = s.preferences;
   return (
     isConnected: s.isConnected,
     externalAntennaSet: prefs.externalAntennaSet,
     isPowerSet:
         prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
-    isTxModeRunning: s.autoPingEnabled &&
-        (s.autoMode == AutoMode.active || s.autoMode == AutoMode.hybrid),
-    isPassiveModeRunning: s.autoPingEnabled && s.autoMode == AutoMode.passive,
-    isTargetedRunning: s.isTargetedModeRunning,
-    isPendingDisable: s.isPendingDisable,
-    isPingSending: s.isPingSending,
-    isPingInProgress: s.isPingInProgress,
-    hybridEnabled: prefs.hybridModeEnabled,
-    txBlockedByOffline: s.offlineMode && s.isConnected,
-    txNotAllowed: s.isConnected && !s.txAllowed,
-    rxWindowActive: s.rxWindowTimer.isRunning,
-    rxWindowRemaining: s.rxWindowTimer.remainingSec,
-    manualCooldownActive: s.manualPingCooldownTimer.isRunning,
-    manualCooldownRemaining: s.manualPingCooldownTimer.remainingSec,
-    discoveryWindowActive: s.discoveryWindowTimer.isRunning,
-    discoveryWindowRemaining: s.discoveryWindowTimer.remainingSec,
-    cooldownActive: s.cooldownTimer.isRunning,
-    cooldownRemaining: s.cooldownTimer.remainingSec,
-    autoPingWaiting: s.autoPingTimer.isRunning,
-    autoPingRemaining: s.autoPingTimer.remainingSec,
-    autoPingSkipReason: s.autoPingTimer.skipReason,
   );
 }
 
@@ -196,9 +195,10 @@ class PingControls extends StatelessWidget {
         // Every word on these buttons comes from the shared table, so the
         // phone cannot drift away from what the watch and the Live Activity
         // say about the same instant.
-        final f = _factsOf(appState);
+        final status = appState.sessionStatus;
+        final rf = _renderFactsOf(appState);
 
-        final hint = blockingHint(f, appState.pingValidation);
+        final hint = blockingHint(_hintFactsOf(appState), appState.pingValidation);
         final blockingIcon = hint == null ? null : _hintIcon(hint.hint);
         final blockingColor = hint == null ? null : _hintColor(hint.hint);
 
@@ -218,7 +218,7 @@ class PingControls extends StatelessWidget {
                   Expanded(
                     child: _ActionButton(
                       icon: Icons.cell_tower,
-                      label: portraitSendPingLabel(f),
+                      label: portraitSendPingLabel(status, rf),
                       color: const Color(0xFF0EA5E9), // sky-500
                       enabled: canPingManual &&
                           // Grey Send Ping while an auto mode is starting so the
@@ -263,7 +263,7 @@ class PingControls extends StatelessWidget {
                     child: _ActionButton(
                       icon:
                           hybridEnabled ? Icons.compare_arrows : Icons.sensors,
-                      label: portraitActiveModeLabel(f),
+                      label: portraitActiveModeLabel(status, rf),
                       color: isPendingDisable
                           ? Colors.orange
                           : isTxModeRunning
@@ -308,7 +308,7 @@ class PingControls extends StatelessWidget {
                 Expanded(
                   child: _ActionButton(
                     icon: Icons.hearing,
-                    label: portraitPassiveModeLabel(f),
+                    label: portraitPassiveModeLabel(status, rf),
                     color: isPassiveModeRunning
                         ? const Color(0xFF22C55E) // green-500
                         : const Color(0xFF6366F1), // indigo-500
@@ -604,7 +604,8 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
-        final tf = _factsOf(appState);
+        final status = appState.sessionStatus;
+        final rf = _renderFactsOf(appState);
         final isTargetedRunning = appState.isTargetedModeRunning;
         final maxLen = appState.traceHopBytes * 2;
 
@@ -621,7 +622,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
         final canStart = isValidHex &&
             !widget.isAnyModeRunning &&
             !isTargetedRunning &&
-            !tf.cooldownActive &&
+            !appState.cooldownTimer.isRunning &&
             appState.isConnected;
 
         final isEnabled = (canStart || isTargetedRunning) && !_isStarting;
@@ -672,7 +673,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            traceSectionLabel(tf, isStarting: _isStarting),
+                            traceSectionLabel(status, rf, isStarting: _isStarting),
                             style: TextStyle(
                               fontSize: 13,
                               fontWeight: isTargetedRunning
@@ -802,7 +803,8 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
-        final f = _factsOf(appState);
+        final status = appState.sessionStatus;
+        final rf = _renderFactsOf(appState);
         final manualValidation = appState
             .manualPingValidation; // Manual ping validation (no distance check)
         final autoValidation = appState.autoModeValidation;
@@ -965,7 +967,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         // Build the buttons
         final sendPingButton = _CompactActionButton(
           icon: Icons.cell_tower,
-          label: compactSendPingLabel(f, showFullText: sendPingExpanded),
+          label: compactSendPingLabel(status, rf, showFullText: sendPingExpanded),
           color: const Color(0xFF0EA5E9), // sky-500
           enabled: sendPingEnabled,
           isActive: sendPingActive,
@@ -984,7 +986,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
         final activeModeButton = _CompactActionButton(
           icon: hybridEnabled ? Icons.compare_arrows : Icons.sensors,
-          label: compactActiveModeLabel(f,
+          label: compactActiveModeLabel(status, rf,
               showFullText: activeModeExpanded,
               isExpandedDuringCooldown: activeModeExpanded && cooldownActive),
           color: isPendingDisable
@@ -1012,7 +1014,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
         final passiveModeButton = _CompactActionButton(
           icon: Icons.hearing,
-          label: compactPassiveModeLabel(f,
+          label: compactPassiveModeLabel(status, rf,
               showFullText: passiveModeExpanded,
               isExpandedDuringCooldown: passiveModeExpanded && cooldownActive),
           color: isPassiveModeRunning
@@ -1035,7 +1037,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         // Build trace mode button (only used when hasTargetRepeaterId)
         final traceModeButton = _CompactActionButton(
           icon: Icons.route,
-          label: compactTraceModeLabel(f,
+          label: compactTraceModeLabel(status, rf,
               showFullText: traceModeExpanded,
               isExpandedDuringCooldown: traceModeExpanded && cooldownActive),
           color: isTargetedRunning
@@ -1155,7 +1157,8 @@ class LandscapePingControls extends StatelessWidget {
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
-        final f = _factsOf(appState);
+        final status = appState.sessionStatus;
+        final rf = _renderFactsOf(appState);
         final manualValidation = appState
             .manualPingValidation; // Manual ping validation (no distance check)
         final autoValidation = appState.autoModeValidation;
@@ -1237,7 +1240,7 @@ class LandscapePingControls extends StatelessWidget {
                           !isPendingDisable,
                       isActive:
                           (isPingSending || rxWindowActive) && !isTxModeRunning,
-                      countdown: landscapeSendPingCountdown(f),
+                      countdown: landscapeSendPingCountdown(status, rf),
                       onPressed: () => _sendPing(context, appState),
                     ),
                   ),
@@ -1268,7 +1271,7 @@ class LandscapePingControls extends StatelessWidget {
                               !txBlockedByOffline &&
                               !txNotAllowed),
                       isActive: isPendingDisable || isTxModeRunning,
-                      countdown: landscapeActiveModeCountdown(f),
+                      countdown: landscapeActiveModeCountdown(status, rf),
                       onPressed: () => hybridEnabled
                           ? _toggleHybridAuto(context, appState)
                           : _toggleTxRxAuto(context, appState),
@@ -1298,7 +1301,7 @@ class LandscapePingControls extends StatelessWidget {
                             isPowerSet),
                     isActive: isPassiveModeRunning &&
                         (discoveryWindowActive || autoPingWaiting),
-                    countdown: landscapePassiveModeCountdown(f),
+                    countdown: landscapePassiveModeCountdown(status, rf),
                     onPressed: () => _toggleRxAuto(context, appState),
                   ),
                 ),

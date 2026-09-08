@@ -56,10 +56,6 @@ SessionStatus resolveSessionStatus({
     isGpsLocked: isGpsLocked,
     autoMode: autoMode,
     txAllowed: txAllowed,
-    isRxWindowRunning: isRxWindowRunning,
-    rxWindow: rxWindow,
-    isDiscoveryWindowRunning: isDiscoveryWindowRunning,
-    discoveryWindow: discoveryWindow,
   );
   if (sessionWide != null) {
     final held = (
@@ -110,6 +106,14 @@ SessionStatus resolveSessionStatus({
   final isTxModeRunning = isSessionActive &&
       (autoMode == AutoMode.active || autoMode == AutoMode.hybrid);
 
+  // A pending disable is handled as a glance override at the end, NOT as a lane
+  // observation. It is the session stopping, which the single-phase surfaces and
+  // the Active button say, but it must not sit on any lane, or it would shadow
+  // the very window that lane is still closing (the auto echo on the TX lane,
+  // the discovery window on Hybrid's TX lane), which is what every other button
+  // still reads. So every lane records its real activity below and the stop is
+  // layered over only the glance.
+
   // Observed whenever a manual send is in flight, but only shown on the glance
   // surfaces when the session is a manual one, which is today's rule. A manual
   // ping during a Passive drive raises this flag without owning the session,
@@ -144,16 +148,28 @@ SessionStatus resolveSessionStatus({
     see(lane, SessionActivity.listening, deadline: rxWindow);
   }
 
-  // An auto ping that has been asked for but has not transmitted yet. The
+  // An auto TX ping that has been asked for but has not transmitted yet. The
   // phone has always shown this; the glance surfaces have not, because their
   // only route to "sending" is a latch set at the moment of transmit, several
-  // seconds later. That is the auto-session sending gap.
-  if (isPingInProgress && !isRxWindowRunning && !isDiscoveryWindowRunning) {
+  // seconds later. That is the auto-session sending gap. Gated on the TX loop
+  // running, because a manual ping also holds `isPingInProgress` and belongs to
+  // the manual lane (the button beside it must not read "Sending" for it).
+  if (isTxModeRunning &&
+      isPingInProgress &&
+      !isRxWindowRunning &&
+      !isDiscoveryWindowRunning) {
     see(StatusLane.txAuto, SessionActivity.sending, onGlance: false);
   }
 
-  if (isManualSession && isManualCooldownRunning) {
-    see(StatusLane.manual, SessionActivity.cooldown, deadline: manualCooldown);
+  // Observed whenever the manual cooldown is running, shown on the glance
+  // surfaces only when the session is a manual one, exactly like the manual
+  // send above. The button needs it either way: a manual ping during a Passive
+  // drive holds this cooldown while the manual-session flag stays false, and if
+  // the manual lane did not carry it the Send Ping button would count down the
+  // discovery interval that happens to be first in the order instead.
+  if (isManualCooldownRunning) {
+    see(StatusLane.manual, SessionActivity.cooldown,
+        deadline: manualCooldown, onGlance: isManualSession);
   }
 
   if (isAutoPingRunning) {
@@ -210,11 +226,13 @@ SessionStatus resolveSessionStatus({
         return (activity: o.activity, deadline: o.deadline, isBlocked: false);
       }
     }
-    // Not this lane's turn. It reports what is holding it up, so the button can
-    // count down the window it is waiting on rather than inventing its own.
+    // Not this lane's turn. It reports the thing that is holding it up, with
+    // that thing's own activity and deadline, so the button can count down the
+    // window it is waiting on and decide for itself whether to borrow it. A
+    // session-wide hold does the same above; this makes the per-lane hold match.
     if (first != null) {
       return (
-        activity: SessionActivity.cooldown,
+        activity: first.activity,
         deadline: first.deadline,
         isBlocked: true
       );
@@ -222,10 +240,31 @@ SessionStatus resolveSessionStatus({
     return (activity: resting, deadline: null, isBlocked: false);
   }
 
+  // The glance answer. A pending disable is the session stopping: it outranks
+  // every observation here and names the Active lane as the owner, but it is
+  // laid over the glance only, so each lane above still carries its own closing
+  // window. Its deadline is whichever window is still shutting (both can be shut,
+  // the case the 12 second backstop covers, and then there is nothing to count).
+  final (
+    SessionActivity glanceActivity,
+    StatusLane? glanceOwner,
+    StatusDeadline? glanceDeadline
+  ) = isPendingDisable
+      ? (
+          SessionActivity.stopping,
+          StatusLane.txAuto,
+          rxWindow ?? discoveryWindow
+        )
+      : (
+          firstOnGlance?.activity ?? resting,
+          firstOnGlance?.lane,
+          firstOnGlance?.deadline
+        );
+
   return (
-    activity: firstOnGlance?.activity ?? resting,
-    owner: firstOnGlance?.lane,
-    deadline: firstOnGlance?.deadline,
+    activity: glanceActivity,
+    owner: glanceOwner,
+    deadline: glanceDeadline,
     manual: viewFor(StatusLane.manual),
     txAuto: viewFor(StatusLane.txAuto),
     discovery: viewFor(StatusLane.discovery),
@@ -250,10 +289,6 @@ StatusLane _autoLane(AutoMode mode) => switch (mode) {
   required bool isGpsLocked,
   required AutoMode autoMode,
   required bool txAllowed,
-  required bool isRxWindowRunning,
-  required StatusDeadline? rxWindow,
-  required bool isDiscoveryWindowRunning,
-  required StatusDeadline? discoveryWindow,
 }) {
   if (isInZoneGracePeriod) {
     return (
@@ -272,14 +307,12 @@ StatusLane _autoLane(AutoMode mode) => switch (mode) {
   if (!isConnected) {
     return (activity: SessionActivity.disconnected, deadline: null);
   }
-  if (isPendingDisable) {
-    return (
-      activity: SessionActivity.stopping,
-      // Whichever window is still open. Both can be shut, which is exactly the
-      // case the 12 second backstop covers, and then there is nothing to count.
-      deadline: rxWindow ?? discoveryWindow,
-    );
-  }
+  // A pending disable is NOT a session-wide hold: the mode being stopped is
+  // still running its closing window, and only the Active button and the glance
+  // say Stopping. It is recorded as a high-precedence observation instead (see
+  // the caller), so it still outranks GPS and a blocked zone, both skipped here
+  // while it is set, without flattening every lane onto one deadline.
+  if (isPendingDisable) return null;
   if (!isGpsLocked) {
     return (activity: SessionActivity.waitingForGps, deadline: null);
   }
