@@ -1063,7 +1063,7 @@ extension MeshMapperActivityAttributes.ContentState {
     Self(
       mode: "Hybrid",
       phase: "listening",
-      phaseTitle: "Listening…",
+      phaseTitle: "Listening",
       phaseDetail: "Waiting for repeater echoes",
       phaseEndsAt: Date().addingTimeInterval(42),
       phaseDurationMs: 60_000,
@@ -1120,7 +1120,7 @@ extension MeshMapperActivityAttributes.ContentState {
     Self(
       mode: "Active",
       phase: "listening",
-      phaseTitle: "Listening…",
+      phaseTitle: "Listening",
       phaseDetail: "Waiting for repeater echoes",
       phaseEndsAt: Date().addingTimeInterval(25),
       phaseDurationMs: 60_000,

@@ -108,9 +108,9 @@ enum SampleSnapshot {
     case "wait":
       samplePhase = ("waiting", "Next ping", now + 25_000, 30_000)
     case "lapsed":
-      samplePhase = ("listening", "Listening…", now - 5_000, 60_000)
+      samplePhase = ("listening", "Listening", now - 5_000, 60_000)
     default:
-      samplePhase = ("listening", "Listening…", now + 42_000, 60_000)
+      samplePhase = ("listening", "Listening", now + 42_000, 60_000)
     }
 
     let sampleControlState = UserDefaults.standard.string(
@@ -134,7 +134,7 @@ enum SampleSnapshot {
         isSessionActive: false,
         manualPingApplicable: false,
         manualCooldownEndsAtMs: nil,
-        blockedReason: "This zone is currently passive-only"
+        blockedReason: "Passive only"
       )
     case "cooldown":
       // The one unavailability the phone reports with no `blockedReason`.
@@ -153,7 +153,7 @@ enum SampleSnapshot {
         isSessionActive: true,
         manualPingApplicable: false,
         manualCooldownEndsAtMs: nil,
-        blockedReason: "Passive Only"
+        blockedReason: "Passive only"
       )
     case "txActive":
       sampleControls = WatchControls(
