@@ -85,6 +85,12 @@ ResolvedPhase resolveSessionPhase({
     txAllowed: txAllowed,
     isManualSession: isManualSession,
     isPingSending: isPingSending,
+    // Both are false here on purpose. This shim exists to keep the golden
+    // table pinned to today's output while the model grows; neither state is
+    // on the glance surfaces yet, so neither can change the phase anyway.
+    isPingInProgress: false,
+    isSharedCooldownRunning: false,
+    sharedCooldown: null,
     isRxWindowRunning: isRxWindowRunning,
     rxWindow: at(rxWindowEndsAt),
     isDiscoveryWindowRunning: isDiscoveryWindowRunning,
