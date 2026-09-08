@@ -76,11 +76,13 @@ SessionStatus resolveSessionStatus({
 
   // Ranks 8 to 18, in order. Each observation names the lane it belongs to.
   //
-  // [onGlance] is false for the two states the phone already shows and the
-  // Live Activity, watch and Siri do not. The model records them because the
-  // buttons need them; the glance answer skips them so this commit changes
-  // nothing anyone can see. Flipping either to true is the whole of that
-  // disagreement's fix, and the phase table will show it as a diff.
+  // [onGlance] decides whether an observation can win the single glance answer
+  // as well as its own lane. It is true for every state now: the two the phone
+  // used to show alone (an auto ping in flight before it transmits, and the
+  // shared post-stop cooldown) reach the glance too. The shared cooldown only
+  // wins post-stop, where the Live Activity session has already ended and the
+  // native projection reads it as idle, so making it reachable changes no
+  // pixels; the sending gap does, on the Live Activity, watch and Siri.
   final observations = <({
     StatusLane lane,
     SessionActivity activity,
@@ -149,16 +151,17 @@ SessionStatus resolveSessionStatus({
   }
 
   // An auto TX ping that has been asked for but has not transmitted yet. The
-  // phone has always shown this; the glance surfaces have not, because their
-  // only route to "sending" is a latch set at the moment of transmit, several
-  // seconds later. That is the auto-session sending gap. Gated on the TX loop
-  // running, because a manual ping also holds `isPingInProgress` and belongs to
-  // the manual lane (the button beside it must not read "Sending" for it).
+  // phone has always shown this; now the glance surfaces do too, closing the
+  // gap where their only route to "sending" was a latch set at the moment of
+  // transmit, several seconds later, so they said "active" in between. Gated on
+  // the TX loop running, because a manual ping also holds `isPingInProgress` and
+  // belongs to the manual lane (the button beside it must not read "Sending" for
+  // it).
   if (isTxModeRunning &&
       isPingInProgress &&
       !isRxWindowRunning &&
       !isDiscoveryWindowRunning) {
-    see(StatusLane.txAuto, SessionActivity.sending, onGlance: false);
+    see(StatusLane.txAuto, SessionActivity.sending);
   }
 
   // Observed whenever the manual cooldown is running, shown on the glance
@@ -204,12 +207,14 @@ SessionStatus resolveSessionStatus({
   }
 
   // The five second cooldown that follows stopping a TX mode. Three buttons
-  // count it down and no glance surface has ever known about it: for those
-  // five seconds the watch says "Ready, no session running" while the phone
-  // says "Cooldown 5s".
+  // count it down. It reaches the glance answer too now, but only ever wins it
+  // post-stop, where the auto interval no longer outranks it. There the Live
+  // Activity session has already ended (so it never publishes this) and the
+  // watch and Siri project it to idle (`resolveWatchSurfacePhase`, keyed on
+  // there being no glance session), so the wrist still reads "Ready". The model
+  // is honest without a pixel moving.
   if (isSharedCooldownRunning) {
-    see(StatusLane.txAuto, SessionActivity.cooldown,
-        deadline: sharedCooldown, onGlance: false);
+    see(StatusLane.txAuto, SessionActivity.cooldown, deadline: sharedCooldown);
   }
 
   // Ranks 19 and 20: nothing is happening yet, or nothing is happening now.

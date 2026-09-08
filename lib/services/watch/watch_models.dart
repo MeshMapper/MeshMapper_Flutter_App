@@ -562,14 +562,26 @@ SessionStartAvailability resolveSessionStartAvailability({
 /// The shared resolver's Starting fallback is correct for a Live Activity,
 /// which only exists for a session, but the watch also renders while idle.
 /// Only the watch calls this projection, keeping the phone surface unchanged.
+///
+/// [isGlanceSessionActive] is whether a glance session is open at all
+/// (`_liveActivitySessionActive`). It separates the two states that both reach
+/// the glance as `cooldown` with no auto session running: a manual ping's
+/// cooldown keeps its session open and belongs on the wrist, while the shared
+/// five second cooldown that follows stopping a TX mode has already ended its
+/// session, so the wrist reads it as idle exactly as it did before the model
+/// knew the cooldown existed.
 LiveActivityPhase resolveWatchSurfacePhase({
   required LiveActivityPhase sharedPhase,
   required bool isSessionActive,
   required bool isSessionStarting,
+  required bool isGlanceSessionActive,
 }) {
   if (sharedPhase == LiveActivityPhase.starting &&
       !isSessionActive &&
       !isSessionStarting) {
+    return LiveActivityPhase.idle;
+  }
+  if (sharedPhase == LiveActivityPhase.cooldown && !isGlanceSessionActive) {
     return LiveActivityPhase.idle;
   }
   return sharedPhase;

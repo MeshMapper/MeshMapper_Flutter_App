@@ -535,6 +535,7 @@ void main() {
           sharedPhase: sharedLiveActivityPhase,
           isSessionActive: false,
           isSessionStarting: false,
+          isGlanceSessionActive: false,
         ),
         LiveActivityPhase.idle,
       );
@@ -545,6 +546,7 @@ void main() {
           sharedPhase: sharedLiveActivityPhase,
           isSessionActive: false,
           isSessionStarting: true,
+          isGlanceSessionActive: false,
         ),
         LiveActivityPhase.starting,
       );

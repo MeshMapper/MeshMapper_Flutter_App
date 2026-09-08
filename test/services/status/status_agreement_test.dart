@@ -15,15 +15,18 @@ import 'package:mesh_mapper/services/watch/watch_models.dart';
 /// function's own doc comment); the in-app buttons read the same model's lanes.
 /// This pins the facts that keep those surfaces from drifting apart again:
 ///
-///   1. the watch/Siri projection only ever maps `starting` to `idle`, so the
-///      two of them agree with each other and differ from the Live Activity by
-///      exactly one defined step, never an invented one;
+///   1. the watch/Siri projection substitutes `idle` in exactly two cases, a
+///      truly idle `starting` and a post-stop `cooldown` with no glance session,
+///      and otherwise passes the phase through, so the two of them agree with
+///      each other and differ from the Live Activity only by defined steps,
+///      never an invented phase;
 ///   2. the shared resolver never itself produces `idle`, so `idle` on the wrist
 ///      is only ever that projection, never a state the model claimed;
-///   3. the two button-only observations (`isPingInProgress`,
-///      `isSharedCooldownRunning`) never move the glance answer, so the buttons,
-///      which see them, and the glance surfaces, which do not, describe the same
-///      activity, owner and deadline.
+///   3. the two states the buttons alone used to show (`isPingInProgress`,
+///      `isSharedCooldownRunning`) now reach the glance too: an auto ping in
+///      flight reads `sending` and the shared post-stop cooldown reads
+///      `cooldown`, so the buttons and the glance no longer disagree about them.
+///      This is the record of that disagreement being fixed in stage 4.
 
 final _t = DateTime.utc(2026, 1, 1, 12);
 StatusDeadline _d([int sec = 5]) =>
@@ -165,25 +168,35 @@ final List<_Scene> _scenes = [
 
 void main() {
   group('the glance surfaces read one activity', () {
-    test('the watch/Siri projection only ever maps starting to idle', () {
+    test('the watch/Siri projection substitutes only idle, in two cases', () {
       // The Live Activity shows the raw phase; the watch and Siri show this
-      // projection of it. It changes exactly one state, and only when the
-      // session is neither running nor starting, so the surfaces can differ by
-      // that one defined step and never invent a phase of their own.
+      // projection of it. It substitutes idle in exactly two cases, a truly
+      // idle Starting and a post-stop cooldown with no glance session, and
+      // otherwise passes the phase through. Whatever it does, the only value it
+      // ever substitutes is idle, so the surfaces never invent a phase.
       for (final p in LiveActivityPhase.values) {
         for (final active in [false, true]) {
           for (final starting in [false, true]) {
-            final projected = resolveWatchSurfacePhase(
-              sharedPhase: p,
-              isSessionActive: active,
-              isSessionStarting: starting,
-            );
-            final expected =
-                p == LiveActivityPhase.starting && !active && !starting
-                    ? LiveActivityPhase.idle
-                    : p;
-            expect(projected, expected,
-                reason: '$p active=$active starting=$starting');
+            for (final glance in [false, true]) {
+              final projected = resolveWatchSurfacePhase(
+                sharedPhase: p,
+                isSessionActive: active,
+                isSessionStarting: starting,
+                isGlanceSessionActive: glance,
+              );
+              final expected =
+                  (p == LiveActivityPhase.starting && !active && !starting)
+                      ? LiveActivityPhase.idle
+                      : (p == LiveActivityPhase.cooldown && !glance)
+                          ? LiveActivityPhase.idle
+                          : p;
+              expect(projected, expected,
+                  reason:
+                      '$p active=$active starting=$starting glance=$glance');
+              if (projected != p) {
+                expect(projected, LiveActivityPhase.idle, reason: '$p');
+              }
+            }
           }
         }
       }
@@ -194,14 +207,17 @@ void main() {
       for (final p in LiveActivityPhase.values) {
         for (final active in [false, true]) {
           for (final starting in [false, true]) {
-            expect(
-              LiveActivityPhase.values,
-              contains(resolveWatchSurfacePhase(
-                  sharedPhase: p,
-                  isSessionActive: active,
-                  isSessionStarting: starting)),
-              reason: '$p',
-            );
+            for (final glance in [false, true]) {
+              expect(
+                LiveActivityPhase.values,
+                contains(resolveWatchSurfacePhase(
+                    sharedPhase: p,
+                    isSessionActive: active,
+                    isSessionStarting: starting,
+                    isGlanceSessionActive: glance)),
+                reason: '$p',
+              );
+            }
           }
         }
       }
@@ -220,20 +236,42 @@ void main() {
     });
   });
 
-  group('the buttons and the glance describe the same state', () {
-    test('the two button-only observations never move the glance answer', () {
-      // The buttons resolve the full model; the glance shims these two flags
-      // off. Flipping them adds only observations the glance is told to ignore,
-      // so the single answer, activity, owner and deadline, cannot move. When
-      // Project B flips either flag on, this expectation changes, which is
-      // exactly the record of that disagreement being fixed.
-      for (final make in _scenes) {
-        final glance = make(pip: false, scd: false);
-        final buttons = make(pip: true, scd: true);
-        expect(buttons.activity, glance.activity, reason: '$glance');
-        expect(buttons.owner, glance.owner, reason: '$glance');
-        expect(buttons.deadline, glance.deadline, reason: '$glance');
-      }
+  group('the two states the buttons showed now reach the glance', () {
+    // Before stage 4 these two flags moved only the buttons; the glance shimmed
+    // them off, and this pinned that they could not move it. Now the glance
+    // follows the buttons, so the expectation is the opposite. That flip is the
+    // record of the disagreement being fixed.
+    test('an auto ping in flight moves the glance to sending', () {
+      final resting = _status(autoMode: AutoMode.active);
+      final inFlight =
+          _status(autoMode: AutoMode.active, isPingInProgress: true);
+      expect(resting.activity, isNot(SessionActivity.sending));
+      expect(inFlight.activity, SessionActivity.sending);
+      expect(inFlight.owner, StatusLane.txAuto);
+    });
+
+    test('the shared post-stop cooldown moves the glance to cooldown', () {
+      final resting = _status(isSessionActive: false);
+      final cooling =
+          _status(isSessionActive: false, isSharedCooldownRunning: true);
+      expect(resting.activity, isNot(SessionActivity.cooldown));
+      expect(cooling.activity, SessionActivity.cooldown);
+      expect(cooling.owner, StatusLane.txAuto);
+    });
+
+    test('a ping in flight still does not disturb an open window', () {
+      // The sending gap sits below the window branches: during an RX window the
+      // glance stays Listening whether or not a ping is in flight, so the fix
+      // cannot stomp the echo window that fills five seconds of every cycle.
+      final listening =
+          _status(autoMode: AutoMode.active, isRxWindowRunning: true);
+      final both = _status(
+          autoMode: AutoMode.active,
+          isRxWindowRunning: true,
+          isPingInProgress: true);
+      expect(both.activity, listening.activity);
+      expect(both.owner, listening.owner);
+      expect(both.deadline, listening.deadline);
     });
   });
 }

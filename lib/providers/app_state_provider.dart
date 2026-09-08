@@ -2638,11 +2638,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       sharedPhase: shared.phase,
       isSessionActive: _autoPingEnabled,
       isSessionStarting: _autoPingStarting,
+      isGlanceSessionActive: _liveActivitySessionActive,
     );
     if (watchPhase == shared.phase) return shared;
 
+    // The projection only ever substitutes idle (pinned in
+    // status_agreement_test), so honour the value it returned rather than
+    // discarding it: render idle the one way the phase resolver does, keeping
+    // the "Ready" copy in a single place instead of a second hardcoded literal.
     return (
-      phase: LiveActivityPhase.idle,
+      phase: watchPhase,
       title: 'Ready',
       detail: 'No session running',
       endsAt: null,
@@ -2724,6 +2729,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         txAllowed: txAllowed,
         isManualSession: _liveActivityManualSession,
         isPingSending: _isPingSending,
+        isPingInProgress: isPingInProgress,
         // Passed unresolved: naming the repeater walks the whole zone
         // catalogue and only the targeted branches ever ask.
         targetRepeaterName: () => _targetRepeaterDisplayName,
@@ -2736,6 +2742,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         isAutoPingRunning: _autoPingTimer.isRunning,
         autoPingSkipReason: _autoPingTimer.skipReason,
         autoPingEndsAt: _autoPingTimer.endTime,
+        isSharedCooldownRunning: _cooldownTimer.isRunning,
+        sharedCooldownEndsAt: _cooldownTimer.endTime,
         minDistanceMetres: PingService.currentMinDistance,
         operation: _liveActivityOperation,
         isSessionStarting: _autoPingStarting,

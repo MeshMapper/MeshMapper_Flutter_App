@@ -53,6 +53,7 @@ ResolvedPhase resolveSessionPhase({
   required bool txAllowed,
   required bool isManualSession,
   required bool isPingSending,
+  required bool isPingInProgress,
   required String? Function() targetRepeaterName,
   required bool isRxWindowRunning,
   required DateTime? rxWindowEndsAt,
@@ -63,6 +64,8 @@ ResolvedPhase resolveSessionPhase({
   required bool isAutoPingRunning,
   required String? autoPingSkipReason,
   required DateTime? autoPingEndsAt,
+  required bool isSharedCooldownRunning,
+  required DateTime? sharedCooldownEndsAt,
   required int minDistanceMetres,
   required SessionOperation? operation,
   required bool isSessionStarting,
@@ -86,12 +89,14 @@ ResolvedPhase resolveSessionPhase({
     txAllowed: txAllowed,
     isManualSession: isManualSession,
     isPingSending: isPingSending,
-    // Both are false here on purpose. This shim exists to keep the golden
-    // table pinned to today's output while the model grows; neither state is
-    // on the glance surfaces yet, so neither can change the phase anyway.
-    isPingInProgress: false,
-    isSharedCooldownRunning: false,
-    sharedCooldown: null,
+    // The glance surfaces now see these two, so they pass through rather than
+    // being shimmed off: an auto ping in flight before it transmits reads
+    // "Sending ping…", and the shared post-stop cooldown reads "Cooldown" (which
+    // only the model and the phone see, since the watch and Siri project it to
+    // idle and the Live Activity session has already ended by then).
+    isPingInProgress: isPingInProgress,
+    isSharedCooldownRunning: isSharedCooldownRunning,
+    sharedCooldown: at(sharedCooldownEndsAt),
     isRxWindowRunning: isRxWindowRunning,
     rxWindow: at(rxWindowEndsAt),
     isDiscoveryWindowRunning: isDiscoveryWindowRunning,
