@@ -39,13 +39,19 @@ enum StatusLane {
   targeted,
 }
 
-/// When something ends, and how long it ran.
+/// When something ends, how long it ran, and how many seconds a button should
+/// print beside it.
 ///
 /// The duration travels with the deadline rather than being recovered later by
 /// matching a timestamp against every live timer, which is what the provider
 /// used to do. A null duration means no timer owns it: today only the zone
 /// grace deadline, which is a wall-clock instant rather than a countdown.
-typedef StatusDeadline = ({DateTime endsAt, int? durationMs});
+///
+/// [remainingSec] is here rather than computed from [endsAt] so the number a
+/// button prints is the exact one its timer reports, rounded the same way, and
+/// so nothing in this layer needs a clock. It moves every tick; [endsAt] does
+/// not, which is what the glance surfaces throttle on.
+typedef StatusDeadline = ({DateTime endsAt, int? durationMs, int remainingSec});
 
 /// One lane's view of the session.
 typedef LaneStatus = ({
