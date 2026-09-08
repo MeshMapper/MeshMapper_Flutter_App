@@ -63,8 +63,9 @@ class _FakeGps implements GpsService {
 }
 
 class _FakeConnection implements MeshCoreConnection {
+  /// Settable so a test can drop the radio after banking a ping.
   @override
-  ConnectionStep get currentStep => ConnectionStep.connected;
+  ConnectionStep currentStep = ConnectionStep.connected;
 
   @override
   DeviceModel? get deviceModel => null;
@@ -150,10 +151,11 @@ PingService _buildWith(
   _Coverage coverage, {
   DiscoveryWindowTimer? discoveryWindowTimer,
   CooldownTimer? cooldownTimer,
+  MeshCoreConnection? connection,
 }) =>
     PingService(
       gpsService: gps,
-      connection: _FakeConnection(),
+      connection: connection ?? _FakeConnection(),
       apiQueue: _FakeApiQueue(),
       wakelockService: _FakeWakelock(),
       cooldownTimer: cooldownTimer ?? CooldownTimer(),
@@ -526,6 +528,44 @@ void main() {
     expect(scheduled.length, scheduledAtRelease,
         reason: 'a successful send schedules nothing until its window closes');
 
+    await ping.forceDisableAutoPing();
+  });
+
+  test('a disconnected radio holds the banked ping', () async {
+    // The radio can drop after a ping is banked (a BLE flap keeps the session
+    // and the bank while auto-reconnect runs). The GPS stream keeps calling
+    // maybeSendBankedPing, which must not release a ping there is no radio to
+    // transmit.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final conn = _FakeConnection();
+    final ping = _buildWith(gps, coverage, connection: conn);
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    // Covered square, so the opening discovery banks instead of transmitting.
+    await ping.enableAutoPing(passiveMode: true);
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(ping.bankedPing, BankedPingType.discovery);
+
+    // The radio drops, and a fix lands in a now-clear square.
+    conn.currentStep = ConnectionStep.reconnecting;
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos()), isFalse,
+        reason: 'no radio to transmit, so the bank is held');
+    expect(ping.bankedPing, BankedPingType.discovery,
+        reason: 'the held ping is still owed');
+
+    // Control: the radio comes back and the very same clear square releases it,
+    // which is what makes the refusal above about the disconnect and nothing
+    // else.
+    conn.currentStep = ConnectionStep.connected;
+    expect(ping.maybeSendBankedPing(_pos()), isTrue);
+    expect(ping.bankedPing, isNull);
+
+    await Future<void>.delayed(Duration.zero);
     await ping.forceDisableAutoPing();
   });
 
