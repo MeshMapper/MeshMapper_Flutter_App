@@ -60,6 +60,7 @@ import '../services/external_commands/external_session_commands.dart';
 import '../services/external_surfaces/geo/external_surface_geo_builder.dart';
 import '../services/live_activity/live_activity_heard.dart';
 import '../services/live_activity/live_activity_models.dart';
+import '../services/status/session_phase_resolver.dart';
 import '../services/status/session_status.dart';
 import '../services/live_activity/live_activity_service.dart';
 import '../services/watch/watch_bridge_service.dart';
@@ -2630,12 +2631,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     super.notifyListeners();
   }
 
-  ({
-    LiveActivityPhase phase,
-    String title,
-    String? detail,
-    DateTime? endsAt,
-  }) _resolveWatchPhase() {
+  ResolvedPhase _resolveWatchPhase() {
     final shared = _resolveLiveActivityPhase();
     final watchPhase = resolveWatchSurfacePhase(
       sharedPhase: shared.phase,
@@ -2706,205 +2702,45 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return ((percent / 5).round() * 5).clamp(0, 100);
   }
 
-  ({
-    LiveActivityPhase phase,
-    String title,
-    String? detail,
-    DateTime? endsAt,
-  }) _resolveLiveActivityPhase() {
-    if (_isInZoneGracePeriod) {
-      return (
-        phase: LiveActivityPhase.pausedOutsideZone,
-        title: 'Outside service area',
-        detail: 'Searching for a nearby wardriving zone',
-        endsAt: _zoneGraceEndsAt,
+  /// The one derivation every glance surface reads.
+  ///
+  /// The branch order lives in [resolveSessionPhase] now, where it can be
+  /// tested. This end supplies the facts and nothing else: each timer is
+  /// flattened to a running flag plus an absolute deadline, so the resolver
+  /// never touches a live object or a clock.
+  ResolvedPhase _resolveLiveActivityPhase() => resolveSessionPhase(
+        isInZoneGracePeriod: _isInZoneGracePeriod,
+        zoneGraceEndsAt: _zoneGraceEndsAt,
+        isZoneTransferInProgress: _isZoneTransferInProgress,
+        zoneTransferFrom: _zoneTransferFrom,
+        zoneTransferTo: _zoneTransferTo,
+        isAutoReconnecting: _isAutoReconnecting,
+        connectionStep: _connectionStep,
+        isConnected: isConnected,
+        isPendingDisable: isPendingDisable,
+        gpsStatus: _gpsStatus,
+        autoMode: _autoMode,
+        txAllowed: txAllowed,
+        isManualSession: _liveActivityManualSession,
+        isPingSending: _isPingSending,
+        // Passed unresolved: naming the repeater walks the whole zone
+        // catalogue and only the targeted branches ever ask.
+        targetRepeaterName: () => _targetRepeaterDisplayName,
+        isRxWindowRunning: _rxWindowTimer.isRunning,
+        rxWindowEndsAt: _rxWindowTimer.endTime,
+        isDiscoveryWindowRunning: _discoveryWindowTimer.isRunning,
+        discoveryWindowEndsAt: _discoveryWindowTimer.endTime,
+        isManualCooldownRunning: _manualPingCooldownTimer.isRunning,
+        manualCooldownEndsAt: _manualPingCooldownTimer.endTime,
+        isAutoPingRunning: _autoPingTimer.isRunning,
+        autoPingSkipReason: _autoPingTimer.skipReason,
+        autoPingEndsAt: _autoPingTimer.endTime,
+        minDistanceMetres: PingService.currentMinDistance,
+        operation: _liveActivityOperation,
+        isSessionStarting: _autoPingStarting,
+        isSessionActive: _autoPingEnabled,
+        modeTitle: _liveActivityModeTitle,
       );
-    }
-
-    if (_isZoneTransferInProgress) {
-      return (
-        phase: LiveActivityPhase.pausedOutsideZone,
-        title: 'Changing region…',
-        detail: [_zoneTransferFrom, _zoneTransferTo]
-            .whereType<String>()
-            .join(' → '),
-        endsAt: null,
-      );
-    }
-
-    if (_isAutoReconnecting || _connectionStep == ConnectionStep.reconnecting) {
-      return (
-        phase: LiveActivityPhase.disconnected,
-        title: 'Reconnecting…',
-        detail: 'Restoring MeshCore connection',
-        endsAt: null,
-      );
-    }
-
-    if (!isConnected) {
-      return (
-        phase: LiveActivityPhase.disconnected,
-        title: _connectionStep == ConnectionStep.disconnecting
-            ? 'Disconnecting…'
-            : 'Device disconnected',
-        detail: 'Open MeshMapper to reconnect',
-        endsAt: null,
-      );
-    }
-
-    if (isPendingDisable) {
-      return (
-        phase: LiveActivityPhase.stopping,
-        title: 'Stopping…',
-        detail: 'Finishing the current listening window',
-        endsAt: _rxWindowTimer.endTime ?? _discoveryWindowTimer.endTime,
-      );
-    }
-
-    if (_gpsStatus != GpsStatus.locked) {
-      return (
-        phase: LiveActivityPhase.waitingForGps,
-        title: 'Waiting for GPS',
-        detail: _liveActivityGpsLabel,
-        endsAt: null,
-      );
-    }
-
-    if ((_autoMode == AutoMode.active ||
-            _autoMode == AutoMode.hybrid ||
-            _autoMode == AutoMode.targeted) &&
-        !txAllowed) {
-      return (
-        phase: LiveActivityPhase.txBlocked,
-        title: 'TX unavailable',
-        detail: 'This zone is currently passive-only',
-        endsAt: null,
-      );
-    }
-
-    if (_liveActivityManualSession && _isPingSending) {
-      return (
-        phase: LiveActivityPhase.sending,
-        title: 'Sending ping…',
-        detail: null,
-        endsAt: null,
-      );
-    }
-
-    if (_discoveryWindowTimer.isRunning) {
-      final isTrace = _autoMode == AutoMode.targeted;
-      return (
-        phase: isTrace
-            ? LiveActivityPhase.listeningTrace
-            : LiveActivityPhase.listeningDiscovery,
-        title: isTrace ? 'Listening for trace…' : 'Listening…',
-        detail: isTrace ? _targetRepeaterDisplayName : 'Discovery responses',
-        endsAt: _discoveryWindowTimer.endTime,
-      );
-    }
-
-    if (_rxWindowTimer.isRunning) {
-      return (
-        phase: LiveActivityPhase.listening,
-        title: 'Listening…',
-        detail: 'Waiting for repeater echoes',
-        endsAt: _rxWindowTimer.endTime,
-      );
-    }
-
-    if (_liveActivityManualSession && _manualPingCooldownTimer.isRunning) {
-      return (
-        phase: LiveActivityPhase.cooldown,
-        title: 'Cooldown',
-        detail: 'Manual ping available when the timer ends',
-        endsAt: _manualPingCooldownTimer.endTime,
-      );
-    }
-
-    if (_autoPingTimer.isRunning) {
-      final deferred =
-          _autoPingTimer.skipReason == PingService.skipReasonRecentlyCovered;
-      if (_autoPingTimer.skipReason != null) {
-        return (
-          phase: deferred
-              ? LiveActivityPhase.deferred
-              : LiveActivityPhase.skipped,
-          title: deferred ? 'Deferred' : 'Ping skipped',
-          detail: deferred
-              ? 'Recently covered, waiting for a fresh square'
-              : 'Move at least ${PingService.currentMinDistance} m',
-          endsAt: _autoPingTimer.endTime,
-        );
-      }
-
-      if (_autoMode == AutoMode.passive) {
-        return (
-          phase: LiveActivityPhase.waitingDiscovery,
-          title: 'Next discovery',
-          detail: null,
-          endsAt: _autoPingTimer.endTime,
-        );
-      }
-
-      if (_autoMode == AutoMode.targeted) {
-        return (
-          phase: LiveActivityPhase.waitingTrace,
-          title: 'Next trace',
-          detail: _targetRepeaterDisplayName,
-          endsAt: _autoPingTimer.endTime,
-        );
-      }
-
-      return (
-        phase: LiveActivityPhase.waiting,
-        title: 'Next ping',
-        detail: null,
-        endsAt: _autoPingTimer.endTime,
-      );
-    }
-
-    switch (_liveActivityOperation) {
-      case SessionOperation.sending:
-        return (
-          phase: LiveActivityPhase.sending,
-          title: 'Sending ping…',
-          detail: null,
-          endsAt: null,
-        );
-      case SessionOperation.discovering:
-        return (
-          phase: LiveActivityPhase.discovering,
-          title: 'Discovering…',
-          detail: 'Requesting nearby repeaters',
-          endsAt: null,
-        );
-      case SessionOperation.tracing:
-        return (
-          phase: LiveActivityPhase.tracing,
-          title: 'Tracing repeater…',
-          detail: _targetRepeaterDisplayName,
-          endsAt: null,
-        );
-      case null:
-        break;
-    }
-
-    if (_autoPingStarting || !_autoPingEnabled) {
-      return (
-        phase: LiveActivityPhase.starting,
-        title: 'Preparing session…',
-        detail: null,
-        endsAt: null,
-      );
-    }
-
-    return (
-      phase: LiveActivityPhase.active,
-      title: '$_liveActivityModeTitle active',
-      detail: 'Waiting for the next cycle',
-      endsAt: null,
-    );
-  }
 
   /// The Live Activity's rows are the map's Top Heard box, the same list the
   /// watch mirrors, so the three surfaces cannot disagree. The ordering, the
@@ -2927,14 +2763,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_liveActivityManualSession) return 'Manual';
     return _autoMode.displayName;
   }
-
-  String get _liveActivityGpsLabel => switch (_gpsStatus) {
-        GpsStatus.permissionDenied => 'Location permission required',
-        GpsStatus.disabled => 'Location services disabled',
-        GpsStatus.searching => 'Searching for GPS signal',
-        GpsStatus.locked => 'GPS locked',
-        GpsStatus.outsideGeofence => 'Outside service area',
-      };
 
   String? get _targetRepeaterDisplayName {
     final id = _targetRepeaterId;
