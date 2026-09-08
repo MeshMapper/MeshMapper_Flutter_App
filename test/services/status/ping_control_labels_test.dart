@@ -281,13 +281,13 @@ void main() {
   group('Send Ping', () {
     test('resting', () => expect(portraitSendPingLabel(facts()), 'Send Ping'));
 
-    test('offline blocks TX', () {
+    test('offline reads as Passive only', () {
       expect(portraitSendPingLabel(facts(txBlockedByOffline: true)),
-          'TX Disabled');
+          'Passive only');
     });
 
-    test('a full zone, which the layout never lets through', () {
-      expect(portraitSendPingLabel(facts(txNotAllowed: true)), 'Zone Full');
+    test('a full zone reads as Passive only', () {
+      expect(portraitSendPingLabel(facts(txNotAllowed: true)), 'Passive only');
     });
 
     test('an auto TX mode greys it to the resting word', () {
@@ -320,10 +320,10 @@ void main() {
           portraitActiveModeLabel(facts(hybridEnabled: true)), 'Hybrid Mode');
     });
 
-    test('offline and full-zone blocks', () {
+    test('offline and full-zone both read as Passive only', () {
       expect(portraitActiveModeLabel(facts(txBlockedByOffline: true)),
-          'TX Disabled');
-      expect(portraitActiveModeLabel(facts(txNotAllowed: true)), 'Zone Full');
+          'Passive only');
+      expect(portraitActiveModeLabel(facts(txNotAllowed: true)), 'Passive only');
     });
 
     test('stopping, with and without a window to wait out', () {

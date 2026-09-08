@@ -210,7 +210,7 @@ class ExternalCommandReason {
         ExternalCommandReasonCode.selectPowerLevelUnknownDevice =>
           'Select power level (unknown device)',
         ExternalCommandReasonCode.offlineMode => 'Offline Mode',
-        ExternalCommandReasonCode.passiveOnly => 'Passive Only',
+        ExternalCommandReasonCode.passiveOnly => 'Passive only',
         ExternalCommandReasonCode.zoneAtCapacity =>
           'Zone is full, Passive only',
         ExternalCommandReasonCode.floodTrafficOff => 'Flood Traffic Off',

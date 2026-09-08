@@ -8072,11 +8072,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       case 'zone_disabled':
         return 'This zone is currently disabled. Try again later.';
       case 'zone_full':
-        return 'Zone is at TX capacity. You can still receive (RX-only mode).';
+        return 'Zone is at TX capacity. Only Passive mode works here.';
       case 'gps_stale':
         return "Your phone's clock is out of sync. Turn on automatic date and time in your phone settings.";
       case 'gps_inaccurate':
-        return 'GPS accuracy insufficient (need <50m). Waiting for better signal...';
+        return 'GPS signal is weak (need <50m). Waiting for a stronger signal...';
       case 'bad_key':
         return 'Invalid API key. Please check configuration.';
       case 'invalid_request':
@@ -8499,7 +8499,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[GEOFENCE] Zone status check failed: reason=$reason, message=$message');
 
         if (reason == 'gps_inaccurate') {
-          logError('GPS Accuracy Error\n$message', autoSwitch: false);
+          logError('Weak GPS Signal\n$message', autoSwitch: false);
           // Schedule a retry so we don't depend solely on the GPS stream firing
           // again — on first launch the stream may stall on a low-accuracy fix
           // and the coverage tile overlay would never load.

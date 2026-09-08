@@ -243,7 +243,7 @@ class PingControls extends StatelessWidget {
                       subtitle: txBlockedByOffline
                           ? 'Offline Mode'
                           : txNotAllowed
-                              ? 'Passive Only'
+                              ? 'Zone full'
                               : null, // No "Move Xm" - manual pings have no distance requirement
                       subtitleColor: txBlockedByOffline
                           ? Colors.orange
@@ -288,7 +288,7 @@ class PingControls extends StatelessWidget {
                       subtitle: txBlockedByOffline
                           ? 'Offline Mode'
                           : txNotAllowed
-                              ? 'Passive Only'
+                              ? 'Zone full'
                               : (isPendingDisable ? 'Stopping' : null),
                       subtitleColor: txBlockedByOffline
                           ? Colors.orange
@@ -301,7 +301,7 @@ class PingControls extends StatelessWidget {
                 ],
 
                 // Passive Mode button (toggle)
-                // When ON: shows "Listening..." → "Next Disc Xs" cycle
+                // When ON: shows "Listening..." then "Next disc Xs" cycle
                 // When OFF: returns to normal, Active/Hybrid Mode re-enables immediately
                 // Disabled during manual ping countdown phases, shows "Cooldown Xs"
                 // When Active/Hybrid Mode is running, just shows "Passive Mode" (disabled, no countdown)
@@ -1220,7 +1220,7 @@ class LandscapePingControls extends StatelessWidget {
                     child: _LandscapeIconButton(
                       icon: Icons.cell_tower,
                       tooltip: txNotAllowed
-                          ? 'Zone Full (Passive Only)'
+                          ? 'Passive only (zone full)'
                           : 'Send Ping',
                       color: const Color(0xFF0EA5E9), // sky-500
                       enabled: canPingManual &&
@@ -1252,7 +1252,7 @@ class LandscapePingControls extends StatelessWidget {
                       icon:
                           hybridEnabled ? Icons.compare_arrows : Icons.sensors,
                       tooltip: txNotAllowed
-                          ? 'Zone Full (Passive Only)'
+                          ? 'Passive only (zone full)'
                           : (hybridEnabled ? 'Hybrid Mode' : 'Active Mode'),
                       color: isPendingDisable
                           ? Colors.orange

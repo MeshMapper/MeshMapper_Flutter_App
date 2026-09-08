@@ -560,7 +560,7 @@ void main() {
       );
 
       expect(result.mode, isNull);
-      expect(result.refusal, 'Passive Only');
+      expect(result.refusal, 'Passive only');
     });
 
     test('an omitted start mode preserves the established phone fallback', () {
@@ -748,7 +748,7 @@ void main() {
         'Select antenna option': startAvailability(antennaConfigured: false),
         'Select power level': startAvailability(powerConfigured: false),
         'Offline Mode': startAvailability(txBlockedByOffline: true),
-        'Passive Only': startAvailability(txNotAllowed: true),
+        'Passive only': startAvailability(txNotAllowed: true),
         'Cooling down': startAvailability(cooldownActive: true),
         'Ping in progress': startAvailability(isPingSending: true),
         'Listening for ping response': startAvailability(rxWindowActive: true),
@@ -1929,7 +1929,7 @@ void main() {
       );
 
       expect(reply?['accepted'], isFalse);
-      expect(reply?['reason'], 'Passive Only');
+      expect(reply?['reason'], 'Passive only');
     });
   });
 
