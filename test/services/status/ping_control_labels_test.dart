@@ -14,7 +14,6 @@ PingControlFacts facts({
   bool isConnected = true,
   bool externalAntennaSet = true,
   bool isPowerSet = true,
-  PingValidation validation = PingValidation.valid,
   bool isTxModeRunning = false,
   bool isPassiveModeRunning = false,
   bool isTargetedRunning = false,
@@ -40,7 +39,6 @@ PingControlFacts facts({
       isConnected: isConnected,
       externalAntennaSet: externalAntennaSet,
       isPowerSet: isPowerSet,
-      validation: validation,
       isTxModeRunning: isTxModeRunning,
       isPassiveModeRunning: isPassiveModeRunning,
       isTargetedRunning: isTargetedRunning,
@@ -67,62 +65,67 @@ void main() {
   group('the blocking hint', () {
     test('says nothing while disconnected', () {
       // The buttons are obviously dead, so a reason would be noise.
-      expect(blockingHint(facts(isConnected: false, externalAntennaSet: false)),
+      expect(
+          blockingHint(facts(isConnected: false, externalAntennaSet: false),
+              PingValidation.valid),
           isNull);
     });
 
     test('names each reason, in priority order', () {
-      expect(blockingHint(facts(externalAntennaSet: false)),
+      expect(
+          blockingHint(facts(externalAntennaSet: false), PingValidation.valid),
           (hint: StatusHint.antennaRequired, text: 'Select antenna option'));
-      expect(blockingHint(facts(isPowerSet: false)), (
+      expect(blockingHint(facts(isPowerSet: false), PingValidation.valid), (
         hint: StatusHint.powerRequired,
         text: 'Select power level in Connect tab'
       ));
-      expect(blockingHint(facts(validation: PingValidation.airborne)),
+      expect(blockingHint(facts(), PingValidation.airborne),
           (hint: StatusHint.airborne, text: 'Airborne, wardriving blocked'));
-      expect(blockingHint(facts(validation: PingValidation.noGpsLock)),
+      expect(blockingHint(facts(), PingValidation.noGpsLock),
           (hint: StatusHint.noGpsLock, text: 'Waiting for GPS lock...'));
-      expect(blockingHint(facts(validation: PingValidation.gpsInaccurate)),
+      expect(blockingHint(facts(), PingValidation.gpsInaccurate),
           (hint: StatusHint.gpsInaccurate, text: 'GPS accuracy too low'));
     });
 
     test('the antenna reason outranks every other', () {
       expect(
-        blockingHint(facts(
-          externalAntennaSet: false,
-          isPowerSet: false,
-          validation: PingValidation.airborne,
-        ))?.hint,
+        blockingHint(
+                facts(
+                  externalAntennaSet: false,
+                  isPowerSet: false,
+                ),
+                PingValidation.airborne)
+            ?.hint,
         StatusHint.antennaRequired,
       );
     });
 
     test('power outranks every validation reason', () {
       expect(
-        blockingHint(facts(
-          isPowerSet: false,
-          validation: PingValidation.noGpsLock,
-        ))?.hint,
+        blockingHint(
+                facts(
+                  isPowerSet: false,
+                ),
+                PingValidation.noGpsLock)
+            ?.hint,
         StatusHint.powerRequired,
       );
     });
 
     test('a valid ping needs no hint', () {
-      expect(blockingHint(facts()), isNull);
+      expect(blockingHint(facts(), PingValidation.valid), isNull);
     });
 
     test('cooldown and too-close are deliberately hintless', () {
       // They show on the button instead, which is why the chain skips them.
-      expect(blockingHint(facts(validation: PingValidation.tooCloseToLastPing)),
-          isNull);
-      expect(blockingHint(facts(validation: PingValidation.recentlyCovered)),
-          isNull);
+      expect(blockingHint(facts(), PingValidation.tooCloseToLastPing), isNull);
+      expect(blockingHint(facts(), PingValidation.recentlyCovered), isNull);
     });
 
     test('the service-area reason exists but nothing can produce it', () {
       // No validator returns outsideGeofence, so this row is unreachable in the
       // app. Pinned so the dead branch is recorded rather than rediscovered.
-      expect(blockingHint(facts(validation: PingValidation.outsideGeofence)),
+      expect(blockingHint(facts(), PingValidation.outsideGeofence),
           (hint: StatusHint.outsideServiceArea, text: 'Outside service area'));
     });
   });

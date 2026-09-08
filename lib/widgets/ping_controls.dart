@@ -19,7 +19,6 @@ PingControlFacts _factsOf(AppStateProvider s) {
     externalAntennaSet: prefs.externalAntennaSet,
     isPowerSet:
         prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
-    validation: s.pingValidation,
     isTxModeRunning: s.autoPingEnabled &&
         (s.autoMode == AutoMode.active || s.autoMode == AutoMode.hybrid),
     isPassiveModeRunning: s.autoPingEnabled && s.autoMode == AutoMode.passive,
@@ -172,7 +171,6 @@ class PingControls extends StatelessWidget {
             .isAutoPingStarting; // True while an auto mode is starting (pre-first-notify)
         final cooldownActive = appState.cooldownTimer
             .isRunning; // Shared cooldown after disabling Active Mode
-        final cooldownRemaining = appState.cooldownTimer.remainingSec;
         final manualCooldownActive = appState.manualPingCooldownTimer
             .isRunning; // Manual ping cooldown (15 seconds)
         final rxWindowActive =
@@ -200,7 +198,7 @@ class PingControls extends StatelessWidget {
         // say about the same instant.
         final f = _factsOf(appState);
 
-        final hint = blockingHint(f);
+        final hint = blockingHint(f, appState.pingValidation);
         final blockingIcon = hint == null ? null : _hintIcon(hint.hint);
         final blockingColor = hint == null ? null : _hintColor(hint.hint);
 
@@ -362,8 +360,6 @@ class PingControls extends StatelessWidget {
               isAnyModeRunning: isActiveModeRunning ||
                   isPassiveModeRunning ||
                   isHybridModeRunning,
-              cooldownActive: cooldownActive,
-              cooldownRemaining: cooldownRemaining,
             ),
           ],
         );
@@ -549,14 +545,10 @@ class _ActionButtonState extends State<_ActionButton> {
 /// Targeted Ping controls - hex text field + start/stop button
 class _TargetedPingSection extends StatefulWidget {
   final bool isAnyModeRunning;
-  final bool cooldownActive;
-  final int cooldownRemaining;
   final bool compact;
 
   const _TargetedPingSection({
     required this.isAnyModeRunning,
-    required this.cooldownActive,
-    required this.cooldownRemaining,
     this.compact = false,
   });
 
@@ -612,6 +604,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
+        final tf = _factsOf(appState);
         final isTargetedRunning = appState.isTargetedModeRunning;
         final maxLen = appState.traceHopBytes * 2;
 
@@ -628,11 +621,8 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
         final canStart = isValidHex &&
             !widget.isAnyModeRunning &&
             !isTargetedRunning &&
-            !widget.cooldownActive &&
+            !tf.cooldownActive &&
             appState.isConnected;
-
-        // Status text for when targeted mode is running
-        final tf = _factsOf(appState);
 
         final isEnabled = (canStart || isTargetedRunning) && !_isStarting;
         final buttonColor = (isTargetedRunning || _isStarting)
@@ -1184,7 +1174,6 @@ class LandscapePingControls extends StatelessWidget {
         final isPendingDisable = appState.isPendingDisable;
         final isAutoStarting = appState.isAutoPingStarting;
         final cooldownActive = appState.cooldownTimer.isRunning;
-        final cooldownRemaining = appState.cooldownTimer.remainingSec;
         final manualCooldownActive = appState.manualPingCooldownTimer
             .isRunning; // Manual ping cooldown (15 seconds)
         final rxWindowActive = appState.rxWindowTimer.isRunning;
@@ -1322,8 +1311,6 @@ class LandscapePingControls extends StatelessWidget {
               isAnyModeRunning: isActiveModeRunning ||
                   isPassiveModeRunning ||
                   isHybridModeRunning,
-              cooldownActive: cooldownActive,
-              cooldownRemaining: cooldownRemaining,
               compact: true,
             ),
           ],
