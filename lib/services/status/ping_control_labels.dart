@@ -16,11 +16,14 @@ import '../ping_service.dart';
 /// A record rather than a class so equality is structural: the controls hang on
 /// a value-compared `context.select`, and a miss costs three full validation
 /// passes.
+/// Note what is NOT here: the ping validation. Reading it runs a full
+/// `canPing()` pass, including a distance calculation and a coverage lookup,
+/// and only the portrait hint chain wants it. Putting it in the shared record
+/// would run that pass once a second in three layouts that never look at it.
 typedef PingControlFacts = ({
   bool isConnected,
   bool externalAntennaSet,
   bool isPowerSet,
-  PingValidation validation,
   bool isTxModeRunning,
   bool isPassiveModeRunning,
   bool isTargetedRunning,
@@ -70,7 +73,10 @@ String pausedWord(String? skipReason) =>
 /// Portrait only today: the compact and landscape layouts read the two button
 /// validators but never this one, so a user in either of those gets a silently
 /// disabled button and no reason at all.
-({StatusHint hint, String text})? blockingHint(PingControlFacts f) {
+({StatusHint hint, String text})? blockingHint(
+  PingControlFacts f,
+  PingValidation validation,
+) {
   if (!f.isConnected) {
     // No hint when disconnected: the buttons are obviously dead.
     return null;
@@ -81,13 +87,13 @@ String pausedWord(String? skipReason) =>
       hint: StatusHint.powerRequired,
       text: 'Select power level in Connect tab'
     );
-  } else if (f.validation == PingValidation.airborne) {
+  } else if (validation == PingValidation.airborne) {
     return (hint: StatusHint.airborne, text: 'Airborne, wardriving blocked');
-  } else if (f.validation == PingValidation.noGpsLock) {
+  } else if (validation == PingValidation.noGpsLock) {
     return (hint: StatusHint.noGpsLock, text: 'Waiting for GPS lock...');
-  } else if (f.validation == PingValidation.gpsInaccurate) {
+  } else if (validation == PingValidation.gpsInaccurate) {
     return (hint: StatusHint.gpsInaccurate, text: 'GPS accuracy too low');
-  } else if (f.validation == PingValidation.outsideGeofence) {
+  } else if (validation == PingValidation.outsideGeofence) {
     // Dead today: no validator returns outsideGeofence. Kept so the lift is
     // faithful, and so the table records that it is unreachable.
     return (hint: StatusHint.outsideServiceArea, text: 'Outside service area');
