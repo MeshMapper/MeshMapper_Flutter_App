@@ -370,6 +370,13 @@ class PingService {
     _discoveryTimer?.cancel();
     _discoveryTimer = null;
 
+    // The provider mirrors our schedule in its own countdown, armed from
+    // onAutoPingScheduled. This is the one path that cancels a pending
+    // schedule without arming another, so it is the one path that has to say
+    // so, or the mirror counts down to a deadline that no longer exists until
+    // the released ping happens to arm a window.
+    onAutoPingCancelled?.call();
+
     // Set rather than toggle: hybrid flips this in its timer callback, which
     // did not run on this path and has already flipped past the deferred
     // ping. Pinning it to the opposite of what fires keeps the alternation
@@ -1235,6 +1242,11 @@ class PingService {
   /// Callback for auto ping scheduling (for UI countdown display)
   void Function(int intervalMs, String? skipReason)? onAutoPingScheduled;
 
+  /// The other half of [onAutoPingScheduled]: a pending schedule was dropped
+  /// and no replacement was armed. Fired only from [maybeSendBankedPing]; every
+  /// other teardown already stops the mirrored countdown on the provider side.
+  void Function()? onAutoPingCancelled;
+
   /// Helper to send auto ping with error handling (avoids catchError type issues)
   Future<void> _sendAutoPing() async {
     try {
@@ -1622,6 +1634,16 @@ class PingService {
   /// Stop discovery mode - cleans up tracker and subscription
   void _stopDiscoveryMode() {
     debugLog('[DISC] Stopping discovery mode');
+
+    // The countdown is normally stopped by _handleDiscoveryWindowComplete,
+    // which a teardown never reaches: DiscTracker.dispose() below goes through
+    // stopTracking(), which cancels the window timer without firing
+    // onWindowComplete. Without this the display keeps counting against a
+    // window nobody is listening to, for up to the full 7 seconds, on every
+    // path that tears the lane down. TraceTracker needs no equivalent: its
+    // dispose() calls _endWindow() while listening, which does fire.
+    _discoveryWindowCountdown.stop();
+
     _discoveryTimer?.cancel();
     _discoveryTimer = null;
     _controlDataSubscription?.cancel();

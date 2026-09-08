@@ -348,6 +348,56 @@ void main() {
     await ping.forceDisableAutoPing();
   });
 
+  test('a released ping tells the provider its schedule is gone', () async {
+    // The provider mirrors the schedule in its own countdown, armed from
+    // onAutoPingScheduled and never stopped here before. Without the cancel
+    // the mirror keeps counting toward a deadline the release just threw away,
+    // and the label reads a stale number until the released ping happens to
+    // arm a window.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    var cancelled = 0;
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+    ping.onAutoPingCancelled = () => cancelled++;
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+    expect(cancelled, 0, reason: 'a deferral alone still owes a ping');
+
+    coverage.answer = RecentCoverage.clear;
+    expect(ping.maybeSendBankedPing(_pos()), isTrue);
+    expect(cancelled, 1);
+
+    await ping.forceDisableAutoPing();
+  });
+
+  test('a refused release leaves the mirrored schedule alone', () async {
+    // Only a release cancels. Every other answer means the interval timer is
+    // still the backstop and the countdown is still telling the truth.
+    final gps = _FakeGps()..position = _pos();
+    final coverage = _Coverage(RecentCoverage.covered);
+    final ping = _buildWith(gps, coverage);
+    final fired = Completer<void>();
+    var cancelled = 0;
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+    ping.onAutoPingCancelled = () => cancelled++;
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    expect(ping.maybeSendBankedPing(_pos()), isFalse,
+        reason: 'still a covered square');
+    expect(cancelled, 0);
+
+    await ping.forceDisableAutoPing();
+  });
+
   test('airborne holds the bank on a clear square', () async {
     final gps = _FakeGps()..position = _pos();
     final coverage = _Coverage(RecentCoverage.covered);
