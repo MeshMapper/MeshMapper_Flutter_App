@@ -4,16 +4,29 @@ import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
 import '../services/ping_service.dart';
+import '../services/status/ping_control_labels.dart';
 import '../utils/debug_logger_io.dart';
 import 'repeater_picker_sheet.dart';
 
-/// The countdown word for a paused auto ping. Smart Pinging holds a ping back
-/// rather than dropping it, so that case reads "Deferred"; the 25 m distance
-/// rule still reads "Skipped".
-String _pausedWord(String? skipReason) =>
-    skipReason == PingService.skipReasonRecentlyCovered
-        ? 'Deferred'
-        : 'Skipped';
+/// The icon for a blocking reason. Exhaustive on purpose: a new reason in the
+/// shared table cannot be added without this failing to compile.
+IconData _hintIcon(StatusHint hint) => switch (hint) {
+      StatusHint.antennaRequired => Icons.settings_input_antenna,
+      StatusHint.powerRequired => Icons.bolt,
+      StatusHint.airborne => Icons.airplanemode_active,
+      StatusHint.noGpsLock => Icons.gps_off,
+      StatusHint.gpsInaccurate => Icons.gps_not_fixed,
+      StatusHint.outsideServiceArea => Icons.wrong_location,
+    };
+
+Color _hintColor(StatusHint hint) => switch (hint) {
+      StatusHint.antennaRequired => Colors.orange,
+      StatusHint.powerRequired => Colors.orange,
+      StatusHint.airborne => Colors.red,
+      StatusHint.noGpsLock => Colors.blue,
+      StatusHint.gpsInaccurate => Colors.orange,
+      StatusHint.outsideServiceArea => Colors.red,
+    };
 
 /// Fields the ping-control widgets depend on for their enabled/label state.
 /// Used with `context.select` so the controls rebuild ONLY when one of these
@@ -139,8 +152,6 @@ class PingControls extends StatelessWidget {
         final autoPingWaiting =
             appState.autoPingTimer.isRunning; // Waiting for next auto ping
         final autoPingRemaining = appState.autoPingTimer.remainingSec;
-        final autoPingSkipped = appState.autoPingTimer.skipReason !=
-            null; // Last ping was skipped (e.g. distance)
         final discoveryWindowActive = appState.discoveryWindowTimer
             .isRunning; // Discovery listening window countdown (Passive Mode)
         final discoveryWindowRemaining =
@@ -152,45 +163,44 @@ class PingControls extends StatelessWidget {
         // TX not allowed when API says zone is at TX capacity
         final txNotAllowed = appState.isConnected && !appState.txAllowed;
 
-        // Determine blocking reason for status hint (in priority order)
-        // Skip antenna hint - the antenna selector already shows this
-        String? blockingHint;
-        IconData? blockingIcon;
-        Color? blockingColor;
-
         final prefs = appState.preferences;
         final isPowerSet = prefs.autoPowerSet ||
             prefs.powerLevelSet ||
             appState.deviceModel != null;
 
-        if (!appState.isConnected) {
-          // Don't show hint when disconnected - buttons are obviously disabled
-        } else if (!prefs.externalAntennaSet) {
-          blockingHint = 'Select antenna option';
-          blockingIcon = Icons.settings_input_antenna;
-          blockingColor = Colors.orange;
-        } else if (!isPowerSet) {
-          blockingHint = 'Select power level in Connect tab';
-          blockingIcon = Icons.bolt;
-          blockingColor = Colors.orange;
-        } else if (validation == PingValidation.airborne) {
-          blockingHint = 'Airborne, wardriving blocked';
-          blockingIcon = Icons.airplanemode_active;
-          blockingColor = Colors.red;
-        } else if (validation == PingValidation.noGpsLock) {
-          blockingHint = 'Waiting for GPS lock...';
-          blockingIcon = Icons.gps_off;
-          blockingColor = Colors.blue;
-        } else if (validation == PingValidation.gpsInaccurate) {
-          blockingHint = 'GPS accuracy too low';
-          blockingIcon = Icons.gps_not_fixed;
-          blockingColor = Colors.orange;
-        } else if (validation == PingValidation.outsideGeofence) {
-          blockingHint = 'Outside service area';
-          blockingIcon = Icons.wrong_location;
-          blockingColor = Colors.red;
-        }
-        // Note: cooldown and tooClose are shown on button itself
+        // Every word on these buttons comes from the shared table, so the
+        // phone cannot drift away from what the watch and the Live Activity
+        // say about the same instant.
+        final f = (
+          isConnected: appState.isConnected,
+          externalAntennaSet: prefs.externalAntennaSet,
+          isPowerSet: isPowerSet,
+          validation: validation,
+          isTxModeRunning: isTxModeRunning,
+          isPassiveModeRunning: isPassiveModeRunning,
+          isTargetedRunning: isTargetedRunning,
+          isPendingDisable: isPendingDisable,
+          isPingSending: isPingSending,
+          isPingInProgress: isPingInProgress,
+          hybridEnabled: hybridEnabled,
+          txBlockedByOffline: txBlockedByOffline,
+          txNotAllowed: txNotAllowed,
+          rxWindowActive: rxWindowActive,
+          rxWindowRemaining: rxWindowRemaining,
+          manualCooldownActive: manualCooldownActive,
+          manualCooldownRemaining: manualCooldownRemaining,
+          discoveryWindowActive: discoveryWindowActive,
+          discoveryWindowRemaining: discoveryWindowRemaining,
+          cooldownActive: cooldownActive,
+          cooldownRemaining: cooldownRemaining,
+          autoPingWaiting: autoPingWaiting,
+          autoPingRemaining: autoPingRemaining,
+          autoPingSkipReason: appState.autoPingTimer.skipReason,
+        );
+
+        final hint = blockingHint(f);
+        final blockingIcon = hint == null ? null : _hintIcon(hint.hint);
+        final blockingColor = hint == null ? null : _hintColor(hint.hint);
 
         final floodTrafficVisible = appState.floodTrafficEnabled;
 
@@ -208,23 +218,7 @@ class PingControls extends StatelessWidget {
                   Expanded(
                     child: _ActionButton(
                       icon: Icons.cell_tower,
-                      label: txBlockedByOffline
-                          ? 'TX Disabled'
-                          : txNotAllowed
-                              ? 'Zone Full'
-                              : isTxModeRunning
-                                  ? 'Send Ping' // Just disabled when Active/Hybrid Mode is running
-                                  : isPingSending
-                                      ? 'Sending...'
-                                      : rxWindowActive
-                                          ? 'Listening ${rxWindowRemaining}s' // Manual ping listening (works during Passive Mode too)
-                                          : manualCooldownActive
-                                              ? 'Cooldown ${manualCooldownRemaining}s' // Manual ping 15-second cooldown
-                                              : discoveryWindowActive
-                                                  ? 'Cooldown ${discoveryWindowRemaining}s' // Cooldown during Passive Mode listening
-                                                  : cooldownActive
-                                                      ? 'Cooldown ${cooldownRemaining}s' // After Active/Hybrid Mode disabled
-                                                      : 'Send Ping',
+                      label: portraitSendPingLabel(f),
                       color: const Color(0xFF0EA5E9), // sky-500
                       enabled: canPingManual &&
                           // Grey Send Ping while an auto mode is starting so the
@@ -269,39 +263,7 @@ class PingControls extends StatelessWidget {
                     child: _ActionButton(
                       icon:
                           hybridEnabled ? Icons.compare_arrows : Icons.sensors,
-                      label: txBlockedByOffline
-                          ? 'TX Disabled'
-                          : txNotAllowed
-                              ? 'Zone Full'
-                              : isPendingDisable
-                                  ? (rxWindowActive
-                                      ? 'Stopping ${rxWindowRemaining}s'
-                                      : discoveryWindowActive
-                                          ? 'Stopping ${discoveryWindowRemaining}s'
-                                          : 'Stopping...')
-                                  : isTxModeRunning
-                                      ? (isPingInProgress &&
-                                              !rxWindowActive &&
-                                              !discoveryWindowActive
-                                          ? 'Sending...'
-                                          : discoveryWindowActive
-                                              ? 'Listening ${discoveryWindowRemaining}s' // Discovery listening window
-                                              : rxWindowActive
-                                                  ? 'Listening ${rxWindowRemaining}s' // TX RX window
-                                                  : autoPingWaiting
-                                                      ? (autoPingSkipped
-                                                          ? '${_pausedWord(appState.autoPingTimer.skipReason)} ${autoPingRemaining}s'
-                                                          : 'Next ping ${autoPingRemaining}s')
-                                                      : hybridEnabled
-                                                          ? 'Hybrid Mode'
-                                                          : 'Active Mode')
-                                      : rxWindowActive
-                                          ? 'Cooldown ${rxWindowRemaining}s'
-                                          : cooldownActive
-                                              ? 'Cooldown ${cooldownRemaining}s'
-                                              : hybridEnabled
-                                                  ? 'Hybrid Mode'
-                                                  : 'Active Mode',
+                      label: portraitActiveModeLabel(f),
                       color: isPendingDisable
                           ? Colors.orange
                           : isTxModeRunning
@@ -346,21 +308,7 @@ class PingControls extends StatelessWidget {
                 Expanded(
                   child: _ActionButton(
                     icon: Icons.hearing,
-                    label: isPassiveModeRunning
-                        ? (discoveryWindowActive
-                            ? 'Listening ${discoveryWindowRemaining}s' // During discovery listening window
-                            : autoPingWaiting
-                                ? (autoPingSkipped
-                                    ? '${_pausedWord(appState.autoPingTimer.skipReason)} ${autoPingRemaining}s'
-                                    : 'Next Disc ${autoPingRemaining}s') // Waiting for next discovery
-                                : 'Passive Mode') // Initial state before first discovery
-                        : isTxModeRunning || isPendingDisable
-                            ? 'Passive Mode' // Just disabled when Active/Hybrid Mode is running or stopping
-                            : rxWindowActive
-                                ? 'Cooldown ${rxWindowRemaining}s' // During manual ping listening
-                                : cooldownActive
-                                    ? 'Cooldown ${cooldownRemaining}s' // After Active/Hybrid Mode disabled
-                                    : 'Passive Mode',
+                    label: portraitPassiveModeLabel(f),
                     color: isPassiveModeRunning
                         ? const Color(0xFF22C55E) // green-500
                         : const Color(0xFF6366F1), // indigo-500
@@ -385,7 +333,7 @@ class PingControls extends StatelessWidget {
             ),
 
             // Status hint area - only show when there's a hint
-            if (blockingHint != null)
+            if (hint != null)
               Padding(
                 padding: const EdgeInsets.only(top: 6, bottom: 2),
                 child: Row(
@@ -394,7 +342,7 @@ class PingControls extends StatelessWidget {
                     Icon(blockingIcon, size: 14, color: blockingColor),
                     const SizedBox(width: 6),
                     Text(
-                      blockingHint,
+                      hint.text,
                       style: TextStyle(
                         fontSize: 12,
                         color: blockingColor,
@@ -1329,7 +1277,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       if (autoPingWaiting) {
         return showFullText
             ? (isSkipped
-                ? '${_pausedWord(skipReason)} ${autoPingRemaining}s'
+                ? '${pausedWord(skipReason)} ${autoPingRemaining}s'
                 : 'Waiting ${autoPingRemaining}s')
             : '${autoPingRemaining}s';
       }
@@ -1367,7 +1315,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       if (autoPingWaiting) {
         return showFullText
             ? (isSkipped
-                ? '${_pausedWord(skipReason)} ${autoPingRemaining}s'
+                ? '${pausedWord(skipReason)} ${autoPingRemaining}s'
                 : 'Waiting ${autoPingRemaining}s')
             : '${autoPingRemaining}s';
       }
