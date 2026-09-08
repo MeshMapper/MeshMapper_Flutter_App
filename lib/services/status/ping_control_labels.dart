@@ -166,3 +166,233 @@ String portraitPassiveModeLabel(PingControlFacts f) => f.isPassiveModeRunning
             : f.cooldownActive
                 ? 'Cooldown ${f.cooldownRemaining}s'
                 : 'Passive Mode';
+
+// ---------------------------------------------------------------------------
+// Compact layout.
+//
+// A separate set on purpose: it says different words for the same state than
+// portrait does. Waiting for the next auto ping reads "Next ping" expanded and
+// "Waiting" minimized, and the Passive button reads "Next Disc" expanded and
+// "Waiting" minimized, so a user who collapses the panel watches the word
+// change with no state change. Kept as it ships; the vocabulary work settles it.
+//
+// [showFullText] is the button's own expanded flag, which decides between the
+// word and a bare countdown. It is an argument rather than a fact because it
+// depends on which button was last active, which is history, not the instant.
+// ---------------------------------------------------------------------------
+
+/// Send Ping, compact. Null means the button shows its icon alone.
+String? compactSendPingLabel(
+  PingControlFacts f, {
+  required bool showFullText,
+}) {
+  if (f.isPingSending) return showFullText ? 'Sending...' : '...';
+  if (f.rxWindowActive) {
+    return showFullText
+        ? 'Listening ${f.rxWindowRemaining}s'
+        : '${f.rxWindowRemaining}s';
+  }
+  if (f.manualCooldownActive) {
+    return showFullText
+        ? 'Cooldown ${f.manualCooldownRemaining}s'
+        : '${f.manualCooldownRemaining}s';
+  }
+  if (f.discoveryWindowActive) {
+    return showFullText
+        ? 'Cooldown ${f.discoveryWindowRemaining}s'
+        : '${f.discoveryWindowRemaining}s';
+  }
+  if (f.cooldownActive) {
+    return showFullText
+        ? 'Cooldown ${f.cooldownRemaining}s'
+        : '${f.cooldownRemaining}s';
+  }
+  return null;
+}
+
+/// Active / Hybrid, compact.
+String? compactActiveModeLabel(
+  PingControlFacts f, {
+  required bool showFullText,
+  required bool isExpandedDuringCooldown,
+}) {
+  if (f.isPendingDisable) {
+    if (f.rxWindowActive) {
+      return showFullText
+          ? 'Stopping ${f.rxWindowRemaining}s'
+          : '${f.rxWindowRemaining}s';
+    }
+    if (f.discoveryWindowActive) {
+      return showFullText
+          ? 'Stopping ${f.discoveryWindowRemaining}s'
+          : '${f.discoveryWindowRemaining}s';
+    }
+    return showFullText ? 'Stopping...' : '...';
+  }
+  if (f.isTxModeRunning) {
+    // Note the order: portrait asks about the send first, compact asks about
+    // the discovery window first. Same answer, different written order.
+    if (f.discoveryWindowActive) {
+      return showFullText
+          ? 'Listening ${f.discoveryWindowRemaining}s'
+          : '${f.discoveryWindowRemaining}s';
+    }
+    if (f.isPingInProgress && !f.rxWindowActive) {
+      return showFullText ? 'Sending...' : '...';
+    }
+    if (f.rxWindowActive) {
+      return showFullText
+          ? 'Listening ${f.rxWindowRemaining}s'
+          : '${f.rxWindowRemaining}s';
+    }
+    if (f.autoPingWaiting) {
+      return showFullText
+          ? (f.autoPingSkipReason != null
+              ? '${pausedWord(f.autoPingSkipReason)} ${f.autoPingRemaining}s'
+              : 'Waiting ${f.autoPingRemaining}s')
+          : '${f.autoPingRemaining}s';
+    }
+  }
+  if (f.cooldownActive && isExpandedDuringCooldown) {
+    return showFullText
+        ? 'Cooldown ${f.cooldownRemaining}s'
+        : '${f.cooldownRemaining}s';
+  }
+  return null;
+}
+
+/// Passive, compact.
+String? compactPassiveModeLabel(
+  PingControlFacts f, {
+  required bool showFullText,
+  required bool isExpandedDuringCooldown,
+}) {
+  if (f.isPassiveModeRunning) {
+    if (f.discoveryWindowActive) {
+      return showFullText
+          ? 'Listening ${f.discoveryWindowRemaining}s'
+          : '${f.discoveryWindowRemaining}s';
+    }
+    if (f.autoPingWaiting) {
+      return showFullText
+          ? (f.autoPingSkipReason != null
+              ? '${pausedWord(f.autoPingSkipReason)} ${f.autoPingRemaining}s'
+              : 'Waiting ${f.autoPingRemaining}s')
+          : '${f.autoPingRemaining}s';
+    }
+  }
+  if (f.cooldownActive && isExpandedDuringCooldown) {
+    return showFullText
+        ? 'Cooldown ${f.cooldownRemaining}s'
+        : '${f.cooldownRemaining}s';
+  }
+  return null;
+}
+
+/// Trace, compact.
+///
+/// The one chain that never says "Deferred": it hardcodes the skipped word
+/// instead of asking [pausedWord]. Harmless only because Smart Pinging does not
+/// defer a trace today.
+String? compactTraceModeLabel(
+  PingControlFacts f, {
+  required bool showFullText,
+  required bool isExpandedDuringCooldown,
+}) {
+  if (f.isTargetedRunning) {
+    if (f.discoveryWindowActive) {
+      return showFullText
+          ? 'Listening ${f.discoveryWindowRemaining}s'
+          : '${f.discoveryWindowRemaining}s';
+    }
+    if (f.autoPingWaiting) {
+      return showFullText
+          ? (f.autoPingSkipReason != null
+              ? 'Skipped ${f.autoPingRemaining}s'
+              : 'Next in ${f.autoPingRemaining}s')
+          : '${f.autoPingRemaining}s';
+    }
+    return showFullText ? 'Stop' : null;
+  }
+  if (f.cooldownActive && isExpandedDuringCooldown) {
+    return showFullText
+        ? 'Cooldown ${f.cooldownRemaining}s'
+        : '${f.cooldownRemaining}s';
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// The Trace section, shared by portrait and landscape.
+// ---------------------------------------------------------------------------
+
+/// The running status line inside the Trace section. Hardcodes "Skipped" for
+/// the same reason the compact trace chain does.
+String? traceStatusText(PingControlFacts f) {
+  if (!f.isTargetedRunning) return null;
+  if (f.discoveryWindowActive) {
+    return 'Listening ${f.discoveryWindowRemaining}s';
+  }
+  if (f.autoPingWaiting) {
+    return f.autoPingSkipReason != null
+        ? 'Skipped ${f.autoPingRemaining}s'
+        : 'Next in ${f.autoPingRemaining}s';
+  }
+  return null;
+}
+
+/// The Trace section's own button word.
+///
+/// [isStarting] is widget-local state, raised by the section's own tap and
+/// cleared when the toggle returns, so no shared model can own it.
+String traceSectionLabel(PingControlFacts f, {required bool isStarting}) =>
+    isStarting
+        ? 'Starting...'
+        : f.isTargetedRunning
+            ? (traceStatusText(f) ?? 'Stop')
+            : f.cooldownActive
+                ? 'Cooldown ${f.cooldownRemaining}s'
+                : 'Trace Mode';
+
+// ---------------------------------------------------------------------------
+// Landscape, which shows no words at all.
+//
+// Three more derivations of the same precedence, emitting a bare integer beside
+// an icon. Included so the ordering cannot drift away from the words.
+// ---------------------------------------------------------------------------
+
+/// Send Ping, landscape. A manual send shows nothing at all, not even a dash.
+int? landscapeSendPingCountdown(PingControlFacts f) => f.isPingSending
+    ? null
+    : f.rxWindowActive && !f.isTxModeRunning
+        ? f.rxWindowRemaining
+        : f.manualCooldownActive
+            ? f.manualCooldownRemaining
+            : f.discoveryWindowActive
+                ? f.discoveryWindowRemaining
+                : f.cooldownActive
+                    ? f.cooldownRemaining
+                    : null;
+
+/// Active / Hybrid, landscape. No skip reason reaches here, so a deferred ping
+/// and a skipped one are indistinguishable in this layout.
+int? landscapeActiveModeCountdown(PingControlFacts f) => f.isTxModeRunning
+    ? (f.discoveryWindowActive
+        ? f.discoveryWindowRemaining
+        : f.rxWindowActive
+            ? f.rxWindowRemaining
+            : f.autoPingWaiting
+                ? f.autoPingRemaining
+                : null)
+    : f.isPendingDisable && (f.rxWindowActive || f.discoveryWindowActive)
+        ? (f.rxWindowActive ? f.rxWindowRemaining : f.discoveryWindowRemaining)
+        : null;
+
+/// Passive, landscape. The shared cooldown never shows here, unlike portrait.
+int? landscapePassiveModeCountdown(PingControlFacts f) => f.isPassiveModeRunning
+    ? (f.discoveryWindowActive
+        ? f.discoveryWindowRemaining
+        : f.autoPingWaiting
+            ? f.autoPingRemaining
+            : null)
+    : null;

@@ -333,6 +333,221 @@ void main() {
     });
   });
 
+  group('compact', () {
+    test('every countdown keeps its "s", only two states collapse to dots', () {
+      expect(
+          compactSendPingLabel(facts(rxWindowActive: true),
+              showFullText: false),
+          '4s');
+      expect(
+          compactSendPingLabel(facts(isPingSending: true), showFullText: false),
+          '...');
+      expect(
+          compactActiveModeLabel(facts(isPendingDisable: true),
+              showFullText: false, isExpandedDuringCooldown: false),
+          '...');
+    });
+
+    test('there is no resting word at all', () {
+      // Collapsed or expanded, an idle compact button is its icon alone.
+      expect(compactSendPingLabel(facts(), showFullText: true), isNull);
+      expect(
+          compactActiveModeLabel(facts(),
+              showFullText: true, isExpandedDuringCooldown: false),
+          isNull);
+      expect(
+          compactPassiveModeLabel(facts(),
+              showFullText: true, isExpandedDuringCooldown: false),
+          isNull);
+    });
+
+    test('Send Ping mirrors portrait word for word', () {
+      expect(
+          compactSendPingLabel(facts(isPingSending: true), showFullText: true),
+          'Sending...');
+      expect(
+          compactSendPingLabel(facts(rxWindowActive: true), showFullText: true),
+          'Listening 4s');
+      expect(
+          compactSendPingLabel(facts(manualCooldownActive: true),
+              showFullText: true),
+          'Cooldown 9s');
+    });
+
+    test('Active/Hybrid: stopping, sending, listening', () {
+      String? label(PingControlFacts f) => compactActiveModeLabel(f,
+          showFullText: true, isExpandedDuringCooldown: false);
+      expect(label(facts(isPendingDisable: true, rxWindowActive: true)),
+          'Stopping 4s');
+      expect(label(facts(isPendingDisable: true)), 'Stopping...');
+      expect(label(facts(isTxModeRunning: true, isPingInProgress: true)),
+          'Sending...');
+      expect(label(facts(isTxModeRunning: true, discoveryWindowActive: true)),
+          'Listening 6s');
+    });
+
+    test('the cooldown only shows on the button that caused it', () {
+      expect(
+          compactActiveModeLabel(facts(cooldownActive: true),
+              showFullText: true, isExpandedDuringCooldown: false),
+          isNull);
+      expect(
+          compactActiveModeLabel(facts(cooldownActive: true),
+              showFullText: true, isExpandedDuringCooldown: true),
+          'Cooldown 5s');
+    });
+
+    test('Trace can never say Deferred', () {
+      // It hardcodes the skipped word instead of asking pausedWord. Safe only
+      // because Smart Pinging does not defer a trace today.
+      expect(
+          compactTraceModeLabel(
+              facts(
+                  isTargetedRunning: true,
+                  autoPingWaiting: true,
+                  autoPingSkipReason: PingService.skipReasonRecentlyCovered),
+              showFullText: true,
+              isExpandedDuringCooldown: false),
+          'Skipped 22s');
+    });
+
+    test('a running trace with nothing pending says Stop, or nothing', () {
+      expect(
+          compactTraceModeLabel(facts(isTargetedRunning: true),
+              showFullText: true, isExpandedDuringCooldown: false),
+          'Stop');
+      // The only label that collapses to nothing rather than to a number.
+      expect(
+          compactTraceModeLabel(facts(isTargetedRunning: true),
+              showFullText: false, isExpandedDuringCooldown: false),
+          isNull);
+    });
+  });
+
+  group('the Trace section', () {
+    test('its status line', () {
+      expect(traceStatusText(facts()), isNull);
+      expect(
+          traceStatusText(
+              facts(isTargetedRunning: true, discoveryWindowActive: true)),
+          'Listening 6s');
+      expect(
+          traceStatusText(
+              facts(isTargetedRunning: true, autoPingWaiting: true)),
+          'Next in 22s');
+      expect(
+          traceStatusText(facts(
+              isTargetedRunning: true,
+              autoPingWaiting: true,
+              autoPingSkipReason: PingService.skipReasonRecentlyCovered)),
+          'Skipped 22s');
+    });
+
+    test('its button word', () {
+      expect(traceSectionLabel(facts(), isStarting: false), 'Trace Mode');
+      expect(traceSectionLabel(facts(), isStarting: true), 'Starting...');
+      expect(traceSectionLabel(facts(cooldownActive: true), isStarting: false),
+          'Cooldown 5s');
+      expect(
+          traceSectionLabel(facts(isTargetedRunning: true), isStarting: false),
+          'Stop');
+      expect(
+          traceSectionLabel(
+              facts(isTargetedRunning: true, discoveryWindowActive: true),
+              isStarting: false),
+          'Listening 6s');
+    });
+
+    test('starting outranks everything, including a running trace', () {
+      expect(
+          traceSectionLabel(facts(isTargetedRunning: true), isStarting: true),
+          'Starting...');
+    });
+  });
+
+  group('landscape, which shows numbers only', () {
+    test('Send Ping shows nothing at all mid-send', () {
+      expect(landscapeSendPingCountdown(facts(isPingSending: true)), isNull);
+      expect(landscapeSendPingCountdown(facts(rxWindowActive: true)), 4);
+      expect(landscapeSendPingCountdown(facts(manualCooldownActive: true)), 9);
+      expect(landscapeSendPingCountdown(facts(cooldownActive: true)), 5);
+      expect(landscapeSendPingCountdown(facts()), isNull);
+    });
+
+    test('an auto TX mode hides the manual listening number', () {
+      expect(
+          landscapeSendPingCountdown(
+              facts(rxWindowActive: true, isTxModeRunning: true)),
+          isNull);
+    });
+
+    test('Active/Hybrid, running and stopping', () {
+      expect(
+          landscapeActiveModeCountdown(
+              facts(isTxModeRunning: true, discoveryWindowActive: true)),
+          6);
+      expect(
+          landscapeActiveModeCountdown(
+              facts(isTxModeRunning: true, autoPingWaiting: true)),
+          22);
+      expect(
+          landscapeActiveModeCountdown(
+              facts(isPendingDisable: true, rxWindowActive: true)),
+          4);
+      expect(
+          landscapeActiveModeCountdown(facts(isPendingDisable: true)), isNull);
+    });
+
+    test('a deferred and a skipped ping are indistinguishable here', () {
+      // No skip reason reaches this layout, so both read as a bare number.
+      final deferred = facts(
+          isTxModeRunning: true,
+          autoPingWaiting: true,
+          autoPingSkipReason: PingService.skipReasonRecentlyCovered);
+      final skipped = facts(
+          isTxModeRunning: true,
+          autoPingWaiting: true,
+          autoPingSkipReason: 'too close');
+      expect(landscapeActiveModeCountdown(deferred),
+          landscapeActiveModeCountdown(skipped));
+    });
+
+    test('Passive never shows the shared cooldown, unlike portrait', () {
+      expect(
+          landscapePassiveModeCountdown(facts(cooldownActive: true)), isNull);
+      expect(
+          portraitPassiveModeLabel(facts(cooldownActive: true)), 'Cooldown 5s');
+      expect(
+          landscapePassiveModeCountdown(
+              facts(isPassiveModeRunning: true, autoPingWaiting: true)),
+          22);
+    });
+  });
+
+  group('the layouts disagree with each other', () {
+    test('one wait, three words', () {
+      // Portrait, compact and Trace each name the same interval differently.
+      final tx = facts(isTxModeRunning: true, autoPingWaiting: true);
+      expect(portraitActiveModeLabel(tx), 'Next ping 22s');
+      expect(
+          compactActiveModeLabel(tx,
+              showFullText: true, isExpandedDuringCooldown: false),
+          'Waiting 22s');
+
+      final passive = facts(isPassiveModeRunning: true, autoPingWaiting: true);
+      expect(portraitPassiveModeLabel(passive), 'Next Disc 22s');
+      expect(
+          compactPassiveModeLabel(passive,
+              showFullText: true, isExpandedDuringCooldown: false),
+          'Waiting 22s');
+
+      expect(
+          traceStatusText(
+              facts(isTargetedRunning: true, autoPingWaiting: true)),
+          'Next in 22s');
+    });
+  });
+
   test('the paused word tells a hold apart from a drop', () {
     expect(pausedWord(PingService.skipReasonRecentlyCovered), 'Deferred');
     expect(pausedWord('too close'), 'Skipped');

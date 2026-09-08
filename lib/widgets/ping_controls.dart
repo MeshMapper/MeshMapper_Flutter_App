@@ -8,6 +8,42 @@ import '../services/status/ping_control_labels.dart';
 import '../utils/debug_logger_io.dart';
 import 'repeater_picker_sheet.dart';
 
+/// The facts every ping-control layout reads, gathered once.
+///
+/// All three layouts derived these identically inline; sharing the builder is
+/// what lets the three of them stop disagreeing by accident.
+PingControlFacts _factsOf(AppStateProvider s) {
+  final prefs = s.preferences;
+  return (
+    isConnected: s.isConnected,
+    externalAntennaSet: prefs.externalAntennaSet,
+    isPowerSet:
+        prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
+    validation: s.pingValidation,
+    isTxModeRunning: s.autoPingEnabled &&
+        (s.autoMode == AutoMode.active || s.autoMode == AutoMode.hybrid),
+    isPassiveModeRunning: s.autoPingEnabled && s.autoMode == AutoMode.passive,
+    isTargetedRunning: s.isTargetedModeRunning,
+    isPendingDisable: s.isPendingDisable,
+    isPingSending: s.isPingSending,
+    isPingInProgress: s.isPingInProgress,
+    hybridEnabled: prefs.hybridModeEnabled,
+    txBlockedByOffline: s.offlineMode && s.isConnected,
+    txNotAllowed: s.isConnected && !s.txAllowed,
+    rxWindowActive: s.rxWindowTimer.isRunning,
+    rxWindowRemaining: s.rxWindowTimer.remainingSec,
+    manualCooldownActive: s.manualPingCooldownTimer.isRunning,
+    manualCooldownRemaining: s.manualPingCooldownTimer.remainingSec,
+    discoveryWindowActive: s.discoveryWindowTimer.isRunning,
+    discoveryWindowRemaining: s.discoveryWindowTimer.remainingSec,
+    cooldownActive: s.cooldownTimer.isRunning,
+    cooldownRemaining: s.cooldownTimer.remainingSec,
+    autoPingWaiting: s.autoPingTimer.isRunning,
+    autoPingRemaining: s.autoPingTimer.remainingSec,
+    autoPingSkipReason: s.autoPingTimer.skipReason,
+  );
+}
+
 /// The icon for a blocking reason. Exhaustive on purpose: a new reason in the
 /// shared table cannot be added without this failing to compile.
 IconData _hintIcon(StatusHint hint) => switch (hint) {
@@ -115,7 +151,6 @@ class PingControls extends StatelessWidget {
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
-        final validation = appState.pingValidation;
         final manualValidation = appState
             .manualPingValidation; // Manual ping validation (no distance check)
         final autoValidation = appState.autoModeValidation;
@@ -140,22 +175,14 @@ class PingControls extends StatelessWidget {
         final cooldownRemaining = appState.cooldownTimer.remainingSec;
         final manualCooldownActive = appState.manualPingCooldownTimer
             .isRunning; // Manual ping cooldown (15 seconds)
-        final manualCooldownRemaining =
-            appState.manualPingCooldownTimer.remainingSec;
         final rxWindowActive =
             appState.rxWindowTimer.isRunning; // RX listening window after ping
-        final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
         final isPingSending = appState
             .isPingSending; // True immediately when manual ping button clicked
-        final isPingInProgress = appState
-            .isPingInProgress; // True during entire ping + RX window (includes auto pings)
         final autoPingWaiting =
             appState.autoPingTimer.isRunning; // Waiting for next auto ping
-        final autoPingRemaining = appState.autoPingTimer.remainingSec;
         final discoveryWindowActive = appState.discoveryWindowTimer
             .isRunning; // Discovery listening window countdown (Passive Mode)
-        final discoveryWindowRemaining =
-            appState.discoveryWindowTimer.remainingSec;
 
         // TX is blocked when offline mode is active and connected
         final txBlockedByOffline = appState.offlineMode && appState.isConnected;
@@ -171,32 +198,7 @@ class PingControls extends StatelessWidget {
         // Every word on these buttons comes from the shared table, so the
         // phone cannot drift away from what the watch and the Live Activity
         // say about the same instant.
-        final f = (
-          isConnected: appState.isConnected,
-          externalAntennaSet: prefs.externalAntennaSet,
-          isPowerSet: isPowerSet,
-          validation: validation,
-          isTxModeRunning: isTxModeRunning,
-          isPassiveModeRunning: isPassiveModeRunning,
-          isTargetedRunning: isTargetedRunning,
-          isPendingDisable: isPendingDisable,
-          isPingSending: isPingSending,
-          isPingInProgress: isPingInProgress,
-          hybridEnabled: hybridEnabled,
-          txBlockedByOffline: txBlockedByOffline,
-          txNotAllowed: txNotAllowed,
-          rxWindowActive: rxWindowActive,
-          rxWindowRemaining: rxWindowRemaining,
-          manualCooldownActive: manualCooldownActive,
-          manualCooldownRemaining: manualCooldownRemaining,
-          discoveryWindowActive: discoveryWindowActive,
-          discoveryWindowRemaining: discoveryWindowRemaining,
-          cooldownActive: cooldownActive,
-          cooldownRemaining: cooldownRemaining,
-          autoPingWaiting: autoPingWaiting,
-          autoPingRemaining: autoPingRemaining,
-          autoPingSkipReason: appState.autoPingTimer.skipReason,
-        );
+        final f = _factsOf(appState);
 
         final hint = blockingHint(f);
         final blockingIcon = hint == null ? null : _hintIcon(hint.hint);
@@ -630,21 +632,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
             appState.isConnected;
 
         // Status text for when targeted mode is running
-        String? statusText;
-        if (isTargetedRunning) {
-          final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
-          final discoveryRemaining = appState.discoveryWindowTimer.remainingSec;
-          final autoPingWaiting = appState.autoPingTimer.isRunning;
-          final autoPingRemaining = appState.autoPingTimer.remainingSec;
-
-          if (discoveryWindowActive) {
-            statusText = 'Listening ${discoveryRemaining}s';
-          } else if (autoPingWaiting) {
-            statusText = appState.autoPingTimer.skipReason != null
-                ? 'Skipped ${autoPingRemaining}s'
-                : 'Next in ${autoPingRemaining}s';
-          }
-        }
+        final tf = _factsOf(appState);
 
         final isEnabled = (canStart || isTargetedRunning) && !_isStarting;
         final buttonColor = (isTargetedRunning || _isStarting)
@@ -694,13 +682,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            _isStarting
-                                ? 'Starting...'
-                                : isTargetedRunning
-                                    ? (statusText ?? 'Stop')
-                                    : widget.cooldownActive
-                                        ? 'Cooldown ${widget.cooldownRemaining}s'
-                                        : 'Trace Mode',
+                            traceSectionLabel(tf, isStarting: _isStarting),
                             style: TextStyle(
                               fontSize: 13,
                               fontWeight: isTargetedRunning
@@ -830,6 +812,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
+        final f = _factsOf(appState);
         final manualValidation = appState
             .manualPingValidation; // Manual ping validation (no distance check)
         final autoValidation = appState.autoModeValidation;
@@ -848,21 +831,12 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         final isPendingDisable = appState.isPendingDisable;
         final isAutoStarting = appState.isAutoPingStarting;
         final cooldownActive = appState.cooldownTimer.isRunning;
-        final cooldownRemaining = appState.cooldownTimer.remainingSec;
         final manualCooldownActive = appState.manualPingCooldownTimer
             .isRunning; // Manual ping cooldown (15 seconds)
-        final manualCooldownRemaining =
-            appState.manualPingCooldownTimer.remainingSec;
         final rxWindowActive = appState.rxWindowTimer.isRunning;
-        final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
         final isPingSending = appState.isPingSending;
-        final isPingInProgress = appState.isPingInProgress;
         final autoPingWaiting = appState.autoPingTimer.isRunning;
-        final autoPingRemaining = appState.autoPingTimer.remainingSec;
-        final autoPingSkipped = appState.autoPingTimer.skipReason != null;
         final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
-        final discoveryWindowRemaining =
-            appState.discoveryWindowTimer.remainingSec;
 
         // TX is blocked when offline mode is active and connected
         final txBlockedByOffline = appState.offlineMode && appState.isConnected;
@@ -1001,18 +975,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         // Build the buttons
         final sendPingButton = _CompactActionButton(
           icon: Icons.cell_tower,
-          label: _getSendPingLabel(
-            isPingSending: isPingSending,
-            rxWindowActive: rxWindowActive,
-            rxWindowRemaining: rxWindowRemaining,
-            manualCooldownActive: manualCooldownActive,
-            manualCooldownRemaining: manualCooldownRemaining,
-            discoveryWindowActive: discoveryWindowActive,
-            discoveryWindowRemaining: discoveryWindowRemaining,
-            cooldownActive: cooldownActive,
-            cooldownRemaining: cooldownRemaining,
-            showFullText: sendPingExpanded,
-          ),
+          label: compactSendPingLabel(f, showFullText: sendPingExpanded),
           color: const Color(0xFF0EA5E9), // sky-500
           enabled: sendPingEnabled,
           isActive: sendPingActive,
@@ -1031,23 +994,9 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
         final activeModeButton = _CompactActionButton(
           icon: hybridEnabled ? Icons.compare_arrows : Icons.sensors,
-          label: _getActiveModeLabel(
-            isActiveModeRunning: isTxModeRunning,
-            isPingInProgress: isPingInProgress,
-            rxWindowActive: rxWindowActive,
-            rxWindowRemaining: rxWindowRemaining,
-            autoPingWaiting: autoPingWaiting,
-            autoPingRemaining: autoPingRemaining,
-            isPendingDisable: isPendingDisable,
-            showFullText: activeModeExpanded,
-            cooldownActive: cooldownActive,
-            cooldownRemaining: cooldownRemaining,
-            isExpandedDuringCooldown: activeModeExpanded && cooldownActive,
-            isSkipped: autoPingSkipped,
-            skipReason: appState.autoPingTimer.skipReason,
-            discoveryWindowActive: discoveryWindowActive,
-            discoveryWindowRemaining: discoveryWindowRemaining,
-          ),
+          label: compactActiveModeLabel(f,
+              showFullText: activeModeExpanded,
+              isExpandedDuringCooldown: activeModeExpanded && cooldownActive),
           color: isPendingDisable
               ? Colors.orange
               : isTxModeRunning
@@ -1073,19 +1022,9 @@ class _CompactPingControlsState extends State<CompactPingControls> {
 
         final passiveModeButton = _CompactActionButton(
           icon: Icons.hearing,
-          label: _getPassiveModeLabel(
-            isPassiveModeRunning: isPassiveModeRunning,
-            discoveryWindowActive: discoveryWindowActive,
-            discoveryWindowRemaining: discoveryWindowRemaining,
-            autoPingWaiting: autoPingWaiting,
-            autoPingRemaining: autoPingRemaining,
-            showFullText: passiveModeExpanded,
-            cooldownActive: cooldownActive,
-            cooldownRemaining: cooldownRemaining,
-            isExpandedDuringCooldown: passiveModeExpanded && cooldownActive,
-            isSkipped: autoPingSkipped,
-            skipReason: appState.autoPingTimer.skipReason,
-          ),
+          label: compactPassiveModeLabel(f,
+              showFullText: passiveModeExpanded,
+              isExpandedDuringCooldown: passiveModeExpanded && cooldownActive),
           color: isPassiveModeRunning
               ? const Color(0xFF22C55E) // green-500
               : const Color(0xFF6366F1), // indigo-500
@@ -1106,18 +1045,9 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         // Build trace mode button (only used when hasTargetRepeaterId)
         final traceModeButton = _CompactActionButton(
           icon: Icons.route,
-          label: _getTraceModeLabel(
-            isTargetedRunning: isTargetedRunning,
-            discoveryWindowActive: discoveryWindowActive,
-            discoveryWindowRemaining: discoveryWindowRemaining,
-            autoPingWaiting: autoPingWaiting,
-            autoPingRemaining: autoPingRemaining,
-            showFullText: traceModeExpanded,
-            cooldownActive: cooldownActive,
-            cooldownRemaining: cooldownRemaining,
-            isExpandedDuringCooldown: traceModeExpanded && cooldownActive,
-            isSkipped: autoPingSkipped,
-          ),
+          label: compactTraceModeLabel(f,
+              showFullText: traceModeExpanded,
+              isExpandedDuringCooldown: traceModeExpanded && cooldownActive),
           color: isTargetedRunning
               ? const Color(0xFF22C55E) // green-500
               : const Color(0xFF06B6D4), // cyan-500
@@ -1190,183 +1120,6 @@ class _CompactPingControlsState extends State<CompactPingControls> {
     );
   }
 
-  /// Get label for Send Ping button
-  /// When showFullText is true: "Listening 5s", when false: "5s"
-  String? _getSendPingLabel({
-    required bool isPingSending,
-    required bool rxWindowActive,
-    required int rxWindowRemaining,
-    required bool manualCooldownActive,
-    required int manualCooldownRemaining,
-    required bool discoveryWindowActive,
-    required int discoveryWindowRemaining,
-    required bool cooldownActive,
-    required int cooldownRemaining,
-    required bool showFullText,
-  }) {
-    if (isPingSending) return showFullText ? 'Sending...' : '...';
-    if (rxWindowActive) {
-      return showFullText
-          ? 'Listening ${rxWindowRemaining}s'
-          : '${rxWindowRemaining}s';
-    }
-    if (manualCooldownActive) {
-      return showFullText
-          ? 'Cooldown ${manualCooldownRemaining}s'
-          : '${manualCooldownRemaining}s';
-    }
-    if (discoveryWindowActive) {
-      return showFullText
-          ? 'Cooldown ${discoveryWindowRemaining}s'
-          : '${discoveryWindowRemaining}s';
-    }
-    if (cooldownActive) {
-      return showFullText
-          ? 'Cooldown ${cooldownRemaining}s'
-          : '${cooldownRemaining}s';
-    }
-    return null;
-  }
-
-  /// Get label for Active/Hybrid Mode button
-  /// When showFullText is true: "Listening 5s", when false: "5s"
-  String? _getActiveModeLabel({
-    required bool isActiveModeRunning,
-    required bool isPingInProgress,
-    required bool rxWindowActive,
-    required int rxWindowRemaining,
-    required bool autoPingWaiting,
-    required int autoPingRemaining,
-    required bool isPendingDisable,
-    required bool showFullText,
-    required bool cooldownActive,
-    required int cooldownRemaining,
-    required bool isExpandedDuringCooldown,
-    required bool isSkipped,
-    required String? skipReason,
-    bool discoveryWindowActive = false,
-    int discoveryWindowRemaining = 0,
-  }) {
-    if (isPendingDisable) {
-      if (rxWindowActive) {
-        return showFullText
-            ? 'Stopping ${rxWindowRemaining}s'
-            : '${rxWindowRemaining}s';
-      }
-      if (discoveryWindowActive) {
-        return showFullText
-            ? 'Stopping ${discoveryWindowRemaining}s'
-            : '${discoveryWindowRemaining}s';
-      }
-      return showFullText ? 'Stopping...' : '...';
-    }
-    if (isActiveModeRunning) {
-      if (discoveryWindowActive) {
-        return showFullText
-            ? 'Listening ${discoveryWindowRemaining}s'
-            : '${discoveryWindowRemaining}s';
-      }
-      if (isPingInProgress && !rxWindowActive) {
-        return showFullText ? 'Sending...' : '...';
-      }
-      if (rxWindowActive) {
-        return showFullText
-            ? 'Listening ${rxWindowRemaining}s'
-            : '${rxWindowRemaining}s';
-      }
-      if (autoPingWaiting) {
-        return showFullText
-            ? (isSkipped
-                ? '${pausedWord(skipReason)} ${autoPingRemaining}s'
-                : 'Waiting ${autoPingRemaining}s')
-            : '${autoPingRemaining}s';
-      }
-    }
-    // Show cooldown if this button caused it
-    if (cooldownActive && isExpandedDuringCooldown) {
-      return showFullText
-          ? 'Cooldown ${cooldownRemaining}s'
-          : '${cooldownRemaining}s';
-    }
-    return null;
-  }
-
-  /// Get label for Passive Mode button
-  /// When showFullText is true: "Listening 5s", when false: "5s"
-  String? _getPassiveModeLabel({
-    required bool isPassiveModeRunning,
-    required bool discoveryWindowActive,
-    required int discoveryWindowRemaining,
-    required bool autoPingWaiting,
-    required int autoPingRemaining,
-    required bool showFullText,
-    required bool cooldownActive,
-    required int cooldownRemaining,
-    required bool isExpandedDuringCooldown,
-    required bool isSkipped,
-    required String? skipReason,
-  }) {
-    if (isPassiveModeRunning) {
-      if (discoveryWindowActive) {
-        return showFullText
-            ? 'Listening ${discoveryWindowRemaining}s'
-            : '${discoveryWindowRemaining}s';
-      }
-      if (autoPingWaiting) {
-        return showFullText
-            ? (isSkipped
-                ? '${pausedWord(skipReason)} ${autoPingRemaining}s'
-                : 'Waiting ${autoPingRemaining}s')
-            : '${autoPingRemaining}s';
-      }
-    }
-    // Show cooldown if this button caused it
-    if (cooldownActive && isExpandedDuringCooldown) {
-      return showFullText
-          ? 'Cooldown ${cooldownRemaining}s'
-          : '${cooldownRemaining}s';
-    }
-    return null;
-  }
-
-  /// Get label for Trace Mode button
-  /// When showFullText is true: "Listening 5s", when false: "5s"
-  String? _getTraceModeLabel({
-    required bool isTargetedRunning,
-    required bool discoveryWindowActive,
-    required int discoveryWindowRemaining,
-    required bool autoPingWaiting,
-    required int autoPingRemaining,
-    required bool showFullText,
-    required bool cooldownActive,
-    required int cooldownRemaining,
-    required bool isExpandedDuringCooldown,
-    required bool isSkipped,
-  }) {
-    if (isTargetedRunning) {
-      if (discoveryWindowActive) {
-        return showFullText
-            ? 'Listening ${discoveryWindowRemaining}s'
-            : '${discoveryWindowRemaining}s';
-      }
-      if (autoPingWaiting) {
-        return showFullText
-            ? (isSkipped
-                ? 'Skipped ${autoPingRemaining}s'
-                : 'Next in ${autoPingRemaining}s')
-            : '${autoPingRemaining}s';
-      }
-      return showFullText ? 'Stop' : null;
-    }
-    // Show cooldown if this button caused it
-    if (cooldownActive && isExpandedDuringCooldown) {
-      return showFullText
-          ? 'Cooldown ${cooldownRemaining}s'
-          : '${cooldownRemaining}s';
-    }
-    return null;
-  }
-
   Future<void> _sendPing(
       BuildContext context, AppStateProvider appState) async {
     HapticFeedback.mediumImpact();
@@ -1412,6 +1165,7 @@ class LandscapePingControls extends StatelessWidget {
     return ListenableBuilder(
       listenable: appState.timerListenable,
       builder: (_, __) {
+        final f = _factsOf(appState);
         final manualValidation = appState
             .manualPingValidation; // Manual ping validation (no distance check)
         final autoValidation = appState.autoModeValidation;
@@ -1433,16 +1187,10 @@ class LandscapePingControls extends StatelessWidget {
         final cooldownRemaining = appState.cooldownTimer.remainingSec;
         final manualCooldownActive = appState.manualPingCooldownTimer
             .isRunning; // Manual ping cooldown (15 seconds)
-        final manualCooldownRemaining =
-            appState.manualPingCooldownTimer.remainingSec;
         final rxWindowActive = appState.rxWindowTimer.isRunning;
-        final rxWindowRemaining = appState.rxWindowTimer.remainingSec;
         final isPingSending = appState.isPingSending;
         final autoPingWaiting = appState.autoPingTimer.isRunning;
-        final autoPingRemaining = appState.autoPingTimer.remainingSec;
         final discoveryWindowActive = appState.discoveryWindowTimer.isRunning;
-        final discoveryWindowRemaining =
-            appState.discoveryWindowTimer.remainingSec;
 
         // TX is blocked when offline mode is active and connected
         final txBlockedByOffline = appState.offlineMode && appState.isConnected;
@@ -1500,17 +1248,7 @@ class LandscapePingControls extends StatelessWidget {
                           !isPendingDisable,
                       isActive:
                           (isPingSending || rxWindowActive) && !isTxModeRunning,
-                      countdown: isPingSending
-                          ? null
-                          : rxWindowActive && !isTxModeRunning
-                              ? rxWindowRemaining
-                              : manualCooldownActive
-                                  ? manualCooldownRemaining
-                                  : discoveryWindowActive
-                                      ? discoveryWindowRemaining
-                                      : cooldownActive
-                                          ? cooldownRemaining
-                                          : null,
+                      countdown: landscapeSendPingCountdown(f),
                       onPressed: () => _sendPing(context, appState),
                     ),
                   ),
@@ -1541,20 +1279,7 @@ class LandscapePingControls extends StatelessWidget {
                               !txBlockedByOffline &&
                               !txNotAllowed),
                       isActive: isPendingDisable || isTxModeRunning,
-                      countdown: isTxModeRunning
-                          ? (discoveryWindowActive
-                              ? discoveryWindowRemaining
-                              : rxWindowActive
-                                  ? rxWindowRemaining
-                                  : autoPingWaiting
-                                      ? autoPingRemaining
-                                      : null)
-                          : isPendingDisable &&
-                                  (rxWindowActive || discoveryWindowActive)
-                              ? (rxWindowActive
-                                  ? rxWindowRemaining
-                                  : discoveryWindowRemaining)
-                              : null,
+                      countdown: landscapeActiveModeCountdown(f),
                       onPressed: () => hybridEnabled
                           ? _toggleHybridAuto(context, appState)
                           : _toggleTxRxAuto(context, appState),
@@ -1584,13 +1309,7 @@ class LandscapePingControls extends StatelessWidget {
                             isPowerSet),
                     isActive: isPassiveModeRunning &&
                         (discoveryWindowActive || autoPingWaiting),
-                    countdown: isPassiveModeRunning
-                        ? (discoveryWindowActive
-                            ? discoveryWindowRemaining
-                            : autoPingWaiting
-                                ? autoPingRemaining
-                                : null)
-                        : null,
+                    countdown: landscapePassiveModeCountdown(f),
                     onPressed: () => _toggleRxAuto(context, appState),
                   ),
                 ),
