@@ -198,10 +198,20 @@ void main() {
     // would transmit its second packet here; it must not.
     gps.position = _pos(lat: 45.01);
     gps.freshPositionGate!.complete();
+    gps.freshPositionGate = null;
     await tester.pump();
     await tester.pump();
     expect(conn.discoveryTransmits, 1,
         reason: 'the discovery never transmitted on top of the in-flight ping');
+
+    // The guard rescheduled the Passive lane instead of stranding it: the
+    // interval timer is one-shot and the RX window does not re-arm Passive, so
+    // a bare return would stop discovery forever after this one collision. Now
+    // the ping has cleared, the next interval must fire a discovery. This is
+    // what pins the reschedule (a bare return leaves this at 1).
+    await tester.pump(const Duration(seconds: 31));
+    expect(conn.discoveryTransmits, 2,
+        reason: 'the reschedule re-armed the one-shot Passive discovery timer');
 
     await ping.forceDisableAutoPing();
     discoveryWindow.stop();
