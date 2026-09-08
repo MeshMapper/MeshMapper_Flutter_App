@@ -3325,13 +3325,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // empty, which is the ordinary case. Placed after the airborne return
       // so a flight can never release one.
       //
-      // Dropping the countdown's skip reason on release keeps the label
-      // honest. PingService clears its own, but the copy the countdown and
-      // the Live Activity read only refreshes when the scheduler next fires,
-      // which is after the send completes. For an auto session the phase
-      // resolver has no "sending" branch, so without this the UI keeps
-      // reading "Deferred" for as long as the fresh GPS read takes, up to
-      // three seconds, while the released ping is going out.
+      // The release itself stops this countdown, through onAutoPingCancelled,
+      // because the schedule it mirrored is gone. Clearing the skip reason is
+      // still ours to do: stop() leaves it set, and every start overwrites it,
+      // so a stale "Deferred" would otherwise survive into the next arming.
       if (_pingService?.maybeSendBankedPing(position) ?? false) {
         _autoPingTimer.skipReason = null;
         notifyListeners();
@@ -4842,6 +4839,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onPingProgressChanged = notifyListeners;
+
+    // A released banked ping cancels the schedule this countdown mirrors, and
+    // arms no replacement. Stopping it here is what keeps the countdown from
+    // running on against a deadline PingService has already thrown away; the
+    // scheduler re-arms it as soon as the released ping lands.
+    _pingService!.onAutoPingCancelled = _autoPingTimer.stop;
 
     _pingService!.onAutoPingScheduled = (intervalMs, skipReason) {
       _liveActivityOperation = null;

@@ -144,7 +144,12 @@ Position _pos(double lat, double lon) => Position(
       speedAccuracy: 1.0,
     );
 
-PingService _buildService(_FakeGps gps, _FakeConnection conn) => PingService(
+PingService _buildService(
+  _FakeGps gps,
+  _FakeConnection conn, {
+  DiscoveryWindowTimer? discoveryWindowTimer,
+}) =>
+    PingService(
       gpsService: gps,
       connection: conn,
       apiQueue: _FakeApiQueue(),
@@ -152,7 +157,7 @@ PingService _buildService(_FakeGps gps, _FakeConnection conn) => PingService(
       cooldownTimer: CooldownTimer(),
       manualPingCooldownTimer: ManualPingCooldownTimer(),
       rxWindowTimer: RxWindowTimer(),
-      discoveryWindowTimer: DiscoveryWindowTimer(),
+      discoveryWindowTimer: discoveryWindowTimer ?? DiscoveryWindowTimer(),
       deviceId: 'TEST',
     );
 
@@ -339,6 +344,56 @@ void main() {
       expect(ping.pendingDisable, isFalse);
       expect(ping.autoPingEnabled, isFalse);
       ping.dispose();
+    });
+  });
+
+  group('a countdown never outlives the lane that owns it', () {
+    // The window countdowns are stopped by their completion handlers, which a
+    // teardown never reaches: disposing the tracker cancels its timer without
+    // firing onWindowComplete. So the stop has to live in the teardown too, or
+    // the display keeps counting against a window nobody is listening to.
+
+    test('tearing down discovery mode stops the discovery countdown', () async {
+      final discoveryWindow = DiscoveryWindowTimer();
+      final ping = _buildService(
+        _FakeGps()..position = _pos(45.0, -75.0),
+        _FakeConnection(),
+        discoveryWindowTimer: discoveryWindow,
+      );
+
+      discoveryWindow.start(7000);
+      expect(discoveryWindow.isRunning, isTrue);
+
+      await ping.forceDisableAutoPing();
+
+      expect(discoveryWindow.isRunning, isFalse,
+          reason: 'the discovery window countdown should stop with its lane');
+      discoveryWindow.stop();
+    });
+
+    test('the trace lane already stops its countdown through the tracker',
+        () async {
+      // Trace reuses the discovery window timer but needs no teardown stop of
+      // its own: TraceTracker.dispose() calls _endWindow() while listening,
+      // which fires the completion handler that stops it. Pinned here so a
+      // change to that dispose cannot quietly reintroduce the leak the
+      // discovery lane had.
+      final discoveryWindow = DiscoveryWindowTimer();
+      final ping = _buildService(
+        _FakeGps()..position = _pos(45.0, -75.0),
+        _FakeConnection(),
+        discoveryWindowTimer: discoveryWindow,
+      );
+
+      await ping.enableAutoPing(targetedMode: true, targetRepeaterId: '4E');
+      discoveryWindow.start(5000);
+      expect(discoveryWindow.isRunning, isTrue);
+
+      await ping.forceDisableAutoPing();
+
+      expect(discoveryWindow.isRunning, isFalse,
+          reason: 'the trace window countdown should stop with its lane');
+      discoveryWindow.stop();
     });
   });
 }
