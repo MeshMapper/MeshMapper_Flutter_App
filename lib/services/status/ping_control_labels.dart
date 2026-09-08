@@ -178,8 +178,8 @@ StatusDeadline? _manualCooldown(SessionStatus s) =>
 /// windows directly rather than the manual lane's held activity, so they still
 /// appear while the session is stopping, when that lane is held by the stop.
 String portraitSendPingLabel(SessionStatus s, PingRenderFacts f) {
-  if (f.txBlockedByOffline) return 'TX Disabled';
-  if (f.txNotAllowed) return 'Zone Full';
+  if (f.txBlockedByOffline) return 'Passive only';
+  if (f.txNotAllowed) return 'Passive only';
   // An auto TX mode greys Send Ping to its resting word; the window on it then
   // belongs to that mode, not to a manual tap.
   if (f.isTxModeRunning) return 'Send Ping';
@@ -199,8 +199,8 @@ String portraitSendPingLabel(SessionStatus s, PingRenderFacts f) {
 
 /// Active / Hybrid, portrait.
 String portraitActiveModeLabel(SessionStatus s, PingRenderFacts f) {
-  if (f.txBlockedByOffline) return 'TX Disabled';
-  if (f.txNotAllowed) return 'Zone Full';
+  if (f.txBlockedByOffline) return 'Passive only';
+  if (f.txNotAllowed) return 'Passive only';
   final mode = f.hybridEnabled ? 'Hybrid Mode' : 'Active Mode';
   // The Active button is the stop indicator, and it counts down whichever window
   // is still closing (the auto echo first, then a discovery leg).

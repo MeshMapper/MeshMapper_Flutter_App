@@ -383,7 +383,7 @@ WatchRequestedStartModeResolution resolveWatchRequestedStartMode({
     return (mode: null, refusal: 'Not connected');
   }
   if (mode == WatchStartMode.hybrid && !txAllowed) {
-    return (mode: null, refusal: 'Passive Only');
+    return (mode: null, refusal: 'Passive only');
   }
   return (mode: mode, refusal: null);
 }

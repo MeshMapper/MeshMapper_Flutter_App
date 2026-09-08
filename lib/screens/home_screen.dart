@@ -382,7 +382,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (appState.floodDisabled) {
             return (
               '${appState.zoneName ?? appState.zoneCode} Zone',
-              'Your regional admin has turned off flood traffic here, so Active and Hybrid modes are unavailable. The zone is not full. Passive Mode and Trace Mode still work.',
+              'Your regional admin has turned off flood traffic here, so Active and Hybrid modes are unavailable. The zone is not full. Passive and Trace modes still work.',
               Icons.flight,
               Colors.blue
             );
@@ -390,7 +390,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (!appState.txAllowed) {
             return (
               '${appState.zoneName ?? appState.zoneCode} Zone',
-              'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive Mode is allowed.',
+              'You\'re in an authorized zone. However, the zone is at Active Wardrive capacity. You can still wardrive, but only Passive mode works.',
               Icons.flight,
               Colors.red
             );

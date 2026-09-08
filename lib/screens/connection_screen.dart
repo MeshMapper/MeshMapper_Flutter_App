@@ -2024,7 +2024,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             context: context,
             icon: isStale ? Icons.schedule : Icons.gps_off,
             iconColor: Colors.orange.withValues(alpha: 0.7),
-            title: isStale ? 'Phone Clock Out of Sync' : 'GPS Accuracy Error',
+            title: isStale ? 'Phone Clock Out of Sync' : 'Weak GPS Signal',
             message: isStale
                 ? "Your phone's clock is off, so your location looks out of date. "
                     'This is a time problem, not a GPS problem.\n\n'
