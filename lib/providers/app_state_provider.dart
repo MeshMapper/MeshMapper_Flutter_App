@@ -62,6 +62,7 @@ import '../services/live_activity/live_activity_heard.dart';
 import '../services/live_activity/live_activity_models.dart';
 import '../services/status/session_phase_resolver.dart';
 import '../services/status/session_status.dart';
+import '../services/status/session_status_resolver.dart';
 import '../services/live_activity/live_activity_service.dart';
 import '../services/watch/watch_bridge_service.dart';
 import '../services/watch/watch_models.dart';
@@ -2741,6 +2742,51 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         isSessionActive: _autoPingEnabled,
         modeTitle: _liveActivityModeTitle,
       );
+
+  /// The one session model the in-app buttons read, resolved fresh each call so
+  /// its countdowns are live. It is the same [resolveSessionStatus] the glance
+  /// phase projects from, given the same facts, so the buttons and the glance
+  /// surfaces cannot disagree about what the session is doing. Deadlines carry
+  /// the timer's own `remainingSec`, so a button prints exactly the number its
+  /// countdown reports. Called once per layout inside the ping controls'
+  /// `ListenableBuilder`, which is the only place it ticks.
+  SessionStatus get sessionStatus => resolveSessionStatus(
+        isInZoneGracePeriod: _isInZoneGracePeriod,
+        zoneGraceEndsAt: _zoneGraceEndsAt,
+        isZoneTransferInProgress: _isZoneTransferInProgress,
+        isAutoReconnecting: _isAutoReconnecting,
+        connectionStep: _connectionStep,
+        isConnected: isConnected,
+        isPendingDisable: isPendingDisable,
+        isGpsLocked: _gpsStatus == GpsStatus.locked,
+        autoMode: _autoMode,
+        txAllowed: txAllowed,
+        isManualSession: _liveActivityManualSession,
+        isPingSending: _isPingSending,
+        isPingInProgress: isPingInProgress,
+        isRxWindowRunning: _rxWindowTimer.isRunning,
+        rxWindow: _deadlineOf(_rxWindowTimer),
+        isDiscoveryWindowRunning: _discoveryWindowTimer.isRunning,
+        discoveryWindow: _deadlineOf(_discoveryWindowTimer),
+        isManualCooldownRunning: _manualPingCooldownTimer.isRunning,
+        manualCooldown: _deadlineOf(_manualPingCooldownTimer),
+        isAutoPingRunning: _autoPingTimer.isRunning,
+        autoPingSkipReason: _autoPingTimer.skipReason,
+        autoPing: _deadlineOf(_autoPingTimer),
+        isSharedCooldownRunning: _cooldownTimer.isRunning,
+        sharedCooldown: _deadlineOf(_cooldownTimer),
+        operation: _liveActivityOperation,
+        isSessionStarting: _autoPingStarting,
+        isSessionActive: _autoPingEnabled,
+      );
+
+  /// Flatten a running countdown to an absolute deadline plus its live remaining
+  /// seconds. Null when the timer is stopped, so the resolver never has to look
+  /// at a live object.
+  StatusDeadline? _deadlineOf(CountdownTimerService t) =>
+      t.isRunning && t.endTime != null
+          ? (endsAt: t.endTime!, durationMs: null, remainingSec: t.remainingSec)
+          : null;
 
   /// The Live Activity's rows are the map's Top Heard box, the same list the
   /// watch mirrors, so the three surfaces cannot disagree. The ordering, the

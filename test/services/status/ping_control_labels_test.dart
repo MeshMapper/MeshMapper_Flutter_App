@@ -1,16 +1,49 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mesh_mapper/models/connection_state.dart';
+import 'package:mesh_mapper/providers/app_state_provider.dart' show AutoMode;
 import 'package:mesh_mapper/services/ping_service.dart';
-import 'package:mesh_mapper/services/status/ping_control_labels.dart';
+import 'package:mesh_mapper/services/status/ping_control_labels.dart'
+    show StatusHint;
+import 'package:mesh_mapper/services/status/ping_control_labels.dart' as labels;
+import 'package:mesh_mapper/services/status/session_status.dart';
+import 'package:mesh_mapper/services/status/session_status_resolver.dart';
 
 /// Every word the in-app ping buttons can show, pinned exactly as it ships
-/// today. This table is the deliverable of the extraction, not the extraction
-/// itself: it is what lets the next step change the shape of the code and
-/// prove no label moved.
-///
-/// It pins the oddities on purpose. Where two buttons say different words about
-/// the same instant, there is a row saying so.
+/// today. This table is the oracle: the strings below do not move, whatever the
+/// code underneath does. The renderers now read the shared [SessionStatus], so
+/// the flat knobs here are turned into a real model through [_status] (the same
+/// mapping the widget makes) and the six render-facts through [_render]; the
+/// assertions themselves are unchanged from when the chains read raw timers.
 
-PingControlFacts facts({
+/// The flat knobs each row still expresses itself in. The same shape the
+/// extraction used, so the assertion bodies did not have to change.
+typedef Knobs = ({
+  bool isConnected,
+  bool externalAntennaSet,
+  bool isPowerSet,
+  bool isTxModeRunning,
+  bool isPassiveModeRunning,
+  bool isTargetedRunning,
+  bool isPendingDisable,
+  bool isPingSending,
+  bool isPingInProgress,
+  bool hybridEnabled,
+  bool txBlockedByOffline,
+  bool txNotAllowed,
+  bool rxWindowActive,
+  int rxWindowRemaining,
+  bool manualCooldownActive,
+  int manualCooldownRemaining,
+  bool discoveryWindowActive,
+  int discoveryWindowRemaining,
+  bool cooldownActive,
+  int cooldownRemaining,
+  bool autoPingWaiting,
+  int autoPingRemaining,
+  String? autoPingSkipReason,
+});
+
+Knobs facts({
   bool isConnected = true,
   bool externalAntennaSet = true,
   bool isPowerSet = true,
@@ -60,6 +93,121 @@ PingControlFacts facts({
       autoPingRemaining: autoPingRemaining,
       autoPingSkipReason: autoPingSkipReason,
     );
+
+final _epoch = DateTime.utc(2026, 1, 1, 12);
+
+StatusDeadline? _dl(bool running, int rem) =>
+    running ? (endsAt: _epoch, durationMs: null, remainingSec: rem) : null;
+
+/// Build the shared model from the flat knobs, exactly as the widget does. The
+/// one non-obvious step: a TX mode with a discovery window open can only be
+/// Hybrid, since Active never opens one, so that combination resolves to Hybrid.
+SessionStatus _status(Knobs k) {
+  final autoMode = k.isTargetedRunning
+      ? AutoMode.targeted
+      : k.isPassiveModeRunning
+          ? AutoMode.passive
+          : k.isTxModeRunning
+              ? (k.hybridEnabled || k.discoveryWindowActive
+                  ? AutoMode.hybrid
+                  : AutoMode.active)
+              : AutoMode.active;
+  final isSessionActive =
+      k.isTxModeRunning || k.isPassiveModeRunning || k.isTargetedRunning;
+  return resolveSessionStatus(
+    isInZoneGracePeriod: false,
+    zoneGraceEndsAt: null,
+    isZoneTransferInProgress: false,
+    isAutoReconnecting: false,
+    connectionStep:
+        k.isConnected ? ConnectionStep.connected : ConnectionStep.disconnected,
+    isConnected: k.isConnected,
+    isPendingDisable: k.isPendingDisable,
+    isGpsLocked: true,
+    autoMode: autoMode,
+    txAllowed: !k.txNotAllowed,
+    // Lane views ignore this; only the glance projection reads it, so its value
+    // never reaches a button label.
+    isManualSession: !isSessionActive,
+    isPingSending: k.isPingSending,
+    isPingInProgress: k.isPingInProgress,
+    isRxWindowRunning: k.rxWindowActive,
+    rxWindow: _dl(k.rxWindowActive, k.rxWindowRemaining),
+    isDiscoveryWindowRunning: k.discoveryWindowActive,
+    discoveryWindow: _dl(k.discoveryWindowActive, k.discoveryWindowRemaining),
+    isManualCooldownRunning: k.manualCooldownActive,
+    manualCooldown: _dl(k.manualCooldownActive, k.manualCooldownRemaining),
+    isAutoPingRunning: k.autoPingWaiting,
+    autoPingSkipReason: k.autoPingSkipReason,
+    autoPing: _dl(k.autoPingWaiting, k.autoPingRemaining),
+    isSharedCooldownRunning: k.cooldownActive,
+    sharedCooldown: _dl(k.cooldownActive, k.cooldownRemaining),
+    operation: null,
+    isSessionStarting: false,
+    isSessionActive: isSessionActive,
+  );
+}
+
+labels.PingRenderFacts _render(Knobs k) => (
+      txBlockedByOffline: k.txBlockedByOffline,
+      txNotAllowed: k.txNotAllowed,
+      hybridEnabled: k.hybridEnabled,
+      isTxModeRunning: k.isTxModeRunning,
+      isPassiveModeRunning: k.isPassiveModeRunning,
+      isTargetedRunning: k.isTargetedRunning,
+      isPendingDisable: k.isPendingDisable,
+    );
+
+// Thin adapters so every assertion below reads exactly as it did when the
+// chains took the flat facts. Each builds the model and the render-facts and
+// calls the real renderer.
+({StatusHint hint, String text})? blockingHint(Knobs k, PingValidation v) =>
+    labels.blockingHint(
+        (
+          isConnected: k.isConnected,
+          externalAntennaSet: k.externalAntennaSet,
+          isPowerSet: k.isPowerSet,
+        ),
+        v);
+
+String pausedWord(String? skipReason) => labels.pausedWord(skipReason);
+
+String portraitSendPingLabel(Knobs k) =>
+    labels.portraitSendPingLabel(_status(k), _render(k));
+String portraitActiveModeLabel(Knobs k) =>
+    labels.portraitActiveModeLabel(_status(k), _render(k));
+String portraitPassiveModeLabel(Knobs k) =>
+    labels.portraitPassiveModeLabel(_status(k), _render(k));
+
+String? compactSendPingLabel(Knobs k, {required bool showFullText}) =>
+    labels.compactSendPingLabel(_status(k), _render(k),
+        showFullText: showFullText);
+String? compactActiveModeLabel(Knobs k,
+        {required bool showFullText, required bool isExpandedDuringCooldown}) =>
+    labels.compactActiveModeLabel(_status(k), _render(k),
+        showFullText: showFullText,
+        isExpandedDuringCooldown: isExpandedDuringCooldown);
+String? compactPassiveModeLabel(Knobs k,
+        {required bool showFullText, required bool isExpandedDuringCooldown}) =>
+    labels.compactPassiveModeLabel(_status(k), _render(k),
+        showFullText: showFullText,
+        isExpandedDuringCooldown: isExpandedDuringCooldown);
+String? compactTraceModeLabel(Knobs k,
+        {required bool showFullText, required bool isExpandedDuringCooldown}) =>
+    labels.compactTraceModeLabel(_status(k), _render(k),
+        showFullText: showFullText,
+        isExpandedDuringCooldown: isExpandedDuringCooldown);
+
+String? traceStatusText(Knobs k) => labels.traceStatusText(_status(k), _render(k));
+String traceSectionLabel(Knobs k, {required bool isStarting}) =>
+    labels.traceSectionLabel(_status(k), _render(k), isStarting: isStarting);
+
+int? landscapeSendPingCountdown(Knobs k) =>
+    labels.landscapeSendPingCountdown(_status(k), _render(k));
+int? landscapeActiveModeCountdown(Knobs k) =>
+    labels.landscapeActiveModeCountdown(_status(k), _render(k));
+int? landscapePassiveModeCountdown(Knobs k) =>
+    labels.landscapePassiveModeCountdown(_status(k), _render(k));
 
 void main() {
   group('the blocking hint', () {
@@ -378,7 +526,7 @@ void main() {
     });
 
     test('Active/Hybrid: stopping, sending, listening', () {
-      String? label(PingControlFacts f) => compactActiveModeLabel(f,
+      String? label(Knobs f) => compactActiveModeLabel(f,
           showFullText: true, isExpandedDuringCooldown: false);
       expect(label(facts(isPendingDisable: true, rxWindowActive: true)),
           'Stopping 4s');

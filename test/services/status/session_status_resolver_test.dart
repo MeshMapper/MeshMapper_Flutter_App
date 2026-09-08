@@ -84,10 +84,9 @@ void main() {
       }
     });
 
-    test('so does waiting for GPS, a stop and a blocked zone', () {
+    test('so does waiting for GPS and a blocked zone', () {
       for (final s in [
         status(isGpsLocked: false),
-        status(isPendingDisable: true),
         status(txAllowed: false),
         status(isInZoneGracePeriod: true),
       ]) {
@@ -96,6 +95,41 @@ void main() {
         expect(s.discovery.activity, s.targeted.activity);
         expect(s.manual.isBlocked, isTrue);
       }
+    });
+
+    test('a stop is a glance answer, not a lane state', () {
+      // A stop is not a session-wide hold like the others: it names the Active
+      // lane as the owner and reads Stopping on the single surfaces, but it is
+      // laid over the glance only and never sits on a lane, so it cannot shadow a
+      // window a lane is still closing. With nothing else running the lanes
+      // simply rest; the buttons that show Stopping read the flag, not the lane.
+      final s = status(isPendingDisable: true);
+      expect(s.activity, SessionActivity.stopping);
+      expect(s.owner, StatusLane.txAuto);
+      expect(s.deadline, isNull);
+      for (final lane in StatusLane.values) {
+        expect(s.lane(lane).activity, isNot(SessionActivity.stopping),
+            reason: '$lane');
+      }
+    });
+
+    test('a stop lets the mode being stopped keep its closing window', () {
+      // The Passive discovery window is still closing during the graceful stop,
+      // so its lane keeps showing it while the glance and the Active button say
+      // Stopping. This is what lets the Passive button count the window down as
+      // it always has, instead of flipping to the mode word the moment a stop
+      // begins.
+      final s = status(
+        autoMode: AutoMode.passive,
+        isPendingDisable: true,
+        isDiscoveryWindowRunning: true,
+        discoveryWindow: _d(_t1, 6),
+      );
+      expect(s.activity, SessionActivity.stopping);
+      expect(s.owner, StatusLane.txAuto);
+      expect(s.discovery.activity, SessionActivity.listeningDiscovery);
+      expect(s.discovery.isBlocked, isFalse);
+      expect(s.discovery.deadline, _d(_t1, 6));
     });
   });
 
@@ -117,7 +151,10 @@ void main() {
         isBlocked: false
       ));
       // This is the disagreement the buttons show today, now as one fact: the
-      // other lanes are held by the SAME deadline they render as a cooldown.
+      // other lanes are held by the SAME deadline, and by the SAME activity,
+      // that the owner is in. A held lane reports the holding activity rather
+      // than a generic cooldown, so each button can decide for itself whether
+      // to borrow that window as its own cooldown or ignore it.
       for (final lane in [
         StatusLane.txAuto,
         StatusLane.discovery,
@@ -125,6 +162,8 @@ void main() {
       ]) {
         expect(s.lane(lane).isBlocked, isTrue, reason: '$lane');
         expect(s.lane(lane).deadline, _d(_t1), reason: '$lane');
+        expect(s.lane(lane).activity, SessionActivity.listening,
+            reason: '$lane');
       }
     });
 
@@ -226,6 +265,26 @@ void main() {
       // cooldown, because it sits higher in the order.
       expect(s.activity, SessionActivity.cooldown);
       expect(s.owner, StatusLane.manual);
+    });
+
+    test('a manual cooldown without a manual session is a button-only fact', () {
+      // A manual ping fired during a Passive drive holds the manual cooldown
+      // while the manual-session flag stays false. The Send Ping button must
+      // still count it down, so the manual lane carries it; the glance surfaces
+      // must not show it, so it does not reach the single answer.
+      final s = status(
+        autoMode: AutoMode.passive,
+        isManualSession: false,
+        isManualCooldownRunning: true,
+        manualCooldown: _d(_t1, 9),
+      );
+
+      expect(s.manual.activity, SessionActivity.cooldown);
+      expect(s.manual.deadline, _d(_t1, 9));
+      expect(s.manual.isBlocked, isFalse);
+      // Off the glance: nothing owns the single answer, which rests.
+      expect(s.owner, isNull);
+      expect(s.activity, isNot(SessionActivity.cooldown));
     });
   });
 
