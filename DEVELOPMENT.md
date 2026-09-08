@@ -340,7 +340,7 @@ untouched. On by default with a 14 day window.
 - **"Deferred", not "Skipped"**: the word applies only to this hold. The countdown labels pick
   it from the skip reason (`_pausedWord` in `lib/widgets/ping_controls.dart`), so the 25 m
   distance skip still reads "Skipped". The shared phase title is the bare word `Deferred` with
-  the detail "Recently covered, waiting for a fresh square", carried by
+  the detail "Waiting for a square with no recent mapping", carried by
   `LiveActivityPhase.deferred` (wire value `deferred`) and labelled natively in
   `ios/MeshMapperLiveActivity/MeshMapperLiveActivity.swift`, which reuses the skipped phase's
   icon and colour.
@@ -1095,8 +1095,8 @@ update, open MeshMapper once, then use any of these forms (the app name is part
 of every registered phrase):
 
 - `Siri, reconnect MeshMapper` or `Siri, connect MeshMapper to the last device`.
-- `Siri, start MeshMapper` defaults to Passive Discovery.
-- `Siri, start a Passive Discovery session in MeshMapper`.
+- `Siri, start MeshMapper` defaults to Passive.
+- `Siri, start a Passive session in MeshMapper`.
 - `Siri, start Active mode in MeshMapper`.
 - `Siri, start Hybrid mapping with MeshMapper`.
 - `Siri, stop MeshMapper`.
