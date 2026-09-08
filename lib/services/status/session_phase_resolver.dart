@@ -69,8 +69,9 @@ ResolvedPhase resolveSessionPhase({
   required bool isSessionActive,
   required String modeTitle,
 }) {
-  StatusDeadline? at(DateTime? endsAt) =>
-      endsAt == null ? null : (endsAt: endsAt, durationMs: null);
+  StatusDeadline? at(DateTime? endsAt) => endsAt == null
+      ? null
+      : (endsAt: endsAt, durationMs: null, remainingSec: 0);
 
   final status = resolveSessionStatus(
     isInZoneGracePeriod: isInZoneGracePeriod,

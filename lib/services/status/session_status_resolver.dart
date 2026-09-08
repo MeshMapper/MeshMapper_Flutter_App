@@ -105,8 +105,17 @@ SessionStatus resolveSessionStatus({
         onGlance: onGlance
       ));
 
-  if (isManualSession && isPingSending) {
-    see(StatusLane.manual, SessionActivity.sending);
+  // The TX loop's own idea of whether it is running, which is also how the
+  // buttons decide who owns a listening window.
+  final isTxModeRunning = isSessionActive &&
+      (autoMode == AutoMode.active || autoMode == AutoMode.hybrid);
+
+  // Observed whenever a manual send is in flight, but only shown on the glance
+  // surfaces when the session is a manual one, which is today's rule. A manual
+  // ping during a Passive drive raises this flag without owning the session,
+  // and the Send Ping button has always said so even though the watch has not.
+  if (isPingSending) {
+    see(StatusLane.manual, SessionActivity.sending, onGlance: isManualSession);
   }
 
   if (isDiscoveryWindowRunning) {
@@ -127,7 +136,11 @@ SessionStatus resolveSessionStatus({
   }
 
   if (isRxWindowRunning) {
-    final lane = isManualSession ? StatusLane.manual : StatusLane.txAuto;
+    // Whoever is transmitting owns the echo window. Not the manual-session
+    // flag: that tracks which surface opened the glance session, and a manual
+    // ping fired during a Passive drive leaves it false while still being the
+    // ping the window belongs to.
+    final lane = isTxModeRunning ? StatusLane.txAuto : StatusLane.manual;
     see(lane, SessionActivity.listening, deadline: rxWindow);
   }
 
@@ -247,7 +260,7 @@ StatusLane _autoLane(AutoMode mode) => switch (mode) {
       activity: SessionActivity.pausedOutsideZone,
       deadline: zoneGraceEndsAt == null
           ? null
-          : (endsAt: zoneGraceEndsAt, durationMs: null),
+          : (endsAt: zoneGraceEndsAt, durationMs: null, remainingSec: 0),
     );
   }
   if (isZoneTransferInProgress) {

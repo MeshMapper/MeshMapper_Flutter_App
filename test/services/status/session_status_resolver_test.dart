@@ -11,7 +11,8 @@ import 'package:mesh_mapper/services/status/session_status_resolver.dart';
 
 final _t1 = DateTime.utc(2026, 1, 1, 12);
 final _t2 = DateTime.utc(2026, 1, 1, 13);
-StatusDeadline _d(DateTime t) => (endsAt: t, durationMs: 5000);
+StatusDeadline _d(DateTime t, [int sec = 4]) =>
+    (endsAt: t, durationMs: 5000, remainingSec: sec);
 
 SessionStatus status({
   bool isInZoneGracePeriod = false,
@@ -100,8 +101,13 @@ void main() {
 
   group('one moment, one owner, four views', () {
     test('a manual RX window: the manual lane listens, the rest are held', () {
+      // A manual-only session: no auto mode is running, so the echo window
+      // belongs to the tap that opened it.
       final s = status(
-          isManualSession: true, isRxWindowRunning: true, rxWindow: _d(_t1));
+          isManualSession: true,
+          isSessionActive: false,
+          isRxWindowRunning: true,
+          rxWindow: _d(_t1));
 
       expect(s.activity, SessionActivity.listening);
       expect(s.owner, StatusLane.manual);
@@ -123,6 +129,9 @@ void main() {
     });
 
     test('an auto RX window belongs to the TX lane instead', () {
+      // Ownership follows who is transmitting, not which surface opened the
+      // glance session: a manual ping during a Passive drive still owns its
+      // own window even though the manual-session flag stays false.
       final s = status(isRxWindowRunning: true, rxWindow: _d(_t1));
       expect(s.owner, StatusLane.txAuto);
       expect(s.txAuto.isBlocked, isFalse);
