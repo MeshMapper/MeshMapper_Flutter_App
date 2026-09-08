@@ -158,13 +158,13 @@ StatusDeadline? _manualCooldown(SessionStatus s) =>
   } else if (validation == PingValidation.airborne) {
     return (hint: StatusHint.airborne, text: 'Airborne, wardriving blocked');
   } else if (validation == PingValidation.noGpsLock) {
-    return (hint: StatusHint.noGpsLock, text: 'Waiting for GPS lock...');
+    return (hint: StatusHint.noGpsLock, text: 'Waiting for GPS');
   } else if (validation == PingValidation.gpsInaccurate) {
-    return (hint: StatusHint.gpsInaccurate, text: 'GPS accuracy too low');
+    return (hint: StatusHint.gpsInaccurate, text: 'GPS signal is weak');
   } else if (validation == PingValidation.outsideGeofence) {
     // Dead today: no validator returns outsideGeofence. Kept so the lift is
     // faithful, and so the table records that it is unreachable.
-    return (hint: StatusHint.outsideServiceArea, text: 'Outside service area');
+    return (hint: StatusHint.outsideServiceArea, text: 'Outside a zone');
   }
   // Cooldown and too-close are deliberately hintless; they show on the button.
   return null;
@@ -237,7 +237,7 @@ String portraitPassiveModeLabel(SessionStatus s, PingRenderFacts f) {
     final v = s.discovery;
     return switch (v.activity) {
       SessionActivity.listeningDiscovery => 'Listening ${_sec(v)}s',
-      SessionActivity.waitingDiscovery => 'Next Disc ${_sec(v)}s',
+      SessionActivity.waitingDiscovery => 'Next disc ${_sec(v)}s',
       SessionActivity.deferred => 'Deferred ${_sec(v)}s',
       SessionActivity.skipped => 'Skipped ${_sec(v)}s',
       _ => 'Passive Mode',
@@ -258,11 +258,10 @@ String portraitPassiveModeLabel(SessionStatus s, PingRenderFacts f) {
 // ---------------------------------------------------------------------------
 // Compact layout.
 //
-// A separate set on purpose: it says different words for the same state than
-// portrait does. Waiting for the next auto ping reads "Next ping" in portrait
-// and "Waiting" here, and the Passive button reads "Next Disc" in portrait and
-// "Waiting" here, so a user who collapses the panel watches the word change with
-// no state change. Kept as it ships; the vocabulary work settles it.
+// The waiting labels now match portrait word for word ("Next ping" / "Next disc"
+// / "Next trace"), so collapsing the panel no longer changes the wording. What
+// still differs is structural, not vocabulary: compact can collapse to a bare
+// countdown, and it borrows fewer windows than portrait.
 //
 // [showFullText] is the button's own expanded flag, which decides between the
 // word and a bare countdown. [isExpandedDuringCooldown] is the same flag anded
@@ -327,7 +326,7 @@ String? compactActiveModeLabel(
       case SessionActivity.sending:
         return showFullText ? 'Sending...' : '...';
       case SessionActivity.waiting:
-        return _n(_sec(v), showFullText: showFullText, word: 'Waiting');
+        return _n(_sec(v), showFullText: showFullText, word: 'Next ping');
       case SessionActivity.deferred:
         return _n(_sec(v), showFullText: showFullText, word: 'Deferred');
       case SessionActivity.skipped:
@@ -356,7 +355,7 @@ String? compactPassiveModeLabel(
     final v = s.discovery;
     final word = switch (v.activity) {
       SessionActivity.listeningDiscovery => 'Listening',
-      SessionActivity.waitingDiscovery => 'Waiting',
+      SessionActivity.waitingDiscovery => 'Next disc',
       SessionActivity.deferred => 'Deferred',
       SessionActivity.skipped => 'Skipped',
       _ => null,
@@ -372,9 +371,10 @@ String? compactPassiveModeLabel(
 
 /// Trace, compact.
 ///
-/// The one chain that never says "Deferred": it reads the skipped word for both
-/// the deferral and the skip. Harmless only because Smart Pinging does not defer
-/// a trace today. A preserves it; B fixes it.
+/// The `deferred` arm is unreachable: a Trace is never deferred (the trace send
+/// path does not consult the coverage lookup, and the banked-ping release
+/// refuses in Trace mode), so mapping it to the skipped word is a dead branch
+/// kept only for totality. Trace deferral is not wanted by design.
 String? compactTraceModeLabel(
   SessionStatus s,
   PingRenderFacts f, {
@@ -388,7 +388,7 @@ String? compactTraceModeLabel(
       case SessionActivity.listeningDiscovery:
         return _n(_sec(v), showFullText: showFullText, word: 'Listening');
       case SessionActivity.waitingTrace:
-        return _n(_sec(v), showFullText: showFullText, word: 'Next in');
+        return _n(_sec(v), showFullText: showFullText, word: 'Next trace');
       case SessionActivity.deferred:
       case SessionActivity.skipped:
         return _n(_sec(v), showFullText: showFullText, word: 'Skipped');
@@ -416,7 +416,7 @@ String? traceStatusText(SessionStatus s, PingRenderFacts f) {
     SessionActivity.listeningTrace ||
     SessionActivity.listeningDiscovery =>
       'Listening ${_sec(v)}s',
-    SessionActivity.waitingTrace => 'Next in ${_sec(v)}s',
+    SessionActivity.waitingTrace => 'Next trace ${_sec(v)}s',
     SessionActivity.deferred || SessionActivity.skipped => 'Skipped ${_sec(v)}s',
     _ => null,
   };
