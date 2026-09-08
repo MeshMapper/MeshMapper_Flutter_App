@@ -4,7 +4,7 @@ import AppIntents
 struct StartMeshMapperSessionIntent: AppIntent {
   static let title: LocalizedStringResource = "Start MeshMapper Session"
   static let description = IntentDescription(
-    "Starts Active, Passive Discovery, or Hybrid mapping using MeshMapper's current radio policy."
+    "Starts Active, Passive, or Hybrid mapping using MeshMapper's current radio policy."
   )
   static var authenticationPolicy: IntentAuthenticationPolicy {
     .requiresAuthentication

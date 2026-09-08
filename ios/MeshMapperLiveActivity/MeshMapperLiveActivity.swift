@@ -956,9 +956,14 @@ extension MeshMapperActivityAttributes.ContentState {
     case "waiting_for_gps": return "No GPS"
     case "paused_outside_zone": return "Paused"
     case "disconnected": return "Offline"
-    case "tx_blocked": return "Blocked"
+    // Discovery is a zero-hop TX that stays allowed here, so the wrist says
+    // Passive, not "Blocked", matching the phone and the glance.
+    case "tx_blocked": return "Passive"
     case "stopping", "stopped": return "Stopped"
     case "starting": return "Starting"
+    // The resting title is "<mode> mode"; on the narrow band show the bare
+    // mode word so it stays one word.
+    case "active": return mode
     default: return bandPhaseTitle
     }
   }
