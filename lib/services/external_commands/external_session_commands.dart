@@ -127,15 +127,15 @@ String _externalCommandVoiceMessage({
     ExternalCommandReasonCode.selectPowerLevelUnknownDevice =>
       'Select a power level in MeshMapper, then try again.',
     ExternalCommandReasonCode.offlineMode => isStart
-        ? "$modeName mode isn't available in Offline Mode. Start Passive Discovery instead."
+        ? "$modeName mode isn't available in Offline Mode. Start Passive mode instead."
         : "Manual pings aren't available in Offline Mode. Turn it off and try again.",
     ExternalCommandReasonCode.passiveOnly ||
     ExternalCommandReasonCode.zoneAtCapacity =>
       isStart
-          ? "$modeName mode isn't available in this region. Start Passive Discovery instead."
-          : "Manual pings aren't available in this region. Passive Discovery still works.",
+          ? "$modeName mode isn't available in this region. Start Passive mode instead."
+          : "Manual pings aren't available in this region. Passive mode still works.",
     ExternalCommandReasonCode.floodTrafficOff => isStart
-        ? '$modeName mode requires Flood Traffic. Enable it or start Passive Discovery.'
+        ? '$modeName mode requires Flood Traffic. Enable it or start Passive mode.'
         : 'Manual pings require Flood Traffic. Enable it and try again.',
     ExternalCommandReasonCode.coolingDown ||
     ExternalCommandReasonCode.waitFiveSeconds ||
@@ -146,11 +146,11 @@ String _externalCommandVoiceMessage({
     ExternalCommandReasonCode.listeningForPingResponse =>
       'MeshMapper is listening for a response. Try again shortly.',
     ExternalCommandReasonCode.waitingForGpsLock =>
-      'MeshMapper is waiting for a GPS fix. Try again shortly.',
+      'MeshMapper is waiting for GPS. Try again shortly.',
     ExternalCommandReasonCode.gpsDataStale =>
       'MeshMapper needs a current GPS position. Let location refresh, then retry.',
     ExternalCommandReasonCode.gpsAccuracyLow =>
-      'GPS accuracy is too low. Try again when it improves.',
+      'Your GPS signal is too weak. Try again when it improves.',
     ExternalCommandReasonCode.anotherOperationInProgress =>
       'Another radio operation is in progress. Try again shortly.',
     ExternalCommandReasonCode.stillStartingTryStopAgain =>

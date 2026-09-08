@@ -43,7 +43,7 @@ enum ExternalSessionMode {
 
   String get displayName => switch (this) {
         ExternalSessionMode.active => 'Active',
-        ExternalSessionMode.passive => 'Passive Discovery',
+        ExternalSessionMode.passive => 'Passive',
         ExternalSessionMode.hybrid => 'Hybrid',
       };
 }
@@ -212,7 +212,7 @@ class ExternalCommandReason {
         ExternalCommandReasonCode.offlineMode => 'Offline Mode',
         ExternalCommandReasonCode.passiveOnly => 'Passive Only',
         ExternalCommandReasonCode.zoneAtCapacity =>
-          'Zone at TX capacity (Passive Only)',
+          'Zone is full, Passive only',
         ExternalCommandReasonCode.floodTrafficOff => 'Flood Traffic Off',
         ExternalCommandReasonCode.coolingDown => 'Cooling down',
         ExternalCommandReasonCode.waitFiveSeconds =>
@@ -223,10 +223,8 @@ class ExternalCommandReason {
         ExternalCommandReasonCode.listeningForPingResponse =>
           'Listening for ping response',
         ExternalCommandReasonCode.waitingForGpsLock => 'Waiting for GPS lock',
-        ExternalCommandReasonCode.gpsDataStale =>
-          'GPS data too old (> 60 seconds)',
-        ExternalCommandReasonCode.gpsAccuracyLow =>
-          'GPS accuracy too low (> 100 meters)',
+        ExternalCommandReasonCode.gpsDataStale => 'GPS data is too old',
+        ExternalCommandReasonCode.gpsAccuracyLow => 'GPS signal is weak',
         ExternalCommandReasonCode.anotherOperationInProgress =>
           'Another operation is in progress',
         ExternalCommandReasonCode.stillStartingTryStopAgain =>

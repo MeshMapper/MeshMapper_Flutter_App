@@ -1875,7 +1875,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } else if (!isConnected) {
       reason = ExternalCommandReason.notConnected;
     } else if (!hasGpsLock) {
-      reason = const ExternalCommandReason.other('No GPS fix');
+      reason = ExternalCommandReason.waitingForGpsLock;
     } else if (txBlockedByOffline) {
       reason = ExternalCommandReason.offlineMode;
     } else if (txNotAllowed) {
@@ -6292,6 +6292,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // named "Passive Only" by watch controls. Reusing it avoids three wrist
     // phrasings for one condition; other presentable server text stays intact.
     if (reason == 'zone_full') return ExternalCommandReason.passiveOnly;
+    // A lapsed session is a real state, not a mystery. Say so plainly rather
+    // than leak the raw "No active session" server string into a spoken Siri
+    // sentence, which reads as a denial that any session ever ran.
+    if (reason == 'no_session') {
+      return const ExternalCommandReason.other(
+        "MeshMapper's session has ended. Open the app and try again.",
+      );
+    }
 
     final serverMessage = message?.trim();
     if (serverMessage != null && serverMessage.isNotEmpty) {

@@ -104,7 +104,7 @@ void main() {
       );
     });
 
-    test('Siri defaults an unqualified Start to Passive Discovery', () {
+    test('Siri defaults an unqualified Start to Passive', () {
       final admission = resolve(command(mode: null));
 
       expect(admission.disposition, ExternalCommandDisposition.admitted);
@@ -138,7 +138,7 @@ void main() {
 
       expect(
         completion.message?.compactText,
-        "Hybrid mode isn't available in this region. Start Passive Discovery instead.",
+        "Hybrid mode isn't available in this region. Start Passive mode instead.",
       );
       expect(completion.sessionId, 'session-1');
       expect(completion.mode, ExternalSessionMode.hybrid);
@@ -164,7 +164,7 @@ void main() {
         ExternalCommandReason.waitFifteenSeconds:
             'MeshMapper is cooling down. Try again shortly.',
         ExternalCommandReason.waitingForGpsLock:
-            'MeshMapper is waiting for a GPS fix. Try again shortly.',
+            'MeshMapper is waiting for GPS. Try again shortly.',
         ExternalCommandReason.selectAntennaOption:
             'Select an antenna option in MeshMapper, then try again.',
         ExternalCommandReason.selectAntennaOptionBeforePinging:
@@ -174,13 +174,13 @@ void main() {
         ExternalCommandReason.selectPowerLevelUnknownDevice:
             'Select a power level in MeshMapper, then try again.',
         ExternalCommandReason.offlineMode:
-            "Active mode isn't available in Offline Mode. Start Passive Discovery instead.",
+            "Active mode isn't available in Offline Mode. Start Passive mode instead.",
         ExternalCommandReason.passiveOnly:
-            "Active mode isn't available in this region. Start Passive Discovery instead.",
+            "Active mode isn't available in this region. Start Passive mode instead.",
         ExternalCommandReason.zoneAtCapacity:
-            "Active mode isn't available in this region. Start Passive Discovery instead.",
+            "Active mode isn't available in this region. Start Passive mode instead.",
         ExternalCommandReason.floodTrafficOff:
-            'Active mode requires Flood Traffic. Enable it or start Passive Discovery.',
+            'Active mode requires Flood Traffic. Enable it or start Passive mode.',
         ExternalCommandReason.pingInProgress:
             'A ping is already in progress. Try again when it finishes.',
         ExternalCommandReason.listeningForPingResponse:
@@ -188,7 +188,7 @@ void main() {
         ExternalCommandReason.gpsDataStale:
             'MeshMapper needs a current GPS position. Let location refresh, then retry.',
         ExternalCommandReason.gpsAccuracyLow:
-            'GPS accuracy is too low. Try again when it improves.',
+            'Your GPS signal is too weak. Try again when it improves.',
         ExternalCommandReason.anotherOperationInProgress:
             'Another radio operation is in progress. Try again shortly.',
         ExternalCommandReason.stillStartingTryStopAgain:
@@ -228,7 +228,7 @@ void main() {
         success: true,
         disposition: ExternalCommandDisposition.admitted,
         message: ExternalCommandReason.other(
-          'MeshMapper started in Passive Discovery mode.',
+          'MeshMapper started in Passive mode.',
         ),
       );
 
