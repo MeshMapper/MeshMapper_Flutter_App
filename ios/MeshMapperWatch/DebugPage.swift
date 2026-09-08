@@ -96,7 +96,7 @@ struct DebugPage: View {
         Text(String(format: "%.5f, %.5f", you.lat, you.lon))
           .font(.system(size: 10).monospacedDigit())
       } else {
-        Text("No GPS fix").font(.system(size: 10)).foregroundStyle(.secondary)
+        Text("Waiting for GPS").font(.system(size: 10)).foregroundStyle(.secondary)
       }
       Text("pings \(s.geo.pings.count) · rptrs \(s.geo.repeaters.count) · heard \(s.geo.heard.count)")
         .font(.system(size: 10).monospacedDigit())
