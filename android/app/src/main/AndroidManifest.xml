@@ -19,6 +19,8 @@
 
     <!-- Internet for API uploads -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Network state for satellite/constrained-network detection -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Wake lock for auto-ping mode -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -72,6 +74,15 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- Opts this app in to Android's satellite/constrained-network routing
+             (API 36+). Without this, the system never hands the app's default
+             network traffic to a satellite link even when one is the only
+             option. See:
+             https://developer.android.com/develop/connectivity/satellite/constrained-networks -->
+        <meta-data
+            android:name="android.telephony.PROPERTY_SATELLITE_DATA_OPTIMIZED"
+            android:value="net.meshmapper.app" />
 
         <!-- Background service for continuous wardriving -->
         <service

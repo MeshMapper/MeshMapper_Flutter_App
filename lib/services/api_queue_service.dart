@@ -7,6 +7,7 @@ import '../models/api_queue_item.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_service.dart';
 import 'custom_api_service.dart';
+import 'network_state_service.dart';
 
 /// API queue service with batch upload and retry logic
 /// Ported from apiQueue and batchUpload() in wardrive.js
@@ -21,6 +22,10 @@ class ApiQueueService {
   static const String _boxName = 'api_queue';
   static const int _batchSize = 50;
   static const Duration _batchTimeout = Duration(seconds: 15);
+  // Wider cadence while on a constrained (e.g. satellite) link: fewer, larger
+  // batches beat frequent small ones when every round trip carries high
+  // per-request latency.
+  static const Duration _batchTimeoutConstrained = Duration(seconds: 60);
   static const int _maxRetries = 5;
   static const int _maxRxPerRepeater = 4;
 
@@ -28,6 +33,7 @@ class ApiQueueService {
   Box<ApiQueueItem>? _box;
   Timer? _batchTimer;
   Timer? _pingFlushTimer;
+  StreamSubscription<NetworkState>? _networkStateSubscription;
   bool _isUploading = false;
   bool _isRecovering = false;
 
@@ -148,6 +154,14 @@ class ApiQueueService {
     // Start batch timer
     debugLog('[API QUEUE] Starting batch timer...');
     _startBatchTimer();
+
+    // Re-pace the batch timer when the device moves onto or off of a
+    // constrained (e.g. satellite) network.
+    _networkStateSubscription =
+        NetworkStateService.instance.stream.listen((_) {
+      if (_batchTimer != null) _startBatchTimer();
+    });
+
     debugLog('[API QUEUE] init() complete');
   }
 
@@ -638,9 +652,12 @@ class ApiQueueService {
   }
 
   void _startBatchTimer() {
+    final constrained = NetworkStateService.instance.current.isConstrained;
+    final timeout = constrained ? _batchTimeoutConstrained : _batchTimeout;
     _batchTimer?.cancel();
-    _batchTimer = Timer.periodic(_batchTimeout, (_) {
-      debugLog('[API QUEUE] Batch timer fired (15s interval)');
+    _batchTimer = Timer.periodic(timeout, (_) {
+      debugLog('[API QUEUE] Batch timer fired (${timeout.inSeconds}s interval'
+          '${constrained ? ', constrained network' : ''})');
       _flushRxBuffer();
       _uploadBatch();
     });
@@ -1007,6 +1024,7 @@ class ApiQueueService {
   void dispose() {
     _batchTimer?.cancel();
     _pingFlushTimer?.cancel();
+    _networkStateSubscription?.cancel();
     _box?.close();
   }
 }

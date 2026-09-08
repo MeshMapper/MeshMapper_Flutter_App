@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 import 'meshcore/regional_carpeater_filter.dart';
+import 'network_state_service.dart';
 
 /// Result of a batch upload attempt
 ///
@@ -519,13 +520,19 @@ class ApiService {
         }
       }
 
+      // Acquiring the API slot is a single round trip with no retry ladder of
+      // its own, so give it more room on a constrained (e.g. satellite) link
+      // rather than timing out before a high-latency response can land.
+      final authTimeout = NetworkStateService.instance.current.isConstrained
+          ? const Duration(seconds: 30)
+          : const Duration(seconds: 10);
       final response = await _client
           .post(
             Uri.parse(geoAuthUrl),
             headers: {'Content-Type': 'application/json'},
             body: json.encode(payload),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(authTimeout);
 
       stopwatch.stop();
 
