@@ -119,21 +119,35 @@ _ControlsDeps _controlsDepsOf(AppStateProvider s) {
 }
 
 /// Subset of provider state the Trace Mode section depends on.
+///
+/// Every field the Start predicate reads must live here, or the button goes
+/// stale: the section rebuilds only when this record changes, so a flipped
+/// antenna/power pref or a cleared auto-start flag would not re-enable it.
 typedef _TargetedDeps = ({
   bool isTargetedModeRunning,
   int traceHopBytes,
   String? targetRepeaterId,
   bool isConnected,
   bool hasRepeaters,
+  bool externalAntennaSet,
+  bool isPowerSet,
+  bool isAutoPingStarting,
 });
 
-_TargetedDeps _targetedDepsOf(AppStateProvider s) => (
-      isTargetedModeRunning: s.isTargetedModeRunning,
-      traceHopBytes: s.traceHopBytes,
-      targetRepeaterId: s.targetRepeaterId,
-      isConnected: s.isConnected,
-      hasRepeaters: s.repeaters.isNotEmpty,
-    );
+_TargetedDeps _targetedDepsOf(AppStateProvider s) {
+  final prefs = s.preferences;
+  return (
+    isTargetedModeRunning: s.isTargetedModeRunning,
+    traceHopBytes: s.traceHopBytes,
+    targetRepeaterId: s.targetRepeaterId,
+    isConnected: s.isConnected,
+    hasRepeaters: s.repeaters.isNotEmpty,
+    externalAntennaSet: prefs.externalAntennaSet,
+    isPowerSet:
+        prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
+    isAutoPingStarting: s.isAutoPingStarting,
+  );
+}
 
 /// Modern ping control panel with icon-based buttons and animated status
 class PingControls extends StatelessWidget {
@@ -615,6 +629,10 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
         }
 
         // Determine if the start button should be enabled
+        final prefs = appState.preferences;
+        final isPowerSet = prefs.autoPowerSet ||
+            prefs.powerLevelSet ||
+            appState.deviceModel != null;
         final hexText = _controller.text.trim();
         final isValidHex = hexText.isNotEmpty &&
             hexText.length == maxLen &&
@@ -623,7 +641,10 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
             !widget.isAnyModeRunning &&
             !isTargetedRunning &&
             !appState.cooldownTimer.isRunning &&
-            appState.isConnected;
+            !appState.isAutoPingStarting &&
+            appState.isConnected &&
+            prefs.externalAntennaSet &&
+            isPowerSet;
 
         final isEnabled = (canStart || isTargetedRunning) && !_isStarting;
         final buttonColor = (isTargetedRunning || _isStarting)
@@ -943,6 +964,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             !isTxModeRunning &&
             !isPassiveModeRunning &&
             !isPendingDisable &&
+            !isAutoStarting &&
             !isPingSending &&
             !rxWindowActive &&
             !cooldownActive &&
