@@ -206,6 +206,12 @@ class TraceTracker {
 
     final result = _result;
     isListening = false;
+    // Cancel, do not just drop the reference: dispose() calls this while the
+    // window is still pending, and a live one-shot timer would then fire
+    // _endWindow a second time (a phantom completion a window later, after the
+    // lane has been torn down). A no-op on the natural path, where the timer
+    // that fired this is already spent.
+    _windowTimer?.cancel();
     _windowTimer = null;
     _expectedTag = null;
     pendingBleSnr = 0.0;

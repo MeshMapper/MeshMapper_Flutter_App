@@ -371,13 +371,14 @@ void main() {
       discoveryWindow.stop();
     });
 
-    test('the trace lane already stops its countdown through the tracker',
-        () async {
-      // Trace reuses the discovery window timer but needs no teardown stop of
-      // its own: TraceTracker.dispose() calls _endWindow() while listening,
-      // which fires the completion handler that stops it. Pinned here so a
-      // change to that dispose cannot quietly reintroduce the leak the
-      // discovery lane had.
+    test('tearing down trace mode stops the shared countdown too', () async {
+      // forceDisableAutoPing tears down both lanes, and _stopDiscoveryMode()
+      // stops the shared window countdown even in trace mode, so the display
+      // cannot keep counting after a trace stop. This pins only that: it cannot
+      // tell whether TraceTracker.dispose() also stops, because the countdown is
+      // stopped either way. The tracker's own teardown (its _endWindow() stop
+      // hook and window-timer cancel) is pinned directly in
+      // test/services/meshcore/trace_tracker_test.dart.
       final discoveryWindow = DiscoveryWindowTimer();
       final ping = _buildService(
         _FakeGps()..position = _pos(45.0, -75.0),
