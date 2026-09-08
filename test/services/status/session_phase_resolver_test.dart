@@ -29,6 +29,7 @@ class _Args {
   GpsStatus gpsStatus = GpsStatus.locked;
   AutoMode autoMode = AutoMode.active;
   bool txAllowed = true;
+  bool isOfflineMode = false;
   bool isManualSession = false;
   bool isPingSending = false;
   bool isPingInProgress = false;
@@ -72,6 +73,7 @@ ResolvedPhase _resolve(_Args a) => resolveSessionPhase(
       gpsStatus: a.gpsStatus,
       autoMode: a.autoMode,
       txAllowed: a.txAllowed,
+      isOfflineMode: a.isOfflineMode,
       isManualSession: a.isManualSession,
       isPingSending: a.isPingSending,
       isPingInProgress: a.isPingInProgress,
@@ -229,7 +231,7 @@ void main() {
         ..zoneGraceEndsAt = _deadline;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.pausedOutsideZone,
-          title: 'Outside service area',
+          title: 'Outside a zone',
           detail: 'Searching for a nearby wardriving zone',
           endsAt: _deadline);
     });
@@ -241,8 +243,8 @@ void main() {
         ..zoneTransferTo = 'PAE';
       expectRow(_resolve(a),
           phase: LiveActivityPhase.pausedOutsideZone,
-          title: 'Changing region…',
-          detail: 'YOW → PAE');
+          title: 'Switching zones',
+          detail: 'Moving to PAE');
     });
 
     test('a zone transfer with neither end named still has a blank detail', () {
@@ -257,21 +259,21 @@ void main() {
         ..connectionStep = ConnectionStep.reconnecting;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.disconnected,
-          title: 'Reconnecting…',
-          detail: 'Restoring MeshCore connection');
+          title: 'Reconnecting',
+          detail: 'Restoring the connection');
     });
 
     test('the reconnecting step reaches the same row without the flag', () {
       expect(
           _resolve(_Args()..connectionStep = ConnectionStep.reconnecting).title,
-          'Reconnecting…');
+          'Reconnecting');
     });
 
     test('disconnecting', () {
       final a = _Args()..connectionStep = ConnectionStep.disconnecting;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.disconnected,
-          title: 'Disconnecting…',
+          title: 'Disconnecting',
           detail: 'Open MeshMapper to reconnect');
     });
 
@@ -279,7 +281,7 @@ void main() {
       final a = _Args()..connectionStep = ConnectionStep.disconnected;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.disconnected,
-          title: 'Device disconnected',
+          title: 'Disconnected',
           detail: 'Open MeshMapper to reconnect');
     });
 
@@ -291,7 +293,7 @@ void main() {
         ConnectionStep.error,
       ]) {
         expect(_resolve(_Args()..connectionStep = step).title,
-            'Device disconnected',
+            'Disconnected',
             reason: 'step $step');
       }
     });
@@ -305,7 +307,7 @@ void main() {
         ..discoveryWindowEndsAt = _other;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.stopping,
-          title: 'Stopping…',
+          title: 'Stopping',
           detail: 'Finishing the current listening window',
           endsAt: _deadline);
     });
@@ -328,8 +330,8 @@ void main() {
       const labels = {
         GpsStatus.permissionDenied: 'Location permission required',
         GpsStatus.disabled: 'Location services disabled',
-        GpsStatus.searching: 'Searching for GPS signal',
-        GpsStatus.outsideGeofence: 'Outside service area',
+        GpsStatus.searching: 'Finding your location',
+        GpsStatus.outsideGeofence: 'Outside a zone',
       };
       labels.forEach((status, label) {
         expectRow(_resolve(_Args()..gpsStatus = status),
@@ -358,8 +360,19 @@ void main() {
           ..txAllowed = false;
         expectRow(_resolve(a),
             phase: LiveActivityPhase.txBlocked,
-            title: 'TX unavailable',
-            detail: 'This zone is currently passive-only');
+            title: 'Passive only',
+            detail: 'Only Passive mode works in this zone');
+
+        // Offline is the other cause of the same block, and it names itself
+        // rather than blaming the zone.
+        final offline = _Args()
+          ..autoMode = mode
+          ..txAllowed = false
+          ..isOfflineMode = true;
+        expectRow(_resolve(offline),
+            phase: LiveActivityPhase.txBlocked,
+            title: 'Passive only',
+            detail: 'Only Passive mode works in Offline Mode');
       }
       final passive = _Args()
         ..autoMode = AutoMode.passive
@@ -373,7 +386,7 @@ void main() {
         ..isManualSession = true
         ..isPingSending = true;
       expectRow(_resolve(a),
-          phase: LiveActivityPhase.sending, title: 'Sending ping…');
+          phase: LiveActivityPhase.sending, title: 'Sending ping');
 
       // A manual send flag without a manual session belongs to the manual lane
       // only, so it does not reach the glance phase. The auto ping in flight is
@@ -390,7 +403,7 @@ void main() {
         ..autoMode = AutoMode.active
         ..isPingInProgress = true;
       expectRow(_resolve(a),
-          phase: LiveActivityPhase.sending, title: 'Sending ping…');
+          phase: LiveActivityPhase.sending, title: 'Sending ping');
 
       // The same flag during Passive is a manual ping in flight, not the auto
       // TX gap, so it does not light this row without a TX mode running.
@@ -408,8 +421,8 @@ void main() {
         ..discoveryWindowEndsAt = _deadline;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.listeningDiscovery,
-          title: 'Listening…',
-          detail: 'Discovery responses',
+          title: 'Listening',
+          detail: 'Waiting for replies',
           endsAt: _deadline);
     });
 
@@ -420,8 +433,8 @@ void main() {
         ..discoveryWindowEndsAt = _deadline;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.listeningTrace,
-          title: 'Listening for trace…',
-          detail: 'Beacon Hill',
+          title: 'Listening',
+          detail: 'Waiting for Beacon Hill to reply',
           endsAt: _deadline);
     });
 
@@ -453,7 +466,7 @@ void main() {
         ..rxWindowEndsAt = _deadline;
       expectRow(_resolve(a),
           phase: LiveActivityPhase.listening,
-          title: 'Listening…',
+          title: 'Listening',
           detail: 'Waiting for repeater echoes',
           endsAt: _deadline);
     });
@@ -466,7 +479,7 @@ void main() {
       expectRow(_resolve(a),
           phase: LiveActivityPhase.cooldown,
           title: 'Cooldown',
-          detail: 'Manual ping available when the timer ends',
+          detail: 'You can ping again when this ends',
           endsAt: _deadline);
 
       final auto = _Args()
@@ -487,7 +500,7 @@ void main() {
       expectRow(_resolve(a),
           phase: LiveActivityPhase.cooldown,
           title: 'Cooldown',
-          detail: 'Manual ping available when the timer ends',
+          detail: 'You can ping again when this ends',
           endsAt: _deadline);
 
       // Mid-session the auto interval outranks it, so it never shows there.
@@ -510,7 +523,7 @@ void main() {
         expectRow(_resolve(a),
             phase: LiveActivityPhase.deferred,
             title: 'Deferred',
-            detail: 'Recently covered, waiting for a fresh square',
+            detail: 'Waiting for a square with no recent mapping',
             endsAt: _deadline);
       }
     });
@@ -526,8 +539,8 @@ void main() {
         expectRow(
           _resolve(a),
           phase: LiveActivityPhase.skipped,
-          title: 'Ping skipped',
-          detail: 'Move at least 50 m',
+          title: 'Skipped',
+          detail: 'Move at least 50 m to ping',
           endsAt: _deadline,
         );
       }
@@ -540,7 +553,7 @@ void main() {
         ..isAutoPingRunning = true
         ..autoPingSkipReason = 'gps too old'
         ..autoPingEndsAt = _deadline;
-      expect(_resolve(a).title, 'Ping skipped');
+      expect(_resolve(a).title, 'Skipped');
     });
 
     test('next discovery', () {
@@ -562,7 +575,7 @@ void main() {
       expectRow(_resolve(a),
           phase: LiveActivityPhase.waitingTrace,
           title: 'Next trace',
-          detail: 'Beacon Hill',
+          detail: 'To Beacon Hill',
           endsAt: _deadline);
     });
 
@@ -581,35 +594,37 @@ void main() {
 
     test('the operation latch: sending, discovering, tracing', () {
       expectRow(_resolve(_Args()..operation = SessionOperation.sending),
-          phase: LiveActivityPhase.sending, title: 'Sending ping…');
+          phase: LiveActivityPhase.sending, title: 'Sending ping');
       expectRow(_resolve(_Args()..operation = SessionOperation.discovering),
           phase: LiveActivityPhase.discovering,
-          title: 'Discovering…',
-          detail: 'Requesting nearby repeaters');
+          title: 'Discovering',
+          detail: 'Looking for nearby repeaters');
       expectRow(_resolve(_Args()..operation = SessionOperation.tracing),
           phase: LiveActivityPhase.tracing,
-          title: 'Tracing repeater…',
-          detail: 'Beacon Hill');
+          title: 'Tracing Beacon Hill');
     });
 
     test('preparing a session, from either half of the condition', () {
       expectRow(_resolve(_Args()..isSessionStarting = true),
-          phase: LiveActivityPhase.starting, title: 'Preparing session…');
+          phase: LiveActivityPhase.starting,
+          title: 'Starting',
+          detail: 'Getting the session ready');
       expectRow(_resolve(_Args()..isSessionActive = false),
-          phase: LiveActivityPhase.starting, title: 'Preparing session…');
+          phase: LiveActivityPhase.starting,
+          title: 'Starting',
+          detail: 'Getting the session ready');
     });
 
-    test('the resting row repeats the mode word', () {
+    test('the resting row names the running mode', () {
       expectRow(_resolve(_Args()),
           phase: LiveActivityPhase.active,
-          title: 'Active active',
-          detail: 'Waiting for the next cycle');
+          title: 'Active mode',
+          detail: 'Wardriving');
 
-      // The same row for a manual session, which is where the doubled word
-      // reads worst.
-      expect(_resolve(_Args()..isManualSession = true).title, 'Manual active');
+      // The same row for a manual session and for Passive.
+      expect(_resolve(_Args()..isManualSession = true).title, 'Manual mode');
       expect(_resolve(_Args()..autoMode = AutoMode.passive).title,
-          'Passive active');
+          'Passive mode');
     });
   });
 

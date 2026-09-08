@@ -2728,6 +2728,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         gpsStatus: _gpsStatus,
         autoMode: _autoMode,
         txAllowed: txAllowed,
+        isOfflineMode: offlineMode,
         isManualSession: _liveActivityManualSession,
         isPingSending: _isPingSending,
         isPingInProgress: isPingInProgress,
