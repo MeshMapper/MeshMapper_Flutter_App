@@ -683,6 +683,55 @@ fan-out logic (`MeshMapper_Server/dev/index.php`):
   `repeaterCoverageCells`, `RepeaterStats.fromCoverageWithPoints`),
   `lib/utils/coverage_tile_palette.dart` (`colorsForStatus`).
 
+### The One Session Status Model
+
+"What is the session doing right now?" is worked out in exactly one place,
+`lib/services/status/session_status_resolver.dart`, and every surface reads that
+one answer. Before this existed the phone buttons, the Live Activity, the watch,
+Siri and the Android notification each derived the state themselves, so they
+could disagree about it, not merely lag.
+
+`resolveSessionStatus(...)` is a pure function of about two dozen facts (each
+timer flattened to a running flag plus an absolute deadline, no clock and no live
+object) and returns a `SessionStatus`: a single glance answer (`activity`,
+`owner`, `deadline`) plus four `LaneStatus` lanes (manual, txAuto, discovery,
+targeted). The precedence is one ordered list of observations, each naming the
+lane it belongs to; the single-phase surfaces take the first, and each button
+takes the first belonging to its own lane, or reports being held by it. That is
+what makes "the surfaces cannot disagree" structural: a surface can only report a
+state some lane is actually in.
+
+Who reads what:
+
+- **The in-app buttons** (`lib/services/status/ping_control_labels.dart`) read
+  the four lanes. `AppStateProvider.sessionStatus` resolves the model fresh on
+  each layout so the countdowns stay live.
+- **The Live Activity, watch and Siri** read the glance answer, projected to a
+  title and detail by `resolveSessionPhase`
+  (`lib/services/status/session_phase_resolver.dart`). The watch and Siri pass it
+  through `resolveWatchSurfacePhase`, which substitutes `idle` in the two cases
+  the wrist renders while the phone shows nothing (a truly idle Starting, and a
+  post-stop cooldown with no glance session).
+- **The Android foreground notification** reads `androidNotificationContent`
+  (`lib/services/status/android_notification.dart`) for its finished title and
+  body; the background isolate composes nothing.
+
+Two observations carry an `onGlance` flag so a state can belong to a lane (which
+the buttons read) without moving the single glance answer, or reach both. The
+`SessionActivity` type is an alias of `LiveActivityPhase`, so a phase dropped
+anywhere fails to compile rather than rendering blank.
+
+**Kept out of the per-tick path on purpose:** the model carries no validator
+result (no `canPing()`, geodesic distance or coverage lookup). It is resolved on
+every countdown tick, about 2 Hz for a whole session, and this app has a
+wardriving overheat history. The one label that needs the validators
+(`blockingHint`) takes them as a separate argument, so only that caller pays.
+
+Golden tables pin all of it (`test/services/status/`): a per-return-site table
+for the phase resolver and a per-lane table for the buttons, a differential
+harness proving the button lift changed no output across about 825k states, and
+an agreement test proving the surfaces read one activity.
+
 ### Apple Companion Surfaces (Watch + Live Activity)
 
 Both surfaces are **projections of phone-owned state**. The phone keeps the
@@ -1229,15 +1278,15 @@ debugError('[API] Failed to post batch: $error');
 
 Never log without a tag.
 
-### Status Message Conventions
+### Describing Session State
 
-Use the status update methods in `AppStateProvider` for all UI status updates. Available status types:
-
-- `idle` — Default/waiting state
-- `success` — Successful operations
-- `warning` — Warning conditions
-- `error` — Error states
-- `info` — Informational/in-progress states
+There is no free-form status-string API (an older `statusMessage` / `StatusType`
+/ `setStatus` shape was documented here but never existed in `lib/`). What the
+session is doing is one value, resolved by `resolveSessionStatus` and read by
+every surface. See **The One Session Status Model**. New UI that needs to say
+what the session is doing reads that model rather than composing its own label,
+so the surfaces stay in agreement. Transient user feedback (an error or an event
+worth surfacing) goes to the error log, which is a separate concern.
 
 ### Documentation Update Requirements
 
@@ -1343,6 +1392,11 @@ All API endpoints may return maintenance mode:
 - `lib/services/transport/android_serial_service.dart` - USB Serial transport for Android (USB OTG)
 - `lib/services/transport/web_serial_service.dart` - USB Serial transport for Web (Web Serial API)
 - `lib/services/ping_service.dart` - TX/RX/Discovery ping orchestration
+- `lib/services/status/session_status_resolver.dart` - The one session model: pure `resolveSessionStatus` (glance answer plus four lanes)
+- `lib/services/status/session_status.dart` - `SessionStatus` / `LaneStatus` / `SessionActivity` types
+- `lib/services/status/session_phase_resolver.dart` - Projects the model to the glance title and detail (Live Activity, watch, Siri)
+- `lib/services/status/ping_control_labels.dart` - The in-app button labels and countdowns, read from the model's lanes
+- `lib/services/status/android_notification.dart` - Pure title/body for the Android foreground notification
 - `lib/services/gps_service.dart` - GPS tracking and geofencing
 - `lib/services/recent_coverage_service.dart` - Smart Pinging lookup: recently covered cells from filtered z13 tiles
 - `lib/services/airborne_release.dart` - Pure builder for the airborne session-end text and release telemetry
