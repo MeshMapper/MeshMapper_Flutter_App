@@ -1676,6 +1676,18 @@ class PingService {
       return;
     }
 
+    // A ping already in flight owns _pingInProgress. sendTxPing returns early on
+    // it; mirror that so a discovery cannot go out on top of a manual ping still
+    // listening, nor clear the shared flag out from under it. Reschedule like the
+    // skip paths below: the RX window that ends the in-flight ping does not re-arm
+    // the Passive lane, so a bare return would strand it. Leave the flag alone, it
+    // belongs to the in-flight ping.
+    if (_pingInProgress) {
+      debugLog('[DISC] Ping already in progress, skipping discovery request');
+      _scheduleNextDiscovery();
+      return;
+    }
+
     // Latch before the first await, not after the checks below it. The fresh
     // fix can take up to the GPS timeout, and maybeSendBankedPing() runs on
     // every fix: it would read an idle service and dispatch a TX on top of
