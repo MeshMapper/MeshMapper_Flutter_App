@@ -230,9 +230,9 @@ void main() {
       expect(blockingHint(facts(), PingValidation.airborne),
           (hint: StatusHint.airborne, text: 'Airborne, wardriving blocked'));
       expect(blockingHint(facts(), PingValidation.noGpsLock),
-          (hint: StatusHint.noGpsLock, text: 'Waiting for GPS lock...'));
+          (hint: StatusHint.noGpsLock, text: 'Waiting for GPS'));
       expect(blockingHint(facts(), PingValidation.gpsInaccurate),
-          (hint: StatusHint.gpsInaccurate, text: 'GPS accuracy too low'));
+          (hint: StatusHint.gpsInaccurate, text: 'GPS signal is weak'));
     });
 
     test('the antenna reason outranks every other', () {
@@ -274,7 +274,7 @@ void main() {
       // No validator returns outsideGeofence, so this row is unreachable in the
       // app. Pinned so the dead branch is recorded rather than rediscovered.
       expect(blockingHint(facts(), PingValidation.outsideGeofence),
-          (hint: StatusHint.outsideServiceArea, text: 'Outside service area'));
+          (hint: StatusHint.outsideServiceArea, text: 'Outside a zone'));
     });
   });
 
@@ -412,7 +412,7 @@ void main() {
       expect(
           portraitPassiveModeLabel(
               facts(isPassiveModeRunning: true, autoPingWaiting: true)),
-          'Next Disc 22s');
+          'Next disc 22s');
       expect(
           portraitPassiveModeLabel(facts(
               isPassiveModeRunning: true,
@@ -471,7 +471,7 @@ void main() {
       expect(portraitSendPingLabel(f), 'Cooldown 6s');
     });
 
-    test('the same wait is Next ping on one button and Next Disc on another',
+    test('the same wait is Next ping on one button and Next disc on another',
         () {
       expect(
           portraitActiveModeLabel(
@@ -480,7 +480,7 @@ void main() {
       expect(
           portraitPassiveModeLabel(
               facts(isPassiveModeRunning: true, autoPingWaiting: true)),
-          'Next Disc 22s');
+          'Next disc 22s');
     });
   });
 
@@ -585,7 +585,7 @@ void main() {
       expect(
           traceStatusText(
               facts(isTargetedRunning: true, autoPingWaiting: true)),
-          'Next in 22s');
+          'Next trace 22s');
       expect(
           traceStatusText(facts(
               isTargetedRunning: true,
@@ -675,27 +675,29 @@ void main() {
     });
   });
 
-  group('the layouts disagree with each other', () {
-    test('one wait, three words', () {
-      // Portrait, compact and Trace each name the same interval differently.
+  group('the layouts agree on the waiting word', () {
+    test('portrait and compact name the interval the same', () {
+      // The wart B fixed: this used to read "Next ping" in portrait and
+      // "Waiting" in compact, and "Next Disc" against "Waiting" for Passive.
       final tx = facts(isTxModeRunning: true, autoPingWaiting: true);
       expect(portraitActiveModeLabel(tx), 'Next ping 22s');
       expect(
           compactActiveModeLabel(tx,
               showFullText: true, isExpandedDuringCooldown: false),
-          'Waiting 22s');
+          'Next ping 22s');
 
       final passive = facts(isPassiveModeRunning: true, autoPingWaiting: true);
-      expect(portraitPassiveModeLabel(passive), 'Next Disc 22s');
+      expect(portraitPassiveModeLabel(passive), 'Next disc 22s');
       expect(
           compactPassiveModeLabel(passive,
               showFullText: true, isExpandedDuringCooldown: false),
-          'Waiting 22s');
+          'Next disc 22s');
 
+      // Trace names its own action, but consistently across surfaces.
       expect(
           traceStatusText(
               facts(isTargetedRunning: true, autoPingWaiting: true)),
-          'Next in 22s');
+          'Next trace 22s');
     });
   });
 
