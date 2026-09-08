@@ -1,15 +1,16 @@
 import '../../models/connection_state.dart';
 import '../../providers/app_state_provider.dart' show AutoMode;
 import '../live_activity/live_activity_models.dart';
-import '../ping_service.dart';
 import 'session_status.dart';
+import 'session_status_resolver.dart';
 
-/// The session phase every glance surface describes, resolved in one place.
+/// The session phase every glance surface describes.
 ///
-/// Lifted verbatim out of `AppStateProvider._resolveLiveActivityPhase` so it can
-/// be tested: nothing in this suite instantiates the provider, so in this
-/// codebase "testable" means "extracted". The branch order below is load
-/// bearing and is the order the provider used, unchanged.
+/// A rendering, not a decision. What state the session is in is worked out once
+/// by [resolveSessionStatus], which the in-app buttons read too; this turns that
+/// one answer into the title and detail the Live Activity, the watch and Siri
+/// show. Two states still carry more than one sentence, and those are noted
+/// where they happen.
 ///
 /// Pure by contract. It reads no clock, no I/O and no live object: every timer
 /// arrives as an already-resolved `isRunning` plus an absolute deadline, so the
@@ -68,194 +69,108 @@ ResolvedPhase resolveSessionPhase({
   required bool isSessionActive,
   required String modeTitle,
 }) {
-  if (isInZoneGracePeriod) {
-    return (
-      phase: LiveActivityPhase.pausedOutsideZone,
-      title: 'Outside service area',
-      detail: 'Searching for a nearby wardriving zone',
-      endsAt: zoneGraceEndsAt,
-    );
-  }
+  StatusDeadline? at(DateTime? endsAt) =>
+      endsAt == null ? null : (endsAt: endsAt, durationMs: null);
 
-  if (isZoneTransferInProgress) {
-    return (
-      phase: LiveActivityPhase.pausedOutsideZone,
-      title: 'Changing region…',
-      detail:
-          [zoneTransferFrom, zoneTransferTo].whereType<String>().join(' → '),
-      endsAt: null,
-    );
-  }
+  final status = resolveSessionStatus(
+    isInZoneGracePeriod: isInZoneGracePeriod,
+    zoneGraceEndsAt: zoneGraceEndsAt,
+    isZoneTransferInProgress: isZoneTransferInProgress,
+    isAutoReconnecting: isAutoReconnecting,
+    connectionStep: connectionStep,
+    isConnected: isConnected,
+    isPendingDisable: isPendingDisable,
+    isGpsLocked: gpsStatus == GpsStatus.locked,
+    autoMode: autoMode,
+    txAllowed: txAllowed,
+    isManualSession: isManualSession,
+    isPingSending: isPingSending,
+    isRxWindowRunning: isRxWindowRunning,
+    rxWindow: at(rxWindowEndsAt),
+    isDiscoveryWindowRunning: isDiscoveryWindowRunning,
+    discoveryWindow: at(discoveryWindowEndsAt),
+    isManualCooldownRunning: isManualCooldownRunning,
+    manualCooldown: at(manualCooldownEndsAt),
+    isAutoPingRunning: isAutoPingRunning,
+    autoPingSkipReason: autoPingSkipReason,
+    autoPing: at(autoPingEndsAt),
+    operation: operation,
+    isSessionStarting: isSessionStarting,
+    isSessionActive: isSessionActive,
+  );
 
-  if (isAutoReconnecting || connectionStep == ConnectionStep.reconnecting) {
-    return (
-      phase: LiveActivityPhase.disconnected,
-      title: 'Reconnecting…',
-      detail: 'Restoring MeshCore connection',
-      endsAt: null,
-    );
-  }
-
-  if (!isConnected) {
-    return (
-      phase: LiveActivityPhase.disconnected,
-      title: connectionStep == ConnectionStep.disconnecting
-          ? 'Disconnecting…'
-          : 'Device disconnected',
-      detail: 'Open MeshMapper to reconnect',
-      endsAt: null,
-    );
-  }
-
-  if (isPendingDisable) {
-    return (
-      phase: LiveActivityPhase.stopping,
-      title: 'Stopping…',
-      detail: 'Finishing the current listening window',
-      endsAt: rxWindowEndsAt ?? discoveryWindowEndsAt,
-    );
-  }
-
-  if (gpsStatus != GpsStatus.locked) {
-    return (
-      phase: LiveActivityPhase.waitingForGps,
-      title: 'Waiting for GPS',
-      detail: gpsPhaseLabel(gpsStatus),
-      endsAt: null,
-    );
-  }
-
-  if ((autoMode == AutoMode.active ||
-          autoMode == AutoMode.hybrid ||
-          autoMode == AutoMode.targeted) &&
-      !txAllowed) {
-    return (
-      phase: LiveActivityPhase.txBlocked,
-      title: 'TX unavailable',
-      detail: 'This zone is currently passive-only',
-      endsAt: null,
-    );
-  }
-
-  if (isManualSession && isPingSending) {
-    return (
-      phase: LiveActivityPhase.sending,
-      title: 'Sending ping…',
-      detail: null,
-      endsAt: null,
-    );
-  }
-
-  if (isDiscoveryWindowRunning) {
-    final isTrace = autoMode == AutoMode.targeted;
-    return (
-      phase: isTrace
-          ? LiveActivityPhase.listeningTrace
-          : LiveActivityPhase.listeningDiscovery,
-      title: isTrace ? 'Listening for trace…' : 'Listening…',
-      detail: isTrace ? targetRepeaterName() : 'Discovery responses',
-      endsAt: discoveryWindowEndsAt,
-    );
-  }
-
-  if (isRxWindowRunning) {
-    return (
-      phase: LiveActivityPhase.listening,
-      title: 'Listening…',
-      detail: 'Waiting for repeater echoes',
-      endsAt: rxWindowEndsAt,
-    );
-  }
-
-  if (isManualSession && isManualCooldownRunning) {
-    return (
-      phase: LiveActivityPhase.cooldown,
-      title: 'Cooldown',
-      detail: 'Manual ping available when the timer ends',
-      endsAt: manualCooldownEndsAt,
-    );
-  }
-
-  if (isAutoPingRunning) {
-    final deferred =
-        autoPingSkipReason == PingService.skipReasonRecentlyCovered;
-    if (autoPingSkipReason != null) {
-      return (
-        phase:
-            deferred ? LiveActivityPhase.deferred : LiveActivityPhase.skipped,
-        title: deferred ? 'Deferred' : 'Ping skipped',
-        detail: deferred
-            ? 'Recently covered, waiting for a fresh square'
-            : 'Move at least $minDistanceMetres m',
-        endsAt: autoPingEndsAt,
-      );
-    }
-
-    if (autoMode == AutoMode.passive) {
-      return (
-        phase: LiveActivityPhase.waitingDiscovery,
-        title: 'Next discovery',
-        detail: null,
-        endsAt: autoPingEndsAt,
-      );
-    }
-
-    if (autoMode == AutoMode.targeted) {
-      return (
-        phase: LiveActivityPhase.waitingTrace,
-        title: 'Next trace',
-        detail: targetRepeaterName(),
-        endsAt: autoPingEndsAt,
-      );
-    }
-
-    return (
-      phase: LiveActivityPhase.waiting,
-      title: 'Next ping',
-      detail: null,
-      endsAt: autoPingEndsAt,
-    );
-  }
-
-  switch (operation) {
-    case SessionOperation.sending:
-      return (
-        phase: LiveActivityPhase.sending,
-        title: 'Sending ping…',
-        detail: null,
-        endsAt: null,
-      );
-    case SessionOperation.discovering:
-      return (
-        phase: LiveActivityPhase.discovering,
-        title: 'Discovering…',
-        detail: 'Requesting nearby repeaters',
-        endsAt: null,
-      );
-    case SessionOperation.tracing:
-      return (
-        phase: LiveActivityPhase.tracing,
-        title: 'Tracing repeater…',
-        detail: targetRepeaterName(),
-        endsAt: null,
-      );
-    case null:
-      break;
-  }
-
-  if (isSessionStarting || !isSessionActive) {
-    return (
-      phase: LiveActivityPhase.starting,
-      title: 'Preparing session…',
-      detail: null,
-      endsAt: null,
-    );
-  }
+  final (String title, String? detail) = switch (status.activity) {
+    // Two titles for one state. The model says the session is paused outside a
+    // zone; which sentence says so is a wording choice, and the vocabulary work
+    // may well collapse them.
+    SessionActivity.pausedOutsideZone => isInZoneGracePeriod
+        ? ('Outside service area', 'Searching for a nearby wardriving zone')
+        : (
+            'Changing region…',
+            [zoneTransferFrom, zoneTransferTo].whereType<String>().join(' → ')
+          ),
+    SessionActivity.disconnected =>
+      isAutoReconnecting || connectionStep == ConnectionStep.reconnecting
+          ? ('Reconnecting…', 'Restoring MeshCore connection')
+          : (
+              connectionStep == ConnectionStep.disconnecting
+                  ? 'Disconnecting…'
+                  : 'Device disconnected',
+              'Open MeshMapper to reconnect'
+            ),
+    SessionActivity.stopping => (
+        'Stopping…',
+        'Finishing the current listening window'
+      ),
+    SessionActivity.waitingForGps => (
+        'Waiting for GPS',
+        gpsPhaseLabel(gpsStatus)
+      ),
+    SessionActivity.txBlocked => (
+        'TX unavailable',
+        'This zone is currently passive-only'
+      ),
+    SessionActivity.sending => ('Sending ping…', null),
+    SessionActivity.listeningDiscovery => ('Listening…', 'Discovery responses'),
+    SessionActivity.listeningTrace => (
+        'Listening for trace…',
+        targetRepeaterName()
+      ),
+    SessionActivity.listening => ('Listening…', 'Waiting for repeater echoes'),
+    SessionActivity.cooldown => (
+        'Cooldown',
+        'Manual ping available when the timer ends'
+      ),
+    SessionActivity.deferred => (
+        'Deferred',
+        'Recently covered, waiting for a fresh square'
+      ),
+    SessionActivity.skipped => (
+        'Ping skipped',
+        'Move at least $minDistanceMetres m'
+      ),
+    SessionActivity.waitingDiscovery => ('Next discovery', null),
+    SessionActivity.waitingTrace => ('Next trace', targetRepeaterName()),
+    SessionActivity.waiting => ('Next ping', null),
+    SessionActivity.discovering => (
+        'Discovering…',
+        'Requesting nearby repeaters'
+      ),
+    SessionActivity.tracing => ('Tracing repeater…', targetRepeaterName()),
+    SessionActivity.starting => ('Preparing session…', null),
+    SessionActivity.active => (
+        '$modeTitle active',
+        'Waiting for the next cycle'
+      ),
+    // Watch only, and produced by that surface's own projection rather than
+    // here, so it can never reach this switch from a live session.
+    SessionActivity.idle => ('Ready', 'No session running'),
+  };
 
   return (
-    phase: LiveActivityPhase.active,
-    title: '$modeTitle active',
-    detail: 'Waiting for the next cycle',
-    endsAt: null,
+    phase: status.activity,
+    title: title,
+    detail: detail,
+    endsAt: status.deadline?.endsAt,
   );
 }
