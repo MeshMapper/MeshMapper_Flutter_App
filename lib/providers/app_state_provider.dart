@@ -60,6 +60,7 @@ import '../services/external_commands/external_session_commands.dart';
 import '../services/external_surfaces/geo/external_surface_geo_builder.dart';
 import '../services/live_activity/live_activity_heard.dart';
 import '../services/live_activity/live_activity_models.dart';
+import '../services/status/session_status.dart';
 import '../services/live_activity/live_activity_service.dart';
 import '../services/watch/watch_bridge_service.dart';
 import '../services/watch/watch_models.dart';
@@ -100,8 +101,6 @@ enum AutoMode {
 
 /// Ping type for the top-heard overlay dots
 enum OverlayPingType { tx, disc, trace, rx }
-
-enum _LiveActivityOperation { sending, discovering, tracing }
 
 /// Result of uploading an offline session
 enum OfflineUploadResult {
@@ -214,7 +213,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// session" and mean it rather than "whatever is in the recent history".
   DateTime? _liveActivitySessionStartedAt;
   DateTime? _liveActivityCycleStartedAt;
-  _LiveActivityOperation? _liveActivityOperation;
+  SessionOperation? _liveActivityOperation;
   MeshCoreConnection? _meshCoreConnection;
   PingService? _pingService;
   UnifiedRxHandler? _unifiedRxHandler;
@@ -1457,8 +1456,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _scheduleLiveActivitySync();
   }
 
+  /// Open the session every glance surface describes.
+  ///
+  /// Named for the Live Activity because that was its first consumer, but it is
+  /// not one: the watch, Siri and, once the buttons read the shared model, the
+  /// phone itself all describe this same session. So there is no platform gate.
+  /// Whether an ActivityKit activity actually exists is decided further down,
+  /// by [_scheduleLiveActivitySync], which is the only leg that needs iOS.
   void _startLiveActivitySession({bool manual = false, DateTime? startedAt}) {
-    if (!_liveActivityService.isSupportedPlatform) return;
     if (_liveActivitySessionActive) {
       // Starting an automatic mode while a manual-ping activity is still in
       // cooldown upgrades the existing activity instead of creating a second.
@@ -1507,11 +1512,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveActivitySessionStartedAt = null;
   }
 
-  void _markLiveActivityOperation(_LiveActivityOperation operation) {
-    if (!_liveActivitySessionActive ||
-        !_liveActivityService.isSupportedPlatform) {
-      return;
-    }
+  void _markLiveActivityOperation(SessionOperation operation) {
+    // No platform gate. The latch is a fact about the session, and the surfaces
+    // that cannot render it already refuse the sync below on their own. Gating
+    // it here left the fact unrecorded on Android, so the branches reading it
+    // were dead there.
+    if (!_liveActivitySessionActive) return;
     final now = DateTime.now();
     _liveActivityOperation = operation;
     _liveActivityCycleStartedAt = now;
@@ -2858,21 +2864,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     switch (_liveActivityOperation) {
-      case _LiveActivityOperation.sending:
+      case SessionOperation.sending:
         return (
           phase: LiveActivityPhase.sending,
           title: 'Sending ping…',
           detail: null,
           endsAt: null,
         );
-      case _LiveActivityOperation.discovering:
+      case SessionOperation.discovering:
         return (
           phase: LiveActivityPhase.discovering,
           title: 'Discovering…',
           detail: 'Requesting nearby repeaters',
           endsAt: null,
         );
-      case _LiveActivityOperation.tracing:
+      case SessionOperation.tracing:
         return (
           phase: LiveActivityPhase.tracing,
           title: 'Tracing repeater…',
@@ -3073,10 +3079,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _rxWindowTimer,
       _discoveryWindowTimer,
     ]);
-    if (_liveActivityService.isSupportedPlatform) {
-      _timerListenable.addListener(_handleLiveActivityTimerChange);
-      _timerListenerAttached = true;
-    }
+    // Attached on every platform. Its first job is closing a finished manual
+    // session, which is session bookkeeping rather than an iOS concern; without
+    // it Android would open a manual session on the first tap and never close
+    // it. Its second job, the sync, costs three early returns off iOS.
+    _timerListenable.addListener(_handleLiveActivityTimerChange);
+    _timerListenerAttached = true;
     if (_watchBridge.isSupportedPlatform) {
       _watchBridge.diagnostics.addListener(_handleWatchDiagnosticsChanged);
       _watchBridge.attachCommandHandler(
@@ -4663,7 +4671,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         () => handleSessionError('session_limit', null);
 
     _pingService!.onTxPing = (ping) {
-      _markLiveActivityOperation(_LiveActivityOperation.sending);
+      _markLiveActivityOperation(SessionOperation.sending);
       _txPings.add(ping);
       if (_txPings.length > _maxMapPins) _txPings.removeAt(0);
 
@@ -4863,7 +4871,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onDiscPing = (entry) {
-      _markLiveActivityOperation(_LiveActivityOperation.discovering);
+      _markLiveActivityOperation(SessionOperation.discovering);
       _addDiscLogEntry(entry);
     };
 
@@ -4981,7 +4989,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.onTracePing = (entry) {
-      _markLiveActivityOperation(_LiveActivityOperation.tracing);
+      _markLiveActivityOperation(SessionOperation.tracing);
       _addTraceLogEntry(entry);
     };
 
