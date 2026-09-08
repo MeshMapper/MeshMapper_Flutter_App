@@ -33,10 +33,20 @@ typedef ResolvedPhase = ({
 String gpsPhaseLabel(GpsStatus status) => switch (status) {
       GpsStatus.permissionDenied => 'Location permission required',
       GpsStatus.disabled => 'Location services disabled',
-      GpsStatus.searching => 'Searching for GPS signal',
+      GpsStatus.searching => 'Finding your location',
       GpsStatus.locked => 'GPS locked',
-      GpsStatus.outsideGeofence => 'Outside service area',
+      GpsStatus.outsideGeofence => 'Outside a zone',
     };
+
+/// The Trace target as a spoken phrase, or null when the repeater is unnamed.
+/// These keep the name logic out of the switch arms so [targetRepeaterName] is
+/// still resolved exactly once, only inside a targeted branch.
+String? _traceReplyDetail(String? name) =>
+    name == null ? null : 'Waiting for $name to reply';
+
+String? _nextTraceDetail(String? name) => name == null ? null : 'To $name';
+
+String _tracingTitle(String? name) => name == null ? 'Tracing' : 'Tracing $name';
 
 ResolvedPhase resolveSessionPhase({
   required bool isInZoneGracePeriod,
@@ -51,6 +61,7 @@ ResolvedPhase resolveSessionPhase({
   required GpsStatus gpsStatus,
   required AutoMode autoMode,
   required bool txAllowed,
+  required bool isOfflineMode,
   required bool isManualSession,
   required bool isPingSending,
   required bool isPingInProgress,
@@ -91,7 +102,7 @@ ResolvedPhase resolveSessionPhase({
     isPingSending: isPingSending,
     // The glance surfaces now see these two, so they pass through rather than
     // being shimmed off: an auto ping in flight before it transmits reads
-    // "Sending ping…", and the shared post-stop cooldown reads "Cooldown" (which
+    // "Sending ping", and the shared post-stop cooldown reads "Cooldown" (which
     // only the model and the phone see, since the watch and Siri project it to
     // idle and the Live Activity session has already ended by then).
     isPingInProgress: isPingInProgress,
@@ -112,68 +123,72 @@ ResolvedPhase resolveSessionPhase({
   );
 
   final (String title, String? detail) = switch (status.activity) {
-    // Two titles for one state. The model says the session is paused outside a
-    // zone; which sentence says so is a wording choice, and the vocabulary work
-    // may well collapse them.
+    // Two titles for one state: the session is paused outside a zone, and which
+    // sentence says so depends on whether this is the grace period or an active
+    // transfer to a new one.
     SessionActivity.pausedOutsideZone => isInZoneGracePeriod
-        ? ('Outside service area', 'Searching for a nearby wardriving zone')
+        ? ('Outside a zone', 'Searching for a nearby wardriving zone')
         : (
-            'Changing region…',
-            [zoneTransferFrom, zoneTransferTo].whereType<String>().join(' → ')
+            'Switching zones',
+            zoneTransferTo == null ? '' : 'Moving to $zoneTransferTo'
           ),
     SessionActivity.disconnected =>
       isAutoReconnecting || connectionStep == ConnectionStep.reconnecting
-          ? ('Reconnecting…', 'Restoring MeshCore connection')
+          ? ('Reconnecting', 'Restoring the connection')
           : (
               connectionStep == ConnectionStep.disconnecting
-                  ? 'Disconnecting…'
-                  : 'Device disconnected',
+                  ? 'Disconnecting'
+                  : 'Disconnected',
               'Open MeshMapper to reconnect'
             ),
     SessionActivity.stopping => (
-        'Stopping…',
+        'Stopping',
         'Finishing the current listening window'
       ),
     SessionActivity.waitingForGps => (
         'Waiting for GPS',
         gpsPhaseLabel(gpsStatus)
       ),
+    // Discovery is a zero-hop TX and stays allowed here, so the state is Passive,
+    // not "listen only". The cause of the block picks the detail.
     SessionActivity.txBlocked => (
-        'TX unavailable',
-        'This zone is currently passive-only'
+        'Passive only',
+        isOfflineMode
+            ? 'Only Passive mode works in Offline Mode'
+            : 'Only Passive mode works in this zone'
       ),
-    SessionActivity.sending => ('Sending ping…', null),
-    SessionActivity.listeningDiscovery => ('Listening…', 'Discovery responses'),
+    SessionActivity.sending => ('Sending ping', null),
+    SessionActivity.listeningDiscovery => ('Listening', 'Waiting for replies'),
     SessionActivity.listeningTrace => (
-        'Listening for trace…',
-        targetRepeaterName()
+        'Listening',
+        _traceReplyDetail(targetRepeaterName())
       ),
-    SessionActivity.listening => ('Listening…', 'Waiting for repeater echoes'),
+    SessionActivity.listening => ('Listening', 'Waiting for repeater echoes'),
     SessionActivity.cooldown => (
         'Cooldown',
-        'Manual ping available when the timer ends'
+        'You can ping again when this ends'
       ),
     SessionActivity.deferred => (
         'Deferred',
-        'Recently covered, waiting for a fresh square'
+        'Waiting for a square with no recent mapping'
       ),
     SessionActivity.skipped => (
-        'Ping skipped',
-        'Move at least $minDistanceMetres m'
+        'Skipped',
+        'Move at least $minDistanceMetres m to ping'
       ),
     SessionActivity.waitingDiscovery => ('Next discovery', null),
-    SessionActivity.waitingTrace => ('Next trace', targetRepeaterName()),
+    SessionActivity.waitingTrace => (
+        'Next trace',
+        _nextTraceDetail(targetRepeaterName())
+      ),
     SessionActivity.waiting => ('Next ping', null),
     SessionActivity.discovering => (
-        'Discovering…',
-        'Requesting nearby repeaters'
+        'Discovering',
+        'Looking for nearby repeaters'
       ),
-    SessionActivity.tracing => ('Tracing repeater…', targetRepeaterName()),
-    SessionActivity.starting => ('Preparing session…', null),
-    SessionActivity.active => (
-        '$modeTitle active',
-        'Waiting for the next cycle'
-      ),
+    SessionActivity.tracing => (_tracingTitle(targetRepeaterName()), null),
+    SessionActivity.starting => ('Starting', 'Getting the session ready'),
+    SessionActivity.active => ('$modeTitle mode', 'Wardriving'),
     // Watch only, and produced by that surface's own projection rather than
     // here, so it can never reach this switch from a live session.
     SessionActivity.idle => ('Ready', 'No session running'),
