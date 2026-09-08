@@ -11,8 +11,8 @@ enum MeshMapperSessionMode: String, AppEnum {
   )
   static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [
     .passive: DisplayRepresentation(
-      title: "Passive Discovery",
-      synonyms: ["Passive", "Listen Only", "Receive Only"]
+      title: "Passive",
+      synonyms: ["Passive Discovery", "Listen Only", "Receive Only"]
     ),
     .active: DisplayRepresentation(
       title: "Active",
@@ -25,6 +25,6 @@ enum MeshMapperSessionMode: String, AppEnum {
   ]
 
   var displayName: String {
-    self == .passive ? "Passive Discovery" : rawValue.capitalized
+    self == .passive ? "Passive" : rawValue.capitalized
   }
 }
