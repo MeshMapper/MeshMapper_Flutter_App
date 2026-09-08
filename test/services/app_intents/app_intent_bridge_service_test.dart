@@ -75,7 +75,7 @@ void main() {
           success: true,
           disposition: ExternalCommandDisposition.admitted,
           message: ExternalCommandReason.other(
-            'MeshMapper started in Passive Discovery mode.',
+            'MeshMapper started in Passive mode.',
           ),
           sessionId: 'session-1',
           mode: ExternalSessionMode.passive,
