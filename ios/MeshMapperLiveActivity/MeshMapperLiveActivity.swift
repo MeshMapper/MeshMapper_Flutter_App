@@ -991,7 +991,9 @@ extension MeshMapperActivityAttributes.ContentState {
     case "waiting_for_gps": return "location.slash.fill"
     case "paused_outside_zone": return "map.fill"
     case "disconnected": return "wifi.slash"
-    case "tx_blocked": return "nosign"
+    // Passive only: channel TX is blocked but discovery still works, so this
+    // reads as listen-only (the Passive mode's own ear), not a prohibition sign.
+    case "tx_blocked": return "ear"
     case "starting": return "hourglass"
     default: return "antenna.radiowaves.left.and.right"
     }
@@ -1011,8 +1013,10 @@ extension MeshMapperActivityAttributes.ContentState {
     case "sending", "discovering", "tracing": return .blue
     case "listening", "listening_discovery", "listening_trace": return .teal
     case "waiting", "waiting_discovery", "waiting_trace", "cooldown": return .cyan
-    case "skipped", "deferred", "waiting_for_gps", "paused_outside_zone": return .orange
-    case "disconnected", "tx_blocked": return .red
+    case "skipped", "deferred", "waiting_for_gps", "paused_outside_zone",
+      "tx_blocked":
+      return .orange
+    case "disconnected": return .red
     case "stopped": return .gray
     default: return .white
     }
