@@ -60,6 +60,7 @@ import '../services/external_commands/external_session_commands.dart';
 import '../services/external_surfaces/geo/external_surface_geo_builder.dart';
 import '../services/live_activity/live_activity_heard.dart';
 import '../services/live_activity/live_activity_models.dart';
+import '../services/status/android_notification.dart';
 import '../services/status/session_phase_resolver.dart';
 import '../services/status/session_status.dart';
 import '../services/status/session_status_resolver.dart';
@@ -3007,18 +3008,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       // Update background service notification with queue size
       if (_autoPingEnabled) {
-        final modeName = _autoMode == AutoMode.passive
-            ? 'Passive Mode'
-            : _autoMode == AutoMode.hybrid
-                ? 'Hybrid Mode'
-                : _autoMode == AutoMode.targeted
-                    ? 'Trace Mode'
-                    : 'Active Mode';
-        BackgroundServiceManager.updateNotification(
-          mode: modeName,
+        final n = androidNotificationContent(
+          mode: _autoMode,
           txCount: _pingStats.txCount,
           rxCount: _pingStats.rxCount,
           queueSize: size,
+        );
+        BackgroundServiceManager.updateNotification(
+          title: n.title,
+          body: n.body,
         );
       }
     };
@@ -4599,18 +4597,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
 
       if (_autoPingEnabled) {
-        final modeName = _autoMode == AutoMode.passive
-            ? 'Passive Mode'
-            : _autoMode == AutoMode.hybrid
-                ? 'Hybrid Mode'
-                : _autoMode == AutoMode.targeted
-                    ? 'Trace Mode'
-                    : 'Active Mode';
-        BackgroundServiceManager.updateNotification(
-          mode: modeName,
+        final n = androidNotificationContent(
+          mode: _autoMode,
           txCount: _pingStats.txCount,
           rxCount: _pingStats.rxCount,
           queueSize: _queueSize,
+        );
+        BackgroundServiceManager.updateNotification(
+          title: n.title,
+          body: n.body,
         );
       }
     };
@@ -6648,15 +6643,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _idleAutoStopReference = DateTime.now();
         _startLiveActivitySession(startedAt: sessionStartedAt);
 
-        // Start noise floor session for graph tracking
-        final sessionLabel = isPassive
-            ? 'passive'
-            : isHybrid
-                ? 'hybrid'
-                : isTargeted
-                    ? 'targeted'
-                    : 'active';
-        _startNoiseFloorSession(sessionLabel);
+        // Start noise floor session for graph tracking. The label is the
+        // enum's own name (active/passive/hybrid/targeted).
+        _startNoiseFloorSession(mode.name);
 
         // Enable heartbeat for all auto-ping modes (not offline mode)
         // Heartbeat sends keepalive ~1 min before session expiry (4 min timer)
@@ -6675,18 +6664,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         // Start background service for continuous operation
-        final modeName = isPassive
-            ? 'Passive Mode'
-            : isHybrid
-                ? 'Hybrid Mode'
-                : isTargeted
-                    ? 'Trace Mode'
-                    : 'Active Mode';
-        await BackgroundServiceManager.startService(
-          mode: modeName,
+        final n = androidNotificationContent(
+          mode: mode,
           txCount: _pingStats.txCount,
           rxCount: _pingStats.rxCount,
           queueSize: _queueSize,
+        );
+        await BackgroundServiceManager.startService(
+          title: n.title,
+          body: n.body,
         );
       } finally {
         // Clear starting state on every path (session/cooldown/blocked early
