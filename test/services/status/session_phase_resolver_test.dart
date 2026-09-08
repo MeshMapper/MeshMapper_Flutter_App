@@ -31,6 +31,7 @@ class _Args {
   bool txAllowed = true;
   bool isManualSession = false;
   bool isPingSending = false;
+  bool isPingInProgress = false;
   String? targetRepeaterName = 'Beacon Hill';
   bool isRxWindowRunning = false;
   DateTime? rxWindowEndsAt;
@@ -41,6 +42,8 @@ class _Args {
   bool isAutoPingRunning = false;
   String? autoPingSkipReason;
   DateTime? autoPingEndsAt;
+  bool isSharedCooldownRunning = false;
+  DateTime? sharedCooldownEndsAt;
   int minDistanceMetres = 25;
   SessionOperation? operation;
   bool isSessionStarting = false;
@@ -71,6 +74,7 @@ ResolvedPhase _resolve(_Args a) => resolveSessionPhase(
       txAllowed: a.txAllowed,
       isManualSession: a.isManualSession,
       isPingSending: a.isPingSending,
+      isPingInProgress: a.isPingInProgress,
       targetRepeaterName: () {
         a.nameLookups++;
         return a.targetRepeaterName;
@@ -84,6 +88,8 @@ ResolvedPhase _resolve(_Args a) => resolveSessionPhase(
       isAutoPingRunning: a.isAutoPingRunning,
       autoPingSkipReason: a.autoPingSkipReason,
       autoPingEndsAt: a.autoPingEndsAt,
+      isSharedCooldownRunning: a.isSharedCooldownRunning,
+      sharedCooldownEndsAt: a.sharedCooldownEndsAt,
       minDistanceMetres: a.minDistanceMetres,
       operation: a.operation,
       isSessionStarting: a.isSessionStarting,
@@ -369,10 +375,30 @@ void main() {
       expectRow(_resolve(a),
           phase: LiveActivityPhase.sending, title: 'Sending ping…');
 
-      // The auto half of the same instant: this is the sending gap, pinned as
-      // it stands. An auto ping in flight does not reach this row.
+      // A manual send flag without a manual session belongs to the manual lane
+      // only, so it does not reach the glance phase. The auto ping in flight is
+      // a different flag with its own row below.
       expect(_resolve(_Args()..isPingSending = true).phase,
           isNot(LiveActivityPhase.sending));
+    });
+
+    test('the auto sending gap: a ping in flight before it transmits', () {
+      // A TX mode with a ping asked for but no window open yet, the two or
+      // three seconds of GPS fetch. The phone said Sending all along; the glance
+      // surfaces now do too instead of resting on the mode-active row.
+      final a = _Args()
+        ..autoMode = AutoMode.active
+        ..isPingInProgress = true;
+      expectRow(_resolve(a),
+          phase: LiveActivityPhase.sending, title: 'Sending ping…');
+
+      // The same flag during Passive is a manual ping in flight, not the auto
+      // TX gap, so it does not light this row without a TX mode running.
+      final passive = _Args()
+        ..autoMode = AutoMode.passive
+        ..isPingInProgress = true;
+      expect(_resolve(passive).phase, isNot(LiveActivityPhase.sending),
+          reason: 'a ping in flight during Passive is not the auto TX gap');
     });
 
     test('listening for discovery responses', () {
@@ -448,6 +474,30 @@ void main() {
         ..manualCooldownEndsAt = _deadline;
       expect(_resolve(auto).phase, isNot(LiveActivityPhase.cooldown),
           reason: 'an auto session never reaches the manual cooldown row');
+    });
+
+    test('the shared post-stop cooldown reaches the phase', () {
+      // After stopping a TX mode the auto interval is gone, so the shared five
+      // second cooldown wins the glance. The model says Cooldown here; the wrist
+      // projects it back to idle, which is the watch surface's own test.
+      final a = _Args()
+        ..isSessionActive = false
+        ..isSharedCooldownRunning = true
+        ..sharedCooldownEndsAt = _deadline;
+      expectRow(_resolve(a),
+          phase: LiveActivityPhase.cooldown,
+          title: 'Cooldown',
+          detail: 'Manual ping available when the timer ends',
+          endsAt: _deadline);
+
+      // Mid-session the auto interval outranks it, so it never shows there.
+      final active = _Args()
+        ..isSharedCooldownRunning = true
+        ..sharedCooldownEndsAt = _deadline
+        ..isAutoPingRunning = true
+        ..autoPingEndsAt = _other;
+      expect(_resolve(active).phase, LiveActivityPhase.waiting,
+          reason: 'the auto interval beats the shared cooldown mid-session');
     });
 
     test('deferred, in every mode that can defer', () {

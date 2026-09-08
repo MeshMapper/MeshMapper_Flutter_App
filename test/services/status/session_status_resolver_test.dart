@@ -288,6 +288,49 @@ void main() {
     });
   });
 
+  group('the two states the glance used to miss', () {
+    test('an auto ping in flight before it transmits owns the glance', () {
+      // The sending gap: a TX mode with the ping asked for but no window open
+      // yet. The Active button always said Sending; now the single answer does
+      // too, on the txAuto lane, instead of resting as active.
+      final s = status(autoMode: AutoMode.active, isPingInProgress: true);
+      expect(s.activity, SessionActivity.sending);
+      expect(s.owner, StatusLane.txAuto);
+      expect(s.txAuto.activity, SessionActivity.sending);
+
+      // A ping in flight during Passive is a manual ping, not the auto gap, so
+      // it stays off the glance.
+      final manual = status(autoMode: AutoMode.passive, isPingInProgress: true);
+      expect(manual.activity, isNot(SessionActivity.sending));
+    });
+
+    test('the shared post-stop cooldown owns the glance', () {
+      // After stopping a TX mode nothing outranks the shared five second
+      // cooldown, so it reaches the single answer on the txAuto lane. The native
+      // projection reads that back as idle (tested on the watch surface); the
+      // model is honest either way.
+      final s = status(
+        isSessionActive: false,
+        isSharedCooldownRunning: true,
+        sharedCooldown: _d(_t1, 5),
+      );
+      expect(s.activity, SessionActivity.cooldown);
+      expect(s.owner, StatusLane.txAuto);
+      expect(s.txAuto.activity, SessionActivity.cooldown);
+      expect(s.deadline, _d(_t1, 5));
+
+      // Mid-session the auto interval outranks it, so the cooldown never wins.
+      final active = status(
+        isSharedCooldownRunning: true,
+        sharedCooldown: _d(_t1, 5),
+        isAutoPingRunning: true,
+        autoPing: _d(_t2),
+      );
+      expect(active.activity, SessionActivity.waiting);
+      expect(active.owner, StatusLane.txAuto);
+    });
+  });
+
   group('nothing happening', () {
     test('an idle running session rests, unblocked', () {
       final s = status();
