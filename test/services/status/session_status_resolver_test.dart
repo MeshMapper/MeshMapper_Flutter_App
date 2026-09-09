@@ -330,6 +330,32 @@ void main() {
       expect(skipping.txAuto.activity, SessionActivity.skipped);
     });
 
+    test('the pre-transmit gap holds Deferred, not the resting mode word', () {
+      // The interval timer fires and is not rescheduled until the attempt
+      // validates, so isAutoPingRunning is momentarily false while the send
+      // reads a fresh fix. With a skip reason still standing the lane must keep
+      // reading Deferred, not fall through to the resting `active` that the
+      // button renders as the bare mode word (the "Deferred -> Hybrid Mode ->
+      // Deferred" flash).
+      final s = status(
+        autoMode: AutoMode.hybrid,
+        isPingInProgress: true,
+        isAutoPingRunning: false,
+        autoPingSkipReason: PingService.skipReasonRecentlyCovered,
+      );
+      expect(s.txAuto.activity, SessionActivity.deferred);
+      expect(s.txAuto.activity, isNot(SessionActivity.active));
+
+      // Same for a distance skip in a clear square.
+      final skipped = status(
+        autoMode: AutoMode.active,
+        isPingInProgress: true,
+        isAutoPingRunning: false,
+        autoPingSkipReason: 'too close',
+      );
+      expect(skipped.txAuto.activity, SessionActivity.skipped);
+    });
+
     test('the shared post-stop cooldown owns the glance', () {
       // After stopping a TX mode nothing outranks the shared five second
       // cooldown, so it reaches the single answer on the txAuto lane. The native

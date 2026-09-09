@@ -339,6 +339,21 @@ void main() {
           'Stopping...');
     });
 
+    test('a deferring attempt holds Deferred through its pre-transmit gap', () {
+      // The interval timer has fired and not rescheduled, so autoPingWaiting is
+      // momentarily false while the deferring attempt reads a fresh fix. The
+      // button must keep reading Deferred, not flash the bare mode word
+      // ("Hybrid Mode") that the resting state renders.
+      expect(
+          portraitActiveModeLabel(facts(
+              isTxModeRunning: true,
+              hybridEnabled: true,
+              isPingInProgress: true,
+              autoPingWaiting: false,
+              autoPingSkipReason: PingService.skipReasonRecentlyCovered)),
+          startsWith('Deferred'));
+    });
+
     test('sending, which needs no window open', () {
       expect(
           portraitActiveModeLabel(
