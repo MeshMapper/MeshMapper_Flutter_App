@@ -113,6 +113,16 @@ class PingService {
   // Reference: state.pingInProgress in wardrive.js
   bool _pingInProgress = false;
 
+  /// Which auto session a send belongs to. Bumped by [forceDisableAutoPing],
+  /// the one stop that clears [_pingInProgress] out from under a send that is
+  /// still suspended on its fresh fix. Each lane captures it before that fetch
+  /// and bows out afterwards if it moved, WITHOUT touching the flag: by then
+  /// the flag is either already clear or held by the next session's first
+  /// ping. The mode flags alone cannot tell those apart, because a zone
+  /// transfer can re-auth and restart inside the old fetch, and a send that
+  /// only re-read the mode then went out alongside the new session's own.
+  int _sendEpoch = 0;
+
   // Auto-ping mode
   bool _autoPingEnabled = false;
   bool _passiveModeEnabled = false;
@@ -716,6 +726,7 @@ class PingService {
       return false;
     }
     _pingInProgress = true;
+    final epoch = _sendEpoch;
 
     try {
       // For auto pings, request a fresh GPS position before validation.
@@ -723,6 +734,15 @@ class PingService {
       // where the device is NOW, not where it was at the last stream event.
       if (!manual) {
         await _gpsService.getFreshPosition();
+
+        // A force disable landed during the fetch. The flag is not ours any
+        // more (see _sendEpoch), so it is left alone, and the mode flags are
+        // not consulted: they may already say on again for a session that is
+        // not this one.
+        if (epoch != _sendEpoch) {
+          debugLog('[PING] Session ended during the fresh fix, not sending');
+          return false;
+        }
 
         // Same re-check the discovery and trace lanes make: canPing() below
         // re-reads the connection step and the airborne latch after this
@@ -1603,8 +1623,10 @@ class PingService {
   Future<void> forceDisableAutoPing() async {
     debugLog('[PING] Force disabling auto-ping');
     // Nothing is meaningfully in flight once this returns: the modes are gone
-    // and the trackers are disposed. A send suspended on its fresh fix re-reads
-    // the mode flags when it resumes and bows out without transmitting.
+    // and the trackers are disposed. A send suspended on its fresh fix sees the
+    // epoch move when it resumes and bows out without transmitting, leaving
+    // the flag to whoever holds it by then.
+    _sendEpoch++;
     _pingInProgress = false;
     _pendingDisable = false; // Clear any pending disable
     _pendingDisableTimeout?.cancel();
@@ -1776,10 +1798,19 @@ class PingService {
     // window is running, so the flag alone cannot tell an armed window from an
     // attempt that bowed out. The finally needs that distinction.
     var armedWindow = false;
+    final epoch = _sendEpoch;
 
     try {
       // Request fresh GPS position before discovery (same rationale as TX auto-ping)
       final position = await _gpsService.getFreshPosition();
+
+      // A force disable landed during the fetch: the flag is not ours any more
+      // (see _sendEpoch), and the mode flags may already say on again for a
+      // session that is not this one. Out, without touching either.
+      if (epoch != _sendEpoch) {
+        debugLog('[DISC] Session ended during the fresh fix, not sending');
+        return;
+      }
 
       // The latch above turns a graceful stop into a parked disable, which is
       // what lets this send finish. It does NOT cover forceDisableAutoPing,
@@ -2194,12 +2225,22 @@ class PingService {
     // is running, so the flag alone cannot tell an armed window from an attempt
     // that bowed out. The finally needs that distinction.
     var armedWindow = false;
+    final epoch = _sendEpoch;
 
     try {
       // Request a fresh GPS position before the trace (same rationale as TX
       // auto-ping and discovery). On iOS in the background the position stream
       // is quiet, so this is also the only fix that feeds the airborne latch.
       final position = await _gpsService.getFreshPosition();
+
+      // A force disable landed during the fetch: the flag is not ours any more
+      // (see _sendEpoch), and the mode flags may already say on again for a
+      // session that is not this one. Out, without touching either; the
+      // finally below makes the same exception.
+      if (epoch != _sendEpoch) {
+        debugLog('[TRACE] Session ended during the fresh fix, not sending');
+        return;
+      }
 
       // The latch above turns a graceful stop into a parked disable, which is
       // what lets this send finish. It does NOT cover forceDisableAutoPing,
@@ -2328,8 +2369,10 @@ class PingService {
       // set for the life of the service, and every trace, discovery, auto and
       // manual ping reads it. sendTxPing has an outer catch for this; this lane
       // has only the finally, so it does the reset. A no-op on all four paths
-      // that already clear it.
-      if (!armedWindow) _pingInProgress = false;
+      // that already clear it. Skipped when the epoch moved: the flag was
+      // cleared by that force disable and may since have been taken by the
+      // next session's first send, which this attempt must not unlatch.
+      if (!armedWindow && epoch == _sendEpoch) _pingInProgress = false;
       if (!armedWindow && _pendingDisable) {
         await _executePendingDisable('trace ended without window');
       }

@@ -786,6 +786,15 @@ TX side the check is auto-only: a manual ping is not part of an auto session, an
 fresh fix there anyway. `canPing()` re-reads the connection step and the airborne latch after
 that suspension but never the mode, which is why the mode needs its own check.
 
+The mode re-read is not enough on its own, because `forceDisableAutoPing` also clears
+`_pingInProgress` (it has to: a force disable during a 7 second echo window would otherwise
+leave the flag latched for the next session) and a zone transfer can re-auth and restart the
+session inside the old send's fetch. The resumed send then read the mode as on and went out
+alongside the new session's first ping. So each lane also captures `PingService._sendEpoch`
+before its fetch; `forceDisableAutoPing` bumps it, and a send that finds it moved bows out
+without touching the flag, which by then is either already clear or held by the new session's
+send. The trace lane's `finally` makes the same exception for its flag reset.
+
 Two observations carry an `onGlance` flag so a state can belong to a lane (which
 the buttons read) without moving the single glance answer, or reach both. The
 `SessionActivity` type is an alias of `LiveActivityPhase`, so a phase dropped

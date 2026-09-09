@@ -496,6 +496,96 @@ void main() {
     });
   });
 
+  test('a send that resumes into a restarted session bows out of it', () {
+    // forceDisableAutoPing clears the in-flight flag so the next session's first
+    // ping is not refused as "already in progress". The suspended send it
+    // cleared it under is still going to resume, and if a new session has
+    // started by then (a zone transfer that re-auths inside the old fetch) the
+    // mode re-read alone lets it proceed alongside the new session's own first
+    // ping: two sends on one radio, the very thing the flag exists to prevent.
+    // The send has to know the lane it started in is gone, whatever the mode
+    // flags say now, and it must not clear a flag that now belongs to the
+    // other send.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final ping = _buildService(gps, conn)
+        ..getSessionId = (() => 'OTT-20260829-0001')
+        ..getNextPingCounter = (() => 1);
+
+      final oldFetch = Completer<Position?>();
+      gps.freshPositionGate = oldFetch;
+      ping.enableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue);
+
+      // The teardown and the restart both land while the old send is parked.
+      ping.forceDisableAutoPing();
+      async.flushMicrotasks();
+      final newFetch = Completer<Position?>();
+      gps.freshPositionGate = newFetch;
+      ping.enableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue,
+          reason: 'the new session\'s first ping owns the flag now');
+
+      // The old send wakes up into a lane that looks alive again.
+      oldFetch.complete(gps.position);
+      async.flushMicrotasks();
+      expect(conn.txTransmits, 0,
+          reason: 'the send from the torn-down session must not go out');
+      expect(ping.pingInProgress, isTrue,
+          reason: 'bowing out must not clear the flag the new send holds');
+
+      // The new session's send goes out alone.
+      newFetch.complete(gps.position);
+      async.flushMicrotasks();
+      expect(conn.txTransmits, 1);
+      async.elapse(const Duration(seconds: 10));
+      expect(ping.pingInProgress, isFalse);
+      ping.dispose();
+    });
+  });
+
+  test('a trace that resumes into a restarted session bows out of it too', () {
+    // The trace lane's finally resets the shared flag on every attempt that
+    // arms no window, which is right for its own attempt and wrong for one
+    // whose session was torn down: by then the flag belongs to the restarted
+    // session's first trace.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final ping = _buildService(gps, conn);
+
+      final oldFetch = Completer<Position?>();
+      gps.freshPositionGate = oldFetch;
+      ping.enableAutoPing(targetedMode: true, targetRepeaterId: '4e');
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue);
+
+      ping.forceDisableAutoPing();
+      async.flushMicrotasks();
+      final newFetch = Completer<Position?>();
+      gps.freshPositionGate = newFetch;
+      ping.enableAutoPing(targetedMode: true, targetRepeaterId: '4e');
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue);
+
+      oldFetch.complete(gps.position);
+      async.flushMicrotasks();
+      expect(conn.traceTransmits, 0);
+      expect(ping.pingInProgress, isTrue,
+          reason: 'the old attempt\'s finally must not unlatch the new send');
+
+      newFetch.complete(gps.position);
+      async.flushMicrotasks();
+      expect(conn.traceTransmits, 1);
+      async.elapse(const Duration(seconds: 10));
+      expect(ping.pingInProgress, isFalse);
+      ping.dispose();
+    });
+  });
+
   test('a trace that bows out after a parked stop drains it, not the backstop',
       () {
     // The other half of moving the latch: now that a Stop during the fresh fix
