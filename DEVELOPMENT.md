@@ -728,7 +728,12 @@ The `sending` observation is gated on `autoPingSkipReason == null` as well as
 fresh fix and validation: an auto attempt about to defer (covered) or skip (25 m)
 would otherwise flash `Sending` for the length of the GPS read before dropping to
 Deferred/Skipped (the Hybrid-while-parked flapping). A real send clears the skip
-reason as it validates, so it still reads `Sending`.
+reason as it validates, so it still reads `Sending`. The deferred/skipped
+observation is correspondingly widened to fire in that same in-progress gap
+(`isAutoPingRunning || (isPingInProgress && autoPingSkipReason != null)`), not
+only while the interval timer runs: the timer fires and is not rescheduled until
+the attempt validates, so without this the lane falls through to the resting
+`active` and the button flashes the bare mode word (`Hybrid Mode`) in the gap.
 
 **Kept out of the per-tick path on purpose:** the model carries no validator
 result (no `canPing()`, geodesic distance or coverage lookup). It is resolved on

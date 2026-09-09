@@ -181,7 +181,19 @@ SessionStatus resolveSessionStatus({
         deadline: manualCooldown, onGlance: isManualSession);
   }
 
-  if (isAutoPingRunning) {
+  // The interval countdown, or the standing skip state it counts toward. The
+  // `isPingInProgress` arm keeps the deferred/skipped word alive through the
+  // sub-second pre-transmit gap: the timer has fired and is not rescheduled
+  // until the attempt validates, so `isAutoPingRunning` is momentarily false
+  // while the send reads a fresh fix, and the lane would otherwise fall through
+  // to the resting `active` that the button renders as the bare mode word (the
+  // "Deferred -> Hybrid Mode -> Deferred" flash). Only with a skip reason set:
+  // a real send has cleared it by the time it validates, so it still reads
+  // Sending. `autoPing` is null in the gap, so the word reads "Deferred 0s" for
+  // that sub-second (the countdown having just hit 0) until the reschedule
+  // re-arms it at the next interval.
+  if (isAutoPingRunning ||
+      (isPingInProgress && autoPingSkipReason != null)) {
     final lane = _autoLane(autoMode);
     final activity = autoPingSkipReason != null
         ? (autoPingSkipReason == PingService.skipReasonRecentlyCovered
