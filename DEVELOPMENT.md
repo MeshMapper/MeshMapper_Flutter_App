@@ -742,9 +742,22 @@ wardriving overheat history. The one label that needs the validators
 (`blockingHint`) takes them as a separate argument, so only that caller pays.
 
 Golden tables pin all of it (`test/services/status/`): a per-return-site table
-for the phase resolver and a per-lane table for the buttons, a differential
-harness proving the button lift changed no output across about 825k states, and
-an agreement test proving the surfaces read one activity.
+for the phase resolver, a per-lane table for the buttons, and an agreement test
+over the glance surfaces (the watch and Siri projection substitutes `idle` in
+exactly two defined cases and otherwise passes the phase through, the resolver
+never itself produces `idle`, and the two states the buttons alone used to show
+now reach the glance). The differential harness that proved the button lift
+changed no output was scaffolding against the pre-lift implementation and was
+retired with it once the lift landed (`ac108b6`); the per-lane table guards the
+buttons now.
+
+Know what is NOT covered: no test puts a button label beside a glance title, so
+the agreement between those two is structural (one resolver, one ordered
+precedence list) rather than asserted. A condition that reads a fact outside the
+lane it belongs to can therefore still split them with every table green, which
+is how a stale `AutoPingTimer.skipReason` once left `Deferred` on a resting
+Active button beside Send Ping's `Listening`. When you add an observation, gate
+it on the same session and lane facts as its neighbours.
 
 ### Apple Companion Surfaces (Watch + Live Activity)
 

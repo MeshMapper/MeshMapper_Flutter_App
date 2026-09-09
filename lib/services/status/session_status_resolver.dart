@@ -192,8 +192,17 @@ SessionStatus resolveSessionStatus({
   // Sending. `autoPing` is null in the gap, so the word reads "Deferred 0s" for
   // that sub-second (the countdown having just hit 0) until the reschedule
   // re-arms it at the next interval.
+  //
+  // That arm is gated on the session, like the `sending` one above it through
+  // `isTxModeRunning`, because `AutoPingTimer.skipReason` outlives the timer:
+  // `stop()` leaves it set and only the next `startWithSkipReason` overwrites
+  // it, so after stopping an auto mode that deferred, the reason is still
+  // there. Ungated, the next manual tap (which latches `isPingInProgress` for
+  // the whole ping plus RX window) painted the resting Active button
+  // "Deferred 0s" beside Send Ping's "Listening", and with no window open the
+  // glance itself resolved `deferred` for a session that was not running.
   if (isAutoPingRunning ||
-      (isPingInProgress && autoPingSkipReason != null)) {
+      (isSessionActive && isPingInProgress && autoPingSkipReason != null)) {
     final lane = _autoLane(autoMode);
     final activity = autoPingSkipReason != null
         ? (autoPingSkipReason == PingService.skipReasonRecentlyCovered
