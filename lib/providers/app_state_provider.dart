@@ -6505,7 +6505,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Toggle auto-ping mode (Active, Passive, Hybrid, or Trace)
-  /// Returns false if blocked by cooldown (Active/Hybrid/Trace Mode only - Passive Mode ignores cooldown)
+  /// Returns false if a start is blocked by the shared 5 second cooldown that
+  /// follows any stop. Every mode is gated by it, Passive included.
   Future<bool> toggleAutoPing(
     AutoMode mode, {
     bool Function()? shouldAbortBeforeTransmit,

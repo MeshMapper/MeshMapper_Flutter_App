@@ -1547,21 +1547,29 @@ class PingService {
     }
     // Start cooldown immediately
     _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
-    // The other three teardowns release this; this one never did, so a stop
-    // taken during an echo window (which is every stop of Active or Hybrid,
-    // since sendTxPing holds the in-flight flag for the whole window) left the
-    // screen awake until the next start or a disconnect.
-    await _wakelockService.disable();
     debugLog('[PING] Pending disable complete, cooldown started');
     // Notify AppStateProvider to update its state and cleanup. Several callers
     // run from void tracker callbacks or timer-driven send paths where nothing
     // awaits this method, so an escaping error here would go unhandled. The
     // local teardown above is already done by this point.
+    //
+    // Nothing may await between the `_pendingDisable = false` at the top and
+    // this call: the provider raises its stopping latch on the first line of
+    // the callback, and until then the session reads as running rather than
+    // stopping, so a Stop from Siri or the watch landing in a gap here would be
+    // admitted and re-run the teardown. Keeping the span synchronous leaves no
+    // gap for it to land in.
     try {
       await onPendingDisableComplete?.call();
     } catch (e) {
       debugError('[PING] Pending disable provider cleanup failed: $e');
     }
+    // The other three teardowns release this; this one never did, so a stop
+    // taken during an echo window (which is every stop of Active or Hybrid,
+    // since sendTxPing holds the in-flight flag for the whole window) left the
+    // screen awake until the next start or a disconnect. It sits after the
+    // provider callback for the reason above.
+    await _wakelockService.disable();
   }
 
   /// Guarantee a parked disable is drained even when the RX window that was
@@ -1685,11 +1693,14 @@ class PingService {
   /// Tear the discovery lane down.
   ///
   /// [keepDistanceAnchor] preserves [_lastDiscoveryPosition], the 25 m skip
-  /// anchor, across the stop. The two user-initiated stops pass true so that
-  /// restarting Passive on the same spot is held by the distance rule instead
-  /// of transmitting immediately, which is how the TX side has always behaved
-  /// (its anchor lives on GpsService and no stop clears it). Without that, the
-  /// stop cooldown alone still let a parked user toggle out one discovery
+  /// anchor, across the stop. Three callers pass true: the two user-initiated
+  /// stops (`disableAutoPing` and `_executePendingDisable`), so that restarting
+  /// Passive on the same spot is held by the distance rule instead of
+  /// transmitting immediately, which is how the TX side has always behaved
+  /// (its anchor lives on GpsService and no stop clears it); and
+  /// `_abandonAutoPingStart`, which unwinds a start that never transmitted and
+  /// so has no reason to hand the next start a free discovery. Without that,
+  /// the stop cooldown alone still let a parked user toggle out one discovery
   /// every few seconds.
   ///
   /// A teardown (force disable, disconnect, dispose) still clears it, so a
