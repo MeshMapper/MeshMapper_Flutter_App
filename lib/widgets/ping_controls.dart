@@ -734,7 +734,10 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                               fontWeight: isTargetedRunning
                                   ? FontWeight.w600
                                   : FontWeight.w500,
-                              color: isEnabled
+                              // Same `|| traceStopping` as effectiveColor above:
+                              // the icon, border and fill went orange for the
+                              // stop while the words stayed disabled grey.
+                              color: isEnabled || traceStopping
                                   ? colorScheme.onSurface
                                   : colorScheme.onSurfaceVariant
                                       .withValues(alpha: 0.5),
@@ -1353,6 +1356,7 @@ class LandscapePingControls extends StatelessWidget {
                               !txBlockedByOffline &&
                               !txNotAllowed),
                       isActive: txStopping || isTxModeRunning,
+                      stopping: txStopping,
                       countdown: landscapeActiveModeCountdown(status, rf),
                       onPressed: () => hybridEnabled
                           ? _toggleHybridAuto(context, appState)
@@ -1386,6 +1390,7 @@ class LandscapePingControls extends StatelessWidget {
                     isActive: passiveStopping ||
                         (isPassiveModeRunning &&
                             (discoveryWindowActive || autoPingWaiting)),
+                    stopping: passiveStopping,
                     countdown: landscapePassiveModeCountdown(status, rf),
                     onPressed: () => _toggleRxAuto(context, appState),
                   ),
@@ -1585,6 +1590,10 @@ class _LandscapeIconButton extends StatefulWidget {
   final bool enabled;
   final bool isActive;
   final int? countdown; // Optional countdown number to display
+  // A stop is draining on this button. Portrait suppresses the running dot
+  // whenever a subtitle ("Stopping") is showing; this widget has no subtitle,
+  // so the caller says so directly.
+  final bool stopping;
   final VoidCallback onPressed;
 
   const _LandscapeIconButton({
@@ -1595,6 +1604,7 @@ class _LandscapeIconButton extends StatefulWidget {
     required this.onPressed,
     this.isActive = false,
     this.countdown,
+    this.stopping = false,
   });
 
   @override
@@ -1667,8 +1677,14 @@ class _LandscapeIconButtonState extends State<_LandscapeIconButton> {
                       ),
                     ),
                   ),
-                // Active indicator dot (top right)
-                if (widget.isActive && widget.countdown == null)
+                // Active indicator dot (top right). Hidden during a stop for
+                // the same reason portrait hides it: a green running dot on an
+                // orange Stopping button says the mode is still going, and
+                // with no countdown running (a stop parked during the GPS
+                // fetch) nothing else would suppress it.
+                if (widget.isActive &&
+                    widget.countdown == null &&
+                    !widget.stopping)
                   Positioned(
                     top: 4,
                     right: 4,
