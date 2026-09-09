@@ -486,6 +486,31 @@ void main() {
       expect(portraitSendPingLabel(f), 'Cooldown 6s');
     });
 
+    test('a stopped mode does not leave Deferred on the resting button', () {
+      // The skip reason outlives the mode that set it, and a manual tap holds
+      // isPingInProgress for its whole ping plus RX window. The Active button
+      // is resting here, so it must read its mode word, not a deferral from a
+      // session that has stopped, and it must not disagree with Send Ping about
+      // the one window that is open.
+      final f = facts(
+        isTxModeRunning: false,
+        isPingInProgress: true,
+        autoPingSkipReason: 'recently covered',
+        rxWindowActive: true,
+      );
+      expect(portraitActiveModeLabel(f), 'Cooldown 4s');
+      expect(portraitSendPingLabel(f), 'Listening 4s');
+
+      // With no window open at all it falls back to the resting mode word.
+      expect(
+          portraitActiveModeLabel(facts(
+            isTxModeRunning: false,
+            isPingInProgress: true,
+            autoPingSkipReason: 'recently covered',
+          )),
+          'Active Mode');
+    });
+
     test('the same wait is Next ping on one button and Next disc on another',
         () {
       expect(

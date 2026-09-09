@@ -356,6 +356,39 @@ void main() {
       expect(skipped.txAuto.activity, SessionActivity.skipped);
     });
 
+    test('a skip reason left over from a stopped mode holds nothing', () {
+      // AutoPingTimer.skipReason outlives the timer: stop() leaves it set and
+      // only the next startWithSkipReason overwrites it. So after stopping an
+      // auto mode that deferred, the reason still stands. The next manual tap
+      // latches isPingInProgress for the whole ping plus RX window, which is
+      // the pre-transmit gap's other condition, so without the session gate the
+      // resting Active button read "Deferred 0s" beside Send Ping's "Listening"
+      // and the glance resolved deferred for a session that was not running.
+      final stale = status(
+        isSessionActive: false,
+        autoMode: AutoMode.active,
+        isPingInProgress: true,
+        isAutoPingRunning: false,
+        autoPingSkipReason: PingService.skipReasonRecentlyCovered,
+      );
+      expect(stale.txAuto.activity, isNot(SessionActivity.deferred));
+      expect(stale.activity, isNot(SessionActivity.deferred));
+
+      // The same stale reason under a live manual RX window: the window is the
+      // manual lane's, and the TX lane must not claim it as a deferral.
+      final withWindow = status(
+        isSessionActive: false,
+        autoMode: AutoMode.active,
+        isPingInProgress: true,
+        isAutoPingRunning: false,
+        autoPingSkipReason: PingService.skipReasonRecentlyCovered,
+        isRxWindowRunning: true,
+        rxWindow: _d(_t1, 5),
+      );
+      expect(withWindow.txAuto.activity, isNot(SessionActivity.deferred));
+      expect(withWindow.owner, StatusLane.manual);
+    });
+
     test('the shared post-stop cooldown owns the glance', () {
       // After stopping a TX mode nothing outranks the shared five second
       // cooldown, so it reaches the single answer on the txAuto lane. The native
