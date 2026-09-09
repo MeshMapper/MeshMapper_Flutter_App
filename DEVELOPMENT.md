@@ -302,8 +302,10 @@ untouched. On by default with a 14 day window.
 - **Fail open**: `unknown` (no tile yet), a fetch failure, Offline Mode, no zone, or the
   feature off all let the ping go out.
 - **The deferral**: `PingService.checkRecentCoverage` (wired to `isCovered`) is consulted by
-  `canPing()` after the distance check (too close wins) and by the auto discovery path next to
-  its distance check. It yields `PingValidation.recentlyCovered` and the skip reason
+  `canPing()` before the distance check (covered wins: a fix that is both reads Deferred, not
+  Skipped, so parked on already mapped ground is held rather than rate limited, and both Hybrid
+  legs agree) and by the auto discovery path alongside its distance check. It yields
+  `PingValidation.recentlyCovered` and the skip reason
   `'recently covered'` (`PingService.skipReasonRecentlyCovered`), which rides the existing
   `onAutoPingScheduled` hook, and it banks the ping instead of dropping it. The interval timer
   is untouched: the next attempt is still scheduled at the normal interval, so the timer stays
@@ -720,6 +722,13 @@ Two observations carry an `onGlance` flag so a state can belong to a lane (which
 the buttons read) without moving the single glance answer, or reach both. The
 `SessionActivity` type is an alias of `LiveActivityPhase`, so a phase dropped
 anywhere fails to compile rather than rendering blank.
+
+The `sending` observation is gated on `autoPingSkipReason == null` as well as
+`isPingInProgress`, because that flag latches at the top of the send, before the
+fresh fix and validation: an auto attempt about to defer (covered) or skip (25 m)
+would otherwise flash `Sending` for the length of the GPS read before dropping to
+Deferred/Skipped (the Hybrid-while-parked flapping). A real send clears the skip
+reason as it validates, so it still reads `Sending`.
 
 **Kept out of the per-tick path on purpose:** the model carries no validator
 result (no `canPing()`, geodesic distance or coverage lookup). It is resolved on

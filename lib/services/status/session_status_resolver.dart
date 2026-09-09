@@ -156,9 +156,15 @@ SessionStatus resolveSessionStatus({
   // transmit, several seconds later, so they said "active" in between. Gated on
   // the TX loop running, because a manual ping also holds `isPingInProgress` and
   // belongs to the manual lane (the button beside it must not read "Sending" for
-  // it).
+  // it). Gated on no skip reason, because `isPingInProgress` latches at the top
+  // of the send, before the fresh fix and validation: an attempt that is about
+  // to defer (covered) or skip (25 m) still holds it, and would otherwise flash
+  // "Sending" for the length of the GPS read before dropping to Deferred/Skipped
+  // (the Hybrid-while-parked flapping). A real send has already cleared the skip
+  // reason by the time it validates, so it still reads Sending.
   if (isTxModeRunning &&
       isPingInProgress &&
+      autoPingSkipReason == null &&
       !isRxWindowRunning &&
       !isDiscoveryWindowRunning) {
     see(StatusLane.txAuto, SessionActivity.sending);

@@ -215,12 +215,45 @@ void main() {
     await ping.disableAutoPing();
   });
 
-  test('too close wins over covered', () {
+  test('covered wins over too close', () {
+    // Parked on already mapped ground reads Deferred, not Skipped: coverage is
+    // checked before the 25 m rule. Banking a too close ping is safe because
+    // the release re-checks the 25 m rule before it ever goes out.
     final gps = _FakeGps()
       ..position = _pos()
       ..tooClose = true;
     expect(_build(gps, RecentCoverage.covered).canPing(),
+        PingValidation.recentlyCovered);
+  });
+
+  test('too close still wins in a clear square', () {
+    // The 25 m rule is only outranked by coverage. In a clear (or unknown)
+    // square it is still the reason a stationary attempt is skipped.
+    final gps = _FakeGps()
+      ..position = _pos()
+      ..tooClose = true;
+    expect(_build(gps, RecentCoverage.clear).canPing(),
         PingValidation.tooCloseToLastPing);
+  });
+
+  test('a covered square banks the auto TX ping even when too close', () async {
+    // The real send path (what the auto timer calls), not just the validator:
+    // stationary on covered ground it must defer and bank, not skip.
+    final gps = _FakeGps()
+      ..position = _pos()
+      ..tooClose = true;
+    final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+    final fired = Completer<void>();
+    ping.onAutoPingScheduled = (_, __) {
+      if (!fired.isCompleted) fired.complete();
+    };
+
+    await ping.enableAutoPing();
+    await fired.future.timeout(const Duration(seconds: 5));
+
+    expect(ping.skipReason, PingService.skipReasonRecentlyCovered);
+    expect(ping.bankedPing, BankedPingType.tx);
+    await ping.disableAutoPing();
   });
 
   test('a deferred auto TX ping is banked', () async {
@@ -253,12 +286,14 @@ void main() {
     await scheduled.future.timeout(const Duration(seconds: 5));
     expect(ping.bankedPing, BankedPingType.tx);
 
-    // Stationary in the covered square. sendTxPing(manual: false) is the very
-    // call the auto timer makes, so this runs the real auto send path rather
-    // than the pure validator: the distance check comes first, so the attempt
-    // skips as 'too close' and never reaches the coverage check that armed
-    // the bank. Driving it directly beats waiting out the 30s interval.
+    // Now in a CLEAR square but still within 25 m of the last ping.
+    // sendTxPing(manual: false) is the very call the auto timer makes, so this
+    // runs the real auto send path: coverage is clear, so the 25 m rule is the
+    // first failing check and the attempt skips as 'too close'. That distance
+    // skip must not discard the deferral already banked from the covered
+    // square. Driving it directly beats waiting out the 30s interval.
     scheduled = Completer<void>();
+    coverage.answer = RecentCoverage.clear;
     gps.tooClose = true;
     await ping.sendTxPing(manual: false);
     await scheduled.future.timeout(const Duration(seconds: 5));

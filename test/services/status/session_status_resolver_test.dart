@@ -304,6 +304,32 @@ void main() {
       expect(manual.activity, isNot(SessionActivity.sending));
     });
 
+    test('an attempt about to defer or skip does not flash Sending', () {
+      // isPingInProgress latches at the top of the send, before validation and
+      // the fresh fix, so an auto attempt that is about to be deferred (covered
+      // ground) or skipped (25 m) would otherwise flash "Sending" for the length
+      // of the GPS read. While a skip reason is set the lane is deferred/skipped,
+      // never sending.
+      final deferring = status(
+        autoMode: AutoMode.hybrid,
+        isPingInProgress: true,
+        isAutoPingRunning: true,
+        autoPing: _d(_t1),
+        autoPingSkipReason: PingService.skipReasonRecentlyCovered,
+      );
+      expect(deferring.txAuto.activity, SessionActivity.deferred);
+      expect(deferring.activity, isNot(SessionActivity.sending));
+
+      final skipping = status(
+        autoMode: AutoMode.active,
+        isPingInProgress: true,
+        isAutoPingRunning: true,
+        autoPing: _d(_t1),
+        autoPingSkipReason: 'too close',
+      );
+      expect(skipping.txAuto.activity, SessionActivity.skipped);
+    });
+
     test('the shared post-stop cooldown owns the glance', () {
       // After stopping a TX mode nothing outranks the shared five second
       // cooldown, so it reaches the single answer on the txAuto lane. The native
