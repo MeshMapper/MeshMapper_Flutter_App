@@ -271,6 +271,13 @@ always behaved (its anchor lives on `GpsService` and no stop clears it). A genui
 a discovery. The Offline Mode hot switch keeps it, since it stops through the same
 user-stop path and the phone has not moved.
 
+The two user stop paths (the inline teardown in `toggleAutoPing`, taken when no ping is in
+flight, and the drain that `PingService._executePendingDisable` hands to
+`onPendingDisableComplete` after the window closes) finish the same way: heartbeat kept, idle
+disconnect timer restarted, top-heard overlay cleared, 5 second cooldown started. A start that
+is refused after its session check (`toggleAutoPing`'s start branch) restarts the idle
+disconnect timer it cancelled, in its `finally`.
+
 ### GPS & Zone Validation
 
 - Uses `geolocator` package with high accuracy and continuous tracking
@@ -470,7 +477,7 @@ Sound notifications for TX pings and RX observations, configurable on/off.
 
 Prevents session timeout during long wardriving sessions by periodically refreshing the session expiry.
 
-- **Trigger**: Enabled when auto-ping mode starts (`enableHeartbeat()`), disabled on disconnect or leaving auto mode
+- **Trigger**: Enabled when the API session is acquired at connect (`enableHeartbeat()`), and again on every auto-ping start, zone re-entry and zone transfer. Disabled on disconnect, on entering zone grace or a zone transfer, and by the Offline Mode hot switch. Stopping an auto mode does NOT disable it, on either stop path: the session stays valid while the radio is connected and idle, and the 15 minute idle disconnect is what ends it. (The pending-disable drain used to disable it, so a stop tapped during an echo window let the session lapse and the next Start came back `session_expired`.)
 - **Timing**: Heartbeat fires **1 minute before** session `expires_at`. If already expired, sends immediately, but never more than one send per 30s (`minHeartbeatSpacing`). The floor matters because `expires_at` is server-clock while the delay math runs on the device clock: a device clock 4+ minutes fast (server TTL is 300s) makes every fresh expiry read as already due, and without the floor the "send immediately" path re-fired one POST per network round trip (the 2026-08-29 storm: 361k POSTs in 64 minutes from one device). An in-flight guard keeps re-entrant `scheduleHeartbeat` callers (upload success, per-ping session check) from stacking concurrent send chains, and a circuit breaker (`maxHeartbeatsPerMinute` = 6) pauses the lane for 60s as a backstop. Regression tests: `test/services/api_service_heartbeat_test.dart`.
 - **Storm brake (429)**: a `rate_limited` answer from `/wardrive` carries `Retry-After` (75s by default) and keeps the session valid (server contract: `docs/APP_API.md` Appendix C item 9, "a 429 is not a sign-out"). `ApiService` parses it into one per-session hold, `wardriveBackoff`, that every sender on that door respects: `uploadBatch` returns `UploadResult.held` (no retry spent), `checkSessionValid` skips the post and reports the last known verdict so the ping itself proceeds, and the keepalive reschedules after the hold instead of going quiet. The brake re-arms its penalty on every blocked hit, so one lane knocking through it would keep all of them locked out. Without the keepalive reschedule, a braked session lapsed while the car was stopped (no ping or upload restarted the lane), the next post got a 401 and the app re-minted a fresh session id, which is exactly what the brake must not cause (VLC-20260903-0002). A new session id drops the hold. Tests: `test/services/api_service_rate_limit_test.dart`.
 - **Mechanism**: POST to `/wardrive-api.php/wardrive` with `heartbeat: true` flag and optional GPS coordinates

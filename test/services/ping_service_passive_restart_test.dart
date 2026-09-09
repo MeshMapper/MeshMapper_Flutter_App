@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -65,6 +66,10 @@ class _FakeGps implements GpsService {
 class _FakeConnection implements MeshCoreConnection {
   int discoveryTransmits = 0;
 
+  /// When set, the discovery send parks on this until it completes, which is
+  /// how a stop gets to land while the send is in flight.
+  Completer<Uint8List>? discoveryGate;
+
   @override
   ConnectionStep get currentStep => ConnectionStep.connected;
 
@@ -94,7 +99,8 @@ class _FakeConnection implements MeshCoreConnection {
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.memberName == #sendDiscoveryRequest) {
       discoveryTransmits++;
-      return Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4]));
+      return discoveryGate?.future ??
+          Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4]));
     }
     throw UnimplementedError('MeshCoreConnection.${invocation.memberName}');
   }
@@ -140,14 +146,15 @@ Position _pos({double lat = 45.0, double lon = -75.0}) => Position(
 PingService _build(
   _FakeGps gps,
   _FakeConnection conn,
-  DiscoveryWindowTimer discoveryWindow,
-) =>
+  DiscoveryWindowTimer discoveryWindow, {
+  CooldownTimer? cooldown,
+}) =>
     PingService(
       gpsService: gps,
       connection: conn,
       apiQueue: _FakeApiQueue(),
       wakelockService: _FakeWakelock(),
-      cooldownTimer: CooldownTimer(),
+      cooldownTimer: cooldown ?? CooldownTimer(),
       manualPingCooldownTimer: ManualPingCooldownTimer(),
       rxWindowTimer: RxWindowTimer(),
       discoveryWindowTimer: discoveryWindow,
@@ -186,6 +193,47 @@ void main() {
 
     await ping.forceDisableAutoPing();
     discoveryWindow.stop();
+  });
+
+  testWidgets(
+      'a stop parked behind the listening window keeps the anchor as well',
+      (tester) async {
+    // The other user stop path: the stop lands while the discovery send is
+    // still in flight, so it is parked and later drained by the window
+    // completion (_executePendingDisable) rather than taken inline. That is
+    // where the button reads "Stopping Xs".
+    final gps = _FakeGps()..position = _pos();
+    final conn = _FakeConnection();
+    final discoveryWindow = DiscoveryWindowTimer();
+    final cooldown = CooldownTimer(); // the drain starts it; stopped below
+    final ping = _build(gps, conn, discoveryWindow, cooldown: cooldown);
+
+    final gate = Completer<Uint8List>();
+    conn.discoveryGate = gate;
+    final starting = ping.enableAutoPing(passiveMode: true);
+    await tester.pump(); // the send is parked on the BLE write
+    expect(conn.discoveryTransmits, 1);
+    expect(ping.pingInProgress, isTrue);
+
+    await ping.disableAutoPing();
+    expect(ping.pendingDisable, isTrue, reason: 'parked behind the send');
+
+    conn.discoveryGate = null;
+    gate.complete(Uint8List.fromList([1, 2, 3, 4]));
+    await starting;
+    await tester.pump(const Duration(seconds: 8)); // window closes, drains it
+    expect(ping.pendingDisable, isFalse);
+    expect(ping.autoPingEnabled, isFalse);
+
+    // Restart on the same spot: held by the 25 m rule, nothing on the air.
+    await ping.enableAutoPing(passiveMode: true);
+    await tester.pump(const Duration(seconds: 8));
+    expect(conn.discoveryTransmits, 1,
+        reason: 'the drained stop kept the anchor');
+
+    await ping.forceDisableAutoPing();
+    discoveryWindow.stop();
+    cooldown.stop();
   });
 
   testWidgets('a teardown clears the anchor, so a new session opens clean',
