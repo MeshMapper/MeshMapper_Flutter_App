@@ -484,17 +484,20 @@ class PingService {
 
     // Note: Zone validation is now handled server-side by the API
 
-    // Check minimum distance from last ping
-    if (!_gpsService.canPingAtPosition(position)) {
-      return PingValidation.tooCloseToLastPing;
-    }
-
-    // Smart Pinging: skip a square that already has a recent bidir or disc
-    // result. After the distance check so a fix that is both reports too
-    // close, and only here (auto): manual pings always send.
+    // Smart Pinging: a square that already has a recent bidir or disc result
+    // defers. BEFORE the distance check so a fix that is both reports covered
+    // (Deferred), not too close (Skipped): parked on already mapped ground
+    // reads as held, not rate limited, and both Hybrid legs then agree. Banking
+    // a too close ping is safe, since the release re-checks the 25 m rule
+    // before it ever goes out. Only here (auto): manual pings always send.
     if (checkRecentCoverage?.call(position.latitude, position.longitude) ==
         RecentCoverage.covered) {
       return PingValidation.recentlyCovered;
+    }
+
+    // Check minimum distance from last ping
+    if (!_gpsService.canPingAtPosition(position)) {
+      return PingValidation.tooCloseToLastPing;
     }
 
     // Check cooldown (5 seconds between pings)
