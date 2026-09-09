@@ -1400,7 +1400,10 @@ class PingService {
     _bankedPing = null;
 
     if (_passiveModeEnabled || _hybridModeEnabled) {
-      _stopDiscoveryMode();
+      // Nothing was transmitted, so this unwind leaves the lane as it found
+      // it. Clearing the anchor here would hand the next start a free
+      // discovery on ground the previous session already covered.
+      _stopDiscoveryMode(keepDistanceAnchor: true);
     }
     if (_targetedModeEnabled) {
       _stopTargetedMode();
@@ -1422,6 +1425,27 @@ class PingService {
 
     if (!_autoPingEnabled) {
       debugLog('[PING] Auto mode not enabled');
+      return true;
+    }
+
+    // A disable is already parked. Say yes and change nothing: the stop the
+    // caller wants is under way, and the window that will drain it is already
+    // counting.
+    //
+    // Falling through here was destructive rather than merely redundant. The
+    // branch below only parks a disable while a ping is IN FLIGHT, and a
+    // discovery clears that flag the moment it arms its listening window, so a
+    // second call landed in the immediate teardown, which disposes the tracker
+    // without firing its window completion, the one thing that drains
+    // `_pendingDisable`. Auto mode was then off inside this service and still
+    // on in the provider, with no cooldown, no RX-logger stop and the
+    // foreground service still running, until the 12 second backstop fired.
+    // The external Stop lane and the idle auto-stop are the callers that can
+    // still arrive here (every in-app button is gated on the flag); guarding
+    // it here rather than only at those keeps any future caller safe.
+    // `forceDisableAutoPing` remains the way to override a parked disable.
+    if (_pendingDisable) {
+      debugLog('[PING] Disable already pending, letting it drain');
       return true;
     }
 
@@ -1451,9 +1475,11 @@ class PingService {
     _skipReason = null;
     _bankedPing = null;
 
-    // Clean up discovery infrastructure if passive or hybrid was enabled
+    // Clean up discovery infrastructure if passive or hybrid was enabled. The
+    // user asked for this stop, so the 25 m anchor is kept: a restart on the
+    // same spot waits for the distance rule rather than transmitting at once.
     if (_passiveModeEnabled || _hybridModeEnabled) {
-      _stopDiscoveryMode();
+      _stopDiscoveryMode(keepDistanceAnchor: true);
     }
 
     // Clean up targeted mode infrastructure
@@ -1498,9 +1524,10 @@ class PingService {
     _autoTimer?.cancel();
     _autoTimer = null;
     _bankedPing = null;
-    // Clean up discovery infrastructure if passive or hybrid was enabled
+    // Clean up discovery infrastructure if passive or hybrid was enabled. Same
+    // user-initiated stop as disableAutoPing, so the 25 m anchor is kept.
     if (wasPassive || wasHybrid) {
-      _stopDiscoveryMode();
+      _stopDiscoveryMode(keepDistanceAnchor: true);
     }
     // Clean up targeted infrastructure if targeted was enabled
     if (wasTargeted) {
@@ -1508,6 +1535,11 @@ class PingService {
     }
     // Start cooldown immediately
     _cooldownTimer.start(_autoPingCooldown.inMilliseconds);
+    // The other three teardowns release this; this one never did, so a stop
+    // taken during an echo window (which is every stop of Active or Hybrid,
+    // since sendTxPing holds the in-flight flag for the whole window) left the
+    // screen awake until the next start or a disconnect.
+    await _wakelockService.disable();
     debugLog('[PING] Pending disable complete, cooldown started');
     // Notify AppStateProvider to update its state and cleanup. Several callers
     // run from void tracker callbacks or timer-driven send paths where nothing
@@ -1550,6 +1582,10 @@ class PingService {
   /// Force disable auto-ping (ignores cooldown, used for disconnect)
   Future<void> forceDisableAutoPing() async {
     debugLog('[PING] Force disabling auto-ping');
+    // Nothing is meaningfully in flight once this returns: the modes are gone
+    // and the trackers are disposed. A send suspended on its fresh fix re-reads
+    // the mode flags when it resumes and bows out without transmitting.
+    _pingInProgress = false;
     _pendingDisable = false; // Clear any pending disable
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = null;
@@ -1634,8 +1670,22 @@ class PingService {
     );
   }
 
-  /// Stop discovery mode - cleans up tracker and subscription
-  void _stopDiscoveryMode() {
+  /// Tear the discovery lane down.
+  ///
+  /// [keepDistanceAnchor] preserves [_lastDiscoveryPosition], the 25 m skip
+  /// anchor, across the stop. The two user-initiated stops pass true so that
+  /// restarting Passive on the same spot is held by the distance rule instead
+  /// of transmitting immediately, which is how the TX side has always behaved
+  /// (its anchor lives on GpsService and no stop clears it). Without that, the
+  /// stop cooldown alone still let a parked user toggle out one discovery
+  /// every few seconds.
+  ///
+  /// A teardown (force disable, disconnect, dispose) still clears it, so a
+  /// reconnect always opens with a discovery. The Offline Mode hot switch goes
+  /// through `disableAutoPing`, so it keeps the anchor: it mints a new session
+  /// but the phone has not moved, and a second discovery from the same square
+  /// is exactly what the 25 m rule is there to refuse.
+  void _stopDiscoveryMode({bool keepDistanceAnchor = false}) {
     debugLog('[DISC] Stopping discovery mode');
 
     // The countdown is normally stopped by _handleDiscoveryWindowComplete,
@@ -1654,8 +1704,9 @@ class PingService {
     _discTracker?.dispose();
     _discTracker = null;
     _discoveryStartPosition = null;
-    _lastDiscoveryPosition =
-        null; // Reset so first discovery always sends on next start
+    if (!keepDistanceAnchor) {
+      _lastDiscoveryPosition = null;
+    }
     _lastDiscPing = null;
   }
 
@@ -2072,104 +2123,175 @@ class PingService {
       return;
     }
 
-    // Request a fresh GPS position before the trace (same rationale as TX
-    // auto-ping and discovery). On iOS in the background the position stream
-    // is quiet, so this is also the only fix that feeds the airborne latch.
-    final position = await _gpsService.getFreshPosition();
-    if (position == null) {
-      debugLog('[TRACE] No GPS position, skipping trace');
-      _pingInProgress = false;
+    // A ping already in flight owns _pingInProgress, exactly as the discovery
+    // lane reads it. Reschedule rather than bare-return: the window that ends
+    // the in-flight ping does not re-arm the trace lane, so a bare return would
+    // strand it. Leave the flag alone, it belongs to that ping.
+    if (_pingInProgress) {
+      debugLog('[TRACE] Ping already in progress, skipping trace');
       _scheduleNextTargetedPing();
       return;
     }
 
-    // Check minimum distance from last trace (25m)
-    final lastPos = _lastTargetedPosition;
-    if (lastPos != null) {
-      final distance = Geolocator.distanceBetween(
-        lastPos.latitude,
-        lastPos.longitude,
-        position.latitude,
-        position.longitude,
-      );
-      if (distance < _gpsService.configuredMinDistance) {
-        debugLog(
-            '[TRACE] Too close to last trace (${distance.toStringAsFixed(1)}m < ${_gpsService.configuredMinDistance.toInt()}m), skipping');
-        _skipReason = 'too close';
+    // Latch BEFORE the first await, which is what TX and discovery both do and
+    // this lane did not. The fresh fix can take up to the GPS timeout, and a
+    // Stop landing in that gap read an idle service: disableAutoPing took its
+    // immediate branch, disposed the TraceTracker and nulled the distance
+    // anchor, and this method then resumed with nothing to stop it. It put a
+    // trace on the air for a session the user had already stopped, started a
+    // listening window against a disposed tracker (so the countdown ran to a
+    // completion that could never fire), and left a stale anchor that could
+    // skip the next session's first trace as "too close".
+    //
+    // With the latch the stop parks instead, so the trace already in flight
+    // finishes and the stop follows it. That is the contract the other two
+    // lanes keep, and it is what "let the window complete, then disable" means.
+    _pingInProgress = true;
+
+    // Whether this attempt got as far as arming a listening window. As in
+    // discovery, the success path clears _pingInProgress as soon as the window
+    // is running, so the flag alone cannot tell an armed window from an attempt
+    // that bowed out. The finally needs that distinction.
+    var armedWindow = false;
+
+    try {
+      // Request a fresh GPS position before the trace (same rationale as TX
+      // auto-ping and discovery). On iOS in the background the position stream
+      // is quiet, so this is also the only fix that feeds the airborne latch.
+      final position = await _gpsService.getFreshPosition();
+
+      // The latch above turns a graceful stop into a parked disable, which is
+      // what lets this send finish. It does NOT cover forceDisableAutoPing,
+      // which consults nothing: it clears the mode flags and disposes the
+      // TraceTracker whatever is in flight. That is the stop behind a
+      // disconnect, the airborne block, a session error, a zone grace or
+      // transfer, and a mode switch, so without this re-check the send resumed
+      // into a torn-down lane and put a trace on the air anyway. The airborne
+      // case is the one that matters: that block exists to stop transmitting
+      // from an aircraft, and it was letting one more trace out.
+      //
+      // No reschedule and no drain: the lane is gone, and forceDisableAutoPing
+      // has already cleared any parked disable.
+      if (!_autoPingEnabled || !_targetedModeEnabled) {
+        debugLog('[TRACE] Targeted mode ended during the fresh fix, not sending');
+        _pingInProgress = false;
+        return;
+      }
+
+      if (position == null) {
+        debugLog('[TRACE] No GPS position, skipping trace');
         _pingInProgress = false;
         _scheduleNextTargetedPing();
         return;
       }
-    }
 
-    // Clear skip reason since we're proceeding
-    _skipReason = null;
-
-    // Signal "Sending..." to UI
-    _pingInProgress = true;
-    onPingProgressChanged?.call();
-
-    // Capture noise floor
-    final noiseFloor = _connection.lastNoiseFloor;
-    _pendingTxNoiseFloor = noiseFloor;
-
-    // Create trace log entry immediately
-    final traceEntry = TraceLogEntry(
-      timestamp: DateTime.now(),
-      latitude: position.latitude,
-      longitude: position.longitude,
-      targetRepeaterId: targetId,
-      noiseFloor: noiseFloor,
-      success: false, // Will be updated after window completes
-    );
-    onTracePing?.call(traceEntry);
-
-    debugLog(
-        '[TRACE] Sending trace to $targetId at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
-
-    try {
-      // Play transmit sound
-      _audioService?.playTransmitSound();
-
-      // Convert hex repeater ID to bytes (trace uses separate byte size: 1, 2, or 4)
-      final traceBytes = _traceHopBytes;
-      final repeaterIdBytes = Uint8List(traceBytes);
-      for (int i = 0; i < traceBytes && i * 2 + 2 <= targetId.length; i++) {
-        repeaterIdBytes[i] =
-            int.parse(targetId.substring(i * 2, i * 2 + 2), radix: 16);
+      // Check minimum distance from last trace (25m)
+      final lastPos = _lastTargetedPosition;
+      if (lastPos != null) {
+        final distance = Geolocator.distanceBetween(
+          lastPos.latitude,
+          lastPos.longitude,
+          position.latitude,
+          position.longitude,
+        );
+        if (distance < _gpsService.configuredMinDistance) {
+          debugLog(
+              '[TRACE] Too close to last trace (${distance.toStringAsFixed(1)}m < ${_gpsService.configuredMinDistance.toInt()}m), skipping');
+          _skipReason = 'too close';
+          _pingInProgress = false;
+          _scheduleNextTargetedPing();
+          return;
+        }
       }
 
-      // Send trace path and get tag
-      final tag = await _connection.sendTracePath(repeaterIdBytes,
-          hopBytes: traceBytes);
+      // Clear skip reason since we're proceeding
+      _skipReason = null;
 
-      // Start tracking with the tag
-      _traceTracker?.startTracking(
-        tag: tag,
+      // Signal "Sending..." to UI (the flag itself was latched above)
+      onPingProgressChanged?.call();
+
+      // Capture noise floor
+      final noiseFloor = _connection.lastNoiseFloor;
+      _pendingTxNoiseFloor = noiseFloor;
+
+      // Create trace log entry immediately
+      final traceEntry = TraceLogEntry(
+        timestamp: DateTime.now(),
+        latitude: position.latitude,
+        longitude: position.longitude,
         targetRepeaterId: targetId,
-        windowDuration: _rxListeningWindow,
+        noiseFloor: noiseFloor,
+        success: false, // Will be updated after window completes
       );
+      onTracePing?.call(traceEntry);
 
-      // Start listening window countdown display
-      _discoveryWindowCountdown.start(_rxListeningWindow.inMilliseconds);
+      debugLog(
+          '[TRACE] Sending trace to $targetId at ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}');
 
-      // Clear pingInProgress now that trace window is active
-      _pingInProgress = false;
+      try {
+        // Play transmit sound
+        _audioService?.playTransmitSound();
 
-      // Update last targeted position for 25m check
-      _lastTargetedPosition = position;
+        // Convert hex repeater ID to bytes (trace uses separate byte size: 1, 2, or 4)
+        final traceBytes = _traceHopBytes;
+        final repeaterIdBytes = Uint8List(traceBytes);
+        for (int i = 0; i < traceBytes && i * 2 + 2 <= targetId.length; i++) {
+          repeaterIdBytes[i] =
+              int.parse(targetId.substring(i * 2, i * 2 + 2), radix: 16);
+        }
 
-      // Follow with the display anchor so the map's distance readout tracks
-      // traces too, not just TX (#501)
-      _gpsService.markActivityPosition(position);
-    } catch (e) {
-      _pingInProgress = false;
-      debugError('[TRACE] Failed to send trace: $e');
-      if (_pendingDisable) {
-        await _executePendingDisable('trace send failed');
-        return;
+        // Send trace path and get tag
+        final tag = await _connection.sendTracePath(repeaterIdBytes,
+            hopBytes: traceBytes);
+
+        // Start tracking with the tag
+        _traceTracker?.startTracking(
+          tag: tag,
+          targetRepeaterId: targetId,
+          windowDuration: _rxListeningWindow,
+        );
+
+        // Start listening window countdown display
+        _discoveryWindowCountdown.start(_rxListeningWindow.inMilliseconds);
+
+        // Clear pingInProgress now that trace window is active
+        armedWindow = true;
+        _pingInProgress = false;
+
+        // Update last targeted position for 25m check
+        _lastTargetedPosition = position;
+
+        // Follow with the display anchor so the map's distance readout tracks
+        // traces too, not just TX (#501)
+        _gpsService.markActivityPosition(position);
+      } catch (e) {
+        _pingInProgress = false;
+        debugError('[TRACE] Failed to send trace: $e');
+        if (_pendingDisable) {
+          await _executePendingDisable('trace send failed');
+          return;
+        }
+        _scheduleNextTargetedPing();
       }
-      _scheduleNextTargetedPing();
+    } finally {
+      // #496 on the trace side, and newly load-bearing: now that the latch sits
+      // ahead of the fresh fix, a Stop pressed during it PARKS a disable, and
+      // an attempt that then bows out (no GPS, the 25 m rule) is the end of the
+      // lifecycle that disable was waiting on. Without this it would sit out
+      // the 12 second backstop.
+      //
+      // [armedWindow] keeps it off the success path, which is not ours to
+      // drain: _handleTraceWindowComplete owns it once the window is running,
+      // and draining here would run _stopTargetedMode() on a live window.
+      // A throw anywhere in the latched region would otherwise leave the flag
+      // set for the life of the service, and every trace, discovery, auto and
+      // manual ping reads it. sendTxPing has an outer catch for this; this lane
+      // has only the finally, so it does the reset. A no-op on all four paths
+      // that already clear it.
+      if (!armedWindow) _pingInProgress = false;
+      if (!armedWindow && _pendingDisable) {
+        await _executePendingDisable('trace ended without window');
+      }
     }
   }
 

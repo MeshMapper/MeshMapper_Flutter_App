@@ -273,10 +273,17 @@ SessionStatus resolveSessionStatus({
   }
 
   // The glance answer. A pending disable is the session stopping: it outranks
-  // every observation here and names the Active lane as the owner, but it is
-  // laid over the glance only, so each lane above still carries its own closing
-  // window. Its deadline is whichever window is still shutting (both can be shut,
-  // the case the 12 second backstop covers, and then there is nothing to count).
+  // every observation here and names the lane of the mode being stopped as the
+  // owner, but it is laid over the glance only, so each lane above still
+  // carries its own closing window. Its deadline is whichever window is still
+  // shutting (both can be shut, the case the 12 second backstop covers, and
+  // then there is nothing to count).
+  //
+  // The owner used to be hardcoded to txAuto, which said a Passive or Trace
+  // stop belonged to the Active lane. Nothing in the app read the field, so it
+  // cost no pixels, but it is the model's answer to "whose stop is this" and
+  // the buttons now ask exactly that question, so it may not disagree with
+  // them. `_autoLane` is the same mapping the interval observation uses.
   final (
     SessionActivity glanceActivity,
     StatusLane? glanceOwner,
@@ -284,7 +291,7 @@ SessionStatus resolveSessionStatus({
   ) = isPendingDisable
       ? (
           SessionActivity.stopping,
-          StatusLane.txAuto,
+          _autoLane(autoMode),
           rxWindow ?? discoveryWindow
         )
       : (

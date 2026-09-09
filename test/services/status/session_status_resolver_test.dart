@@ -98,11 +98,12 @@ void main() {
     });
 
     test('a stop is a glance answer, not a lane state', () {
-      // A stop is not a session-wide hold like the others: it names the Active
-      // lane as the owner and reads Stopping on the single surfaces, but it is
-      // laid over the glance only and never sits on a lane, so it cannot shadow a
-      // window a lane is still closing. With nothing else running the lanes
-      // simply rest; the buttons that show Stopping read the flag, not the lane.
+      // A stop is not a session-wide hold like the others: it names the lane of
+      // the mode being stopped as the owner and reads Stopping on the single
+      // surfaces, but it is laid over the glance only and never sits on a lane,
+      // so it cannot shadow a window a lane is still closing. With nothing else
+      // running the lanes simply rest; the buttons that show Stopping read the
+      // flag, not the lane. Active is the default mode here, hence txAuto.
       final s = status(isPendingDisable: true);
       expect(s.activity, SessionActivity.stopping);
       expect(s.owner, StatusLane.txAuto);
@@ -115,10 +116,10 @@ void main() {
 
     test('a stop lets the mode being stopped keep its closing window', () {
       // The Passive discovery window is still closing during the graceful stop,
-      // so its lane keeps showing it while the glance and the Active button say
-      // Stopping. This is what lets the Passive button count the window down as
-      // it always has, instead of flipping to the mode word the moment a stop
-      // begins.
+      // so its lane keeps showing it while the glance says Stopping. The owner
+      // is the discovery lane, because Passive is the mode being stopped: the
+      // glance used to name txAuto for every stop, which is what put "Stopping"
+      // on the Active button for a mode that was never running.
       final s = status(
         autoMode: AutoMode.passive,
         isPendingDisable: true,
@@ -126,7 +127,7 @@ void main() {
         discoveryWindow: _d(_t1, 6),
       );
       expect(s.activity, SessionActivity.stopping);
-      expect(s.owner, StatusLane.txAuto);
+      expect(s.owner, StatusLane.discovery);
       expect(s.discovery.activity, SessionActivity.listeningDiscovery);
       expect(s.discovery.isBlocked, isFalse);
       expect(s.discovery.deadline, _d(_t1, 6));

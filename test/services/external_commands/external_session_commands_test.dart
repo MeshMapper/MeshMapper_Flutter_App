@@ -75,6 +75,7 @@ void main() {
       ExternalSessionCommand value, {
       bool active = false,
       bool starting = false,
+      bool stopping = false,
       String currentMode = 'hybrid',
       String currentSessionId = 'session-a',
       String currentModeLabel = 'Hybrid',
@@ -83,6 +84,7 @@ void main() {
           command: value,
           isSessionActive: active,
           isSessionStarting: starting,
+          isSessionStopping: stopping,
           currentMode: currentMode,
           currentSessionId: currentSessionId,
           currentModeLabel: currentModeLabel,
@@ -275,6 +277,46 @@ void main() {
       );
     });
 
+    test('a second Stop while one is draining is a no-op, not a re-stop', () {
+      // The mirror of a duplicate Start. It matters more than politeness: a
+      // second Stop admitted here re-entered the disable after the in-flight
+      // ping had armed its window, tore down the tracker whose completion is
+      // the only thing that drains the parked disable, and left the session
+      // half stopped until the 12 second backstop.
+      final second = resolve(
+        command(kind: ExternalSessionCommandKind.stopSession, mode: null),
+        active: true,
+        stopping: true,
+      );
+
+      expect(second.disposition, ExternalCommandDisposition.noOp);
+      expect(second.reason?.compactText, contains('already stopping'));
+    });
+
+    test('a stop that has cleared the session flag still reads as stopping',
+        () {
+      // `_stopAutoPingGracefully` (the Offline Mode hot switch) clears
+      // `_autoPingEnabled` while the disable is still parked, so the stopping
+      // test has to outrank the idle one or the wearer is told there is no
+      // session while the phone is visibly stopping.
+      final admission = resolve(
+        command(kind: ExternalSessionCommandKind.stopSession, mode: null),
+        active: false,
+        stopping: true,
+      );
+
+      expect(admission.disposition, ExternalCommandDisposition.noOp);
+      expect(admission.reason?.compactText, contains('already stopping'));
+    });
+
+    test('a Start during a stop is still refused by the availability rule', () {
+      // The start side has always had this guard; it lives in
+      // resolveSessionStartAvailability, not here, so the transition still
+      // admits and the caller refuses. Pinned so the two halves stay paired.
+      final admission = resolve(command(), stopping: true);
+      expect(admission.disposition, ExternalCommandDisposition.admitted);
+    });
+
     test('Stop cannot terminate a newer session', () {
       final admission = resolve(
         command(
@@ -349,6 +391,7 @@ void main() {
         command: command(expiresAt: now.subtract(const Duration(seconds: 1))),
         isSessionActive: false,
         isSessionStarting: false,
+        isSessionStopping: false,
         currentMode: 'passive',
         currentSessionId: 'session-a',
         currentModeLabel: 'Passive',
@@ -368,6 +411,7 @@ void main() {
         ),
         isSessionActive: true,
         isSessionStarting: false,
+        isSessionStopping: false,
         currentMode: 'passive',
         currentSessionId: 'session-a',
         currentModeLabel: 'Passive',
@@ -382,6 +426,7 @@ void main() {
         command: command(),
         isSessionActive: false,
         isSessionStarting: false,
+        isSessionStopping: false,
         currentMode: 'passive',
         currentSessionId: 'session-a',
         currentModeLabel: 'Passive',
