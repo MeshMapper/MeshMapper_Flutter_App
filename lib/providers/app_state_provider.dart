@@ -4962,11 +4962,27 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         await _endNoiseFloorSession();
-        _apiService.disableHeartbeat();
+
+        // The same tail as the inline stop in toggleAutoPing. The two used to
+        // differ in three ways, so what a stop left behind depended on whether
+        // a ping happened to be in flight when the user tapped it:
+        //
+        // The heartbeat is KEPT. It is enabled at connect, not at auto start,
+        // and it is what keeps the API session valid while the radio sits
+        // connected and idle. This path used to disable it, so a stop taken
+        // during an echo window (every Active stop tapped while the button was
+        // counting down) let the session lapse five minutes later, and the next
+        // Start or Send Ping came back session_expired and disconnected the
+        // radio. The 15 minute idle disconnect below is what ends an idle
+        // session, on both paths.
+        _startIdleDisconnectTimer();
 
         _autoPingEnabled = false;
         _resetIdleAutoStop();
         _finishLiveActivitySession();
+
+        // Clear top-heard overlay on stop, as the inline path does.
+        _clearOverlayState();
 
         debugLog('[APP] Pending disable cleanup complete, cooldown running');
       } finally {
@@ -6741,6 +6757,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Clear starting state on every path (session/cooldown/blocked early
         // returns, exceptions, and success) so the buttons never stay disabled
         _autoPingStarting = false;
+        // The idle disconnect timer was cancelled at the top of this block. A
+        // start that did not come up (a failed session check, which a cellular
+        // dead spot is enough for; an expired external deadline; a refused
+        // enable) has to give it back, or the radio sits connected with no
+        // idle timeout until the user does something else. Restarting rather
+        // than never cancelling keeps the 15 minute timer from firing into the
+        // middle of a start. Skipped when the failure itself disconnected.
+        if (!_autoPingEnabled && isConnected) _startIdleDisconnectTimer();
         notifyListeners();
       }
     }
