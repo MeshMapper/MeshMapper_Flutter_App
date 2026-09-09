@@ -723,6 +723,18 @@ class PingService {
       // where the device is NOW, not where it was at the last stream event.
       if (!manual) {
         await _gpsService.getFreshPosition();
+
+        // Same re-check the discovery and trace lanes make: canPing() below
+        // re-reads the connection step and the airborne latch after this
+        // suspension, but never whether auto mode is still on, and
+        // forceDisableAutoPing turns it off without consulting anything in
+        // flight. Manual pings are exempt because they are not part of an auto
+        // session, and they take no fresh fix here anyway.
+        if (!_autoPingEnabled) {
+          debugLog('[PING] Auto mode ended during the fresh fix, not sending');
+          _pingInProgress = false;
+          return false;
+        }
       }
 
       // The transport parks a non-sign write behind an in-progress sign, and
@@ -1757,6 +1769,24 @@ class PingService {
     try {
       // Request fresh GPS position before discovery (same rationale as TX auto-ping)
       final position = await _gpsService.getFreshPosition();
+
+      // The latch above turns a graceful stop into a parked disable, which is
+      // what lets this send finish. It does NOT cover forceDisableAutoPing,
+      // which consults nothing: it clears the mode flags and disposes the
+      // DiscTracker whatever is in flight. That is the stop behind a
+      // disconnect, the airborne block, a session error, a zone grace or
+      // transfer, and a mode switch, so without this the send resumed into a
+      // torn-down lane and put a discovery on the air anyway, then rewrote the
+      // 25 m anchor the teardown had just cleared. The airborne case is the one
+      // that matters: that block exists to stop transmitting from an aircraft.
+      //
+      // No reschedule and no drain: the lane is gone, and forceDisableAutoPing
+      // has already cleared any parked disable.
+      if (!_autoPingEnabled || (!_passiveModeEnabled && !_hybridModeEnabled)) {
+        debugLog('[DISC] Mode ended during the fresh fix, not sending');
+        _pingInProgress = false;
+        return;
+      }
 
       // As in sendTxPing: the transport parks a non-sign write behind an
       // in-progress sign, so take that wait here rather than inside the send.

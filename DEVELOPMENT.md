@@ -771,10 +771,12 @@ parked disable itself, or that stop waits out the 12 second backstop.
 The latch only covers the graceful stop, the one that parks. `forceDisableAutoPing` consults
 nothing: it clears the mode flags and disposes the trackers whatever is in flight, and that is
 the stop behind a disconnect, the airborne block, a session error, a zone grace or transfer,
-and a mode switch. So the trace send also re-reads its mode flags after the fresh fix and bows
-out without transmitting if the lane is gone. That matters most for the airborne block, which
-exists to stop transmitting from an aircraft and was letting one more trace out. **The
-discovery and auto-TX lanes have the same gap and do not yet have that re-check.**
+and a mode switch. So all three sends re-read the mode after the fresh fix and bow out without
+transmitting if the lane is gone. That matters most for the airborne block, which exists to
+stop transmitting from an aircraft and was letting one more packet out on every lane. On the
+TX side the check is auto-only: a manual ping is not part of an auto session, and it takes no
+fresh fix there anyway. `canPing()` re-reads the connection step and the airborne latch after
+that suspension but never the mode, which is why the mode needs its own check.
 
 Two observations carry an `onGlance` flag so a state can belong to a lane (which
 the buttons read) without moving the single glance answer, or reach both. The
