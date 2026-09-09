@@ -211,6 +211,11 @@ class PingControls extends StatelessWidget {
         // say about the same instant.
         final status = appState.sessionStatus;
         final rf = _renderFactsOf(appState);
+        // Which button owns a pending stop. Read from the shared table so the
+        // colour, the caption and the word can never point at different
+        // buttons: stopping Passive lights up Passive, not Active/Hybrid.
+        final txStopping = isTxStopping(status, rf);
+        final passiveStopping = isPassiveStopping(status, rf);
 
         final hint = blockingHint(_hintFactsOf(appState), appState.pingValidation);
         final blockingIcon = hint == null ? null : _hintIcon(hint.hint);
@@ -278,7 +283,7 @@ class PingControls extends StatelessWidget {
                       icon:
                           hybridEnabled ? Icons.compare_arrows : Icons.sensors,
                       label: portraitActiveModeLabel(status, rf),
-                      color: isPendingDisable
+                      color: txStopping
                           ? Colors.orange
                           : isTxModeRunning
                               ? const Color(0xFF22C55E) // green-500
@@ -294,7 +299,7 @@ class PingControls extends StatelessWidget {
                                       !rxWindowActive)) &&
                               !txBlockedByOffline &&
                               !txNotAllowed),
-                      isActive: isPendingDisable || isTxModeRunning,
+                      isActive: txStopping || isTxModeRunning,
                       onPressed: () => hybridEnabled
                           ? _toggleHybridAuto(context, appState)
                           : _toggleTxRxAuto(context, appState),
@@ -303,7 +308,7 @@ class PingControls extends StatelessWidget {
                           ? 'Offline Mode'
                           : txNotAllowed
                               ? 'Zone full'
-                              : (isPendingDisable ? 'Stopping' : null),
+                              : (txStopping ? 'Stopping' : null),
                       subtitleColor: txBlockedByOffline
                           ? Colors.orange
                           : txNotAllowed
@@ -323,23 +328,28 @@ class PingControls extends StatelessWidget {
                   child: _ActionButton(
                     icon: Icons.hearing,
                     label: portraitPassiveModeLabel(status, rf),
-                    color: isPassiveModeRunning
-                        ? const Color(0xFF22C55E) // green-500
-                        : const Color(0xFF6366F1), // indigo-500
-                    enabled: isPassiveModeRunning ||
-                        (appState.isConnected &&
-                            !isTxModeRunning &&
-                            !isTargetedRunning &&
-                            !isPendingDisable &&
-                            !isAutoStarting &&
-                            !isPingSending &&
-                            !rxWindowActive &&
-                            !cooldownActive &&
-                            prefs.externalAntennaSet &&
-                            isPowerSet),
-                    isActive: isPassiveModeRunning &&
-                        (discoveryWindowActive ||
-                            autoPingWaiting), // Active during listening/waiting phases
+                    color: passiveStopping
+                        ? Colors.orange
+                        : isPassiveModeRunning
+                            ? const Color(0xFF22C55E) // green-500
+                            : const Color(0xFF6366F1), // indigo-500
+                    enabled: !isPendingDisable &&
+                        (isPassiveModeRunning ||
+                            (appState.isConnected &&
+                                !isTxModeRunning &&
+                                !isTargetedRunning &&
+                                !isAutoStarting &&
+                                !isPingSending &&
+                                !rxWindowActive &&
+                                !cooldownActive &&
+                                prefs.externalAntennaSet &&
+                                isPowerSet)),
+                    isActive: passiveStopping ||
+                        (isPassiveModeRunning &&
+                            (discoveryWindowActive ||
+                                autoPingWaiting)), // Active during listening/waiting phases
+                    subtitle: passiveStopping ? 'Stopping' : null,
+                    subtitleColor: Colors.orange,
                     onPressed: () => _toggleRxAuto(context, appState),
                   ),
                 ),
@@ -488,8 +498,11 @@ class _ActionButtonState extends State<_ActionButton> {
                           ? effectiveColor
                           : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                     ),
-                    // Active indicator dot
-                    if (widget.isActive)
+                    // Active indicator dot. Suppressed whenever a subtitle is
+                    // showing, for the same reason the caption below prefers
+                    // one: a green running dot on an orange "Stopping 5s"
+                    // button says the mode is still going.
+                    if (widget.isActive && widget.subtitle == null)
                       Positioned(
                         top: 0,
                         right: -6,
@@ -524,26 +537,31 @@ class _ActionButtonState extends State<_ActionButton> {
                       : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                 ),
               ),
-              // Active status text OR subtitle - always reserve space
+              // Subtitle OR the "Active" status text - always reserve space.
+              // The subtitle wins, because it is the more specific word: a
+              // button that is stopping is still "active", and captioning it
+              // green "Active" under an orange "Stopping 5s" read as a mode
+              // that was still running. Nothing else passes a subtitle while
+              // it is active (Offline Mode and Zone full both disable the
+              // button), so this only changes the stop.
               SizedBox(
                 height: 12,
-                child: widget.isActive
-                    ? const Text(
-                        'Active',
+                child: widget.subtitle != null
+                    ? Text(
+                        widget.subtitle!,
                         style: TextStyle(
                           fontSize: 9,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF22C55E),
+                          fontWeight: FontWeight.w500,
+                          color: widget.subtitleColor ?? Colors.orange.shade600,
                         ),
                       )
-                    : widget.subtitle != null
-                        ? Text(
-                            widget.subtitle!,
+                    : widget.isActive
+                        ? const Text(
+                            'Active',
                             style: TextStyle(
                               fontSize: 9,
-                              fontWeight: FontWeight.w500,
-                              color: widget.subtitleColor ??
-                                  Colors.orange.shade600,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF22C55E),
                             ),
                           )
                         : null,
@@ -620,6 +638,8 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
       builder: (_, __) {
         final status = appState.sessionStatus;
         final rf = _renderFactsOf(appState);
+        // A pending stop belongs to the button of the mode being stopped.
+        final traceStopping = isTraceStopping(status, rf);
         final isTargetedRunning = appState.isTargetedModeRunning;
         final maxLen = appState.traceHopBytes * 2;
 
@@ -646,12 +666,26 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
             prefs.externalAntennaSet &&
             isPowerSet;
 
-        final isEnabled = (canStart || isTargetedRunning) && !_isStarting;
-        final buttonColor = (isTargetedRunning || _isStarting)
-            ? const Color(0xFF22C55E) // green-500 when running/starting
-            : Colors.cyan;
-        final effectiveColor =
-            isEnabled ? buttonColor : colorScheme.onSurfaceVariant;
+        // `isTargetedRunning` stays true through a pending stop, so without
+        // the guard this section kept taking taps while its own stop was
+        // draining, which re-entered the disable and parked it until the 12s
+        // backstop. The Active/Hybrid button has always led with this check.
+        final isEnabled = (canStart || isTargetedRunning) &&
+            !_isStarting &&
+            !rf.isPendingDisable;
+        final buttonColor = traceStopping
+            ? Colors.orange
+            : (isTargetedRunning || _isStarting)
+                ? const Color(0xFF22C55E) // green-500 when running/starting
+                : Colors.cyan;
+        // `|| traceStopping` is the `showColor = enabled || isActive` idiom the
+        // other three buttons use. Without it this section, which greys itself
+        // while its own stop drains, could never show the stop: portrait dimmed
+        // it to 50% and landscape (which renders no label at all) showed
+        // nothing whatsoever.
+        final effectiveColor = isEnabled || traceStopping
+            ? buttonColor
+            : colorScheme.onSurfaceVariant;
 
         return Container(
           decoration: BoxDecoration(
@@ -826,6 +860,12 @@ class _CompactPingControlsState extends State<CompactPingControls> {
       builder: (_, __) {
         final status = appState.sessionStatus;
         final rf = _renderFactsOf(appState);
+        // Which button owns a pending stop. Read from the shared table so the
+        // colour, the caption and the word can never point at different
+        // buttons: stopping Passive lights up Passive, not Active/Hybrid.
+        final txStopping = isTxStopping(status, rf);
+        final passiveStopping = isPassiveStopping(status, rf);
+        final traceStopping = isTraceStopping(status, rf);
         final manualValidation = appState
             .manualPingValidation; // Manual ping validation (no distance check)
         final autoValidation = appState.autoModeValidation;
@@ -866,9 +906,10 @@ class _CompactPingControlsState extends State<CompactPingControls> {
         final sendPingCurrentlyActive =
             (isPingSending || rxWindowActive || manualCooldownActive) &&
                 !isTxModeRunning;
-        final activeModeCurrentlyActive = isPendingDisable || isTxModeRunning;
-        final passiveModeCurrentlyActive =
-            isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
+        final activeModeCurrentlyActive = txStopping || isTxModeRunning;
+        final passiveModeCurrentlyActive = passiveStopping ||
+            (isPassiveModeRunning &&
+                (discoveryWindowActive || autoPingWaiting));
 
         // Track the last active button for cooldown
         if (sendPingCurrentlyActive) {
@@ -877,7 +918,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
           _lastActiveButton = _LastActiveButton.activeMode;
         } else if (passiveModeCurrentlyActive) {
           _lastActiveButton = _LastActiveButton.passiveMode;
-        } else if (isTargetedRunning) {
+        } else if (traceStopping || isTargetedRunning) {
           _lastActiveButton = _LastActiveButton.targeted;
         }
         // Reset when no cooldown and no activity
@@ -886,6 +927,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             !sendPingCurrentlyActive &&
             !activeModeCurrentlyActive &&
             !passiveModeCurrentlyActive &&
+            !traceStopping &&
             !isTargetedRunning) {
           _lastActiveButton = _LastActiveButton.none;
         }
@@ -936,28 +978,29 @@ class _CompactPingControlsState extends State<CompactPingControls> {
                         !rxWindowActive)) &&
                 !txBlockedByOffline &&
                 !txNotAllowed);
-        final activeModeActive = isPendingDisable || isTxModeRunning;
+        final activeModeActive = txStopping || isTxModeRunning;
         final activeModeShowColor = activeModeEnabled || activeModeActive;
 
-        final passiveModeEnabled = isPassiveModeRunning ||
-            (appState.isConnected &&
-                !isTxModeRunning &&
-                !isTargetedRunning &&
-                !isPendingDisable &&
-                !isAutoStarting &&
-                !isPingSending &&
-                !rxWindowActive &&
-                !cooldownActive &&
-                prefs.externalAntennaSet &&
-                isPowerSet);
-        final passiveModeActive =
-            isPassiveModeRunning && (discoveryWindowActive || autoPingWaiting);
+        final passiveModeEnabled = !isPendingDisable &&
+            (isPassiveModeRunning ||
+                (appState.isConnected &&
+                    !isTxModeRunning &&
+                    !isTargetedRunning &&
+                    !isAutoStarting &&
+                    !isPingSending &&
+                    !rxWindowActive &&
+                    !cooldownActive &&
+                    prefs.externalAntennaSet &&
+                    isPowerSet));
+        final passiveModeActive = passiveStopping ||
+            (isPassiveModeRunning &&
+                (discoveryWindowActive || autoPingWaiting));
         final passiveModeShowColor = passiveModeEnabled || passiveModeActive;
 
         // Trace Mode (only relevant when a repeater ID has been entered)
         final hasTargetRepeaterId = appState.targetRepeaterId != null &&
             appState.targetRepeaterId!.isNotEmpty;
-        final targetedCurrentlyActive = isTargetedRunning;
+        final targetedCurrentlyActive = traceStopping || isTargetedRunning;
         final traceModeExpanded = targetedCurrentlyActive ||
             (cooldownActive && _lastActiveButton == _LastActiveButton.targeted);
         final traceModeEnabled = hasTargetRepeaterId &&
@@ -972,7 +1015,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             appState.isConnected &&
             prefs.externalAntennaSet &&
             isPowerSet;
-        final traceModeActive = isTargetedRunning;
+        final traceModeActive = traceStopping || isTargetedRunning;
         final traceModeShowColor = traceModeEnabled || traceModeActive;
 
         // Check if any button is actively expanded (showing label)
@@ -1011,7 +1054,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
           label: compactActiveModeLabel(status, rf,
               showFullText: activeModeExpanded,
               isExpandedDuringCooldown: activeModeExpanded && cooldownActive),
-          color: isPendingDisable
+          color: txStopping
               ? Colors.orange
               : isTxModeRunning
                   ? const Color(0xFF22C55E) // green-500
@@ -1039,20 +1082,30 @@ class _CompactPingControlsState extends State<CompactPingControls> {
           label: compactPassiveModeLabel(status, rf,
               showFullText: passiveModeExpanded,
               isExpandedDuringCooldown: passiveModeExpanded && cooldownActive),
-          color: isPassiveModeRunning
-              ? const Color(0xFF22C55E) // green-500
-              : const Color(0xFF6366F1), // indigo-500
+          color: passiveStopping
+              ? Colors.orange
+              : isPassiveModeRunning
+                  ? const Color(0xFF22C55E) // green-500
+                  : const Color(0xFF6366F1), // indigo-500
           enabled: passiveModeEnabled,
           isActive: passiveModeActive,
           isExpanded: passiveModeExpanded,
-          progress: discoveryWindowActive && isPassiveModeRunning
-              ? appState.discoveryWindowTimer.progress
-              : autoPingWaiting && isPassiveModeRunning
-                  ? appState.autoPingTimer.progress
-                  : cooldownActive &&
-                          _lastActiveButton == _LastActiveButton.passiveMode
-                      ? appState.cooldownTimer.progress
-                      : null,
+          // While its own stop drains, the bar follows the window the label
+          // counts, not the interval timer that is still running underneath.
+          progress: passiveStopping
+              ? (discoveryWindowActive
+                  ? appState.discoveryWindowTimer.progress
+                  : rxWindowActive
+                      ? appState.rxWindowTimer.progress
+                      : null)
+              : discoveryWindowActive && isPassiveModeRunning
+                  ? appState.discoveryWindowTimer.progress
+                  : autoPingWaiting && isPassiveModeRunning
+                      ? appState.autoPingTimer.progress
+                      : cooldownActive &&
+                              _lastActiveButton == _LastActiveButton.passiveMode
+                          ? appState.cooldownTimer.progress
+                          : null,
           onPressed: () => _toggleRxAuto(context, appState),
         );
 
@@ -1062,10 +1115,12 @@ class _CompactPingControlsState extends State<CompactPingControls> {
           label: compactTraceModeLabel(status, rf,
               showFullText: traceModeExpanded,
               isExpandedDuringCooldown: traceModeExpanded && cooldownActive),
-          color: isTargetedRunning
-              ? const Color(0xFF22C55E) // green-500
-              : const Color(0xFF06B6D4), // cyan-500
-          enabled: traceModeEnabled || isTargetedRunning,
+          color: traceStopping
+              ? Colors.orange
+              : isTargetedRunning
+                  ? const Color(0xFF22C55E) // green-500
+                  : const Color(0xFF06B6D4), // cyan-500
+          enabled: !isPendingDisable && (traceModeEnabled || isTargetedRunning),
           isActive: traceModeActive,
           isExpanded: traceModeExpanded,
           progress: discoveryWindowActive && isTargetedRunning
@@ -1181,6 +1236,11 @@ class LandscapePingControls extends StatelessWidget {
       builder: (_, __) {
         final status = appState.sessionStatus;
         final rf = _renderFactsOf(appState);
+        // Which button owns a pending stop. Read from the shared table so the
+        // colour, the caption and the word can never point at different
+        // buttons: stopping Passive lights up Passive, not Active/Hybrid.
+        final txStopping = isTxStopping(status, rf);
+        final passiveStopping = isPassiveStopping(status, rf);
         final manualValidation = appState
             .manualPingValidation; // Manual ping validation (no distance check)
         final autoValidation = appState.autoModeValidation;
@@ -1276,7 +1336,7 @@ class LandscapePingControls extends StatelessWidget {
                       tooltip: txNotAllowed
                           ? 'Passive only (zone full)'
                           : (hybridEnabled ? 'Hybrid Mode' : 'Active Mode'),
-                      color: isPendingDisable
+                      color: txStopping
                           ? Colors.orange
                           : isTxModeRunning
                               ? const Color(0xFF22C55E) // green-500
@@ -1292,7 +1352,7 @@ class LandscapePingControls extends StatelessWidget {
                                       !rxWindowActive)) &&
                               !txBlockedByOffline &&
                               !txNotAllowed),
-                      isActive: isPendingDisable || isTxModeRunning,
+                      isActive: txStopping || isTxModeRunning,
                       countdown: landscapeActiveModeCountdown(status, rf),
                       onPressed: () => hybridEnabled
                           ? _toggleHybridAuto(context, appState)
@@ -1307,22 +1367,25 @@ class LandscapePingControls extends StatelessWidget {
                   child: _LandscapeIconButton(
                     icon: Icons.hearing,
                     tooltip: 'Passive Mode',
-                    color: isPassiveModeRunning
-                        ? const Color(0xFF22C55E) // green-500
-                        : const Color(0xFF6366F1), // indigo-500
-                    enabled: isPassiveModeRunning ||
-                        (appState.isConnected &&
-                            !isTxModeRunning &&
-                            !isTargetedRunning &&
-                            !isPendingDisable &&
-                            !isAutoStarting &&
-                            !isPingSending &&
-                            !rxWindowActive &&
-                            !cooldownActive &&
-                            prefs.externalAntennaSet &&
-                            isPowerSet),
-                    isActive: isPassiveModeRunning &&
-                        (discoveryWindowActive || autoPingWaiting),
+                    color: passiveStopping
+                        ? Colors.orange
+                        : isPassiveModeRunning
+                            ? const Color(0xFF22C55E) // green-500
+                            : const Color(0xFF6366F1), // indigo-500
+                    enabled: !isPendingDisable &&
+                        (isPassiveModeRunning ||
+                            (appState.isConnected &&
+                                !isTxModeRunning &&
+                                !isTargetedRunning &&
+                                !isAutoStarting &&
+                                !isPingSending &&
+                                !rxWindowActive &&
+                                !cooldownActive &&
+                                prefs.externalAntennaSet &&
+                                isPowerSet)),
+                    isActive: passiveStopping ||
+                        (isPassiveModeRunning &&
+                            (discoveryWindowActive || autoPingWaiting)),
                     countdown: landscapePassiveModeCountdown(status, rf),
                     onPressed: () => _toggleRxAuto(context, appState),
                   ),

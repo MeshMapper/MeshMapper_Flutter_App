@@ -188,6 +188,7 @@ ExternalCommandAdmission resolveExternalSessionTransition({
   required ExternalSessionCommand command,
   required bool isSessionActive,
   required bool isSessionStarting,
+  required bool isSessionStopping,
   required String currentMode,
   required String currentSessionId,
   required String currentModeLabel,
@@ -244,6 +245,30 @@ ExternalCommandAdmission resolveExternalSessionTransition({
         return const ExternalCommandAdmission(
           disposition: ExternalCommandDisposition.refused,
           reason: ExternalCommandReason.stillStartingTryStopAgain,
+        );
+      }
+      // A stop already draining behind an in-flight ping. The wearer's intent
+      // is being carried out, so this is a no-op and not a refusal, the mirror
+      // of a duplicate Start above.
+      //
+      // It has to be admitted nowhere, not merely answered politely: a second
+      // Stop re-enters `disableAutoPing` after the in-flight ping has armed its
+      // listening window, takes the immediate teardown branch, and disposes the
+      // tracker whose window completion is the only thing that would have
+      // drained the parked disable. The session then sat half stopped, with no
+      // cooldown and the foreground service still up, until the 12 second
+      // backstop fired.
+      //
+      // Ahead of the `!isSessionActive` test below on purpose: one stop path
+      // (`_stopAutoPingGracefully`) clears the session flag while the disable is
+      // still parked, and "there isn't a session running" would be the wrong
+      // thing to say about a session that is visibly stopping.
+      if (isSessionStopping) {
+        return const ExternalCommandAdmission(
+          disposition: ExternalCommandDisposition.noOp,
+          reason: ExternalCommandReason.other(
+            'MeshMapper is already stopping.',
+          ),
         );
       }
       if (!isSessionActive) {

@@ -741,6 +741,176 @@ void main() {
     });
   });
 
+  group('a stop lands on the button of the mode being stopped', () {
+    // `isPendingDisable` says a stop is parked behind an in-flight ping, not
+    // which mode asked for it, and every renderer used to put the word on the
+    // Active/Hybrid button. Stopping Passive therefore lit up a button for a
+    // mode that was never running, which is exactly what a user reported after
+    // sending a manual ping during a Passive drive and then stopping Passive.
+
+    test('exactly one button owns a pending stop', () {
+      for (final k in [
+        facts(isPendingDisable: true), // Active
+        facts(isPendingDisable: true, isTxModeRunning: true),
+        facts(isPendingDisable: true, isPassiveModeRunning: true),
+        facts(isPendingDisable: true, isTargetedRunning: true),
+      ]) {
+        final s = _status(k);
+        final f = _render(k);
+        final owners = [
+          labels.isTxStopping(s, f),
+          labels.isPassiveStopping(s, f),
+          labels.isTraceStopping(s, f),
+        ];
+        expect(owners.where((o) => o).length, 1, reason: '$k');
+      }
+    });
+
+    test('the stop follows the mode even after the running flags go false', () {
+      // `_stopAutoPingGracefully` (the Offline Mode hot switch) clears the
+      // provider's `_autoPingEnabled` while the stop is still draining, because
+      // it waits on the in-flight ping rather than on the parked disable. All
+      // three "running" flags are false there, so deriving the stopping lane
+      // from them put a Passive stop back on the Active button. The lane comes
+      // from the model's `owner`, which reads `_autoMode`, so it survives.
+      final s = resolveSessionStatus(
+        isInZoneGracePeriod: false,
+        zoneGraceEndsAt: null,
+        isZoneTransferInProgress: false,
+        isAutoReconnecting: false,
+        connectionStep: ConnectionStep.connected,
+        isConnected: true,
+        isPendingDisable: true,
+        isGpsLocked: true,
+        autoMode: AutoMode.passive,
+        txAllowed: true,
+        isManualSession: false,
+        isPingSending: false,
+        isPingInProgress: false,
+        isRxWindowRunning: false,
+        rxWindow: null,
+        isDiscoveryWindowRunning: true,
+        discoveryWindow: (endsAt: _epoch, durationMs: null, remainingSec: 6),
+        isManualCooldownRunning: false,
+        manualCooldown: null,
+        isAutoPingRunning: false,
+        autoPingSkipReason: null,
+        autoPing: null,
+        isSharedCooldownRunning: false,
+        sharedCooldown: null,
+        operation: null,
+        isSessionStarting: false,
+        isSessionActive: false, // the flags have already been cleared
+      );
+      final f = _render(facts(isPendingDisable: true));
+      expect(labels.isPassiveStopping(s, f), isTrue);
+      expect(labels.isTxStopping(s, f), isFalse);
+      expect(labels.portraitPassiveModeLabel(s, f), 'Stopping 6s');
+      expect(labels.portraitActiveModeLabel(s, f),
+          isNot(startsWith('Stopping')));
+    });
+
+    test('no button claims a stop when none is pending', () {
+      final k = facts(isPassiveModeRunning: true);
+      final s = _status(k);
+      final f = _render(k);
+      expect(labels.isTxStopping(s, f), isFalse);
+      expect(labels.isPassiveStopping(s, f), isFalse);
+      expect(labels.isTraceStopping(s, f), isFalse);
+    });
+
+    test('a Passive stop reads Stopping on Passive, not on Active', () {
+      // The reported repro: a manual ping is listening for echoes, so the
+      // Passive stop is parked behind it and the window it counts down is the
+      // manual one.
+      final k = facts(
+          isPendingDisable: true,
+          isPassiveModeRunning: true,
+          rxWindowActive: true);
+      expect(portraitPassiveModeLabel(k), 'Stopping 4s');
+      expect(portraitActiveModeLabel(k), isNot(startsWith('Stopping')));
+
+      // Its own discovery window is preferred when both are open.
+      final withDisc = facts(
+          isPendingDisable: true,
+          isPassiveModeRunning: true,
+          discoveryWindowActive: true,
+          rxWindowActive: true);
+      expect(portraitPassiveModeLabel(withDisc), 'Stopping 6s');
+
+      // Nothing left to wait out.
+      expect(
+          portraitPassiveModeLabel(
+              facts(isPendingDisable: true, isPassiveModeRunning: true)),
+          'Stopping...');
+    });
+
+    test('an Active stop still reads Stopping on Active, not on Passive', () {
+      final k = facts(
+          isPendingDisable: true,
+          isTxModeRunning: true,
+          rxWindowActive: true);
+      expect(portraitActiveModeLabel(k), 'Stopping 4s');
+      expect(portraitPassiveModeLabel(k), 'Passive Mode');
+    });
+
+    test('a Trace stop reads Stopping in the Trace section only', () {
+      final k = facts(
+          isPendingDisable: true,
+          isTargetedRunning: true,
+          discoveryWindowActive: true);
+      expect(traceSectionLabel(k, isStarting: false), 'Stopping 6s');
+      expect(portraitActiveModeLabel(k), isNot(startsWith('Stopping')));
+      expect(portraitPassiveModeLabel(k), 'Passive Mode');
+    });
+
+    test('compact moves the word with it', () {
+      final passive = facts(
+          isPendingDisable: true,
+          isPassiveModeRunning: true,
+          rxWindowActive: true);
+      expect(
+          compactPassiveModeLabel(passive,
+              showFullText: true, isExpandedDuringCooldown: false),
+          'Stopping 4s');
+      expect(
+          compactActiveModeLabel(passive,
+              showFullText: true, isExpandedDuringCooldown: false),
+          isNot(startsWith('Stopping')));
+
+      // Collapsed, it is a bare countdown like every other compact state.
+      expect(
+          compactPassiveModeLabel(passive,
+              showFullText: false, isExpandedDuringCooldown: false),
+          '4s');
+
+      final trace = facts(
+          isPendingDisable: true,
+          isTargetedRunning: true,
+          discoveryWindowActive: true);
+      expect(
+          compactTraceModeLabel(trace,
+              showFullText: true, isExpandedDuringCooldown: false),
+          'Stopping 6s');
+    });
+
+    test('landscape moves the number with it', () {
+      final passive = facts(
+          isPendingDisable: true,
+          isPassiveModeRunning: true,
+          rxWindowActive: true);
+      expect(landscapePassiveModeCountdown(passive), 4);
+      expect(landscapeActiveModeCountdown(passive), isNull);
+
+      final active = facts(
+          isPendingDisable: true,
+          isTxModeRunning: true,
+          rxWindowActive: true);
+      expect(landscapeActiveModeCountdown(active), 4);
+      expect(landscapePassiveModeCountdown(active), isNull);
+    });
+  });
+
   test('the paused word tells a hold apart from a drop', () {
     expect(pausedWord(PingService.skipReasonRecentlyCovered), 'Deferred');
     expect(pausedWord('too close'), 'Skipped');

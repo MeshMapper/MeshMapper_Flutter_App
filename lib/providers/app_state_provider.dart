@@ -292,6 +292,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const double _idleAnchorRadiusMeters = 150;
   static const int _idleAnchorStreakRequired = 3;
   bool _isPingSending = false; // True immediately when ping button clicked
+  /// True from the moment a stop begins until the teardown behind it has
+  /// finished. It covers the awaits that [isPendingDisable]'s own flag does
+  /// not: the inline stop branch (which never parks a disable at all) and the
+  /// drain's provider half, which runs after PingService has already cleared
+  /// its flag. Without it "is the session stopping" was true for only the first
+  /// part of a stop, and a second Stop arriving in either window was admitted
+  /// and re-ran the teardown, re-arming the 5 second cooldown from zero.
+  bool _autoPingStopping = false;
+
   bool _autoPingStarting =
       false; // True while an auto mode is starting (before the first notify)
   int _queueSize = 0;
@@ -750,7 +759,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // pendingDisable should clear when the RX/discovery window it is waiting on
     // completes. Still true while no such window is counting down => stuck.
-    if (isPendingDisable &&
+    if ((_pingService?.pendingDisable ?? false) &&
         !_rxWindowTimer.isRunning &&
         !_discoveryWindowTimer.isRunning) {
       debugWarn('[TIMER] pendingDisable stuck true with no RX/discovery window '
@@ -821,8 +830,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isDiscoveryListening =>
       _pingService?.isDiscoveryListening ??
       false; // True during discovery listening window (for Passive Mode)
-  /// Check if auto-ping disable is pending (waiting for RX window)
-  bool get isPendingDisable => _pingService?.pendingDisable ?? false;
+  /// Whether a stop is under way: a disable parked behind an in-flight ping,
+  /// or the teardown that follows one. Every surface that asks "is the session
+  /// stopping" reads this, so the buttons, the glance and the Siri/watch
+  /// admission rule cannot give different answers about the same instant.
+  bool get isPendingDisable =>
+      (_pingService?.pendingDisable ?? false) || _autoPingStopping;
 
   /// True when running any mode that does TX (Active or Hybrid)
   bool get isTxModeRunning =>
@@ -2168,6 +2181,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       command: command,
       isSessionActive: _autoPingEnabled,
       isSessionStarting: _autoPingStarting,
+      isSessionStopping: isPendingDisable,
       currentMode: _autoMode.name,
       currentSessionId: _liveActivitySessionId ?? 'idle',
       currentModeLabel: _autoMode.displayName,
@@ -2245,7 +2259,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             return ExternalCommandCompletion(
               success: false,
               disposition: ExternalCommandDisposition.refused,
-              message: _externalStartFailureReason(mode),
+              message: _externalStartFailureReason(),
               mode: mode,
             );
           }
@@ -2304,7 +2318,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         success: false,
         disposition: ExternalCommandDisposition.refused,
         message: command.kind == ExternalSessionCommandKind.startSession
-            ? _externalStartFailureReason(admission.mode)
+            ? _externalStartFailureReason()
             : command.kind == ExternalSessionCommandKind.stopSession
                 ? ExternalCommandReason.couldNotStop
                 : _lastSessionCheckFailureReason ??
@@ -2466,12 +2480,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         ExternalSessionMode.hybrid => AutoMode.hybrid,
       };
 
-  ExternalCommandReason _externalStartFailureReason(
-    ExternalSessionMode? mode,
-  ) {
+  ExternalCommandReason _externalStartFailureReason() {
     final sessionReason = _lastSessionCheckFailureReason;
     if (sessionReason != null) return sessionReason;
-    if (mode != ExternalSessionMode.passive && _cooldownTimer.isRunning) {
+    // Every mode, Passive included: the stop cooldown now applies to all of
+    // them, so a refused Passive start has to say it is cooling down rather
+    // than fall through to the vague "could not start".
+    if (_cooldownTimer.isRunning) {
       return ExternalCommandReason.coolingDown;
     }
     return ExternalCommandReason.couldNotStart;
@@ -4928,28 +4943,36 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _pingService!.onPendingDisableComplete = () async {
       debugLog('[APP] Pending disable completed, cleaning up');
+      // PingService cleared its own pendingDisable before calling this, so the
+      // latch is what keeps the session reading as stopping across the awaits
+      // below. This is the window a wearer taps into: they have been looking at
+      // an enabled Stop for the length of the echo window.
+      _autoPingStopping = true;
+      try {
+        _pingService!.stopEchoTracking();
+        _rxLogger?.stopWardriving(trigger: 'pending_disable');
 
-      _pingService!.stopEchoTracking();
-      _rxLogger?.stopWardriving(trigger: 'pending_disable');
+        await BackgroundServiceManager.stopService();
 
-      await BackgroundServiceManager.stopService();
+        _autoPingTimer.stop();
+        _rxWindowTimer.stop();
 
-      _autoPingTimer.stop();
-      _rxWindowTimer.stop();
+        if (_preferences.offlineMode) {
+          await _saveOfflineSession();
+        }
 
-      if (_preferences.offlineMode) {
-        await _saveOfflineSession();
+        await _endNoiseFloorSession();
+        _apiService.disableHeartbeat();
+
+        _autoPingEnabled = false;
+        _resetIdleAutoStop();
+        _finishLiveActivitySession();
+
+        debugLog('[APP] Pending disable cleanup complete, cooldown running');
+      } finally {
+        _autoPingStopping = false;
+        notifyListeners();
       }
-
-      await _endNoiseFloorSession();
-      _apiService.disableHeartbeat();
-
-      _autoPingEnabled = false;
-      _resetIdleAutoStop();
-      _finishLiveActivitySession();
-
-      debugLog('[APP] Pending disable cleanup complete, cooldown running');
-      notifyListeners();
     };
 
     await _saveRememberedDevice(device,
@@ -6492,71 +6515,102 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final isPassive = mode == AutoMode.passive;
     final isHybrid = mode == AutoMode.hybrid;
     final isTargeted = mode == AutoMode.targeted;
-    final isTxMode = !isPassive; // Active, Hybrid, and Targeted all do TX
 
     // If currently running the same mode, stop it (always allow stopping)
     if (_autoPingEnabled && _autoMode == mode) {
       debugLog('[PING] Stopping auto mode: ${mode.name}');
+      // Held for the whole branch, including the inline teardown below, which
+      // parks no disable of its own and so left the session reading as running
+      // across its three awaits while _autoPingEnabled was still true. A second
+      // Stop landing there re-ran the whole teardown and re-armed the 5 second
+      // cooldown from zero.
+      _autoPingStopping = true;
+      try {
+        // Try graceful disable first - this queues disable if ping is in progress
+        await _pingService!.disableAutoPing();
 
-      // Try graceful disable first - this queues disable if ping is in progress
-      await _pingService!.disableAutoPing();
+        // If ping was in progress, disableAutoPing() queued the disable
+        // Just update UI state - actual disable happens after RX window
+        if (_pingService!.pendingDisable) {
+          debugLog('[PING] Disable pending, will complete after RX window');
+          // Don't change _autoPingEnabled yet - let RX window complete
+          // But notify listeners so UI can grey out buttons and show "Stopping..."
+          notifyListeners();
+          return true;
+        }
 
-      // If ping was in progress, disableAutoPing() queued the disable
-      // Just update UI state - actual disable happens after RX window
-      if (_pingService!.pendingDisable) {
-        debugLog('[PING] Disable pending, will complete after RX window');
-        // Don't change _autoPingEnabled yet - let RX window complete
-        // But notify listeners so UI can grey out buttons and show "Stopping..."
-        notifyListeners();
-        return true;
-      }
+        // No ping in progress - immediate disable path
+        // Stop TX echo tracking to prevent late timer callbacks from triggering pings
+        // This fixes race condition where RX window timer fires after mode is disabled
+        _pingService!.stopEchoTracking();
+        // Stop RX wardriving (flushes batches)
+        _rxLogger?.stopWardriving(trigger: 'user_stop');
 
-      // No ping in progress - immediate disable path
-      // Stop TX echo tracking to prevent late timer callbacks from triggering pings
-      // This fixes race condition where RX window timer fires after mode is disabled
-      _pingService!.stopEchoTracking();
-      // Stop RX wardriving (flushes batches)
-      _rxLogger?.stopWardriving(trigger: 'user_stop');
+        // Stop background service
+        await BackgroundServiceManager.stopService();
 
-      // Stop background service
-      await BackgroundServiceManager.stopService();
+        // Stop countdown timers (fixes "Next ping in Xs" continuing after stop)
+        _autoPingTimer.stop();
+        _rxWindowTimer.stop();
 
-      // Stop countdown timers (fixes "Next ping in Xs" continuing after stop)
-      _autoPingTimer.stop();
-      _rxWindowTimer.stop();
+        // Save offline session if offline mode is enabled
+        if (_preferences.offlineMode) {
+          await _saveOfflineSession();
+        }
 
-      // Save offline session if offline mode is enabled
-      if (_preferences.offlineMode) {
-        await _saveOfflineSession();
-      }
+        // End noise floor session when mode is disabled
+        await _endNoiseFloorSession();
 
-      // End noise floor session when mode is disabled
-      await _endNoiseFloorSession();
+        // Keep heartbeat enabled (stays on while connected to prevent session expiry)
+        // Re-start idle disconnect timer now that user is idle again
+        _startIdleDisconnectTimer();
 
-      // Keep heartbeat enabled (stays on while connected to prevent session expiry)
-      // Re-start idle disconnect timer now that user is idle again
-      _startIdleDisconnectTimer();
+        _autoPingEnabled = false;
+        _resetIdleAutoStop();
+        _finishLiveActivitySession();
 
-      _autoPingEnabled = false;
-      _resetIdleAutoStop();
-      _finishLiveActivitySession();
+        // Clear top-heard overlay on stop
+        _clearOverlayState();
 
-      // Clear top-heard overlay on stop
-      _clearOverlayState();
-
-      // Start 5-second shared cooldown for TX modes (Active/Hybrid), not Passive Mode
-      // Passive Mode is listening only, no cooldown needed
-      if (isTxMode) {
+        // Start the 5 second shared cooldown for every mode, Passive included.
+        // Passive used to be exempt on the grounds that it is listen-only, but a
+        // Passive start puts a discovery request on the air within milliseconds,
+        // so an un-cooled stop let the button be toggled to flood the mesh. The
+        // pending-disable path (_executePendingDisable) has always started this
+        // cooldown regardless of mode, so Passive already got one whenever the
+        // stop was queued behind an in-flight ping; this makes the two stop paths
+        // agree instead of the cooldown depending on timing.
         _cooldownTimer.start(5000);
         debugLog(
-            '[${mode.name.toUpperCase()} MODE] Shared cooldown started (5s) - blocks TX Ping and TX modes');
-      } else {
-        debugLog('[PASSIVE MODE] Stopped - no cooldown (listen-only mode)');
+            '[${mode.name.toUpperCase()} MODE] Shared cooldown started (5s) - blocks TX Ping and every auto mode');
+      } finally {
+        // Cleared on every exit, the parked-disable return included: from
+        // there PingService.pendingDisable carries the stopping state, and
+        // the drain re-raises this latch when it clears that flag.
+        _autoPingStopping = false;
       }
     } else {
       // Ignore re-taps while a start is already in flight (prevents the
       // double-tap / concurrent-heartbeat storm during the session check)
       if (_autoPingStarting) return false;
+
+      // Block starting while the shared cooldown runs. Every mode, Passive
+      // included: it is the other half of the stop cooldown above, and the
+      // buttons have always been greyed out here for Passive too, so this only
+      // closes the programmatic route (Siri, the watch, an idle auto-stop
+      // restart) that could still slip through.
+      //
+      // Checked here, ahead of the starting latch, rather than after the
+      // awaited session check. A refused start has no business spending a
+      // /wardrive POST first, and the cancel of the idle-disconnect timer
+      // below it has nothing to restart it, so a blocked tap used to leave the
+      // session without its idle timeout. Passive is the button people toggle
+      // most, so the widened gate would have made that easy to hit.
+      if (_cooldownTimer.isRunning) {
+        debugLog(
+            '[${mode.name.toUpperCase()} MODE] Start blocked by shared cooldown');
+        return false;
+      }
 
       // Set starting state immediately for instant UI feedback, BEFORE the
       // (awaited, network) session check so the buttons lock the moment it's tapped
@@ -6571,14 +6625,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!_preferences.offlineMode) {
           final sessionCheck = await _checkSessionBeforeAction();
           if (!sessionCheck) return false;
-        }
-
-        // Block starting if shared cooldown is active (TX modes only)
-        // Passive Mode is listening only and can start during cooldown
-        if (isTxMode && _cooldownTimer.isRunning) {
-          debugLog(
-              '[${mode.name.toUpperCase()} MODE] Start blocked by shared cooldown');
-          return false;
         }
 
         // The awaited session check can outlast the deadline an external

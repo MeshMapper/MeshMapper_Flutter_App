@@ -258,6 +258,18 @@ Three auto-ping modes are available after connecting:
 
 All modes also passively listen for RX packets via `RxLogger`, adding additional free coverage data to MeshMapper from nearby mesh traffic.
 
+Stopping any mode arms a 5 second shared cooldown before another can start
+(`AppStateProvider.toggleAutoPing`), and every button, Siri and the watch respect it. Passive
+used to be exempt on the grounds that it is listen-only, but a Passive start puts a discovery
+request on the air within milliseconds, so the toggle could be worked to flood the mesh. A
+user-initiated Passive or Hybrid stop also KEEPS the 25 m discovery anchor
+(`PingService._stopDiscoveryMode(keepDistanceAnchor: true)`), so restarting on the same spot
+is held by the distance rule instead of transmitting at once, which is how the TX side has
+always behaved (its anchor lives on `GpsService` and no stop clears it). A genuine teardown
+(force disable, disconnect, dispose) still clears the anchor, so a reconnect always opens with
+a discovery. The Offline Mode hot switch keeps it, since it stops through the same
+user-stop path and the phone has not moved.
+
 ### GPS & Zone Validation
 
 - Uses `geolocator` package with high accuracy and continuous tracking
@@ -717,6 +729,52 @@ Who reads what:
 - **The Android foreground notification** reads `androidNotificationContent`
   (`lib/services/status/android_notification.dart`) for its finished title and
   body; the background isolate composes nothing.
+
+**A pending stop belongs to the mode being stopped.** It is the one state that is NOT a lane
+observation: it is laid over the glance only, so the lane the mode is closing keeps counting
+its own window down. The glance names that mode's lane as the `owner` (`_autoLane(autoMode)`),
+and the buttons ask the same question through `isTxStopping` / `isPassiveStopping` /
+`isTraceStopping` in `ping_control_labels.dart`. Exactly one is true whenever a stop is
+pending, Active taking anything no other mode claims, so a stop is never rendered nowhere and
+never on a button whose mode was not running. `isPendingDisable` used to be a lane-less
+boolean that every renderer put on the Active/Hybrid button, so stopping Passive turned
+Active orange and read "Stopping" for a mode that had never been enabled. The button that
+owns the stop also stops taking taps while it drains, which Active always did and Passive and
+Trace did not (their `isXRunning ||` short-circuited past the guard, and a second tap tore the
+lane down without clearing the parked disable, leaving the stop up for the full 12 second
+backstop).
+
+"Is the session stopping" is one fact, `AppStateProvider.isPendingDisable`: a disable parked
+behind an in-flight ping, OR the teardown that follows one (`_autoPingStopping`). The latch
+half matters because the parked flag is cleared by `PingService` on the first line of the
+drain and the provider's half of the teardown runs after that, across three awaits, and the
+inline stop path parks no flag at all. Without it the session read as running for the back
+half of every stop, and a repeat Stop from Siri or the watch landing there was admitted and
+re-ran the teardown, re-arming the 5 second cooldown from zero. The Siri/watch lane answers a
+repeat Stop with a no-op, "MeshMapper is already stopping"
+(`resolveExternalSessionTransition`, ahead of its idle test because one stop path clears the
+session flag while the disable is still parked), and `PingService.disableAutoPing` returns
+early when a disable is already parked, so no caller can strand one: the old fall-through ran
+the immediate teardown, which disposes the tracker whose window completion is the only thing
+that drains it. `forceDisableAutoPing` is still the way to override a parked disable.
+
+All three send lanes latch `_pingInProgress` BEFORE their fresh GPS fix, never after it, so a
+Stop pressed during that fetch parks rather than tearing the lane down under a send that is
+still running. Trace was the exception and it showed: its stop ran the immediate teardown,
+disposed the TraceTracker and nulled the distance anchor, and the suspended send then resumed
+with nothing to stop it, putting a trace on the air for a session the user had already
+stopped, arming a listening window against a disposed tracker (a countdown whose completion
+could never fire), and leaving a stale anchor that skipped the next session's first trace. The
+corollary of the latch is that every bow-out past it (no fix, the 25 m rule) has to drain a
+parked disable itself, or that stop waits out the 12 second backstop.
+
+The latch only covers the graceful stop, the one that parks. `forceDisableAutoPing` consults
+nothing: it clears the mode flags and disposes the trackers whatever is in flight, and that is
+the stop behind a disconnect, the airborne block, a session error, a zone grace or transfer,
+and a mode switch. So the trace send also re-reads its mode flags after the fresh fix and bows
+out without transmitting if the lane is gone. That matters most for the airborne block, which
+exists to stop transmitting from an aircraft and was letting one more trace out. **The
+discovery and auto-TX lanes have the same gap and do not yet have that re-check.**
 
 Two observations carry an `onGlance` flag so a state can belong to a lane (which
 the buttons read) without moving the single glance answer, or reach both. The

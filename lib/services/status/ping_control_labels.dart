@@ -33,9 +33,46 @@ typedef PingRenderFacts = ({
   bool isTargetedRunning,
   // A stop is the session's answer, not a lane's, so it never sits on a lane in
   // the model (that would shadow the window the lane is still closing). The
-  // Active button, which is the stop indicator, reads it from here.
+  // button of the mode being stopped is the stop indicator; [isTxStopping] and
+  // its two siblings work out which button that is, from the model's `owner`.
   bool isPendingDisable,
 });
+
+// ---------------------------------------------------------------------------
+// Which button owns a pending stop.
+//
+// `isPendingDisable` is one lane-less boolean: it says a stop is parked behind
+// an in-flight ping, not which mode asked for it. Every stop used to render on
+// the Active/Hybrid button because of that, so stopping Passive (or Trace) lit
+// up a button for a mode that was never running.
+//
+// The answer comes from the model, which already resolves it: a stop sets
+// `owner` to the lane of the mode being stopped. That is deliberately NOT the
+// three running flags beside it. Those go false the moment the provider clears
+// `_autoPingEnabled`, and one path (`_stopAutoPingGracefully`, the Offline Mode
+// hot switch) does that while the stop is still draining, because it waits on
+// the in-flight ping rather than on the parked disable. The model reads
+// `_autoMode`, which is only ever written on start, so it still names the right
+// mode there.
+//
+// Exactly one of the three is true whenever a stop is pending, since `owner` is
+// one lane and Active/Hybrid takes anything no other mode claims, so a stop is
+// never rendered nowhere.
+// ---------------------------------------------------------------------------
+
+/// True when the pending stop belongs to the Active / Hybrid button.
+bool isTxStopping(SessionStatus s, PingRenderFacts f) =>
+    f.isPendingDisable &&
+    s.owner != StatusLane.discovery &&
+    s.owner != StatusLane.targeted;
+
+/// True when the pending stop belongs to the Passive button.
+bool isPassiveStopping(SessionStatus s, PingRenderFacts f) =>
+    f.isPendingDisable && s.owner == StatusLane.discovery;
+
+/// True when the pending stop belongs to the Trace button.
+bool isTraceStopping(SessionStatus s, PingRenderFacts f) =>
+    f.isPendingDisable && s.owner == StatusLane.targeted;
 
 /// The three flags the blocking hint needs that are not session state and not
 /// in [PingRenderFacts]: whether the radio is connected and whether the antenna
@@ -202,9 +239,10 @@ String portraitActiveModeLabel(SessionStatus s, PingRenderFacts f) {
   if (f.txBlockedByOffline) return 'Passive only';
   if (f.txNotAllowed) return 'Passive only';
   final mode = f.hybridEnabled ? 'Hybrid Mode' : 'Active Mode';
-  // The Active button is the stop indicator, and it counts down whichever window
-  // is still closing (the auto echo first, then a discovery leg).
-  if (f.isPendingDisable) {
+  // This button is the stop indicator for its OWN mode, and it counts down
+  // whichever window is still closing (the auto echo first, then a discovery
+  // leg). A Passive or Trace stop belongs to that mode's button, not this one.
+  if (isTxStopping(s, f)) {
     final w = _rxWindow(s) ?? _discWindow(s);
     return w != null ? 'Stopping ${w.remainingSec}s' : 'Stopping...';
   }
@@ -233,6 +271,13 @@ String portraitActiveModeLabel(SessionStatus s, PingRenderFacts f) {
 
 /// Passive, portrait.
 String portraitPassiveModeLabel(SessionStatus s, PingRenderFacts f) {
+  // Its own stop, counting down whichever window is still closing. The
+  // discovery leg first, since that is the one Passive itself opened; a manual
+  // ping's echo window is the other thing that parks a Passive stop.
+  if (isPassiveStopping(s, f)) {
+    final w = _discWindow(s) ?? _rxWindow(s);
+    return w != null ? 'Stopping ${w.remainingSec}s' : 'Stopping...';
+  }
   if (f.isPassiveModeRunning) {
     final v = s.discovery;
     return switch (v.activity) {
@@ -243,8 +288,8 @@ String portraitPassiveModeLabel(SessionStatus s, PingRenderFacts f) {
       _ => 'Passive Mode',
     };
   }
-  // A TX mode, or a stop of some other mode, greys it to the mode word. (Its own
-  // stop is the running branch above, which keeps showing the discovery window.)
+  // A TX mode, or another mode's stop, greys it to the mode word. Its own stop
+  // is the first branch above, so this one only catches stops it does not own.
   if (f.isTxModeRunning || f.isPendingDisable) return 'Passive Mode';
   // Idle: it borrows the RX window and the shared cooldown; a manual cooldown
   // holding it shows the mode word (the shared helper is null there).
@@ -299,7 +344,8 @@ String? compactSendPingLabel(
   }
   final shared = _sharedCooldown(s);
   if (shared != null) {
-    return _n(shared.remainingSec, showFullText: showFullText, word: 'Cooldown');
+    return _n(shared.remainingSec,
+        showFullText: showFullText, word: 'Cooldown');
   }
   return null;
 }
@@ -311,7 +357,7 @@ String? compactActiveModeLabel(
   required bool showFullText,
   required bool isExpandedDuringCooldown,
 }) {
-  if (f.isPendingDisable) {
+  if (isTxStopping(s, f)) {
     final w = _rxWindow(s) ?? _discWindow(s);
     return w != null
         ? _n(w.remainingSec, showFullText: showFullText, word: 'Stopping')
@@ -351,6 +397,12 @@ String? compactPassiveModeLabel(
   required bool showFullText,
   required bool isExpandedDuringCooldown,
 }) {
+  if (isPassiveStopping(s, f)) {
+    final w = _discWindow(s) ?? _rxWindow(s);
+    return w != null
+        ? _n(w.remainingSec, showFullText: showFullText, word: 'Stopping')
+        : (showFullText ? 'Stopping...' : '...');
+  }
   if (f.isPassiveModeRunning) {
     final v = s.discovery;
     final word = switch (v.activity) {
@@ -364,7 +416,8 @@ String? compactPassiveModeLabel(
   }
   final shared = _sharedCooldown(s);
   if (shared != null && isExpandedDuringCooldown) {
-    return _n(shared.remainingSec, showFullText: showFullText, word: 'Cooldown');
+    return _n(shared.remainingSec,
+        showFullText: showFullText, word: 'Cooldown');
   }
   return null;
 }
@@ -381,6 +434,12 @@ String? compactTraceModeLabel(
   required bool showFullText,
   required bool isExpandedDuringCooldown,
 }) {
+  if (isTraceStopping(s, f)) {
+    final w = _discWindow(s) ?? _rxWindow(s);
+    return w != null
+        ? _n(w.remainingSec, showFullText: showFullText, word: 'Stopping')
+        : (showFullText ? 'Stopping...' : '...');
+  }
   if (f.isTargetedRunning) {
     final v = s.targeted;
     switch (v.activity) {
@@ -398,7 +457,8 @@ String? compactTraceModeLabel(
   }
   final shared = _sharedCooldown(s);
   if (shared != null && isExpandedDuringCooldown) {
-    return _n(shared.remainingSec, showFullText: showFullText, word: 'Cooldown');
+    return _n(shared.remainingSec,
+        showFullText: showFullText, word: 'Cooldown');
   }
   return null;
 }
@@ -417,7 +477,9 @@ String? traceStatusText(SessionStatus s, PingRenderFacts f) {
     SessionActivity.listeningDiscovery =>
       'Listening ${_sec(v)}s',
     SessionActivity.waitingTrace => 'Next trace ${_sec(v)}s',
-    SessionActivity.deferred || SessionActivity.skipped => 'Skipped ${_sec(v)}s',
+    SessionActivity.deferred ||
+    SessionActivity.skipped =>
+      'Skipped ${_sec(v)}s',
     _ => null,
   };
 }
@@ -432,6 +494,10 @@ String traceSectionLabel(
   required bool isStarting,
 }) {
   if (isStarting) return 'Starting...';
+  if (isTraceStopping(s, f)) {
+    final w = _discWindow(s) ?? _rxWindow(s);
+    return w != null ? 'Stopping ${w.remainingSec}s' : 'Stopping...';
+  }
   if (f.isTargetedRunning) return traceStatusText(s, f) ?? 'Stop';
   final shared = _sharedCooldown(s);
   if (shared != null) return 'Cooldown ${shared.remainingSec}s';
@@ -468,7 +534,7 @@ int? landscapeSendPingCountdown(SessionStatus s, PingRenderFacts f) {
 /// Active / Hybrid, landscape. No skip reason reaches here, so a deferred ping
 /// and a skipped one are indistinguishable in this layout.
 int? landscapeActiveModeCountdown(SessionStatus s, PingRenderFacts f) {
-  if (f.isPendingDisable) {
+  if (isTxStopping(s, f)) {
     return (_rxWindow(s) ?? _discWindow(s))?.remainingSec;
   }
   final v = s.txAuto;
@@ -489,6 +555,9 @@ int? landscapeActiveModeCountdown(SessionStatus s, PingRenderFacts f) {
 
 /// Passive, landscape. The shared cooldown never shows here, unlike portrait.
 int? landscapePassiveModeCountdown(SessionStatus s, PingRenderFacts f) {
+  if (isPassiveStopping(s, f)) {
+    return (_discWindow(s) ?? _rxWindow(s))?.remainingSec;
+  }
   if (!f.isPassiveModeRunning) return null;
   final v = s.discovery;
   return switch (v.activity) {

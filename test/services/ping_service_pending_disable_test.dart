@@ -53,6 +53,13 @@ class _FakeGps implements GpsService {
   @override
   void markPingPosition(Position position) {}
 
+  // Called by the discovery send immediately after it arms its listening
+  // window. Missing here, it threw out of the send's own try, so every
+  // discovery in this file drained its queued disable down the send-FAILURE
+  // path and no test ever reached the armed-window path they are named for.
+  @override
+  void markActivityPosition(Position position) {}
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('GpsService.${invocation.memberName}');
@@ -62,6 +69,7 @@ class _FakeConnection implements MeshCoreConnection {
   Completer<Uint8List>? discoveryGate;
   Completer<Uint8List>? traceGate;
   bool sendPingThrows = false;
+  int traceTransmits = 0;
 
   @override
   ConnectionStep get currentStep => ConnectionStep.connected;
@@ -99,8 +107,10 @@ class _FakeConnection implements MeshCoreConnection {
 
   @override
   Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes,
-          {int hopBytes = 1}) =>
-      traceGate?.future ?? Future.value(Uint8List(4));
+      {int hopBytes = 1}) {
+    traceTransmits++;
+    return traceGate?.future ?? Future.value(Uint8List(4));
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -118,14 +128,16 @@ class _FakeApiQueue implements ApiQueueService {
 }
 
 class _FakeWakelock implements WakelockService {
-  @override
-  bool get isEnabled => false;
+  bool held = false;
 
   @override
-  Future<void> enable() async {}
+  bool get isEnabled => held;
 
   @override
-  Future<void> disable() async {}
+  Future<void> enable() async => held = true;
+
+  @override
+  Future<void> disable() async => held = false;
 
   @override
   Future<void> dispose() async {}
@@ -148,12 +160,13 @@ PingService _buildService(
   _FakeGps gps,
   _FakeConnection conn, {
   DiscoveryWindowTimer? discoveryWindowTimer,
+  _FakeWakelock? wakelock,
 }) =>
     PingService(
       gpsService: gps,
       connection: conn,
       apiQueue: _FakeApiQueue(),
-      wakelockService: _FakeWakelock(),
+      wakelockService: wakelock ?? _FakeWakelock(),
       cooldownTimer: CooldownTimer(),
       manualPingCooldownTimer: ManualPingCooldownTimer(),
       rxWindowTimer: RxWindowTimer(),
@@ -247,6 +260,201 @@ void main() {
 
       expect(ping.pendingDisable, isFalse,
           reason: 'the discovery window end must drain the queued disable');
+      expect(ping.autoPingEnabled, isFalse);
+      ping.dispose();
+    });
+  });
+
+  test('a stop drained by its window still releases the wake lock', () {
+    // The drain did every other piece of the teardown and left the screen
+    // awake. It is the common case for a TX mode, not an edge: sendTxPing holds
+    // the in-flight flag for the whole echo window, so a Stop pressed while the
+    // button reads "Listening Xs" always parks and always drains through here.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final wakelock = _FakeWakelock();
+      final ping = _buildService(gps, conn, wakelock: wakelock)
+        ..getSessionId = (() => 'OTT-20260829-0001')
+        ..getNextPingCounter = (() => 1);
+
+      ping.enableAutoPing();
+      async.flushMicrotasks();
+      expect(wakelock.held, isTrue, reason: 'auto mode holds the wake lock');
+
+      // Stop during the echo window, which is what parks the disable.
+      ping.disableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pendingDisable, isTrue);
+
+      async.elapse(const Duration(seconds: 6));
+      expect(ping.pendingDisable, isFalse,
+          reason: 'the echo window drained the disable');
+      expect(wakelock.held, isFalse,
+          reason: 'the drain must release the wake lock like every other stop');
+      ping.dispose();
+    });
+  });
+
+  test('a repeat stop cannot strand the disable it is repeating', () {
+    // The gap the external Stop lane could reach: a discovery clears
+    // pingInProgress the moment it arms its listening window, so a second stop
+    // arriving during that window skipped the parking branch and ran the
+    // immediate teardown, which disposes the tracker WITHOUT firing the window
+    // completion that drains the parked disable. Auto mode then read off in the
+    // service and on in the provider, with no cooldown and the foreground
+    // service still up, until the 12 second backstop.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final discGate = Completer<Uint8List>();
+      conn.discoveryGate = discGate;
+      final ping = _buildService(gps, conn);
+
+      ping.enableAutoPing(passiveMode: true);
+      async.flushMicrotasks();
+      ping.disableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pendingDisable, isTrue);
+
+      // The discovery lands and arms its 7s window, which clears the in-flight
+      // flag while the disable stays parked.
+      discGate.complete(Uint8List(4));
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isFalse);
+      expect(ping.pendingDisable, isTrue);
+
+      // A second stop in that window. It must change nothing.
+      expect(ping.disableAutoPing(), completion(isTrue));
+      async.flushMicrotasks();
+      expect(ping.pendingDisable, isTrue,
+          reason: 'the parked disable is still the one that will run');
+      expect(ping.autoPingEnabled, isTrue,
+          reason: 'the repeat must not tear the mode down behind the stop');
+
+      // The window still drains it, well before the 12s backstop.
+      async.elapse(const Duration(seconds: 8));
+      expect(ping.pendingDisable, isFalse);
+      expect(ping.autoPingEnabled, isFalse);
+      ping.dispose();
+    });
+  });
+
+  test('a stop during the trace fresh fix parks, it does not tear down', () {
+    // The trace lane latched _pingInProgress AFTER its GPS await, where TX and
+    // discovery both latch before. A Stop landing in that gap read an idle
+    // service, so disableAutoPing took its immediate branch and disposed the
+    // TraceTracker, and this send then resumed with nothing to stop it: a trace
+    // went on the air for a session the user had already stopped, and the
+    // listening window it armed counted against a disposed tracker, so the
+    // completion that drains the disable could never fire.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final discoveryWindow = DiscoveryWindowTimer();
+      final ping =
+          _buildService(gps, conn, discoveryWindowTimer: discoveryWindow);
+
+      final gate = Completer<Position?>();
+      gps.freshPositionGate = gate;
+
+      ping.enableAutoPing(targetedMode: true, targetRepeaterId: '4e');
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue,
+          reason: 'the trace latches the shared flag before its fresh fix');
+      expect(conn.traceTransmits, 0, reason: 'nothing on the air yet');
+
+      ping.disableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pendingDisable, isTrue,
+          reason: 'the stop parks behind the trace in flight');
+      expect(ping.autoPingEnabled, isTrue,
+          reason: 'a parked stop must not tear the mode down under the send');
+
+      // The fix arrives. The trace in flight finishes and arms its window,
+      // which is the contract the other two lanes keep.
+      gate.complete(gps.position);
+      async.flushMicrotasks();
+      expect(conn.traceTransmits, 1);
+      expect(discoveryWindow.isRunning, isTrue);
+
+      // The tracker survived the parked stop, so its window drains the disable
+      // well before the 12s backstop, and the countdown stops with it.
+      async.elapse(const Duration(seconds: 6));
+      expect(ping.pendingDisable, isFalse,
+          reason: 'the trace window end must drain the queued disable');
+      expect(ping.autoPingEnabled, isFalse);
+      expect(discoveryWindow.isRunning, isFalse,
+          reason: 'no countdown may outlive the window it was counting');
+      ping.dispose();
+    });
+  });
+
+  test('a force disable during the trace fresh fix stops it going on the air',
+      () {
+    // The latch turns a graceful stop into a parked disable, which is what lets
+    // the send finish. forceDisableAutoPing consults nothing, so the send has to
+    // re-check the lane when it resumes. This is the stop behind a disconnect,
+    // the airborne block, a session error and a zone grace or transfer, and the
+    // airborne one is the point: that block exists to stop transmitting from an
+    // aircraft, and it was letting one more trace out.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final ping = _buildService(gps, conn);
+
+      final gate = Completer<Position?>();
+      gps.freshPositionGate = gate;
+
+      ping.enableAutoPing(targetedMode: true, targetRepeaterId: '4e');
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue);
+      expect(conn.traceTransmits, 0);
+
+      ping.forceDisableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.autoPingEnabled, isFalse);
+
+      // The suspended send resumes into a lane that no longer exists.
+      gate.complete(gps.position);
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 10));
+
+      expect(conn.traceTransmits, 0,
+          reason: 'no trace may reach the radio after a force disable');
+      expect(ping.pingInProgress, isFalse,
+          reason: 'the resumed send must not leave the shared flag latched');
+      ping.dispose();
+    });
+  });
+
+  test('a trace that bows out after a parked stop drains it, not the backstop',
+      () {
+    // The other half of moving the latch: now that a Stop during the fresh fix
+    // parks, an attempt that then bows out is the end of the lifecycle that
+    // disable was waiting on. Without the drain it would sit out all 12s.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final ping = _buildService(gps, conn);
+
+      final gate = Completer<Position?>();
+      gps.freshPositionGate = gate;
+
+      ping.enableAutoPing(targetedMode: true, targetRepeaterId: '4e');
+      async.flushMicrotasks();
+      ping.disableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pendingDisable, isTrue);
+
+      // No fix, so the trace bows out without arming anything.
+      gate.complete(null);
+      async.flushMicrotasks();
+
+      expect(conn.traceTransmits, 0,
+          reason: 'a trace with no fix never reaches the radio');
+      expect(ping.pendingDisable, isFalse,
+          reason: 'the bow-out drains the disable it was holding');
       expect(ping.autoPingEnabled, isFalse);
       ping.dispose();
     });
