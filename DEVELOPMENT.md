@@ -250,11 +250,12 @@ Discovery pings use the MeshCore control data protocol to directly query nearby 
 
 ### Auto-Ping Modes
 
-Three auto-ping modes are available after connecting:
+Four auto-ping modes are available after connecting:
 
 - **Active Mode**: Sends TX pings at user-configured interval (15s, 30s, or 60s). Each ping broadcasts a group channel message containing GPS location and radio power to `#wardriving`, then listens 7s for repeater echoes via `TxTracker`.
-- **Passive Mode**: Sends discovery requests every 30s. No TX pings — only discovery request-response. Responses tracked via `DiscTracker`.
-- **Hybrid Mode**: Alternates between discovery and TX pings at the user-configured interval. Discovery → TX → Discovery → TX...
+- **Passive Mode**: Sends discovery requests every 30s. No TX pings, only discovery request-response. Responses tracked via `DiscTracker`.
+- **Hybrid Mode**: Alternates between discovery and TX pings at the user-configured interval. Discovery, TX, Discovery, TX...
+- **Trace Mode**: Sends zero-hop trace path (CMD_SEND_TRACE_PATH, 0x24) to a specific repeater by ID at user-configured interval. Listens 7s for trace response (PUSH_CODE_TRACE_DATA, 0x89) via `TraceTracker`. Only successful traces are posted to API; failures are logged locally and shown as red markers on noise floor graph.
 
 All modes also passively listen for RX packets via `RxLogger`, adding additional free coverage data to MeshMapper from nearby mesh traffic.
 
