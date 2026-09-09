@@ -55,16 +55,17 @@ typedef PingRenderFacts = ({
 // `_autoMode`, which is only ever written on start, so it still names the right
 // mode there.
 //
-// Exactly one of the three is true whenever a stop is pending, since `owner` is
-// one lane and Active/Hybrid takes anything no other mode claims, so a stop is
-// never rendered nowhere.
+// Exactly one of the three is true whenever a stop is pending, because the
+// model names the stopping mode's lane as `owner` in every state a stop can be
+// pending in, the session-wide holds included. Each test is an equality, so a
+// stop the model did not attribute would render nowhere rather than on a
+// button whose mode was never running; the resolver's tables pin that it is
+// always attributed.
 // ---------------------------------------------------------------------------
 
 /// True when the pending stop belongs to the Active / Hybrid button.
 bool isTxStopping(SessionStatus s, PingRenderFacts f) =>
-    f.isPendingDisable &&
-    s.owner != StatusLane.discovery &&
-    s.owner != StatusLane.targeted;
+    f.isPendingDisable && s.owner == StatusLane.txAuto;
 
 /// True when the pending stop belongs to the Passive button.
 bool isPassiveStopping(SessionStatus s, PingRenderFacts f) =>

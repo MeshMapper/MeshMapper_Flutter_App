@@ -6519,6 +6519,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // If currently running the same mode, stop it (always allow stopping)
     if (_autoPingEnabled && _autoMode == mode) {
+      // A second tap while the inline teardown below is still running. The
+      // latch is set without a notify (the first frame that shows it is the
+      // one after the teardown), so the button still reads enabled for those
+      // few hundred milliseconds and a double tap gets here. Siri and the
+      // watch read the latch directly and were already refused; this is the
+      // same answer for the phone, without painting a Stopping flash for it.
+      if (_autoPingStopping) return false;
       debugLog('[PING] Stopping auto mode: ${mode.name}');
       // Held for the whole branch, including the inline teardown below, which
       // parks no disable of its own and so left the session reading as running

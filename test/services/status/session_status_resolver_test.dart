@@ -97,6 +97,36 @@ void main() {
       }
     });
 
+    test('a stop parked when the hold began still names its lane', () {
+      // The hold owns the activity, but the parked stop still belongs to the
+      // mode that was stopping. The buttons read `owner` to decide which of
+      // them shows Stopping, and a null here put a Passive or Trace stop on the
+      // Active button in these four states, the one place the fix everywhere
+      // else had not reached.
+      final holds = <SessionStatus Function(AutoMode)>[
+        (m) => status(autoMode: m, isPendingDisable: true,
+            isInZoneGracePeriod: true),
+        (m) => status(autoMode: m, isPendingDisable: true,
+            isZoneTransferInProgress: true),
+        (m) => status(autoMode: m, isPendingDisable: true,
+            isAutoReconnecting: true),
+        (m) => status(autoMode: m, isPendingDisable: true,
+            connectionStep: ConnectionStep.disconnected),
+      ];
+      for (final hold in holds) {
+        expect(hold(AutoMode.active).owner, StatusLane.txAuto);
+        expect(hold(AutoMode.hybrid).owner, StatusLane.txAuto);
+        expect(hold(AutoMode.passive).owner, StatusLane.discovery);
+        expect(hold(AutoMode.targeted).owner, StatusLane.targeted);
+        final s = hold(AutoMode.passive);
+        expect(s.activity, isNot(SessionActivity.stopping),
+            reason: 'the hold, not the stop, is what the session is doing');
+        for (final lane in StatusLane.values) {
+          expect(s.lane(lane).isBlocked, isTrue, reason: '$lane');
+        }
+      }
+    });
+
     test('a stop is a glance answer, not a lane state', () {
       // A stop is not a session-wide hold like the others: it names the lane of
       // the mode being stopped as the owner and reads Stopping on the single

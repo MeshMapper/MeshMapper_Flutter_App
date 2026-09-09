@@ -65,7 +65,13 @@ SessionStatus resolveSessionStatus({
     );
     return (
       activity: sessionWide.activity,
-      owner: null,
+      // A stop parked when the hold began still belongs to the mode that was
+      // stopping. The buttons ask `owner` whose stop it is (see
+      // ping_control_labels.dart), and a null here would have put a Passive or
+      // Trace stop on the Active button, the disagreement the field exists to
+      // rule out. The activity stays the hold's: the stop is not what the
+      // session is doing, it is a fact about one lane.
+      owner: isPendingDisable ? _autoLane(autoMode) : null,
       deadline: sessionWide.deadline,
       manual: held,
       txAuto: held,
@@ -347,10 +353,10 @@ StatusLane _autoLane(AutoMode mode) => switch (mode) {
     return (activity: SessionActivity.disconnected, deadline: null);
   }
   // A pending disable is NOT a session-wide hold: the mode being stopped is
-  // still running its closing window, and only the Active button and the glance
-  // say Stopping. It is recorded as a high-precedence observation instead (see
-  // the caller), so it still outranks GPS and a blocked zone, both skipped here
-  // while it is set, without flattening every lane onto one deadline.
+  // still running its closing window, and only the glance and the button of
+  // the mode being stopped say Stopping. It is laid over the glance instead
+  // (see the caller), so it still outranks GPS and a blocked zone, both skipped
+  // here while it is set, without flattening every lane onto one deadline.
   if (isPendingDisable) return null;
   if (!isGpsLocked) {
     return (activity: SessionActivity.waitingForGps, deadline: null);

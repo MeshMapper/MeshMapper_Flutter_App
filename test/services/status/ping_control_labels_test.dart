@@ -810,6 +810,58 @@ void main() {
           isNot(startsWith('Stopping')));
     });
 
+    test('a stop keeps its button through a session-wide hold', () {
+      // Zone grace, zone transfer, reconnect and disconnected flatten every lane
+      // onto the hold. The stop parked before the hold still belongs to its
+      // mode: the model names the lane in those states too, and each helper is
+      // an equality, so a Passive or Trace stop cannot fall through to the
+      // Active button there.
+      SessionStatus held(AutoMode mode, ConnectionStep step) =>
+          resolveSessionStatus(
+            isInZoneGracePeriod: step == ConnectionStep.connected,
+            zoneGraceEndsAt: null,
+            isZoneTransferInProgress: false,
+            isAutoReconnecting: false,
+            connectionStep: step,
+            isConnected: step == ConnectionStep.connected,
+            isPendingDisable: true,
+            isGpsLocked: true,
+            autoMode: mode,
+            txAllowed: true,
+            isManualSession: false,
+            isPingSending: false,
+            isPingInProgress: false,
+            isRxWindowRunning: false,
+            rxWindow: null,
+            isDiscoveryWindowRunning: false,
+            discoveryWindow: null,
+            isManualCooldownRunning: false,
+            manualCooldown: null,
+            isAutoPingRunning: false,
+            autoPingSkipReason: null,
+            autoPing: null,
+            isSharedCooldownRunning: false,
+            sharedCooldown: null,
+            operation: null,
+            isSessionStarting: false,
+            isSessionActive: false,
+          );
+      final f = _render(facts(isPendingDisable: true));
+      for (final step in [
+        ConnectionStep.connected, // zone grace
+        ConnectionStep.disconnected,
+      ]) {
+        final passive = held(AutoMode.passive, step);
+        expect(labels.isPassiveStopping(passive, f), isTrue, reason: '$step');
+        expect(labels.isTxStopping(passive, f), isFalse, reason: '$step');
+        final trace = held(AutoMode.targeted, step);
+        expect(labels.isTraceStopping(trace, f), isTrue, reason: '$step');
+        expect(labels.isTxStopping(trace, f), isFalse, reason: '$step');
+        final active = held(AutoMode.active, step);
+        expect(labels.isTxStopping(active, f), isTrue, reason: '$step');
+      }
+    });
+
     test('no button claims a stop when none is pending', () {
       final k = facts(isPassiveModeRunning: true);
       final s = _status(k);
