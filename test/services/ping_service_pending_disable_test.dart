@@ -70,6 +70,8 @@ class _FakeConnection implements MeshCoreConnection {
   Completer<Uint8List>? traceGate;
   bool sendPingThrows = false;
   int traceTransmits = 0;
+  int discoveryTransmits = 0;
+  int txTransmits = 0;
 
   @override
   ConnectionStep get currentStep => ConnectionStep.connected;
@@ -98,12 +100,15 @@ class _FakeConnection implements MeshCoreConnection {
 
   @override
   Future<void> sendPing(String message) async {
+    txTransmits++;
     if (sendPingThrows) throw Exception('BLE write failed');
   }
 
   @override
-  Future<Uint8List> sendDiscoveryRequest() =>
-      discoveryGate?.future ?? Future.value(Uint8List(4));
+  Future<Uint8List> sendDiscoveryRequest() {
+    discoveryTransmits++;
+    return discoveryGate?.future ?? Future.value(Uint8List(4));
+  }
 
   @override
   Future<Uint8List> sendTracePath(Uint8List repeaterIdBytes,
@@ -424,6 +429,69 @@ void main() {
           reason: 'no trace may reach the radio after a force disable');
       expect(ping.pingInProgress, isFalse,
           reason: 'the resumed send must not leave the shared flag latched');
+      ping.dispose();
+    });
+  });
+
+  test('a force disable during a discovery fresh fix stops it going on the air',
+      () {
+    // Same gap the trace lane had, on the mode people actually drive with.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final ping = _buildService(gps, conn);
+
+      final gate = Completer<Position?>();
+      gps.freshPositionGate = gate;
+
+      ping.enableAutoPing(passiveMode: true);
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue);
+      expect(conn.discoveryTransmits, 0);
+
+      ping.forceDisableAutoPing();
+      async.flushMicrotasks();
+
+      gate.complete(gps.position);
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 10));
+
+      expect(conn.discoveryTransmits, 0,
+          reason: 'no discovery may reach the radio after a force disable');
+      expect(ping.pingInProgress, isFalse);
+      ping.dispose();
+    });
+  });
+
+  test('a force disable during an auto TX fresh fix stops it going on the air',
+      () {
+    // canPing() re-reads the connection step and the airborne latch after the
+    // fetch, but never whether auto mode is still on.
+    fakeAsync((async) {
+      final gps = _FakeGps()..position = _pos(45.0, -75.0);
+      final conn = _FakeConnection();
+      final ping = _buildService(gps, conn)
+        ..getSessionId = (() => 'OTT-20260829-0001')
+        ..getNextPingCounter = (() => 1);
+
+      final gate = Completer<Position?>();
+      gps.freshPositionGate = gate;
+
+      ping.enableAutoPing();
+      async.flushMicrotasks();
+      expect(ping.pingInProgress, isTrue);
+      expect(conn.txTransmits, 0);
+
+      ping.forceDisableAutoPing();
+      async.flushMicrotasks();
+
+      gate.complete(gps.position);
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 10));
+
+      expect(conn.txTransmits, 0,
+          reason: 'no auto TX may reach the radio after a force disable');
+      expect(ping.pingInProgress, isFalse);
       ping.dispose();
     });
   });
