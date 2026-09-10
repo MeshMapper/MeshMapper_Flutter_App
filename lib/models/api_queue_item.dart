@@ -17,7 +17,7 @@ part 'api_queue_item.g.dart';
 @HiveType(typeId: 3)
 class ApiQueueItem extends HiveObject {
   @HiveField(0)
-  final String type; // 'TX' or 'RX'
+  final String type; // 'TX', 'RX', 'DISC', 'TRACE' or 'DEFER'
 
   @HiveField(1)
   final double latitude;
@@ -72,6 +72,14 @@ class ApiQueueItem extends HiveObject {
   @HiveField(18)
   final double? altitude;
 
+  /// The auto mode running when this item was queued, as the server's enum:
+  /// `active`, `hybrid`, `passive`, `trace`, or `none` for a manual ping or
+  /// an RX row heard while connected with no mode running. Null only when the
+  /// queue has no mode getter wired, which the server reads as unknown. An
+  /// analytics stamp: the server copies it to the coverage row.
+  @HiveField(19)
+  final String? autoMode;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -87,6 +95,7 @@ class ApiQueueItem extends HiveObject {
     this.pingCounter,
     this.wireTag,
     this.altitude,
+    this.autoMode,
   });
 
   /// Create from TX ping
@@ -102,6 +111,7 @@ class ApiQueueItem extends HiveObject {
     int? pingCounter,
     String? wireTag,
     double? altitude,
+    String? autoMode,
   }) {
     return ApiQueueItem(
       type: 'TX',
@@ -117,6 +127,7 @@ class ApiQueueItem extends HiveObject {
       pingCounter: pingCounter,
       wireTag: wireTag,
       altitude: altitude,
+      autoMode: autoMode,
     );
   }
 
@@ -131,6 +142,7 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? autoMode,
   }) {
     return ApiQueueItem(
       type: 'RX',
@@ -143,6 +155,7 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoMode,
     );
   }
 
@@ -162,6 +175,7 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? autoMode,
   }) {
     // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
     final heardRepeats =
@@ -177,6 +191,7 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoMode,
     );
   }
 
@@ -194,6 +209,7 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? autoMode,
   }) {
     final heardRepeats =
         '$repeaterId:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
@@ -208,6 +224,7 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoMode,
     );
   }
 
@@ -220,6 +237,7 @@ class ApiQueueItem extends HiveObject {
     int? noiseFloor,
     double? power,
     double? altitude,
+    String? autoMode,
   }) {
     return ApiQueueItem(
       type: 'DISC',
@@ -232,11 +250,47 @@ class ApiQueueItem extends HiveObject {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoMode,
+    );
+  }
+
+  /// A square where smart pinging held a ping: the server verifies it was
+  /// covered and credits it. [held] is `tx` or `disc`, stored in the
+  /// heardRepeats slot the way DISC and TRACE overload it. Nothing else is
+  /// carried: the server pays for the square, not the reading.
+  factory ApiQueueItem.fromDefer({
+    required double latitude,
+    required double longitude,
+    required int timestamp,
+    required String held,
+    String? autoMode,
+  }) {
+    return ApiQueueItem(
+      type: 'DEFER',
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp * 1000),
+      heardRepeats: held,
+      canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
+      externalAntenna: false,
+      autoMode: autoMode,
     );
   }
 
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
+    // A deferral carries only the square and which kind of ping was held.
+    if (type == 'DEFER') {
+      return {
+        'type': type,
+        'lat': latitude,
+        'lon': longitude,
+        'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
+        'held': heardRepeats,
+        if (autoMode != null) 'auto_mode': autoMode,
+      };
+    }
+
     // For TRACE type, parse the heardRepeats field to extract individual values
     if (type == 'TRACE') {
       // Format: "repeaterId:localSnr:localRssi:remoteSnr"
@@ -254,6 +308,7 @@ class ApiQueueItem extends HiveObject {
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
         if (altitude != null) 'altitude': altitude!.round(),
+        if (autoMode != null) 'auto_mode': autoMode,
       };
     }
 
@@ -271,6 +326,7 @@ class ApiQueueItem extends HiveObject {
           'external_antenna': externalAntenna,
           'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
           if (altitude != null) 'altitude': altitude!.round(),
+          if (autoMode != null) 'auto_mode': autoMode,
         };
       }
 
@@ -292,6 +348,7 @@ class ApiQueueItem extends HiveObject {
         'external_antenna': externalAntenna,
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
         if (altitude != null) 'altitude': altitude!.round(),
+        if (autoMode != null) 'auto_mode': autoMode,
       };
     }
 
@@ -311,6 +368,7 @@ class ApiQueueItem extends HiveObject {
       if (wireTag != null) 'wire_tag': wireTag,
       // Whole meters, omitted when the phone did not know its altitude.
       if (altitude != null) 'altitude': altitude!.round(),
+      if (autoMode != null) 'auto_mode': autoMode,
     };
   }
 

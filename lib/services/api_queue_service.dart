@@ -68,6 +68,13 @@ class ApiQueueService {
   /// Custom API service for forwarding pings to third-party endpoint
   CustomApiService? customApiService;
 
+  /// The auto mode running right now, as the server's enum, or null when
+  /// nothing is wired. Read by every enqueue when it builds its item, so one
+  /// wire covers every producer (PingService, RxLogger) with the callers
+  /// untouched. An item is stamped at enqueue time, which for RX is when the
+  /// packet was heard, not when the buffer flushes.
+  String Function()? autoModeGetter;
+
   /// Number of pings accumulated in current offline session
   int get offlinePingCount => _offlinePings.length;
 
@@ -291,6 +298,7 @@ class ApiQueueService {
       pingCounter: pingCounter,
       wireTag: wireTag,
       altitude: altitude,
+      autoMode: autoModeGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -341,6 +349,7 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoModeGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -394,6 +403,7 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoModeGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -448,6 +458,7 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoModeGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -494,6 +505,7 @@ class ApiQueueService {
       noiseFloor: noiseFloor,
       power: power,
       altitude: altitude,
+      autoMode: autoModeGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -512,6 +524,51 @@ class ApiQueueService {
     } else {
       debugLog(
           '[API QUEUE] DISC drop enqueued at $latitude, $longitude (queue size: $queueSize)');
+    }
+    onQueueUpdated?.call(queueSize);
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
+      debugLog('[API QUEUE] Ping flush timer fired');
+      _flushRxBuffer();
+      _uploadBatch();
+    });
+  }
+
+  /// Report a square where smart pinging held a ping. [held] is `tx` or
+  /// `disc`. The server verifies the square against its own coverage and
+  /// credits it once per session; a dropped one is silent. Modelled on
+  /// enqueueDiscDrop: offline rows honour the airborne pause, a closed box
+  /// falls back to memory, and the 5 second flush timer sends it on.
+  Future<void> enqueueDefer({
+    required double latitude,
+    required double longitude,
+    required int timestamp,
+    required String held,
+  }) async {
+    final item = ApiQueueItem.fromDefer(
+      latitude: latitude,
+      longitude: longitude,
+      timestamp: timestamp,
+      held: held,
+      autoMode: autoModeGetter?.call(),
+    );
+
+    // In offline mode, accumulate to offline pings list instead of queue
+    if (offlineMode) {
+      if (_dropOfflineRowIfPaused()) return;
+      _offlinePings.add(item.toApiJson());
+      debugLog('[API QUEUE] DEFER ($held) enqueued (offline)');
+      return;
+    }
+
+    final wrote = await _safeWrite((box) => box.add(item));
+    if (!wrote) {
+      _memoryQueue.add(item);
+      debugLog(
+          '[API QUEUE] DEFER ($held) enqueued (memory fallback) at $latitude, $longitude (queue size: $queueSize)');
+    } else {
+      debugLog(
+          '[API QUEUE] DEFER ($held) enqueued at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
     _pingFlushTimer?.cancel();
