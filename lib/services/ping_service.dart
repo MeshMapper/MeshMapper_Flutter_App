@@ -1888,9 +1888,9 @@ class PingService {
         _bankedPing = BankedPingType.discovery;
         debugLog(
             '[DISC] Square recently covered, discovery deferred and banked');
+        _pingInProgress = false;
         onPingDeferred?.call(
             position.latitude, position.longitude, BankedPingType.discovery);
-        _pingInProgress = false;
         _scheduleNextDiscovery();
         return;
       }

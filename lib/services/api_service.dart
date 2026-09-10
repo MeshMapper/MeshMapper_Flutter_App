@@ -510,10 +510,12 @@ class ApiService {
         payload['session_id'] = sessionId ?? _sessionId;
 
         // The mode running at release. Connect and register have no session
-        // yet, and an offline-mode auth is not a live session.
-        final releaseMode = currentAutoMode?.call();
-        if (reason == 'disconnect' && releaseMode != null) {
-          payload['auto_mode'] = releaseMode;
+        // yet, an offline-mode auth is not a live session, and a release that
+        // names an explicit session id is the offline upload closing its own
+        // isolated session, which has no mode of its own.
+        if (reason == 'disconnect' && sessionId == null) {
+          final releaseMode = currentAutoMode?.call();
+          if (releaseMode != null) payload['auto_mode'] = releaseMode;
         }
       }
 
@@ -1268,6 +1270,9 @@ class ApiService {
   /// the mode that call reported. Null means the field is not sent (older
   /// behaviour). Never consulted by the offline upload: the server ignores
   /// mode time on offline sessions by design.
+  ///
+  /// Not sent on a release that names an explicit session id either (the
+  /// offline upload closing its own session).
   String Function()? currentAutoMode;
 
   /// Force-rebuild one vector coverage tile on the region server
