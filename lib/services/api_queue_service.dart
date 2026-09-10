@@ -71,8 +71,9 @@ class ApiQueueService {
   /// The auto mode running right now, as the server's enum, or null when
   /// nothing is wired. Read by every enqueue when it builds its item, so one
   /// wire covers every producer (PingService, RxLogger) with the callers
-  /// untouched. An item is stamped at enqueue time, which for RX is when the
-  /// packet was heard, not when the buffer flushes.
+  /// untouched. An item is stamped when its enqueue is called. For RX that is
+  /// when RxLogger hands the row over (up to 30 s or 25 m after the packet was
+  /// heard), not when the queue's own buffer flushes.
   String Function()? autoModeGetter;
 
   /// Number of pings accumulated in current offline session
