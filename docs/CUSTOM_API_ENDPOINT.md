@@ -221,6 +221,76 @@ The `external_antenna`, `noisefloor`, `altitude` and `power` fields are not pres
 }
 ```
 
+## Batch Examples
+
+A batch is whatever the app uploaded to MeshMapper in that round, so one request can mix every type above. `DEFER` items only appear from app version 1.4.0 onward, and only while the user has Smart Pinging on (the default) in Active, Passive or Hybrid mode, so your endpoint must accept batches both with and without them. Dispatch on `type` and ignore any value you do not handle rather than rejecting the batch: a `4xx` is shown to the user as an error.
+
+**Batch without a DEFER** (a TX ping and a passive RX observation):
+
+```json
+{
+  "data": [
+    {
+      "type": "TX",
+      "lat": 45.26974,
+      "lon": -75.77746,
+      "noisefloor": -103,
+      "altitude": 84,
+      "heard_repeats": "4e(12.25),77(8.50)",
+      "timestamp": 1768762843,
+      "external_antenna": false,
+      "power": "0.3w",
+      "contact": "D873B1F2",
+      "iata": "YOW"
+    },
+    {
+      "type": "RX",
+      "lat": 45.26950,
+      "lon": -75.77700,
+      "noisefloor": -105,
+      "heard_repeats": "4e(12.00)",
+      "timestamp": 1768762900,
+      "external_antenna": false,
+      "power": "0.3w",
+      "contact": "D873B1F2",
+      "iata": "YOW"
+    }
+  ]
+}
+```
+
+**Batch with a DEFER** (the next TX ping was held because the square already had recent coverage, while passive RX logging carried on):
+
+```json
+{
+  "data": [
+    {
+      "type": "DEFER",
+      "lat": 45.27210,
+      "lon": -75.78120,
+      "timestamp": 1768762933,
+      "held": "tx",
+      "contact": "D873B1F2",
+      "iata": "YOW"
+    },
+    {
+      "type": "RX",
+      "lat": 45.27222,
+      "lon": -75.78140,
+      "noisefloor": -104,
+      "heard_repeats": "77(9.75)",
+      "timestamp": 1768762941,
+      "external_antenna": false,
+      "power": "0.3w",
+      "contact": "D873B1F2",
+      "iata": "YOW"
+    }
+  ]
+}
+```
+
+Note that the `DEFER` has no `noisefloor`, `altitude`, `external_antenna` or `power`, while the `RX` beside it does.
+
 ## Expected Response
 
 Your endpoint should return any `2xx` HTTP status code on success. The response body is ignored by MeshMapper.
