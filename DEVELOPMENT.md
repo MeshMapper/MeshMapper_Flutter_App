@@ -392,7 +392,7 @@ untouched. On by default with a 14 day window.
   each queued item, as an optional `auto_mode` on the item (`ApiQueueItem` Hive field 19, read
   at enqueue time through `ApiQueueService.autoModeGetter`; `none` for a manual ping or an RX
   row heard with no mode running, absent only when no getter is wired, which the server reads
-  as unknown). (3) One `DEFER` item
+  as unknown, and never on a `DEFER`, which the factory cannot stamp). (3) One `DEFER` item
   per fixed 300 m square per API session, `{type, lat, lon, timestamp, held}` with `held`
   `tx` or `disc` and nothing else (no antenna, noise floor, power or altitude: the server pays
   for the square, not the reading). `PingService.onPingDeferred` fires at the two deferral

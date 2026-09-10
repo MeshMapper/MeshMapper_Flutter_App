@@ -257,13 +257,13 @@ class ApiQueueItem extends HiveObject {
   /// A square where smart pinging held a ping: the server verifies it was
   /// covered and credits it. [held] is `tx` or `disc`, stored in the
   /// heardRepeats slot the way DISC and TRACE overload it. Nothing else is
-  /// carried: the server pays for the square, not the reading.
+  /// carried: the server pays for the square, not the reading, and the item
+  /// is never stamped with the auto mode.
   factory ApiQueueItem.fromDefer({
     required double latitude,
     required double longitude,
     required int timestamp,
     required String held,
-    String? autoMode,
   }) {
     return ApiQueueItem(
       type: 'DEFER',
@@ -273,13 +273,13 @@ class ApiQueueItem extends HiveObject {
       heardRepeats: held,
       canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
       externalAntenna: false,
-      autoMode: autoMode,
     );
   }
 
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
     // A deferral carries only the square and which kind of ping was held.
+    // Never the mode stamp: the server stores none for a deferral.
     if (type == 'DEFER') {
       return {
         'type': type,
@@ -287,7 +287,6 @@ class ApiQueueItem extends HiveObject {
         'lon': longitude,
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
         'held': heardRepeats,
-        if (autoMode != null) 'auto_mode': autoMode,
       };
     }
 

@@ -152,21 +152,20 @@ void main() {
       expect(item.toApiJson()['held'], 'disc');
     });
 
-    test('carries the stamp when given one', () {
+    test('never carries the mode stamp', () {
       final item = ApiQueueItem.fromDefer(
         latitude: 45.0,
         longitude: -75.0,
         timestamp: _ts,
         held: 'tx',
-        autoMode: 'hybrid',
       );
+      expect(item.autoMode, isNull);
       expect(item.toApiJson(), {
         'type': 'DEFER',
         'lat': 45.0,
         'lon': -75.0,
         'timestamp': _ts,
         'held': 'tx',
-        'auto_mode': 'hybrid',
       });
     });
   });

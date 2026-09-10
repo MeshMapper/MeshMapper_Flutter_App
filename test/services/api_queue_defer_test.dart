@@ -76,7 +76,7 @@ void main() {
     expect(json.single.containsKey('auto_mode'), isFalse);
   });
 
-  test('a deferral is queued as a DEFER item with the stamp', () async {
+  test('a deferral is queued as a five-field DEFER item', () async {
     final queue = newQueue();
     queue.autoModeGetter = () => 'active';
     var updates = 0;
@@ -98,7 +98,6 @@ void main() {
       'lon': -75.77746,
       'timestamp': 1757400000,
       'held': 'tx',
-      'auto_mode': 'active',
     });
   });
 
