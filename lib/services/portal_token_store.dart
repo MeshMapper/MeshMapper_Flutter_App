@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../utils/debug_logger_io.dart';
+import '../utils/public_key.dart';
 
 /// The half-finished PKCE handshake for one sign-in attempt.
 ///
@@ -57,7 +58,10 @@ abstract class PortalTokenStore {
 }
 
 /// Repeater admin passwords, one entry per repeater public key. Keychain or
-/// Keystore only: never logged, never sent to any server.
+/// Keystore only: never logged, never sent to any server. The key is
+/// normalized the same way as everywhere else in the app (upper-case 64 hex,
+/// a `0x` or `!` prefix tolerated), so a caller can pass either form and read
+/// back what it wrote.
 abstract class RepeaterPasswordStore {
   Future<String?> readRepeaterPassword(String repeaterHex);
   Future<void> writeRepeaterPassword(String repeaterHex, String password);
@@ -109,7 +113,7 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
         aOptions: _androidOptions,
       );
     } catch (e) {
-      debugWarn('[ACCOUNT] Secure storage read failed for "$key" '
+      debugWarn('[ACCOUNT] Secure storage read failed for "${redactedKeyForLog(key)}" '
           '(${e.runtimeType}) — resetting to signed-out');
       try {
         await _storage.deleteAll(
@@ -135,8 +139,8 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
         aOptions: _androidOptions,
       );
     } catch (e) {
-      debugError(
-          '[ACCOUNT] Secure storage write failed for "$key" (${e.runtimeType})');
+      debugError('[ACCOUNT] Secure storage write failed for '
+          '"${redactedKeyForLog(key)}" (${e.runtimeType})');
     }
   }
 
@@ -150,7 +154,7 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
         aOptions: _androidOptions,
       );
     } catch (e) {
-      debugWarn('[ACCOUNT] Secure storage delete failed for "$key" '
+      debugWarn('[ACCOUNT] Secure storage delete failed for "${redactedKeyForLog(key)}" '
           '(${e.runtimeType})');
     }
   }
@@ -189,7 +193,19 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
   static const String repeaterPasswordPrefix = 'repeater_admin_pw_';
 
   static String repeaterPasswordKey(String repeaterHex) =>
-      '$repeaterPasswordPrefix${repeaterHex.toUpperCase()}';
+      '$repeaterPasswordPrefix'
+      '${normalizePublicKey(repeaterHex) ?? repeaterHex.trim().toUpperCase()}';
+
+  /// [key] unchanged unless it is a repeater password key, in which case
+  /// only the prefix plus the first 8 characters of the key material survive
+  /// - the full 64-hex public key must never reach a log line.
+  static String redactedKeyForLog(String key) {
+    if (!key.startsWith(repeaterPasswordPrefix)) return key;
+    final material = key.substring(repeaterPasswordPrefix.length);
+    final shortened =
+        material.length > 8 ? material.substring(0, 8) : material;
+    return '$repeaterPasswordPrefix$shortened';
+  }
 
   @override
   Future<String?> readRepeaterPassword(String repeaterHex) =>
@@ -228,15 +244,18 @@ class InMemoryTokenStore implements PortalTokenStore, RepeaterPasswordStore {
   @override
   Future<void> deletePendingPkce() async => pending = null;
 
+  static String _key(String repeaterHex) =>
+      normalizePublicKey(repeaterHex) ?? repeaterHex.trim().toUpperCase();
+
   @override
   Future<String?> readRepeaterPassword(String repeaterHex) async =>
-      repeaterPasswords[repeaterHex.toUpperCase()];
+      repeaterPasswords[_key(repeaterHex)];
 
   @override
   Future<void> writeRepeaterPassword(String repeaterHex, String password) async =>
-      repeaterPasswords[repeaterHex.toUpperCase()] = password;
+      repeaterPasswords[_key(repeaterHex)] = password;
 
   @override
   Future<void> deleteRepeaterPassword(String repeaterHex) async =>
-      repeaterPasswords.remove(repeaterHex.toUpperCase());
+      repeaterPasswords.remove(_key(repeaterHex));
 }
