@@ -36,6 +36,17 @@ void main() {
     expect(r.provenNeighbours[1].snr, isNull);
   });
 
+  test('a proven neighbour whose key is too short to show is dropped', () {
+    final r = Repeater.fromJson({
+      ...base,
+      'proven_neighbours': [
+        {'hex': 'AB', 'resolved': 0, 'heard_at': 1700000000},
+        {'prefix': 'ef' * 8, 'resolved': 0, 'heard_at': 1700000100},
+      ],
+    });
+    expect(r.provenNeighbours.single.hex, 'EF' * 8);
+  });
+
   test('toJson round trips both fields', () {
     final r = Repeater.fromJson({
       ...base,

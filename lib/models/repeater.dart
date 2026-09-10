@@ -16,9 +16,15 @@ class ProvenNeighbour {
     this.heardAt,
   });
 
+  /// The shortest key this accepts. The wire contract carries a 16-hex
+  /// prefix or a full 64-hex key, and every surface shows the first 8
+  /// characters, so anything shorter is malformed and is dropped rather than
+  /// left to blow up the row that renders it.
+  static const int minHexChars = 8;
+
   static ProvenNeighbour? tryFromJson(Map<String, dynamic> json) {
-    final raw = (json['hex'] ?? json['prefix']) as String?;
-    if (raw == null || raw.isEmpty) return null;
+    final raw = ((json['hex'] ?? json['prefix']) as String?)?.trim();
+    if (raw == null || raw.length < minHexChars) return null;
     final resolvedRaw = json['resolved'];
     final resolved = resolvedRaw == true || resolvedRaw == 1;
     final snr = json['snr'];
