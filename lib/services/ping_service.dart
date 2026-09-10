@@ -191,6 +191,12 @@ class PingService {
   /// to [RecentCoverageService.isCovered].
   RecentCoverage Function(double lat, double lon)? checkRecentCoverage;
 
+  /// Fired once each time smart pinging holds a ping, with the fix that was
+  /// validated and which kind of ping was held. The provider dedupes it on
+  /// the fixed 300 m grid and queues a DEFER for the square. Synchronous,
+  /// and both sites run with the in-progress flag already cleared.
+  void Function(double lat, double lon, BankedPingType held)? onPingDeferred;
+
   /// Callback to check if discovery drop is enabled (failed discoveries → API)
   bool Function()? getDiscDropEnabled;
 
@@ -824,6 +830,11 @@ class PingService {
               // maybeSendBankedPing() on the first fix in a fresh square.
               _bankedPing = BankedPingType.tx;
               debugLog('[PING] TX ping deferred, banked for a clear square');
+              final held = _gpsService.lastPosition;
+              if (held != null) {
+                onPingDeferred?.call(
+                    held.latitude, held.longitude, BankedPingType.tx);
+              }
             } else {
               // Anything else clears it, so a stale "recently covered" from
               // the previous attempt cannot ride into the countdown and the
@@ -1877,6 +1888,8 @@ class PingService {
         _bankedPing = BankedPingType.discovery;
         debugLog(
             '[DISC] Square recently covered, discovery deferred and banked');
+        onPingDeferred?.call(
+            position.latitude, position.longitude, BankedPingType.discovery);
         _pingInProgress = false;
         _scheduleNextDiscovery();
         return;
