@@ -1836,12 +1836,22 @@ class MeshCoreConnection {
     Duration Function(int estTimeoutMs) replyTimeout = _defaultReplyTimeout,
   }) async {
     _beginAdminCommand('login');
+    final sentCompleter = Completer<SentInfo>();
+    final loginCompleter = Completer<LoginResult>();
     try {
-      final sentCompleter = Completer<SentInfo>();
       _adminSentCompleter = sentCompleter;
-      final loginCompleter = Completer<LoginResult>();
+      // _write parks a non-sign frame behind an in-progress sign's gate for
+      // an unbounded wait (see _write), and abortPendingAdmin() can free
+      // this call's admin slot (_adminCommandInFlight) for a second login
+      // while this one is still parked there. _failPendingAdmin can
+      // therefore complete these two completers with an error long before
+      // either await below ever runs. Attach a no-op listener to each right
+      // away so that error is never left unobserved (an extra listener does
+      // not stop the later await from throwing the same error).
+      unawaited(sentCompleter.future.then((_) {}, onError: (_) {}));
       _loginCompleter = loginCompleter;
       _loginPrefix = pubkey.sublist(0, 6);
+      unawaited(loginCompleter.future.then((_) {}, onError: (_) {}));
 
       final frame = BufferWriter()
         ..writeByte(CommandCodes.sendLogin)
@@ -1851,31 +1861,34 @@ class MeshCoreConnection {
       await _write(bytes);
       debugLog('[CONN] Login frame sent (${bytes.length} bytes)');
 
-      SentInfo sent;
-      try {
-        sent = await sentCompleter.future.timeout(sentTimeout, onTimeout: () {
+      final sent = await sentCompleter.future.timeout(sentTimeout,
+          onTimeout: () {
+        if (identical(_adminSentCompleter, sentCompleter)) {
           _adminSentCompleter = null;
-          throw TimeoutException('login: SENT timed out');
-        });
-      } catch (_) {
-        // ERR and dispose fail every pending admin completer together
-        // (_failPendingAdmin), so loginCompleter above may already carry an
-        // error nobody will ever await now that we are bailing out here.
-        // Give it a listener so that error does not surface as an unhandled
-        // zone error, then rethrow the failure that actually happened.
-        unawaited(loginCompleter.future.then((_) {}, onError: (_) {}));
-        rethrow;
-      }
+        }
+        throw TimeoutException('login: SENT timed out');
+      });
       return await loginCompleter.future.timeout(
           replyTimeout(sent.estTimeoutMs), onTimeout: () {
-        _loginCompleter = null;
-        _loginPrefix = null;
+        if (identical(_loginCompleter, loginCompleter)) {
+          _loginCompleter = null;
+          _loginPrefix = null;
+        }
         throw TimeoutException('login: no reply from the repeater');
       });
     } finally {
-      _loginCompleter = null;
-      _loginPrefix = null;
-      _adminSentCompleter = null;
+      // Same orphan-completer guard as getContacts/addContact: while this
+      // call was parked behind the sign gate above, an abort can have freed
+      // the admin slot for a second login() that has since installed its
+      // own completers here. Only clear the fields if they are still the
+      // ones this call registered.
+      if (identical(_adminSentCompleter, sentCompleter)) {
+        _adminSentCompleter = null;
+      }
+      if (identical(_loginCompleter, loginCompleter)) {
+        _loginCompleter = null;
+        _loginPrefix = null;
+      }
       _endAdminCommand();
     }
   }
