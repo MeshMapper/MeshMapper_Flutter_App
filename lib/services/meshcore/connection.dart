@@ -118,6 +118,144 @@ class SignException implements Exception {
   String toString() => 'SignException($code): $message';
 }
 
+/// Thrown when the radio answers a repeater-admin command with ERR.
+class RadioErrorException implements Exception {
+  final String command;
+  final int errorCode; // ErrorCodes.*
+
+  const RadioErrorException(this.command, this.errorCode);
+
+  bool get isNotFound => errorCode == ErrorCodes.notFound;
+  bool get isTableFull => errorCode == ErrorCodes.tableFull;
+
+  @override
+  String toString() => 'RadioErrorException($command, code $errorCode)';
+}
+
+/// Thrown into every pending repeater-admin completer when the connection
+/// closes mid-command (the `_abortPendingSign` pattern).
+class RadioAbortedException implements Exception {
+  const RadioAbortedException();
+
+  @override
+  String toString() => 'RadioAbortedException: connection closed';
+}
+
+/// The parsed RESP_CODE_SENT frame: [flood:1][tag:4][est_timeout_ms:u32].
+class SentInfo {
+  final bool flood;
+  final Uint8List tag;
+  final int estTimeoutMs;
+
+  const SentInfo(
+      {required this.flood, required this.tag, required this.estTimeoutMs});
+}
+
+/// One contact as the radio stores it. The same 147-byte layout is read from
+/// RESP_CODE_CONTACT and written to CMD_ADD_UPDATE_CONTACT:
+/// [pubkey:32][type:1][flags:1][out_path_len:1][out_path:64][name:32]
+/// [last_advert:u32][lat:i32 microdeg][lon:i32 microdeg][lastmod:u32]
+class ContactRecord {
+  static const int payloadLength = 32 + 1 + 1 + 1 + 64 + 32 + 4 + 4 + 4 + 4;
+
+  final Uint8List publicKey;
+  final int type;
+  final int flags;
+  final int outPathLen;
+  final Uint8List outPath; // always 64 bytes
+  final String name;
+  final int lastAdvert;
+  final int latMicro;
+  final int lonMicro;
+  final int lastMod;
+
+  const ContactRecord({
+    required this.publicKey,
+    required this.type,
+    required this.flags,
+    required this.outPathLen,
+    required this.outPath,
+    required this.name,
+    required this.lastAdvert,
+    required this.latMicro,
+    required this.lonMicro,
+    required this.lastMod,
+  });
+
+  /// A flood-route repeater contact with the MeshMapper name and position.
+  factory ContactRecord.newRepeater({
+    required Uint8List publicKey,
+    required String name,
+    required double lat,
+    required double lon,
+    required int nowSecs,
+  }) {
+    return ContactRecord(
+      publicKey: publicKey,
+      type: AdvTypes.repeater,
+      flags: 0,
+      outPathLen: ProtocolConstants.outPathUnknown,
+      outPath: Uint8List(64),
+      name: name,
+      lastAdvert: nowSecs,
+      latMicro: (lat * 1e6).round(),
+      lonMicro: (lon * 1e6).round(),
+      lastMod: nowSecs,
+    );
+  }
+
+  /// Parse the payload after the code byte. Throws [FormatException] when
+  /// fewer than [payloadLength] bytes remain.
+  factory ContactRecord.parse(BufferReader reader) {
+    if (reader.remainingBytesCount < payloadLength) {
+      throw FormatException(
+          'Contact frame carries ${reader.remainingBytesCount} bytes, '
+          'expected $payloadLength');
+    }
+    return ContactRecord(
+      publicKey: reader.readBytes(32),
+      type: reader.readByte(),
+      flags: reader.readByte(),
+      outPathLen: reader.readByte(),
+      outPath: reader.readBytes(64),
+      name: reader.readCString(32),
+      lastAdvert: reader.readUInt32LE(),
+      latMicro: reader.readInt32LE(),
+      lonMicro: reader.readInt32LE(),
+      lastMod: reader.readUInt32LE(),
+    );
+  }
+
+  String get publicKeyHex => publicKey
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join()
+      .toUpperCase();
+
+  bool get hasRoute =>
+      outPathLen != ProtocolConstants.outPathUnknown && outPathLen > 0;
+
+  /// The learned path, `out_path_len` bytes of `out_path` (empty when unknown).
+  Uint8List get routeBytes => hasRoute
+      ? outPath.sublist(0, outPathLen.clamp(0, outPath.length))
+      : Uint8List(0);
+
+  Uint8List toFrame(int commandCode) {
+    final w = BufferWriter();
+    w.writeByte(commandCode);
+    w.writeBytes(publicKey);
+    w.writeByte(type);
+    w.writeByte(flags);
+    w.writeByte(outPathLen);
+    w.writeBytes(outPath);
+    w.writeCString(name, 32);
+    w.writeUInt32LE(lastAdvert);
+    w.writeUInt32LE(latMicro.toUnsigned(32));
+    w.writeUInt32LE(lonMicro.toUnsigned(32));
+    w.writeUInt32LE(lastMod);
+    return w.toBytes();
+  }
+}
+
 /// MeshCore connection manager
 /// Ported from content/mc/connection/connection.js in WebClient repo
 ///
@@ -161,6 +299,15 @@ class MeshCoreConnection {
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
   Completer<int>? _getTimeCompleter;
+
+  // Repeater-admin commands (contacts, login, binary request, reset path).
+  // One at a time: the companion keeps a single pending request and a login
+  // clears it (clearPendingReqs), so overlapping two would lose a reply.
+  String? _adminCommandInFlight;
+  Completer<SentInfo>? _adminSentCompleter;
+  Completer<void>? _adminOkCompleter;
+  Completer<List<ContactRecord>>? _contactsCompleter;
+  List<ContactRecord> _contactsBuffer = [];
 
   // CMD_SIGN state. `_signGate` is non-null for the whole duration of a sign;
   // Task-4's write funnel queues every non-sign frame behind it so no other
@@ -410,6 +557,7 @@ class MeshCoreConnection {
     // Channel deletion is a gated write; a live sign would park it behind the
     // sign timeout while BLE is still up. Abort the sign first.
     _abortPendingSign();
+    _abortPendingAdmin();
     final channel = _wardrivingChannel;
     if (channel != null) {
       await ChannelService.deleteWardrivingChannel(this, channel.channelIndex);
@@ -421,6 +569,7 @@ class MeshCoreConnection {
     try {
       debugLog('[CONN] Disconnecting');
       _abortPendingSign();
+      _abortPendingAdmin();
 
       // Stop noise floor polling
       _stopNoiseFloorPolling();
@@ -506,6 +655,12 @@ class MeshCoreConnection {
               if (!signOk.isCompleted) signOk.complete();
               break;
             }
+            final adminOk = _adminOkCompleter;
+            if (adminOk != null) {
+              _adminOkCompleter = null;
+              if (!adminOk.isCompleted) adminOk.complete();
+              break;
+            }
             _setTimeCompleter?.complete();
             _setTimeCompleter = null;
             break;
@@ -553,6 +708,10 @@ class MeshCoreConnection {
             _setTimeCompleter = null;
             break;
           }
+          // Repeater-admin commands read the code: 2 is "contact unknown",
+          // 3 is "table full" on add and "could not send" on login/request.
+          _failPendingAdmin(RadioErrorException(
+              _adminCommandInFlight ?? 'admin', errorCode));
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
           _statsCompleter?.completeError(errException);
@@ -573,7 +732,7 @@ class MeshCoreConnection {
           _onSelfInfoResponse(reader);
           break;
         case ResponseCodes.sent:
-          _onSentResponse();
+          _onSentResponse(reader);
           break;
         case ResponseCodes.channelMsgRecv:
           _onChannelMsgRecvResponse(reader);
@@ -647,6 +806,35 @@ class MeshCoreConnection {
             completer.complete(reader.readBytes(64));
             break;
           }
+        case ResponseCodes.contactsStart:
+          if (_contactsCompleter == null) {
+            debugLog('[CONN] Ignoring unsolicited CONTACTS_START');
+            break;
+          }
+          _contactsBuffer = [];
+          final count =
+              reader.remainingBytesCount >= 4 ? reader.readUInt32LE() : -1;
+          debugLog('[CONN] Contact list starting ($count contacts)');
+          break;
+        case ResponseCodes.contact:
+          if (_contactsCompleter == null) break;
+          try {
+            _contactsBuffer.add(ContactRecord.parse(reader));
+          } on FormatException catch (e) {
+            debugWarn('[CONN] Skipping malformed contact frame: $e');
+          }
+          break;
+        case ResponseCodes.endOfContacts:
+          {
+            final completer = _contactsCompleter;
+            _contactsCompleter = null;
+            final contacts = _contactsBuffer;
+            _contactsBuffer = [];
+            if (completer == null || completer.isCompleted) break;
+            debugLog('[CONN] Contact list complete (${contacts.length})');
+            completer.complete(contacts);
+            break;
+          }
         default:
           // Log unhandled response codes (like JS implementation)
           debugLog(
@@ -690,6 +878,51 @@ class MeshCoreConnection {
     }
     return true;
   }
+
+  /// Claim the single repeater-admin command slot, or throw.
+  void _beginAdminCommand(String name) {
+    if (_disposed) throw StateError('Connection disposed');
+    final running = _adminCommandInFlight;
+    if (running != null) {
+      throw StateError('Repeater admin command $running is still in flight');
+    }
+    _adminCommandInFlight = name;
+  }
+
+  void _endAdminCommand() {
+    _adminCommandInFlight = null;
+  }
+
+  /// Complete every pending repeater-admin completer with [error]. Returns
+  /// true when at least one was pending.
+  bool _failPendingAdmin(Object error) {
+    var any = false;
+    void fail<T>(Completer<T>? c) {
+      if (c != null && !c.isCompleted) {
+        c.completeError(error);
+        any = true;
+      }
+    }
+
+    fail(_adminSentCompleter);
+    fail(_adminOkCompleter);
+    fail(_contactsCompleter);
+    _adminSentCompleter = null;
+    _adminOkCompleter = null;
+    _contactsCompleter = null;
+    _contactsBuffer = [];
+    return any;
+  }
+
+  /// Tear down an in-flight repeater-admin command on disconnect/dispose.
+  void _abortPendingAdmin() {
+    final wasPending = _failPendingAdmin(const RadioAbortedException());
+    _adminCommandInFlight = null;
+    if (wasPending) debugLog('[CONN] Aborted in-flight repeater admin command');
+  }
+
+  /// Public for the provider's disconnect sequence (mirrors abortPendingSign).
+  void abortPendingAdmin() => _abortPendingAdmin();
 
   /// Tear down an in-flight sign on disconnect/dispose.
   ///
@@ -847,9 +1080,30 @@ class MeshCoreConnection {
     }
   }
 
-  void _onSentResponse() {
+  /// RESP_CODE_SENT. The legacy completer (channel messages) is void; the
+  /// repeater-admin completer wants the parsed [flood:1][tag:4][est:u32].
+  void _onSentResponse(BufferReader reader) {
+    SentInfo? info;
+    if (reader.remainingBytesCount >= 9) {
+      final flood = reader.readByte() != 0;
+      final tag = reader.readBytes(4);
+      final est = reader.readUInt32LE();
+      info = SentInfo(flood: flood, tag: tag, estTimeoutMs: est);
+    }
     _sentCompleter?.complete();
     _sentCompleter = null;
+    final admin = _adminSentCompleter;
+    _adminSentCompleter = null;
+    if (admin != null && !admin.isCompleted) {
+      if (info == null) {
+        admin.completeError(const FormatException(
+            'SENT frame carries no tag (shorter than 10 bytes)'));
+      } else {
+        debugLog('[CONN] SENT flood=${info.flood} '
+            'est_timeout=${info.estTimeoutMs}ms');
+        admin.complete(info);
+      }
+    }
   }
 
   void _onChannelMsgRecvResponse(BufferReader reader) {
@@ -1429,6 +1683,46 @@ class MeshCoreConnection {
     );
   }
 
+  /// Read the radio's whole contact list (CMD_GET_CONTACTS with since = 0).
+  Future<List<ContactRecord>> getContacts(
+      {Duration timeout = const Duration(seconds: 20)}) async {
+    _beginAdminCommand('getContacts');
+    try {
+      final completer = Completer<List<ContactRecord>>();
+      _contactsCompleter = completer;
+      final data = BufferWriter()
+        ..writeByte(CommandCodes.getContacts)
+        ..writeUInt32LE(0);
+      await _sendToRadio(data);
+      return await completer.future.timeout(timeout, onTimeout: () {
+        _contactsCompleter = null;
+        _contactsBuffer = [];
+        throw TimeoutException('getContacts timed out');
+      });
+    } finally {
+      _endAdminCommand();
+    }
+  }
+
+  /// Add or update one contact (CMD_ADD_UPDATE_CONTACT). Resolves on OK;
+  /// throws [RadioErrorException] (code 3 = table full) on ERR.
+  Future<void> addContact(ContactRecord contact,
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    _beginAdminCommand('addContact');
+    try {
+      final completer = Completer<void>();
+      _adminOkCompleter = completer;
+      await _write(contact.toFrame(CommandCodes.addUpdateContact));
+      debugLog('[CONN] addContact ${contact.publicKeyHex.substring(0, 8)}');
+      await completer.future.timeout(timeout, onTimeout: () {
+        _adminOkCompleter = null;
+        throw TimeoutException('addContact timed out');
+      });
+    } finally {
+      _endAdminCommand();
+    }
+  }
+
   /// Ask the radio to Ed25519-sign [data] with its device private key.
   ///
   /// Framing (byte-identical to the portal's meshcore.js, which minted every
@@ -1643,6 +1937,7 @@ class MeshCoreConnection {
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
     _abortPendingSign();
+    _abortPendingAdmin();
     _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();
