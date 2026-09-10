@@ -87,6 +87,20 @@ void main() {
     expect(lastBody(t.bodies)['auto_mode'], 'passive');
   });
 
+  test('the release of an explicit (offline upload) session id carries nothing',
+      () async {
+    final t = build();
+    t.api.currentAutoMode = () => 'active';
+    await connect(t.api);
+    await t.api.requestAuth(
+      reason: 'disconnect',
+      publicKey: 'AB',
+      sessionId: 'offline-20260909-0001',
+    );
+    expect(lastBody(t.bodies)['session_id'], 'offline-20260909-0001');
+    expect(lastBody(t.bodies).containsKey('auto_mode'), isFalse);
+  });
+
   test('register does not carry it', () async {
     final t = build();
     t.api.currentAutoMode = () => 'active';
