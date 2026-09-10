@@ -56,8 +56,16 @@ abstract class PortalTokenStore {
   Future<void> deletePendingPkce();
 }
 
+/// Repeater admin passwords, one entry per repeater public key. Keychain or
+/// Keystore only: never logged, never sent to any server.
+abstract class RepeaterPasswordStore {
+  Future<String?> readRepeaterPassword(String repeaterHex);
+  Future<void> writeRepeaterPassword(String repeaterHex, String password);
+  Future<void> deleteRepeaterPassword(String repeaterHex);
+}
+
 /// Keychain (iOS) / Keystore-backed EncryptedSharedPreferences (Android).
-class SecureTokenStore implements PortalTokenStore {
+class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
   static const String tokenKey = 'portal_app_token';
   static const String pendingPkceKey = 'portal_pending_pkce';
 
@@ -177,12 +185,30 @@ class SecureTokenStore implements PortalTokenStore {
 
   @override
   Future<void> deletePendingPkce() => _deleteSafely(pendingPkceKey);
+
+  static const String repeaterPasswordPrefix = 'repeater_admin_pw_';
+
+  static String repeaterPasswordKey(String repeaterHex) =>
+      '$repeaterPasswordPrefix${repeaterHex.toUpperCase()}';
+
+  @override
+  Future<String?> readRepeaterPassword(String repeaterHex) =>
+      _readSafely(repeaterPasswordKey(repeaterHex));
+
+  @override
+  Future<void> writeRepeaterPassword(String repeaterHex, String password) =>
+      _writeSafely(repeaterPasswordKey(repeaterHex), password);
+
+  @override
+  Future<void> deleteRepeaterPassword(String repeaterHex) =>
+      _deleteSafely(repeaterPasswordKey(repeaterHex));
 }
 
 /// Test double. Also useful as a null-object on platforms with no keystore.
-class InMemoryTokenStore implements PortalTokenStore {
+class InMemoryTokenStore implements PortalTokenStore, RepeaterPasswordStore {
   String? token;
   PendingPkce? pending;
+  final Map<String, String> repeaterPasswords = {};
 
   @override
   Future<String?> readToken() async => token;
@@ -201,4 +227,16 @@ class InMemoryTokenStore implements PortalTokenStore {
 
   @override
   Future<void> deletePendingPkce() async => pending = null;
+
+  @override
+  Future<String?> readRepeaterPassword(String repeaterHex) async =>
+      repeaterPasswords[repeaterHex.toUpperCase()];
+
+  @override
+  Future<void> writeRepeaterPassword(String repeaterHex, String password) async =>
+      repeaterPasswords[repeaterHex.toUpperCase()] = password;
+
+  @override
+  Future<void> deleteRepeaterPassword(String repeaterHex) async =>
+      repeaterPasswords.remove(repeaterHex.toUpperCase());
 }
