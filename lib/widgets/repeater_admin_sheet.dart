@@ -107,6 +107,7 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
     if (!mounted) return;
     if (session.isLoggedIn && _remember) {
       await appState.rememberRepeaterPassword(session.target.hexId, text);
+      if (!mounted) return;
       _hasRemembered = true;
     }
     if (ok) setState(() => _claimError = null);
@@ -127,6 +128,9 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
   Future<void> _claim() async {
     final appState = context.read<AppStateProvider>();
     setState(() {
+      // The claim runs over the mesh and can set the session's lastError. It
+      // belongs to this card's own line, so no card owns the session's copy.
+      _errorOwner = _ErrorOwner.none;
       _serverBusy = true;
       _claimError = null;
     });
@@ -141,7 +145,10 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
 
   Future<void> _unclaim() async {
     final appState = context.read<AppStateProvider>();
-    setState(() => _serverBusy = true);
+    setState(() {
+      _errorOwner = _ErrorOwner.none;
+      _serverBusy = true;
+    });
     final result = await appState.unclaimRepeater(session.target.hexId);
     if (!mounted) return;
     setState(() {
@@ -153,7 +160,10 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
 
   Future<void> _upload() async {
     final appState = context.read<AppStateProvider>();
-    setState(() => _serverBusy = true);
+    setState(() {
+      _errorOwner = _ErrorOwner.none;
+      _serverBusy = true;
+    });
     final result = await appState.uploadRepeaterNeighbours();
     if (!mounted) return;
     setState(() {
@@ -302,6 +312,13 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
 
   Widget _loginCard(BuildContext context) {
     final busy = session.busy;
+    // Only a failed session still has something to say. The session keeps
+    // lastError across a later login, so without the state guard a mistyped
+    // password would stay on screen under a session now logged in, and would
+    // crowd out the guest sentence after a guest login.
+    final loginError = session.state == RepeaterAdminState.failed
+        ? _ownedError(_ErrorOwner.login, onRetry: busy ? null : _login)
+        : null;
     return _card(context, 'Log in', [
       TextField(
         controller: _password,
@@ -330,9 +347,9 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
           ),
         ],
       ),
-      if (session.state == RepeaterAdminState.guest && session.lastError == null)
+      if (session.state == RepeaterAdminState.guest)
         const Text('That is the guest password. Claiming needs the admin password.'),
-      if (_ownedError(_ErrorOwner.login, onRetry: busy ? null : _login) case final w?) w,
+      if (loginError case final w?) w,
     ]);
   }
 
@@ -355,10 +372,21 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
     ]);
   }
 
+  /// Who the claim listed: the signed-in account's name, else the entry the
+  /// claim added to the repeater's administrators ([previousAdmins] is the
+  /// list from before the tap), else the plain word.
+  String _listedAs(String? displayName, List<String> previousAdmins) {
+    if (displayName != null && displayName.isNotEmpty) return displayName;
+    for (final name in _claimResult?.administrators ?? const <String>[]) {
+      if (!previousAdmins.contains(name)) return name;
+    }
+    return 'you';
+  }
+
   Widget _claimCard(BuildContext context, bool claimed, List<String> admins) {
     final appState = context.read<AppStateProvider>();
     final busy = session.busy || _serverBusy;
-    final listedAs = appState.portalAccount?.displayName ?? 'you';
+    final listedAs = _listedAs(appState.portalAccount?.displayName, admins);
     final shown = _claimResult?.administrators ?? admins;
     return _card(context, 'Claim', [
       if (_claimResult != null) ...[
