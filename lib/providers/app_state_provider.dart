@@ -100,6 +100,17 @@ enum AutoMode {
         AutoMode.hybrid => 'Hybrid',
         AutoMode.targeted => 'Trace',
       };
+
+  /// The mode word on the wire: the `auto_mode` value the server reads on
+  /// every session call and every queued item. Trace is `trace`, never the
+  /// enum name. The server's enum is `active`, `hybrid`, `passive`, `trace`,
+  /// `none`; `none` is the provider's word for "no mode running", not a mode.
+  String get wireName => switch (this) {
+        AutoMode.active => 'active',
+        AutoMode.passive => 'passive',
+        AutoMode.hybrid => 'hybrid',
+        AutoMode.targeted => 'trace',
+      };
 }
 
 /// Ping type for the top-heard overlay dots
@@ -845,6 +856,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// True when running Trace Mode (zero-hop trace)
   bool get isTargetedModeRunning =>
       _autoPingEnabled && _autoMode == AutoMode.targeted;
+
+  /// The auto mode as the server reads it on the batch post, the heartbeat
+  /// and the release, and the stamp on every queued item. `none` while no
+  /// mode is running. A pure read of two fields, because it is consulted on
+  /// every batch and heartbeat. Gated on the enabled flag and not on
+  /// [isPendingDisable]: a mode draining its last window is still that mode
+  /// until the drain finishes, and the server credits the gap to whatever the
+  /// previous call reported anyway.
+  String get wireAutoMode => _autoPingEnabled ? _autoMode.wireName : 'none';
   String? get targetRepeaterId => _targetRepeaterId;
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
