@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/ping_service.dart';
+import '../services/repeater_admin/manage_target.dart';
+import '../services/repeater_admin/repeater_admin_models.dart';
 import '../services/status/ping_control_labels.dart';
 import '../utils/debug_logger_io.dart';
+import 'repeater_admin_sheet.dart';
 import 'repeater_picker_sheet.dart';
 
 /// The render-only facts every ping-control layout reads: the offline / zone
@@ -89,6 +93,7 @@ typedef _ControlsDeps = ({
   bool isPowerSet,
   bool floodTrafficEnabled,
   bool hasTargetRepeaterId,
+  bool isRepeaterAdminActive,
 });
 
 _ControlsDeps _controlsDepsOf(AppStateProvider s) {
@@ -115,6 +120,7 @@ _ControlsDeps _controlsDepsOf(AppStateProvider s) {
         prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
     floodTrafficEnabled: s.floodTrafficEnabled,
     hasTargetRepeaterId: targetId != null && targetId.isNotEmpty,
+    isRepeaterAdminActive: s.isRepeaterAdminActive,
   );
 }
 
@@ -132,6 +138,12 @@ typedef _TargetedDeps = ({
   bool externalAntennaSet,
   bool isPowerSet,
   bool isAutoPingStarting,
+  bool isRepeaterAdminActive,
+  bool isPingInProgress,
+  bool isPingSending,
+  bool isAutoReconnecting,
+  int repeaterCount,
+  String? firmwareVersionString,
 });
 
 _TargetedDeps _targetedDepsOf(AppStateProvider s) {
@@ -146,6 +158,12 @@ _TargetedDeps _targetedDepsOf(AppStateProvider s) {
     isPowerSet:
         prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
     isAutoPingStarting: s.isAutoPingStarting,
+    isRepeaterAdminActive: s.isRepeaterAdminActive,
+    isPingInProgress: s.isPingInProgress,
+    isPingSending: s.isPingSending,
+    isAutoReconnecting: s.isAutoReconnecting,
+    repeaterCount: s.repeaters.length,
+    firmwareVersionString: s.firmwareVersionString,
   );
 }
 
@@ -252,6 +270,7 @@ class PingControls extends StatelessWidget {
                           !txNotAllowed &&
                           !rxWindowActive &&
                           !isPingSending &&
+                          !appState.isRepeaterAdminActive &&
                           !discoveryWindowActive &&
                           !isPendingDisable,
                       isActive: (isPingSending || rxWindowActive) &&
@@ -296,6 +315,7 @@ class PingControls extends StatelessWidget {
                                       !isPassiveModeRunning &&
                                       !cooldownActive &&
                                       !isPingSending &&
+                                      !appState.isRepeaterAdminActive &&
                                       !rxWindowActive)) &&
                               !txBlockedByOffline &&
                               !txNotAllowed),
@@ -340,6 +360,7 @@ class PingControls extends StatelessWidget {
                                 !isTargetedRunning &&
                                 !isAutoStarting &&
                                 !isPingSending &&
+                                !appState.isRepeaterAdminActive &&
                                 !rxWindowActive &&
                                 !cooldownActive &&
                                 prefs.externalAntennaSet &&
@@ -592,6 +613,10 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
   final _controller = TextEditingController();
   bool _isStarting = false;
 
+  /// The repeater the user picked from the list, kept so Manage has a full
+  /// public key even when the typed ID is only its first few characters.
+  Repeater? _pickedRepeater;
+
   @override
   void initState() {
     super.initState();
@@ -623,6 +648,7 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
         ? repeater.hexId.substring(0, maxLen).toUpperCase()
         : repeater.hexId.toUpperCase();
     _controller.text = trimmed;
+    _pickedRepeater = repeater;
     appState.setTargetRepeaterId(trimmed);
     setState(() {});
   }
@@ -660,11 +686,38 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
         final canStart = isValidHex &&
             !widget.isAnyModeRunning &&
             !isTargetedRunning &&
+            !appState.isRepeaterAdminActive &&
             !appState.cooldownTimer.isRunning &&
             !appState.isAutoPingStarting &&
             appState.isConnected &&
             prefs.externalAntennaSet &&
             isPowerSet;
+
+        // Which repeater Manage would open, and why it may not open now. The
+        // inputs match the provider's own refusal, plus the Trace lane this
+        // row owns.
+        final manageTarget = resolveManageTarget(
+          typedId: hexText,
+          picked: _pickedRepeater,
+          repeaters: appState.repeaters,
+        );
+        final manageBlock = manageBlockReason(
+          isConnected: appState.isConnected,
+          isAnyModeRunning: widget.isAnyModeRunning || isTargetedRunning,
+          isPingInProgress: appState.isPingInProgress,
+          isPingSending: appState.isPingSending,
+          isRepeaterAdminActive: appState.isRepeaterAdminActive,
+          isAutoReconnecting: appState.isAutoReconnecting,
+          companionFirmwareSupported: companionFirmwareAtLeast(
+              appState.firmwareVersionString,
+              major: kCompanionFloorMajor,
+              minor: kCompanionFloorMinor,
+              patch: kCompanionFloorPatch),
+        );
+        final manageHint = manageBlock ??
+            (manageTarget == null ? kChooseFromListHint : 'Manage repeater');
+        final canManage =
+            manageBlock == null && manageTarget != null && !_isStarting;
 
         // `isTargetedRunning` stays true through a pending stop, so without
         // the guard this section kept taking taps while its own stop was
@@ -788,6 +841,13 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                   ],
                   onChanged: (value) {
                     appState.setTargetRepeaterId(value.trim().toUpperCase());
+                    // The picked repeater stops being the selection as soon as
+                    // the typed text no longer prefixes its key.
+                    final typed = value.trim().toUpperCase();
+                    if (_pickedRepeater != null &&
+                        !_pickedRepeater!.hexId.toUpperCase().startsWith(typed)) {
+                      _pickedRepeater = null;
+                    }
                     setState(() {});
                   },
                 ),
@@ -814,6 +874,33 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
                   tooltip: 'Choose repeater',
                 ),
               ),
+              if (!widget.compact) ...[
+                const SizedBox(width: 6),
+                // Manage repeater button (repeater administrators)
+                SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: IconButton(
+                    icon: Icon(
+                      Icons.admin_panel_settings_outlined,
+                      size: 18,
+                      color: canManage
+                          ? effectiveColor
+                          : colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+                    ),
+                    onPressed: canManage
+                        ? () {
+                            HapticFeedback.lightImpact();
+                            showRepeaterAdminSheet(context,
+                                RepeaterTarget.fromRepeater(manageTarget));
+                          }
+                        : null,
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    tooltip: manageHint,
+                  ),
+                ),
+              ],
             ],
           ),
         );
@@ -962,6 +1049,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             !txNotAllowed &&
             !rxWindowActive &&
             !isPingSending &&
+            !appState.isRepeaterAdminActive &&
             !discoveryWindowActive &&
             !isPendingDisable;
         final sendPingActive = (isPingSending || rxWindowActive) &&
@@ -978,6 +1066,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
                         !isPassiveModeRunning &&
                         !cooldownActive &&
                         !isPingSending &&
+                        !appState.isRepeaterAdminActive &&
                         !rxWindowActive)) &&
                 !txBlockedByOffline &&
                 !txNotAllowed);
@@ -991,6 +1080,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
                     !isTargetedRunning &&
                     !isAutoStarting &&
                     !isPingSending &&
+                    !appState.isRepeaterAdminActive &&
                     !rxWindowActive &&
                     !cooldownActive &&
                     prefs.externalAntennaSet &&
@@ -1012,6 +1102,7 @@ class _CompactPingControlsState extends State<CompactPingControls> {
             !isPendingDisable &&
             !isAutoStarting &&
             !isPingSending &&
+            !appState.isRepeaterAdminActive &&
             !rxWindowActive &&
             !cooldownActive &&
             !manualCooldownActive &&
@@ -1321,6 +1412,7 @@ class LandscapePingControls extends StatelessWidget {
                           !txNotAllowed &&
                           !rxWindowActive &&
                           !isPingSending &&
+                          !appState.isRepeaterAdminActive &&
                           !discoveryWindowActive &&
                           !isPendingDisable,
                       isActive:
@@ -1352,6 +1444,7 @@ class LandscapePingControls extends StatelessWidget {
                                       !isPassiveModeRunning &&
                                       !cooldownActive &&
                                       !isPingSending &&
+                                      !appState.isRepeaterAdminActive &&
                                       !rxWindowActive)) &&
                               !txBlockedByOffline &&
                               !txNotAllowed),
@@ -1383,6 +1476,7 @@ class LandscapePingControls extends StatelessWidget {
                                 !isTargetedRunning &&
                                 !isAutoStarting &&
                                 !isPingSending &&
+                                !appState.isRepeaterAdminActive &&
                                 !rxWindowActive &&
                                 !cooldownActive &&
                                 prefs.externalAntennaSet &&
