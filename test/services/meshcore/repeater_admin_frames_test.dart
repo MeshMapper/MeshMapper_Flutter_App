@@ -329,6 +329,42 @@ void main() {
       await expectLater(future, throwsA(isA<RadioAbortedException>()));
     });
 
+    test(
+        'a write parked behind the sign gate does not leave the login '
+        'completers unobserved when dispose fires', () async {
+      // sign() sets _signGate before it ever writes and only clears/
+      // completes it in its own finally, so leaving CMD_SIGN_START
+      // unanswered keeps the gate open for the rest of this test. login()'s
+      // frame then parks behind that gate inside _write (connection.dart,
+      // the sign-gate queueing in _write).
+      final signFuture = connection.sign(Uint8List.fromList([9, 9, 9]));
+      await transport.settle();
+      expect(transport.writes.length, 1); // CMD_SIGN_START only
+
+      final future = connection.login(pubkey, 'x');
+      await transport.settle();
+      // login's frame is queued behind the still-open sign gate, not
+      // written yet.
+      expect(transport.writes.length, 1);
+
+      connection.dispose();
+
+      // Both completers login() registered before the parked write were
+      // given a no-op listener immediately, so the abort each one gets from
+      // dispose (delivered while the write is still parked) does not
+      // surface as an unhandled zone error - only as these two matchers.
+      // Attach both matchers before awaiting either: sign()'s own future
+      // completes with its abort inside dispose() above (synchronously,
+      // no listener of its own yet), so it must not sit unobserved while
+      // we await the other expectation first.
+      final loginExpectation =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      final signExpectation =
+          expectLater(signFuture, throwsA(isA<SignException>()));
+      await loginExpectation;
+      await signExpectation;
+    });
+
     test('the password never reaches the debug log', () async {
       // Same harness as sign_flow_test.dart: capture debugPrint with the
       // logger switched on, restore both in tearDown.
