@@ -118,6 +118,169 @@ class SignException implements Exception {
   String toString() => 'SignException($code): $message';
 }
 
+/// Thrown when the radio answers a repeater-admin command with ERR.
+class RadioErrorException implements Exception {
+  final String command;
+  final int errorCode; // ErrorCodes.*
+
+  const RadioErrorException(this.command, this.errorCode);
+
+  bool get isNotFound => errorCode == ErrorCodes.notFound;
+  bool get isTableFull => errorCode == ErrorCodes.tableFull;
+
+  @override
+  String toString() => 'RadioErrorException($command, code $errorCode)';
+}
+
+/// Thrown into every pending repeater-admin completer when the connection
+/// closes mid-command (the `_abortPendingSign` pattern).
+class RadioAbortedException implements Exception {
+  const RadioAbortedException();
+
+  @override
+  String toString() => 'RadioAbortedException: connection closed';
+}
+
+/// The parsed RESP_CODE_SENT frame: [flood:1][tag:4][est_timeout_ms:u32].
+class SentInfo {
+  final bool flood;
+  final Uint8List tag;
+  final int estTimeoutMs;
+
+  const SentInfo(
+      {required this.flood, required this.tag, required this.estTimeoutMs});
+}
+
+/// The pushed answer to CMD_SEND_LOGIN.
+///
+/// LOGIN_SUCCESS (14 bytes, companion firmware v1.9.0 and newer):
+/// [0x85][is_admin:1][prefix:6][tag:4][acl_perms:1][fw_level:1].
+/// A shorter push is older companion firmware, which the app does not
+/// support; the parser completes the login with a FormatException.
+/// LOGIN_FAIL (0x86) gives [success] false. A repeater older than v1.9.0
+/// sends no firmware-level byte; the companion then forwards the cipher's
+/// zero pad byte, so [fwLevel] 0 means "repeater older than v1.9.0".
+class LoginResult {
+  final bool success;
+  final bool isAdmin;
+  final Uint8List prefix;
+  final int? aclPerms;
+  final int? fwLevel;
+
+  const LoginResult({
+    required this.success,
+    required this.isAdmin,
+    required this.prefix,
+    this.aclPerms,
+    this.fwLevel,
+  });
+}
+
+/// One contact as the radio stores it. The same 147-byte layout is read from
+/// RESP_CODE_CONTACT and written to CMD_ADD_UPDATE_CONTACT:
+/// [pubkey:32][type:1][flags:1][out_path_len:1][out_path:64][name:32]
+/// [last_advert:u32][lat:i32 microdeg][lon:i32 microdeg][lastmod:u32]
+class ContactRecord {
+  static const int payloadLength = 32 + 1 + 1 + 1 + 64 + 32 + 4 + 4 + 4 + 4;
+
+  final Uint8List publicKey;
+  final int type;
+  final int flags;
+  final int outPathLen;
+  final Uint8List outPath; // always 64 bytes
+  final String name;
+  final int lastAdvert;
+  final int latMicro;
+  final int lonMicro;
+  final int lastMod;
+
+  const ContactRecord({
+    required this.publicKey,
+    required this.type,
+    required this.flags,
+    required this.outPathLen,
+    required this.outPath,
+    required this.name,
+    required this.lastAdvert,
+    required this.latMicro,
+    required this.lonMicro,
+    required this.lastMod,
+  });
+
+  /// A flood-route repeater contact with the MeshMapper name and position.
+  factory ContactRecord.newRepeater({
+    required Uint8List publicKey,
+    required String name,
+    required double lat,
+    required double lon,
+    required int nowSecs,
+  }) {
+    return ContactRecord(
+      publicKey: publicKey,
+      type: AdvTypes.repeater,
+      flags: 0,
+      outPathLen: ProtocolConstants.outPathUnknown,
+      outPath: Uint8List(64),
+      name: name,
+      lastAdvert: nowSecs,
+      latMicro: (lat * 1e6).round(),
+      lonMicro: (lon * 1e6).round(),
+      lastMod: nowSecs,
+    );
+  }
+
+  /// Parse the payload after the code byte. Throws [FormatException] when
+  /// fewer than [payloadLength] bytes remain.
+  factory ContactRecord.parse(BufferReader reader) {
+    if (reader.remainingBytesCount < payloadLength) {
+      throw FormatException(
+          'Contact frame carries ${reader.remainingBytesCount} bytes, '
+          'expected $payloadLength');
+    }
+    return ContactRecord(
+      publicKey: reader.readBytes(32),
+      type: reader.readByte(),
+      flags: reader.readByte(),
+      outPathLen: reader.readByte(),
+      outPath: reader.readBytes(64),
+      name: reader.readCString(32),
+      lastAdvert: reader.readUInt32LE(),
+      latMicro: reader.readInt32LE(),
+      lonMicro: reader.readInt32LE(),
+      lastMod: reader.readUInt32LE(),
+    );
+  }
+
+  String get publicKeyHex => publicKey
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join()
+      .toUpperCase();
+
+  bool get hasRoute =>
+      outPathLen != ProtocolConstants.outPathUnknown && outPathLen > 0;
+
+  /// The learned path, `out_path_len` bytes of `out_path` (empty when unknown).
+  Uint8List get routeBytes => hasRoute
+      ? outPath.sublist(0, outPathLen.clamp(0, outPath.length))
+      : Uint8List(0);
+
+  Uint8List toFrame(int commandCode) {
+    final w = BufferWriter();
+    w.writeByte(commandCode);
+    w.writeBytes(publicKey);
+    w.writeByte(type);
+    w.writeByte(flags);
+    w.writeByte(outPathLen);
+    w.writeBytes(outPath);
+    w.writeCString(name, 32);
+    w.writeUInt32LE(lastAdvert);
+    w.writeUInt32LE(latMicro.toUnsigned(32));
+    w.writeUInt32LE(lonMicro.toUnsigned(32));
+    w.writeUInt32LE(lastMod);
+    return w.toBytes();
+  }
+}
+
 /// MeshCore connection manager
 /// Ported from content/mc/connection/connection.js in WebClient repo
 ///
@@ -145,6 +308,7 @@ class MeshCoreConnection {
   final _traceDataController = StreamController<Uint8List>.broadcast();
   final _noiseFloorController = StreamController<int>.broadcast();
   final _batteryController = StreamController<int>.broadcast();
+  final _pathUpdatedController = StreamController<Uint8List>.broadcast();
 
   ConnectionStep _currentStep = ConnectionStep.disconnected;
   DeviceQueryResponse? _deviceInfo;
@@ -161,6 +325,19 @@ class MeshCoreConnection {
   Completer<int>? _statsCompleter;
   Completer<String>? _exportContactCompleter;
   Completer<int>? _getTimeCompleter;
+
+  // Repeater-admin commands (contacts, login, binary request, reset path).
+  // One at a time: the companion keeps a single pending request and a login
+  // clears it (clearPendingReqs), so overlapping two would lose a reply.
+  String? _adminCommandInFlight;
+  Completer<SentInfo>? _adminSentCompleter;
+  Completer<void>? _adminOkCompleter;
+  Completer<List<ContactRecord>>? _contactsCompleter;
+  List<ContactRecord> _contactsBuffer = [];
+  Completer<LoginResult>? _loginCompleter;
+  Uint8List? _loginPrefix; // first 6 bytes of the repeater key
+  Completer<Uint8List>? _binaryResponseCompleter;
+  Uint8List? _binaryResponseTag;
 
   // CMD_SIGN state. `_signGate` is non-null for the whole duration of a sign;
   // Task-4's write funnel queues every non-sign frame behind it so no other
@@ -221,6 +398,9 @@ class MeshCoreConnection {
 
   /// Stream of battery updates (percentage 0-100)
   Stream<int> get batteryStream => _batteryController.stream;
+
+  /// Stream of PUSH_CODE_PATH_UPDATED pushes (32-byte contact public key).
+  Stream<Uint8List> get pathUpdatedStream => _pathUpdatedController.stream;
 
   /// Current connection step
   ConnectionStep get currentStep => _currentStep;
@@ -410,6 +590,7 @@ class MeshCoreConnection {
     // Channel deletion is a gated write; a live sign would park it behind the
     // sign timeout while BLE is still up. Abort the sign first.
     _abortPendingSign();
+    _abortPendingAdmin();
     final channel = _wardrivingChannel;
     if (channel != null) {
       await ChannelService.deleteWardrivingChannel(this, channel.channelIndex);
@@ -421,6 +602,7 @@ class MeshCoreConnection {
     try {
       debugLog('[CONN] Disconnecting');
       _abortPendingSign();
+      _abortPendingAdmin();
 
       // Stop noise floor polling
       _stopNoiseFloorPolling();
@@ -506,6 +688,12 @@ class MeshCoreConnection {
               if (!signOk.isCompleted) signOk.complete();
               break;
             }
+            final adminOk = _adminOkCompleter;
+            if (adminOk != null) {
+              _adminOkCompleter = null;
+              if (!adminOk.isCompleted) adminOk.complete();
+              break;
+            }
             _setTimeCompleter?.complete();
             _setTimeCompleter = null;
             break;
@@ -553,6 +741,20 @@ class MeshCoreConnection {
             _setTimeCompleter = null;
             break;
           }
+          // Repeater-admin commands read the code: 2 is "contact unknown",
+          // 3 is "table full" on add and "could not send" on login/request.
+          // An ERR frame carries no correlation, so claim it for the admin
+          // lane only when nothing else is waiting: the noise floor poll runs
+          // every 5s and a login can wait up to 60s, and a poller's ERR must
+          // not kill that login with the wrong sentence.
+          if (_statsCompleter == null &&
+              _channelInfoCompleter == null &&
+              _deviceQueryCompleter == null &&
+              _exportContactCompleter == null &&
+              _getTimeCompleter == null) {
+            _failPendingAdmin(RadioErrorException(
+                _adminCommandInFlight ?? 'admin', errorCode));
+          }
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
           _statsCompleter?.completeError(errException);
@@ -573,7 +775,7 @@ class MeshCoreConnection {
           _onSelfInfoResponse(reader);
           break;
         case ResponseCodes.sent:
-          _onSentResponse();
+          _onSentResponse(reader);
           break;
         case ResponseCodes.channelMsgRecv:
           _onChannelMsgRecvResponse(reader);
@@ -592,6 +794,22 @@ class MeshCoreConnection {
           break;
         case PushCodes.traceData:
           _onTraceDataPush(reader);
+          break;
+        case PushCodes.loginSuccess:
+        case PushCodes.loginFail:
+          _onLoginPush(responseCode, reader);
+          break;
+        case PushCodes.binaryResponse:
+          _onBinaryResponsePush(reader);
+          break;
+        case PushCodes.pathUpdated:
+          if (reader.remainingBytesCount >= 32 &&
+              !_pathUpdatedController.isClosed) {
+            final k = reader.readBytes(32);
+            debugLog('[CONN] PATH_UPDATED for '
+                '${k.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join()}');
+            _pathUpdatedController.add(k);
+          }
           break;
         case ResponseCodes.stats:
           _onStatsResponse(reader);
@@ -647,6 +865,35 @@ class MeshCoreConnection {
             completer.complete(reader.readBytes(64));
             break;
           }
+        case ResponseCodes.contactsStart:
+          if (_contactsCompleter == null) {
+            debugLog('[CONN] Ignoring unsolicited CONTACTS_START');
+            break;
+          }
+          _contactsBuffer = [];
+          final count =
+              reader.remainingBytesCount >= 4 ? reader.readUInt32LE() : -1;
+          debugLog('[CONN] Contact list starting ($count contacts)');
+          break;
+        case ResponseCodes.contact:
+          if (_contactsCompleter == null) break;
+          try {
+            _contactsBuffer.add(ContactRecord.parse(reader));
+          } on FormatException catch (e) {
+            debugWarn('[CONN] Skipping malformed contact frame: $e');
+          }
+          break;
+        case ResponseCodes.endOfContacts:
+          {
+            final completer = _contactsCompleter;
+            _contactsCompleter = null;
+            final contacts = _contactsBuffer;
+            _contactsBuffer = [];
+            if (completer == null || completer.isCompleted) break;
+            debugLog('[CONN] Contact list complete (${contacts.length})');
+            completer.complete(contacts);
+            break;
+          }
         default:
           // Log unhandled response codes (like JS implementation)
           debugLog(
@@ -690,6 +937,57 @@ class MeshCoreConnection {
     }
     return true;
   }
+
+  /// Claim the single repeater-admin command slot, or throw.
+  void _beginAdminCommand(String name) {
+    if (_disposed) throw StateError('Connection disposed');
+    final running = _adminCommandInFlight;
+    if (running != null) {
+      throw StateError('Repeater admin command $running is still in flight');
+    }
+    _adminCommandInFlight = name;
+  }
+
+  void _endAdminCommand() {
+    _adminCommandInFlight = null;
+  }
+
+  /// Complete every pending repeater-admin completer with [error]. Returns
+  /// true when at least one was pending.
+  bool _failPendingAdmin(Object error) {
+    var any = false;
+    void fail<T>(Completer<T>? c) {
+      if (c != null && !c.isCompleted) {
+        c.completeError(error);
+        any = true;
+      }
+    }
+
+    fail(_adminSentCompleter);
+    fail(_adminOkCompleter);
+    fail(_contactsCompleter);
+    fail(_loginCompleter);
+    fail(_binaryResponseCompleter);
+    _adminSentCompleter = null;
+    _adminOkCompleter = null;
+    _contactsCompleter = null;
+    _contactsBuffer = [];
+    _loginCompleter = null;
+    _loginPrefix = null;
+    _binaryResponseCompleter = null;
+    _binaryResponseTag = null;
+    return any;
+  }
+
+  /// Tear down an in-flight repeater-admin command on disconnect/dispose.
+  void _abortPendingAdmin() {
+    final wasPending = _failPendingAdmin(const RadioAbortedException());
+    _adminCommandInFlight = null;
+    if (wasPending) debugLog('[CONN] Aborted in-flight repeater admin command');
+  }
+
+  /// Public for the provider's disconnect sequence (mirrors abortPendingSign).
+  void abortPendingAdmin() => _abortPendingAdmin();
 
   /// Tear down an in-flight sign on disconnect/dispose.
   ///
@@ -847,9 +1145,30 @@ class MeshCoreConnection {
     }
   }
 
-  void _onSentResponse() {
+  /// RESP_CODE_SENT. The legacy completer (channel messages) is void; the
+  /// repeater-admin completer wants the parsed [flood:1][tag:4][est:u32].
+  void _onSentResponse(BufferReader reader) {
+    SentInfo? info;
+    if (reader.remainingBytesCount >= 9) {
+      final flood = reader.readByte() != 0;
+      final tag = reader.readBytes(4);
+      final est = reader.readUInt32LE();
+      info = SentInfo(flood: flood, tag: tag, estTimeoutMs: est);
+    }
     _sentCompleter?.complete();
     _sentCompleter = null;
+    final admin = _adminSentCompleter;
+    _adminSentCompleter = null;
+    if (admin != null && !admin.isCompleted) {
+      if (info == null) {
+        admin.completeError(const FormatException(
+            'SENT frame carries no tag (shorter than 10 bytes)'));
+      } else {
+        debugLog('[CONN] SENT flood=${info.flood} '
+            'est_timeout=${info.estTimeoutMs}ms');
+        admin.complete(info);
+      }
+    }
   }
 
   void _onChannelMsgRecvResponse(BufferReader reader) {
@@ -924,6 +1243,78 @@ class MeshCoreConnection {
     debugLog('[CONN] Received trace data: ${raw.length} bytes');
 
     _traceDataController.add(raw);
+  }
+
+  void _onLoginPush(int code, BufferReader reader) {
+    final completer = _loginCompleter;
+    final wanted = _loginPrefix;
+    if (completer == null || wanted == null) {
+      debugLog('[CONN] Ignoring unsolicited login push');
+      return;
+    }
+    if (reader.remainingBytesCount < 7) {
+      debugWarn('[CONN] Login push shorter than 7 bytes, ignoring');
+      return;
+    }
+    final flagByte = reader.readByte();
+    final prefix = reader.readBytes(6);
+    if (!_areBuffersEqual(prefix, wanted)) {
+      debugLog('[CONN] Login push for another contact, ignoring');
+      return;
+    }
+    _loginCompleter = null;
+    _loginPrefix = null;
+    if (code == PushCodes.loginFail) {
+      debugLog('[CONN] LOGIN_FAIL');
+      completer.complete(
+          LoginResult(success: false, isAdmin: false, prefix: prefix));
+      return;
+    }
+    // [tag:4][acl_perms:1][fw_level:1] follow the prefix on companion
+    // firmware v1.9.0 and newer. Anything shorter is unsupported firmware.
+    if (reader.remainingBytesCount < 6) {
+      debugWarn('[CONN] LOGIN_SUCCESS is ${reader.remainingBytesCount + 7} '
+          'bytes; companion firmware older than v1.9.0');
+      completer.completeError(const FormatException(
+          'LOGIN_SUCCESS shorter than 14 bytes (companion firmware older than v1.9.0)'));
+      return;
+    }
+    reader.readBytes(4); // reply tag
+    final aclPerms = reader.readByte();
+    final fwLevel = reader.readByte();
+    debugLog('[CONN] LOGIN_SUCCESS admin=${flagByte & 1 == 1} fw_level=$fwLevel');
+    completer.complete(LoginResult(
+      success: true,
+      isAdmin: (flagByte & 1) == 1,
+      prefix: prefix,
+      aclPerms: aclPerms,
+      fwLevel: fwLevel,
+    ));
+  }
+
+  /// [0x8C][reserved:1][tag:4][data]. Only the pending tag completes.
+  void _onBinaryResponsePush(BufferReader reader) {
+    final completer = _binaryResponseCompleter;
+    final wanted = _binaryResponseTag;
+    if (completer == null || wanted == null) {
+      debugLog('[CONN] Ignoring unsolicited BINARY_RESPONSE');
+      return;
+    }
+    if (reader.remainingBytesCount < 5) {
+      debugWarn('[CONN] BINARY_RESPONSE shorter than 5 bytes, ignoring');
+      return;
+    }
+    reader.readByte(); // reserved
+    final tag = reader.readBytes(4);
+    if (!_areBuffersEqual(tag, wanted)) {
+      debugLog('[CONN] BINARY_RESPONSE for another tag, ignoring');
+      return;
+    }
+    _binaryResponseCompleter = null;
+    _binaryResponseTag = null;
+    final data = reader.readRemainingBytes();
+    debugLog('[CONN] BINARY_RESPONSE ${data.length} bytes');
+    completer.complete(data);
   }
 
   void _onStatsResponse(BufferReader reader) {
@@ -1429,6 +1820,243 @@ class MeshCoreConnection {
     );
   }
 
+  /// Read the radio's whole contact list (CMD_GET_CONTACTS with since = 0).
+  Future<List<ContactRecord>> getContacts(
+      {Duration timeout = const Duration(seconds: 20)}) async {
+    _beginAdminCommand('getContacts');
+    final completer = Completer<List<ContactRecord>>();
+    try {
+      _contactsCompleter = completer;
+      final data = BufferWriter()
+        ..writeByte(CommandCodes.getContacts)
+        ..writeUInt32LE(0);
+      await _sendToRadio(data);
+      return await completer.future.timeout(timeout, onTimeout: () {
+        _contactsCompleter = null;
+        _contactsBuffer = [];
+        throw TimeoutException('getContacts timed out');
+      });
+    } finally {
+      // A write that threw before completer.future was ever awaited leaves
+      // this call's completer registered with no listener. Clear it here
+      // (only if it is still the one this call installed - a later call may
+      // already have replaced it) so a subsequent ERR or _abortPendingAdmin()
+      // does not complete it into the void.
+      if (identical(_contactsCompleter, completer)) {
+        _contactsCompleter = null;
+        _contactsBuffer = [];
+      }
+      _endAdminCommand();
+    }
+  }
+
+  /// Add or update one contact (CMD_ADD_UPDATE_CONTACT). Resolves on OK;
+  /// throws [RadioErrorException] (code 3 = table full) on ERR.
+  Future<void> addContact(ContactRecord contact,
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    _beginAdminCommand('addContact');
+    final completer = Completer<void>();
+    try {
+      _adminOkCompleter = completer;
+      await _write(contact.toFrame(CommandCodes.addUpdateContact));
+      debugLog('[CONN] addContact ${contact.publicKeyHex.substring(0, 8)}');
+      await completer.future.timeout(timeout, onTimeout: () {
+        _adminOkCompleter = null;
+        throw TimeoutException('addContact timed out');
+      });
+    } finally {
+      // Same orphan-completer guard as getContacts: a write that threw before
+      // completer.future was awaited must not leave this call's completer
+      // registered for a later ERR or _abortPendingAdmin() to complete
+      // unheard.
+      if (identical(_adminOkCompleter, completer)) {
+        _adminOkCompleter = null;
+      }
+      _endAdminCommand();
+    }
+  }
+
+  /// CMD_SEND_LOGIN: [26][pubkey:32][password bytes]. The firmware terminates
+  /// the frame itself, so no NUL is sent. Resolves with the pushed
+  /// LOGIN_SUCCESS / LOGIN_FAIL matched on the 6-byte key prefix.
+  ///
+  /// The frame is logged by LENGTH only: it carries the admin password and
+  /// debug logs ship with bug reports.
+  ///
+  /// [replyTimeout] turns the radio's est_timeout_ms into the wait for the
+  /// push; the session supplies the margin and clamp.
+  Future<LoginResult> login(
+    Uint8List pubkey,
+    String password, {
+    Duration sentTimeout = const Duration(seconds: 5),
+    Duration Function(int estTimeoutMs) replyTimeout = _defaultReplyTimeout,
+  }) async {
+    _beginAdminCommand('login');
+    final sentCompleter = Completer<SentInfo>();
+    final loginCompleter = Completer<LoginResult>();
+    try {
+      _adminSentCompleter = sentCompleter;
+      // _write parks a non-sign frame behind an in-progress sign's gate for
+      // an unbounded wait (see _write), and abortPendingAdmin() can free
+      // this call's admin slot (_adminCommandInFlight) for a second login
+      // while this one is still parked there. _failPendingAdmin can
+      // therefore complete these two completers with an error long before
+      // either await below ever runs. Attach a no-op listener to each right
+      // away so that error is never left unobserved (an extra listener does
+      // not stop the later await from throwing the same error).
+      unawaited(sentCompleter.future.then((_) {}, onError: (_) {}));
+      _loginCompleter = loginCompleter;
+      _loginPrefix = pubkey.sublist(0, 6);
+      unawaited(loginCompleter.future.then((_) {}, onError: (_) {}));
+
+      final frame = BufferWriter()
+        ..writeByte(CommandCodes.sendLogin)
+        ..writeBytes(pubkey)
+        ..writeString(password);
+      final bytes = frame.toBytes();
+      await _write(bytes);
+      debugLog('[CONN] Login frame sent (${bytes.length} bytes)');
+
+      final sent = await sentCompleter.future.timeout(sentTimeout,
+          onTimeout: () {
+        if (identical(_adminSentCompleter, sentCompleter)) {
+          _adminSentCompleter = null;
+        }
+        throw TimeoutException('login: SENT timed out');
+      });
+      return await loginCompleter.future.timeout(
+          replyTimeout(sent.estTimeoutMs), onTimeout: () {
+        if (identical(_loginCompleter, loginCompleter)) {
+          _loginCompleter = null;
+          _loginPrefix = null;
+        }
+        throw TimeoutException('login: no reply from the repeater');
+      });
+    } finally {
+      // Same orphan-completer guard as getContacts/addContact: while this
+      // call was parked behind the sign gate above, an abort can have freed
+      // the admin slot for a second login() that has since installed its
+      // own completers here. Only clear the fields if they are still the
+      // ones this call registered.
+      if (identical(_adminSentCompleter, sentCompleter)) {
+        _adminSentCompleter = null;
+      }
+      if (identical(_loginCompleter, loginCompleter)) {
+        _loginCompleter = null;
+        _loginPrefix = null;
+      }
+      _endAdminCommand();
+    }
+  }
+
+  static Duration _defaultReplyTimeout(int estTimeoutMs) =>
+      Duration(milliseconds: estTimeoutMs) + const Duration(seconds: 5);
+
+  /// CMD_SEND_BINARY_REQ: [50][pubkey:32][request]. Resolves with the
+  /// BINARY_RESPONSE data whose tag matches the SENT tag.
+  ///
+  /// [replyTimeout] turns the radio's est_timeout_ms into the wait for the
+  /// response; the session supplies the margin and clamp.
+  Future<Uint8List> sendBinaryRequest(
+    Uint8List pubkey,
+    Uint8List request, {
+    Duration sentTimeout = const Duration(seconds: 5),
+    Duration Function(int estTimeoutMs) replyTimeout = _defaultReplyTimeout,
+  }) async {
+    _beginAdminCommand('sendBinaryRequest');
+    final sentCompleter = Completer<SentInfo>();
+    final responseCompleter = Completer<Uint8List>();
+    try {
+      _adminSentCompleter = sentCompleter;
+      // Same parked-write hazard as login: _write parks a non-sign frame
+      // behind an in-progress sign's gate for an unbounded wait (see
+      // _write), and _abortPendingAdmin() can free this call's admin slot
+      // (_adminCommandInFlight) for a second sendBinaryRequest while this
+      // one is still parked there. _failPendingAdmin can therefore complete
+      // these two completers with an error long before either await below
+      // ever runs. Attach a no-op listener to each right away so that error
+      // is never left unobserved.
+      unawaited(sentCompleter.future.then((_) {}, onError: (_) {}));
+      _binaryResponseCompleter = responseCompleter;
+      unawaited(responseCompleter.future.then((_) {}, onError: (_) {}));
+
+      final frame = BufferWriter()
+        ..writeByte(CommandCodes.sendBinaryReq)
+        ..writeBytes(pubkey)
+        ..writeBytes(request);
+      await _sendToRadio(frame);
+      debugLog(
+          '[CONN] Binary request type=${request.isNotEmpty ? request[0] : -1} '
+          '(${request.length} bytes) sent');
+
+      final sent = await sentCompleter.future.timeout(sentTimeout,
+          onTimeout: () {
+        if (identical(_adminSentCompleter, sentCompleter)) {
+          _adminSentCompleter = null;
+        }
+        throw TimeoutException('binary request: SENT timed out');
+      });
+      // Set only after SENT arrives: the companion emits SENT before any
+      // response can exist, and both frames arrive on one ordered stream,
+      // so a response cannot precede this assignment.
+      _binaryResponseTag = sent.tag;
+      return await responseCompleter.future.timeout(
+          replyTimeout(sent.estTimeoutMs), onTimeout: () {
+        if (identical(_binaryResponseCompleter, responseCompleter)) {
+          _binaryResponseCompleter = null;
+          _binaryResponseTag = null;
+        }
+        throw TimeoutException('binary request: no reply from the repeater');
+      });
+    } finally {
+      // Same orphan-completer guard as login: while this call was parked
+      // behind the sign gate above, an abort can have freed the admin slot
+      // for a second sendBinaryRequest() that has since installed its own
+      // completers here. Only clear the fields if they are still the ones
+      // this call registered.
+      if (identical(_adminSentCompleter, sentCompleter)) {
+        _adminSentCompleter = null;
+      }
+      if (identical(_binaryResponseCompleter, responseCompleter)) {
+        _binaryResponseCompleter = null;
+        _binaryResponseTag = null;
+      }
+      _endAdminCommand();
+    }
+  }
+
+  /// CMD_RESET_PATH: [13][pubkey:32]. The next send to that contact floods.
+  Future<void> resetPath(Uint8List pubkey,
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    _beginAdminCommand('resetPath');
+    final completer = Completer<void>();
+    try {
+      _adminOkCompleter = completer;
+      // Same orphan-completer hazard as login/sendBinaryRequest: attach a
+      // no-op listener right away so a _failPendingAdmin error delivered
+      // while this call is still parked behind the sign gate (inside
+      // _write, below) is never left unobserved.
+      unawaited(completer.future.then((_) {}, onError: (_) {}));
+      final frame = BufferWriter()
+        ..writeByte(CommandCodes.resetPath)
+        ..writeBytes(pubkey);
+      await _sendToRadio(frame);
+      debugLog('[CONN] resetPath '
+          '${pubkey.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join()}');
+      await completer.future.timeout(timeout, onTimeout: () {
+        if (identical(_adminOkCompleter, completer)) {
+          _adminOkCompleter = null;
+        }
+        throw TimeoutException('resetPath timed out');
+      });
+    } finally {
+      if (identical(_adminOkCompleter, completer)) {
+        _adminOkCompleter = null;
+      }
+      _endAdminCommand();
+    }
+  }
+
   /// Ask the radio to Ed25519-sign [data] with its device private key.
   ///
   /// Framing (byte-identical to the portal's meshcore.js, which minted every
@@ -1643,6 +2271,7 @@ class MeshCoreConnection {
     _stopNoiseFloorPolling();
     _stopBatteryPolling();
     _abortPendingSign();
+    _abortPendingAdmin();
     _setTimeCompleter = null;
     _dataSubscription?.cancel();
     _stepController.close();
@@ -1653,5 +2282,6 @@ class MeshCoreConnection {
     _traceDataController.close();
     _noiseFloorController.close();
     _batteryController.close();
+    _pathUpdatedController.close();
   }
 }

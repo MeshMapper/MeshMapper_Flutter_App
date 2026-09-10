@@ -67,4 +67,15 @@ void main() {
   test('does not eat short values that merely look similar', () {
     expect(DebugFileLogger.scrubSecrets('mode=1&code=7'), 'mode=1&code=7');
   });
+
+  test('password shapes are redacted', () {
+    expect(DebugFileLogger.scrubSecrets('login password=hunter2 sent'),
+        'login password=<redacted> sent');
+    expect(DebugFileLogger.scrubSecrets('{password: hunter2, remember: true}'),
+        '{password: <redacted>, remember: true}');
+    expect(DebugFileLogger.scrubSecrets('"password":"hunter2"'),
+        '"password":"<redacted>"');
+    expect(DebugFileLogger.scrubSecrets('Password: abc'),
+        'Password: <redacted>');
+  });
 }

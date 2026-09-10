@@ -106,6 +106,13 @@ class DebugFileLogger {
       r'''(\btoken['"]?\s*[:=]\s*)['"]?[A-Za-z0-9._~%+/=-]{20,}''',
       caseSensitive: false);
 
+  /// Repeater admin passwords. The app never logs one on purpose; this is
+  /// the belt-and-braces rule for any `password=…`, `password: …` or
+  /// `"password":"…"` shape that reaches a log FILE.
+  static final RegExp _passwordPattern = RegExp(
+      r'''(\bpassword['"]?\s*[:=]\s*)['"]?[^\s,}'"]+['"]?''',
+      caseSensitive: false);
+
   /// Strip credential shapes out of a log line.
   ///
   /// Log files are uploaded verbatim with bug reports and debug logging stays
@@ -120,6 +127,13 @@ class DebugFileLogger {
         _codeParamPattern, (match) => '${match.group(1)}=<redacted>');
     out = out.replaceAllMapped(
         _looseTokenPattern, (match) => '${match.group(1)}<redacted>');
+    out = out.replaceAllMapped(_passwordPattern, (match) {
+      final head = match.group(1)!;
+      final whole = match.group(0)!;
+      // Keep a JSON value quoted so the line still parses by eye.
+      final quoted = whole.endsWith('"') && whole[head.length] == '"';
+      return quoted ? '$head"<redacted>"' : '$head<redacted>';
+    });
     return out;
   }
 
