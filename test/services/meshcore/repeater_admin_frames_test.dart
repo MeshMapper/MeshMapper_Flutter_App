@@ -390,4 +390,126 @@ void main() {
       expect(lines.any((l) => l.contains('Login frame sent')), isTrue);
     });
   });
+
+  group('sendBinaryRequest', () {
+    final pubkey = key(0x33);
+    test('matches the response on the SENT tag', () async {
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]),
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      final frame = transport.writes.single;
+      expect(frame, [CommandCodes.sendBinaryReq, ...pubkey, 0x05, 0, 0]);
+
+      transport.emit([ResponseCodes.sent, 0, 0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0]);
+      await transport.settle();
+      // A response for a different tag is ignored.
+      transport.emit([PushCodes.binaryResponse, 0, 1, 2, 3, 4, 9, 9]);
+      await transport.settle();
+      transport.emit([PushCodes.binaryResponse, 0, 0xAA, 0xBB, 0xCC, 0xDD, 7, 8, 9]);
+      expect(await future, [7, 8, 9]);
+    });
+
+    test('no response is a timeout', () async {
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]),
+          replyTimeout: (_) => const Duration(milliseconds: 20));
+      await transport.settle();
+      transport.emit([ResponseCodes.sent, 0, 1, 1, 1, 1, 0, 0, 0, 0]);
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+    });
+
+    test('ERR 3 on the send surfaces as a radio error', () async {
+      final future =
+          connection.sendBinaryRequest(pubkey, Uint8List.fromList([0x06]));
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.tableFull]);
+      await expectLater(future, throwsA(isA<RadioErrorException>()));
+    });
+
+    test('a second request while one is pending is refused', () async {
+      final first = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]),
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      expect(() => connection.sendBinaryRequest(pubkey, Uint8List(1)),
+          throwsA(isA<StateError>()));
+      transport.emit([ResponseCodes.sent, 0, 1, 1, 1, 1, 0, 0, 0, 0]);
+      await transport.settle();
+      transport.emit([PushCodes.binaryResponse, 0, 1, 1, 1, 1]);
+      expect(await first, isEmpty);
+    });
+
+    test(
+        'a write parked behind the sign gate does not leave the binary '
+        'request completers unobserved when dispose fires', () async {
+      // Same hazard as login's sign-gate test: sign() holds the gate open
+      // (CMD_SIGN_START unanswered), so sendBinaryRequest's frame parks
+      // inside _write and never reaches the transport.
+      final signFuture = connection.sign(Uint8List.fromList([9, 9, 9]));
+      await transport.settle();
+      expect(transport.writes.length, 1); // CMD_SIGN_START only
+
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]));
+      await transport.settle();
+      expect(transport.writes.length, 1);
+
+      connection.dispose();
+
+      final requestExpectation =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      final signExpectation =
+          expectLater(signFuture, throwsA(isA<SignException>()));
+      await requestExpectation;
+      await signExpectation;
+    });
+  });
+
+  group('resetPath and PATH_UPDATED', () {
+    test('resetPath writes the key and resolves on OK', () async {
+      final future = connection.resetPath(key(4));
+      await transport.settle();
+      expect(transport.writes.single, [CommandCodes.resetPath, ...key(4)]);
+      transport.emit([ResponseCodes.ok]);
+      await future;
+    });
+
+    test('resetPath ERR 2 is not found', () async {
+      final future = connection.resetPath(key(4));
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.notFound]);
+      await expectLater(future, throwsA(isA<RadioErrorException>()));
+    });
+
+    test('PATH_UPDATED pushes the 32-byte key', () async {
+      final seen = <Uint8List>[];
+      final sub = connection.pathUpdatedStream.listen(seen.add);
+      transport.emit([PushCodes.pathUpdated, ...key(0x77)]);
+      await transport.settle();
+      expect(seen.single, key(0x77));
+      await sub.cancel();
+    });
+
+    test(
+        'a write parked behind the sign gate does not leave the resetPath '
+        'completer unobserved when dispose fires', () async {
+      final signFuture = connection.sign(Uint8List.fromList([9, 9, 9]));
+      await transport.settle();
+      expect(transport.writes.length, 1); // CMD_SIGN_START only
+
+      final future = connection.resetPath(key(4));
+      await transport.settle();
+      expect(transport.writes.length, 1);
+
+      connection.dispose();
+
+      final resetExpectation =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      final signExpectation =
+          expectLater(signFuture, throwsA(isA<SignException>()));
+      await resetExpectation;
+      await signExpectation;
+    });
+  });
 }

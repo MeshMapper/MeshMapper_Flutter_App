@@ -308,6 +308,7 @@ class MeshCoreConnection {
   final _traceDataController = StreamController<Uint8List>.broadcast();
   final _noiseFloorController = StreamController<int>.broadcast();
   final _batteryController = StreamController<int>.broadcast();
+  final _pathUpdatedController = StreamController<Uint8List>.broadcast();
 
   ConnectionStep _currentStep = ConnectionStep.disconnected;
   DeviceQueryResponse? _deviceInfo;
@@ -335,6 +336,8 @@ class MeshCoreConnection {
   List<ContactRecord> _contactsBuffer = [];
   Completer<LoginResult>? _loginCompleter;
   Uint8List? _loginPrefix; // first 6 bytes of the repeater key
+  Completer<Uint8List>? _binaryResponseCompleter;
+  Uint8List? _binaryResponseTag;
 
   // CMD_SIGN state. `_signGate` is non-null for the whole duration of a sign;
   // Task-4's write funnel queues every non-sign frame behind it so no other
@@ -395,6 +398,9 @@ class MeshCoreConnection {
 
   /// Stream of battery updates (percentage 0-100)
   Stream<int> get batteryStream => _batteryController.stream;
+
+  /// Stream of PUSH_CODE_PATH_UPDATED pushes (32-byte contact public key).
+  Stream<Uint8List> get pathUpdatedStream => _pathUpdatedController.stream;
 
   /// Current connection step
   ConnectionStep get currentStep => _currentStep;
@@ -783,6 +789,18 @@ class MeshCoreConnection {
         case PushCodes.loginFail:
           _onLoginPush(responseCode, reader);
           break;
+        case PushCodes.binaryResponse:
+          _onBinaryResponsePush(reader);
+          break;
+        case PushCodes.pathUpdated:
+          if (reader.remainingBytesCount >= 32 &&
+              !_pathUpdatedController.isClosed) {
+            final k = reader.readBytes(32);
+            debugLog('[CONN] PATH_UPDATED for '
+                '${k.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join()}');
+            _pathUpdatedController.add(k);
+          }
+          break;
         case ResponseCodes.stats:
           _onStatsResponse(reader);
           break;
@@ -939,12 +957,15 @@ class MeshCoreConnection {
     fail(_adminOkCompleter);
     fail(_contactsCompleter);
     fail(_loginCompleter);
+    fail(_binaryResponseCompleter);
     _adminSentCompleter = null;
     _adminOkCompleter = null;
     _contactsCompleter = null;
     _contactsBuffer = [];
     _loginCompleter = null;
     _loginPrefix = null;
+    _binaryResponseCompleter = null;
+    _binaryResponseTag = null;
     return any;
   }
 
@@ -1259,6 +1280,31 @@ class MeshCoreConnection {
       aclPerms: aclPerms,
       fwLevel: fwLevel,
     ));
+  }
+
+  /// [0x8C][reserved:1][tag:4][data]. Only the pending tag completes.
+  void _onBinaryResponsePush(BufferReader reader) {
+    final completer = _binaryResponseCompleter;
+    final wanted = _binaryResponseTag;
+    if (completer == null || wanted == null) {
+      debugLog('[CONN] Ignoring unsolicited BINARY_RESPONSE');
+      return;
+    }
+    if (reader.remainingBytesCount < 5) {
+      debugWarn('[CONN] BINARY_RESPONSE shorter than 5 bytes, ignoring');
+      return;
+    }
+    reader.readByte(); // reserved
+    final tag = reader.readBytes(4);
+    if (!_areBuffersEqual(tag, wanted)) {
+      debugLog('[CONN] BINARY_RESPONSE for another tag, ignoring');
+      return;
+    }
+    _binaryResponseCompleter = null;
+    _binaryResponseTag = null;
+    final data = reader.readRemainingBytes();
+    debugLog('[CONN] BINARY_RESPONSE ${data.length} bytes');
+    completer.complete(data);
   }
 
   void _onStatsResponse(BufferReader reader) {
@@ -1896,6 +1942,111 @@ class MeshCoreConnection {
   static Duration _defaultReplyTimeout(int estTimeoutMs) =>
       Duration(milliseconds: estTimeoutMs) + const Duration(seconds: 5);
 
+  /// CMD_SEND_BINARY_REQ: [50][pubkey:32][request]. Resolves with the
+  /// BINARY_RESPONSE data whose tag matches the SENT tag.
+  ///
+  /// [replyTimeout] turns the radio's est_timeout_ms into the wait for the
+  /// response; the session supplies the margin and clamp.
+  Future<Uint8List> sendBinaryRequest(
+    Uint8List pubkey,
+    Uint8List request, {
+    Duration sentTimeout = const Duration(seconds: 5),
+    Duration Function(int estTimeoutMs) replyTimeout = _defaultReplyTimeout,
+  }) async {
+    _beginAdminCommand('sendBinaryRequest');
+    final sentCompleter = Completer<SentInfo>();
+    final responseCompleter = Completer<Uint8List>();
+    try {
+      _adminSentCompleter = sentCompleter;
+      // Same parked-write hazard as login: _write parks a non-sign frame
+      // behind an in-progress sign's gate for an unbounded wait (see
+      // _write), and _abortPendingAdmin() can free this call's admin slot
+      // (_adminCommandInFlight) for a second sendBinaryRequest while this
+      // one is still parked there. _failPendingAdmin can therefore complete
+      // these two completers with an error long before either await below
+      // ever runs. Attach a no-op listener to each right away so that error
+      // is never left unobserved.
+      unawaited(sentCompleter.future.then((_) {}, onError: (_) {}));
+      _binaryResponseCompleter = responseCompleter;
+      unawaited(responseCompleter.future.then((_) {}, onError: (_) {}));
+
+      final frame = BufferWriter()
+        ..writeByte(CommandCodes.sendBinaryReq)
+        ..writeBytes(pubkey)
+        ..writeBytes(request);
+      await _sendToRadio(frame);
+      debugLog(
+          '[CONN] Binary request type=${request.isNotEmpty ? request[0] : -1} '
+          '(${request.length} bytes) sent');
+
+      final sent = await sentCompleter.future.timeout(sentTimeout,
+          onTimeout: () {
+        if (identical(_adminSentCompleter, sentCompleter)) {
+          _adminSentCompleter = null;
+        }
+        throw TimeoutException('binary request: SENT timed out');
+      });
+      // Set only after SENT arrives: the companion emits SENT before any
+      // response can exist, and both frames arrive on one ordered stream,
+      // so a response cannot precede this assignment.
+      _binaryResponseTag = sent.tag;
+      return await responseCompleter.future.timeout(
+          replyTimeout(sent.estTimeoutMs), onTimeout: () {
+        if (identical(_binaryResponseCompleter, responseCompleter)) {
+          _binaryResponseCompleter = null;
+          _binaryResponseTag = null;
+        }
+        throw TimeoutException('binary request: no reply from the repeater');
+      });
+    } finally {
+      // Same orphan-completer guard as login: while this call was parked
+      // behind the sign gate above, an abort can have freed the admin slot
+      // for a second sendBinaryRequest() that has since installed its own
+      // completers here. Only clear the fields if they are still the ones
+      // this call registered.
+      if (identical(_adminSentCompleter, sentCompleter)) {
+        _adminSentCompleter = null;
+      }
+      if (identical(_binaryResponseCompleter, responseCompleter)) {
+        _binaryResponseCompleter = null;
+        _binaryResponseTag = null;
+      }
+      _endAdminCommand();
+    }
+  }
+
+  /// CMD_RESET_PATH: [13][pubkey:32]. The next send to that contact floods.
+  Future<void> resetPath(Uint8List pubkey,
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    _beginAdminCommand('resetPath');
+    final completer = Completer<void>();
+    try {
+      _adminOkCompleter = completer;
+      // Same orphan-completer hazard as login/sendBinaryRequest: attach a
+      // no-op listener right away so a _failPendingAdmin error delivered
+      // while this call is still parked behind the sign gate (inside
+      // _write, below) is never left unobserved.
+      unawaited(completer.future.then((_) {}, onError: (_) {}));
+      final frame = BufferWriter()
+        ..writeByte(CommandCodes.resetPath)
+        ..writeBytes(pubkey);
+      await _sendToRadio(frame);
+      debugLog('[CONN] resetPath '
+          '${pubkey.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join()}');
+      await completer.future.timeout(timeout, onTimeout: () {
+        if (identical(_adminOkCompleter, completer)) {
+          _adminOkCompleter = null;
+        }
+        throw TimeoutException('resetPath timed out');
+      });
+    } finally {
+      if (identical(_adminOkCompleter, completer)) {
+        _adminOkCompleter = null;
+      }
+      _endAdminCommand();
+    }
+  }
+
   /// Ask the radio to Ed25519-sign [data] with its device private key.
   ///
   /// Framing (byte-identical to the portal's meshcore.js, which minted every
@@ -2121,5 +2272,6 @@ class MeshCoreConnection {
     _traceDataController.close();
     _noiseFloorController.close();
     _batteryController.close();
+    _pathUpdatedController.close();
   }
 }
