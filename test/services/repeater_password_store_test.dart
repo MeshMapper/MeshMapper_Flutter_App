@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/portal_token_store.dart';
@@ -49,6 +50,41 @@ class _MapStorage extends FlutterSecureStorage {
   }
 }
 
+/// Read fails only for repeater password keys, the way a flaky Keystore read
+/// on one entry looks. Everything else behaves like [_MapStorage].
+class _FlakyRepeaterReadStorage extends _MapStorage {
+  bool deletedAll = false;
+
+  @override
+  Future<String?> read({
+    required String key,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    if (key.startsWith(SecureTokenStore.repeaterPasswordPrefix)) {
+      throw PlatformException(code: 'BadPaddingException');
+    }
+    return values[key];
+  }
+
+  @override
+  Future<void> deleteAll({
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    deletedAll = true;
+    values.clear();
+  }
+}
+
 void main() {
   final hex = 'ab' * 32;
 
@@ -88,5 +124,16 @@ void main() {
     expect(SecureTokenStore.redactedKeyForLog('repeater_admin_pw_${'AB' * 32}'),
         'repeater_admin_pw_ABABABAB');
     expect(SecureTokenStore.redactedKeyForLog('portal_app_token'), 'portal_app_token');
+  });
+
+  test('a failed repeater password read leaves the rest of the store alone',
+      () async {
+    final storage = _FlakyRepeaterReadStorage();
+    storage.values[SecureTokenStore.tokenKey] = 'a1b2c3';
+    final store = SecureTokenStore(storage: storage);
+
+    expect(await store.readRepeaterPassword(hex), isNull);
+    expect(storage.deletedAll, isFalse);
+    expect(await store.readToken(), 'a1b2c3');
   });
 }

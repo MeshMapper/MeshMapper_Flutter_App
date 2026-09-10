@@ -310,6 +310,41 @@ void main() {
               .having((e) => e.isNotFound, 'isNotFound', isTrue)));
     });
 
+    test('a stats ERR does not fail a login that is still waiting', () async {
+      // An ERR frame carries no correlation. The noise floor poll runs every
+      // 5s while a login can wait up to 60s, so the ERR belongs to whichever
+      // other consumer is pending, not to the admin lane.
+      final loginFuture = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(seconds: 5));
+      await transport.settle();
+
+      var loginSettled = false;
+      unawaited(loginFuture.then((_) => loginSettled = true,
+          onError: (_) => loginSettled = true));
+
+      final statsFuture = connection.getStats(StatsTypes.radio);
+      await transport.settle();
+      // Claim the stats error before the frame lands, or it reaches an
+      // unlistened future and flutter_test reports it as unhandled.
+      final statsFailure = expectLater(statsFuture, throwsA(isA<Exception>()));
+      transport.emit([ResponseCodes.err, ErrorCodes.badState]);
+      await transport.settle();
+      await statsFailure;
+      expect(loginSettled, isFalse,
+          reason: 'the stats poll owns that ERR, not the login');
+
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([
+        PushCodes.loginSuccess, 1,
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+        1, 2, 3, 4,
+        3, 2,
+      ]);
+      final r = await loginFuture;
+      expect(r.success, isTrue);
+    });
+
     test('the reply timeout is built from the SENT estimate', () async {
       int? seen;
       final future = connection.login(pubkey, 'x', replyTimeout: (est) {

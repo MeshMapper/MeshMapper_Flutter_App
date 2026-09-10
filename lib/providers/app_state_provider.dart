@@ -684,8 +684,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             patch: kCompanionFloorPatch),
       );
 
-  /// The connected companion's claims, or every cached companion's claims
-  /// (deduped by repeater) while no radio is connected.
+  /// The connected companion's cached claims when it has an entry, otherwise
+  /// every cached companion's claims deduped by repeater, so the list still
+  /// shows before the first reconcile lands and while no radio is connected.
+  /// A claim from another radio can therefore show until the connect
+  /// reconcile replaces it.
   List<RepeaterClaim> get repeaterClaims {
     final key = _devicePublicKey?.toUpperCase();
     if (key != null && _repeaterClaimsByPubkey.containsKey(key)) {
@@ -1415,6 +1418,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
+
+  /// How many zone repeaters are loaded, without copying the list.
+  /// `repeaters` wraps in `List.unmodifiable`, which allocates a copy, and the
+  /// ping controls read this on every notify (Critical Rule 9 territory).
+  int get repeaterCount => _repeaters.length;
 
   /// Lazy tap-to-inspect: fetch raw coverage points for a clicked map cell from
   /// the current zone's app endpoint. Returns `[]` when there is no zone or on

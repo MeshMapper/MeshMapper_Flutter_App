@@ -743,8 +743,18 @@ class MeshCoreConnection {
           }
           // Repeater-admin commands read the code: 2 is "contact unknown",
           // 3 is "table full" on add and "could not send" on login/request.
-          _failPendingAdmin(RadioErrorException(
-              _adminCommandInFlight ?? 'admin', errorCode));
+          // An ERR frame carries no correlation, so claim it for the admin
+          // lane only when nothing else is waiting: the noise floor poll runs
+          // every 5s and a login can wait up to 60s, and a poller's ERR must
+          // not kill that login with the wrong sentence.
+          if (_statsCompleter == null &&
+              _channelInfoCompleter == null &&
+              _deviceQueryCompleter == null &&
+              _exportContactCompleter == null &&
+              _getTimeCompleter == null) {
+            _failPendingAdmin(RadioErrorException(
+                _adminCommandInFlight ?? 'admin', errorCode));
+          }
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
           _statsCompleter?.completeError(errException);

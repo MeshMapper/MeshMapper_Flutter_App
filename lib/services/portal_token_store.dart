@@ -103,8 +103,13 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
   /// Android auto-backup restores the EncryptedSharedPreferences ciphertext
   /// without the hardware Keystore key that wrapped it, so the first read after
   /// a device transfer raises BadPaddingException. Nuking the store and
-  /// reporting "signed out" is the only sane recovery — a throw here would take
-  /// down `AppStateProvider._initialize()` and the whole app with it.
+  /// reporting "signed out" is the only sane recovery there, and a throw here
+  /// would take down `AppStateProvider._initialize()` and the whole app.
+  ///
+  /// Only the two account keys justify that wipe. A repeater password is read
+  /// on every Manage sheet open, so one flaky Keystore read on that key must
+  /// report "no saved password" and nothing more: wiping would sign the user
+  /// out and forget every other repeater's password with it.
   Future<String?> _readSafely(String key) async {
     try {
       return await _storage.read(
@@ -113,8 +118,16 @@ class SecureTokenStore implements PortalTokenStore, RepeaterPasswordStore {
         aOptions: _androidOptions,
       );
     } catch (e) {
-      debugWarn('[ACCOUNT] Secure storage read failed for "${redactedKeyForLog(key)}" '
-          '(${e.runtimeType}) — resetting to signed-out');
+      final resetsStore = key == tokenKey || key == pendingPkceKey;
+      if (!resetsStore) {
+        debugWarn('[ACCOUNT] Secure storage read failed for '
+            '"${redactedKeyForLog(key)}" (${e.runtimeType}), leaving the '
+            'store intact');
+        return null;
+      }
+      debugWarn('[ACCOUNT] Secure storage read failed for '
+          '"${redactedKeyForLog(key)}" (${e.runtimeType}), resetting to '
+          'signed-out');
       try {
         await _storage.deleteAll(
           iOptions: _iosOptions,

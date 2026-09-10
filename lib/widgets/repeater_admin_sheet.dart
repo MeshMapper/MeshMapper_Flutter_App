@@ -21,7 +21,12 @@ Future<void> showRepeaterAdminSheet(
     BuildContext context, RepeaterTarget target) async {
   final appState = context.read<AppStateProvider>();
   final session = await appState.openRepeaterAdminSession(target);
-  if (!context.mounted) return;
+  if (!context.mounted) {
+    // The session is already open, so bowing out here without closing it
+    // would leave the ping controls locked with no sheet (Rule 7).
+    await appState.closeRepeaterAdminSession();
+    return;
+  }
   if (session == null) {
     AppToast.error(context,
         appState.repeaterAdminBlockReason ?? 'Cannot manage this repeater right now');
@@ -440,7 +445,8 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
           ],
         ),
       if (_ownedError(_ErrorOwner.neighbours) case final w?) w,
-      if (_uploadResult != null && !_uploadResult!.ok) _error(_uploadResult!.userMessage),
+      if (_uploadResult != null && !_uploadResult!.ok)
+        _error(_uploadResult!.message ?? _uploadResult!.userMessage),
       if (fetched && session.neighbours.isNotEmpty)
         Align(
           alignment: Alignment.centerLeft,

@@ -153,7 +153,7 @@ _TargetedDeps _targetedDepsOf(AppStateProvider s) {
     traceHopBytes: s.traceHopBytes,
     targetRepeaterId: s.targetRepeaterId,
     isConnected: s.isConnected,
-    hasRepeaters: s.repeaters.isNotEmpty,
+    hasRepeaters: s.repeaterCount > 0,
     externalAntennaSet: prefs.externalAntennaSet,
     isPowerSet:
         prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
@@ -162,7 +162,7 @@ _TargetedDeps _targetedDepsOf(AppStateProvider s) {
     isPingInProgress: s.isPingInProgress,
     isPingSending: s.isPingSending,
     isAutoReconnecting: s.isAutoReconnecting,
-    repeaterCount: s.repeaters.length,
+    repeaterCount: s.repeaterCount,
     firmwareVersionString: s.firmwareVersionString,
   );
 }
