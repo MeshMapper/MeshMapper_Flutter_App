@@ -1687,8 +1687,8 @@ class MeshCoreConnection {
   Future<List<ContactRecord>> getContacts(
       {Duration timeout = const Duration(seconds: 20)}) async {
     _beginAdminCommand('getContacts');
+    final completer = Completer<List<ContactRecord>>();
     try {
-      final completer = Completer<List<ContactRecord>>();
       _contactsCompleter = completer;
       final data = BufferWriter()
         ..writeByte(CommandCodes.getContacts)
@@ -1700,6 +1700,15 @@ class MeshCoreConnection {
         throw TimeoutException('getContacts timed out');
       });
     } finally {
+      // A write that threw before completer.future was ever awaited leaves
+      // this call's completer registered with no listener. Clear it here
+      // (only if it is still the one this call installed - a later call may
+      // already have replaced it) so a subsequent ERR or _abortPendingAdmin()
+      // does not complete it into the void.
+      if (identical(_contactsCompleter, completer)) {
+        _contactsCompleter = null;
+        _contactsBuffer = [];
+      }
       _endAdminCommand();
     }
   }
@@ -1709,8 +1718,8 @@ class MeshCoreConnection {
   Future<void> addContact(ContactRecord contact,
       {Duration timeout = const Duration(seconds: 5)}) async {
     _beginAdminCommand('addContact');
+    final completer = Completer<void>();
     try {
-      final completer = Completer<void>();
       _adminOkCompleter = completer;
       await _write(contact.toFrame(CommandCodes.addUpdateContact));
       debugLog('[CONN] addContact ${contact.publicKeyHex.substring(0, 8)}');
@@ -1719,6 +1728,13 @@ class MeshCoreConnection {
         throw TimeoutException('addContact timed out');
       });
     } finally {
+      // Same orphan-completer guard as getContacts: a write that threw before
+      // completer.future was awaited must not leave this call's completer
+      // registered for a later ERR or _abortPendingAdmin() to complete
+      // unheard.
+      if (identical(_adminOkCompleter, completer)) {
+        _adminOkCompleter = null;
+      }
       _endAdminCommand();
     }
   }
