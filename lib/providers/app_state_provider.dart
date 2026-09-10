@@ -13,6 +13,7 @@ import 'package:app_links/app_links.dart';
 import 'package:uuid/uuid.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
+import 'package:http/http.dart' as http;
 
 import '../models/connection_state.dart';
 import '../models/device_model.dart';
@@ -69,7 +70,13 @@ import '../services/watch/watch_bridge_service.dart';
 import '../services/watch/watch_models.dart';
 import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
+import '../services/portal_token_store.dart';
 import '../services/recent_coverage_service.dart';
+import '../services/repeater_admin/manage_target.dart';
+import '../services/repeater_admin/repeater_admin_api.dart';
+import '../services/repeater_admin/repeater_admin_models.dart';
+import '../services/repeater_admin/repeater_admin_module.dart';
+import '../services/repeater_admin/repeater_admin_session.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
 import '../utils/ping_colors.dart';
@@ -645,6 +652,79 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     return null;
   }
+
+  // ============================================
+  // Repeater administrators
+  // ============================================
+
+  // One live session at most; the claims cache is keyed by companion pubkey
+  // so the detail sheet can say "You administer this repeater" offline. All
+  // notifies here are UI-only (Rule 9).
+  static const String _repeaterClaimsKey = 'repeater_claims';
+  RepeaterAdminSession? _repeaterAdminSession;
+  Map<String, List<RepeaterClaim>> _repeaterClaimsByPubkey = {};
+  late final RepeaterAdminApi _repeaterAdminApi;
+  late final RepeaterPasswordStore _repeaterPasswordStore;
+
+  RepeaterAdminSession? get repeaterAdminSession => _repeaterAdminSession;
+  bool get isRepeaterAdminActive => _repeaterAdminSession != null;
+
+  /// Null when a repeater admin session may open now (see manageBlockReason).
+  String? get repeaterAdminBlockReason => manageBlockReason(
+        isConnected: isConnected,
+        isAnyModeRunning: _autoPingEnabled,
+        isPingInProgress: isPingInProgress,
+        isPingSending: _isPingSending,
+        isRepeaterAdminActive: isRepeaterAdminActive,
+        isAutoReconnecting: _isAutoReconnecting,
+        companionFirmwareSupported: companionFirmwareAtLeast(
+            _firmwareVersionString,
+            major: kCompanionFloorMajor,
+            minor: kCompanionFloorMinor,
+            patch: kCompanionFloorPatch),
+      );
+
+  /// The connected companion's cached claims when it has an entry, otherwise
+  /// every cached companion's claims deduped by repeater, so the list still
+  /// shows before the first reconcile lands and while no radio is connected.
+  /// A claim from another radio can therefore show until the connect
+  /// reconcile replaces it.
+  List<RepeaterClaim> get repeaterClaims {
+    final key = _devicePublicKey?.toUpperCase();
+    if (key != null && _repeaterClaimsByPubkey.containsKey(key)) {
+      return List.unmodifiable(_repeaterClaimsByPubkey[key]!);
+    }
+    final seen = <String>{};
+    final out = <RepeaterClaim>[];
+    for (final list in _repeaterClaimsByPubkey.values) {
+      for (final c in list) {
+        if (seen.add(c.repeaterHex)) out.add(c);
+      }
+    }
+    return List.unmodifiable(out);
+  }
+
+  bool isRepeaterClaimed(String hex) {
+    final wanted = hex.toUpperCase();
+    return repeaterClaims.any((c) => c.repeaterHex == wanted);
+  }
+
+  /// Name of the zone repeater whose full key starts with [hopHex] when that
+  /// prefix is unique, else null. Used to render route hops and neighbours.
+  String? repeaterNameForPrefix(String prefixHex) {
+    final wanted = prefixHex.toUpperCase();
+    if (wanted.isEmpty) return null;
+    Repeater? match;
+    for (final r in _repeaters) {
+      if (!r.hexId.toUpperCase().startsWith(wanted)) continue;
+      if (match != null) return null;
+      match = r;
+    }
+    final name = match?.name;
+    return (name == null || name.isEmpty) ? null : name;
+  }
+
+  String? repeaterNameForHop(String hopHex) => repeaterNameForPrefix(hopHex);
 
   /// Drained by MainScaffold after it has shown the toast.
   void clearCarpeaterCapNotice() {
@@ -1338,6 +1418,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
+
+  /// How many zone repeaters are loaded, without copying the list.
+  /// `repeaters` wraps in `List.unmodifiable`, which allocates a copy, and the
+  /// ping controls read this on every notify (Critical Rule 9 territory).
+  int get repeaterCount => _repeaters.length;
 
   /// Lazy tap-to-inspect: fetch raw coverage points for a clicked map cell from
   /// the current zone's app endpoint. Returns `[]` when there is no zone or on
@@ -2958,6 +3043,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     };
 
+    _repeaterAdminApi = RepeaterAdminApi(
+      client: http.Client(),
+      sessionId: () => _apiService.sessionId,
+      appVersion: () => _appVersion,
+    );
+    // The two stores share two interfaces, so an unannotated conditional
+    // infers Object: name the type the branches are read as.
+    _repeaterPasswordStore = kIsWeb
+        ? InMemoryTokenStore()
+        : SecureTokenStore() as RepeaterPasswordStore;
+
     // Set up session error callback for auto-disconnect
     _apiService.onSessionError = (reason, message, {subReason}) async {
       debugError('[APP] Session error from API: $reason'
@@ -3115,6 +3211,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[INIT] Loading preferences...');
     await _loadPreferences();
     await _loadRegionalCarpeaters();
+    await _loadRepeaterClaims();
     await _loadWatchPairingPreference();
     await _loadDeviceAntennaPreferences();
     await _loadDevicePowerOverrides();
@@ -5170,6 +5267,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugWarn('[ACCOUNT] Account refresh failed to start: $e');
       }
     }
+
+    // Repeater administrators: refresh the cached claims for this companion.
+    // Strictly non-fatal, and skipped on an old server.
+    try {
+      unawaited(_reconcileRepeaterClaims(reason: 'connect'));
+    } catch (e) {
+      debugWarn('[RADMIN] Claims reconcile failed to start: $e');
+    }
   }
 
   /// Create and wire up unified RX handler
@@ -5728,6 +5833,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _clearOverlayState();
 
+    await closeRepeaterAdminSession();
+
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
     _pingService?.dispose();
@@ -5792,6 +5899,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _noiseFloorSubscription = null;
     await _batterySubscription?.cancel();
     _batterySubscription = null;
+    // Before the connection is disposed, so the session's own
+    // abortPendingAdmin() still has a live object to abort against. A
+    // successful reconnect closes nothing of its own, so without this a BLE
+    // flap left the session holding a disposed connection and the ping
+    // controls locked for the rest of the run.
+    await closeRepeaterAdminSession();
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
     _pingService?.dispose();
@@ -6069,6 +6182,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Release the sign gate before any teardown write (advert-name restore,
     // path-hash restore, flood scope, channel deletion) is parked behind it.
     _meshCoreConnection?.abortPendingSign();
+    _meshCoreConnection?.abortPendingAdmin();
+    await closeRepeaterAdminSession();
 
     // Cancel idle disconnect timer
     _cancelIdleDisconnectTimer();
@@ -6303,6 +6418,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     }
 
+    if (_repeaterAdminSession != null) {
+      debugLog('[RADMIN] Ignoring ping while a repeater admin session is open');
+      return false;
+    }
+
     // Set sending state immediately for instant UI feedback, BEFORE the
     // (awaited, network) session check so the button locks the moment it's tapped
     _isPingSending = true;
@@ -6407,6 +6527,222 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   void setTargetRepeaterId(String? id) {
     _targetRepeaterId = id;
     notifyListeners();
+  }
+
+  // ---------------- Repeater administrators ----------------
+
+  /// Open the one live repeater admin session, or refuse with the reason in
+  /// [repeaterAdminBlockReason]. While it is open the ping controls are
+  /// locked (sendPing and toggleAutoPing refuse) until [closeRepeaterAdminSession].
+  Future<RepeaterAdminSession?> openRepeaterAdminSession(
+      RepeaterTarget target) async {
+    final reason = repeaterAdminBlockReason;
+    if (reason != null) {
+      debugLog('[RADMIN] Session refused for ${target.shortId}: $reason');
+      return null;
+    }
+    final connection = _meshCoreConnection;
+    if (connection == null) {
+      debugLog('[RADMIN] Session refused: no connection object');
+      return null;
+    }
+    final session = RepeaterAdminSession(
+      connection: connection,
+      target: target,
+      hopBytes: effectiveHopBytes,
+      hopNameFor: repeaterNameForHop,
+      neighbourNameFor: repeaterNameForPrefix,
+    );
+    _repeaterAdminSession = session;
+    _cancelIdleDisconnectTimer();
+    notifyListeners();
+    return session;
+  }
+
+  /// Every exit path lands here: user close, error, disconnect, dispose.
+  Future<void> closeRepeaterAdminSession() async {
+    final session = _repeaterAdminSession;
+    if (session == null) return;
+    _repeaterAdminSession = null;
+    // close(), never dispose(): the sheet's ListenableBuilder may still be
+    // attached for one more frame, and it rebuilds to the disconnected view
+    // when it sees the provider's session go null.
+    session.close();
+    if (isConnected) _startIdleDisconnectTimer();
+    notifyListeners();
+    debugLog('[RADMIN] Session released, ping controls unlocked');
+  }
+
+  /// Prove admin over the mesh (ClaimModule), then post the claim.
+  Future<RepeaterAdminResult> claimRepeater() async {
+    final session = _repeaterAdminSession;
+    if (session == null) {
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
+          message: 'No repeater session is open.');
+    }
+    if (_preferences.offlineMode || !_apiService.hasSession) {
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.noSession);
+    }
+    final Map<String, dynamic> proof;
+    try {
+      proof = await ClaimModule().run(session);
+    } on RepeaterAdminFailure catch (e) {
+      return RepeaterAdminResult.failed(RepeaterAdminFailureKind.notAdmin,
+          message: e.message);
+    } catch (e) {
+      // The radio lane throws more than RepeaterAdminFailure: a disposed
+      // connection raises a bare StateError, which used to reach the sheet
+      // unhandled.
+      debugError('[RADMIN] Claim failed before the request: $e');
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
+          message: 'Something went wrong talking to the radio.');
+    }
+    final result = await _repeaterAdminApi.claim(session.target.hexId, proof);
+    if (result.ok) {
+      debugLog('[RADMIN] Claimed ${session.target.shortId}: '
+          'administrators=${result.administrators.length}');
+      _upsertClaim(RepeaterClaim(
+        repeaterHex: session.target.hexId,
+        name: session.target.name,
+        iata: zoneCode,
+        claimedAt: result.claimedAt ?? DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        updatedAt: result.updatedAt ?? DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      ));
+      unawaited(_reconcileRepeaterClaims(reason: 'after claim'));
+    } else {
+      debugWarn('[RADMIN] Claim refused: ${result.failure.name}');
+    }
+    return result;
+  }
+
+  Future<RepeaterAdminResult> unclaimRepeater(String repeaterHex) async {
+    if (_preferences.offlineMode || !_apiService.hasSession) {
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.noSession);
+    }
+    final result = await _repeaterAdminApi.unclaim(repeaterHex);
+    if (result.ok) {
+      debugLog('[RADMIN] Unclaimed ${repeaterHex.substring(0, 8)}');
+      _removeClaim(repeaterHex);
+    }
+    return result;
+  }
+
+  /// Post the neighbour pages the session holds (NeighboursModule): however
+  /// many the user loaded, with the repeater's own total beside them.
+  Future<RepeaterAdminResult> uploadRepeaterNeighbours() async {
+    final session = _repeaterAdminSession;
+    if (session == null) {
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
+          message: 'No repeater session is open.');
+    }
+    if (_preferences.offlineMode || !_apiService.hasSession) {
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.noSession);
+    }
+    final Map<String, dynamic> table;
+    try {
+      table = await NeighboursModule().run(session);
+    } on RepeaterAdminFailure catch (e) {
+      return RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
+          message: e.message);
+    } catch (e) {
+      debugError('[RADMIN] Neighbours read failed before the request: $e');
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
+          message: 'Something went wrong talking to the radio.');
+    }
+    final result =
+        await _repeaterAdminApi.neighbours(session.target.hexId, table);
+    if (result.ok) {
+      debugLog('[RADMIN] Neighbours uploaded for ${session.target.shortId}: '
+          'resolved=${result.resolved} unresolved=${result.unresolved}');
+    }
+    return result;
+  }
+
+  Future<String?> readRepeaterPassword(String hex) =>
+      _repeaterPasswordStore.readRepeaterPassword(hex);
+  Future<void> rememberRepeaterPassword(String hex, String password) =>
+      _repeaterPasswordStore.writeRepeaterPassword(hex, password);
+  Future<void> forgetRepeaterPassword(String hex) =>
+      _repeaterPasswordStore.deleteRepeaterPassword(hex);
+
+  void _upsertClaim(RepeaterClaim claim) {
+    final key = _devicePublicKey?.toUpperCase();
+    if (key == null) return;
+    final list = List<RepeaterClaim>.from(_repeaterClaimsByPubkey[key] ?? const []);
+    list.removeWhere((c) => c.repeaterHex == claim.repeaterHex);
+    list.add(claim);
+    _repeaterClaimsByPubkey[key] = list;
+    notifyListeners();
+    unawaited(_saveRepeaterClaims());
+  }
+
+  void _removeClaim(String repeaterHex) {
+    final wanted = repeaterHex.toUpperCase();
+    for (final key in _repeaterClaimsByPubkey.keys.toList()) {
+      _repeaterClaimsByPubkey[key] =
+          _repeaterClaimsByPubkey[key]!.where((c) => c.repeaterHex != wanted).toList();
+    }
+    notifyListeners();
+    unawaited(_saveRepeaterClaims());
+  }
+
+  /// Replace the connected companion's cached claims from the server's
+  /// `mine` action. Non-fatal: a refusal or an old server leaves the cache.
+  Future<void> _reconcileRepeaterClaims({required String reason}) async {
+    if (kIsWeb) return;
+    final key = _devicePublicKey?.toUpperCase();
+    if (key == null || !_apiService.hasSession || _preferences.offlineMode) return;
+    try {
+      final result = await _repeaterAdminApi.mine();
+      if (!result.ok) {
+        debugLog('[RADMIN] Claims reconcile ($reason) skipped: ${result.failure.name}');
+        return;
+      }
+      _repeaterClaimsByPubkey[key] = result.claims;
+      debugLog('[RADMIN] Claims reconciled ($reason): ${result.claims.length}');
+      notifyListeners();
+      await _saveRepeaterClaims();
+    } catch (e) {
+      debugWarn('[RADMIN] Claims reconcile failed: $e');
+    }
+  }
+
+  Future<void> _loadRepeaterClaims() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      final raw = box.get(_repeaterClaimsKey);
+      if (raw is! String) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final out = <String, List<RepeaterClaim>>{};
+      decoded.forEach((pubkey, rows) {
+        if (pubkey is! String || rows is! List) return;
+        out[pubkey.toUpperCase()] = [
+          for (final row in rows)
+            if (row is Map<String, dynamic>)
+              if (RepeaterClaim.tryFromJson(row) case final c?) c,
+        ];
+      });
+      _repeaterClaimsByPubkey = out;
+      debugLog('[RADMIN] Loaded cached claims for ${out.length} companion(s)');
+    } catch (e) {
+      debugError('[RADMIN] Failed to load cached claims: $e');
+      _repeaterClaimsByPubkey = {};
+    }
+  }
+
+  Future<void> _saveRepeaterClaims() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      final encoded = jsonEncode(_repeaterClaimsByPubkey.map(
+          (k, v) => MapEntry(k, v.map((c) => c.toJson()).toList())));
+      await box.put(_repeaterClaimsKey, encoded);
+      await box.flush();
+    } catch (e) {
+      debugError('[RADMIN] Failed to cache claims: $e');
+    }
   }
 
   /// Advance the idle auto-stop anchor walk by one auto-ping tick.
@@ -6673,6 +7009,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Ignore re-taps while a start is already in flight (prevents the
       // double-tap / concurrent-heartbeat storm during the session check)
       if (_autoPingStarting) return false;
+
+      if (_repeaterAdminSession != null) {
+        debugLog('[${mode.name.toUpperCase()} MODE] Start blocked by an open '
+            'repeater admin session');
+        return false;
+      }
 
       // Block starting while the shared cooldown runs. Every mode, Passive
       // included: it is the other half of the stop cooldown above, and the
@@ -11076,6 +11418,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     _isDisposed = true;
+    // No notify in dispose: the session just has to let the radio go.
+    _repeaterAdminSession?.close();
+    _repeaterAdminSession = null;
     if (_timerListenerAttached) {
       _timerListenable.removeListener(_handleLiveActivityTimerChange);
     }

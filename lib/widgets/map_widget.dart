@@ -19,6 +19,7 @@ import '../models/ping_data.dart';
 import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
+import '../services/repeater_admin/repeater_admin_models.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
 import '../utils/debug_logger_io.dart';
@@ -26,10 +27,12 @@ import '../utils/geo_validation.dart';
 import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
+import '../utils/public_key.dart';
 import '../utils/repeater_format.dart';
 import '../utils/map_style_errors.dart';
 import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
+import 'repeater_admin_sheet.dart';
 import 'repeater_id_chip.dart';
 import 'rx_path_chain.dart';
 
@@ -9755,9 +9758,89 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         );
                       },
                     ),
+                    // Administrators (repeater administrators feature)
+                    _repRow(
+                      context,
+                      Icons.admin_panel_settings_outlined,
+                      Text(
+                        appState.isRepeaterClaimed(repeater.hexId)
+                            ? 'You administer this repeater'
+                                '${repeater.admins.isNotEmpty ? ' (${repeater.admins.join(', ')})' : ''}'
+                            : repeater.admins.isEmpty
+                                ? 'No administrators listed'
+                                : 'Administrators: ${repeater.admins.join(', ')}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
                   ],
                 ),
               ),
+              const SizedBox(height: 14),
+              // Neighbours the repeater reported to an administrator's app.
+              if (repeater.provenNeighbours.isNotEmpty) ...[
+                Text('Proven neighbours (via app)',
+                    style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 4),
+                for (final n in repeater.provenNeighbours)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(children: [
+                      Expanded(
+                        child: Text(
+                          n.resolved
+                              ? (appState.repeaterNameForKey(n.hex) ??
+                                  n.hex.substring(0, 8))
+                              : '${n.hex.substring(0, 8)} (unknown)',
+                          style: const TextStyle(fontSize: 13),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (n.snr != null)
+                        Text('${n.snr!.toStringAsFixed(1)} dB',
+                            style: const TextStyle(fontSize: 12)),
+                      if (n.heardAt != null) ...[
+                        const SizedBox(width: 8),
+                        Text(formatDateWithAgo(n.heardAt),
+                            style: const TextStyle(fontSize: 12)),
+                      ],
+                    ]),
+                  ),
+                const SizedBox(height: 14),
+              ],
+              // Manage: opens the admin sheet for this repeater. Disabled with
+              // the reason when the key is short or the app cannot manage now.
+              Builder(builder: (context) {
+                final block = appState.repeaterAdminBlockReason;
+                final hasKey = isFullPublicKey(repeater.hexId);
+                final hint = !hasKey ? 'Full key unknown' : block;
+                return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      FilledButton.tonalIcon(
+                        icon: const Icon(Icons.admin_panel_settings_outlined,
+                            size: 18),
+                        label: const Text('Manage'),
+                        onPressed: hint == null
+                            ? () {
+                                Navigator.pop(context);
+                                showRepeaterAdminSheet(this.context,
+                                    RepeaterTarget.fromRepeater(repeater));
+                              }
+                            : null,
+                      ),
+                      if (hint != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(hint,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant)),
+                        ),
+                    ]);
+              }),
               const SizedBox(height: 14),
               // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
               FutureBuilder<RepeaterStats?>(

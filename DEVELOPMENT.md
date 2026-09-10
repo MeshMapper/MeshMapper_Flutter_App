@@ -672,6 +672,99 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   `lib/providers/app_state_provider.dart`, `lib/screens/main_scaffold.dart`,
   `lib/screens/settings/account_settings_page.dart`.
 
+### Repeater Administrators
+
+A connected user picks a repeater (the Trace row's Manage button, the repeater detail sheet,
+or My Repeaters in Settings > MeshMapper Account), opens the Manage sheet and logs in with the
+repeater's admin password over the mesh. The app proves admin two ways the firmware
+guarantees: the login reply's admin flag, then a `GET_ACCESS_LIST` binary request that a
+guest never gets answered. With that proof the user can claim the repeater on MeshMapper (one
+server call), see and reset the route the radio learned, and fetch the repeater's neighbour
+table a page per tap and upload it. Everything is a request with a pushed response. **Never:**
+a CLI command (its reply is a direct message), a read of the radio's message queue
+(`CMD_SYNC_NEXT_MESSAGE` stays unsent, `MSG_WAITING` unhandled), or an export of the radio's
+private key. Server contract: `MeshMapper_Server/docs/HANDOFF-repeater-administrators-server.md`.
+**Server first:** an old server answers the `/repeater` leg with 400 `invalid_request`, which
+the app shows as "This region does not support claiming yet."
+
+- **The mesh conversation** (`lib/services/repeater_admin/repeater_admin_session.dart`,
+  `RepeaterAdminSession`, a `ChangeNotifier` the sheet listens to, depends on
+  `MeshCoreConnection` only). Step 1 makes sure the radio has the repeater as a contact
+  (`getContacts`, then `addContact` as a flood repeater with the MeshMapper name and position
+  only when absent, because an add wipes a learned route; `ERR 3` there is "Your radio's
+  contact list is full."). Step 2 logs in (`login`, `CMD_SEND_LOGIN` with the raw UTF-8
+  password, no NUL; the firmware terminates the frame). The 14-byte `LOGIN_SUCCESS` carries
+  an explicit admin flag, the ACL perms byte and the firmware level. **Firmware floor, no
+  legacy support:** companion firmware v1.9.0 or newer is required and enforced from the
+  version string read at connect (`companionFirmwareAtLeast`; Manage is disabled with "Manage
+  needs companion firmware v1.9.0 or newer"), and repeater firmware v1.9.0 or newer is
+  required and detected at login (that release added `GET_ACCESS_LIST`, `GET_NEIGHBOURS` and
+  the firmware-level byte; an older repeater's 12-byte reply has no such byte, the companion
+  forwards the cipher's zero pad in its place, so a level of 0 stops the session with "This
+  repeater seems to be running firmware older than v1.9.0. Manage needs repeater firmware
+  v1.9.0 or newer." and sends it nothing further). A shorter `LOGIN_SUCCESS` is a protocol
+  error, not a state. **A wrong password gets no reply from the repeater** (firmware `handleLoginReq` returns without answering), so it
+  presents as the login timeout "No reply from the repeater. Check the password and try
+  again." Step 3 proves admin: `sendBinaryRequest` with `[0x05, 0, 0]`; the reply's entries
+  are read for the count and discarded (never shown, uploaded or logged); silence within the
+  timeout refuses the claim with "The repeater did not confirm admin access." Step 4 renders
+  the contact's `out_path` as hops at the region's hop width (names resolved by unique
+  prefix against the zone list, else hex; `0xFF` is "Flood (no route learned yet)"),
+  re-read on every `PATH_UPDATED` push, and `resetPath` floods the next send. Step 5 reads
+  the neighbour table one page per tap: `[0x06][0][10][offset:u16][0][8][random:4]`, ten
+  entries per page at an 8-byte prefix, newest first. "Fetch neighbours" is the first page,
+  "Load more" is the next (`hasMoreNeighbours` is false once the table is complete, a page
+  comes back empty, or the 30-page brake trips); nothing pages on its own, and Upload sends
+  the pages held with the repeater's own `total` beside them. SNR is the firmware's
+  `int8 / 4` dB. Timeouts are the radio's `est_timeout_ms` from
+  the `SENT` reply plus 5 s, clamped to [8 s, 60 s]. Commands never overlap: the companion
+  keeps one pending request and a login clears it.
+- **Connection layer** (`lib/services/meshcore/connection.dart`): `getContacts`,
+  `addContact`, `login`, `sendBinaryRequest`, `resetPath`, `pathUpdatedStream`, each a
+  completer plus timeout in the `sign()` style, one at a time (`StateError` otherwise),
+  all through `_write` so the sign gate still parks them. `SENT` is parsed for its tag and
+  estimate. `ERR` completes them with `RadioErrorException(code)`; `abortPendingAdmin()`
+  completes them with `RadioAbortedException` and is called from `disconnect()`,
+  `deleteWardrivingChannelEarly()`, `dispose()` and the provider's disconnect, the
+  `abortPendingSign` pattern. The login frame is logged by length only, and
+  `DebugFileLogger.scrubSecrets` redacts any `password=` shape as a backstop.
+- **Modules** (`repeater_admin_module.dart`): `RepeaterAdminModule { name, needsAdmin,
+  run(session) }` produces one payload for one server action. `ClaimModule` runs the ACL
+  proof and returns `{login, acl, perms, fw_level}`; `NeighboursModule` returns
+  `{fetched_at, total, entries}` for the pages the user loaded, capped at 300, with `total`
+  the repeater's own count so the server knows the table may be partial. A later module is one class here and one
+  server action.
+- **API** (`repeater_admin_api.dart`, `RepeaterAdminApi`): `claim`, `unclaim`, `mine`,
+  `neighbours`, all `POST /wardrive-api.php/repeater` with `key`, `session_id`, `action`,
+  `app_ver`. **The body never carries a top-level `data`, `public_key`, `heartbeat`, `lat`,
+  `lng` or `lon`** (the old router keys on them; asserted in `_post`). Refusals map to
+  `RepeaterAdminFailureKind` with one sentence each (`userMessage`); a 429 carries
+  `Retry-After`; `sessionExpired` is reported, never acted on (the sheet never touches the
+  connection). Offline Mode or no session refuses claim, unclaim and upload locally.
+- **Provider**: one live session at most (`openRepeaterAdminSession` /
+  `closeRepeaterAdminSession`). While open, `sendPing` and `toggleAutoPing` refuse and every
+  ping button is disabled (`isRepeaterAdminActive` in the controls deps); every exit path
+  (sheet close, error, disconnect in both flows, the auto-reconnect teardown, dispose) closes
+  the session (Rule 7). A
+  session may open only when `repeaterAdminBlockReason` is null (connected, no mode running,
+  no ping in flight, no other session; `manageBlockReason` in `manage_target.dart`, shared
+  by every entry point so the surfaces give the same answer). Claims are cached in Hive
+  (`user_preferences`, key `repeater_claims`, a JSON map keyed by companion pubkey) and
+  reconciled from the server's `mine` action after every connect (non-fatal, skipped on an
+  old server). Passwords go through `SecureTokenStore` under `repeater_admin_pw_<HEX>`,
+  never logged, never sent. Nothing here bumps `mapRevision`.
+- **Entry points**: the Trace row is `[list] [selected ID] [Trace] [Manage]`; Manage needs
+  the full key, so a picked repeater carries it and a typed ID counts only when it prefixes
+  exactly one loaded repeater (`resolveManageTarget`), else the tooltip reads "Choose from
+  the list". The compact (landscape) controls are unchanged. The detail sheet gets an
+  Administrators row, a "Proven neighbours (via app)" list from the repeater list's
+  `proven_neighbours`, and a Manage button (disabled with the block reason while it cannot
+  open). My Repeaters lists the cached claims; a row opens the sheet when a radio is
+  connected.
+- **Repeater list fields** (`Repeater.admins`, `Repeater.provenNeighbours`): display names
+  and the server-resolved neighbours; an old list has neither.
+- Logged under `[RADMIN]` (session, modules, API, sheet, provider) and `[CONN]` (frames).
+
 ### Coverage Overlay (vector tiles)
 
 The MeshMapper coverage layer is rendered from the region server's vector tiles
@@ -1383,6 +1476,7 @@ debugError('[API] Failed to post batch: $error');
 | `[EXTERNAL]` | External command execution (shared Siri/watch lane) |
 | `[GPS]` | GPS/geolocation operations |
 | `[PING]` | Ping sending and validation |
+| `[RADMIN]` | Repeater administrators: admin session, claim and neighbour modules, the /repeater API, the Manage sheet |
 | `[API QUEUE]` | API queue operations (batch posting) |
 | `[RX BATCH]` | RX batch buffer operations |
 | `[RX]` | RX packet handling and logging |
@@ -1553,6 +1647,12 @@ All API endpoints may return maintenance mode:
 - `lib/services/portal_account_service.dart` - MyMeshMapper portal lane (PKCE sign-in, nonce/link/unlink/me/logout)
 - `lib/services/portal_token_store.dart` - Keychain/Keystore storage for the portal token and pending PKCE pair
 - `lib/services/link_decision.dart` - Pure decision for whether to offer a device link
+- `lib/services/repeater_admin/repeater_admin_session.dart` - Repeater admin session: contact, login, ACL proof, route, neighbour pager over the mesh
+- `lib/services/repeater_admin/repeater_admin_module.dart` - ClaimModule and NeighboursModule: one payload per server action
+- `lib/services/repeater_admin/repeater_admin_api.dart` - The /repeater leg (claim, unclaim, mine, neighbours) and its refusal mapping
+- `lib/services/repeater_admin/repeater_admin_models.dart` - Repeater admin models, request builders and reply parsers
+- `lib/services/repeater_admin/manage_target.dart` - Pure Manage-target resolver and the shared block reason
+- `lib/widgets/repeater_admin_sheet.dart` - The Manage bottom sheet
 - `lib/utils/pkce.dart` - RFC 7636 S256 PKCE pair generation
 - `lib/services/watch/watch_bridge_service.dart` - WatchConnectivity transport: throttle, dedupe, movement gate, map-geo lease, command admission
 - `lib/services/watch/watch_models.dart` - Watch wire contract and shared start-admission resolver

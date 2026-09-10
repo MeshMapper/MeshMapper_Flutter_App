@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../models/repeater.dart';
 import '../../providers/app_state_provider.dart';
 import '../../services/portal_account_service.dart';
+import '../../services/repeater_admin/repeater_admin_models.dart';
 import '../../utils/debug_logger_io.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/repeater_admin_sheet.dart';
 import 'account_overview_widgets.dart';
 import 'settings_section_card.dart';
 
@@ -158,9 +161,58 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                   onTap: () => _resetPortalDeclines(context, appState),
                 ),
             ]),
+          // Repeaters this account has logged in to. The rows come from the
+          // local claim cache, so the card shows with no radio connected.
+          SettingsSectionCard(title: 'My Repeaters', children: [
+            if (appState.repeaterClaims.isEmpty)
+              const ListTile(
+                leading: Icon(Icons.cell_tower),
+                title: Text('No repeaters claimed yet'),
+                subtitle: Text('Pick a repeater on the map and tap Manage to '
+                    'log in with its admin password'),
+              )
+            else
+              for (final claim in appState.repeaterClaims)
+                ListTile(
+                  leading: const Icon(Icons.cell_tower),
+                  title: Text(claim.name.isEmpty
+                      ? claim.repeaterHex.substring(0, 8)
+                      : claim.name),
+                  subtitle: Text('${claim.repeaterHex.substring(0, 8)}'
+                      '${claim.iata != null ? '  ${claim.iata}' : ''}'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _openClaim(context, appState, claim),
+                ),
+          ]),
         ],
       ),
     );
+  }
+
+  /// Opens the manage sheet for a claimed repeater from the account page.
+  /// Refuses through the shared block reason, the same gate the map's Manage
+  /// button uses.
+  Future<void> _openClaim(BuildContext context, AppStateProvider appState,
+      RepeaterClaim claim) async {
+    final block = appState.repeaterAdminBlockReason;
+    if (block != null) {
+      AppToast.error(context, block);
+      return;
+    }
+    // Position from the loaded list when the zone has it; the contact the
+    // radio may need to add carries it. (0, 0) is the API's "unknown".
+    Repeater? known;
+    for (final r in appState.repeaters) {
+      if (r.hexId.toUpperCase() == claim.repeaterHex) {
+        known = r;
+        break;
+      }
+    }
+    final target = known != null
+        ? RepeaterTarget.fromRepeater(known)
+        : RepeaterTarget(
+            hexId: claim.repeaterHex, name: claim.name, lat: 0, lon: 0);
+    await showRepeaterAdminSheet(context, target);
   }
 
   Future<void> _startPortalSignIn(
