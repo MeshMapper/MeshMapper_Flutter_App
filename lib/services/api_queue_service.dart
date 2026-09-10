@@ -550,7 +550,6 @@ class ApiQueueService {
       longitude: longitude,
       timestamp: timestamp,
       held: held,
-      autoMode: autoModeGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue

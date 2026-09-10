@@ -57,7 +57,6 @@ void main() {
         'lon': -75.77746,
         'timestamp': 1757400000,
         'held': 'tx',
-        'auto_mode': 'hybrid',
       },
     ]);
     final sent = await t.sent.timeout(const Duration(seconds: 5));
