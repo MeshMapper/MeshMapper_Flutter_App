@@ -377,8 +377,40 @@ untouched. On by default with a 14 day window.
   after disconnect would keep fetching tiles with no session. Auto-reconnect keeps the session
   and re-syncs through `_postConnectionSetup`, so the cache survives a BLE flap. Positions come
   from the GPS listener and from the auto-ping hook (iOS background).
-- Logged under `[COVERAGE]` (tiles, session marks) and `[PING]` / `[DISC]` (deferrals,
-  releases and drops).
+- **Credit**: a deferred ping never posts a coverage row, so smart pinging used to cost the
+  user a leaderboard point on every mapped road. The app now reports three things it already
+  knows and keeps no tally, does no scoring and shows nothing new. (1) The running auto mode,
+  as `auto_mode` (`active`, `hybrid`, `passive`, `trace`, `none`) on the batch post, the
+  heartbeat and the `/auth` release, read at the moment of each call through
+  `ApiService.currentAutoMode`, wired to `AppStateProvider.wireAutoMode` (a pure read of the
+  enabled flag and `AutoMode.wireName`; `none` when nothing is running, and NOT gated on the
+  pending stop, since a draining mode is still that mode). Never on connect, register, an
+  offline-mode auth or the offline upload. (2) The mode that produced each queued item, as an
+  optional `auto_mode` on the item (`ApiQueueItem` Hive field 19, read at enqueue time through
+  `ApiQueueService.autoModeGetter`; absent means unknown, never `none`). (3) One `DEFER` item
+  per fixed 300 m square per API session, `{type, lat, lon, timestamp, held}` with `held`
+  `tx` or `disc` and nothing else (no antenna, noise floor, power or altitude: the server pays
+  for the square, not the reading). `PingService.onPingDeferred` fires at the two deferral
+  sites (the TX auto branch and the discovery send) with the validated fix; the provider
+  dedupes it through `RecentCoverageService.markDeferred` (always the 300 m grid, whatever the
+  Coverage Grid setting, so a Detailed-grid user reports one per real square and a parked car
+  reports one) and queues it with `ApiQueueService.enqueueDefer`, which rides the normal batch,
+  the offline recording (honouring the airborne pause) and the pre-disconnect snapshot, and is
+  never dropped on a session change (no wire tag). A new session id under a kept queue resets
+  the dedupe set (`clearDeferred` on `onSessionIdChanged`), matching the server's per-session
+  credit. A released banked ping does not cancel its `DEFER`: the user crossed the covered
+  square without transmitting. The server verifies each square against its own coverage,
+  dedupes again per session, credits it at 1.5 points and grants the three Airtime awards on
+  the lifetime count; a drop is silent and the app has no constant for the weight, the
+  thresholds or the names. The custom third-party endpoint gets `DEFER` items (documented as
+  unverified in `docs/CUSTOM_API_ENDPOINT.md`) but never the stamp
+  (`CustomApiService.forwardPings` strips it). **Server first, not optional**: an old server
+  routes an unknown item type into its TX path and inserts a dead TX row, so no build carrying
+  this may reach a phone pointed at a server without the other half
+  (`MeshMapper_Server/docs/HANDOFF-app-smart-ping-credit.md`).
+- Logged under `[COVERAGE]` (tiles, session marks, deferral reports), `[API QUEUE]` (the
+  `DEFER` enqueue) and `[PING]` / `[DISC]` (deferrals, releases and drops). The batch and
+  heartbeat request summaries under `[API]` / `[HEARTBEAT]` show `auto_mode`.
 
 ### API Queue System
 
