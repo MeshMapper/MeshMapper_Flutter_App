@@ -18,20 +18,29 @@ const int kNeighbourMaxPages = 30;
 /// Cap on how many neighbour rows are ever uploaded for one repeater.
 const int kNeighbourUploadCap = 300;
 
+final RegExp _hexOnly = RegExp(r'^[0-9a-fA-F]*$');
+
+/// Shortens [value] for an exception message, so a long input (a public key,
+/// say) never lands whole in a log line. Values of 8 characters or fewer are
+/// left as-is; longer ones are cut to an 8-character prefix plus an ellipsis.
+String _truncateForMessage(String value) {
+  return value.length <= 8 ? value : '${value.substring(0, 8)}...';
+}
+
 /// Decodes a hex string into bytes. Case-insensitive. Throws
-/// [FormatException] when [hex] has an odd length or a non-hex character.
+/// [FormatException] when [hex] has an odd length or contains any character
+/// outside `0-9a-fA-F` (a sign, whitespace or anything else).
 Uint8List hexToBytes(String hex) {
   if (hex.length.isOdd) {
-    throw FormatException('Odd length hex string: $hex');
+    throw FormatException('Odd length hex string: ${_truncateForMessage(hex)}');
+  }
+  if (!_hexOnly.hasMatch(hex)) {
+    throw FormatException('Non-hex character in: ${_truncateForMessage(hex)}');
   }
   final bytes = Uint8List(hex.length ~/ 2);
   for (var i = 0; i < bytes.length; i++) {
     final byteHex = hex.substring(i * 2, i * 2 + 2);
-    final value = int.tryParse(byteHex, radix: 16);
-    if (value == null) {
-      throw FormatException('Invalid hex character in: $byteHex');
-    }
-    bytes[i] = value;
+    bytes[i] = int.parse(byteHex, radix: 16);
   }
   return bytes;
 }
