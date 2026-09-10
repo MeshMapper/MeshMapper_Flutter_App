@@ -5891,6 +5891,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _noiseFloorSubscription = null;
     await _batterySubscription?.cancel();
     _batterySubscription = null;
+    // Before the connection is disposed, so the session's own
+    // abortPendingAdmin() still has a live object to abort against. A
+    // successful reconnect closes nothing of its own, so without this a BLE
+    // flap left the session holding a disposed connection and the ping
+    // controls locked for the rest of the run.
+    await closeRepeaterAdminSession();
     _meshCoreConnection?.dispose();
     _meshCoreConnection = null;
     _pingService?.dispose();
@@ -6575,6 +6581,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } on RepeaterAdminFailure catch (e) {
       return RepeaterAdminResult.failed(RepeaterAdminFailureKind.notAdmin,
           message: e.message);
+    } catch (e) {
+      // The radio lane throws more than RepeaterAdminFailure: a disposed
+      // connection raises a bare StateError, which used to reach the sheet
+      // unhandled.
+      debugError('[RADMIN] Claim failed before the request: $e');
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
+          message: 'Something went wrong talking to the radio.');
     }
     final result = await _repeaterAdminApi.claim(session.target.hexId, proof);
     if (result.ok) {
@@ -6623,6 +6636,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } on RepeaterAdminFailure catch (e) {
       return RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
           message: e.message);
+    } catch (e) {
+      debugError('[RADMIN] Neighbours read failed before the request: $e');
+      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid,
+          message: 'Something went wrong talking to the radio.');
     }
     final result =
         await _repeaterAdminApi.neighbours(session.target.hexId, table);
