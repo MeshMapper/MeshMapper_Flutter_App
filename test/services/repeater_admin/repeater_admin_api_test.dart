@@ -169,4 +169,26 @@ void main() {
     expect(seen, isNull);
     expect(result.failure, RepeaterAdminFailureKind.invalid);
   });
+
+  test('odd value types in the body do not throw', () async {
+    final okResult = await api((_) => ok({
+          'resolved': 1.0,
+          'unresolved': '2',
+          'claimed_at': '10',
+          'updated_at': null,
+          'administrators': 'not a list',
+        })).mine();
+    expect(okResult.ok, isTrue);
+    expect(okResult.resolved, 1);
+    expect(okResult.unresolved, 2);
+    expect(okResult.claimedAt, 10);
+    expect(okResult.updatedAt, isNull);
+    expect(okResult.administrators, isEmpty);
+
+    final failedResult = await api((_) => http.Response(
+            json.encode({'success': false, 'reason': 0}), 403))
+        .claim('ab' * 32, {});
+    expect(failedResult.ok, isFalse);
+    expect(failedResult.failure, RepeaterAdminFailureKind.invalid);
+  });
 }

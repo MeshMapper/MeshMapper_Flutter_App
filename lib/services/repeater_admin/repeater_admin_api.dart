@@ -200,8 +200,8 @@ class RepeaterAdminApi {
       return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.invalid);
     }
 
-    final reason = data['reason'] as String?;
-    final message = data['message'] as String?;
+    final reason = _asString(data['reason']);
+    final message = _asString(data['message']);
     debugLog('[RADMIN] POST /repeater $action -> HTTP ${response.statusCode} '
         '${data['success'] == true ? 'ok' : 'reason=$reason'} '
         '(${stopwatch.elapsedMilliseconds}ms)');
@@ -217,10 +217,10 @@ class RepeaterAdminApi {
         ok: true,
         administrators: _strings(data['administrators']),
         claims: _claims(data['claims']),
-        resolved: data['resolved'] as int?,
-        unresolved: data['unresolved'] as int?,
-        claimedAt: data['claimed_at'] as int?,
-        updatedAt: data['updated_at'] as int?,
+        resolved: _asInt(data['resolved']),
+        unresolved: _asInt(data['unresolved']),
+        claimedAt: _asInt(data['claimed_at']),
+        updatedAt: _asInt(data['updated_at']),
       );
     }
     return RepeaterAdminResult.failed(_kindFor(response.statusCode, reason),
@@ -252,6 +252,22 @@ class RepeaterAdminApi {
     if (status == 401) return RepeaterAdminFailureKind.sessionExpired;
     if (status == 404) return RepeaterAdminFailureKind.unsupported;
     return RepeaterAdminFailureKind.invalid;
+  }
+
+  /// [raw] as a [String], or null when it isn't one. The server answers
+  /// JSON, but a proxy or an old server can still hand back a number or
+  /// null where a string is expected; every field read from the body goes
+  /// through this rather than an unguarded cast.
+  static String? _asString(Object? raw) => raw is String ? raw : null;
+
+  /// [raw] as an [int]: an int as-is, a whole-valued num truncated, or a
+  /// numeric string parsed; null for anything else (including a
+  /// fractional num, which is not a valid count or timestamp here).
+  static int? _asInt(Object? raw) {
+    if (raw is int) return raw;
+    if (raw is num) return raw == raw.truncate() ? raw.toInt() : null;
+    if (raw is String) return int.tryParse(raw);
+    return null;
   }
 
   static List<String> _strings(Object? raw) =>
