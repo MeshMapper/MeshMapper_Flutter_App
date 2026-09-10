@@ -72,10 +72,11 @@ class ApiQueueItem extends HiveObject {
   @HiveField(18)
   final double? altitude;
 
-  /// The auto mode running when this item was queued, as the server's enum
-  /// (`active`, `hybrid`, `passive`, `trace`), or null when unknown. An
-  /// analytics stamp: the server copies it to the coverage row. Never `none`
-  /// on an item; absent means unknown.
+  /// The auto mode running when this item was queued, as the server's enum:
+  /// `active`, `hybrid`, `passive`, `trace`, or `none` for a manual ping or
+  /// an RX row heard while connected with no mode running. Null only when the
+  /// queue has no mode getter wired, which the server reads as unknown. An
+  /// analytics stamp: the server copies it to the coverage row.
   @HiveField(19)
   final String? autoMode;
 

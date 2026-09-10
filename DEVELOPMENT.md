@@ -385,9 +385,14 @@ untouched. On by default with a 14 day window.
   `ApiService.currentAutoMode`, wired to `AppStateProvider.wireAutoMode` (a pure read of the
   enabled flag and `AutoMode.wireName`; `none` when nothing is running, and NOT gated on the
   pending stop, since a draining mode is still that mode). Never on connect, register, an
-  offline-mode auth or the offline upload. (2) The mode that produced each queued item, as an
-  optional `auto_mode` on the item (`ApiQueueItem` Hive field 19, read at enqueue time through
-  `ApiQueueService.autoModeGetter`; absent means unknown, never `none`). (3) One `DEFER` item
+  offline-mode auth, the offline upload, or the release of an offline upload's own session.
+  Every disconnect path stops the mode before it releases, so the release reads `none` in
+  practice; the server credits the final gap from the mode it last stored and never reads the
+  release's value, so that field is sent for contract completeness. (2) The mode that produced
+  each queued item, as an optional `auto_mode` on the item (`ApiQueueItem` Hive field 19, read
+  at enqueue time through `ApiQueueService.autoModeGetter`; `none` for a manual ping or an RX
+  row heard with no mode running, absent only when no getter is wired, which the server reads
+  as unknown). (3) One `DEFER` item
   per fixed 300 m square per API session, `{type, lat, lon, timestamp, held}` with `held`
   `tx` or `disc` and nothing else (no antenna, noise floor, power or altitude: the server pays
   for the square, not the reading). `PingService.onPingDeferred` fires at the two deferral
