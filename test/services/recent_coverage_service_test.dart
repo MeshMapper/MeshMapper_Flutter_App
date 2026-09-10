@@ -334,5 +334,47 @@ void main() {
       expect(svc.loadedTileCount, 0);
       expect(svc.isCovered(lat, lon), RecentCoverage.unknown);
     });
+
+    group('deferral dedupe', () {
+      test('the same 300 m square reports once', () {
+        expect(svc.markDeferred(lat, lon), isTrue);
+        expect(svc.markDeferred(lat, lon), isFalse);
+      });
+
+      test('three fixes 100 m apart in one 300 m square report once, on the 100 m grid too',
+          () {
+        svc.configure(zone: 'YOW', gridSize: 100, days: 14, enabled: true);
+        // Anchor at the bottom-left of a 300 m cell so the three fixes stay
+        // inside it: 0.0009 deg lat is the 100 m step, three of them fit in
+        // the 0.0027 deg 300 m step.
+        final steps = kCoverageGridSteps[300]!;
+        final base = (lat / steps[0]).floor() * steps[0] + steps[0] * 0.1;
+        expect(svc.markDeferred(base, lon), isTrue);
+        expect(svc.markDeferred(base + 0.0009, lon), isFalse);
+        expect(svc.markDeferred(base + 0.0018, lon), isFalse);
+        // The next 300 m square is a new report.
+        expect(svc.markDeferred(base + 0.0027, lon), isTrue);
+      });
+
+      test('reports even while the lookup is inactive', () {
+        svc.configure(zone: 'YOW', gridSize: 300, days: 14, enabled: false);
+        expect(svc.markDeferred(lat, lon), isTrue);
+      });
+
+      test('clearDeferred empties only the deferred set', () {
+        svc.markCovered(lat, lon);
+        expect(svc.markDeferred(lat, lon), isTrue);
+        svc.clearDeferred();
+        expect(svc.markDeferred(lat, lon), isTrue);
+        expect(svc.isCovered(lat, lon), RecentCoverage.covered,
+            reason: 'the session mark is untouched');
+      });
+
+      test('clear resets it with the rest', () {
+        expect(svc.markDeferred(lat, lon), isTrue);
+        svc.clear();
+        expect(svc.markDeferred(lat, lon), isTrue);
+      });
+    });
   });
 }

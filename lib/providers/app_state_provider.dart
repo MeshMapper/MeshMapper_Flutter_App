@@ -100,6 +100,17 @@ enum AutoMode {
         AutoMode.hybrid => 'Hybrid',
         AutoMode.targeted => 'Trace',
       };
+
+  /// The mode word on the wire: the `auto_mode` value the server reads on
+  /// every session call and every queued item. Trace is `trace`, never the
+  /// enum name. The server's enum is `active`, `hybrid`, `passive`, `trace`,
+  /// `none`; `none` is the provider's word for "no mode running", not a mode.
+  String get wireName => switch (this) {
+        AutoMode.active => 'active',
+        AutoMode.passive => 'passive',
+        AutoMode.hybrid => 'hybrid',
+        AutoMode.targeted => 'trace',
+      };
 }
 
 /// Ping type for the top-heard overlay dots
@@ -845,6 +856,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// True when running Trace Mode (zero-hop trace)
   bool get isTargetedModeRunning =>
       _autoPingEnabled && _autoMode == AutoMode.targeted;
+
+  /// The auto mode as the server reads it on the batch post, the heartbeat
+  /// and the release, and the stamp on every queued item. `none` while no
+  /// mode is running. A pure read of two fields, because it is consulted on
+  /// every batch and heartbeat. Gated on the enabled flag and not on
+  /// [isPendingDisable]: a mode draining its last window is still that mode
+  /// until the drain finishes, and the server credits the gap to whatever the
+  /// previous call reported anyway.
+  String get wireAutoMode => _autoPingEnabled ? _autoMode.wireName : 'none';
   String? get targetRepeaterId => _targetRepeaterId;
   int get queueSize => _queueSize;
   int? get currentNoiseFloor => _currentNoiseFloor;
@@ -2898,6 +2918,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
     _customApiService.iataGetter = () => zoneCode ?? _preferences.iataCode;
     _apiQueueService.customApiService = _customApiService;
+    // Every queued item is stamped with the mode that produced it.
+    _apiQueueService.autoModeGetter = () => wireAutoMode;
 
     // MyMeshMapper portal account. Mobile only — the sign-in flow needs an
     // OS-registered URL scheme, which the web build cannot have.
@@ -2943,12 +2965,19 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await handleSessionError(reason, message, subReason: subReason);
     };
 
+    // The mode running at the moment of each batch post, heartbeat and
+    // release, so the server can total mode time.
+    _apiService.currentAutoMode = () => wireAutoMode;
+
     // A new session id makes every wire tag already queued under the old one
     // undeliverable (auto-reconnect preserves the queue across re-auth). Drop
     // those pings honestly instead of uploading claims the server will skip
     // while reporting success.
     _apiService.onSessionIdChanged = () {
       unawaited(_apiQueueService.dropStaleTaggedItems());
+      // The server credits one deferred square per session id, so a square
+      // reported under the old session is owed again under the new one.
+      _recentCoverage.clearDeferred();
     };
 
     _apiService.onRegionalCarpeaters = (keys, error) {
@@ -3048,16 +3077,22 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (_vectorOverlayActive) {
         // Queue the batch's coords for the +7s fresh-tile check; the user's
         // own cells land on the map via the session patch (see
-        // _freshenAffectedVectorTiles).
-        _pendingFreshZone = zoneCode;
+        // _freshenAffectedVectorTiles). A DEFER changes no tile (the server
+        // keeps deferrals in a table nothing renders), so it is left out.
+        var added = false;
         for (final item in uploadedItems) {
+          if (item.type == 'DEFER') continue;
           if (_pendingFreshCoords.length >= 16) break;
           _pendingFreshCoords.add([item.latitude, item.longitude]);
+          added = true;
         }
-        _vectorFreshTimer?.cancel();
-        _vectorFreshTimer = Timer(const Duration(seconds: 7), () {
-          _freshenAffectedVectorTiles(attempt: 1);
-        });
+        if (added) {
+          _pendingFreshZone = zoneCode;
+          _vectorFreshTimer?.cancel();
+          _vectorFreshTimer = Timer(const Duration(seconds: 7), () {
+            _freshenAffectedVectorTiles(attempt: 1);
+          });
+        }
       }
     };
 
@@ -4627,6 +4662,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
 
     _pingService!.checkRecentCoverage = _recentCoverage.isCovered;
+
+    // One DEFER per fixed 300 m square per API session. The server verifies
+    // the square against its own coverage and credits it; a duplicate or an
+    // uncovered square is a silent drop there, so the phone-side dedupe only
+    // keeps the queue small.
+    _pingService!.onPingDeferred = (lat, lon, held) {
+      final heldWord = held == BankedPingType.tx ? 'tx' : 'disc';
+      if (!_recentCoverage.markDeferred(lat, lon)) {
+        debugLog('[COVERAGE] Deferral already reported for this square ($heldWord)');
+        return;
+      }
+      debugLog('[COVERAGE] Deferral queued for square at '
+          '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)} ($heldWord)');
+      unawaited(_apiQueueService.enqueueDefer(
+        latitude: lat,
+        longitude: lon,
+        timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        held: heldWord,
+      ));
+    };
 
     _pingService!.onEchoReceived = (txPing, repeater, isNew) {
       _recentCoverage.markCovered(txPing.latitude, txPing.longitude);

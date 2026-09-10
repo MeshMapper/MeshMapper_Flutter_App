@@ -124,6 +124,13 @@ class RecentCoverageService {
 
   final Map<String, _Tile> _tiles = {}; // 'x/y'
   final Set<String> _sessionCells = {}; // 'i,j'
+
+  /// Squares already reported as deferred this API session, on the fixed
+  /// 300 m grid whatever the user's Coverage Grid setting. The server dedupes
+  /// on the same grid per session; this keeps the queue from carrying a
+  /// DEFER every interval tick from a parked car, and a Detailed-grid user
+  /// from queueing nine per real square.
+  final Set<String> _deferredCells = {}; // 'i,j' on the 300 m grid
   final List<({int x, int y})> _queue = [];
   bool _draining = false;
   ({double lat, double lon})? _lastEvaluated;
@@ -161,10 +168,11 @@ class RecentCoverageService {
     }
   }
 
-  /// Drop every tile and session mark.
+  /// Drop every tile, session mark and deferral mark.
   void clear() {
     _tiles.clear();
     _sessionCells.clear();
+    _deferredCells.clear();
     _queue.clear();
     _lastEvaluated = null;
   }
@@ -178,6 +186,19 @@ class RecentCoverageService {
       debugLog('[COVERAGE] Session covered cell $key');
     }
   }
+
+  /// Record that smart pinging held a ping on this fix's fixed 300 m square.
+  /// True the first time the square is seen this session, so the caller
+  /// queues one DEFER per square; false after. Not gated on [isActive]: by
+  /// the time a deferral happens the lookup was active, and a stale answer
+  /// here costs one extra DEFER the server drops anyway.
+  bool markDeferred(double lat, double lon) =>
+      _deferredCells.add(_cellKey300(lat, lon));
+
+  /// Forget the deferral marks and nothing else. Called when the API session
+  /// id changes under a kept queue (auto-reconnect that re-auths to a fresh
+  /// session), because the server credits one square per session id.
+  void clearDeferred() => _deferredCells.clear();
 
   /// Whether the cell under this fix is recently covered.
   RecentCoverage isCovered(double lat, double lon) {
@@ -286,6 +307,13 @@ class RecentCoverageService {
 
   String _cellKey(double lat, double lon) {
     final steps = kCoverageGridSteps[_gridSize] ?? kCoverageGridSteps[300]!;
+    final cell = GridCell.containing(lat, lon, steps[0], steps[1]);
+    return '${cell.i},${cell.j}';
+  }
+
+  /// The cell key on the fixed 300 m grid, independent of [_gridSize].
+  String _cellKey300(double lat, double lon) {
+    final steps = kCoverageGridSteps[300]!;
     final cell = GridCell.containing(lat, lon, steps[0], steps[1]);
     return '${cell.i},${cell.j}';
   }
