@@ -74,4 +74,19 @@ void main() {
     await store.deleteRepeaterPassword(hex);
     expect(await store.readRepeaterPassword(hex), isNull);
   });
+
+  test('the key normalizes a 0x or ! prefix like every other public key', () async {
+    final storage = _MapStorage();
+    final store = SecureTokenStore(storage: storage);
+    await store.writeRepeaterPassword('!$hex', 'hunter2');
+    expect(await store.readRepeaterPassword('0x${hex.toUpperCase()}'), 'hunter2');
+    await store.deleteRepeaterPassword(hex);
+    expect(await store.readRepeaterPassword(hex), isNull);
+  });
+
+  test('redactedKeyForLog keeps only the first 8 characters of a repeater key', () {
+    expect(SecureTokenStore.redactedKeyForLog('repeater_admin_pw_${'AB' * 32}'),
+        'repeater_admin_pw_ABABABAB');
+    expect(SecureTokenStore.redactedKeyForLog('portal_app_token'), 'portal_app_token');
+  });
 }
