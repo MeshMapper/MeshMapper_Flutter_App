@@ -146,6 +146,19 @@ void main() {
       transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
       expect(await first, isEmpty);
     });
+
+    test(
+        'a write failure clears the completer so a later abort has no '
+        'listener to yell at', () async {
+      transport.failWrites = true;
+      await expectLater(
+          connection.getContacts(), throwsA(isA<StateError>()));
+      // If the orphaned completer were still registered, disposing here
+      // would call completeError on it with nobody awaiting the future,
+      // which flutter_test reports as an unhandled asynchronous error and
+      // fails this test.
+      connection.dispose();
+    });
   });
 
   group('addContact', () {
@@ -170,6 +183,21 @@ void main() {
           future,
           throwsA(isA<RadioErrorException>()
               .having((e) => e.isTableFull, 'isTableFull', isTrue)));
+    });
+
+    test(
+        'a write failure clears the completer so a later abort has no '
+        'listener to yell at', () async {
+      final rec = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      transport.failWrites = true;
+      await expectLater(
+          connection.addContact(rec), throwsA(isA<StateError>()));
+      // Same orphan-completer hazard as getContacts: a leftover
+      // _adminOkCompleter would take disposal's completeError with no
+      // listener, which flutter_test reports as an unhandled asynchronous
+      // error and fails this test.
+      connection.dispose();
     });
   });
 
