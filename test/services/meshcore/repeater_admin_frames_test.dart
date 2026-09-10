@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/services/meshcore/buffer_utils.dart';
 import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
+import 'package:mesh_mapper/utils/debug_logger_io.dart';
 
 import 'fake_companion_transport.dart';
 
@@ -208,6 +211,147 @@ void main() {
       transport.emit(
           [ResponseCodes.sent, 1, 0xDE, 0xAD, 0xBE, 0xEF, 0x10, 0x27, 0, 0]);
       await future;
+    });
+  });
+
+  group('login', () {
+    final pubkey = key(0x5A);
+    List<int> sentFrame({int est = 0, int flood = 1}) => [
+          ResponseCodes.sent,
+          flood,
+          0x5A, 0x5A, 0x5A, 0x5A,
+          est & 0xFF, (est >> 8) & 0xFF, (est >> 16) & 0xFF, (est >> 24) & 0xFF,
+        ];
+
+    test('writes pubkey plus raw password and parses the long reply', () async {
+      final future = connection.login(pubkey, 'hunter2',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      final frame = transport.writes.single;
+      expect(frame[0], CommandCodes.sendLogin);
+      expect(frame.sublist(1, 33), pubkey);
+      expect(String.fromCharCodes(frame.sublist(33)), 'hunter2');
+      expect(frame.length, 33 + 7, reason: 'no trailing NUL');
+
+      transport.emit(sentFrame());
+      await transport.settle();
+      // [0x85][is_admin][prefix:6][tag:4][acl_perms][fw_level]
+      transport.emit([
+        PushCodes.loginSuccess, 1,
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+        1, 2, 3, 4,
+        3, 2,
+      ]);
+      final r = await future;
+      expect(r.success, isTrue);
+      expect(r.isAdmin, isTrue);
+      expect(r.aclPerms, 3);
+      expect(r.fwLevel, 2);
+    });
+
+    test('a LOGIN_SUCCESS shorter than 14 bytes is a protocol error', () async {
+      // Companion firmware older than v1.9.0 pushes 8 bytes. The app gates
+      // Manage on the companion version, so this cannot happen past the gate;
+      // if it does, fail loudly rather than guess.
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([PushCodes.loginSuccess, 1, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A]);
+      await expectLater(future, throwsA(isA<FormatException>()));
+    });
+
+    test('a guest reply is success without admin', () async {
+      final future = connection.login(pubkey, 'guest',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([
+        PushCodes.loginSuccess, 0,
+        0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A,
+        0, 0, 0, 0, 0, 1,
+      ]);
+      final r = await future;
+      expect(r.success, isTrue);
+      expect(r.isAdmin, isFalse);
+      expect(r.fwLevel, 1);
+    });
+
+    test('LOGIN_FAIL resolves as not successful', () async {
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(seconds: 1));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([PushCodes.loginFail, 0, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A]);
+      final r = await future;
+      expect(r.success, isFalse);
+    });
+
+    test('a push for another prefix is ignored and the login times out', () async {
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(milliseconds: 50));
+      await transport.settle();
+      transport.emit(sentFrame());
+      await transport.settle();
+      transport.emit([PushCodes.loginSuccess, 1, 1, 2, 3, 4, 5, 6]);
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+    });
+
+    test('ERR 2 on the send is not found', () async {
+      final future = connection.login(pubkey, 'x');
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.notFound]);
+      await expectLater(
+          future,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.isNotFound, 'isNotFound', isTrue)));
+    });
+
+    test('the reply timeout is built from the SENT estimate', () async {
+      int? seen;
+      final future = connection.login(pubkey, 'x', replyTimeout: (est) {
+        seen = est;
+        return const Duration(milliseconds: 20);
+      });
+      await transport.settle();
+      transport.emit(sentFrame(est: 12345));
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+      expect(seen, 12345);
+    });
+
+    test('dispose mid-login aborts the completer', () async {
+      final future = connection.login(pubkey, 'x');
+      await transport.settle();
+      connection.dispose();
+      await expectLater(future, throwsA(isA<RadioAbortedException>()));
+    });
+
+    test('the password never reaches the debug log', () async {
+      // Same harness as sign_flow_test.dart: capture debugPrint with the
+      // logger switched on, restore both in tearDown.
+      final lines = <String>[];
+      final originalDebugPrint = debugPrint;
+      final originalEnabled = DebugLogger.isEnabled;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) lines.add(message);
+      };
+      DebugLogger.setEnabled(true);
+      addTearDown(() {
+        debugPrint = originalDebugPrint;
+        DebugLogger.setEnabled(originalEnabled);
+      });
+
+      final future = connection.login(pubkey, 'S3cretPassw0rd',
+          replyTimeout: (_) => const Duration(milliseconds: 20));
+      await transport.settle();
+      await expectLater(future, throwsA(isA<TimeoutException>()));
+
+      expect(lines, isNotEmpty);
+      expect(lines.any((l) => l.contains('S3cretPassw0rd')), isFalse);
+      expect(lines.any((l) => l.contains('Login frame sent')), isTrue);
     });
   });
 }

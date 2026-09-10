@@ -151,6 +151,31 @@ class SentInfo {
       {required this.flood, required this.tag, required this.estTimeoutMs});
 }
 
+/// The pushed answer to CMD_SEND_LOGIN.
+///
+/// LOGIN_SUCCESS (14 bytes, companion firmware v1.9.0 and newer):
+/// [0x85][is_admin:1][prefix:6][tag:4][acl_perms:1][fw_level:1].
+/// A shorter push is older companion firmware, which the app does not
+/// support; the parser completes the login with a FormatException.
+/// LOGIN_FAIL (0x86) gives [success] false. A repeater older than v1.9.0
+/// sends no firmware-level byte; the companion then forwards the cipher's
+/// zero pad byte, so [fwLevel] 0 means "repeater older than v1.9.0".
+class LoginResult {
+  final bool success;
+  final bool isAdmin;
+  final Uint8List prefix;
+  final int? aclPerms;
+  final int? fwLevel;
+
+  const LoginResult({
+    required this.success,
+    required this.isAdmin,
+    required this.prefix,
+    this.aclPerms,
+    this.fwLevel,
+  });
+}
+
 /// One contact as the radio stores it. The same 147-byte layout is read from
 /// RESP_CODE_CONTACT and written to CMD_ADD_UPDATE_CONTACT:
 /// [pubkey:32][type:1][flags:1][out_path_len:1][out_path:64][name:32]
@@ -308,6 +333,8 @@ class MeshCoreConnection {
   Completer<void>? _adminOkCompleter;
   Completer<List<ContactRecord>>? _contactsCompleter;
   List<ContactRecord> _contactsBuffer = [];
+  Completer<LoginResult>? _loginCompleter;
+  Uint8List? _loginPrefix; // first 6 bytes of the repeater key
 
   // CMD_SIGN state. `_signGate` is non-null for the whole duration of a sign;
   // Task-4's write funnel queues every non-sign frame behind it so no other
@@ -752,6 +779,10 @@ class MeshCoreConnection {
         case PushCodes.traceData:
           _onTraceDataPush(reader);
           break;
+        case PushCodes.loginSuccess:
+        case PushCodes.loginFail:
+          _onLoginPush(responseCode, reader);
+          break;
         case ResponseCodes.stats:
           _onStatsResponse(reader);
           break;
@@ -907,10 +938,13 @@ class MeshCoreConnection {
     fail(_adminSentCompleter);
     fail(_adminOkCompleter);
     fail(_contactsCompleter);
+    fail(_loginCompleter);
     _adminSentCompleter = null;
     _adminOkCompleter = null;
     _contactsCompleter = null;
     _contactsBuffer = [];
+    _loginCompleter = null;
+    _loginPrefix = null;
     return any;
   }
 
@@ -1178,6 +1212,53 @@ class MeshCoreConnection {
     debugLog('[CONN] Received trace data: ${raw.length} bytes');
 
     _traceDataController.add(raw);
+  }
+
+  void _onLoginPush(int code, BufferReader reader) {
+    final completer = _loginCompleter;
+    final wanted = _loginPrefix;
+    if (completer == null || wanted == null) {
+      debugLog('[CONN] Ignoring unsolicited login push');
+      return;
+    }
+    if (reader.remainingBytesCount < 7) {
+      debugWarn('[CONN] Login push shorter than 7 bytes, ignoring');
+      return;
+    }
+    final flagByte = reader.readByte();
+    final prefix = reader.readBytes(6);
+    if (!_areBuffersEqual(prefix, wanted)) {
+      debugLog('[CONN] Login push for another contact, ignoring');
+      return;
+    }
+    _loginCompleter = null;
+    _loginPrefix = null;
+    if (code == PushCodes.loginFail) {
+      debugLog('[CONN] LOGIN_FAIL');
+      completer.complete(
+          LoginResult(success: false, isAdmin: false, prefix: prefix));
+      return;
+    }
+    // [tag:4][acl_perms:1][fw_level:1] follow the prefix on companion
+    // firmware v1.9.0 and newer. Anything shorter is unsupported firmware.
+    if (reader.remainingBytesCount < 6) {
+      debugWarn('[CONN] LOGIN_SUCCESS is ${reader.remainingBytesCount + 7} '
+          'bytes; companion firmware older than v1.9.0');
+      completer.completeError(const FormatException(
+          'LOGIN_SUCCESS shorter than 14 bytes (companion firmware older than v1.9.0)'));
+      return;
+    }
+    reader.readBytes(4); // reply tag
+    final aclPerms = reader.readByte();
+    final fwLevel = reader.readByte();
+    debugLog('[CONN] LOGIN_SUCCESS admin=${flagByte & 1 == 1} fw_level=$fwLevel');
+    completer.complete(LoginResult(
+      success: true,
+      isAdmin: (flagByte & 1) == 1,
+      prefix: prefix,
+      aclPerms: aclPerms,
+      fwLevel: fwLevel,
+    ));
   }
 
   void _onStatsResponse(BufferReader reader) {
@@ -1738,6 +1819,69 @@ class MeshCoreConnection {
       _endAdminCommand();
     }
   }
+
+  /// CMD_SEND_LOGIN: [26][pubkey:32][password bytes]. The firmware terminates
+  /// the frame itself, so no NUL is sent. Resolves with the pushed
+  /// LOGIN_SUCCESS / LOGIN_FAIL matched on the 6-byte key prefix.
+  ///
+  /// The frame is logged by LENGTH only: it carries the admin password and
+  /// debug logs ship with bug reports.
+  ///
+  /// [replyTimeout] turns the radio's est_timeout_ms into the wait for the
+  /// push; the session supplies the margin and clamp.
+  Future<LoginResult> login(
+    Uint8List pubkey,
+    String password, {
+    Duration sentTimeout = const Duration(seconds: 5),
+    Duration Function(int estTimeoutMs) replyTimeout = _defaultReplyTimeout,
+  }) async {
+    _beginAdminCommand('login');
+    try {
+      final sentCompleter = Completer<SentInfo>();
+      _adminSentCompleter = sentCompleter;
+      final loginCompleter = Completer<LoginResult>();
+      _loginCompleter = loginCompleter;
+      _loginPrefix = pubkey.sublist(0, 6);
+
+      final frame = BufferWriter()
+        ..writeByte(CommandCodes.sendLogin)
+        ..writeBytes(pubkey)
+        ..writeString(password);
+      final bytes = frame.toBytes();
+      await _write(bytes);
+      debugLog('[CONN] Login frame sent (${bytes.length} bytes)');
+
+      SentInfo sent;
+      try {
+        sent = await sentCompleter.future.timeout(sentTimeout, onTimeout: () {
+          _adminSentCompleter = null;
+          throw TimeoutException('login: SENT timed out');
+        });
+      } catch (_) {
+        // ERR and dispose fail every pending admin completer together
+        // (_failPendingAdmin), so loginCompleter above may already carry an
+        // error nobody will ever await now that we are bailing out here.
+        // Give it a listener so that error does not surface as an unhandled
+        // zone error, then rethrow the failure that actually happened.
+        unawaited(loginCompleter.future.then((_) {}, onError: (_) {}));
+        rethrow;
+      }
+      return await loginCompleter.future.timeout(
+          replyTimeout(sent.estTimeoutMs), onTimeout: () {
+        _loginCompleter = null;
+        _loginPrefix = null;
+        throw TimeoutException('login: no reply from the repeater');
+      });
+    } finally {
+      _loginCompleter = null;
+      _loginPrefix = null;
+      _adminSentCompleter = null;
+      _endAdminCommand();
+    }
+  }
+
+  static Duration _defaultReplyTimeout(int estTimeoutMs) =>
+      Duration(milliseconds: estTimeoutMs) + const Duration(seconds: 5);
 
   /// Ask the radio to Ed25519-sign [data] with its device private key.
   ///
