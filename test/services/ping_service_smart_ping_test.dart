@@ -827,4 +827,77 @@ void main() {
     await ping.forceDisableAutoPing();
     discoveryWindow.stop();
   });
+
+  // Smart pinging reports each held ping through onPingDeferred so the
+  // provider can queue a DEFER for the square. One call per deferral, with
+  // the fix that was validated.
+  group('deferral report', () {
+    test('a deferred auto TX ping reports the fix and the type', () async {
+      final gps = _FakeGps()..position = _pos(lat: 45.1, lon: -75.2);
+      final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+      final reported = <(double, double, BankedPingType)>[];
+      ping.onPingDeferred = (lat, lon, held) => reported.add((lat, lon, held));
+      final fired = Completer<void>();
+      ping.onAutoPingScheduled = (_, __) {
+        if (!fired.isCompleted) fired.complete();
+      };
+
+      await ping.enableAutoPing();
+      await fired.future.timeout(const Duration(seconds: 5));
+
+      expect(reported, [(45.1, -75.2, BankedPingType.tx)]);
+      await ping.disableAutoPing();
+    });
+
+    test('a deferred passive discovery reports the fresh fix and disc',
+        () async {
+      final gps = _FakeGps()..position = _pos(lat: 45.3, lon: -75.4);
+      final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+      final reported = <(double, double, BankedPingType)>[];
+      ping.onPingDeferred = (lat, lon, held) => reported.add((lat, lon, held));
+      final fired = Completer<void>();
+      ping.onAutoPingScheduled = (_, __) {
+        if (!fired.isCompleted) fired.complete();
+      };
+
+      await ping.enableAutoPing(passiveMode: true);
+      await fired.future.timeout(const Duration(seconds: 5));
+
+      expect(reported, [(45.3, -75.4, BankedPingType.discovery)]);
+      await ping.disableAutoPing();
+    });
+
+    test('a too close skip reports nothing', () async {
+      final gps = _FakeGps()
+        ..position = _pos()
+        ..tooClose = true;
+      final ping = _buildWith(gps, _Coverage(RecentCoverage.clear));
+      var reports = 0;
+      ping.onPingDeferred = (_, __, ___) => reports++;
+      final fired = Completer<void>();
+      ping.onAutoPingScheduled = (_, __) {
+        if (!fired.isCompleted) fired.complete();
+      };
+
+      await ping.enableAutoPing();
+      await fired.future.timeout(const Duration(seconds: 5));
+
+      expect(ping.skipReason, 'too close');
+      expect(reports, 0);
+      await ping.disableAutoPing();
+    });
+
+    test('a null callback does not throw at the deferral site', () async {
+      final gps = _FakeGps()..position = _pos();
+      final ping = _buildWith(gps, _Coverage(RecentCoverage.covered));
+      final fired = Completer<void>();
+      ping.onAutoPingScheduled = (_, __) {
+        if (!fired.isCompleted) fired.complete();
+      };
+      await ping.enableAutoPing();
+      await fired.future.timeout(const Duration(seconds: 5));
+      expect(ping.bankedPing, BankedPingType.tx);
+      await ping.disableAutoPing();
+    });
+  });
 }
