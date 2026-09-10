@@ -83,6 +83,8 @@ class CustomApiService {
 
     final enriched = pings.map((ping) {
       final enrichedPing = Map<String, dynamic>.from(ping);
+      // The auto mode stamp is MeshMapper analytics, never a third party's.
+      enrichedPing.remove('auto_mode');
       if (contact != null) enrichedPing['contact'] = contact;
       if (iata != null) enrichedPing['iata'] = iata;
       return enrichedPing;

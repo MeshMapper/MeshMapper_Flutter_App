@@ -32,7 +32,7 @@ Every ping object contains a `type` field that determines which additional field
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | `string` | Ping type: `"TX"`, `"RX"`, `"DISC"`, or `"TRACE"` |
+| `type` | `string` | Ping type: `"TX"`, `"RX"`, `"DISC"`, `"TRACE"`, or `"DEFER"`. A `DEFER` carries only the common `lat`, `lon`, `timestamp`, `contact` and `iata` fields plus `held` (see below); it has no `external_antenna`, `noisefloor`, `altitude` or `power`. |
 | `lat` | `number` | Latitude (WGS84, decimal degrees) |
 | `lon` | `number` | Longitude (WGS84, decimal degrees) |
 | `timestamp` | `integer` | Unix timestamp in seconds |
@@ -190,6 +190,32 @@ A targeted zero-hop trace to a specific repeater.
   "timestamp": 1768763010,
   "external_antenna": false,
   "power": "0.3w",
+  "contact": "D873B1F2",
+  "iata": "YOW"
+}
+```
+
+### DEFER (type: "DEFER")
+
+A square where the app's smart pinging held a TX ping or a discovery request because MeshMapper already had recent coverage there. The app reports it so MeshMapper can credit the square; you receive it because it may help a mapper keeping its own coverage.
+
+**A deferral is unverified.** MeshMapper checks each one against its own coverage data and silently discards any it cannot confirm, but the batch answer does not say which items were kept, and the app forwards the whole batch after the upload succeeds. Treat a `DEFER` as "the app believed this square was covered", not as a confirmed observation.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `held` | `string` | Which kind of ping was held: `"tx"` (a channel ping) or `"disc"` (a discovery request). |
+
+The `external_antenna`, `noisefloor`, `altitude` and `power` fields are not present on a `DEFER`. At most one `DEFER` is sent per 300 m square per MeshMapper session.
+
+**Example:**
+
+```json
+{
+  "type": "DEFER",
+  "lat": 45.26974,
+  "lon": -75.77746,
+  "timestamp": 1757400000,
+  "held": "tx",
   "contact": "D873B1F2",
   "iata": "YOW"
 }
