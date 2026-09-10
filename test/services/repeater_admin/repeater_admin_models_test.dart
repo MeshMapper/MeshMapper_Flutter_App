@@ -14,6 +14,12 @@ void main() {
     test('odd length throws', () {
       expect(() => hexToBytes('abc'), throwsFormatException);
     });
+    test('a non-hex character throws', () {
+      expect(() => hexToBytes('-1'), throwsFormatException);
+      expect(() => hexToBytes(' 1'), throwsFormatException);
+      expect(() => hexToBytes('+1'), throwsFormatException);
+      expect(() => hexToBytes('zz'), throwsFormatException);
+    });
   });
 
   group('RepeaterTarget', () {
