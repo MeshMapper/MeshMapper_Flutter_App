@@ -58,6 +58,7 @@ class RepeaterAdminSession extends ChangeNotifier {
   bool _neighboursExhausted = false;
   bool _busy = false;
   bool _closed = false;
+  bool _disposed = false;
   bool _routeStale = false;
   LoginResult? _login;
   StreamSubscription<Uint8List>? _pathSub;
@@ -172,7 +173,7 @@ class RepeaterAdminSession extends ChangeNotifier {
   Future<bool> proveAdmin() async {
     if (!isAdmin) {
       _lastError = 'Log in with the admin password first.';
-      notifyListeners();
+      _notify();
       return false;
     }
     if (!_begin()) return false;
@@ -293,7 +294,7 @@ class RepeaterAdminSession extends ChangeNotifier {
     _neighbourPagesFetched = 0;
     _neighboursFetchedAt = null;
     _neighboursExhausted = false;
-    notifyListeners();
+    _notify();
     try {
       return await _fetchNeighbourPage(offset: 0);
     } finally {
@@ -374,11 +375,21 @@ class RepeaterAdminSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     close();
     super.dispose();
   }
 
   // ---- internals ----
+
+  /// Guards every [notifyListeners] call: a command suspended past [close]
+  /// resumes and reports its outcome after this notifier is disposed
+  /// ([dispose] runs [close] first), and a disposed [ChangeNotifier] throws
+  /// on notify. Once [_disposed] is set nothing here notifies again.
+  void _notify() {
+    if (_disposed) return;
+    notifyListeners();
+  }
 
   bool _begin() {
     if (_closed || _busy) {
@@ -386,15 +397,14 @@ class RepeaterAdminSession extends ChangeNotifier {
       return false;
     }
     _busy = true;
-    notifyListeners();
+    _notify();
     return true;
   }
 
   void _end() {
     _busy = false;
-    if (_closed) return;
-    notifyListeners();
-    if (_routeStale) {
+    _notify();
+    if (_routeStale && !_closed) {
       _routeStale = false;
       unawaited(readRoute());
     }
@@ -402,13 +412,13 @@ class RepeaterAdminSession extends ChangeNotifier {
 
   void _setState(RepeaterAdminState s) {
     _state = s;
-    notifyListeners();
+    _notify();
   }
 
   void _fail(String message) {
     _lastError = message;
     _state = RepeaterAdminState.failed;
-    notifyListeners();
+    _notify();
   }
 
   Future<void> _ensureContact() async {

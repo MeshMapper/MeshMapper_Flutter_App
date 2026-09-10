@@ -465,6 +465,32 @@ void main() {
       expect(session.lastError, 'The radio disconnected.');
     });
 
+    test('close mid-login releases busy and notifies the final state', () async {
+      final notifications = <(bool, RepeaterAdminState)>[];
+      session.addListener(() {
+        notifications.add((session.busy, session.state));
+      });
+      final future = session.login('x');
+      await answerContacts([contactPayload(repeaterKey)]);
+      await transport.settle();
+      transport.emit(sent([0x5A, 0x5A, 0x5A, 0x5A], est: 60000));
+      await transport.settle();
+      session.close();
+      expect(await future, isFalse);
+      expect(notifications.last, (false, RepeaterAdminState.failed));
+      expect(session.lastError, 'The radio disconnected.');
+    });
+
+    test('dispose mid-login completes without touching the notifier', () async {
+      final future = session.login('x');
+      await answerContacts([contactPayload(repeaterKey)]);
+      await transport.settle();
+      transport.emit(sent([0x5A, 0x5A, 0x5A, 0x5A], est: 60000));
+      await transport.settle();
+      session.dispose();
+      expect(await future, isFalse);
+    });
+
     test('close after login is idempotent and stops listening', () async {
       await loginAsAdmin();
       session.close();
