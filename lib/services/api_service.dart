@@ -813,7 +813,9 @@ class ApiService {
 
       // Log with data summary including external_antenna values
       final antennaSummary = entries
-          .map((e) => '${e['type']}:external_antenna=${e['external_antenna']}')
+          .map((e) => e['type'] == 'DEFER'
+              ? 'DEFER'
+              : '${e['type']}:external_antenna=${e['external_antenna']}')
           .join(', ');
       _logApiCall(
         endpoint: '/wardrive-api.php/wardrive',

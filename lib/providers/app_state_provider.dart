@@ -3078,15 +3078,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Queue the batch's coords for the +7s fresh-tile check; the user's
         // own cells land on the map via the session patch (see
         // _freshenAffectedVectorTiles). A DEFER changes no tile (the server
-        // keeps deferrals in a table nothing renders), so it is left out.
-        var added = false;
+        // keeps deferrals in a table nothing renders), so it is left out and
+        // a batch of nothing but deferrals arms nothing.
+        final hasCoverageRows = uploadedItems.any((i) => i.type != 'DEFER');
         for (final item in uploadedItems) {
           if (item.type == 'DEFER') continue;
           if (_pendingFreshCoords.length >= 16) break;
           _pendingFreshCoords.add([item.latitude, item.longitude]);
-          added = true;
         }
-        if (added) {
+        if (hasCoverageRows) {
           _pendingFreshZone = zoneCode;
           _vectorFreshTimer?.cancel();
           _vectorFreshTimer = Timer(const Duration(seconds: 7), () {
@@ -4670,7 +4670,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pingService!.onPingDeferred = (lat, lon, held) {
       final heldWord = held == BankedPingType.tx ? 'tx' : 'disc';
       if (!_recentCoverage.markDeferred(lat, lon)) {
-        debugLog('[COVERAGE] Deferral already reported for this square ($heldWord)');
+        debugLog(
+            '[COVERAGE] Deferral already reported for this square ($heldWord)');
         return;
       }
       debugLog('[COVERAGE] Deferral queued for square at '
