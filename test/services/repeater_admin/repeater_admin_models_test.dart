@@ -67,23 +67,35 @@ void main() {
   group('access list', () {
     test('parses entries and the admin bit', () {
       final data = Uint8List.fromList([
-        1, 0, 0, 0, // ts
         1, 2, 3, 4, 5, 6, 3, // admin
         9, 9, 9, 9, 9, 9, 0, // guest
       ]);
       final acl = parseAccessList(data);
-      expect(acl.senderTs, 1);
       expect(acl.entries.length, 2);
       expect(acl.entries[0].isAdmin, isTrue);
       expect(acl.entries[1].isAdmin, isFalse);
       expect(acl.entries[0].prefix, [1, 2, 3, 4, 5, 6]);
     });
     test('a trailing partial entry is ignored', () {
-      final acl = parseAccessList(Uint8List.fromList([0, 0, 0, 0, 1, 2, 3]));
+      final acl = parseAccessList(Uint8List.fromList([1, 2, 3]));
       expect(acl.entries, isEmpty);
     });
-    test('shorter than 4 bytes throws', () {
-      expect(() => parseAccessList(Uint8List(3)), throwsFormatException);
+    test('an empty reply is an empty list', () {
+      expect(parseAccessList(Uint8List(0)).entries, isEmpty);
+    });
+    test('the reply body starts at the first entry, there is no timestamp', () {
+      // The 28-byte reply a repeater answered on 2026-09-10: four entries,
+      // every one with perms 0x03. Skipping a timestamp read three entries
+      // with perms 0xEB, 0xF8 and 0x2B out of the middle of the keys.
+      final acl = parseAccessList(Uint8List.fromList([
+        0x84, 0x82, 0xe6, 0x18, 0x80, 0xc6, 0x03,
+        0xa6, 0x07, 0xb2, 0xeb, 0xf3, 0x1b, 0x03,
+        0x1c, 0x96, 0x6a, 0xf8, 0x91, 0x79, 0x03,
+        0x27, 0xb9, 0xe9, 0x2b, 0x5a, 0xe1, 0x03,
+      ]));
+      expect(acl.entries.length, 4);
+      expect(acl.entries.every((e) => e.isAdmin), isTrue);
+      expect(acl.entries[0].prefix, [0x84, 0x82, 0xe6, 0x18, 0x80, 0xc6]);
     });
     test('request bytes', () {
       expect(buildAccessListRequest(), [0x05, 0, 0]);
@@ -93,14 +105,12 @@ void main() {
   group('neighbour page', () {
     test('parses the header and the entries with int8/4 SNR', () {
       final data = Uint8List.fromList([
-        5, 0, 0, 0, // sender ts
         25, 0, // total
         2, 0, // returned
         ...List<int>.filled(8, 0xAB), 10, 0, 0, 0, 0xFC, // heard 10 s, -1.0 dB
         ...List<int>.filled(8, 0xCD), 0x10, 0x27, 0, 0, 10, // heard 10000 s, +2.5 dB
       ]);
       final page = parseNeighbourPage(data, prefixLen: 8);
-      expect(page.senderTs, 5);
       expect(page.total, 25);
       expect(page.returned, 2);
       expect(page.entries.length, 2);
@@ -114,13 +124,43 @@ void main() {
     });
     test('a trailing partial entry is ignored', () {
       final data = Uint8List.fromList([
-        0, 0, 0, 0, 1, 0, 1, 0, ...List<int>.filled(8, 1), 1, 0,
+        1, 0, 1, 0, ...List<int>.filled(8, 1), 1, 0,
       ]);
       expect(parseNeighbourPage(data, prefixLen: 8).entries, isEmpty);
     });
-    test('shorter than 8 bytes throws', () {
-      expect(() => parseNeighbourPage(Uint8List(7), prefixLen: 8),
+    test('shorter than 4 bytes throws', () {
+      expect(() => parseNeighbourPage(Uint8List(3), prefixLen: 8),
           throwsFormatException);
+    });
+    test('a real page: header, entries, cipher padding ignored', () {
+      // The first page CBC-FORTUNE-R1 answered on 2026-09-10 (140 bytes as
+      // handed over by sendBinaryRequest): 50 known, 10 returned, then the
+      // six zero bytes of cipher padding. Skipping a timestamp read the
+      // total as 43799 and the first prefix as 2ACA255E4D000000.
+      final data = Uint8List.fromList([
+        0x32, 0x00, 0x0a, 0x00,
+        0x17, 0xab, 0x75, 0x37, 0x2a, 0xca, 0x25, 0x5e, 0x45, 0, 0, 0, 0x22,
+        0xa0, 0x1e, 0x36, 0x76, 0x25, 0xd0, 0x89, 0x8a, 0x4d, 0, 0, 0, 0xfa,
+        0xe1, 0xad, 0x61, 0xe9, 0x22, 0x72, 0x02, 0xe6, 0x8c, 0, 0, 0, 0xf6,
+        0x0d, 0xf4, 0xb2, 0xe5, 0x22, 0x7d, 0x14, 0xb8, 0xda, 0, 0, 0, 0xef,
+        0xb9, 0x47, 0x19, 0x42, 0x37, 0x02, 0x30, 0xfd, 0xe7, 0, 0, 0, 0x29,
+        0xb1, 0xfb, 0xd6, 0xaa, 0x2b, 0x0e, 0xb5, 0x70, 0xea, 0, 0, 0, 0x28,
+        0x22, 0xeb, 0xc5, 0xeb, 0xb5, 0xcc, 0x7d, 0xc5, 0x3a, 1, 0, 0, 0x28,
+        0xcd, 0x9c, 0xb3, 0x65, 0x71, 0x12, 0x9e, 0x9a, 0x02, 2, 0, 0, 0xee,
+        0x8e, 0xe9, 0x3b, 0x76, 0x5d, 0xc1, 0x01, 0x9f, 0xc4, 4, 0, 0, 0x31,
+        0xee, 0x5f, 0x1f, 0x8e, 0xa6, 0xa9, 0x19, 0xed, 0xc2, 6, 0, 0, 0xef,
+        0, 0, 0, 0, 0, 0,
+      ]);
+      final page = parseNeighbourPage(data, prefixLen: 8);
+      expect(page.total, 50);
+      expect(page.returned, 10);
+      expect(page.entries.length, 10);
+      expect(page.entries[0].prefixHex, '17AB75372ACA255E');
+      expect(page.entries[0].heardSecsAgo, 69);
+      expect(page.entries[0].snrDb, 8.5);
+      expect(page.entries[1].snrDb, -1.5);
+      expect(page.entries[9].prefixHex, 'EE5F1F8EA6A919ED');
+      expect(page.entries[9].heardSecsAgo, 0x06c2);
     });
     test('request bytes: type, version, count, offset LE, order, prefix, random', () {
       final req = buildNeighbourRequest(offset: 0x0102, random: 0x04030201);

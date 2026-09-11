@@ -719,7 +719,12 @@ the app shows as "This region does not support claiming yet."
   route when one is learned. Once logged in the route cannot change for the session, so the
   Route card is read-only. Step 5 reads
   the neighbour table one page per tap: `[0x06][0][10][offset:u16][0][8][random:4]`, ten
-  entries per page at an 8-byte prefix, newest first. "Fetch neighbours" is the first page,
+  entries per page at an 8-byte prefix, newest first. A binary reply's body starts at its
+  first field (`[total:u16][returned:u16]`, or the first 7-byte ACL entry): the repeater
+  prefixes every reply with its 4-byte timestamp, but the companion lifts that into the push
+  frame's tag and `sendBinaryRequest` drops it, so the parsers must NOT skip one (they did,
+  and every entry landed 4 bytes late: prefixes ending in three zero bytes, perms bytes out
+  of the middle of a key). "Fetch neighbours" is the first page,
   "Load more" is the next (`hasMoreNeighbours` is false once the table is complete, a page
   comes back empty, or the 30-page brake trips); nothing pages on its own, and Upload sends
   the pages held with the repeater's own `total` beside them. SNR is the firmware's

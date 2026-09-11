@@ -199,33 +199,34 @@ class AccessEntry {
 /// A repeater's access control list, as returned by a GET_ACCESS_LIST
 /// request.
 class AccessList {
-  /// The repeater's own clock, seconds since epoch, at the time it answered.
-  final int senderTs;
-
   /// The parsed entries.
   final List<AccessEntry> entries;
 
-  /// Builds an access list from its header and entries.
-  const AccessList({required this.senderTs, required this.entries});
+  /// Builds an access list from its entries.
+  const AccessList({required this.entries});
 }
 
-/// Parses a GET_ACCESS_LIST response. Throws [FormatException] when [data]
-/// is shorter than the 4-byte header. Reads 7-byte entries (6-byte prefix
+/// The bytes a binary reply reaches the app with. The repeater prefixes
+/// every reply with the 4-byte sender timestamp, but the companion radio
+/// lifts that into the BINARY_RESPONSE push frame's tag (`&data[4]` is what
+/// it forwards), and `sendBinaryRequest` matches and drops the tag. So the
+/// data handed to these parsers starts at the reply body: there is NO
+/// timestamp to skip here. Skipping one read every access-list and
+/// neighbour entry four bytes late (permission bytes from the middle of a
+/// key, neighbour prefixes ending in three zero bytes).
+
+/// Parses a GET_ACCESS_LIST response. Reads 7-byte entries (6-byte prefix
 /// plus 1 permission byte) until fewer than 7 bytes remain; a trailing
-/// partial entry is ignored.
+/// partial entry is ignored. An empty reply is an empty list.
 AccessList parseAccessList(Uint8List data) {
-  if (data.length < 4) {
-    throw FormatException('Access list response too short: ${data.length} bytes');
-  }
   final reader = BufferReader(data);
-  final senderTs = reader.readUInt32LE();
   final entries = <AccessEntry>[];
   while (reader.remainingBytesCount >= 7) {
     final prefix = reader.readBytes(6);
     final perms = reader.readByte();
     entries.add(AccessEntry(prefix: prefix, perms: perms));
   }
-  return AccessList(senderTs: senderTs, entries: entries);
+  return AccessList(entries: entries);
 }
 
 /// Builds the GET_ACCESS_LIST request bytes.
@@ -274,9 +275,6 @@ class RepeaterNeighbour {
 /// One page of a repeater's neighbour table, as returned by a
 /// GET_NEIGHBOURS request.
 class NeighbourPage {
-  /// The repeater's own clock, seconds since epoch, at the time it answered.
-  final int senderTs;
-
   /// The total number of neighbours the repeater knows about.
   final int total;
 
@@ -288,7 +286,6 @@ class NeighbourPage {
 
   /// Builds a neighbour page from its header and entries.
   const NeighbourPage({
-    required this.senderTs,
     required this.total,
     required this.returned,
     required this.entries,
@@ -296,15 +293,16 @@ class NeighbourPage {
 }
 
 /// Parses a GET_NEIGHBOURS response. Throws [FormatException] when [data]
-/// is shorter than the 8-byte header. Reads up to `returned` entries of
-/// `[prefix:prefixLen][heard_secs_ago:u32][snr:i8]`, stopping at the first
-/// incomplete entry (ignored). `snrDb` is the signed SNR byte divided by 4.
+/// is shorter than the 4-byte header `[total:u16][returned:u16]`. Reads up
+/// to `returned` entries of `[prefix:prefixLen][heard_secs_ago:u32][snr:i8]`,
+/// stopping at the first incomplete entry (ignored). Bytes past the last
+/// entry (cipher padding) are ignored. `snrDb` is the signed SNR byte
+/// divided by 4.
 NeighbourPage parseNeighbourPage(Uint8List data, {required int prefixLen}) {
-  if (data.length < 8) {
+  if (data.length < 4) {
     throw FormatException('Neighbour page response too short: ${data.length} bytes');
   }
   final reader = BufferReader(data);
-  final senderTs = reader.readUInt32LE();
   final total = reader.readUInt16LE();
   final returned = reader.readUInt16LE();
   final entries = <RepeaterNeighbour>[];
@@ -319,7 +317,7 @@ NeighbourPage parseNeighbourPage(Uint8List data, {required int prefixLen}) {
       snrDb: snr / 4.0,
     ));
   }
-  return NeighbourPage(senderTs: senderTs, total: total, returned: returned, entries: entries);
+  return NeighbourPage(total: total, returned: returned, entries: entries);
 }
 
 /// Builds a GET_NEIGHBOURS request: type, version (0), count, offset
