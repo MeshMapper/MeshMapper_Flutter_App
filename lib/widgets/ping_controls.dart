@@ -620,14 +620,24 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
   @override
   void initState() {
     super.initState();
-    // Restore any previously set target ID
+    // Restore any previously set target ID. The section is rebuilt from
+    // scratch when the control panel is minimised and reopened, and the
+    // first build has already run with an empty field by the time this
+    // fires, so it has to ask for another one: without the setState the
+    // Trace and Manage buttons stayed grey behind a filled-in ID until the
+    // next timer tick.
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       final appState = context.read<AppStateProvider>();
       final existing = appState.targetRepeaterId;
       if (existing != null &&
           existing.isNotEmpty &&
           _controller.text != existing) {
         _controller.text = existing;
+        // The picked repeater does not survive the rebuild, so Manage falls
+        // back to the typed ID, which resolves when it prefixes one loaded
+        // repeater.
+        setState(() {});
       }
     });
   }
@@ -740,169 +750,215 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
             ? buttonColor
             : colorScheme.onSurfaceVariant;
 
-        return Container(
-          decoration: BoxDecoration(
-            color: effectiveColor.withValues(
-                alpha: isTargetedRunning ? 0.15 : 0.08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: effectiveColor.withValues(
-                  alpha: isTargetedRunning ? 0.5 : 0.25),
-              width: isTargetedRunning ? 1.5 : 1,
-            ),
+        // The pieces, shared by both layouts.
+        final canPick = !isTargetedRunning && appState.repeaters.isNotEmpty;
+        final hexField = TextField(
+          controller: _controller,
+          enabled: !isTargetedRunning,
+          maxLength: maxLen,
+          textCapitalization: TextCapitalization.characters,
+          style: TextStyle(
+            fontSize: 14,
+            fontFamily: 'monospace',
+            color: isTargetedRunning
+                ? colorScheme.onSurfaceVariant
+                : colorScheme.onSurface,
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          child: Row(
-            children: [
-              // Targeted button
-              Expanded(
-                child: GestureDetector(
-                  onTap: isEnabled
-                      ? () async {
-                          HapticFeedback.lightImpact();
-                          if (!isTargetedRunning) {
-                            setState(() => _isStarting = true);
-                            appState.setTargetRepeaterId(
-                                _controller.text.trim().toUpperCase());
-                          }
-                          await appState.toggleAutoPing(AutoMode.targeted);
-                          if (mounted) setState(() => _isStarting = false);
-                        }
-                      : null,
-                  behavior: HitTestBehavior.opaque,
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.route,
-                        size: 18,
-                        color: effectiveColor,
-                      ),
-                      if (!widget.compact) ...[
-                        const SizedBox(width: 8),
-                        Expanded(
+          decoration: InputDecoration(
+            hintText:
+                'e.g. ${maxLen == 2 ? '4E' : maxLen == 4 ? '4E7A' : maxLen == 8 ? '4E7A3B00' : '4E7A3B'}',
+            hintStyle: TextStyle(
+              fontSize: 12,
+              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+            ),
+            counterText: '',
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            border: widget.compact
+                ? OutlineInputBorder(borderRadius: BorderRadius.circular(8))
+                : InputBorder.none,
+          ),
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9a-fA-F]')),
+            _UpperCaseTextFormatter(),
+          ],
+          onChanged: (value) {
+            appState.setTargetRepeaterId(value.trim().toUpperCase());
+            // The picked repeater stops being the selection as soon as
+            // the typed text no longer prefixes its key.
+            final typed = value.trim().toUpperCase();
+            if (_pickedRepeater != null &&
+                !_pickedRepeater!.hexId.toUpperCase().startsWith(typed)) {
+              _pickedRepeater = null;
+            }
+            setState(() {});
+          },
+        );
+        final listButton = SizedBox(
+          width: 32,
+          height: 32,
+          child: IconButton(
+            icon: Icon(
+              Icons.list,
+              size: 18,
+              color: canPick
+                  ? (widget.compact ? effectiveColor : colorScheme.onSurface)
+                  : colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+            ),
+            onPressed: canPick ? _showRepeaterPicker : null,
+            padding: EdgeInsets.zero,
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Choose repeater',
+          ),
+        );
+        Future<void> toggleTrace() async {
+          HapticFeedback.lightImpact();
+          if (!isTargetedRunning) {
+            setState(() => _isStarting = true);
+            appState.setTargetRepeaterId(_controller.text.trim().toUpperCase());
+          }
+          await appState.toggleAutoPing(AutoMode.targeted);
+          if (mounted) setState(() => _isStarting = false);
+        }
+
+        BoxDecoration tinted(Color color, {required bool lit}) => BoxDecoration(
+              color: color.withValues(alpha: lit ? 0.15 : 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: color.withValues(alpha: lit ? 0.5 : 0.25),
+                width: lit ? 1.5 : 1,
+              ),
+            );
+
+        if (widget.compact) {
+          // Landscape: one tinted box, icon, field and list button, as before.
+          return Container(
+            decoration: tinted(effectiveColor, lit: isTargetedRunning),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: isEnabled ? toggleTrace : null,
+                    behavior: HitTestBehavior.opaque,
+                    child: Row(children: [
+                      Icon(Icons.route, size: 18, color: effectiveColor),
+                    ]),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(width: 80, child: hexField),
+                const SizedBox(width: 6),
+                listButton,
+              ],
+            ),
+          );
+        }
+
+        // Portrait: three separate pieces. The repeater input (list button
+        // and hex field) is one neutral group, then the Trace button in its
+        // own tinted box, then Manage in its own.
+        final manageColor =
+            canManage ? Colors.cyan : colorScheme.onSurfaceVariant;
+        return Row(
+          children: [
+            Expanded(
+              flex: 5,
+              child: Container(
+                height: 44,
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: colorScheme.outline.withValues(alpha: 0.5)),
+                ),
+                padding: const EdgeInsets.only(left: 4, right: 8),
+                child: Row(
+                  children: [
+                    listButton,
+                    const SizedBox(width: 2),
+                    Expanded(child: hexField),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 4,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: isEnabled ? toggleTrace : null,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    height: 44,
+                    decoration: tinted(effectiveColor, lit: isTargetedRunning),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.route, size: 18, color: effectiveColor),
+                        const SizedBox(width: 6),
+                        Flexible(
                           child: Text(
-                            traceSectionLabel(status, rf, isStarting: _isStarting),
+                            traceSectionLabel(status, rf,
+                                isStarting: _isStarting),
                             style: TextStyle(
                               fontSize: 13,
                               fontWeight: isTargetedRunning
                                   ? FontWeight.w600
                                   : FontWeight.w500,
-                              // Same `|| traceStopping` as effectiveColor above:
-                              // the icon, border and fill went orange for the
-                              // stop while the words stayed disabled grey.
+                              // Same `|| traceStopping` as effectiveColor
+                              // above: the icon, border and fill went orange
+                              // for the stop while the words stayed grey.
                               color: isEnabled || traceStopping
                                   ? colorScheme.onSurface
                                   : colorScheme.onSurfaceVariant
                                       .withValues(alpha: 0.5),
                             ),
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Hex text field
-              SizedBox(
-                width: 80,
-                child: TextField(
-                  controller: _controller,
-                  enabled: !isTargetedRunning,
-                  maxLength: maxLen,
-                  textCapitalization: TextCapitalization.characters,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontFamily: 'monospace',
-                    color: isTargetedRunning
-                        ? colorScheme.onSurfaceVariant
-                        : colorScheme.onSurface,
-                  ),
-                  decoration: InputDecoration(
-                    hintText:
-                        'e.g. ${maxLen == 2 ? '4E' : maxLen == 4 ? '4E7A' : maxLen == 8 ? '4E7A3B00' : '4E7A3B'}',
-                    hintStyle: TextStyle(
-                      fontSize: 12,
-                      color:
-                          colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                    ),
-                    counterText: '',
-                    isDense: true,
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
                     ),
                   ),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'[0-9a-fA-F]')),
-                    _UpperCaseTextFormatter(),
-                  ],
-                  onChanged: (value) {
-                    appState.setTargetRepeaterId(value.trim().toUpperCase());
-                    // The picked repeater stops being the selection as soon as
-                    // the typed text no longer prefixes its key.
-                    final typed = value.trim().toUpperCase();
-                    if (_pickedRepeater != null &&
-                        !_pickedRepeater!.hexId.toUpperCase().startsWith(typed)) {
-                      _pickedRepeater = null;
-                    }
-                    setState(() {});
-                  },
                 ),
               ),
-              const SizedBox(width: 6),
-              // Choose repeater button
-              SizedBox(
-                width: 32,
-                height: 32,
-                child: IconButton(
-                  icon: Icon(
-                    Icons.list,
-                    size: 18,
-                    color: (!isTargetedRunning && appState.repeaters.isNotEmpty)
-                        ? effectiveColor
-                        : colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
-                  ),
-                  onPressed:
-                      (!isTargetedRunning && appState.repeaters.isNotEmpty)
-                          ? _showRepeaterPicker
-                          : null,
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Choose repeater',
-                ),
-              ),
-              if (!widget.compact) ...[
-                const SizedBox(width: 6),
-                // Manage repeater button (repeater administrators)
-                SizedBox(
-                  width: 32,
-                  height: 32,
-                  child: IconButton(
-                    icon: Icon(
+            ),
+            const SizedBox(width: 8),
+            // Manage repeater button (repeater administrators)
+            Tooltip(
+              message: manageHint,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: canManage
+                      ? () {
+                          HapticFeedback.lightImpact();
+                          showRepeaterAdminSheet(context,
+                              RepeaterTarget.fromRepeater(manageTarget));
+                        }
+                      : null,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: tinted(manageColor, lit: false),
+                    alignment: Alignment.center,
+                    child: Icon(
                       Icons.admin_panel_settings_outlined,
-                      size: 18,
+                      size: 20,
                       color: canManage
-                          ? effectiveColor
+                          ? manageColor
                           : colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
                     ),
-                    onPressed: canManage
-                        ? () {
-                            HapticFeedback.lightImpact();
-                            showRepeaterAdminSheet(context,
-                                RepeaterTarget.fromRepeater(manageTarget));
-                          }
-                        : null,
-                    padding: EdgeInsets.zero,
-                    visualDensity: VisualDensity.compact,
-                    tooltip: manageHint,
                   ),
                 ),
-              ],
-            ],
-          ),
+              ),
+            ),
+          ],
         );
       },
     );

@@ -2172,6 +2172,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           zoomGesturesEnabled: true,
           tiltGesturesEnabled: false, // 2D wardriving map
           compassEnabled: false, // We have our own controls
+          // The (i) attribution button carries the OpenStreetMap and
+          // OpenFreeMap credit the ODbL requires, so it has to stay visible.
+          // Bottom-left, lifted by the control panel's height (the same
+          // padding the camera uses), so it rides just above the panel
+          // instead of underneath it. Both platforms apply the margins live
+          // through the map options diff, so it follows the panel as it
+          // opens, minimises and closes.
+          attributionButtonPosition: AttributionButtonPosition.bottomLeft,
+          attributionButtonMargins:
+              math.Point(8, widget.bottomPaddingPixels + 8),
           // CRITICAL: must be true so the controller's `cameraPosition` getter
           // stays synced with the platform side. Without this, the Dart-side
           // _cameraPosition is set once at construction and never updated, which
@@ -9557,6 +9567,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
+      // Scroll-controlled so the sheet can grow to its whole content (the
+      // default sheet caps at ~9/16 of the screen and cut the card off);
+      // the constraint keeps a sliver of map visible above it.
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.92),
       // Transparent barrier so the map stays bright (like focus mode).
       barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -9566,9 +9582,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       builder: (context) => Container(
         padding: EdgeInsets.fromLTRB(
             20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
-        // Scrollable so the content can't overflow on shorter screens — this
-        // (non-scroll-controlled) bottom sheet caps height to ~9/16 of the
-        // screen, and the detail card is occasionally taller than that.
+        // Still scrollable for the rare card taller than the 92% cap.
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -9633,20 +9647,57 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-
-              // Status chips row
-              Row(
-                children: [
-                  if (isDuplicate) ...[
-                    _buildRepeaterStatusChip(
-                        'Duplicate', _repeaterDuplicateColor),
-                    const SizedBox(width: 8),
+              const SizedBox(height: 14),
+              // Manage: opens the admin sheet for this repeater. Disabled with
+              // the reason when the key is short or the app cannot manage now.
+              Builder(builder: (context) {
+                final block = appState.repeaterAdminBlockReason;
+                final hasKey = isFullPublicKey(repeater.hexId);
+                final hint = !hasKey ? 'Full key unknown' : block;
+                return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      FilledButton.tonalIcon(
+                        icon: const Icon(Icons.admin_panel_settings_outlined,
+                            size: 18),
+                        label: const Text('Manage'),
+                        onPressed: hint == null
+                            ? () {
+                                Navigator.pop(context);
+                                showRepeaterAdminSheet(this.context,
+                                    RepeaterTarget.fromRepeater(repeater));
+                              }
+                            : null,
+                      ),
+                      if (hint != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(hint,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant)),
+                        ),
+                    ]);
+              }),
+              // Status chip only when there is something to say. The badge
+              // colour already says online, so that chip was redundant.
+              if (isDuplicate || statusLabel != 'Repeater Online') ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    if (isDuplicate) ...[
+                      _buildRepeaterStatusChip(
+                          'Duplicate', _repeaterDuplicateColor),
+                      const SizedBox(width: 8),
+                    ],
+                    _buildRepeaterStatusChip(statusLabel, statusColor),
                   ],
-                  _buildRepeaterStatusChip(statusLabel, statusColor),
-                ],
-              ),
-              const SizedBox(height: 16),
+                ),
+              ],
+              const SizedBox(height: 14),
 
               // Details card
               Container(
@@ -9807,41 +9858,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   ),
                 const SizedBox(height: 14),
               ],
-              // Manage: opens the admin sheet for this repeater. Disabled with
-              // the reason when the key is short or the app cannot manage now.
-              Builder(builder: (context) {
-                final block = appState.repeaterAdminBlockReason;
-                final hasKey = isFullPublicKey(repeater.hexId);
-                final hint = !hasKey ? 'Full key unknown' : block;
-                return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      FilledButton.tonalIcon(
-                        icon: const Icon(Icons.admin_panel_settings_outlined,
-                            size: 18),
-                        label: const Text('Manage'),
-                        onPressed: hint == null
-                            ? () {
-                                Navigator.pop(context);
-                                showRepeaterAdminSheet(this.context,
-                                    RepeaterTarget.fromRepeater(repeater));
-                              }
-                            : null,
-                      ),
-                      if (hint != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(hint,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant)),
-                        ),
-                    ]);
-              }),
-              const SizedBox(height: 14),
               // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
               FutureBuilder<RepeaterStats?>(
                 future: statsFuture,
