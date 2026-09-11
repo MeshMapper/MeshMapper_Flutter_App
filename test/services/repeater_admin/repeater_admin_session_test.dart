@@ -256,7 +256,6 @@ void main() {
       await loginAsAdmin();
       final future = session.proveAdmin();
       await answerBinary([
-        9, 0, 0, 0, // sender ts
         1, 2, 3, 4, 5, 6, 3, // an admin entry
         7, 7, 7, 7, 7, 7, 1, // a guest entry
       ]);
@@ -322,7 +321,6 @@ void main() {
 
   group('neighbours', () {
     List<int> page({required int total, required int returned, int fill = 1}) => [
-          0, 0, 0, 0,
           total & 0xFF, total >> 8,
           returned & 0xFF, returned >> 8,
           for (var i = 0; i < returned; i++) ...[
