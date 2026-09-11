@@ -76,6 +76,13 @@ class ApiQueueService {
   /// heard), not when the queue's own buffer flushes.
   String Function()? autoModeGetter;
 
+  /// The live radio's configuration tag (`freqMHz,bwKHz,SF,CR`) or null,
+  /// read at every enqueue the same way [autoModeGetter] is. Live only: the
+  /// stamp says what the radio was running when the item was recorded, so
+  /// the provider wires the connection's SelfInfo here, never a remembered
+  /// value.
+  String? Function()? radioConfigGetter;
+
   /// Number of pings accumulated in current offline session
   int get offlinePingCount => _offlinePings.length;
 
@@ -300,6 +307,7 @@ class ApiQueueService {
       wireTag: wireTag,
       altitude: altitude,
       autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -351,6 +359,7 @@ class ApiQueueService {
       power: power,
       altitude: altitude,
       autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -405,6 +414,7 @@ class ApiQueueService {
       power: power,
       altitude: altitude,
       autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -460,6 +470,7 @@ class ApiQueueService {
       power: power,
       altitude: altitude,
       autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -507,6 +518,7 @@ class ApiQueueService {
       power: power,
       altitude: altitude,
       autoMode: autoModeGetter?.call(),
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue
@@ -551,6 +563,7 @@ class ApiQueueService {
       longitude: longitude,
       timestamp: timestamp,
       held: held,
+      radioFreq: radioConfigGetter?.call(),
     );
 
     // In offline mode, accumulate to offline pings list instead of queue

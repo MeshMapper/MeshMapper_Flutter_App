@@ -120,6 +120,7 @@ class RecentCoverageService {
   String? _zone;
   int _gridSize = 300;
   int _days = 14;
+  String? _radioKey;
   bool _enabled = false;
 
   final Map<String, _Tile> _tiles = {}; // 'x/y'
@@ -141,30 +142,38 @@ class RecentCoverageService {
   /// Loaded (successfully fetched) tiles. Test hook.
   int get loadedTileCount => _tiles.values.where((t) => t.loaded).length;
 
-  /// Apply the effective settings. Any change of zone, grid or window drops
-  /// the cache, since the cells it holds answer a different question.
+  /// Apply the effective settings. Any change of zone, grid, window or radio
+  /// preset drops the cache, since the cells it holds answer a different
+  /// question. [radioKey] is `radioFilterKey(...)` from
+  /// `lib/utils/radio_filter.dart` (the fetch itself carries the filter
+  /// through ApiService; this only decides when loaded tiles go stale).
   ///
   /// Called on every zone check (every 100 m while disconnected), so an
   /// identical reconfigure is silent: it logs only when the zone, grid,
-  /// window or the active state actually moved.
+  /// window, preset or the active state actually moved.
   void configure({
     required String? zone,
     required int gridSize,
     required int days,
     required bool enabled,
+    String? radioKey,
   }) {
     final wasActive = isActive;
-    final changed = zone != _zone || gridSize != _gridSize || days != _days;
+    final changed = zone != _zone ||
+        gridSize != _gridSize ||
+        days != _days ||
+        radioKey != _radioKey;
     _zone = zone;
     _gridSize = gridSize;
     _days = days;
+    _radioKey = radioKey;
     _enabled = enabled;
     if (changed || !isActive) {
       clear();
     }
     if (changed || isActive != wasActive) {
       debugLog(
-          '[COVERAGE] Smart pinging ${isActive ? 'active' : 'inactive'}: zone=${zone ?? '-'} grid=${gridSize}m window=${days}d enabled=$enabled');
+          '[COVERAGE] Smart pinging ${isActive ? 'active' : 'inactive'}: zone=${zone ?? '-'} grid=${gridSize}m window=${days}d preset=${radioKey ?? 'any'} enabled=$enabled');
     }
   }
 

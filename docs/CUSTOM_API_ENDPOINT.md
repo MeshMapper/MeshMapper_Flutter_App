@@ -32,13 +32,14 @@ Every ping object contains a `type` field that determines which additional field
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | `string` | Ping type: `"TX"`, `"RX"`, `"DISC"`, `"TRACE"`, or `"DEFER"`. A `DEFER` carries only the common `lat`, `lon`, `timestamp`, `contact` and `iata` fields plus `held` (see below); it has no `external_antenna`, `noisefloor`, `altitude` or `power`. |
+| `type` | `string` | Ping type: `"TX"`, `"RX"`, `"DISC"`, `"TRACE"`, or `"DEFER"`. A `DEFER` carries only the common `lat`, `lon`, `timestamp`, `contact`, `iata` and `radio_freq` fields plus `held` (see below); it has no `external_antenna`, `noisefloor`, `altitude` or `power`. |
 | `lat` | `number` | Latitude (WGS84, decimal degrees) |
 | `lon` | `number` | Longitude (WGS84, decimal degrees) |
 | `timestamp` | `integer` | Unix timestamp in seconds |
 | `external_antenna` | `boolean` | Whether an external antenna is connected to the device |
 | `noisefloor` | `integer\|null` | Ambient noise floor in dBm (e.g., -103). Null if unavailable. |
 | `altitude` | `integer\|absent` | Altitude of the fix in whole meters (e.g., `123`). Absent when the phone did not know its altitude. iOS reports height above mean sea level. Android usually reports height above the WGS84 ellipsoid, but Android 14 and later substitutes mean sea level when the fix carries it, so one device can report either. The two references can differ by up to about 100 m. |
+| `radio_freq` | `string\|absent` | The radio configuration the item was recorded under, as `freqMHz,bwKHz,SF,CR` (e.g. `"910.525,62.5,7,5"`). Absent when the radio did not report its parameters. Present on every type, `DEFER` included. |
 | `power` | `string\|null` | Radio TX power formatted as `"X.Xw"` (e.g., `"0.3w"`, `"1.0w"`, `"2.0w"`). Null if unavailable. |
 | `contact` | `string\|absent` | First 8 hex chars of the wardriver's MeshCore device public key (e.g., `"D873B1F2"`). Only present when the user enables "Include Contact Key" in settings. Useful for cross-referencing with MQTT observer data. |
 | `iata` | `string\|absent` | MeshMapper zone code (e.g., `"RDU"`, `"MSP"`, `"YOW"`). Present when the wardriver is in a zone. |
@@ -60,6 +61,7 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "lon": -75.77746,
   "noisefloor": -103,
   "altitude": 84,
+  "radio_freq": "910.525,62.5,7,5",
   "heard_repeats": "4e(12.25),77(8.50)",
   "timestamp": 1768762843,
   "external_antenna": false,
@@ -78,6 +80,7 @@ A transmitted ping broadcast on the wardriving channel, with repeater echo resul
   "lon": -75.77802,
   "noisefloor": -101,
   "altitude": 86,
+  "radio_freq": "910.525,62.5,7,5",
   "heard_repeats": "None",
   "timestamp": 1768762873,
   "external_antenna": false,
@@ -205,7 +208,7 @@ A square where the app's smart pinging held a TX ping or a discovery request bec
 |-------|------|-------------|
 | `held` | `string` | Which kind of ping was held: `"tx"` (a channel ping) or `"disc"` (a discovery request). |
 
-The `external_antenna`, `noisefloor`, `altitude` and `power` fields are not present on a `DEFER`. At most one `DEFER` is sent per 300 m square per MeshMapper session.
+The `external_antenna`, `noisefloor`, `altitude` and `power` fields are not present on a `DEFER`. A `DEFER` carries `lat`, `lon`, `timestamp`, `contact`, `iata`, `held` and `radio_freq`. At most one `DEFER` is sent per 300 m square per MeshMapper session.
 
 **Example:**
 
@@ -215,9 +218,10 @@ The `external_antenna`, `noisefloor`, `altitude` and `power` fields are not pres
   "lat": 45.26974,
   "lon": -75.77746,
   "timestamp": 1757400000,
-  "held": "tx",
   "contact": "D873B1F2",
-  "iata": "YOW"
+  "iata": "YOW",
+  "radio_freq": "910.525,62.5,7,5",
+  "held": "tx"
 }
 ```
 
@@ -236,6 +240,7 @@ A batch is whatever the app uploaded to MeshMapper in that round, so one request
       "lon": -75.77746,
       "noisefloor": -103,
       "altitude": 84,
+      "radio_freq": "910.525,62.5,7,5",
       "heard_repeats": "4e(12.25),77(8.50)",
       "timestamp": 1768762843,
       "external_antenna": false,
@@ -269,9 +274,10 @@ A batch is whatever the app uploaded to MeshMapper in that round, so one request
       "lat": 45.27210,
       "lon": -75.78120,
       "timestamp": 1768762933,
-      "held": "tx",
       "contact": "D873B1F2",
-      "iata": "YOW"
+      "iata": "YOW",
+      "radio_freq": "910.525,62.5,7,5",
+      "held": "tx"
     },
     {
       "type": "RX",
