@@ -3783,7 +3783,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[APP] Radio configuration changed across reconnect: $_sessionRadioConfig -> ${radioConfig ?? 'none'}');
         logError(
             'Your radio\'s settings changed. MeshMapper is now using the new settings.',
-            severity: ErrorSeverity.warning);
+            severity: ErrorSeverity.warning, autoSwitch: false);
       }
       _sessionRadioConfig = radioConfig;
 
@@ -4660,7 +4660,30 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[CONN] Hybrid mode force-enabled by regional admin');
     }
 
+    // Compare on the filter (freq/bw/sf), not the raw tag: a coding-rate-only
+    // change moves radioConfigApi but leaves the three-slot filter alone, and
+    // must not cost a refetch. radioFilterKey always prefers the live radio
+    // (SelfInfo is read early in connect(), well before this line), so by
+    // the time we get here it already reads the NEW radio on both sides of
+    // _rememberRadioConfig. The "before" filter has to come from
+    // _lastRadioConfig directly instead: that is what any read still running
+    // while disconnected (including the racy pre-connect repeater fetch) was
+    // filtered on.
+    final priorRepeaterFilterKey = radio_filter.radioFilterKey(
+        radio_filter.radioFilterFromTag(_lastRadioConfig));
     await _rememberRadioConfig();
+    if (radioFilterKey != priorRepeaterFilterKey) {
+      final zone = zoneCode;
+      debugLog('[MAP] Radio preset changed for repeaters '
+          '(${priorRepeaterFilterKey ?? 'none'} -> ${radioFilterKey ?? 'none'}); '
+          'reloading repeater list for zone ${zone ?? 'unknown'}');
+      _repeatersLoaded = false;
+      _repeatersLoadedForIata = null;
+      if (zone != null && zone.isNotEmpty) {
+        _fetchRepeatersForZone(
+            zone); // fire-and-forget, matches the zone-check path
+      }
+    }
     _syncRecentCoverage();
 
     // The repeater list is loaded by now, so the picker in Settings works.
