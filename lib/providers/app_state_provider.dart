@@ -1231,6 +1231,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final entries = tiles.entries.toList();
     final z14Bodies = <Uint8List>[];
     var anyChanged = false;
+    // Did the server give a verdict at all? X-Tile-Changed is absent whenever
+    // it renders a tile on demand instead of from a cache tree, which is the
+    // case for a preset filter the region has not admitted and for any
+    // request carrying extra filters. That is a legitimate steady state, not
+    // a failure, so it must not be read as "nothing changed".
+    var anyVerdict = false;
     for (var i = 0; i < entries.length; i += 4) {
       final chunk = entries.sublist(i, math.min(i + 4, entries.length));
       await Future.wait(chunk.map((e) async {
@@ -1242,8 +1248,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             gsize: _preferences.coverageGridSize);
         if (result.changed == true) {
           anyChanged = true;
+          anyVerdict = true;
           debugLog('[COVERAGE] Retrieved new tile ${e.key}');
         } else if (result.changed == false) {
+          anyVerdict = true;
           debugLog('[COVERAGE] No new tile ${e.key} (unchanged)');
         } else {
           debugLog('[COVERAGE] Tile ${e.key} fresh check failed');
@@ -1288,7 +1296,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           '[COVERAGE] No cells for your position in the fresh tiles yet (attempt $attempt)');
     }
 
-    if (attempt < 2 && !anyChanged) {
+    // With a verdict, retry when it says nothing changed, as before. With no
+    // verdict at all there is nothing to wait on, so retry only when the sweep
+    // also failed to patch any of the user's cells. Gating purely on
+    // `anyChanged` would run the second sweep after every single upload for
+    // the rest of the session on any region that renders this preset on
+    // demand, doubling the fresh-render load for no gain.
+    final retryWorthwhile = anyVerdict ? !anyChanged : patched.isEmpty;
+    if (attempt < 2 && retryWorthwhile) {
       // Re-check at +10s only when the first sweep came back unchanged —
       // ingestion can lag a few seconds behind the post. An ACTIVE timer here
       // belongs to a newer upload (it re-armed the +7s timer while this run's
