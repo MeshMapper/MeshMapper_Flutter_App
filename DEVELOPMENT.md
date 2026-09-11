@@ -708,9 +708,16 @@ the app shows as "This region does not support claiming yet."
   again." Step 3 proves admin: `sendBinaryRequest` with `[0x05, 0, 0]`; the reply's entries
   are read for the count and discarded (never shown, uploaded or logged); silence within the
   timeout refuses the claim with "The repeater did not confirm admin access." Step 4 renders
-  the contact's `out_path` as hops at the region's hop width (names resolved by unique
+  the contact's `out_path` as hops at the width its `out_path_len` byte encodes (the packet
+  path_len encoding: top two bits hash size less one, low six the hop count; it is NOT a byte
+  count, so 0x81 is one 3-byte hop; `ContactRecord.routeHopBytes`) (names resolved by unique
   prefix against the zone list, else hex; `0xFF` is "Flood (no route learned yet)"),
-  re-read on every `PATH_UPDATED` push, and `resetPath` floods the next send. Step 5 reads
+  re-read on every `PATH_UPDATED` push, and `resetPath` floods the next send. Reset route sits
+  in the Log in card, shown once the contact has been read and until a login succeeds: the
+  radio sends the login DIRECT along a learned route and never falls back to flood, so a
+  stale route is silent exactly like a wrong password, and the timeout sentence names the
+  route when one is learned. Once logged in the route cannot change for the session, so the
+  Route card is read-only. Step 5 reads
   the neighbour table one page per tap: `[0x06][0][10][offset:u16][0][8][random:4]`, ten
   entries per page at an 8-byte prefix, newest first. "Fetch neighbours" is the first page,
   "Load more" is the next (`hasMoreNeighbours` is false once the table is complete, a page

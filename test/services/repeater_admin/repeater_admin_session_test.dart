@@ -189,6 +189,18 @@ void main() {
       expect(session.busy, isFalse);
     });
 
+    test('silence on a learned route also names the route', () async {
+      final future = session.login('admin-pw');
+      await answerContacts([
+        contactPayload(repeaterKey, outPathLen: 0x81, outPath: [0x4E, 0x31, 0x92]),
+      ]);
+      expect(session.describeRoute(), '4E3192');
+      await answerLogin(null);
+      expect(await future, isFalse);
+      expect(session.lastError,
+          'No reply from the repeater. Check the password, or reset the route and try again.');
+    });
+
     test('LOGIN_FAIL is a rejection', () async {
       final future = session.login('x');
       await answerContacts([contactPayload(repeaterKey)]);
