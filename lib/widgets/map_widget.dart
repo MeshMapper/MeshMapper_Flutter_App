@@ -597,6 +597,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // paint; a change to either rebuilds the overlay via the build watcher.
   int? _lastAppliedGridSize;
   String? _lastAppliedCvd;
+  /// The radio preset filter key the overlay was last built with (Task: the
+  /// preset filter is baked into the tile URL like the grid size). Null
+  /// means unfiltered.
+  String? _lastAppliedRadioKey;
   // Session coverage patch: a GeoJSON layer carrying the user's own
   // freshly-pinged cells ON TOP of the base overlay; the base layer's copies
   // of those cells are hidden via setFilter so translucent fills never stack.
@@ -2086,8 +2090,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _styleLoaded &&
         _lastAppliedGridSize != null &&
         _lastAppliedGridSize != prefsForOverlay.coverageGridSize;
+    // The preset filter is baked into the tile URL like the grid size, so a
+    // change (connect on a different preset, or the remembered value
+    // arriving) rebuilds the overlay. The first add records the key itself.
+    final radioChanged = _isMapReady &&
+        _styleLoaded &&
+        _lastAppliedGridSize != null &&
+        _lastAppliedRadioKey != appState.radioFilterKey;
 
-    if (zoneChanged || overlayPrefChanged) {
+    if (zoneChanged || overlayPrefChanged || radioChanged) {
       if (zoneChanged) {
         _lastOverlayZoneCode = appState.zoneCode;
         // The session patch belongs to the old region's grid.
@@ -2105,6 +2116,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _clearCoverageConnections();
         _lastAppliedGridSize = prefsForOverlay.coverageGridSize;
         _lastAppliedCvd = prefsForOverlay.colorVisionType;
+      }
+      if (radioChanged) {
+        debugLog(
+            '[MAP] Coverage overlay preset changed: ${_lastAppliedRadioKey ?? 'any'} -> ${appState.radioFilterKey ?? 'any'}');
+        // The session patch and any open community view were decoded from
+        // the old preset's tiles.
+        appState.clearCoveragePatch();
+        _clearCoverageConnections();
+        _lastAppliedRadioKey = appState.radioFilterKey;
       }
       if (!_coverageRefreshScheduled) {
         _coverageRefreshScheduled = true;
@@ -3144,6 +3164,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final prefs = appState.preferences;
     final zone = appState.zoneCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
+    // The preset filter (f_freq, f_bw, f_sf; never f_cr) so the overlay
+    // paints the preset the radio is on, or was last on. Values are digits
+    // and dots, so no encoding. Absent = the region's default layer.
+    final radioFilter = appState.radioFilterQuery;
+    final radioSuffix = radioFilter == null
+        ? ''
+        : '&f_freq=${radioFilter['f_freq']}&f_bw=${radioFilter['f_bw']}&f_sf=${radioFilter['f_sf']}';
 
     // Replace, never stack: if an overlay is already up (double-triggered
     // add, resume racing a rebuild), tear it down first or the old
@@ -3175,7 +3202,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // happens HERE via match expressions, so colour-vision palettes apply
       // without any server param and a tile carries data, not pixels.
       final url =
-          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize';
+          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize$radioSuffix';
+      debugLog(
+          '[MAP] Coverage overlay source: gsize=$gridSize preset=${appState.radioFilterKey ?? 'any'}');
       // minzoom 7 = the raster's old on-screen range (512px-convention vector
       // tiles sit one display-zoom lower than 256px raster tiles).
       await _mapController!.addSource(
@@ -3217,6 +3246,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _lastAppliedCoverageOpacity = opacity;
       _lastAppliedGridSize = gridSize;
       _lastAppliedCvd = prefs.colorVisionType;
+      _lastAppliedRadioKey = appState.radioFilterKey;
       appState.reportVectorOverlayActive(true);
       debugLog(
           '[MAP] Coverage overlay added as $layerId (grid $gridSize, below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
