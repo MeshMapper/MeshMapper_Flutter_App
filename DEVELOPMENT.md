@@ -309,6 +309,9 @@ untouched. On by default with a 14 day window.
   (`ApiService.fetchRecentCoverageTile`), decoded by `decodeCoverageCells`. The square is the
   cell of the user's Coverage Grid setting (300 m or 100 m), so what is deferred matches what
   is painted, including the Detailed 3 by 3 smear. The tap API (`app_coverage.php`) is not used.
+  The fetch also carries the radio preset filter (`f_freq`, `f_bw`, `f_sf`, see Coverage
+  Overlay), and `RecentCoverageService.configure(radioKey:)` drops every loaded tile when the
+  preset changes, since a tile fetched under the old preset answers for the wrong layer.
 - **Lookup** (`RecentCoverageService`, `lib/services/recent_coverage_service.dart`): keeps
   every z13 tile within 500 m of the phone loaded (one tile mid-tile, up to four at a corner),
   re-evaluated after 100 m of movement, refetched after 5 minutes at the next 100 m of movement
@@ -424,6 +427,14 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
 - **Storage**: Hive-based persistent queue survives app restarts
 - **Batch Size**: Max 50 messages, auto-flush at 10 items or 30 seconds
 - **Payload Format**: `[{type:"TX"|"RX"|"DISC"|"TRACE", ...}]`. TX/RX include `heard_repeats`; DISC includes `repeater_id`, `node_type`, `local_snr`, `local_rssi`, `remote_snr`, `public_key`; TRACE includes `repeater_id`, `local_snr`, `local_rssi`, `remote_snr`. Every type also carries `altitude` (whole meters, omitted when the phone did not know it; iOS reports height above mean sea level; Android usually reports height above the WGS84 ellipsoid, but Android 14+ substitutes mean sea level when the fix carries it, so one device can report either. The two references differ by the local geoid separation, up to ~100 m)
+- **Radio preset stamp**: every item (TX, RX, DISC, TRACE and DEFER) carries `radio_freq`, the
+  radio's configuration tag `freqMHz,bwKHz,SF,CR` as reported at connect (`ApiQueueItem` Hive
+  field 20, read at enqueue time through `ApiQueueService.radioConfigGetter`, wired to the live
+  radio only). The server reads the preset off the row instead of joining the session, and an item
+  queued before a preset change keeps the preset it was heard on. Absent when the radio reported
+  no configuration or the queue has no getter wired; the server then uses the session's value.
+  The third-party endpoint keeps it. Contract:
+  `MeshMapper_Server/docs/HANDOFF-app-radio-preset.md`.
 - **Authentication**: API key in JSON body (NOT query string)
 - **Retry Logic**: Exponential backoff on failures. A 429 storm-brake answer holds the whole queue for the server's `Retry-After` without spending a retry (see Session Heartbeat)
 
@@ -763,7 +774,8 @@ the app shows as "This region does not support claiming yet."
 - **API** (`repeater_admin_api.dart`, `RepeaterAdminApi`): `claim`, `unclaim`, `mine`,
   `neighbours`, all `POST /wardrive-api.php/repeater` with `key`, `session_id`, `action`,
   `app_ver`. **The body never carries a top-level `data`, `public_key`, `heartbeat`, `lat`,
-  `lng` or `lon`** (the old router keys on them; asserted in `_post`). Refusals map to
+  `lng` or `lon`** (the old router keys on them; asserted in `_post`). Every body carries a top-level `radio_freq` (the full configuration tag) when the radio reported
+  one, so a claim and a neighbour table are tied to the preset they were made on. Refusals map to
   `RepeaterAdminFailureKind` with one sentence each (`userMessage`); a 429 carries
   `Retry-After`; `sessionExpired` is reported, never acted on (the sheet never touches the
   connection). Offline Mode or no session refuses claim, unclaim and upload locally.
@@ -806,6 +818,16 @@ vector-only — every region server must serve `vector_tile.php` (the legacy ras
 - **Coverage Grid preference (`prefs.coverageGridSize`)**: Simplified (300 m, default) or
   Detailed (100 m + blob), mirroring the web's Grid Mode; baked into the tile URL. The
   grid is locked to the chosen preset at every zoom — cells never resize.
+- **Radio preset filter**: the tile URL, the post-wardrive fresh refetch, both coverage tap
+  requests and the repeater list carry `f_freq`, `f_bw` and `f_sf` (never `f_cr`, so a channel
+  matches every coding rate), built by `radioFilterFromTag` in `lib/utils/radio_filter.dart` from
+  the radio's tag. Connected: the live radio's. Disconnected: the last connect's, persisted in
+  `user_preferences` under `last_radio_config` (deleted when a radio that reports no
+  configuration connects). No configuration means no parameters. `ApiService.radioFilterGetter`
+  feeds the readers; `MapWidget` bakes the same suffix into its tile template and rebuilds the
+  overlay when `AppStateProvider.radioFilterKey` differs from the key it last applied (session
+  patch and open community view dropped, like a grid change). Server first: a region door that
+  answers an unknown `f_` with 400 would blank the overlay.
 - **Post-wardrive live refresh**: on upload success the queue hands the uploaded items to
   `AppStateProvider`; +7 s later the server re-renders the affected tiles at z11–14
   (`fresh=1`, incl. neighbouring tiles within ~0.005° — blob/border spill lands in the
