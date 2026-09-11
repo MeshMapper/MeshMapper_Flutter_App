@@ -81,7 +81,12 @@ class SelfInfo {
   }
 
   /// The region-door filter for this radio's preset: `f_freq`, `f_bw`,
-  /// `f_sf` from [radioConfigApi] (no coding rate). Null when the radio did
+  /// `f_sf` from [radioConfigApi] (no coding rate). Deliberately NOT the
+  /// app's filter source: this reflects only the live connection, and the
+  /// app needs a filter while disconnected too. The app reads its filter
+  /// from `AppStateProvider.radioFilterQuery`, which falls back to the last
+  /// connected radio's configuration while disconnected, so the map keeps
+  /// painting the right preset between sessions. Null when the radio did
   /// not report a usable configuration. See `lib/utils/radio_filter.dart`.
   Map<String, String>? get radioFilterQuery =>
       radioFilterFromTag(radioConfigApi);
