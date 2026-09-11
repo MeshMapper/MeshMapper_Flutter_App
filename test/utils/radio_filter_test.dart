@@ -37,6 +37,30 @@ void main() {
     test('an unknown bandwidth (0) gives no filter', () {
       expect(radioFilterFromTag('910.525,0,7,5'), isNull);
     });
+
+    test('an unknown frequency (0) gives no filter', () {
+      expect(radioFilterFromTag('0,62.5,7,5'), isNull);
+    });
+
+    test('a zero written with decimals gives no filter', () {
+      expect(radioFilterFromTag('910.525,0.0,7,5'), isNull);
+    });
+
+    test('a slot that is not a plain number gives no filter', () {
+      // The callers concatenate these straight into a URL, so anything that
+      // is not digits and an optional dot turns the filter off rather than
+      // reaching the wire.
+      expect(radioFilterFromTag('abc,62.5,7,5'), isNull);
+      expect(radioFilterFromTag('910.525,62.5,7 OR 1=1,5'), isNull);
+      expect(radioFilterFromTag('910.525&x=1,62.5,7,5'), isNull);
+      expect(radioFilterFromTag('-910.525,62.5,7,5'), isNull);
+      expect(radioFilterFromTag('9.1e2,62.5,7,5'), isNull);
+    });
+
+    test('extra slots beyond the coding rate are ignored', () {
+      expect(radioFilterFromTag('910.525,62.5,7,5,extra'),
+          {'f_freq': '910.525', 'f_bw': '62.5', 'f_sf': '7'});
+    });
   });
 
   group('radioFilterKey', () {
