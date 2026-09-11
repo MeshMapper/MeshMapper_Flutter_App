@@ -80,6 +80,16 @@ class ApiQueueItem extends HiveObject {
   @HiveField(19)
   final String? autoMode;
 
+  /// The radio configuration this item was recorded under, the full
+  /// `freqMHz,bwKHz,SF,CR` tag the radio reported at connect (e.g.
+  /// `910.525,62.5,7,5`). Stamped at enqueue time from the live radio, so
+  /// the server reads the preset off the row instead of joining the session,
+  /// and an item queued before a preset change keeps the preset it was heard
+  /// on. Null when the radio reported no configuration or the queue has no
+  /// getter wired; the server then falls back to the session's value.
+  @HiveField(20)
+  final String? radioFreq;
+
   ApiQueueItem({
     required this.type,
     required this.latitude,
@@ -96,6 +106,7 @@ class ApiQueueItem extends HiveObject {
     this.wireTag,
     this.altitude,
     this.autoMode,
+    this.radioFreq,
   });
 
   /// Create from TX ping
@@ -112,6 +123,7 @@ class ApiQueueItem extends HiveObject {
     String? wireTag,
     double? altitude,
     String? autoMode,
+    String? radioFreq,
   }) {
     return ApiQueueItem(
       type: 'TX',
@@ -128,6 +140,7 @@ class ApiQueueItem extends HiveObject {
       wireTag: wireTag,
       altitude: altitude,
       autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -143,6 +156,7 @@ class ApiQueueItem extends HiveObject {
     double? power,
     double? altitude,
     String? autoMode,
+    String? radioFreq,
   }) {
     return ApiQueueItem(
       type: 'RX',
@@ -156,6 +170,7 @@ class ApiQueueItem extends HiveObject {
       power: power,
       altitude: altitude,
       autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -176,6 +191,7 @@ class ApiQueueItem extends HiveObject {
     double? power,
     double? altitude,
     String? autoMode,
+    String? radioFreq,
   }) {
     // Format: "repeaterId:nodeType:localSnr:localRssi:remoteSnr:pubkeyFull"
     final heardRepeats =
@@ -192,6 +208,7 @@ class ApiQueueItem extends HiveObject {
       power: power,
       altitude: altitude,
       autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -210,6 +227,7 @@ class ApiQueueItem extends HiveObject {
     double? power,
     double? altitude,
     String? autoMode,
+    String? radioFreq,
   }) {
     final heardRepeats =
         '$repeaterId:${localSnr.toStringAsFixed(2)}:$localRssi:${remoteSnr.toStringAsFixed(2)}';
@@ -225,6 +243,7 @@ class ApiQueueItem extends HiveObject {
       power: power,
       altitude: altitude,
       autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -238,6 +257,7 @@ class ApiQueueItem extends HiveObject {
     double? power,
     double? altitude,
     String? autoMode,
+    String? radioFreq,
   }) {
     return ApiQueueItem(
       type: 'DISC',
@@ -251,6 +271,7 @@ class ApiQueueItem extends HiveObject {
       power: power,
       altitude: altitude,
       autoMode: autoMode,
+      radioFreq: radioFreq,
     );
   }
 
@@ -264,6 +285,7 @@ class ApiQueueItem extends HiveObject {
     required double longitude,
     required int timestamp,
     required String held,
+    String? radioFreq,
   }) {
     return ApiQueueItem(
       type: 'DEFER',
@@ -273,13 +295,15 @@ class ApiQueueItem extends HiveObject {
       heardRepeats: held,
       canUploadAfter: DateTime.now().millisecondsSinceEpoch, // Immediate
       externalAntenna: false,
+      radioFreq: radioFreq,
     );
   }
 
   /// Convert to API JSON format (matches WebClient exactly)
   Map<String, dynamic> toApiJson() {
     // A deferral carries only the square and which kind of ping was held.
-    // Never the mode stamp: the server stores none for a deferral.
+    // Never the mode stamp (the server stores none for a deferral), but the
+    // radio tag rides along.
     if (type == 'DEFER') {
       return {
         'type': type,
@@ -287,6 +311,10 @@ class ApiQueueItem extends HiveObject {
         'lon': longitude,
         'timestamp': timestamp.millisecondsSinceEpoch ~/ 1000,
         'held': heardRepeats,
+        // The preset the square was crossed on. The server verifies the
+        // square against that preset's coverage, not the region's whole
+        // history.
+        if (radioFreq != null) 'radio_freq': radioFreq,
       };
     }
 
@@ -308,6 +336,7 @@ class ApiQueueItem extends HiveObject {
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
         if (altitude != null) 'altitude': altitude!.round(),
         if (autoMode != null) 'auto_mode': autoMode,
+        if (radioFreq != null) 'radio_freq': radioFreq,
       };
     }
 
@@ -326,6 +355,7 @@ class ApiQueueItem extends HiveObject {
           'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
           if (altitude != null) 'altitude': altitude!.round(),
           if (autoMode != null) 'auto_mode': autoMode,
+          if (radioFreq != null) 'radio_freq': radioFreq,
         };
       }
 
@@ -348,6 +378,7 @@ class ApiQueueItem extends HiveObject {
         'power': power != null ? '${power!.toStringAsFixed(1)}w' : null,
         if (altitude != null) 'altitude': altitude!.round(),
         if (autoMode != null) 'auto_mode': autoMode,
+        if (radioFreq != null) 'radio_freq': radioFreq,
       };
     }
 
@@ -368,6 +399,7 @@ class ApiQueueItem extends HiveObject {
       // Whole meters, omitted when the phone did not know its altitude.
       if (altitude != null) 'altitude': altitude!.round(),
       if (autoMode != null) 'auto_mode': autoMode,
+      if (radioFreq != null) 'radio_freq': radioFreq,
     };
   }
 
