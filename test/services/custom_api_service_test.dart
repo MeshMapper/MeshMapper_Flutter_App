@@ -9,7 +9,8 @@ import 'package:mesh_mapper/services/custom_api_service.dart';
 
 /// The custom third-party endpoint gets the same items MeshMapper accepted,
 /// enriched with contact and iata, minus the auto_mode stamp, which is
-/// MeshMapper analytics. DEFER items pass through unchanged.
+/// MeshMapper analytics. The radio configuration tag is a fact about the ping
+/// and is kept. DEFER items pass through unchanged.
 
 void main() {
   ({CustomApiService svc, Future<List<Map<String, dynamic>>> sent}) build() {
@@ -45,6 +46,20 @@ void main() {
       expect(item.containsKey('auto_mode'), isFalse);
       expect(item['contact'], 'D873B1F2');
       expect(item['iata'], 'YOW');
+    }
+  });
+
+  test('radio_freq is kept on every forwarded item', () async {
+    final t = build();
+    t.svc.forwardPings([
+      {'type': 'TX', 'lat': 45.0, 'lon': -75.0, 'radio_freq': '910.525,62.5,7,5', 'auto_mode': 'active'},
+      {'type': 'DEFER', 'lat': 45.0, 'lon': -75.0, 'held': 'tx', 'radio_freq': '910.525,62.5,7,5'},
+    ]);
+    final sent = await t.sent.timeout(const Duration(seconds: 5));
+    expect(sent.length, 2);
+    for (final item in sent) {
+      expect(item['radio_freq'], '910.525,62.5,7,5');
+      expect(item.containsKey('auto_mode'), isFalse);
     }
   });
 
