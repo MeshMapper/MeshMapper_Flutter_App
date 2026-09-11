@@ -53,9 +53,15 @@ void main() {
           Uint8List.fromList([0x4E, 0x7A, 0x3B]), hopBytes: 2);
       expect(r.hops, ['4E', '7A', '3B']);
     });
-    test('empty is flood', () {
+    test('empty bytes is a direct route', () {
       final r = RepeaterRoute.fromRouteBytes(Uint8List(0), hopBytes: 1);
-      expect(r.flood, isTrue);
+      expect(r.flood, isFalse);
+      expect(r.direct, isTrue);
+      expect(r.describe((_) => null), 'Direct (no hops)');
+    });
+    test('flood describes as flood', () {
+      const r = RepeaterRoute.flood();
+      expect(r.direct, isFalse);
       expect(r.describe((_) => null), 'Flood (no route learned yet)');
     });
     test('describe resolves names else hex', () {

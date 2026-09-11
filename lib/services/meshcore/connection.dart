@@ -267,14 +267,32 @@ class ContactRecord {
   /// Bytes per hop in [routeBytes]: 1, 2 or 3 (4 is reserved by the firmware).
   int get routeHopBytes => (outPathLen >> 6) + 1;
 
-  bool get hasRoute => routeHopCount > 0;
+  /// True when the radio has learned a route, which includes a ZERO-hop one
+  /// (0x80 on a 3-byte-hop mesh): the repeater heard this radio directly and
+  /// the radio sends to it direct with an empty path. Only 0xFF is unknown,
+  /// which is when the radio floods.
+  bool get hasRoute => outPathLen != ProtocolConstants.outPathUnknown;
 
   /// The learned path, `routeHopCount * routeHopBytes` bytes of `out_path`
-  /// (empty when unknown).
+  /// (empty when unknown, and empty for a direct zero-hop route).
   Uint8List get routeBytes => hasRoute
       ? outPath.sublist(
           0, (routeHopCount * routeHopBytes).clamp(0, outPath.length))
       : Uint8List(0);
+
+  /// The same contact with no learned route (what CMD_RESET_PATH leaves).
+  ContactRecord withRouteCleared() => ContactRecord(
+        publicKey: publicKey,
+        type: type,
+        flags: flags,
+        outPathLen: ProtocolConstants.outPathUnknown,
+        outPath: Uint8List(64),
+        name: name,
+        lastAdvert: lastAdvert,
+        latMicro: latMicro,
+        lonMicro: lonMicro,
+        lastMod: lastMod,
+      );
 
   Uint8List toFrame(int commandCode) {
     final w = BufferWriter();
@@ -346,6 +364,21 @@ class MeshCoreConnection {
   Completer<void>? _adminOkCompleter;
   Completer<List<ContactRecord>>? _contactsCompleter;
   List<ContactRecord> _contactsBuffer = [];
+
+  /// The radio's contact list as this connection last saw it, keyed by the
+  /// full public key hex, in the radio's order. Lives exactly as long as
+  /// this object (a BLE flap builds a new MeshCoreConnection). Primed by the
+  /// first full read; every later [getContacts] asks the firmware only for
+  /// contacts modified after [_contactSince] (the newest `lastmod` the
+  /// END_OF_CONTACTS frame reported) and merges them in, so a 350-contact
+  /// radio streams its 52 KB once per connection rather than once per
+  /// login. A learned route bumps `lastmod` on the firmware side, so route
+  /// changes arrive through the same sync; a CMD_RESET_PATH does not, so
+  /// [resetPath] patches the cached record itself.
+  final Map<String, ContactRecord> _contactCache = <String, ContactRecord>{};
+  bool _contactCachePrimed = false;
+  int _contactSince = 0;
+  int _contactsEndLastmod = 0;
   Completer<LoginResult>? _loginCompleter;
   Uint8List? _loginPrefix; // first 6 bytes of the repeater key
   Completer<Uint8List>? _binaryResponseCompleter;
@@ -899,11 +932,26 @@ class MeshCoreConnection {
           {
             final completer = _contactsCompleter;
             _contactsCompleter = null;
-            final contacts = _contactsBuffer;
+            final received = _contactsBuffer;
             _contactsBuffer = [];
+            // [4][most_recent_lastmod:u32]: the newest lastmod among the
+            // contacts just sent, 0 when none were. Only ever moves forward.
+            _contactsEndLastmod =
+                reader.remainingBytesCount >= 4 ? reader.readUInt32LE() : 0;
             if (completer == null || completer.isCompleted) break;
-            debugLog('[CONN] Contact list complete (${contacts.length})');
-            completer.complete(contacts);
+            for (final c in received) {
+              _contactCache[c.publicKeyHex] = c;
+            }
+            if (_contactsEndLastmod > _contactSince) {
+              _contactSince = _contactsEndLastmod;
+            }
+            final wasPrimed = _contactCachePrimed;
+            _contactCachePrimed = true;
+            debugLog(wasPrimed
+                ? '[CONN] Contact sync: ${received.length} changed, '
+                    '${_contactCache.length} cached, since=$_contactSince'
+                : '[CONN] Contact list complete (${received.length})');
+            completer.complete(List.unmodifiable(_contactCache.values));
             break;
           }
         default:
@@ -1839,9 +1887,12 @@ class MeshCoreConnection {
     final completer = Completer<List<ContactRecord>>();
     try {
       _contactsCompleter = completer;
+      // CMD_GET_CONTACTS [4][since:u32]: the firmware sends only contacts
+      // with lastmod > since. 0 is the full list, which primes the cache.
+      final since = _contactCachePrimed ? _contactSince : 0;
       final data = BufferWriter()
         ..writeByte(CommandCodes.getContacts)
-        ..writeUInt32LE(0);
+        ..writeUInt32LE(since);
       await _sendToRadio(data);
       return await completer.future.timeout(timeout, onTimeout: () {
         _contactsCompleter = null;
@@ -1876,6 +1927,12 @@ class MeshCoreConnection {
         _adminOkCompleter = null;
         throw TimeoutException('addContact timed out');
       });
+      // The firmware stamps lastmod from the frame (the phone's clock), which
+      // may sit below the radio's newest lastmod and so never come back
+      // through a since-sync. Insert it here instead.
+      if (_contactCachePrimed) {
+        _contactCache[contact.publicKeyHex] = contact;
+      }
     } finally {
       // Same orphan-completer guard as getContacts: a write that threw before
       // completer.future was awaited must not leave this call's completer
@@ -2061,6 +2118,16 @@ class MeshCoreConnection {
         }
         throw TimeoutException('resetPath timed out');
       });
+      // CMD_RESET_PATH deliberately does not touch lastmod on the radio, so
+      // the cleared route would never arrive through a since-sync.
+      final hex = pubkey
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join()
+          .toUpperCase();
+      final cached = _contactCache[hex];
+      if (cached != null) {
+        _contactCache[hex] = cached.withRouteCleared();
+      }
     } finally {
       if (identical(_adminOkCompleter, completer)) {
         _adminOkCompleter = null;
@@ -2199,8 +2266,19 @@ class MeshCoreConnection {
     debugLog('[CONN] Started noise floor polling (5s interval)');
   }
 
+  /// True while a repeater admin command holds the link. The two pollers
+  /// stand down for it: a 350-contact stream is 52 KB through the
+  /// companion's BLE queue, and both times the battery and noise floor
+  /// requests landed inside one (2026-09-10) the radio dropped the link.
+  /// The poll simply skips a tick; the next one runs once the command ends.
+  bool get _pollsHeld => _adminCommandInFlight != null;
+
   Future<void> _fetchNoiseFloor() async {
     if (_isFetchingNoiseFloor) return; // Skip if previous fetch still in flight
+    if (_pollsHeld) {
+      debugLog('[CONN] Noise floor poll skipped: $_adminCommandInFlight in flight');
+      return;
+    }
     _isFetchingNoiseFloor = true;
     try {
       debugLog('[CONN] Fetching noise floor...');
@@ -2242,6 +2320,10 @@ class MeshCoreConnection {
   }
 
   Future<void> _fetchBattery() async {
+    if (_pollsHeld) {
+      debugLog('[CONN] Battery poll skipped: $_adminCommandInFlight in flight');
+      return;
+    }
     try {
       debugLog('[CONN] ⚡ Fetching battery voltage (poll triggered)...');
       await getBatteryVoltage();

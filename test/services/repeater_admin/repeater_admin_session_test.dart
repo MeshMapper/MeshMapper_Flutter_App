@@ -189,6 +189,14 @@ void main() {
       expect(session.busy, isFalse);
     });
 
+    test('a zero-hop contact reads as a direct route', () async {
+      final future = session.login('admin-pw');
+      await answerContacts([contactPayload(repeaterKey, outPathLen: 0x80)]);
+      expect(session.describeRoute(), 'Direct (no hops)');
+      await answerLogin(loginSuccess(admin: true));
+      expect(await future, isTrue);
+    });
+
     test('silence on a learned route also names the route', () async {
       final future = session.login('admin-pw');
       await answerContacts([
@@ -199,6 +207,52 @@ void main() {
       expect(await future, isFalse);
       expect(session.lastError,
           'No reply from the repeater. Check the password, or reset the route and try again.');
+    });
+
+    test('the third unanswered login on a learned route resets the route',
+        () async {
+      final learned = contactPayload(repeaterKey,
+          outPathLen: 0x81, outPath: [0x4E, 0x31, 0x92]);
+      for (var attempt = 1; attempt <= 2; attempt++) {
+        final future = session.login('admin-pw');
+        await answerContacts([learned]);
+        await answerLogin(null);
+        expect(await future, isFalse);
+        expect(session.lastError, contains('reset the route'));
+        expect(commands().where((c) => c == CommandCodes.resetPath), isEmpty);
+      }
+      final future = session.login('admin-pw');
+      await answerContacts([learned]);
+      await answerLogin(null);
+      // The login times out, then the session resets the route itself.
+      await Future<void>.delayed(const Duration(milliseconds: 260));
+      expect(transport.writes.last, [CommandCodes.resetPath, ...repeaterKey]);
+      transport.emit([ResponseCodes.ok]);
+      expect(await future, isFalse);
+      expect(session.lastError, kRouteAutoResetSentence);
+      expect(session.route?.flood, isTrue);
+      expect(session.busy, isFalse);
+    });
+
+    test('a login reply clears the unanswered count', () async {
+      final learned = contactPayload(repeaterKey,
+          outPathLen: 0x81, outPath: [0x4E, 0x31, 0x92]);
+      for (var attempt = 1; attempt <= 2; attempt++) {
+        final future = session.login('admin-pw');
+        await answerContacts([learned]);
+        await answerLogin(null);
+        expect(await future, isFalse);
+      }
+      // A rejection is an answer: the streak is over.
+      var future = session.login('admin-pw');
+      await answerContacts([learned]);
+      await answerLogin([PushCodes.loginFail, 0, ...repeaterKey.sublist(0, 6)]);
+      expect(await future, isFalse);
+      future = session.login('admin-pw');
+      await answerContacts([learned]);
+      await answerLogin(null);
+      expect(await future, isFalse);
+      expect(commands().where((c) => c == CommandCodes.resetPath), isEmpty);
     });
 
     test('LOGIN_FAIL is a rejection', () async {
@@ -308,6 +362,31 @@ void main() {
       ]);
       expect(transport.writes.length, writes + 1);
       expect(session.describeRoute(), '7A');
+    });
+
+    test('a PATH_UPDATED during the login is read before the login completes',
+        () async {
+      final future = session.login('admin-pw');
+      await answerContacts([contactPayload(repeaterKey)]);
+      await transport.settle();
+      // The route arrives while the login is still on the air.
+      transport.emit([PushCodes.pathUpdated, ...repeaterKey]);
+      await answerLogin(loginSuccess(admin: true));
+      // Still logging in: the re-read is on the wire, the sheet has not
+      // flipped, and nothing else can be tapped yet.
+      expect(session.state, RepeaterAdminState.loggingIn);
+      expect(session.busy, isTrue);
+      await answerContacts([contactPayload(repeaterKey, outPathLen: 0x80)]);
+      expect(await future, isTrue);
+      expect(session.state, RepeaterAdminState.admin);
+      expect(session.describeRoute(), 'Direct (no hops)');
+      expect(session.busy, isFalse);
+      expect(commands(), [
+        CommandCodes.getContacts, CommandCodes.sendLogin, CommandCodes.getContacts,
+      ]);
+      // Nothing left stale: no third contact read follows.
+      await transport.settle();
+      expect(commands().length, 3);
     });
 
     test('PATH_UPDATED for another contact is ignored', () async {
@@ -421,13 +500,24 @@ void main() {
       expect(transport.writes.length, writes);
     });
 
-    test('silence is old firmware', () async {
+    test('silence is a timeout, not old firmware', () async {
+      // v1.9.0 or newer is already proven at login, so an unanswered page
+      // is the mesh, and the sentence invites a retry.
       await loginAsAdmin();
       final future = session.fetchNeighbours();
       await answerBinary(null);
       expect(await future, isFalse);
-      expect(session.lastError, "This repeater's firmware cannot report neighbours.");
+      expect(session.lastError, 'No reply from the repeater. Try again.');
       expect(session.hasMoreNeighbours, isFalse);
+    });
+
+    test('ERR 1 is a repeater that cannot report neighbours', () async {
+      await loginAsAdmin();
+      final future = session.fetchNeighbours();
+      await transport.settle();
+      transport.emit([ResponseCodes.err, 1]);
+      expect(await future, isFalse);
+      expect(session.lastError, "This repeater's firmware cannot report neighbours.");
     });
 
     test('a failed load more keeps the pages already fetched', () async {

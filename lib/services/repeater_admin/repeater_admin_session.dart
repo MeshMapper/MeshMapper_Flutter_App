@@ -22,6 +22,17 @@ const String kAclUnansweredSentence =
     'The repeater did not confirm admin access.';
 const String kNeighboursUnansweredSentence =
     "This repeater's firmware cannot report neighbours.";
+const String kNeighboursTimeoutSentence =
+    'No reply from the repeater. Try again.';
+
+/// Consecutive unanswered logins along a learned route before the session
+/// resets the route itself. The radio never falls back to flood on its own,
+/// so a stale route would otherwise swallow logins forever.
+const int kLoginTimeoutsBeforeRouteReset = 3;
+const String kRouteAutoResetSentence =
+    'No reply from the repeater $kLoginTimeoutsBeforeRouteReset times in a '
+    'row, so the route was reset. The next login floods. Check the password '
+    'and try again.';
 
 /// One repeater, one radio, one mesh conversation.
 ///
@@ -60,6 +71,7 @@ class RepeaterAdminSession extends ChangeNotifier {
   bool _closed = false;
   bool _disposed = false;
   bool _routeStale = false;
+  int _loginTimeouts = 0;
   LoginResult? _login;
   StreamSubscription<Uint8List>? _pathSub;
 
@@ -106,6 +118,10 @@ class RepeaterAdminSession extends ChangeNotifier {
   String describeRoute() =>
       (_route ?? const RepeaterRoute.flood()).describe(_hopNameFor ?? (_) => null);
 
+  /// The zone-list name for one hop of the route, or null when no single
+  /// repeater matches that hop hash.
+  String? hopName(String hopHex) => _hopNameFor?.call(hopHex);
+
   /// Log in with [password]. Returns true only for a proven-flag admin login.
   /// A guest login returns false with [state] `guest` and no error; every
   /// failure returns false with a sentence in [lastError].
@@ -123,6 +139,7 @@ class RepeaterAdminSession extends ChangeNotifier {
         replyTimeout: timeoutFor,
       );
       _login = result;
+      _loginTimeouts = 0;
       if (!result.success) {
         _fail('The repeater rejected the login.');
         return false;
@@ -133,6 +150,11 @@ class RepeaterAdminSession extends ChangeNotifier {
         _fail(kRepeaterFirmwareFloorSentence);
         return false;
       }
+      // The reply itself teaches the radio the route, so a PATH_UPDATED
+      // usually lands while the login is in flight. Read it now, still
+      // "logging in", so the sheet flips to logged in with the route in
+      // hand instead of flipping and then locking up for the re-read.
+      await _refreshRouteIfStale();
       if (!result.isAdmin) {
         debugLog('[RADMIN] Logged in as guest');
         _setState(RepeaterAdminState.guest);
@@ -145,11 +167,24 @@ class RepeaterAdminSession extends ChangeNotifier {
       // A learned route is the other silent cause: the radio sends the login
       // DIRECT along it and never falls back to flood, so a stale route (the
       // first hop moved out of range) looks exactly like a wrong password.
+      // After enough of those in a row the session resets the route itself,
+      // the way the official client does, so the next tap floods. It does
+      // not resend: every request here is a user tap.
       final learnedRoute = _route != null && !_route!.flood;
-      _fail(learnedRoute
-          ? 'No reply from the repeater. Check the password, or reset the '
-              'route and try again.'
-          : 'No reply from the repeater. Check the password and try again.');
+      if (!learnedRoute) {
+        _loginTimeouts = 0;
+        _fail('No reply from the repeater. Check the password and try again.');
+        return false;
+      }
+      _loginTimeouts++;
+      if (_loginTimeouts >= kLoginTimeoutsBeforeRouteReset &&
+          await _autoResetRoute()) {
+        _loginTimeouts = 0;
+        _fail(kRouteAutoResetSentence);
+        return false;
+      }
+      _fail('No reply from the repeater. Check the password, or reset the '
+          'route and try again.');
       return false;
     } on FormatException catch (e) {
       // A LOGIN_SUCCESS shorter than 14 bytes: companion firmware older than
@@ -238,6 +273,32 @@ class RepeaterAdminSession extends ChangeNotifier {
     }
   }
 
+  /// The contact's route: flood while the radio has no route (0xFF), else
+  /// the learned path, which is direct when it has zero hops.
+  static RepeaterRoute _routeOf(ContactRecord c) => c.hasRoute
+      ? RepeaterRoute.fromRouteBytes(c.routeBytes, hopBytes: c.routeHopBytes)
+      : const RepeaterRoute.flood();
+
+  /// The route re-read a PATH_UPDATED asked for while a command was in
+  /// flight, run inside that command so it does not become a second busy
+  /// spell. A failed read keeps the old route and is not the command's
+  /// failure; an abort is.
+  Future<void> _refreshRouteIfStale() async {
+    if (!_routeStale || _closed) return;
+    _routeStale = false;
+    try {
+      final c = _findContact(await _connection.getContacts());
+      if (c != null) {
+        _route = _routeOf(c);
+        debugLog('[RADMIN] Route: ${describeRoute()}');
+      }
+    } on RadioAbortedException {
+      rethrow;
+    } catch (e) {
+      debugWarn('[RADMIN] Route read failed: $e');
+    }
+  }
+
   /// Re-read the contact and render its out_path.
   Future<void> readRoute() async {
     if (!_begin()) {
@@ -248,7 +309,7 @@ class RepeaterAdminSession extends ChangeNotifier {
       final contacts = await _connection.getContacts();
       final c = _findContact(contacts);
       if (c != null) {
-        _route = RepeaterRoute.fromRouteBytes(c.routeBytes, hopBytes: c.routeHopBytes);
+        _route = _routeOf(c);
         debugLog('[RADMIN] Route: ${describeRoute()}');
       }
     } on RadioAbortedException {
@@ -260,12 +321,32 @@ class RepeaterAdminSession extends ChangeNotifier {
     }
   }
 
+  /// The reset the login lane runs on its own after
+  /// [kLoginTimeoutsBeforeRouteReset] unanswered logins. Inside the login's
+  /// busy spell, so no [_begin]. False when the radio does not confirm it,
+  /// and then the normal timeout sentence stands.
+  Future<bool> _autoResetRoute() async {
+    try {
+      await _connection.resetPath(target.publicKey);
+      _route = const RepeaterRoute.flood();
+      debugLog('[RADMIN] Route reset to flood after '
+          '$_loginTimeouts unanswered logins');
+      return true;
+    } on RadioAbortedException {
+      rethrow;
+    } catch (e) {
+      debugWarn('[RADMIN] Automatic route reset failed: $e');
+      return false;
+    }
+  }
+
   /// CMD_RESET_PATH. The next request floods and the route is relearned.
   Future<bool> resetRoute() async {
     if (!_begin()) return false;
     try {
       await _connection.resetPath(target.publicKey);
       _route = const RepeaterRoute.flood();
+      _loginTimeouts = 0;
       _lastError = null;
       debugLog('[RADMIN] Route reset to flood');
       return true;
@@ -354,7 +435,11 @@ class RepeaterAdminSession extends ChangeNotifier {
           'held ${_neighbours.length}, more=$hasMoreNeighbours)');
       return true;
     } on TimeoutException {
-      _lastError = kNeighboursUnansweredSentence;
+      // Silence is the mesh, not the firmware: v1.9.0 or newer is already
+      // proven at login, so an unanswered page is a request or a reply that
+      // did not make it through. Only ERR 1 (unsupported) or a reply the
+      // parser cannot read says the repeater cannot do this.
+      _lastError = kNeighboursTimeoutSentence;
       return false;
     } on RadioErrorException catch (e) {
       _lastError = e.errorCode == 1
@@ -433,8 +518,7 @@ class RepeaterAdminSession extends ChangeNotifier {
     final existing = _findContact(contacts);
     if (existing != null) {
       // Leave it alone: an add would wipe the learned route.
-      _route = RepeaterRoute.fromRouteBytes(existing.routeBytes,
-          hopBytes: existing.routeHopBytes);
+      _route = _routeOf(existing);
       debugLog('[RADMIN] Contact present, route: ${describeRoute()}');
       return;
     }
