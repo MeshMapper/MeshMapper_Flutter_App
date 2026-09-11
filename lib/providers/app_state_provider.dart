@@ -80,6 +80,7 @@ import '../services/repeater_admin/repeater_admin_session.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
 import '../utils/ping_colors.dart';
+import '../utils/radio_filter.dart' as radio_filter;
 import '../services/wakelock_service.dart';
 import '../utils/debug_logger_io.dart';
 
@@ -654,6 +655,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   // ============================================
+  // Radio preset (multiple radio configurations per region)
+  // ============================================
+
+  /// The radio's configuration tag (`freqMHz,bwKHz,SF,CR`) from the last
+  /// connect, so the coverage overlay and the coverage taps keep reading the
+  /// preset the user was on while the radio is disconnected. Deleted when a
+  /// radio connects that reports no configuration, so the reads go
+  /// unfiltered honestly. Never used as a stamp: stamps are live only.
+  static const String _lastRadioConfigKey = 'last_radio_config';
+  String? _lastRadioConfig;
+
+  /// The radio tag sent on the last auth, to notice a reconnect that comes
+  /// back on a different preset (a radio with its own screen, changed during
+  /// a BLE gap). The reconnect re-auths through the normal connect workflow
+  /// anyway, so this is bookkeeping and a log line, not a control path.
+  String? _sessionRadioConfig;
+
+  // ============================================
   // Repeater administrators
   // ============================================
 
@@ -909,6 +928,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// (e.g. "910.525 MHz · 62.5 kHz · SF7 · CR5"); null on older firmware/no device.
   String? get radioConfigDisplay =>
       _meshCoreConnection?.selfInfo?.radioConfigDisplay;
+
+  /// The connected radio's configuration tag (`freqMHz,bwKHz,SF,CR`), null
+  /// while disconnected or when the firmware reported none. The stamp source
+  /// for queued items and repeater admin requests.
+  String? get liveRadioConfig => _meshCoreConnection?.selfInfo?.radioConfigApi;
+
+  /// The preset filter for region reads: the live radio's, else the last one
+  /// seen, else none. See `lib/utils/radio_filter.dart`.
+  Map<String, String>? get radioFilterQuery =>
+      radio_filter.radioFilterFromTag(liveRadioConfig ?? _lastRadioConfig);
+
+  /// One string for "did the preset filter change" (`freq,bw,sf` or null).
+  /// The map widget and the smart pinging cache compare on it.
+  String? get radioFilterKey => radio_filter.radioFilterKey(radioFilterQuery);
   String? get devicePublicKey => _devicePublicKey;
   PingStats get pingStats => _pingStats;
   bool get autoPingEnabled => _autoPingEnabled;
@@ -3005,6 +3038,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _apiQueueService.customApiService = _customApiService;
     // Every queued item is stamped with the mode that produced it.
     _apiQueueService.autoModeGetter = () => wireAutoMode;
+    _apiQueueService.radioConfigGetter = () => liveRadioConfig;
 
     // MyMeshMapper portal account. Mobile only — the sign-in flow needs an
     // OS-registered URL scheme, which the web build cannot have.
@@ -3047,7 +3081,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       client: http.Client(),
       sessionId: () => _apiService.sessionId,
       appVersion: () => _appVersion,
-      radioConfig: () => _meshCoreConnection?.selfInfo?.radioConfigApi,
+      radioConfig: () => liveRadioConfig,
     );
     // The two stores share two interfaces, so an unannotated conditional
     // infers Object: name the type the branches are read as.
@@ -3065,6 +3099,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // The mode running at the moment of each batch post, heartbeat and
     // release, so the server can total mode time.
     _apiService.currentAutoMode = () => wireAutoMode;
+    _apiService.radioFilterGetter = () => radioFilterQuery;
 
     // A new session id makes every wire tag already queued under the old one
     // undeliverable (auto-reconnect preserves the queue across re-auth). Drop
@@ -3213,6 +3248,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _loadPreferences();
     await _loadRegionalCarpeaters();
     await _loadRepeaterClaims();
+    await _loadLastRadioConfig();
     await _loadWatchPairingPreference();
     await _loadDeviceAntennaPreferences();
     await _loadDevicePowerOverrides();
@@ -3738,6 +3774,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // Stage 1: Try existing public_key authentication
       debugLog(
           '[APP] Stage 1: Attempting auth with public_key: ${publicKey.substring(0, 16)}...');
+
+      final radioConfig = liveRadioConfig;
+      if (_isAutoReconnecting &&
+          _sessionRadioConfig != null &&
+          radioConfig != _sessionRadioConfig) {
+        debugLog(
+            '[APP] Radio configuration changed across reconnect: $_sessionRadioConfig -> ${radioConfig ?? 'none'}');
+        logError(
+            'Your radio\'s settings changed. MeshMapper is now using the new settings.',
+            severity: ErrorSeverity.warning);
+      }
+      _sessionRadioConfig = radioConfig;
 
       final result = await _apiService.requestAuth(
         reason: 'connect',
@@ -4612,6 +4660,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog('[CONN] Hybrid mode force-enabled by regional admin');
     }
 
+    await _rememberRadioConfig();
     _syncRecentCoverage();
 
     // The repeater list is loaded by now, so the picker in Settings works.
@@ -8311,6 +8360,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       zone: zoneCode,
       gridSize: _preferences.coverageGridSize,
       days: smartPingDays,
+      radioKey: radioFilterKey,
       enabled: !sessionEnded &&
           smartPingEnabled &&
           hasApiSession &&
@@ -10395,6 +10445,42 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     _syncCarpeaterFilter();
+  }
+
+  Future<void> _loadLastRadioConfig() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      final v = box.get(_lastRadioConfigKey);
+      _lastRadioConfig = v is String && v.isNotEmpty ? v : null;
+      if (_lastRadioConfig != null) {
+        debugLog('[APP] Last radio config: $_lastRadioConfig');
+      }
+    } catch (e) {
+      debugError('[APP] Failed to load the last radio config: $e');
+      _lastRadioConfig = null;
+    }
+  }
+
+  /// Remember the connected radio's configuration for the reads that run
+  /// while disconnected. Called from _postConnectionSetup, once per connect.
+  Future<void> _rememberRadioConfig() async {
+    final tag = liveRadioConfig;
+    if (tag == _lastRadioConfig) return;
+    _lastRadioConfig = tag;
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return;
+    try {
+      if (tag == null) {
+        await box.delete(_lastRadioConfigKey);
+      } else {
+        await box.put(_lastRadioConfigKey, tag);
+      }
+      await box.flush();
+      debugLog('[APP] Remembered radio config: ${tag ?? 'none'}');
+    } catch (e) {
+      debugError('[APP] Failed to remember the radio config: $e');
+    }
   }
 
   /// Every auth answer lands here: replace the cache in full, rebuild the
