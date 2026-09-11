@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import '../../models/connection_state.dart';
 import '../../models/device_model.dart';
 import '../../utils/debug_logger_io.dart';
+import '../../utils/radio_filter.dart';
 import '../transport/companion_transport.dart';
 import 'buffer_utils.dart';
 import 'channel_service.dart';
@@ -78,6 +79,17 @@ class SelfInfo {
     final bw = _trimNum((radioBwHz ?? 0) / 1e3);
     return '$freq,$bw,${radioSf ?? 0},${radioCr ?? 0}';
   }
+
+  /// The region-door filter for this radio's preset: `f_freq`, `f_bw`,
+  /// `f_sf` from [radioConfigApi] (no coding rate). Deliberately NOT the
+  /// app's filter source: this reflects only the live connection, and the
+  /// app needs a filter while disconnected too. The app reads its filter
+  /// from `AppStateProvider.radioFilterQuery`, which falls back to the last
+  /// connected radio's configuration while disconnected, so the map keeps
+  /// painting the right preset between sessions. Null when the radio did
+  /// not report a usable configuration. See `lib/utils/radio_filter.dart`.
+  Map<String, String>? get radioFilterQuery =>
+      radioFilterFromTag(radioConfigApi);
 
   /// Human-readable radio config for the UI: "910.525 MHz · 62.5 kHz · SF7 · CR5".
   /// Null when unavailable.

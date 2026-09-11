@@ -314,6 +314,41 @@ void main() {
       expect(svc.loadedTileCount, 1);
     });
 
+    test('a radio preset change clears the cache', () async {
+      fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
+      await svc.onPosition(lat, lon);
+      svc.markCovered(lat + 0.01, lon);
+      expect(svc.loadedTileCount, 1);
+      svc.configure(
+          zone: 'YOW',
+          gridSize: 300,
+          days: 14,
+          enabled: true,
+          radioKey: '906.875,250,10');
+      expect(svc.loadedTileCount, 0,
+          reason: 'tiles fetched under the old preset answer for the wrong layer');
+      expect(svc.isCovered(lat + 0.01, lon), RecentCoverage.unknown,
+          reason: 'session marks belong to the old preset');
+    });
+
+    test('the same radio preset keeps the cache', () async {
+      svc.configure(
+          zone: 'YOW',
+          gridSize: 300,
+          days: 14,
+          enabled: true,
+          radioKey: '910.525,62.5,7');
+      fetches.answers['2373/2933'] = tileWithCells([cellOf(lat, lon)]);
+      await svc.onPosition(lat, lon);
+      svc.configure(
+          zone: 'YOW',
+          gridSize: 300,
+          days: 14,
+          enabled: true,
+          radioKey: '910.525,62.5,7');
+      expect(svc.loadedTileCount, 1);
+    });
+
     test('inactive when disabled or without a zone: clear, no fetches',
         () async {
       svc.configure(zone: 'YOW', gridSize: 300, days: 14, enabled: false);

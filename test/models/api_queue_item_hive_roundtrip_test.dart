@@ -5,8 +5,8 @@ import 'package:hive/hive.dart';
 import 'package:mesh_mapper/models/api_queue_item.dart';
 
 /// The generated adapter is gitignored and regenerated per machine, so a
-/// stale one compiles cleanly while silently dropping field 19. Every real
-/// upload reads its items back out of Hive, so the stamp must survive a
+/// stale one compiles cleanly while silently dropping field 19 or 20. Every
+/// real upload reads its items back out of Hive, so the stamp must survive a
 /// write and a read through the adapter, and a DEFER must come back a DEFER.
 
 void main() {
@@ -74,5 +74,31 @@ void main() {
     });
     expect(tx.autoMode, isNull);
     expect(tx.toApiJson().containsKey('auto_mode'), isFalse);
+  });
+
+  test('the radio tag survives the adapter on a ping and on a DEFER',
+      () async {
+    final box = await Hive.openBox<ApiQueueItem>('roundtrip3');
+    await box.add(ApiQueueItem.fromRx(
+      latitude: 45.0,
+      longitude: -75.0,
+      heardRepeats: '4e(12.0)',
+      timestamp: 1757400000,
+      externalAntenna: false,
+      radioFreq: '910.525,62.5,7,5',
+    ));
+    await box.add(ApiQueueItem.fromDefer(
+      latitude: 45.0,
+      longitude: -75.0,
+      timestamp: 1757400001,
+      held: 'tx',
+      radioFreq: '906.875,250,10,5',
+    ));
+    await box.close();
+
+    final reopened = await Hive.openBox<ApiQueueItem>('roundtrip3');
+    expect(reopened.getAt(0)!.radioFreq, '910.525,62.5,7,5');
+    expect(reopened.getAt(0)!.toApiJson()['radio_freq'], '910.525,62.5,7,5');
+    expect(reopened.getAt(1)!.toApiJson()['radio_freq'], '906.875,250,10,5');
   });
 }
