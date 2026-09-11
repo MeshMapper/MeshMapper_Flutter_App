@@ -98,6 +98,8 @@ class RepeaterAdminResult {
 /// `lat`, `lng` or `lon`: an old server's router keys on those, and the
 /// `invalid_request` it answers instead is how the app learns the region has
 /// no `/repeater` leg yet. [forbiddenTopLevelKeys] is asserted on every post.
+/// Every body carries `radio_freq`, the radio's configuration tag, when the
+/// radio reported one.
 class RepeaterAdminApi {
   static const String endpoint =
       '${ApiService.baseUrl}/wardrive-api.php/repeater';
@@ -114,14 +116,17 @@ class RepeaterAdminApi {
   final http.Client _client;
   final String? Function() _sessionId;
   final String Function() _appVersion;
+  final String? Function() _radioConfig;
 
   RepeaterAdminApi({
     required http.Client client,
     required String? Function() sessionId,
     required String Function() appVersion,
+    required String? Function() radioConfig,
   })  : _client = client,
         _sessionId = sessionId,
-        _appVersion = appVersion;
+        _appVersion = appVersion,
+        _radioConfig = radioConfig;
 
   Future<RepeaterAdminResult> claim(
       String repeaterHex, Map<String, dynamic> proof) {
@@ -162,11 +167,17 @@ class RepeaterAdminApi {
       return const RepeaterAdminResult.failed(
           RepeaterAdminFailureKind.noSession);
     }
+    // The preset this request was made on (the full freqMHz,bwKHz,SF,CR tag).
+    // A claim and a neighbour table are facts about one preset: the companion
+    // and the repeater were on the same one to talk at all. Top level because
+    // every action wants it; not one of the keys the old router traps.
+    final radioFreq = _radioConfig();
     final body = <String, dynamic>{
       'key': ApiService.apiKey,
       'session_id': sessionId,
       'action': action,
       'app_ver': _appVersion(),
+      if (radioFreq != null) 'radio_freq': radioFreq,
       ...fields,
     };
     assert(body.keys.every((k) => !forbiddenTopLevelKeys.contains(k)),

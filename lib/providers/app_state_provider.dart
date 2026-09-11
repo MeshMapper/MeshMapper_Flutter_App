@@ -3047,6 +3047,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       client: http.Client(),
       sessionId: () => _apiService.sessionId,
       appVersion: () => _appVersion,
+      radioConfig: () => _meshCoreConnection?.selfInfo?.radioConfigApi,
     );
     // The two stores share two interfaces, so an unannotated conditional
     // infers Object: name the type the branches are read as.
