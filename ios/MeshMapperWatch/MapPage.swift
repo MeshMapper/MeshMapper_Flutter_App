@@ -716,9 +716,9 @@ struct MapPage: View {
         // through `proxy.convert`; camera placement is now `.safeAreaPadding`,
         // which insets MapKit's own framing, so no coordinate conversion
         // happens anywhere in this file. The proxy was threaded through six
-        // functions unread. Do not reintroduce a reader to place the camera —
-        // see the handoff: the map's SwiftUI frame is not the map, and any
-        // offset computed from view geometry under-shoots.
+        // functions unread. Do not reintroduce a reader to place the camera:
+        // the map's SwiftUI frame is not the map, and any offset computed
+        // from view geometry under-shoots.
         mapContent
       } else {
         readoutContent

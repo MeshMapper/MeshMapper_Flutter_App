@@ -678,7 +678,7 @@ class ApiService {
         // an admin deleted (or retention aged out) leaves this phone at the
         // next auth. Missing on an older server means an empty list. Read
         // even on a skipSessionStore auth (the offline upload), because the
-        // handoff says every auth replaces it.
+        // server contract says every auth replaces it.
         _regionalCarpeaters =
             RegionalCarpeaterFilter.sanitize(data['carpeaters']);
         final carpeaterError = data['carpeater_error'];
