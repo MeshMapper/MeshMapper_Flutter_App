@@ -215,6 +215,7 @@ class RepeaterAdminApi {
     final message = _asString(data['message']);
     debugLog('[RADMIN] POST /repeater $action -> HTTP ${response.statusCode} '
         '${data['success'] == true ? 'ok' : 'reason=$reason'} '
+        'radio=${radioFreq ?? 'none'} '
         '(${stopwatch.elapsedMilliseconds}ms)');
 
     if (response.statusCode == 429 || reason == 'rate_limited') {
