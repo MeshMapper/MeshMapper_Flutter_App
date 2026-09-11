@@ -9,6 +9,7 @@ import 'package:mesh_mapper/services/repeater_admin/repeater_admin_api.dart';
 void main() {
   http.Request? seen;
   String? sessionId = 'YOW-20260910-0001';
+  String? radioConfig = '910.525,62.5,7,5';
 
   RepeaterAdminApi api(http.Response Function(http.Request) responder) =>
       RepeaterAdminApi(
@@ -18,6 +19,7 @@ void main() {
         }),
         sessionId: () => sessionId,
         appVersion: () => '1.4.0',
+        radioConfig: () => radioConfig,
       );
 
   http.Response ok(Map<String, dynamic> body) =>
@@ -26,6 +28,7 @@ void main() {
   setUp(() {
     seen = null;
     sessionId = 'YOW-20260910-0001';
+    radioConfig = '910.525,62.5,7,5';
   });
 
   Map<String, dynamic> body() =>
@@ -190,5 +193,34 @@ void main() {
         .claim('ab' * 32, {});
     expect(failedResult.ok, isFalse);
     expect(failedResult.failure, RepeaterAdminFailureKind.invalid);
+  });
+
+  test('every action carries the radio config at the top level', () async {
+    await api((_) => ok({'administrators': []})).claim('ab' * 32, {
+      'login': 'admin',
+      'acl': true,
+      'perms': 3,
+      'fw_level': 2
+    });
+    expect(body()['radio_freq'], '910.525,62.5,7,5');
+
+    await api((_) => ok({})).unclaim('ab' * 32);
+    expect(body()['radio_freq'], '910.525,62.5,7,5');
+
+    await api((_) => ok({'claims': []})).mine();
+    expect(body()['radio_freq'], '910.525,62.5,7,5');
+
+    await api((_) => ok({})).neighbours('ab' * 32, {
+      'fetched_at': 1,
+      'total': 0,
+      'entries': [],
+    });
+    expect(body()['radio_freq'], '910.525,62.5,7,5');
+  });
+
+  test('no radio config means no radio_freq key', () async {
+    radioConfig = null;
+    await api((_) => ok({'claims': []})).mine();
+    expect(body().containsKey('radio_freq'), isFalse);
   });
 }
