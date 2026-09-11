@@ -218,9 +218,10 @@ The `external_antenna`, `noisefloor`, `altitude` and `power` fields are not pres
   "lat": 45.26974,
   "lon": -75.77746,
   "timestamp": 1757400000,
-  "held": "tx",
   "contact": "D873B1F2",
-  "iata": "YOW"
+  "iata": "YOW",
+  "radio_freq": "910.525,62.5,7,5",
+  "held": "tx"
 }
 ```
 
@@ -273,9 +274,10 @@ A batch is whatever the app uploaded to MeshMapper in that round, so one request
       "lat": 45.27210,
       "lon": -75.78120,
       "timestamp": 1768762933,
-      "held": "tx",
       "contact": "D873B1F2",
-      "iata": "YOW"
+      "iata": "YOW",
+      "radio_freq": "910.525,62.5,7,5",
+      "held": "tx"
     },
     {
       "type": "RX",
