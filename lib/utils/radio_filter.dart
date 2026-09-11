@@ -7,7 +7,7 @@
 /// and `f_sf`, matched exactly against the stored tag's slots. The coding
 /// rate is left out on purpose, so a channel matches whatever coding rate
 /// people run on it. Contract: the wiki's Coverage API "Filtering" section
-/// and `MeshMapper_Server/docs/HANDOFF-app-radio-preset.md`.
+/// and `MeshMapper_Server/docs/APP_API.md`.
 ///
 /// Fail open: a null, short, partly unknown or malformed tag gives null, and
 /// every caller sends no filter at all in that case.

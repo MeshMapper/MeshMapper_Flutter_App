@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:mesh_mapper/services/repeater_admin/repeater_admin_api.dart';
 
-/// Request shapes pinned by MeshMapper_Server/docs/HANDOFF-repeater-administrators-server.md.
+/// Request shapes pinned by MeshMapper_Server/docs/APP_API.md.
 void main() {
   http.Request? seen;
   String? sessionId = 'YOW-20260910-0001';

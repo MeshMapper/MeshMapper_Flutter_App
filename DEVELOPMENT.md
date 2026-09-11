@@ -415,7 +415,7 @@ untouched. On by default with a 14 day window.
   (`CustomApiService.forwardPings` strips it). **Server first, not optional**: an old server
   routes an unknown item type into its TX path and inserts a dead TX row, so no build carrying
   this may reach a phone pointed at a server without the other half
-  (`MeshMapper_Server/docs/HANDOFF-app-smart-ping-credit.md`).
+  (`MeshMapper_Server/docs/APP_API.md`).
 - Logged under `[COVERAGE]` (tiles, session marks, deferral reports), `[API QUEUE]` (the
   `DEFER` enqueue) and `[PING]` / `[DISC]` (deferrals, releases and drops). The batch and
   heartbeat request summaries under `[API]` / `[HEARTBEAT]` show `auto_mode`.
@@ -434,7 +434,7 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
   queued before a preset change keeps the preset it was heard on. Absent when the radio reported
   no configuration or the queue has no getter wired; the server then uses the session's value.
   The third-party endpoint keeps it. Contract:
-  `MeshMapper_Server/docs/HANDOFF-app-radio-preset.md`.
+  `MeshMapper_Server/docs/APP_API.md`.
 - **Authentication**: API key in JSON body (NOT query string)
 - **Retry Logic**: Exponential backoff on failures. A 429 storm-brake answer holds the whole queue for the server's `Retry-After` without spending a retry (see Session Heartbeat)
 
@@ -486,7 +486,7 @@ Continuous RSSI measurement of the idle channel, providing ambient noise data fo
 "Carpeater" = co-located repeater with very strong signal, indicating the device is too close for meaningful coverage data. Three layers, checked in `TxTracker` and `RxLogger` in this order, and in `DiscTracker` with the regional check first:
 
 - **The user's own CARpeater** (`UserPreferences.carpeaterPublicKey`, a full upper-case 64-hex public key, on while `ignoreCarpeater` is set; entered in Settings by the trace repeater picker or a validated text field). Pass-through: a TX echo or RX packet whose hop matches is stripped and the repeater behind it is credited with null SNR/RSSI; a single-hop packet via it is dropped; a discovery response from it is dropped. The hop is compared at its own width (2 to 8 hex) via `PacketValidator.isCarpeaterIdMatch`. The pre-share 6-hex prefix is wiped at load (`UserPreferences.stripLegacyCarpeater`), never migrated, and a persisted `carpeater_reentry_pending` flag makes `MainScaffold` prompt for the full key after the next connect (with a button to the Wardriving settings page; "Not now" repeats after the next connect, "I don't use a CARpeater" clears it, so does setting a key).
-- **Regional CARpeaters** (`RegionalCarpeaterFilter`, `lib/services/meshcore/regional_carpeater_filter.dart`): the region's shared list. The app sends its own key as `carpeater` on connect and register auths (never on an offline-mode auth) and every auth answer carries `carpeaters`, which replaces the Hive cache (`user_preferences` box, key `regional_carpeaters`) in full, so an entry an admin deleted or retention aged out leaves the phone at the next auth and Offline Mode keeps the last copy. A missing field is an empty list. The filter excludes the user's own key while their switch is on; every other key is a plain drop, always, even with the user's filter off: someone else's CARpeater is in someone else's car, so neither it nor the repeater behind it may be credited. TX checks the first hop and the credited hop, RX the credited hop, both AFTER the own-CARpeater strip; discovery matches the full key. Regional drops are debug-log only (`[TX LOG]`, `[RX LOG]`, `[DISC]`), never error-log entries. Settings shows "Filtering N regional CARpeaters" with a list. The server caps one radio at 5 live tags per zone; `carpeater_error: max_reached` becomes an error-log entry plus a toast and never affects the connection. Contract: `MeshMapper_Server/docs/HANDOFF-app-regional-carpeaters.md`.
+- **Regional CARpeaters** (`RegionalCarpeaterFilter`, `lib/services/meshcore/regional_carpeater_filter.dart`): the region's shared list. The app sends its own key as `carpeater` on connect and register auths (never on an offline-mode auth) and every auth answer carries `carpeaters`, which replaces the Hive cache (`user_preferences` box, key `regional_carpeaters`) in full, so an entry an admin deleted or retention aged out leaves the phone at the next auth and Offline Mode keeps the last copy. A missing field is an empty list. The filter excludes the user's own key while their switch is on; every other key is a plain drop, always, even with the user's filter off: someone else's CARpeater is in someone else's car, so neither it nor the repeater behind it may be credited. TX checks the first hop and the credited hop, RX the credited hop, both AFTER the own-CARpeater strip; discovery matches the full key. Regional drops are debug-log only (`[TX LOG]`, `[RX LOG]`, `[DISC]`), never error-log entries. Settings shows "Filtering N regional CARpeaters" with a list. The server caps one radio at 5 live tags per zone; `carpeater_error: max_reached` becomes an error-log entry plus a toast and never affects the connection. Contract: `MeshMapper_Server/docs/APP_API.md`.
 - **RSSI threshold**: Packets with RSSI >= -30 dBm are dropped as carpeater (constant `maxRssiThreshold`), skipped for an own-CARpeater pass-through; logged to the error log without auto-switching tabs under `[RX FILTER]`.
 - **Validation pipeline**: RSSI check → packet type (GROUP_TEXT/ADVERT) → channel hash match → AES-ECB decryption → printable character ratio (60% minimum)
 - **Files**: `lib/services/meshcore/packet_validator.dart`, `lib/services/meshcore/regional_carpeater_filter.dart`, `lib/utils/public_key.dart`
@@ -694,7 +694,7 @@ server call), see and reset the route the radio learned, and fetch the repeater'
 table a page per tap and upload it. Everything is a request with a pushed response. **Never:**
 a CLI command (its reply is a direct message), a read of the radio's message queue
 (`CMD_SYNC_NEXT_MESSAGE` stays unsent, `MSG_WAITING` unhandled), or an export of the radio's
-private key. Server contract: `MeshMapper_Server/docs/HANDOFF-repeater-administrators-server.md`.
+private key. Server contract: `MeshMapper_Server/docs/APP_API.md`.
 **Server first:** an old server answers the `/repeater` leg with 400 `invalid_request`, which
 the app shows as "This region does not support claiming yet."
 
