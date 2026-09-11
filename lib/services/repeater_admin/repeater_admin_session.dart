@@ -142,7 +142,14 @@ class RepeaterAdminSession extends ChangeNotifier {
       _setState(RepeaterAdminState.admin);
       return true;
     } on TimeoutException {
-      _fail('No reply from the repeater. Check the password and try again.');
+      // A learned route is the other silent cause: the radio sends the login
+      // DIRECT along it and never falls back to flood, so a stale route (the
+      // first hop moved out of range) looks exactly like a wrong password.
+      final learnedRoute = _route != null && !_route!.flood;
+      _fail(learnedRoute
+          ? 'No reply from the repeater. Check the password, or reset the '
+              'route and try again.'
+          : 'No reply from the repeater. Check the password and try again.');
       return false;
     } on FormatException catch (e) {
       // A LOGIN_SUCCESS shorter than 14 bytes: companion firmware older than
@@ -241,7 +248,7 @@ class RepeaterAdminSession extends ChangeNotifier {
       final contacts = await _connection.getContacts();
       final c = _findContact(contacts);
       if (c != null) {
-        _route = RepeaterRoute.fromRouteBytes(c.routeBytes, hopBytes: hopBytes);
+        _route = RepeaterRoute.fromRouteBytes(c.routeBytes, hopBytes: c.routeHopBytes);
         debugLog('[RADMIN] Route: ${describeRoute()}');
       }
     } on RadioAbortedException {
@@ -426,7 +433,8 @@ class RepeaterAdminSession extends ChangeNotifier {
     final existing = _findContact(contacts);
     if (existing != null) {
       // Leave it alone: an add would wipe the learned route.
-      _route = RepeaterRoute.fromRouteBytes(existing.routeBytes, hopBytes: hopBytes);
+      _route = RepeaterRoute.fromRouteBytes(existing.routeBytes,
+          hopBytes: existing.routeHopBytes);
       debugLog('[RADMIN] Contact present, route: ${describeRoute()}');
       return;
     }

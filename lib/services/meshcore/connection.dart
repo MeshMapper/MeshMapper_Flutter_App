@@ -256,12 +256,24 @@ class ContactRecord {
       .join()
       .toUpperCase();
 
-  bool get hasRoute =>
-      outPathLen != ProtocolConstants.outPathUnknown && outPathLen > 0;
+  /// `out_path_len` is NOT a byte count. The firmware stores it in the
+  /// packet path_len encoding (`Packet::copyPath`): the top two bits are the
+  /// hop hash size less one, the low six bits the hop count. A one-hop route
+  /// on a 3-byte-hop mesh is 0x81, and reading that as 129 bytes rendered the
+  /// whole 64-byte buffer, stale hops and all, as 64 one-byte hops.
+  int get routeHopCount =>
+      outPathLen == ProtocolConstants.outPathUnknown ? 0 : outPathLen & 63;
 
-  /// The learned path, `out_path_len` bytes of `out_path` (empty when unknown).
+  /// Bytes per hop in [routeBytes]: 1, 2 or 3 (4 is reserved by the firmware).
+  int get routeHopBytes => (outPathLen >> 6) + 1;
+
+  bool get hasRoute => routeHopCount > 0;
+
+  /// The learned path, `routeHopCount * routeHopBytes` bytes of `out_path`
+  /// (empty when unknown).
   Uint8List get routeBytes => hasRoute
-      ? outPath.sublist(0, outPathLen.clamp(0, outPath.length))
+      ? outPath.sublist(
+          0, (routeHopCount * routeHopBytes).clamp(0, outPath.length))
       : Uint8List(0);
 
   Uint8List toFrame(int commandCode) {

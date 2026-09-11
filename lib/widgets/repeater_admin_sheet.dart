@@ -355,25 +355,34 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
       if (session.state == RepeaterAdminState.guest)
         const Text('That is the guest password. Claiming needs the admin password.'),
       if (loginError case final w?) w,
+      // Reset route lives here, before login, because the route only matters
+      // for getting the login through: the radio sends it DIRECT along a
+      // learned route and never falls back to flood, so a stale route is
+      // silent exactly like a wrong password. Once logged in the route is
+      // fixed for the session, so the Route card below is read-only.
+      if (!session.isLoggedIn && session.route != null) ...[
+        Text('Route: ${session.describeRoute()}'),
+        if (_ownedError(_ErrorOwner.route) case final w?) w,
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            onPressed: busy ? null : _resetRoute,
+            child: const Text('Reset route'),
+          ),
+        ),
+      ],
     ]);
   }
 
-  Widget _routeCard(BuildContext context) {
-    Future<void> reset() async {
-      setState(() => _errorOwner = _ErrorOwner.route);
-      await session.resetRoute();
-    }
+  Future<void> _resetRoute() async {
+    setState(() => _errorOwner = _ErrorOwner.route);
+    await session.resetRoute();
+    if (mounted) setState(() {});
+  }
 
+  Widget _routeCard(BuildContext context) {
     return _card(context, 'Route', [
       Text('Route: ${session.describeRoute()}'),
-      if (_ownedError(_ErrorOwner.route) case final w?) w,
-      Align(
-        alignment: Alignment.centerRight,
-        child: TextButton(
-          onPressed: session.busy ? null : reset,
-          child: const Text('Reset route'),
-        ),
-      ),
     ]);
   }
 

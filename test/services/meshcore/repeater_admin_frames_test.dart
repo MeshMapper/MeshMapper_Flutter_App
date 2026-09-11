@@ -79,6 +79,26 @@ void main() {
       expect(frame.sublist(1), payload);
     });
 
+    test('out_path_len carries the hop width in its top two bits', () {
+      // The frame the field log showed: one 3-byte hop (0x81) with the
+      // leftovers of an older three-hop route still in the buffer.
+      final rec = ContactRecord.parse(BufferReader(contactPayload(
+          pubkey: key(1),
+          outPathLen: 0x81,
+          outPath: [0x4E, 0x31, 0x92, 0xBD, 0x60, 0x89, 0xF0, 0x62, 0xEB])));
+      expect(rec.routeHopBytes, 3);
+      expect(rec.routeHopCount, 1);
+      expect(rec.hasRoute, isTrue);
+      expect(rec.routeBytes, [0x4E, 0x31, 0x92]);
+    });
+
+    test('a zero hop count is no route whatever the width bits say', () {
+      final rec = ContactRecord.parse(
+          BufferReader(contactPayload(pubkey: key(1), outPathLen: 0x80)));
+      expect(rec.hasRoute, isFalse);
+      expect(rec.routeBytes, isEmpty);
+    });
+
     test('0xFF path length is no route', () {
       final rec = ContactRecord.parse(
           BufferReader(contactPayload(pubkey: key(1), outPathLen: 0xFF)));
