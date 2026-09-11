@@ -1277,6 +1277,22 @@ class ApiService {
   /// offline upload closing its own session).
   String Function()? currentAutoMode;
 
+  /// The radio preset filter for every region read (`f_freq`, `f_bw`,
+  /// `f_sf`; see `lib/utils/radio_filter.dart`), or null for none. Wired by
+  /// the provider: the live radio while connected, the last-seen config
+  /// while disconnected, so the map keeps painting the right preset between
+  /// sessions. Read at the moment of each request.
+  Map<String, String>? Function()? radioFilterGetter;
+
+  /// The filter as query parameters, empty when there is none.
+  Map<String, String> _radioFilterParams() =>
+      radioFilterGetter?.call() ?? const <String, String>{};
+
+  /// The filter as a `&k=v` suffix for string-built URLs, empty when none.
+  /// Values are digits and dots only, so no encoding is needed.
+  String _radioFilterSuffix() =>
+      _radioFilterParams().entries.map((e) => '&${e.key}=${e.value}').join();
+
   /// Force-rebuild one vector coverage tile on the region server
   /// (`vector_tile.php?...&fresh=1`, see VECTOR_TILES.md). Used by the
   /// post-wardrive live refresh: it keeps the server cache hot AND hands the
@@ -1294,12 +1310,13 @@ class ApiService {
     required int y,
     int gsize = 300,
   }) async {
+    final filter = _radioFilterSuffix();
     final url =
         Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
-            '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1');
+            '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter');
     final sw = Stopwatch()..start();
     debugLog(
-        '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1 (zone ${zone.toLowerCase()})');
+        '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter (zone ${zone.toLowerCase()})');
     try {
       final response =
           await _client.get(url).timeout(const Duration(seconds: 8));
@@ -1339,6 +1356,7 @@ class ApiService {
     required int days,
   }) async {
     const z = 13;
+    final filter = _radioFilterParams();
     final url =
         Uri.https('${zone.toLowerCase()}.meshmapper.net', '/vector_tile.php', {
       'z': '$z',
@@ -1347,10 +1365,11 @@ class ApiService {
       'gsize': '$gsize',
       'f_days': '$days',
       'f_types': 'green,cyan',
+      ...filter,
     });
     final sw = Stopwatch()..start();
     debugLog(
-        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&f_days=$days&f_types=green,cyan (zone ${zone.toLowerCase()})');
+        '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&f_days=$days&f_types=green,cyan${_radioFilterSuffix()} (zone ${zone.toLowerCase()})');
     try {
       final response =
           await _client.get(url).timeout(const Duration(seconds: 8));
@@ -1477,13 +1496,12 @@ class ApiService {
     final stopwatch = Stopwatch()..start();
     const endpoint = '/get_repeaters.php';
     try {
-      final url = 'https://${iata.toLowerCase()}.meshmapper.net$endpoint';
+      final filter = _radioFilterParams();
+      final url = Uri.https('${iata.toLowerCase()}.meshmapper.net', endpoint,
+          filter.isEmpty ? null : filter);
 
-      final response = await _client
-          .get(
-            Uri.parse(url),
-          )
-          .timeout(const Duration(seconds: 15));
+      final response =
+          await _client.get(url).timeout(const Duration(seconds: 15));
 
       stopwatch.stop();
 
@@ -1596,13 +1614,16 @@ class ApiService {
     final z = zone.toLowerCase();
     final url = Uri.parse('https://$z.meshmapper.net/app_coverage.php');
     final sw = Stopwatch()..start();
-    debugLog('[COVERAGE] POST /app_coverage.php ($label, zone $z)');
+    final filter = _radioFilterSuffix();
+    debugLog(
+        '[COVERAGE] POST /app_coverage.php ($label, zone $z${filter.isEmpty ? '' : ', filter $filter'})');
     try {
       final response = await _client
           .post(
             url,
             headers: {'Content-Type': 'application/json'},
-            body: json.encode({'key': apiKey, ...body}),
+            body:
+                json.encode({'key': apiKey, ...body, ..._radioFilterParams()}),
           )
           .timeout(const Duration(seconds: 15));
       final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
