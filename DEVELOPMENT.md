@@ -691,7 +691,13 @@ the app shows as "This region does not support claiming yet."
   `RepeaterAdminSession`, a `ChangeNotifier` the sheet listens to, depends on
   `MeshCoreConnection` only). Step 1 makes sure the radio has the repeater as a contact
   (`getContacts`, then `addContact` as a flood repeater with the MeshMapper name and position
-  only when absent, because an add wipes a learned route; `ERR 3` there is "Your radio's
+  only when absent, because an add wipes a learned route; the contact list is read in full
+  once per BLE connection and cached on the `MeshCoreConnection`, and every later
+  `getContacts` sends the firmware's `since` filter (the newest `lastmod` from the
+  END_OF_CONTACTS frame) and merges what changed, so the 52 KB stream happens once, not per
+  login; a learned route bumps `lastmod` so it syncs, `resetPath` does not so the cached
+  record is patched, `addContact` inserts its record, and the cache dies with the connection
+  object (auto-reconnect builds a new one); `ERR 3` there is "Your radio's
   contact list is full."). Step 2 logs in (`login`, `CMD_SEND_LOGIN` with the raw UTF-8
   password, no NUL; the firmware terminates the frame). The 14-byte `LOGIN_SUCCESS` carries
   an explicit admin flag, the ACL perms byte and the firmware level. **Firmware floor, no
@@ -711,13 +717,19 @@ the app shows as "This region does not support claiming yet."
   the contact's `out_path` as hops at the width its `out_path_len` byte encodes (the packet
   path_len encoding: top two bits hash size less one, low six the hop count; it is NOT a byte
   count, so 0x81 is one 3-byte hop; `ContactRecord.routeHopBytes`) (names resolved by unique
-  prefix against the zone list, else hex; `0xFF` is "Flood (no route learned yet)"),
-  re-read on every `PATH_UPDATED` push, and `resetPath` floods the next send. Reset route sits
-  in the Log in card, shown once the contact has been read and until a login succeeds: the
+  prefix against the zone list, else hex; `0xFF` is "Flood (no route learned yet)"; a zero hop
+  count, 0x80 on a 3-byte mesh, is "Direct (no hops)", a LEARNED route the radio sends along
+  with an empty path, which is what a repeater in range answers with),
+  re-read on every `PATH_UPDATED` push, and `resetPath` floods the next send. The route line sits
+  under the header at all times (hop hashes only, a Details dialog lists the hops by name), with
+  Reset route beside it once the contact has been read and until a login succeeds: the
   radio sends the login DIRECT along a learned route and never falls back to flood, so a
   stale route is silent exactly like a wrong password, and the timeout sentence names the
-  route when one is learned. Once logged in the route cannot change for the session, so the
-  Route card is read-only. Step 5 reads
+  route when one is learned. After 3 unanswered logins in a row along a learned route the
+  session resets the route itself (`kLoginTimeoutsBeforeRouteReset`, the official client's
+  habit) and says so; it never resends, the next tap floods. Any login reply, a manual reset
+  or a flood-route timeout clears the count. Once logged in the route cannot change for the session, so it
+  shows as a read-only fact row under the header. Step 5 reads
   the neighbour table one page per tap: `[0x06][0][10][offset:u16][0][8][random:4]`, ten
   entries per page at an 8-byte prefix, newest first. A binary reply's body starts at its
   first field (`[total:u16][returned:u16]`, or the first 7-byte ACL entry): the repeater
@@ -730,7 +742,9 @@ the app shows as "This region does not support claiming yet."
   the pages held with the repeater's own `total` beside them. SNR is the firmware's
   `int8 / 4` dB. Timeouts are the radio's `est_timeout_ms` from
   the `SENT` reply plus 5 s, clamped to [8 s, 60 s]. Commands never overlap: the companion
-  keeps one pending request and a login clears it.
+  keeps one pending request and a login clears it. The noise floor and battery pollers skip
+  their tick while an admin command holds the link: a 350-contact stream is 52 KB through the
+  companion's BLE queue, and both times a poll landed inside one the radio dropped the link.
 - **Connection layer** (`lib/services/meshcore/connection.dart`): `getContacts`,
   `addContact`, `login`, `sendBinaryRequest`, `resetPath`, `pathUpdatedStream`, each a
   completer plus timeout in the `sign()` style, one at a time (`StateError` otherwise),
@@ -765,7 +779,8 @@ the app shows as "This region does not support claiming yet."
   reconciled from the server's `mine` action after every connect (non-fatal, skipped on an
   old server). Passwords go through `SecureTokenStore` under `repeater_admin_pw_<HEX>`,
   never logged, never sent. Nothing here bumps `mapRevision`.
-- **Entry points**: the Trace row is `[list] [selected ID] [Trace] [Manage]`; Manage needs
+- **Entry points**: the Trace row is three pieces, `[list + ID]` (one neutral group), `[Trace]`
+  and `[Manage]` (each its own tinted box); Manage needs
   the full key, so a picked repeater carries it and a typed ID counts only when it prefixes
   exactly one loaded repeater (`resolveManageTarget`), else the tooltip reads "Choose from
   the list". The compact (landscape) controls are unchanged. The detail sheet gets an

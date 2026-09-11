@@ -92,8 +92,10 @@ class RepeaterTarget {
   String get shortId => hexId.substring(0, 8);
 }
 
-/// A route to a repeater, decoded from the radio's route-hop bytes: either a
-/// learned sequence of hop hashes or the flood fallback (no route learned).
+/// A route to a repeater, decoded from the radio's route-hop bytes: a
+/// learned sequence of hop hashes, a learned DIRECT route (no hops: the
+/// repeater hears this radio itself), or the flood fallback (no route
+/// learned).
 class RepeaterRoute {
   /// The route's hop hashes, each an upper case hex string.
   final List<String> hops;
@@ -109,12 +111,22 @@ class RepeaterRoute {
       : hops = const [],
         flood = true;
 
-  /// Decodes [bytes] into a route. Empty bytes is flood. When the length
-  /// does not divide evenly by [hopBytes] (or [hopBytes] is less than 1),
-  /// falls back to splitting into one-byte hops.
+  /// A learned direct route: zero hops, the repeater is in range.
+  const RepeaterRoute.direct()
+      : hops = const [],
+        flood = false;
+
+  /// True for a learned route with no hops.
+  bool get direct => !flood && hops.isEmpty;
+
+  /// Decodes the LEARNED route in [bytes]; empty bytes is a direct route,
+  /// not flood (the caller answers "is there a route at all" from the
+  /// contact's `out_path_len`, see `ContactRecord.hasRoute`). When the
+  /// length does not divide evenly by [hopBytes] (or [hopBytes] is less
+  /// than 1), falls back to splitting into one-byte hops.
   factory RepeaterRoute.fromRouteBytes(Uint8List bytes, {required int hopBytes}) {
     if (bytes.isEmpty) {
-      return const RepeaterRoute.flood();
+      return const RepeaterRoute.direct();
     }
     var width = hopBytes;
     if (width < 1 || bytes.length % width != 0) {
@@ -128,11 +140,15 @@ class RepeaterRoute {
   }
 
   /// Describes the route as human-readable text: `'Flood (no route learned
-  /// yet)'` when flooded or empty, otherwise each hop resolved via [nameFor]
-  /// (falling back to its hex when unresolved) joined with `' > '`.
+  /// yet)'` when flooded, `'Direct (no hops)'` for a learned zero-hop route,
+  /// otherwise each hop resolved via [nameFor] (falling back to its hex when
+  /// unresolved) joined with `' > '`.
   String describe(String? Function(String hopHex) nameFor) {
-    if (flood || hops.isEmpty) {
+    if (flood) {
       return 'Flood (no route learned yet)';
+    }
+    if (hops.isEmpty) {
+      return 'Direct (no hops)';
     }
     return hops.map((h) => nameFor(h) ?? h).join(' > ');
   }

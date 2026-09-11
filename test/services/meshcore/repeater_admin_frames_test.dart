@@ -92,10 +92,13 @@ void main() {
       expect(rec.routeBytes, [0x4E, 0x31, 0x92]);
     });
 
-    test('a zero hop count is no route whatever the width bits say', () {
+    test('a zero hop count is a learned direct route, not no route', () {
+      // What the radio stored once CBC-FORTUNE-R1 answered a flooded login
+      // directly on 2026-09-10, and then sent to with flood=false.
       final rec = ContactRecord.parse(
           BufferReader(contactPayload(pubkey: key(1), outPathLen: 0x80)));
-      expect(rec.hasRoute, isFalse);
+      expect(rec.hasRoute, isTrue);
+      expect(rec.routeHopCount, 0);
       expect(rec.routeBytes, isEmpty);
     });
 
@@ -149,6 +152,105 @@ void main() {
       final contacts = await future;
       expect(contacts.map((c) => c.publicKeyHex).toList(),
           ['01' * 32, '02' * 32]);
+    });
+
+    test('a second read asks only for changes and merges them in', () async {
+      // First read primes the cache and learns the newest lastmod (100).
+      final first = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 2, 0, 0, 0]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(pubkey: key(1), lastMod: 90),
+      ]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(pubkey: key(2), lastMod: 100),
+      ]);
+      transport.emit([ResponseCodes.endOfContacts, 100, 0, 0, 0]);
+      expect((await first).length, 2);
+
+      // Second read: since=100 on the wire, and only key(1) comes back,
+      // now with a learned route. The result is still the whole list, with
+      // key(1) replaced in place.
+      final second = connection.getContacts();
+      await transport.settle();
+      expect(transport.writes.last, [CommandCodes.getContacts, 100, 0, 0, 0]);
+      transport.emit([ResponseCodes.contactsStart, 1, 0, 0, 0]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(
+            pubkey: key(1),
+            outPathLen: 0x81,
+            outPath: [0x4E, 0x31, 0x92],
+            lastMod: 150),
+      ]);
+      transport.emit([ResponseCodes.endOfContacts, 150, 0, 0, 0]);
+      final merged = await second;
+      expect(merged.map((c) => c.publicKeyHex).toList(), ['01' * 32, '02' * 32]);
+      expect(merged[0].routeBytes, [0x4E, 0x31, 0x92]);
+
+      // An empty sync reports lastmod 0 and must not move since backwards.
+      final third = connection.getContacts();
+      await transport.settle();
+      expect(transport.writes.last, [CommandCodes.getContacts, 150, 0, 0, 0]);
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect((await third).length, 2);
+      final fourth = connection.getContacts();
+      await transport.settle();
+      expect(transport.writes.last, [CommandCodes.getContacts, 150, 0, 0, 0]);
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      await fourth;
+    });
+
+    test('resetPath clears the cached route, the radio never resends it',
+        () async {
+      final first = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 1, 0, 0, 0]);
+      transport.emit([
+        ResponseCodes.contact,
+        ...contactPayload(
+            pubkey: key(1), outPathLen: 0x81, outPath: [0x4E, 0x31, 0x92]),
+      ]);
+      transport.emit([ResponseCodes.endOfContacts, 5, 0, 0, 0]);
+      expect((await first).single.hasRoute, isTrue);
+
+      final reset = connection.resetPath(key(1));
+      await transport.settle();
+      transport.emit([ResponseCodes.ok]);
+      await reset;
+
+      final second = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      final after = await second;
+      expect(after.single.hasRoute, isFalse);
+      expect(after.single.name, 'Hilltop');
+    });
+
+    test('addContact lands in the cache once primed', () async {
+      final first = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect(await first, isEmpty);
+
+      final rec = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      final add = connection.addContact(rec);
+      await transport.settle();
+      transport.emit([ResponseCodes.ok]);
+      await add;
+
+      final second = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect((await second).single.publicKeyHex, '09' * 32);
     });
 
     test('ERR while iterating fails with the radio code', () async {
