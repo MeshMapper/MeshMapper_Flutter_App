@@ -6689,14 +6689,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (result.ok) {
       debugLog('[RADMIN] Claimed ${session.target.shortId}: '
           'administrators=${result.administrators.length}');
-      _upsertClaim(RepeaterClaim(
-        repeaterHex: session.target.hexId,
-        name: session.target.name,
-        iata: zoneCode,
-        claimedAt: result.claimedAt ?? DateTime.now().millisecondsSinceEpoch ~/ 1000,
-        updatedAt: result.updatedAt ?? DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      ));
-      unawaited(_reconcileRepeaterClaims(reason: 'after claim'));
+      // Fetch the repeater's zone from the server, never the phone's zone.
+      await _reconcileRepeaterClaims(reason: 'after claim');
     } else {
       debugWarn('[RADMIN] Claim refused: ${result.failure.name}');
     }
@@ -6752,17 +6746,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _repeaterPasswordStore.writeRepeaterPassword(hex, password);
   Future<void> forgetRepeaterPassword(String hex) =>
       _repeaterPasswordStore.deleteRepeaterPassword(hex);
-
-  void _upsertClaim(RepeaterClaim claim) {
-    final key = _devicePublicKey?.toUpperCase();
-    if (key == null) return;
-    final list = List<RepeaterClaim>.from(_repeaterClaimsByPubkey[key] ?? const []);
-    list.removeWhere((c) => c.repeaterHex == claim.repeaterHex);
-    list.add(claim);
-    _repeaterClaimsByPubkey[key] = list;
-    notifyListeners();
-    unawaited(_saveRepeaterClaims());
-  }
 
   void _removeClaim(String repeaterHex) {
     final wanted = repeaterHex.toUpperCase();

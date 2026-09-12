@@ -179,7 +179,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       ? claim.repeaterHex.substring(0, 8)
                       : claim.name),
                   subtitle: Text('${claim.repeaterHex.substring(0, 8)}'
-                      '${claim.iata != null ? '  ${claim.iata}' : ''}'),
+                      '${claim.regionLabel != null ? '  ${claim.regionLabel}' : ''}'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => _openClaim(context, appState, claim),
                 ),
