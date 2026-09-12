@@ -59,6 +59,18 @@ bool _requestNeverReachedServer(Object error) {
       name.contains('HandshakeException');
 }
 
+/// True when the request died on a connection the server had already closed,
+/// before a single byte of the response arrived.
+///
+/// The server closes an idle keep-alive connection after 5 seconds; Dart's
+/// HttpClient holds one in its pool for 15 and only drops it when it notices
+/// the close, which a backgrounded app cannot do while its event loop is
+/// frozen. A request written into that gap goes out on a dead socket and never
+/// reaches the server at all.
+bool _connectionWasAlreadyClosed(Object error) =>
+    error is http.ClientException &&
+    error.message.contains('Connection closed before full header was received');
+
 /// MeshMapper API service
 /// Handles communication with the MeshMapper backend
 ///
@@ -191,6 +203,33 @@ class ApiService {
 
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
+  /// Send [request], replaying it once when the first attempt was written onto
+  /// a keep-alive socket the server had already closed.
+  ///
+  /// The server closes an idle connection after 5 seconds while Dart's
+  /// HttpClient keeps one in its pool for 15, so a request made in that gap
+  /// goes out on a socket that is already gone and comes back as
+  /// [_connectionWasAlreadyClosed]. Such a request never reaches the server
+  /// (it leaves no access-log entry there), so replaying it is safe and
+  /// changes nothing about what the server did. One replay only: a second
+  /// failure is a real network problem and belongs to the caller.
+  ///
+  /// The per-attempt timeout lives at the call site, so the replay gets its
+  /// own full allowance rather than the remains of the first one's.
+  Future<http.Response> _send(
+    String label,
+    Future<http.Response> Function() request,
+  ) async {
+    try {
+      return await request();
+    } catch (e) {
+      if (!_connectionWasAlreadyClosed(e)) rethrow;
+      debugWarn('[API] $label found the connection already closed by the '
+          'server, sending it again');
+      return request();
+    }
+  }
+
   /// Sanitize payload by removing sensitive fields for logging
   Map<String, dynamic> _sanitizePayload(Map<String, dynamic> payload) {
     final sanitized = Map<String, dynamic>.from(payload);
@@ -306,13 +345,16 @@ class ApiService {
         'key': apiKey,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(geoAuthStatusUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 10));
+      final response = await _send(
+        'POST /wardrive-api.php/status',
+        () => _client
+            .post(
+              Uri.parse(geoAuthStatusUrl),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 10)),
+      );
 
       stopwatch.stop();
 
@@ -372,13 +414,16 @@ class ApiService {
         'key': apiKey,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(borderUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 10));
+      final response = await _send(
+        'POST /wardrive-api.php/border',
+        () => _client
+            .post(
+              Uri.parse(borderUrl),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 10)),
+      );
 
       stopwatch.stop();
 
@@ -519,13 +564,16 @@ class ApiService {
         }
       }
 
-      final response = await _client
-          .post(
-            Uri.parse(geoAuthUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 10));
+      final response = await _send(
+        'POST /wardrive-api.php/auth',
+        () => _client
+            .post(
+              Uri.parse(geoAuthUrl),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 10)),
+      );
 
       stopwatch.stop();
 
@@ -781,13 +829,16 @@ class ApiService {
         if (autoMode != null) 'auto_mode': autoMode,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(wardriveEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _send(
+        'POST /wardrive-api.php/wardrive',
+        () => _client
+            .post(
+              Uri.parse(wardriveEndpoint),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30)),
+      );
 
       stopwatch.stop();
 
@@ -876,13 +927,16 @@ class ApiService {
         };
       }
 
-      final response = await _client
-          .post(
-            Uri.parse(wardriveEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _send(
+        'POST /wardrive-api.php/wardrive (heartbeat)',
+        () => _client
+            .post(
+              Uri.parse(wardriveEndpoint),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30)),
+      );
 
       stopwatch.stop();
 
@@ -1318,8 +1372,10 @@ class ApiService {
     debugLog(
         '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter (zone ${zone.toLowerCase()})');
     try {
-      final response =
-          await _client.get(url).timeout(const Duration(seconds: 8));
+      final response = await _send(
+        'GET /vector_tile.php?z=$z&x=$x&y=$y (fresh)',
+        () => _client.get(url).timeout(const Duration(seconds: 8)),
+      );
       final changed = response.headers['x-tile-changed'];
       debugLog(
           '[API]   Tile $z/$x/$y response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
@@ -1371,8 +1427,10 @@ class ApiService {
     debugLog(
         '[COVERAGE] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&f_days=$days&f_types=green,cyan${_radioFilterSuffix()} (zone ${zone.toLowerCase()})');
     try {
-      final response =
-          await _client.get(url).timeout(const Duration(seconds: 8));
+      final response = await _send(
+        'GET /vector_tile.php?z=$z&x=$x&y=$y (recent coverage)',
+        () => _client.get(url).timeout(const Duration(seconds: 8)),
+      );
       final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
       if (response.statusCode == 204) {
         debugLog(
@@ -1500,8 +1558,10 @@ class ApiService {
       final url = Uri.https('${iata.toLowerCase()}.meshmapper.net', endpoint,
           filter.isEmpty ? null : filter);
 
-      final response =
-          await _client.get(url).timeout(const Duration(seconds: 15));
+      final response = await _send(
+        'GET $endpoint',
+        () => _client.get(url).timeout(const Duration(seconds: 15)),
+      );
 
       stopwatch.stop();
 
@@ -1618,14 +1678,17 @@ class ApiService {
     debugLog(
         '[COVERAGE] POST /app_coverage.php ($label, zone $z${filter.isEmpty ? '' : ', filter $filter'})');
     try {
-      final response = await _client
-          .post(
-            url,
-            headers: {'Content-Type': 'application/json'},
-            body:
-                json.encode({'key': apiKey, ...body, ..._radioFilterParams()}),
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await _send(
+        'POST /app_coverage.php ($label)',
+        () => _client
+            .post(
+              url,
+              headers: {'Content-Type': 'application/json'},
+              body: json
+                  .encode({'key': apiKey, ...body, ..._radioFilterParams()}),
+            )
+            .timeout(const Duration(seconds: 15)),
+      );
       final secs = (sw.elapsedMilliseconds / 1000).toStringAsFixed(2);
 
       if (response.statusCode != 200) {
@@ -1671,13 +1734,16 @@ class ApiService {
         'data': entries,
       };
 
-      final response = await _client
-          .post(
-            Uri.parse(wardriveEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode(payload),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _send(
+        'POST /wardrive-api.php/wardrive (offline)',
+        () => _client
+            .post(
+              Uri.parse(wardriveEndpoint),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30)),
+      );
 
       stopwatch.stop();
 

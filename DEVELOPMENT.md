@@ -437,6 +437,7 @@ Three data flows (TX pings, RX observations, Discovery results) merge into unifi
   `MeshMapper_Server/docs/APP_API.md`.
 - **Authentication**: API key in JSON body (NOT query string)
 - **Retry Logic**: Exponential backoff on failures. A 429 storm-brake answer holds the whole queue for the server's `Retry-After` without spending a retry (see Session Heartbeat)
+- **Closed keep-alive sockets are replayed once**: every request `ApiService` makes goes through `_send`, which sends it again when the first attempt comes back `ClientException: Connection closed before full header was received`. The server closes an idle connection after 5 seconds while Dart's HttpClient keeps it pooled for 15, so a request made in that gap goes out on a socket that is already gone; a backgrounded app widens the gap further, because a frozen event loop cannot notice the close. Such a request never reaches the server (no access-log entry there), so replaying it changes nothing about what the server did. One replay only, and the per-attempt timeout stays at the call site so the replay gets a full allowance. Without it a single dead socket failed the whole connect on `/auth` and the user had to press Connect again.
 
 ### Offline Mode
 
