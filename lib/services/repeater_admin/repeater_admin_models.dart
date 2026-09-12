@@ -368,6 +368,15 @@ class RepeaterClaim {
   /// IATA zone code, when known.
   final String? iata;
 
+  /// Multi-region group through which the server lists this claim.
+  final String? groupCode;
+
+  /// Group label when available, otherwise the legacy region code.
+  String? get regionLabel {
+    final group = groupCode?.trim();
+    return group != null && group.isNotEmpty ? group : iata;
+  }
+
   /// When the claim was made, Unix seconds.
   final int claimedAt;
 
@@ -379,6 +388,7 @@ class RepeaterClaim {
     required this.repeaterHex,
     required this.name,
     this.iata,
+    this.groupCode,
     required this.claimedAt,
     required this.updatedAt,
   });
@@ -395,6 +405,7 @@ class RepeaterClaim {
       repeaterHex: key,
       name: json['name'] as String? ?? '',
       iata: json['iata'] as String?,
+      groupCode: json['group_code'] as String?,
       claimedAt: _asInt(json['claimed_at']),
       updatedAt: _asInt(json['updated_at']),
     );
@@ -415,6 +426,7 @@ class RepeaterClaim {
         'repeater': repeaterHex,
         'name': name,
         'iata': iata,
+        'group_code': groupCode,
         'claimed_at': claimedAt,
         'updated_at': updatedAt,
       };

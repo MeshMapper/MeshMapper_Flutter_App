@@ -789,7 +789,9 @@ the app shows as "This region does not support claiming yet."
   by every entry point so the surfaces give the same answer). Claims are cached in Hive
   (`user_preferences`, key `repeater_claims`, a JSON map keyed by companion pubkey) and
   reconciled from the server's `mine` action after every connect (non-fatal, skipped on an
-  old server). Passwords go through `SecureTokenStore` under `repeater_admin_pw_<HEX>`,
+  old server). A successful claim awaits a fresh `mine` response instead of creating a
+  local row with the phone's zone. If that refresh fails, the existing cache is kept.
+  Passwords go through `SecureTokenStore` under `repeater_admin_pw_<HEX>`,
   never logged, never sent. Nothing here bumps `mapRevision`.
 - **Entry points**: the Trace row is three pieces, `[list + ID]` (one neutral group), `[Trace]`
   and `[Manage]` (each its own tinted box); Manage needs
@@ -799,7 +801,9 @@ the app shows as "This region does not support claiming yet."
   Administrators row, a "Proven neighbours (via app)" list from the repeater list's
   `proven_neighbours`, and a Manage button (disabled with the block reason while it cannot
   open). My Repeaters lists the cached claims; a row opens the sheet when a radio is
-  connected.
+  connected. Labels prefer the server's nonempty `group_code` (such as BALTIC), otherwise
+  `iata`. Both fields persist in the JSON claim cache; older rows without `group_code`
+  retain their IATA label until a successful refresh supplies a group.
 - **Repeater list fields** (`Repeater.admins`, `Repeater.provenNeighbours`): display names
   and the server-resolved neighbours; an old list has neither.
 - Logged under `[RADMIN]` (session, modules, API, sheet, provider) and `[CONN]` (frames).
