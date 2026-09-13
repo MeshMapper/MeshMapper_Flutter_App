@@ -85,9 +85,16 @@ drive_route_map*.html
 # Local TestFlight "What to Test" scratch text picked up by set_whats_new.sh
 WhatToTest.txt
 
-# Claude Code
-.claude/
-CLAUDE.md
+# Local AI assistant configuration and working documents
+/.claude/
+/CLAUDE.md
+/.agents/
+/.codex/
+/.ai/
+/AGENTS.md
+/HANDOFF*.md
+/PLAN[-_]*.md
+/SPEC[-_]*.md
 
 # SwiftPM build products for the watch wire-rule tests
 ios/WatchLogicTests/.build/
