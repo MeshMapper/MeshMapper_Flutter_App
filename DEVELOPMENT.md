@@ -709,11 +709,12 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
 
 A connected user picks a repeater (the Trace row's Manage button, the repeater detail sheet,
 or My Repeaters in Settings > MeshMapper Account), opens the Manage sheet and logs in with the
-repeater's admin password over the mesh. The app proves admin two ways the firmware
-guarantees: the login reply's admin flag, then a `GET_ACCESS_LIST` binary request that a
-guest never gets answered. With that proof the user can claim the repeater on MeshMapper (one
-server call), see and reset the route the radio learned, and fetch the repeater's neighbour
-table a page per tap and upload it. Everything is a request with a pushed response. **Never:**
+repeater's admin or guest password over the mesh. Either login can fetch the repeater's
+neighbour table a page per tap and upload it without a MeshMapper claim. Only an admin login
+can claim the repeater on MeshMapper: the app proves admin with the login reply's admin flag,
+then a `GET_ACCESS_LIST`
+binary request that a guest never gets answered. The user can also see and reset the route the
+radio learned. Everything is a request with a pushed response. **Never:**
 a CLI command (its reply is a direct message), a read of the radio's message queue
 (`CMD_SYNC_NEXT_MESSAGE` stays unsent, `MSG_WAITING` unhandled), or an export of the radio's
 private key. Server contract: `MeshMapper_Server/docs/APP_API.md`.
@@ -788,8 +789,9 @@ the app shows as "This region does not support claiming yet."
   `abortPendingSign` pattern. The login frame is logged by length only, and
   `DebugFileLogger.scrubSecrets` redacts any `password=` shape as a backstop.
 - **Modules** (`repeater_admin_module.dart`): `RepeaterAdminModule { name, needsAdmin,
-  run(session) }` produces one payload for one server action. `ClaimModule` runs the ACL
-  proof and returns `{login, acl, perms, fw_level}`; `NeighboursModule` returns
+  run(session) }` produces one payload for one server action. `ClaimModule` needs admin,
+  runs the ACL proof and returns `{login, acl, perms, fw_level}`; `NeighboursModule` allows
+  admin or guest access and returns
   `{fetched_at, total, entries}` for the pages the user loaded, capped at 300, with `total`
   the repeater's own count so the server knows the table may be partial. A later module is one class here and one
   server action.

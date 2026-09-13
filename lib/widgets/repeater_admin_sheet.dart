@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../providers/app_state_provider.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
 import '../services/repeater_admin/repeater_admin_models.dart';
+import '../services/repeater_admin/repeater_admin_module.dart';
 import '../models/repeater.dart';
 import '../services/repeater_admin/repeater_admin_session.dart';
 import '../utils/debug_logger_io.dart';
@@ -249,6 +250,10 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
         final claimed = appState.isRepeaterClaimed(session.target.hexId) ||
             _claimResult != null;
         final badgeColor = _badgeColor(rep.isEmpty ? null : rep.first);
+        final canUseClaim = session.isLoggedIn &&
+            (!ClaimModule().needsAdmin || session.isAdmin);
+        final canUseNeighbours = session.isLoggedIn &&
+            (!NeighboursModule().needsAdmin || session.isAdmin);
         return ListView(
           controller: widget.scrollController,
           padding: EdgeInsets.fromLTRB(
@@ -260,10 +265,8 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
             // session cannot be re-logged without closing the sheet anyway.
             // A guest still needs it, to enter the admin password.
             if (!session.isAdmin) _loginCard(context),
-            if (session.isAdmin) ...[
-              _claimCard(context, claimed, admins),
-              _neighboursCard(context),
-            ],
+            if (canUseClaim) _claimCard(context, claimed, admins),
+            if (canUseNeighbours) _neighboursCard(context),
           ],
         );
       },

@@ -140,7 +140,7 @@ void main() {
                 .claim('ab' * 32, {}))
             .failure;
     expect(await kind(403, 'not_admin'), RepeaterAdminFailureKind.notAdmin);
-    expect(await kind(403, 'no_claim'), RepeaterAdminFailureKind.noClaim);
+    expect(await kind(403, 'no_claim'), RepeaterAdminFailureKind.invalid);
     expect(await kind(404, 'unknown_repeater'),
         RepeaterAdminFailureKind.unknownRepeater);
     expect(await kind(409, 'too_many_admins'),
