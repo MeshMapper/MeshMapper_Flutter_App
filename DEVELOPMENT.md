@@ -128,6 +128,7 @@ The app uses a layered service architecture with clear separation of concerns:
 - `PingService`: TX/RX/Discovery ping orchestration, coordinates with TxTracker/DiscTracker/RxLogger
 - `ApiQueueService`: Hive-based persistent upload queue with batch POST and retry logic
 - `ApiService`: HTTP client for MeshMapper API endpoints
+- `NetworkStateService`: Android constrained and satellite network monitoring; routine uploads use 60-second pacing and auth uses a 30-second timeout on constrained links
 - `DeviceModelService`: Loads `assets/device-models.json` for device identification and power reporting
 
 **State Management** (`lib/providers/`):

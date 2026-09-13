@@ -7,13 +7,14 @@ import '../models/api_queue_item.dart';
 import '../utils/debug_logger_io.dart';
 import 'api_service.dart';
 import 'custom_api_service.dart';
+import 'network_state_service.dart';
 
 /// API queue service with batch upload and retry logic
 /// Ported from apiQueue and batchUpload() in wardrive.js
 ///
 /// Features:
 /// - Queue pings locally with Hive persistence
-/// - Batch upload every 50 entries OR 30 seconds
+/// - Upload batches contain up to 50 entries and use network-aware timers
 /// - RX buffering: group by repeater ID (max 4 per batch)
 /// - Retry with exponential backoff for failed uploads
 /// - Offline mode: accumulates pings without uploading
@@ -21,13 +22,22 @@ class ApiQueueService {
   static const String _boxName = 'api_queue';
   static const int _batchSize = 50;
   static const Duration _batchTimeout = Duration(seconds: 15);
+  // Wider cadence while on a constrained (e.g. satellite) link: fewer, larger
+  // batches beat frequent small ones when every round trip carries high
+  // per-request latency.
+  static const Duration _batchTimeoutConstrained = Duration(seconds: 60);
+  static const Duration _pingFlushTimeout = Duration(seconds: 5);
+  static const Duration _pingFlushTimeoutConstrained = Duration(seconds: 60);
   static const int _maxRetries = 5;
   static const int _maxRxPerRepeater = 4;
 
   final ApiService _apiService;
+  final NetworkStateSource _networkState;
   Box<ApiQueueItem>? _box;
   Timer? _batchTimer;
   Timer? _pingFlushTimer;
+  StreamSubscription<NetworkState>? _networkStateSubscription;
+  late bool _lastIsConstrained;
   bool _isUploading = false;
   bool _isRecovering = false;
 
@@ -112,7 +122,15 @@ class ApiQueueService {
     return true;
   }
 
-  ApiQueueService({required ApiService apiService}) : _apiService = apiService;
+  ApiQueueService({
+    required ApiService apiService,
+    NetworkStateSource? networkState,
+  })  : _apiService = apiService,
+        _networkState = networkState ?? NetworkStateService.instance {
+    _lastIsConstrained = _networkState.current.isConstrained;
+    _networkStateSubscription =
+        _networkState.stream.listen(_handleNetworkState);
+  }
 
   /// Initialize the queue (must be called before use)
   Future<void> init() async {
@@ -148,6 +166,7 @@ class ApiQueueService {
     // Start batch timer
     debugLog('[API QUEUE] Starting batch timer...');
     _startBatchTimer();
+
     debugLog('[API QUEUE] init() complete');
   }
 
@@ -328,12 +347,7 @@ class ApiQueueService {
           '[API QUEUE] TX enqueued: $heardRepeats (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   /// Enqueue an RX observation
@@ -435,12 +449,7 @@ class ApiQueueService {
           '[API QUEUE] DISC enqueued: $repeaterId ($nodeType) at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   /// Enqueue a TRACE ping result (targeted zero-hop trace)
@@ -491,12 +500,7 @@ class ApiQueueService {
           '[API QUEUE] TRACE enqueued: $repeaterId at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   /// Enqueue a failed DISC discovery (no nodes responded)
@@ -539,19 +543,14 @@ class ApiQueueService {
           '[API QUEUE] DISC drop enqueued at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   /// Report a square where smart pinging held a ping. [held] is `tx` or
   /// `disc`. The server verifies the square against its own coverage and
   /// credits it once per session; a dropped one is silent. Modelled on
   /// enqueueDiscDrop: offline rows honour the airborne pause, a closed box
-  /// falls back to memory, and the 5 second flush timer sends it on.
+  /// falls back to memory, and the network-aware flush timer sends it on.
   Future<void> enqueueDefer({
     required double latitude,
     required double longitude,
@@ -584,12 +583,7 @@ class ApiQueueService {
           '[API QUEUE] DEFER ($held) enqueued at $latitude, $longitude (queue size: $queueSize)');
     }
     onQueueUpdated?.call(queueSize);
-    _pingFlushTimer?.cancel();
-    _pingFlushTimer = Timer(const Duration(seconds: 5), () {
-      debugLog('[API QUEUE] Ping flush timer fired');
-      _flushRxBuffer();
-      _uploadBatch();
-    });
+    _schedulePingFlush();
   }
 
   // Guard to prevent concurrent RX buffer flushes
@@ -637,10 +631,37 @@ class ApiQueueService {
     }
   }
 
+  void _handleNetworkState(NetworkState state) {
+    if (state.isConstrained == _lastIsConstrained) return;
+
+    _lastIsConstrained = state.isConstrained;
+    debugLog('[API QUEUE] Network pacing changed: '
+        '${state.isConstrained ? 'constrained' : 'ordinary'}');
+
+    if (_batchTimer != null) _startBatchTimer();
+    if (_pingFlushTimer?.isActive ?? false) _schedulePingFlush();
+  }
+
+  void _schedulePingFlush() {
+    final timeout =
+        _lastIsConstrained ? _pingFlushTimeoutConstrained : _pingFlushTimeout;
+    _pingFlushTimer?.cancel();
+    _pingFlushTimer = Timer(timeout, () {
+      debugLog('[API QUEUE] Ping flush timer fired '
+          '(${timeout.inSeconds}s delay'
+          '${_lastIsConstrained ? ', constrained network' : ''})');
+      _flushRxBuffer();
+      _uploadBatch();
+    });
+  }
+
   void _startBatchTimer() {
+    final constrained = _lastIsConstrained;
+    final timeout = constrained ? _batchTimeoutConstrained : _batchTimeout;
     _batchTimer?.cancel();
-    _batchTimer = Timer.periodic(_batchTimeout, (_) {
-      debugLog('[API QUEUE] Batch timer fired (15s interval)');
+    _batchTimer = Timer.periodic(timeout, (_) {
+      debugLog('[API QUEUE] Batch timer fired (${timeout.inSeconds}s interval'
+          '${constrained ? ', constrained network' : ''})');
       _flushRxBuffer();
       _uploadBatch();
     });
@@ -1007,6 +1028,7 @@ class ApiQueueService {
   void dispose() {
     _batchTimer?.cancel();
     _pingFlushTimer?.cancel();
+    _networkStateSubscription?.cancel();
     _box?.close();
   }
 }

@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 import 'meshcore/regional_carpeater_filter.dart';
+import 'network_state_service.dart';
 
 /// Result of a batch upload attempt
 ///
@@ -116,6 +117,7 @@ class ApiService {
   static const Duration maxWardriveRetryAfter = Duration(hours: 1);
 
   final http.Client _client;
+  final NetworkStateSource _networkState;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
   bool _txAllowed = false;
@@ -201,7 +203,11 @@ class ApiService {
   /// the refusal code, if any. The provider replaces its cache from this.
   void Function(List<String> keys, String? error)? onRegionalCarpeaters;
 
-  ApiService({http.Client? client}) : _client = client ?? http.Client();
+  ApiService({
+    http.Client? client,
+    NetworkStateSource? networkState,
+  })  : _client = client ?? http.Client(),
+        _networkState = networkState ?? NetworkStateService.instance;
 
   /// Send [request], replaying it once when the first attempt was written onto
   /// a keep-alive socket the server had already closed.
@@ -564,6 +570,11 @@ class ApiService {
         }
       }
 
+      // Give auth attempts more room on a constrained link so a
+      // high-latency response can arrive before the request times out.
+      final authTimeout = _networkState.current.isConstrained
+          ? const Duration(seconds: 30)
+          : const Duration(seconds: 10);
       final response = await _send(
         'POST /wardrive-api.php/auth',
         () => _client
@@ -572,7 +583,7 @@ class ApiService {
               headers: {'Content-Type': 'application/json'},
               body: json.encode(payload),
             )
-            .timeout(const Duration(seconds: 10)),
+            .timeout(authTimeout),
       );
 
       stopwatch.stop();
