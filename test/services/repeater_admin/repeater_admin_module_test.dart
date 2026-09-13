@@ -21,9 +21,9 @@ void main() {
         {'prefix': '0' * 16, 'snr': -1.5, 'heard_secs_ago': 0});
   });
 
-  test('ClaimModule needs admin, NeighboursModule needs admin', () {
+  test('only ClaimModule needs admin access', () {
     expect(ClaimModule().needsAdmin, isTrue);
-    expect(NeighboursModule().needsAdmin, isTrue);
+    expect(NeighboursModule().needsAdmin, isFalse);
     expect(ClaimModule().name, 'claim');
     expect(NeighboursModule().name, 'neighbours');
   });

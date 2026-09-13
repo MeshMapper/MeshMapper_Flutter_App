@@ -45,7 +45,7 @@ class NeighboursModule implements RepeaterAdminModule {
   String get name => 'neighbours';
 
   @override
-  bool get needsAdmin => true;
+  bool get needsAdmin => false;
 
   @override
   Future<Map<String, dynamic>> run(RepeaterAdminSession session) async {

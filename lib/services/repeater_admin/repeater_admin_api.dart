@@ -12,7 +12,6 @@ enum RepeaterAdminFailureKind {
   noSession,
   unsupported,
   notAdmin,
-  noClaim,
   unknownRepeater,
   tooManyAdmins,
   rateLimited,
@@ -67,8 +66,6 @@ class RepeaterAdminResult {
         return 'This region does not support claiming yet.';
       case RepeaterAdminFailureKind.notAdmin:
         return 'The server did not accept the admin proof.';
-      case RepeaterAdminFailureKind.noClaim:
-        return 'Claim this repeater before uploading its neighbours.';
       case RepeaterAdminFailureKind.unknownRepeater:
         return 'MeshMapper does not know this repeater in your region.';
       case RepeaterAdminFailureKind.tooManyAdmins:
@@ -246,8 +243,6 @@ class RepeaterAdminApi {
         return RepeaterAdminFailureKind.unsupported;
       case 'not_admin':
         return RepeaterAdminFailureKind.notAdmin;
-      case 'no_claim':
-        return RepeaterAdminFailureKind.noClaim;
       case 'unknown_repeater':
         return RepeaterAdminFailureKind.unknownRepeater;
       case 'too_many_admins':
