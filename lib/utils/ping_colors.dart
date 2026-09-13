@@ -25,6 +25,7 @@ class ColorPalette {
   final Color discFail;
   final Color traceSuccess;
   final Color noResponse;
+  final Color deferred;
 
   // Signal quality (SNR/RSSI) traffic-light
   final Color signalGood;
@@ -59,6 +60,7 @@ class ColorPalette {
     required this.discFail,
     required this.traceSuccess,
     required this.noResponse,
+    required this.deferred,
     required this.signalGood,
     required this.signalMedium,
     required this.signalBad,
@@ -90,6 +92,7 @@ class ColorPalettes {
   /// BIDIR=#7EE094, TX=#FD8928, DISC/TRACE=#51D4E9, RX=#7D54C7,
   /// DEAD=#9E9689, DROP=#E04F5D
   static const none = ColorPalette(
+    deferred: Color(0xFFFFD600),
     txSuccess: Color(0xFF4CAF50),
     txSuccessLegend: Color(0xFF22C55E),
     txFail: Color(0xFFF44336),
@@ -119,6 +122,8 @@ class ColorPalettes {
   /// Protanopia (red-blind) — replaces red/green axis with blue/orange.
   /// Also used for deuteranopia since both are red-green CVD.
   static const protanopia = ColorPalette(
+    deferred:
+        Color(0xFFFFFF00), // Hollow ring distinguishes it from filled markers
     txSuccess: Color(0xFF0072B2), // Wong blue
     txSuccessLegend: Color(0xFF56B4E9), // Wong sky blue
     txFail: Color(0xFFD55E00), // Wong vermillion
@@ -148,6 +153,8 @@ class ColorPalettes {
   /// Tritanopia (blue-blind) — replaces blue/cyan with orange/vermillion.
   /// Red/green distinction is preserved since tritan users can see those.
   static const tritanopia = ColorPalette(
+    deferred:
+        Color(0xFF00BFC4), // Cyan remains distinct from the warm ping palette
     txSuccess: Color(0xFF009E73), // Wong bluish green
     txSuccessLegend: Color(0xFF22C55E), // Bright green (visible)
     txFail: Color(0xFFD55E00), // Wong vermillion
@@ -178,6 +185,7 @@ class ColorPalettes {
   /// Relies on maximum brightness contrast between categories.
   /// Secondary indicators (icons, text) are essential with this palette.
   static const achromatopsia = ColorPalette(
+    deferred: Color(0xFFFFFFFF), // Hollow ring remains distinct in monochrome
     txSuccess: Color(0xFFE0E0E0), // Light
     txSuccessLegend: Color(0xFFE0E0E0),
     txFail: Color(0xFF616161), // Dark
@@ -248,6 +256,7 @@ class PingColors {
   static Color get discFail => _activePalette.discFail;
   static Color get traceSuccess => _activePalette.traceSuccess;
   static Color get noResponse => _activePalette.noResponse;
+  static Color get deferred => _activePalette.deferred;
 
   // ── Signal quality (SNR/RSSI traffic-light) ──
   static Color get signalGood => _activePalette.signalGood;

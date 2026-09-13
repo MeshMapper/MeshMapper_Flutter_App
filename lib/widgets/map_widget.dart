@@ -81,7 +81,7 @@ class _MapImages {
   static String coverage(String type, bool success) =>
       'cov_${type}_${success ? "ok" : "fail"}';
 
-  static const coverageTypes = ['tx', 'rx', 'disc', 'trace'];
+  static const coverageTypes = ['tx', 'rx', 'disc', 'trace', 'deferred'];
 
   // GPS marker bitmaps: one per style
   // Names: gps_arrow, gps_car, etc. The list of styles lives in
@@ -601,6 +601,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// preset filter is baked into the tile URL like the grid size). Null
   /// means unfiltered.
   String? _lastAppliedRadioKey;
+  int? _lastAppliedRecentDays;
   // Session coverage patch: a GeoJSON layer carrying the user's own
   // freshly-pinged cells ON TOP of the base overlay; the base layer's copies
   // of those cells are hidden via setFilter so translucent fills never stack.
@@ -860,9 +861,28 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // (a rebuild per slider step would relayout the platform view), so it needs
     // a direct listener too. See _onCoverageOpacityNotify.
     _patchProviderRef!.addListener(_onCoverageOpacityNotify);
+    _patchProviderRef!.addListener(_onCoverageFilterNotify);
   }
 
   AppStateProvider? _patchProviderRef;
+
+  /// Auth/release can change the effective window on a UI-only notify.
+  /// Observe it directly so the memoized map never keeps a regional override.
+  void _onCoverageFilterNotify() {
+    final appState = _patchProviderRef;
+    if (appState == null || !mounted || !_isMapReady || !_styleLoaded) return;
+    if (_lastAppliedRecentDays == appState.coverageOverlayDays) return;
+    _lastAppliedRecentDays = appState.coverageOverlayDays;
+    appState.clearCoveragePatch();
+    _clearCoverageConnections();
+    if (_coverageRefreshScheduled) return;
+    _coverageRefreshScheduled = true;
+    scheduleMicrotask(() async {
+      _coverageRefreshScheduled = false;
+      if (!mounted || !_isMapReady || !_styleLoaded) return;
+      await _refreshCoverageOverlay(appState);
+    });
+  }
 
   void _onCoveragePatchNotify() {
     final appState = _patchProviderRef;
@@ -966,6 +986,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _patchProviderRef?.removeListener(_onPositionNotify);
     _patchProviderRef?.removeListener(_onCoverageOpacityNotify);
+    _patchProviderRef?.removeListener(_onCoverageFilterNotify);
     _tileLoadTimeoutTimer?.cancel();
     final controller = _mapController;
     if (controller != null) {
@@ -2285,6 +2306,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             .firstOrNull;
         if (entry != null) _showTraceDetails(entry);
         break;
+      case 'deferred':
+      case 'history_deferred':
+        final markers = kind == 'deferred'
+            ? appState.deferredPingMarkers
+            : appState.historySessionMarkers ?? <PingEventMarker>[];
+        final marker =
+            markers.where((m) => _deferredMarkerId(m) == id).firstOrNull;
+        if (marker != null) _showDeferredPingDetails(marker);
+        break;
       case 'history_tx':
       case 'history_rx':
       case 'history_disc':
@@ -3164,6 +3194,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final prefs = appState.preferences;
     final zone = appState.zoneCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
+    final recentDays = appState.coverageOverlayDays;
+    final recentSuffix =
+        recentDays == null ? '' : '&f_days=$recentDays&f_types=green,cyan';
     // The preset filter (f_freq, f_bw, f_sf; never f_cr) so the overlay
     // paints the preset the radio is on, or was last on. Values are digits
     // and dots, so no encoding. Absent = the region's default layer.
@@ -3202,7 +3235,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // happens HERE via match expressions, so colour-vision palettes apply
       // without any server param and a tile carries data, not pixels.
       final url =
-          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize$radioSuffix';
+          'https://$zone.meshmapper.net/vector_tile.php?z={z}&x={x}&y={y}&gsize=$gridSize$radioSuffix$recentSuffix';
       debugLog(
           '[MAP] Coverage overlay source: gsize=$gridSize preset=${appState.radioFilterKey ?? 'any'}');
       // minzoom 7 = the raster's old on-screen range (512px-convention vector
@@ -3247,6 +3280,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _lastAppliedGridSize = gridSize;
       _lastAppliedCvd = prefs.colorVisionType;
       _lastAppliedRadioKey = appState.radioFilterKey;
+      _lastAppliedRecentDays = recentDays;
       appState.reportVectorOverlayActive(true);
       debugLog(
           '[MAP] Coverage overlay added as $layerId (grid $gridSize, below ${belowLayer ?? "top"}, opacity ${opacity.toStringAsFixed(2)})');
@@ -3670,6 +3704,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         return success ? PingColors.txSuccess : PingColors.txFail;
       case 'rx':
         return PingColors.rx;
+      case 'deferred':
+        return PingColors.deferred;
       case 'disc':
         return success ? PingColors.discSuccess : PingColors.discFail;
       case 'trace':
@@ -3765,7 +3801,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final type in _MapImages.coverageTypes) {
       for (final success in [true, false]) {
         final painter = _CoverageMarkerPainter(
-          style: styleName,
+          style: type == 'deferred' ? 'outline' : styleName,
           color: _coverageStatusColor(type, success),
         );
         final bytes = await _renderPainterToPng(painter, coverageSize);
@@ -4601,6 +4637,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   int _zIndexFor(String key) =>
       _coverageZIndex.putIfAbsent(key, () => ++_coverageZCounter);
 
+  // Object identity preserves separate deferrals even at identical fixes/times.
+  final _deferredMarkerIds = Expando<int>('deferred marker');
+  int _deferredMarkerSequence = 0;
+
+  int _deferredMarkerId(PingEventMarker marker) =>
+      _deferredMarkerIds[marker] ??= ++_deferredMarkerSequence;
+
   /// Diff-syncs native coverage symbols (TX/RX/DISC/Trace) against app state.
   /// One symbol per ping, image varies by type/success state, opacity reflects
   /// focus mode (faded if focus active and this isn't the focused ping).
@@ -4635,8 +4678,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       required bool success,
       required int idForMetadata,
       String? iconImageOverride,
+      String? keyOverride,
     }) async {
-      final key = _coverageKey(type, ts, lat, lon);
+      final key = keyOverride ?? _coverageKey(type, ts, lat, lon);
       final isFocused = _isFocusedPing(lat, lon, ts);
       // In focus mode, hide every coverage marker except the focused ping.
       // Skipping wantedKeys lets the cleanup loop remove them entirely so the
@@ -4699,11 +4743,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         final mapping = _historyMarkerType(marker.type);
         await syncOne(
           type: 'history_${mapping.type}',
+          keyOverride: marker.type == PingEventType.deferred
+              ? 'history_deferred_${_deferredMarkerId(marker)}'
+              : null,
           lat: marker.latitude!,
           lon: marker.longitude!,
           ts: marker.timestamp,
           success: mapping.success,
-          idForMetadata: marker.timestamp.millisecondsSinceEpoch,
+          idForMetadata: marker.type == PingEventType.deferred
+              ? _deferredMarkerId(marker)
+              : marker.timestamp.millisecondsSinceEpoch,
           iconImageOverride: _MapImages.coverage(mapping.type, mapping.success),
         );
       }
@@ -4751,6 +4800,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           idForMetadata: entry.timestamp.millisecondsSinceEpoch,
           iconImageOverride:
               renderAsTxFail ? _MapImages.coverage('tx', false) : null,
+        );
+      }
+
+      for (final marker in appState.deferredPingMarkers) {
+        final id = _deferredMarkerId(marker);
+        await syncOne(
+          type: 'deferred',
+          keyOverride: 'deferred_$id',
+          lat: marker.latitude!,
+          lon: marker.longitude!,
+          ts: marker.timestamp,
+          success: true,
+          idForMetadata: id,
         );
       }
 
@@ -5936,6 +5998,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         PingEventType.traceSuccess => (type: 'trace', success: true),
         PingEventType.traceFail => (type: 'trace', success: false),
         PingEventType.txMultiHopOnly => (type: 'rx', success: true),
+        PingEventType.deferred => (type: 'deferred', success: true),
       };
 
   /// Compute a version hash of all data that affects the marker list.
@@ -5955,6 +6018,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final e in appState.discLogEntries) {
       discNodeTotal += e.discoveredNodes.length;
     }
+    final deferredMarkers = appState.deferredPingMarkers;
     int traceSuccessTotal = 0;
     for (final t in appState.traceLogEntries) {
       if (t.success) traceSuccessTotal++;
@@ -5965,6 +6029,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       appState.rxPings.length,
       appState.discLogEntries.length,
       appState.traceLogEntries.length,
+      deferredMarkers.length,
+      deferredMarkers.lastOrNull,
       appState.repeaters.length,
       appState.discDropEnabled,
       appState.enforceHopBytes,
@@ -6410,6 +6476,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Show map legend popup explaining marker colors and types
   void _showLegendPopup() {
+    final recentDays = context.read<AppStateProvider>().coverageOverlayDays;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -6572,6 +6639,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                 description:
                                     'Location where a trace got no response',
                               ),
+                              const Divider(height: 1),
+                              _buildLegendItem(
+                                context: context,
+                                color: PingColors.deferred,
+                                label: 'Deferred',
+                                outlined: true,
+                                description:
+                                    'Ping held because this square already has recent coverage',
+                              ),
                             ],
                           ),
                         ),
@@ -6587,6 +6663,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                                 Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
+                        if (recentDays != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              'Showing successful coverage from the last '
+                              '$recentDays ${recentDays == 1 ? 'day' : 'days'}.',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
                         const SizedBox(height: 8),
                         Container(
                           decoration: BoxDecoration(
@@ -6912,6 +6997,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     required Color color,
     required String label,
     required String description,
+    bool outlined = false,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     return Padding(
@@ -6923,15 +7009,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             width: 16,
             height: 16,
             decoration: BoxDecoration(
-              color: color,
+              color: outlined ? Colors.transparent : color,
               shape: BoxShape.circle,
-              border: Border.all(color: colorScheme.surface, width: 1.5),
+              border: Border.all(
+                  color: outlined ? color : colorScheme.surface,
+                  width: outlined ? 2.5 : 1.5),
             ),
           ),
           const SizedBox(width: 12),
           // Label
           SizedBox(
-            width: 48,
+            width: 64,
             child: Text(
               label,
               style: TextStyle(
@@ -8064,6 +8152,28 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return Wrap(spacing: 14, runSpacing: 6, children: chips);
   }
 
+  void _showDeferredPingDetails(PingEventMarker marker) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: Icon(Icons.circle_outlined, color: PingColors.deferred),
+        title: const Text('Deferred'),
+        content: Text(
+          'Ping held because this square already has recent coverage.\n\n'
+          '${TimeOfDay.fromDateTime(marker.timestamp).format(context)}\n'
+          '${marker.latitude!.toStringAsFixed(5)}, '
+          '${marker.longitude!.toStringAsFixed(5)}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          )
+        ],
+      ),
+    );
+  }
+
   void _showHistoryMarkerAsLive(PingEventMarker marker) {
     if (marker.latitude == null || marker.longitude == null) return;
     final lat = marker.latitude!;
@@ -8071,6 +8181,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final repeaters = marker.repeaters ?? [];
 
     switch (marker.type) {
+      case PingEventType.deferred:
+        _showDeferredPingDetails(marker);
       case PingEventType.txSuccess:
       case PingEventType.txFail:
       case PingEventType.txMultiHopOnly:
@@ -10737,6 +10849,24 @@ class _CoverageMarkerPainter extends CustomPainter {
         break;
       case 'diamond':
         _DiamondMarkerPainter(color).paint(canvas, innerSize);
+        break;
+      case 'outline':
+        final center = Offset(innerSize.width / 2, innerSize.height / 2);
+        // A dark outer edge keeps the hollow ring visible on pale map styles.
+        canvas.drawCircle(
+            center,
+            9,
+            Paint()
+              ..color = Colors.black87
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 5);
+        canvas.drawCircle(
+            center,
+            9,
+            Paint()
+              ..color = color
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 3);
         break;
       case 'circle':
         _paintCircle(canvas, innerSize, borderAlpha: 1.0, borderWidth: 2.0);

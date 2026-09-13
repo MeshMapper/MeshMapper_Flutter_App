@@ -45,6 +45,9 @@ enum PingEventType {
 
   @HiveField(7)
   txMultiHopOnly, // RX color: TX got multi-hop echoes but no direct
+
+  @HiveField(8)
+  deferred, // Hollow yellow: Smart Pinging held a ping on recent coverage
 }
 
 /// Repeater info for graph markers
@@ -117,6 +120,7 @@ class PingEventMarker extends HiveObject {
         PingEventType.traceSuccess => PingColors.traceSuccess,
         PingEventType.traceFail => PingColors.noResponse,
         PingEventType.txMultiHopOnly => PingColors.rx,
+        PingEventType.deferred => PingColors.deferred,
       };
 
   /// Get a display label for this event type
@@ -129,6 +133,7 @@ class PingEventMarker extends HiveObject {
         PingEventType.traceSuccess => 'Trace Success',
         PingEventType.traceFail => 'Trace Fail',
         PingEventType.txMultiHopOnly => 'TX Multi-hop',
+        PingEventType.deferred => 'Deferred',
       };
 }
 

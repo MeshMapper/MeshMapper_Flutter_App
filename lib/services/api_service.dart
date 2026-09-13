@@ -1374,8 +1374,10 @@ class ApiService {
     required int x,
     required int y,
     int gsize = 300,
+    int? recentDays,
   }) async {
-    final filter = _radioFilterSuffix();
+    final filter = '${_radioFilterSuffix()}'
+        '${recentDays == null ? '' : '&f_days=$recentDays&f_types=green,cyan'}';
     final url =
         Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
             '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter');
