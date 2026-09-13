@@ -136,6 +136,16 @@ class WardrivingSettingsPage extends StatelessWidget {
                     ? null
                     : () => _showSmartPingDaysSelector(context, appState),
               ),
+            if (appState.smartPingEnabled)
+              SwitchListTile(
+                secondary: const Icon(Icons.layers_outlined),
+                title: const Text('Show only recent coverage'),
+                subtitle: const Text(
+                    'Show coverage within the Smart Ping time window'),
+                value: prefs.smartPingRecentCoverageOnly,
+                onChanged: (value) => appState.updatePreferences(
+                    prefs.copyWith(smartPingRecentCoverageOnly: value)),
+              ),
             SwitchListTile(
               secondary: const Icon(Icons.timer_off),
               title: const Text('Auto-Stop After Idle'),
@@ -656,6 +666,14 @@ class WardrivingSettingsPage extends StatelessWidget {
               SizedBox(height: 4),
               Text(
                 'A square with a two-way (green) or discovery (cyan) result inside your chosen window. Squares match your Coverage Grid setting, so what is deferred is what is already painted on the map.',
+                style: TextStyle(fontSize: 13),
+              ),
+              SizedBox(height: 12),
+              Text('On the map:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              SizedBox(height: 4),
+              Text(
+                'Each deferral leaves a hollow marker along your trail. Turn on "Show only recent coverage" to hide older coverage squares and make gaps easier to see.',
                 style: TextStyle(fontSize: 13),
               ),
               SizedBox(height: 12),

@@ -2,6 +2,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/models/user_preferences.dart';
 
 void main() {
+  test('recent coverage filtering is opt-in and survives saving settings', () {
+    expect(
+        const UserPreferences().toJson()['smartPingRecentCoverageOnly'], false);
+    final restored = UserPreferences.fromJson({
+      'smartPingRecentCoverageOnly': true,
+      'smartPingDays': 30,
+    });
+    expect(
+        restored
+            .copyWith(smartPingDays: 7)
+            .toJson()['smartPingRecentCoverageOnly'],
+        true);
+    expect(restored, isNot(const UserPreferences(smartPingDays: 30)));
+  });
+
   test('smart pinging defaults to on with a 14 day window', () {
     const prefs = UserPreferences();
     expect(prefs.smartPingEnabled, isTrue);

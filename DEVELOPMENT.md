@@ -300,6 +300,26 @@ untouched. On by default with a 14 day window.
   `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
   hidden while the switch is off. An (i) button beside the switch opens `_showSmartPingInfo`,
   a dialog explaining the deferral in user-facing words.
+- **Map trail**: every actual TX or discovery deferral adds a hollow yellow marker
+  (`PingColors.deferred`, with color-vision palette variants). Overlapping deferrals are
+  kept, including repeated attempts at the same position; marker identity is independent
+  of the server-credit dedupe below. `AppStateProvider.deferredPingMarkers` follows the
+  normal log limit and clears with map markers or logs, with a `mapRevision` bump.
+  Deferred events are also recorded in noise-floor sessions when a reading is available,
+  so saved-session maps and the graph preserve them. Startup deferrals are held until
+  the recording session opens, with failed starts clearing that buffer. `PingEventType.deferred` appends
+  Hive field 8 to the existing enum (type ID 11); earlier values keep their indices.
+  Both the map and graph legends use the hollow Deferred swatch.
+- **Optional recent-coverage view**: `smartPingRecentCoverageOnly` defaults to false.
+  Settings shows "Show only recent coverage" beneath the time window while effective
+  Smart Pinging is enabled. `coverageOverlayDays` uses that effective window, including
+  regional overrides, and is null when the view is off or Smart Pinging is disabled.
+  A direct map listener observes the effective window even on UI-only auth/release
+  notifications. The overlay and live fresh-tile requests both use `f_days` and `f_types=green,cyan`,
+  leaving old or never-mapped places as gaps. Filter changes rebuild the overlay and
+  clear its patch; patch bodies belong to a region/grid/radio/window context, and an
+  in-flight fetch from an old context is discarded. This changes the coverage squares,
+  not the session's ping markers or the Smart Pinging send rules.
 - **Enforcement**: `/auth` carries `smart_ping` (bool) and `smart_ping_days` (int). When
   `smart_ping` is true the switch is locked on and the window is the server's; otherwise the
   user's own values apply. The preference is never overwritten: `AppStateProvider`
@@ -383,7 +403,7 @@ untouched. On by default with a 14 day window.
   from the GPS listener and from the auto-ping hook (iOS background).
 - **Credit**: a deferred ping never posts a coverage row, so smart pinging used to cost the
   user a leaderboard point on every mapped road. The app now reports three things it already
-  knows and keeps no tally, does no scoring and shows nothing new. (1) The running auto mode,
+  knows and keeps no tally or score. (1) The running auto mode,
   as `auto_mode` (`active`, `hybrid`, `passive`, `trace`, `none`) on the batch post, the
   heartbeat and the `/auth` release, read at the moment of each call through
   `ApiService.currentAutoMode`, wired to `AppStateProvider.wireAutoMode` (a pure read of the

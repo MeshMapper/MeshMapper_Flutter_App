@@ -31,6 +31,17 @@ void main() {
   setUp(() => seen = null);
 
   group('overlay fresh refetch', () {
+    test('recent overlay refresh keeps the window, types and radio preset',
+        () async {
+      await api(answer: filter)
+          .freshenVectorTile(zone: 'yow', z: 14, x: 1, y: 2, recentDays: 30);
+      final q = seen!.url.queryParameters;
+      expect(q['f_days'], '30');
+      expect(q['f_types'], 'green,cyan');
+      expect(q['f_freq'], '910.525');
+      expect(q['fresh'], '1');
+    });
+
     test('carries the three slots and never f_cr', () async {
       await api(answer: filter)
           .freshenVectorTile(zone: 'yow', z: 14, x: 1, y: 2, gsize: 300);

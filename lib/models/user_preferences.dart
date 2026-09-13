@@ -65,6 +65,9 @@ class UserPreferences {
   /// Smart Pinging window in days ([SmartPingDays.min] to [SmartPingDays.max]).
   final int smartPingDays;
 
+  /// Limit the map overlay to the effective Smart Pinging coverage window.
+  final bool smartPingRecentCoverageOnly;
+
   /// Map auto-follow GPS position
   final bool mapAutoFollow;
 
@@ -169,6 +172,7 @@ class UserPreferences {
     this.hybridModeEnabled = true,
     this.smartPingEnabled = true,
     this.smartPingDays = SmartPingDays.defaultDays,
+    this.smartPingRecentCoverageOnly = false,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
@@ -220,6 +224,8 @@ class UserPreferences {
       unitSystem: (json['unitSystem'] as String?) ?? 'metric',
       hybridModeEnabled: (json['hybridModeEnabled'] as bool?) ?? true,
       smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
+      smartPingRecentCoverageOnly:
+          (json['smartPingRecentCoverageOnly'] as bool?) ?? false,
       smartPingDays: switch ((json['smartPingDays'] as num?)?.toInt()) {
         final int d when d >= SmartPingDays.min && d <= SmartPingDays.max => d,
         _ => SmartPingDays.defaultDays,
@@ -312,6 +318,7 @@ class UserPreferences {
       'hybridModeEnabled': hybridModeEnabled,
       'smartPingEnabled': smartPingEnabled,
       'smartPingDays': smartPingDays,
+      'smartPingRecentCoverageOnly': smartPingRecentCoverageOnly,
       'mapAutoFollow': mapAutoFollow,
       'mapAlwaysNorth': mapAlwaysNorth,
       'mapRotationLocked': mapRotationLocked,
@@ -363,6 +370,7 @@ class UserPreferences {
     bool? hybridModeEnabled,
     bool? smartPingEnabled,
     int? smartPingDays,
+    bool? smartPingRecentCoverageOnly,
     bool? mapAutoFollow,
     bool? mapAlwaysNorth,
     bool? mapRotationLocked,
@@ -414,6 +422,8 @@ class UserPreferences {
       hybridModeEnabled: hybridModeEnabled ?? this.hybridModeEnabled,
       smartPingEnabled: smartPingEnabled ?? this.smartPingEnabled,
       smartPingDays: smartPingDays ?? this.smartPingDays,
+      smartPingRecentCoverageOnly:
+          smartPingRecentCoverageOnly ?? this.smartPingRecentCoverageOnly,
       mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
@@ -497,6 +507,7 @@ class UserPreferences {
         other.hybridModeEnabled == hybridModeEnabled &&
         other.smartPingEnabled == smartPingEnabled &&
         other.smartPingDays == smartPingDays &&
+        other.smartPingRecentCoverageOnly == smartPingRecentCoverageOnly &&
         other.mapAutoFollow == mapAutoFollow &&
         other.mapAlwaysNorth == mapAlwaysNorth &&
         other.mapRotationLocked == mapRotationLocked &&
@@ -545,6 +556,7 @@ class UserPreferences {
       hybridModeEnabled,
       smartPingEnabled,
       smartPingDays,
+      smartPingRecentCoverageOnly,
       mapAutoFollow,
       mapAlwaysNorth,
       mapRotationLocked,

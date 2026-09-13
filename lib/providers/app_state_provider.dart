@@ -344,6 +344,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<RxLogEntry> _rxLogEntries = [];
   final List<DiscLogEntry> _discLogEntries = [];
   final List<TraceLogEntry> _traceLogEntries = [];
+  final List<PingEventMarker> _deferredPingMarkers = [];
+  final List<PingEventMarker> _startingDeferredHistory = [];
+
+  List<PingEventMarker> get deferredPingMarkers =>
+      List.unmodifiable(_deferredPingMarkers);
   int _siriObservationRevision = 0;
 
   // Top repeaters overlay, updated live on each ping event. The map's Top
@@ -473,6 +478,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // feature id, insertion-ordered, capped.
   final Map<int, CoverageCell> _coveragePatchCells = {};
   int _coveragePatchVersion = 0;
+  String? _coveragePatchContext;
 
   // Auth type from API response (API, Mesh, Manual)
   String? _authType;
@@ -1148,7 +1154,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The user's own freshly-pinged cells (feature id -> cell), authoritative
   /// server state decoded from the fresh z14 tiles.
-  Map<int, CoverageCell> get coveragePatchCells => _coveragePatchCells;
+  Map<int, CoverageCell> get coveragePatchCells =>
+      _coveragePatchContext == coverageOverlayContext
+          ? _coveragePatchCells
+          : const {};
 
   /// Drop the session patch — the cells belong to one region + grid preset
   /// (called on zone change and when the Grid Mode preference changes).
@@ -1180,6 +1189,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // fetches below are in flight; only this snapshot is processed and only
     // it gets removed afterwards, so late arrivals keep their refresh.
     final coords = List<List<double>>.from(_pendingFreshCoords);
+    final overlayContext = coverageOverlayContext;
+    final gridSize = _preferences.coverageGridSize;
+    final recentDays = coverageOverlayDays;
+    if (_coveragePatchContext != overlayContext) {
+      clearCoveragePatch();
+      _coveragePatchContext = overlayContext;
+    }
 
     // A ping's influence is wider than its own cell: blob dilation and cells
     // straddling a tile border are emitted in the NEIGHBOURING tile too (the
@@ -1245,7 +1261,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             z: e.value[0],
             x: e.value[1],
             y: e.value[2],
-            gsize: _preferences.coverageGridSize);
+            gsize: gridSize,
+            recentDays: recentDays);
         if (result.changed == true) {
           anyChanged = true;
           anyVerdict = true;
@@ -1260,7 +1277,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           z14Bodies.add(result.body!);
         }
       }));
-      if (_isDisposed) return;
+      if (_isDisposed || overlayContext != coverageOverlayContext) return;
     }
 
     // Patch ONLY the user's own cells onto the map. The base overlay is never
@@ -1566,6 +1583,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int get smartPingDays => _apiService.enforceSmartPing
       ? _apiService.apiSmartPingDays
       : _preferences.smartPingDays;
+
+  /// Null means the ordinary all-time overlay. Regional window overrides apply.
+  int? get coverageOverlayDays =>
+      smartPingEnabled && _preferences.smartPingRecentCoverageOnly
+          ? smartPingDays
+          : null;
+
+  /// A patch must come from the same region, grid, preset and time filter.
+  String get coverageOverlayContext =>
+      '$zoneCode|${_preferences.coverageGridSize}|$radioFilterKey|$coverageOverlayDays';
+
   bool get discDropEnabled =>
       _preferences.discDropEnabled || _apiService.enforceDiscDrop;
 
@@ -4853,6 +4881,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // uncovered square is a silent drop there, so the phone-side dedupe only
     // keeps the queue small.
     _pingService!.onPingDeferred = (lat, lon, held) {
+      // Every actual deferral leaves a marker, even in the same square or
+      // at the same location. Only server credit is deduplicated below.
+      _deferredPingMarkers.add(PingEventMarker(
+        timestamp: DateTime.now(),
+        type: PingEventType.deferred,
+        noiseFloor: _currentNoiseFloor ?? -120,
+        latitude: lat,
+        longitude: lon,
+      ));
+      if (_deferredPingMarkers.length > _maxLogEntries) {
+        _deferredPingMarkers.removeAt(0);
+      }
+      recordPingEvent(PingEventType.deferred, latitude: lat, longitude: lon);
+      _notifyMapNow();
       final heldWord = held == BankedPingType.tx ? 'tx' : 'disc';
       if (!_recentCoverage.markDeferred(lat, lon)) {
         debugLog(
@@ -7193,7 +7235,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Start noise floor session for graph tracking. The label is the
         // enum's own name (active/passive/hybrid/targeted).
-        _startNoiseFloorSession(mode.name);
+        _startNoiseFloorSession(mode.name, startedAt: sessionStartedAt);
 
         // Enable heartbeat for all auto-ping modes (not offline mode)
         // Heartbeat sends keepalive ~1 min before session expiry (4 min timer)
@@ -7223,6 +7265,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           body: n.body,
         );
       } finally {
+        _startingDeferredHistory.clear();
         // Clear starting state on every path (session/cooldown/blocked early
         // returns, exceptions, and success) so the buttons never stay disabled
         _autoPingStarting = false;
@@ -7248,6 +7291,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxPings.clear();
     _discLogEntries.clear();
     _traceLogEntries.clear();
+    _deferredPingMarkers.clear();
     _siriObservationRevision++;
     _clearOverlayState();
     _pingService?.resetStats();
@@ -7260,6 +7304,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _rxLogEntries.clear();
     _discLogEntries.clear();
     _traceLogEntries.clear();
+    _deferredPingMarkers.clear();
     _siriObservationRevision++;
     _errorLogEntries.clear();
     _clearOverlayState();
@@ -11335,7 +11380,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Start a new noise floor session when mode is enabled
-  void _startNoiseFloorSession(String mode) {
+  void _startNoiseFloorSession(String mode, {DateTime? startedAt}) {
     // Continue existing session if same mode (e.g., after auto-reconnect)
     if (_currentNoiseFloorSession != null &&
         _currentNoiseFloorSession!.isActive &&
@@ -11345,9 +11390,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _currentNoiseFloorSession = NoiseFloorSession(
       id: const Uuid().v4(),
-      startTime: DateTime.now(),
+      startTime: startedAt ?? DateTime.now(),
       mode: mode,
+      markers: List.of(_startingDeferredHistory),
     );
+    _startingDeferredHistory.clear();
     debugLog('[GRAPH] Started $mode noise floor session');
     notifyListeners();
   }
@@ -11370,8 +11417,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     double? longitude,
     List<MarkerRepeaterInfo>? repeaters,
   }) {
-    if (_currentNoiseFloorSession != null && _currentNoiseFloor != null) {
-      _currentNoiseFloorSession!.markers.add(PingEventMarker(
+    // enableAutoPing can defer its first attempt before the recording session
+    // opens. Keep that event until a successful start; failed starts clear it.
+    final awaitingStart = _currentNoiseFloorSession == null &&
+        _autoPingStarting && type == PingEventType.deferred;
+    if ((_currentNoiseFloorSession != null || awaitingStart) &&
+        _currentNoiseFloor != null) {
+      final markers = awaitingStart
+          ? _startingDeferredHistory
+          : _currentNoiseFloorSession!.markers;
+      markers.add(PingEventMarker(
         timestamp: DateTime.now(),
         type: type,
         noiseFloor: _currentNoiseFloor!,
