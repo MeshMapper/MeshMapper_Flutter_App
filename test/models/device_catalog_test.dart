@@ -30,7 +30,8 @@ void main() {
 
   test('requires a bounded non-empty catalog with valid revision', () {
     final negativeRevision = validCatalog()..['revision'] = -1;
-    expect(() => DeviceCatalog.fromJson(negativeRevision), throwsFormatException);
+    expect(
+        () => DeviceCatalog.fromJson(negativeRevision), throwsFormatException);
 
     final empty = validCatalog()..['devices'] = [];
     expect(() => DeviceCatalog.fromJson(empty), throwsFormatException);

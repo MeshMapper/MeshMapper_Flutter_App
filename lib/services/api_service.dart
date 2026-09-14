@@ -260,7 +260,10 @@ class ApiService {
         stopwatch: stopwatch,
         statusCode: response.statusCode,
         request: payload,
-        response: {'revision': catalog.revision, 'device_count': catalog.devices.length},
+        response: {
+          'revision': catalog.revision,
+          'device_count': catalog.devices.length
+        },
       );
       return catalog;
     } catch (error) {
@@ -739,7 +742,8 @@ class ApiService {
                 'Queued wire tags are stale');
             await onSessionIdChanged?.call(previousSessionId, newSessionId);
             if (shouldStoreSession?.call() == false) {
-              debugWarn('[SESSION] Auth owner became stale during queue cleanup');
+              debugWarn(
+                  '[SESSION] Auth owner became stale during queue cleanup');
               return data;
             }
           }
@@ -855,7 +859,8 @@ class ApiService {
             carpeaterError is String && carpeaterError.isNotEmpty
                 ? carpeaterError
                 : null;
-        debugLog('[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
+        debugLog(
+            '[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
             '${_lastCarpeaterError != null ? ', carpeater refused: $_lastCarpeaterError' : ''}');
         // Nothing on this lane may fail a connection: a throw from the
         // listener would otherwise land in the outer catch and read as a
@@ -1166,9 +1171,8 @@ class ApiService {
     final message = result['message'] as String?;
     debugWarn('[SESSION] Session invalid: $reason - $message');
 
-    final recovery = reason == 'session_expired'
-        ? await _recoverExpiredSession()
-        : null;
+    final recovery =
+        reason == 'session_expired' ? await _recoverExpiredSession() : null;
     if (recovery == SessionRecoveryResult.recovered) {
       return (isValid: true, reason: null, message: null);
     }
@@ -1441,9 +1445,8 @@ class ApiService {
         'zone_disabled',
       };
 
-      final recovery = reason == 'session_expired'
-          ? await _recoverExpiredSession()
-          : null;
+      final recovery =
+          reason == 'session_expired' ? await _recoverExpiredSession() : null;
       if (recovery == SessionRecoveryResult.recovered) {
         _heartbeatRetryCount = 0;
         _heartbeatRetryTimer?.cancel();
@@ -1718,9 +1721,8 @@ class ApiService {
         'zone_full', 'zone_disabled',
       };
 
-      final recovery = reason == 'session_expired'
-          ? await _recoverExpiredSession()
-          : null;
+      final recovery =
+          reason == 'session_expired' ? await _recoverExpiredSession() : null;
       if (recovery == SessionRecoveryResult.recovered) {
         debugLog(
             '[API] Upload batch held after live session refresh: ${pings.length} items');

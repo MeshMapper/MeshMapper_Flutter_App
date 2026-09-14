@@ -43,6 +43,7 @@ void main() {
       txPower: 20,
       notes: '',
     );
-    expect(matchDeviceModel('Seeed Tracker T1000', [tracker, duplicate]), isNull);
+    expect(
+        matchDeviceModel('Seeed Tracker T1000', [tracker, duplicate]), isNull);
   });
 }

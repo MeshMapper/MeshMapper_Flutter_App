@@ -26,12 +26,17 @@ String normalizeDeviceIdentity(String value) {
 }
 
 /// Finds a model only when exactly one distinct device matches the identity.
-DeviceModel? matchDeviceModel(String manufacturer, Iterable<DeviceModel> models) {
+DeviceModel? matchDeviceModel(
+    String manufacturer, Iterable<DeviceModel> models) {
   final identity = normalizeDeviceIdentity(manufacturer);
   if (identity.isEmpty) return null;
   final matches = <int, DeviceModel>{};
   for (final model in models) {
-    final values = <String>[model.manufacturer, model.shortName, ...model.aliases];
+    final values = <String>[
+      model.manufacturer,
+      model.shortName,
+      ...model.aliases
+    ];
     if (values.any((value) => normalizeDeviceIdentity(value) == identity)) {
       matches[model.id] = model;
     }

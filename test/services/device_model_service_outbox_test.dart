@@ -45,7 +45,8 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     final preferences = await SharedPreferences.getInstance();
-    final stored = jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
+    final stored =
+        jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
     expect(calls, ['Unknown radio']);
     expect((stored['entries'] as Map).containsKey('unknownradio'), isTrue);
   });
@@ -87,7 +88,8 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 10));
 
     final preferences = await SharedPreferences.getInstance();
-    final stored = jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
+    final stored =
+        jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
     final entry = (stored['entries'] as Map)['newradio'] as Map;
     expect(calls, 1);
     expect(entry['app_version'], 'new');
@@ -102,12 +104,14 @@ void main() {
     await service.initialize();
     await service.refreshFuture;
     for (var i = 0; i < 51; i++) {
-      service.observeUnknownDevice(manufacturer: 'Unknown $i', appVersion: 'APP');
+      service.observeUnknownDevice(
+          manufacturer: 'Unknown $i', appVersion: 'APP');
     }
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     final preferences = await SharedPreferences.getInstance();
-    final stored = jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
+    final stored =
+        jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
     final entries = stored['entries'] as Map;
     expect(entries.length, 50);
     expect(entries.containsKey('unknown0'), isFalse);

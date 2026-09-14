@@ -561,7 +561,8 @@ class MeshCoreConnection {
   /// Returns (deviceModel, deviceModelMatched) for display/reporting purposes
   /// Note: This method does NOT modify radio TX power settings - it only reads device info
   Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(
-      Future<DeviceModel?> Function(String manufacturer) resolveDeviceModel) async {
+      Future<DeviceModel?> Function(String manufacturer)
+          resolveDeviceModel) async {
     if (_disposed) {
       throw Exception('Connection instance has been disposed');
     }
@@ -1401,7 +1402,8 @@ class MeshCoreConnection {
     reader.readBytes(4); // reply tag
     final aclPerms = reader.readByte();
     final fwLevel = reader.readByte();
-    debugLog('[CONN] LOGIN_SUCCESS admin=${flagByte & 1 == 1} fw_level=$fwLevel');
+    debugLog(
+        '[CONN] LOGIN_SUCCESS admin=${flagByte & 1 == 1} fw_level=$fwLevel');
     completer.complete(LoginResult(
       success: true,
       isAdmin: (flagByte & 1) == 1,
@@ -2056,15 +2058,15 @@ class MeshCoreConnection {
       await _write(bytes);
       debugLog('[CONN] Login frame sent (${bytes.length} bytes)');
 
-      final sent = await sentCompleter.future.timeout(sentTimeout,
-          onTimeout: () {
+      final sent =
+          await sentCompleter.future.timeout(sentTimeout, onTimeout: () {
         if (identical(_adminSentCompleter, sentCompleter)) {
           _adminSentCompleter = null;
         }
         throw TimeoutException('login: SENT timed out');
       });
-      return await loginCompleter.future.timeout(
-          replyTimeout(sent.estTimeoutMs), onTimeout: () {
+      return await loginCompleter.future
+          .timeout(replyTimeout(sent.estTimeoutMs), onTimeout: () {
         if (identical(_loginCompleter, loginCompleter)) {
           _loginCompleter = null;
           _loginPrefix = null;
@@ -2128,8 +2130,8 @@ class MeshCoreConnection {
           '[CONN] Binary request type=${request.isNotEmpty ? request[0] : -1} '
           '(${request.length} bytes) sent');
 
-      final sent = await sentCompleter.future.timeout(sentTimeout,
-          onTimeout: () {
+      final sent =
+          await sentCompleter.future.timeout(sentTimeout, onTimeout: () {
         if (identical(_adminSentCompleter, sentCompleter)) {
           _adminSentCompleter = null;
         }
@@ -2142,8 +2144,8 @@ class MeshCoreConnection {
       // leaves seconds between the two frames, so this remains a practical
       // expectation rather than a broader response-buffering change.
       _binaryResponseTag = sent.tag;
-      return await responseCompleter.future.timeout(
-          replyTimeout(sent.estTimeoutMs), onTimeout: () {
+      return await responseCompleter.future
+          .timeout(replyTimeout(sent.estTimeoutMs), onTimeout: () {
         if (identical(_binaryResponseCompleter, responseCompleter)) {
           _binaryResponseCompleter = null;
           _binaryResponseTag = null;

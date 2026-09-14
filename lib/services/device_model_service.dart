@@ -39,8 +39,8 @@ class DeviceModelService {
     Duration launchTimeout = const Duration(seconds: 10),
   })  : _fetchCatalog = fetchCatalog ?? ApiService().fetchDeviceCatalog,
         _reportUnknown = reportUnknown ??
-            ((manufacturer, appVersion, firmwareVersion) => ApiService()
-                .reportUnknownDevice(
+            ((manufacturer, appVersion, firmwareVersion) =>
+                ApiService().reportUnknownDevice(
                   manufacturer: manufacturer,
                   appVersion: appVersion,
                   firmwareVersion: firmwareVersion,
@@ -49,7 +49,8 @@ class DeviceModelService {
         _launchTimeout = launchTimeout;
 
   bool get isLoaded => _preferences != null;
-  List<DeviceModel> get models => List.unmodifiable(_catalog?.devices ?? const []);
+  List<DeviceModel> get models =>
+      List.unmodifiable(_catalog?.devices ?? const []);
   DeviceCatalog? get catalog => _catalog;
   Future<void> get refreshFuture => _refreshFuture ?? Future<void>.value();
 
@@ -63,7 +64,8 @@ class DeviceModelService {
       try {
         final decoded = jsonDecode(cached);
         if (decoded is Map<String, dynamic>) {
-          _catalog = DeviceCatalog.fromJson(decoded, encodedLength: utf8.encode(cached).length);
+          _catalog = DeviceCatalog.fromJson(decoded,
+              encodedLength: utf8.encode(cached).length);
         }
       } catch (_) {
         // A corrupt local value is never a catalog fallback.
@@ -110,7 +112,9 @@ class DeviceModelService {
       }
       current = _catalog;
     }
-    return current == null ? null : matchDeviceModel(manufacturer, current.devices);
+    return current == null
+        ? null
+        : matchDeviceModel(manufacturer, current.devices);
   }
 
   /// Queues a genuine unknown only when a valid catalog was available.
@@ -150,7 +154,9 @@ class DeviceModelService {
     if (raw == null) return <String, Map<String, dynamic>>{};
     try {
       final decoded = jsonDecode(raw);
-      if (decoded is! Map || decoded['version'] != 1 || decoded['entries'] is! Map) {
+      if (decoded is! Map ||
+          decoded['version'] != 1 ||
+          decoded['entries'] is! Map) {
         return <String, Map<String, dynamic>>{};
       }
       return (decoded['entries'] as Map).map((key, value) => MapEntry(
@@ -165,7 +171,9 @@ class DeviceModelService {
   Future<void> _writeOutbox(
     SharedPreferences preferences,
     Map<String, Map<String, dynamic>> entries,
-  ) => preferences.setString(outboxKey, jsonEncode({'version': 1, 'entries': entries}));
+  ) =>
+      preferences.setString(
+          outboxKey, jsonEncode({'version': 1, 'entries': entries}));
 
   void _trimOutbox(Map<String, Map<String, dynamic>> entries) {
     if (entries.length <= 50) return;
@@ -177,7 +185,8 @@ class DeviceModelService {
     }
   }
 
-  Future<void> _dispatchOne(String identity, Map<String, dynamic> submitted) async {
+  Future<void> _dispatchOne(
+      String identity, Map<String, dynamic> submitted) async {
     final acknowledgement = await _reportUnknown(
       submitted['manufacturer'] as String,
       submitted['app_version'] as String,
@@ -194,7 +203,9 @@ class DeviceModelService {
   }
 
   Future<void> _drainOutbox({required bool afterSuccessfulRefresh}) {
-    if (!afterSuccessfulRefresh || _catalog == null) return Future<void>.value();
+    if (!afterSuccessfulRefresh || _catalog == null) {
+      return Future<void>.value();
+    }
     _outboxChain = _outboxChain.then((_) async {
       final preferences = _preferences;
       if (preferences == null) return;
@@ -206,7 +217,9 @@ class DeviceModelService {
       }
       await _writeOutbox(preferences, entries);
       for (final entry in entries.entries) {
-        if (_attempted.add(entry.key)) await _dispatchOne(entry.key, entry.value);
+        if (_attempted.add(entry.key)) {
+          await _dispatchOne(entry.key, entry.value);
+        }
       }
     });
     return _outboxChain;

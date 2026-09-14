@@ -39,7 +39,8 @@ void main() {
     final catalog = await api.fetchDeviceCatalog();
 
     expect(request.url.path, '/wardrive-api.php/devices');
-    expect(jsonDecode(request.body), {'key': ApiService.apiKey, 'action': 'list'});
+    expect(
+        jsonDecode(request.body), {'key': ApiService.apiKey, 'action': 'list'});
     expect(catalog?.revision, 1);
     expect(callbacks, 0);
   });
@@ -56,7 +57,8 @@ void main() {
     expect(await malformed.fetchDeviceCatalog(), isNull);
   });
 
-  test('acknowledges only an exact successful unknown report envelope', () async {
+  test('acknowledges only an exact successful unknown report envelope',
+      () async {
     late Map<String, dynamic> body;
     final api = ApiService(
       client: MockClient((request) async {
