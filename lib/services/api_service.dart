@@ -136,6 +136,7 @@ class ApiService {
   DateTime? _heartbeatWindowStart;
   int _heartbeatWindowCount = 0;
   DateTime? _wardriveBlockedUntil;
+  Future<bool>? _sessionRecoveryInFlight;
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
@@ -625,18 +626,19 @@ class ApiService {
           // was tagged under the old session and would be silently dropped on
           // upload, so tell the listener to drop those pings.
           final previousSessionId = _sessionId;
-          _sessionId = data['session_id'] as String?;
+          final newSessionId = data['session_id'] as String?;
+          if (previousSessionId != null &&
+              newSessionId != null &&
+              previousSessionId != newSessionId) {
+            debugLog(
+                '[SESSION] New session id issued (was $previousSessionId, now $newSessionId). '
+                'Queued wire tags are stale');
+            await onSessionIdChanged?.call(previousSessionId, newSessionId);
+          }
+          _sessionId = newSessionId;
           // The storm brake is keyed on the session id, so a hold belongs to
           // the session that earned it.
           if (previousSessionId != _sessionId) _wardriveBlockedUntil = null;
-          if (previousSessionId != null &&
-              _sessionId != null &&
-              previousSessionId != _sessionId) {
-            debugLog(
-                '[SESSION] New session id issued (was $previousSessionId, now $_sessionId). '
-                'Queued wire tags are stale');
-            onSessionIdChanged?.call();
-          }
           _txAllowed = data['tx_allowed'] == true;
           _rxAllowed = data['rx_allowed'] == true;
           _sessionExpiresAt = data['expires_at'] as int?;
@@ -1056,6 +1058,10 @@ class ApiService {
     final message = result['message'] as String?;
     debugWarn('[SESSION] Session invalid: $reason - $message');
 
+    if (reason == 'session_expired' && await _recoverExpiredSession()) {
+      return (isValid: true, reason: null, message: null);
+    }
+
     // Trigger session error callback for critical errors
     const criticalErrors = {
       'session_expired',
@@ -1079,6 +1085,57 @@ class ApiService {
     }
 
     return (isValid: false, reason: reason, message: message);
+  }
+
+  /// Run at most one replacement auth for a server-expired live session.
+  ///
+  /// The provider owns the connection-specific request data and rejects this
+  /// callback while disconnecting, transferring zones, or offline. Keeping
+  /// that policy outside this service lets every wardrive door share one
+  /// recovery without coupling ApiService to BLE state.
+  Future<bool> _recoverExpiredSession() {
+    final inFlight = _sessionRecoveryInFlight;
+    if (inFlight != null) return inFlight;
+
+    late final Future<bool> recovery;
+    recovery = _recoverExpiredSessionImpl().whenComplete(() {
+      if (identical(_sessionRecoveryInFlight, recovery)) {
+        _sessionRecoveryInFlight = null;
+      }
+    });
+    _sessionRecoveryInFlight = recovery;
+    return recovery;
+  }
+
+  Future<bool> _recoverExpiredSessionImpl() async {
+    final recover = onSessionExpiredRecovery;
+    if (recover == null) {
+      debugWarn('[SESSION] Session expired with no live recovery handler');
+      return false;
+    }
+
+    try {
+      debugWarn('[SESSION] Session expired, refreshing live auth');
+      final recovered = await recover();
+      if (!recovered || _sessionId == null) {
+        debugWarn('[SESSION] Live session refresh did not complete');
+        return false;
+      }
+
+      // A recovery auth replaces expires_at but deliberately does not call
+      // enableHeartbeat(), because that would reset a lane the connection
+      // already owns. It does own the next schedule, so the expired chain
+      // cannot stack a retry behind the replacement session.
+      final expiresAt = _sessionExpiresAt;
+      if (_heartbeatEnabled && expiresAt != null) {
+        scheduleHeartbeat(expiresAt);
+      }
+      debugLog('[SESSION] Live session refresh complete');
+      return true;
+    } catch (e) {
+      debugError('[SESSION] Live session refresh failed: $e');
+      return false;
+    }
   }
 
   /// Enable heartbeat mode (called when auto mode starts)
@@ -1265,6 +1322,13 @@ class ApiService {
         'zone_disabled',
       };
 
+      if (reason == 'session_expired' && await _recoverExpiredSession()) {
+        _heartbeatRetryCount = 0;
+        _heartbeatRetryTimer?.cancel();
+        _heartbeatRetryTimer = null;
+        return;
+      }
+
       if (criticalErrors.contains(reason)) {
         _clearSession();
         await onSessionError?.call(reason, message);
@@ -1314,6 +1378,11 @@ class ApiService {
   /// Legacy: Check if we have a slot (compatibility with old code)
   bool get hasSlot => hasSession;
 
+  /// Re-authenticate a still-live companion after the server reports the
+  /// one recoverable session error. The provider owns the auth payload and
+  /// decides whether its connection state still permits recovery.
+  Future<bool> Function()? onSessionExpiredRecovery;
+
   /// Callback for session errors (session_expired, bad_session, outside_zone)
   /// Set by AppStateProvider to handle auto-disconnect
   ///
@@ -1328,7 +1397,8 @@ class ApiService {
 
   /// Fired when /auth returns a session id different from the one we held.
   /// Wired to ApiQueueService.dropStaleTaggedItems(). See that method for why.
-  void Function()? onSessionIdChanged;
+  Future<void> Function(String previousSessionId, String newSessionId)?
+      onSessionIdChanged;
 
   /// The auto mode running right now, as the server's enum (`active`,
   /// `hybrid`, `passive`, `trace`, `none`). Wired by the provider to
@@ -1510,6 +1580,12 @@ class ApiService {
         // Zone errors
         'zone_full', 'zone_disabled',
       };
+
+      if (reason == 'session_expired' && await _recoverExpiredSession()) {
+        debugLog(
+            '[API] Upload batch held after live session refresh: ${pings.length} items');
+        return UploadResult.held;
+      }
 
       if (criticalErrors.contains(reason)) {
         final subReason = result['sub_reason'] as String?;

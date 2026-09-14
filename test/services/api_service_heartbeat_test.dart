@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:clock/clock.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -139,6 +140,85 @@ void main() {
       async.elapse(const Duration(seconds: 20));
       expect(built.heartbeats.length, 1,
           reason: 'the ordinary pre-expiry keepalive must still go out');
+    });
+  });
+
+  test('an expired scheduled heartbeat lets its replacement auth own the lane',
+      () {
+    fakeAsync((async) {
+      final origin = DateTime.utc(2026, 9, 14, 12);
+      withClock(Clock(() => origin.add(async.elapsed)), () {
+        var auths = 0;
+        var heartbeats = 0;
+        final api = ApiService(
+          client: MockClient((request) async {
+            if (request.url.path.endsWith('/auth')) {
+              auths++;
+              return http.Response(
+                json.encode({
+                  'success': true,
+                  'session_id': 'session-$auths',
+                  'tx_allowed': true,
+                  'rx_allowed': true,
+                  'expires_at':
+                      clock.now().millisecondsSinceEpoch ~/ 1000 + 300,
+                }),
+                200,
+              );
+            }
+            heartbeats++;
+            if (heartbeats == 1) {
+              return http.Response(
+                json.encode({
+                  'success': false,
+                  'reason': 'session_expired',
+                  'message': 'expired for test',
+                }),
+                401,
+              );
+            }
+            return http.Response(
+              json.encode({
+                'success': true,
+                'expires_at':
+                    clock.now().millisecondsSinceEpoch ~/ 1000 + 300,
+              }),
+              200,
+            );
+          }),
+        );
+        api.onSessionExpiredRecovery = () async {
+          await api.requestAuth(
+            reason: 'connect',
+            publicKey: 'AB',
+            lat: 45.0,
+            lon: -75.0,
+          );
+          return true;
+        };
+
+        api.requestAuth(
+          reason: 'connect',
+          publicKey: 'AB',
+          lat: 45.0,
+          lon: -75.0,
+        );
+        async.flushMicrotasks();
+        api.enableHeartbeat();
+        async.flushMicrotasks();
+
+        async.elapse(const Duration(seconds: 241));
+        async.flushMicrotasks();
+        expect(heartbeats, 1);
+        expect(auths, 2, reason: 'the expired heartbeat triggers one re-auth');
+
+        async.elapse(const Duration(seconds: 230));
+        expect(heartbeats, 1,
+            reason: 'the old heartbeat chain must not leave a second timer');
+        async.elapse(const Duration(seconds: 10));
+        expect(heartbeats, 2,
+            reason: 'the recovered session schedules its own next heartbeat');
+      });
     });
   });
 }
