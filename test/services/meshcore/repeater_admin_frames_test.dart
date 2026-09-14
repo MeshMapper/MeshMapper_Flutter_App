@@ -129,6 +129,52 @@ void main() {
           31);
     });
 
+    test('rejects invalid public key and out path lengths before framing', () {
+      ContactRecord direct({required int keyLength, required int pathLength}) {
+        return ContactRecord(
+          publicKey: Uint8List(keyLength),
+          type: AdvTypes.repeater,
+          flags: 0,
+          outPathLen: ProtocolConstants.outPathUnknown,
+          outPath: Uint8List(pathLength),
+          name: 'R',
+          lastAdvert: 1,
+          latMicro: 2,
+          lonMicro: 3,
+          lastMod: 4,
+        );
+      }
+
+      for (final length in [31, 33]) {
+        expect(
+          () => direct(keyLength: length, pathLength: 64),
+          throwsArgumentError,
+          reason: 'a $length-byte public key would shift the frame',
+        );
+        expect(
+          () => ContactRecord.newRepeater(
+            publicKey: Uint8List(length),
+            name: 'R',
+            lat: 1,
+            lon: 2,
+            nowSecs: 3,
+          ),
+          throwsArgumentError,
+        );
+      }
+      for (final length in [63, 65]) {
+        expect(
+          () => direct(keyLength: 32, pathLength: length),
+          throwsArgumentError,
+          reason: 'a $length-byte out path would shift the frame',
+        );
+      }
+
+      final valid = direct(keyLength: 32, pathLength: 64);
+      expect(valid.toFrame(CommandCodes.addUpdateContact).length,
+          1 + ContactRecord.payloadLength);
+    });
+
     test('a short payload throws FormatException', () {
       expect(() => ContactRecord.parse(BufferReader(Uint8List(100))),
           throwsFormatException);

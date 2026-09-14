@@ -214,7 +214,41 @@ class ContactRecord {
   final int lonMicro;
   final int lastMod;
 
-  const ContactRecord({
+  factory ContactRecord({
+    required Uint8List publicKey,
+    required int type,
+    required int flags,
+    required int outPathLen,
+    required Uint8List outPath,
+    required String name,
+    required int lastAdvert,
+    required int latMicro,
+    required int lonMicro,
+    required int lastMod,
+  }) {
+    if (publicKey.length != 32) {
+      throw ArgumentError.value(
+          publicKey.length, 'publicKey.length', 'must be exactly 32 bytes');
+    }
+    if (outPath.length != 64) {
+      throw ArgumentError.value(
+          outPath.length, 'outPath.length', 'must be exactly 64 bytes');
+    }
+    return ContactRecord._(
+      publicKey: publicKey,
+      type: type,
+      flags: flags,
+      outPathLen: outPathLen,
+      outPath: outPath,
+      name: name,
+      lastAdvert: lastAdvert,
+      latMicro: latMicro,
+      lonMicro: lonMicro,
+      lastMod: lastMod,
+    );
+  }
+
+  ContactRecord._({
     required this.publicKey,
     required this.type,
     required this.flags,
