@@ -270,4 +270,56 @@ void main() {
     expect(built.api.sessionId, isNull);
     expect(sessionErrors, 1);
   });
+
+  test('an invalidated auth failure remains nonfatal', () async {
+    final built = build();
+    await connect(built.api);
+    final authGate = Completer<void>();
+    var invalidated = false;
+    var sessionErrors = 0;
+    built.api.onSessionExpiredRecovery = () async {
+      await authGate.future;
+      return invalidated
+          ? SessionRecoveryResult.superseded
+          : SessionRecoveryResult.failed;
+    };
+    built.api.onSessionError = (reason, message, {subReason}) async {
+      sessionErrors++;
+    };
+
+    final check = built.api.checkSessionValid();
+    await Future<void>.delayed(Duration.zero);
+    invalidated = true;
+    authGate.complete();
+
+    expect((await check).isValid, isFalse);
+    expect(built.api.sessionId, 'old-session');
+    expect(sessionErrors, 0);
+  });
+
+  test('an invalidated configuration failure remains nonfatal', () async {
+    final built = build();
+    await connect(built.api);
+    final configGate = Completer<void>();
+    var invalidated = false;
+    var sessionErrors = 0;
+    built.api.onSessionExpiredRecovery = () async {
+      await configGate.future;
+      return invalidated
+          ? SessionRecoveryResult.superseded
+          : SessionRecoveryResult.failed;
+    };
+    built.api.onSessionError = (reason, message, {subReason}) async {
+      sessionErrors++;
+    };
+
+    final check = built.api.checkSessionValid();
+    await Future<void>.delayed(Duration.zero);
+    invalidated = true;
+    configGate.complete();
+
+    expect((await check).isValid, isFalse);
+    expect(built.api.sessionId, 'old-session');
+    expect(sessionErrors, 0);
+  });
 }

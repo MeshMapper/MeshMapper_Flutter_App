@@ -113,10 +113,12 @@ class _FakeApiQueue implements ApiQueueService {
   _FakeApiQueue({this.txEnqueueGate});
 
   final Completer<void>? txEnqueueGate;
+  int txEnqueueCalls = 0;
 
   @override
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.memberName == #enqueueTx) {
+      txEnqueueCalls++;
       return txEnqueueGate?.future ?? Future<void>.value();
     }
     if (invocation.memberName.toString().contains('enqueue')) {
@@ -291,6 +293,61 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(windowFinished, isTrue);
+    ping.dispose();
+  });
+
+  testWidgets('force teardown cancels a listening TX before opening its gate',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final queue = _FakeApiQueue();
+    final ping = _build(
+      gps,
+      _FakeConnection(),
+      DiscoveryWindowTimer(),
+      queue: queue,
+      withSession: true,
+    );
+
+    expect(await ping.sendTxPing(), isTrue);
+    var gateOpened = false;
+    unawaited(ping.waitForTxWindow().then((_) => gateOpened = true));
+
+    await ping.forceDisableAutoPing();
+    await tester.pump(const Duration(seconds: 8));
+    expect(gateOpened, isTrue);
+    expect(queue.txEnqueueCalls, 0,
+        reason: 'a force teardown must not queue the cancelled old TX later');
+    ping.dispose();
+  });
+
+  testWidgets('force teardown leaves a finalizing queue write owning its gate',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final enqueueGate = Completer<void>();
+    final queue = _FakeApiQueue(txEnqueueGate: enqueueGate);
+    final ping = _build(
+      gps,
+      _FakeConnection(),
+      DiscoveryWindowTimer(),
+      queue: queue,
+      withSession: true,
+    );
+
+    expect(await ping.sendTxPing(), isTrue);
+    var gateOpened = false;
+    unawaited(ping.waitForTxWindow().then((_) => gateOpened = true));
+    await tester.pump(const Duration(seconds: 8));
+    expect(queue.txEnqueueCalls, 1);
+
+    await ping.forceDisableAutoPing();
+    await tester.pump();
+    expect(gateOpened, isFalse,
+        reason: 'the enqueuing handler must finish before stale-tag cleanup');
+
+    enqueueGate.complete();
+    await tester.pump();
+    await tester.pump();
+    expect(gateOpened, isTrue);
     ping.dispose();
   });
 
