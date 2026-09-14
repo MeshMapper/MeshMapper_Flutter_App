@@ -1,11 +1,11 @@
 import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:provider/provider.dart';
 
 import '../../providers/app_state_provider.dart';
-import '../../services/permission_disclosure_service.dart';
+import '../../widgets/background_location_setup.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: General.
@@ -218,55 +218,9 @@ class _BackgroundModeToggleState extends State<_BackgroundModeToggle>
   }
 
   Future<void> _requestPermission() async {
-    // Show prominent disclosure before requesting background location
-    final accepted =
-        await PermissionDisclosureService.showBackgroundLocationDisclosure(
-            context);
-    if (!accepted) {
-      return; // User declined
-    }
-
     setState(() => _isLoading = true);
-
-    final granted = await widget.appState.requestAlwaysLocationPermission();
-
-    if (mounted) {
-      setState(() {
-        _hasAlwaysPermission = granted;
-        _isLoading = false;
-      });
-
-      if (!granted) {
-        // Show dialog suggesting to open Settings
-        _showPermissionDeniedDialog();
-      }
-    }
-  }
-
-  void _showPermissionDeniedDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Permission Required'),
-        content: const Text(
-          'To enable background location tracking, please go to Settings and set Location to "Always".\n\n'
-          'This allows the app to track your location while in the background for continuous wardriving.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              Geolocator.openAppSettings();
-            },
-            child: const Text('Open Settings'),
-          ),
-        ],
-      ),
-    );
+    await setUpBackgroundLocation(context, widget.appState);
+    await _checkPermission();
   }
 
   void _showDisableDialog() {

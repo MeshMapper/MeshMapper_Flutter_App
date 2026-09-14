@@ -94,6 +94,18 @@ updated by adding the developer-portal capability.
 
 ## Architecture
 
+### First-Run Quick Guide
+
+The iOS and Android apps show a versioned Quick Guide after the required
+first-run permission flow. `AppStateProvider` owns the seen-version state and
+stores it as a separate key in the `user_preferences` Hive box, so a missing
+key makes the current guide due for both new installs and existing upgrades.
+Skip and Finish persist completion; simply opening or interrupting the guide
+does not. `MainScaffold` serializes the welcome prompt with other global
+dialogs, and About & Support offers manual replay on mobile. The guide is a
+self-contained Flutter PageView and never changes connection, wardriving, or
+upload state.
+
 ### Service-Oriented Architecture
 
 The app uses a layered service architecture with clear separation of concerns:
