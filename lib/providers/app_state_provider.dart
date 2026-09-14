@@ -50,6 +50,7 @@ import '../services/meshcore/rx_logger.dart';
 import '../services/meshcore/tx_tracker.dart';
 import '../services/meshcore/unified_rx_handler.dart';
 import '../services/ping_service.dart';
+import '../services/path_hash_mode_policy.dart';
 import '../services/countdown_timer_service.dart';
 import '../services/app_intents/app_intent_bridge_service.dart';
 import '../services/app_intents/app_intent_commands.dart';
@@ -5710,49 +5711,61 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final originalPathHashMode = deviceInfo.pathHashMode;
     final deviceMode = originalPathHashMode ?? 0;
     final deviceHopBytes = deviceMode + 1;
-    var refreshedHopBytes =
-        originalPathHashMode == null ? 1 : deviceHopBytes;
+    var refreshedHopBytes = originalPathHashMode == null ? 1 : deviceHopBytes;
     var refreshedTraceHopBytes =
         originalPathHashMode == null ? 1 : (deviceHopBytes == 3 ? 4 : deviceHopBytes);
 
-    final effective = effectiveHopBytes;
+    final policy = resolvePathHashModePolicy(
+      deviceHopBytes: deviceHopBytes,
+      currentRuntimeHopBytes: currentRuntimeHopBytes,
+      enforcedHopBytes: _apiService.apiHopBytes,
+      enforceHopBytes: enforceHopBytes,
+    );
+    final desiredHopBytes = policy.desiredHopBytes;
 
-    if (effective != currentRuntimeHopBytes && originalPathHashMode != null) {
+    if (policy.needsRadioWrite && originalPathHashMode != null) {
       // Need to change the radio's path hash mode
       try {
-        await connection!.setPathHashMode(effective - 1);
+        await connection!.setPathHashMode(desiredHopBytes - 1);
         if (!stillOwns()) return false;
-        refreshedHopBytes = effective;
+        refreshedHopBytes = desiredHopBytes;
         if (!preserveTraceHopBytes) {
-          refreshedTraceHopBytes = effective == 3 ? 4 : effective;
+          refreshedTraceHopBytes =
+              desiredHopBytes == 3 ? 4 : desiredHopBytes;
         }
         debugLog(
-            '[PATH] Set path hash mode: radio was $currentRuntimeHopBytes-byte, now $effective-byte (trace: $refreshedTraceHopBytes-byte)');
+            '[PATH] Set path hash mode: radio was $currentRuntimeHopBytes-byte, now $desiredHopBytes-byte (trace: $refreshedTraceHopBytes-byte)');
 
         // Show warning popup if changing from 1-byte to multi-byte
-        if (deviceMode == 0 && effective > 1) {
+        if (deviceMode == 0 && desiredHopBytes > 1) {
           final reason = enforceHopBytes
               ? 'set by your regional admin'
               : 'set in your app preferences';
-          _pendingPathHashWarning = (hopBytes: effective, reason: reason);
+          _pendingPathHashWarning =
+              (hopBytes: desiredHopBytes, reason: reason);
           notifyListeners();
         }
       } catch (e) {
         debugError('[PATH] Failed to set path hash mode: $e');
         return false;
       }
-    } else if (originalPathHashMode == null && effective > 1) {
+    } else if (originalPathHashMode == null && desiredHopBytes > 1) {
       // Old firmware doesn't support multi-byte paths — warn user, fall back to 1-byte
       debugWarn(
-          '[PATH] Device firmware does not report path_hash_mode, cannot set $effective-byte paths');
+          '[PATH] Device firmware does not report path_hash_mode, cannot set $desiredHopBytes-byte paths');
       if (enforceHopBytes) {
         _pendingPathHashWarning =
-            (hopBytes: effective, reason: 'firmware_unsupported');
+            (hopBytes: desiredHopBytes, reason: 'firmware_unsupported');
         notifyListeners();
       }
     } else {
+      refreshedHopBytes = desiredHopBytes;
+      if (!preserveTraceHopBytes) {
+        refreshedTraceHopBytes =
+            desiredHopBytes == 3 ? 4 : desiredHopBytes;
+      }
       debugLog(
-          '[PATH] Path hash mode OK: radio=$currentRuntimeHopBytes-byte, effective=$effective-byte');
+          '[PATH] Path hash mode OK: radio=$currentRuntimeHopBytes-byte, desired=$desiredHopBytes-byte');
     }
     if (!stillOwns()) return false;
     _originalPathHashMode = originalPathHashMode;
@@ -6701,28 +6714,41 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           connection.deviceInfo?.manufacturer ??
           'Unknown';
       debugLog('[SESSION] Re-authenticating live companion after session expiry');
-      final result = await _apiService.requestAuth(
-        reason: 'connect',
-        publicKey: publicKey,
-        who: deviceName,
-        appVersion: _appVersion,
-        power: _preferences.powerLevel,
-        iataCode: zoneCode ?? _preferences.iataCode,
-        model: model,
-        radioFreq: connection.selfInfo?.radioConfigApi,
-        lat: position.latitude,
-        lon: position.longitude,
-        accuracyMeters: position.accuracy,
-        shouldStoreSession: () =>
-            _ownsSessionRecovery(generation, connection, publicKey),
-      );
+      Map<String, dynamic>? result;
+      try {
+        result = await _apiService.requestAuth(
+          reason: 'connect',
+          publicKey: publicKey,
+          who: deviceName,
+          appVersion: _appVersion,
+          power: _preferences.powerLevel,
+          iataCode: zoneCode ?? _preferences.iataCode,
+          model: model,
+          radioFreq: connection.selfInfo?.radioConfigApi,
+          lat: position.latitude,
+          lon: position.longitude,
+          accuracyMeters: position.accuracy,
+          shouldStoreSession: () =>
+              _ownsSessionRecovery(generation, connection, publicKey),
+        );
+      } catch (e) {
+        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
+          debugLog('[SESSION] Stale re-authentication failure ignored');
+          return SessionRecoveryResult.superseded;
+        }
+        debugError('[SESSION] Live re-authentication failed: $e');
+        return SessionRecoveryResult.failed;
+      }
       final replacementSessionId = result?['session_id'] as String?;
+      if (!_ownsSessionRecovery(generation, connection, publicKey)) {
+        await _releaseRecoveredSession(publicKey, replacementSessionId);
+        return SessionRecoveryResult.superseded;
+      }
       if (result == null || result['success'] != true) {
         debugWarn('[SESSION] Live re-authentication was not accepted');
         return SessionRecoveryResult.failed;
       }
-      if (!_ownsSessionRecovery(generation, connection, publicKey) ||
-          replacementSessionId == null ||
+      if (replacementSessionId == null ||
           _apiService.sessionId != replacementSessionId) {
         await _releaseRecoveredSession(publicKey, replacementSessionId);
         return SessionRecoveryResult.superseded;
@@ -6744,6 +6770,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return SessionRecoveryResult.failed;
         }
       } catch (e) {
+        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
+          await _releaseRecoveredSession(publicKey, replacementSessionId);
+          return SessionRecoveryResult.superseded;
+        }
         debugError('[SESSION] Failed to apply replacement session: $e');
         await _releaseRecoveredSession(publicKey, replacementSessionId);
         return SessionRecoveryResult.failed;

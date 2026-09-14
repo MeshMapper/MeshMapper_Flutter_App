@@ -109,6 +109,7 @@ class PingService {
   int? _pendingTxPingCounter; // wire-tag ping counter (null in coords mode)
   String? _pendingTxWireTag; // wire-tag body sent on air (null in coords mode)
   Completer<void>? _txWindowCompletion;
+  bool _txWindowFinalizing = false;
 
   // Ping in progress guard (prevents concurrent BLE GATT errors)
   // Reference: state.pingInProgress in wardrive.js
@@ -1203,53 +1204,57 @@ class PingService {
     // Queue TX entry with heard_repeats AFTER RX window ends
     final txTimestamp = _pendingTxTimestamp;
     if (txTimestamp != null) {
+      _txWindowFinalizing = true;
       try {
-        await _apiQueue.enqueueTx(
-          latitude: txPosition.latitude,
-          longitude: txPosition.longitude,
-          heardRepeats: heardRepeats,
-          timestamp: txTimestamp,
-          externalAntenna: getExternalAntenna?.call() ?? false,
-          noiseFloor: _pendingTxNoiseFloor,
-          power: getPowerLevel?.call(),
-          pingCounter:
-              _pendingTxPingCounter, // null in coords mode → server coords path
-          wireTag: _pendingTxWireTag, // null in coords mode → server coords path
-          altitude: GpsService.altitudeOrNull(txPosition),
-        );
-        debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
-      } catch (e) {
-        // ApiQueueService normally handles Hive recovery itself. This final
-        // guard still releases a recovery waiter if a replacement queue throws.
-        debugError('[PING] Failed to queue TX after RX window: $e');
-      }
-
-      // Queue multi-hop echoes as individual RX API entries
-      if (multiHopEchoes.isNotEmpty) {
-        for (final echo in multiHopEchoes) {
-          final rxHeardRepeats = echo.snr != null
-              ? '${echo.repeaterId}(${echo.snr!.toStringAsFixed(2)})'
-              : '${echo.repeaterId}(null)';
-          _apiQueue.enqueueRx(
+        try {
+          await _apiQueue.enqueueTx(
             latitude: txPosition.latitude,
             longitude: txPosition.longitude,
-            heardRepeats: rxHeardRepeats,
-            timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-            repeaterId: echo.repeaterId,
+            heardRepeats: heardRepeats,
+            timestamp: txTimestamp,
             externalAntenna: getExternalAntenna?.call() ?? false,
             noiseFloor: _pendingTxNoiseFloor,
             power: getPowerLevel?.call(),
+            pingCounter: _pendingTxPingCounter,
+            wireTag: _pendingTxWireTag,
             altitude: GpsService.altitudeOrNull(txPosition),
           );
+          debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
+        } catch (e) {
+          // ApiQueueService normally handles Hive recovery itself. This final
+          // guard still releases a recovery waiter if a replacement queue throws.
+          debugError('[PING] Failed to queue TX after RX window: $e');
         }
-        debugLog(
-            '[PING] Queued ${multiHopEchoes.length} multi-hop echoes as RX');
-      }
 
-      // Clear pending TX context
-      _pendingTxTimestamp = null;
-      _pendingTxNoiseFloor = null;
-      _completeTxWindowGate();
+        // Queue multi-hop echoes as individual RX API entries
+        if (multiHopEchoes.isNotEmpty) {
+          for (final echo in multiHopEchoes) {
+            final rxHeardRepeats = echo.snr != null
+                ? '${echo.repeaterId}(${echo.snr!.toStringAsFixed(2)})'
+                : '${echo.repeaterId}(null)';
+            _apiQueue.enqueueRx(
+              latitude: txPosition.latitude,
+              longitude: txPosition.longitude,
+              heardRepeats: rxHeardRepeats,
+              timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+              repeaterId: echo.repeaterId,
+              externalAntenna: getExternalAntenna?.call() ?? false,
+              noiseFloor: _pendingTxNoiseFloor,
+              power: getPowerLevel?.call(),
+              altitude: GpsService.altitudeOrNull(txPosition),
+            );
+          }
+          debugLog(
+              '[PING] Queued ${multiHopEchoes.length} multi-hop echoes as RX');
+        }
+      } finally {
+        _pendingTxTimestamp = null;
+        _pendingTxNoiseFloor = null;
+        _pendingTxPingCounter = null;
+        _pendingTxWireTag = null;
+        _txWindowFinalizing = false;
+        _completeTxWindowGate();
+      }
     }
 
     // Unlock ping controls immediately (don't wait for API)
@@ -1695,7 +1700,10 @@ class PingService {
     // the flag to whoever holds it by then.
     _sendEpoch++;
     _pingInProgress = false;
-    _completeTxWindowGate();
+    if (!_txWindowFinalizing) {
+      _cancelPendingTxWindow();
+      _completeTxWindowGate();
+    }
     _pendingDisable = false; // Clear any pending disable
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = null;
@@ -2531,29 +2539,36 @@ class PingService {
   /// triggering pings during cooldown (race condition fix)
   void stopEchoTracking() {
     debugLog('[PING] Stopping TX echo tracking and RX window timer');
+    if (!_txWindowFinalizing) {
+      _cancelPendingTxWindow();
+      _completeTxWindowGate();
+    }
+    // Unlock ping controls if the window was in progress
+    _pingInProgress = false;
+  }
+
+  void _cancelPendingTxWindow() {
     _rxWindowTimer?.cancel();
     _rxWindowTimer = null;
     _rxWindowCountdown.stop();
     _txTracker?.stopTracking();
-    // Clear pending TX context since we're aborting the window
     _pendingTxTimestamp = null;
     _pendingTxNoiseFloor = null;
-    // Unlock ping controls if the window was in progress
-    _pingInProgress = false;
-    _completeTxWindowGate();
+    _pendingTxPingCounter = null;
+    _pendingTxWireTag = null;
   }
 
   /// Dispose of resources
   void dispose() {
-    _rxWindowTimer?.cancel();
-    _rxWindowTimer = null;
-    _rxWindowCountdown.stop();
+    if (!_txWindowFinalizing) {
+      _cancelPendingTxWindow();
+      _completeTxWindowGate();
+    }
     _autoTimer?.cancel();
     _autoTimer = null;
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = null;
     _bankedPing = null;
-    _completeTxWindowGate();
     _cooldownTimer.stop();
     _manualPingCooldownTimer.stop();
     _stopDiscoveryMode();
