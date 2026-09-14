@@ -74,6 +74,7 @@ import '../services/portal_token_store.dart';
 import '../services/recent_coverage_service.dart';
 import '../services/repeater_admin/manage_target.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
+import '../services/repeater_admin/repeater_claims_cache.dart';
 import '../services/repeater_admin/repeater_admin_models.dart';
 import '../services/repeater_admin/repeater_admin_module.dart';
 import '../services/repeater_admin/repeater_admin_session.dart';
@@ -687,7 +688,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // notifies here are UI-only (Rule 9).
   static const String _repeaterClaimsKey = 'repeater_claims';
   RepeaterAdminSession? _repeaterAdminSession;
-  Map<String, List<RepeaterClaim>> _repeaterClaimsByPubkey = {};
+  RepeaterClaimsCache _repeaterClaimsCache = RepeaterClaimsCache({});
   late final RepeaterAdminApi _repeaterAdminApi;
   late final RepeaterPasswordStore _repeaterPasswordStore;
 
@@ -706,25 +707,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             companionSupportsRepeaterAdmin(companionFirmwareVersionCode),
       );
 
-  /// The connected companion's cached claims when it has an entry, otherwise
-  /// every cached companion's claims deduped by repeater, so the list still
-  /// shows before the first reconcile lands and while no radio is connected.
-  /// A claim from another radio can therefore show until the connect
-  /// reconcile replaces it.
-  List<RepeaterClaim> get repeaterClaims {
-    final key = _devicePublicKey?.toUpperCase();
-    if (key != null && _repeaterClaimsByPubkey.containsKey(key)) {
-      return List.unmodifiable(_repeaterClaimsByPubkey[key]!);
-    }
-    final seen = <String>{};
-    final out = <RepeaterClaim>[];
-    for (final list in _repeaterClaimsByPubkey.values) {
-      for (final c in list) {
-        if (seen.add(c.repeaterHex)) out.add(c);
-      }
-    }
-    return List.unmodifiable(out);
-  }
+  /// The connected companion's cached claims, or the deduplicated cache while
+  /// no companion is connected.
+  List<RepeaterClaim> get repeaterClaims =>
+      _repeaterClaimsCache.claimsFor(_devicePublicKey);
 
   bool isRepeaterClaimed(String hex) {
     final wanted = hex.toUpperCase();
@@ -6791,11 +6777,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _repeaterPasswordStore.deleteRepeaterPassword(hex);
 
   void _removeClaim(String repeaterHex) {
-    final wanted = repeaterHex.toUpperCase();
-    for (final key in _repeaterClaimsByPubkey.keys.toList()) {
-      _repeaterClaimsByPubkey[key] =
-          _repeaterClaimsByPubkey[key]!.where((c) => c.repeaterHex != wanted).toList();
-    }
+    _repeaterClaimsCache =
+        _repeaterClaimsCache.removeForCurrent(_devicePublicKey, repeaterHex);
     notifyListeners();
     unawaited(_saveRepeaterClaims());
   }
@@ -6812,7 +6795,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugLog('[RADMIN] Claims reconcile ($reason) skipped: ${result.failure.name}');
         return;
       }
-      _repeaterClaimsByPubkey[key] = result.claims;
+      final replacement = _repeaterClaimsCache.replaceForCurrent(
+        requestKey: key,
+        currentKey: _devicePublicKey,
+        claims: result.claims,
+      );
+      if (replacement == null) {
+        debugLog('[RADMIN] Claims reconcile ($reason) discarded after '
+            'companion changed');
+        return;
+      }
+      _repeaterClaimsCache = replacement;
       debugLog('[RADMIN] Claims reconciled ($reason): ${result.claims.length}');
       notifyListeners();
       await _saveRepeaterClaims();
@@ -6838,11 +6831,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
               if (RepeaterClaim.tryFromJson(row) case final c?) c,
         ];
       });
-      _repeaterClaimsByPubkey = out;
+      _repeaterClaimsCache = RepeaterClaimsCache(out);
       debugLog('[RADMIN] Loaded cached claims for ${out.length} companion(s)');
     } catch (e) {
       debugError('[RADMIN] Failed to load cached claims: $e');
-      _repeaterClaimsByPubkey = {};
+      _repeaterClaimsCache = RepeaterClaimsCache({});
     }
   }
 
@@ -6850,8 +6843,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final box = await _openBoxSafely(_preferencesBoxName);
     if (box == null) return;
     try {
-      final encoded = jsonEncode(_repeaterClaimsByPubkey.map(
-          (k, v) => MapEntry(k, v.map((c) => c.toJson()).toList())));
+      final encoded = jsonEncode(_repeaterClaimsCache.snapshot
+          .map((k, v) => MapEntry(k, v.map((c) => c.toJson()).toList())));
       await box.put(_repeaterClaimsKey, encoded);
       await box.flush();
     } catch (e) {
