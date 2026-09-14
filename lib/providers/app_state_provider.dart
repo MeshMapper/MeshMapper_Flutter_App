@@ -4175,7 +4175,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Execute connection workflow (transport already connected above)
         final connectionResult = await _meshCoreConnection!.connect(
-          _deviceModelService.models,
+          _deviceModelService.resolveForConnection,
         );
 
         await _postConnectionSetup(connectionResult, device);
@@ -4342,7 +4342,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       });
 
       final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.models,
+        _deviceModelService.resolveForConnection,
       );
 
       final device = DiscoveredDevice(
@@ -4472,7 +4472,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       });
 
       final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.models,
+        _deviceModelService.resolveForConnection,
       );
 
       final vid = usbDevice['vid'] as int? ?? 0;
@@ -4595,7 +4595,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       });
 
       final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.models,
+        _deviceModelService.resolveForConnection,
       );
 
       final device = DiscoveredDevice(id: deviceId, name: deviceName);
@@ -4629,7 +4629,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _portalLinkPromptPubkey = null;
 
     if (connectionResult.deviceModelMatched &&
-        connectionResult.deviceModel != null) {
+        connectionResult.deviceModel != null &&
+        !_preferences.powerLevelSet) {
       final matchedDevice = connectionResult.deviceModel!;
       _preferences = _preferences.copyWith(
         powerLevel: matchedDevice.power,
@@ -4640,6 +4641,17 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       debugLog(
           '[MODEL] Device recognized: ${matchedDevice.shortName} - reporting ${matchedDevice.power}W in API calls');
+    }
+
+    if (!connectionResult.deviceModelMatched) {
+      final manufacturer = _meshCoreConnection?.deviceInfo?.manufacturer;
+      if (manufacturer != null) {
+        _deviceModelService.observeUnknownDevice(
+          manufacturer: manufacturer,
+          appVersion: AppConstants.appVersion,
+          firmwareVersion: _meshCoreConnection?.deviceInfo?.firmwareVersionString,
+        );
+      }
     }
 
     await _createUnifiedRxHandler();
