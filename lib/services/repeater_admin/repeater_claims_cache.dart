@@ -33,11 +33,11 @@ class RepeaterClaimsCache {
     return List.unmodifiable(claims);
   }
 
-  /// Returns a replacement cache with [repeaterHex] removed only for the
-  /// connected companion. No companion key leaves this cache unchanged.
-  RepeaterClaimsCache removeForCurrent(
-      String? connectedPublicKey, String repeaterHex) {
-    final key = _normalizedKey(connectedPublicKey);
+  /// Returns a replacement cache with [repeaterHex] removed only for
+  /// [companionPublicKey]. No companion key leaves this cache unchanged.
+  RepeaterClaimsCache removeForCompanion(
+      String? companionPublicKey, String repeaterHex) {
+    final key = _normalizedKey(companionPublicKey);
     if (key == null) return this;
 
     final wanted = repeaterHex.toUpperCase();

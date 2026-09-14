@@ -74,6 +74,7 @@ import '../services/portal_token_store.dart';
 import '../services/recent_coverage_service.dart';
 import '../services/repeater_admin/manage_target.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
+import '../services/repeater_admin/repeater_claim_unclaim.dart';
 import '../services/repeater_admin/repeater_claims_cache.dart';
 import '../services/repeater_admin/repeater_admin_models.dart';
 import '../services/repeater_admin/repeater_admin_module.dart';
@@ -6730,10 +6731,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_preferences.offlineMode || !_apiService.hasSession) {
       return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.noSession);
     }
-    final result = await _repeaterAdminApi.unclaim(repeaterHex);
+    final result = await RepeaterClaimUnclaim(
+      request: _repeaterAdminApi.unclaim,
+      companionPublicKey: () => _devicePublicKey,
+      cache: () => _repeaterClaimsCache,
+      replaceCache: (cache) => _repeaterClaimsCache = cache,
+      notify: notifyListeners,
+      persist: () => unawaited(_saveRepeaterClaims()),
+    ).run(repeaterHex);
     if (result.ok) {
       debugLog('[RADMIN] Unclaimed ${repeaterHex.substring(0, 8)}');
-      _removeClaim(repeaterHex);
     }
     return result;
   }
@@ -6775,13 +6782,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       _repeaterPasswordStore.writeRepeaterPassword(hex, password);
   Future<void> forgetRepeaterPassword(String hex) =>
       _repeaterPasswordStore.deleteRepeaterPassword(hex);
-
-  void _removeClaim(String repeaterHex) {
-    _repeaterClaimsCache =
-        _repeaterClaimsCache.removeForCurrent(_devicePublicKey, repeaterHex);
-    notifyListeners();
-    unawaited(_saveRepeaterClaims());
-  }
 
   /// Replace the connected companion's cached claims from the server's
   /// `mine` action. Non-fatal: a refusal or an old server leaves the cache.

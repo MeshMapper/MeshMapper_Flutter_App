@@ -40,7 +40,7 @@ void main() {
     final cache = RepeaterClaimsCache({
       companionA: [claimA],
       companionB: [claimA, claimB],
-    }).removeForCurrent(companionA, repeaterA);
+    }).removeForCompanion(companionA, repeaterA);
 
     expect(cache.claimsFor(companionA), isEmpty);
     expect(cache.claimsFor(companionB).map((claim) => claim.repeaterHex),
