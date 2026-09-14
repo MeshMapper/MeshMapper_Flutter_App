@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:clock/clock.dart';
 import 'package:http/http.dart' as http;
 
+import '../models/device_catalog.dart';
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 import 'meshcore/regional_carpeater_filter.dart';
@@ -38,6 +39,9 @@ enum UploadResult {
 /// untouched while they quietly stop, hold their upload, or await the next
 /// heartbeat schedule.
 enum SessionRecoveryResult { recovered, superseded, failed }
+
+/// A report response that is safe to remove from the local outbox.
+enum DeviceReportAcknowledgement { known, pending, dismissed }
 
 /// The request never reached the server: no coverage, DNS failure, connection
 /// reset, TLS handshake, or a timeout waiting for the first byte.
@@ -96,6 +100,7 @@ class ApiService {
   static const String geoAuthStatusUrl = '$baseUrl/wardrive-api.php/status';
   static const String geoAuthUrl = '$baseUrl/wardrive-api.php/auth';
   static const String borderUrl = '$baseUrl/wardrive-api.php/border';
+  static const String deviceCatalogUrl = '$baseUrl/wardrive-api.php/devices';
 
   /// API key — injected at build time via --dart-define=API_KEY=...
   static const String apiKey = String.fromEnvironment('API_KEY');
@@ -126,6 +131,7 @@ class ApiService {
 
   final http.Client _client;
   final NetworkStateSource _networkState;
+  final Duration _deviceCatalogTimeout;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
   bool _txAllowed = false;
@@ -215,8 +221,93 @@ class ApiService {
   ApiService({
     http.Client? client,
     NetworkStateSource? networkState,
+    Duration deviceCatalogTimeout = const Duration(seconds: 10),
   })  : _client = client ?? http.Client(),
-        _networkState = networkState ?? NetworkStateService.instance;
+        _networkState = networkState ?? NetworkStateService.instance,
+        _deviceCatalogTimeout = deviceCatalogTimeout;
+
+  /// Fetches the public model catalog without affecting session callbacks.
+  Future<DeviceCatalog?> fetchDeviceCatalog() async {
+    final stopwatch = Stopwatch()..start();
+    final payload = <String, dynamic>{'key': apiKey, 'action': 'list'};
+    try {
+      final response = await _send(
+        'POST /wardrive-api.php/devices list',
+        () => _client.post(
+          Uri.parse(deviceCatalogUrl),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ),
+      ).timeout(_deviceCatalogTimeout);
+      stopwatch.stop();
+      if (response.statusCode != 200 ||
+          response.bodyBytes.length > DeviceCatalog.maxEncodedBytes) {
+        debugWarn('[API] Device catalog request was rejected');
+        return null;
+      }
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        debugWarn('[API] Device catalog response was not an object');
+        return null;
+      }
+      final catalog = DeviceCatalog.fromJson(
+        decoded,
+        encodedLength: response.bodyBytes.length,
+      );
+      _logApiCall(
+        endpoint: '/wardrive-api.php/devices',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: payload,
+        response: {'revision': catalog.revision, 'device_count': catalog.devices.length},
+      );
+      return catalog;
+    } catch (error) {
+      stopwatch.stop();
+      debugWarn('[API] Device catalog refresh failed: $error');
+      return null;
+    }
+  }
+
+  /// Reports an unmatched firmware identity without using a session.
+  Future<DeviceReportAcknowledgement?> reportUnknownDevice({
+    required String manufacturer,
+    required String appVersion,
+    String? firmwareVersion,
+  }) async {
+    final payload = <String, dynamic>{
+      'key': apiKey,
+      'action': 'report_unknown',
+      'manufacturer': manufacturer,
+      'app_version': appVersion,
+      'firmware_version': firmwareVersion ?? '',
+    };
+    try {
+      final response = await _send(
+        'POST /wardrive-api.php/devices report_unknown',
+        () => _client.post(
+          Uri.parse(deviceCatalogUrl),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ),
+      ).timeout(_deviceCatalogTimeout);
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic> || decoded['success'] != true) {
+        return null;
+      }
+      return switch (decoded['status']) {
+        'known' => DeviceReportAcknowledgement.known,
+        'pending' => DeviceReportAcknowledgement.pending,
+        'dismissed' => DeviceReportAcknowledgement.dismissed,
+        _ => null,
+      };
+    } catch (error) {
+      debugWarn('[API] Unknown device report failed: $error');
+      return null;
+    }
+  }
 
   /// Send [request], replaying it once when the first attempt was written onto
   /// a keep-alive socket the server had already closed.
