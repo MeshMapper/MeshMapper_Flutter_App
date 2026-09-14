@@ -89,12 +89,17 @@ void main() {
     final release = Completer<void>();
     final started = Completer<void>();
     final events = <String>[];
+    Object? controller = Object();
+    var platformCalls = 0;
 
     final active = runner.run(() async {
       events.add('active start');
       started.complete();
       await release.future;
-      if (!runner.isCancelled) events.add('active side effect');
+      if (!runner.isCancelled && controller != null) {
+        platformCalls++;
+        events.add('active side effect');
+      }
     });
     await started.future;
 
@@ -102,12 +107,14 @@ void main() {
       events.add('pending start');
     });
     runner.cancel();
+    controller = null;
     release.complete();
 
     await active;
     await pending;
 
     expect(events, ['active start']);
+    expect(platformCalls, 0);
     expect(runner.isCancelled, isFalse);
   });
 

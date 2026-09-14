@@ -985,6 +985,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    final controller = _mapController;
+    // Invalidate the field before any async restore helper can resume. Those
+    // helpers dereference the field after awaits, so they fail closed here;
+    // keep the local only for listener cleanup below.
+    _mapController = null;
     _styleLoadRunner.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
@@ -992,7 +997,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _patchProviderRef?.removeListener(_onCoverageOpacityNotify);
     _patchProviderRef?.removeListener(_onCoverageFilterNotify);
     _tileLoadTimeoutTimer?.cancel();
-    final controller = _mapController;
     if (controller != null) {
       controller.removeListener(_onCameraChanged);
       // Symbol/feature tap listeners are registered in _onMapCreated onto
