@@ -129,7 +129,7 @@ The app uses a layered service architecture with clear separation of concerns:
 - `ApiQueueService`: Hive-based persistent upload queue with batch POST and retry logic
 - `ApiService`: HTTP client for MeshMapper API endpoints
 - `NetworkStateService`: Android constrained and satellite network monitoring; routine uploads use 60-second pacing and auth uses a 30-second timeout on constrained links
-- `DeviceModelService`: Loads `assets/device-models.json` for device identification and power reporting
+- `DeviceModelService`: Loads a validated cached device catalog, refreshes it once per launch, and serializes advisory unknown-device reports
 
 **State Management** (`lib/providers/`):
 - `AppStateProvider`: Single ChangeNotifier for all app state using Provider pattern
@@ -195,7 +195,7 @@ Critical safety: The connection sequence MUST complete in order.
 1. **Transport Connect**: Platform-specific transport connection (BLE GATT, TCP socket, or USB Serial port)
 2. **Protocol Handshake**: `deviceQuery()` with protocol version
 3. **Device Info**: `deviceQuery()` returns manufacturer string, then `getSelfInfo()` acquires device public key (required for geo-auth API authentication). If `getSelfInfo()` fails, the entire connection fails.
-4. **Device Identification**: Parse manufacturer string, match against `device-models.json` (does NOT modify radio settings)
+4. **Device Identification**: Resolve the queried manufacturer against the current server-managed catalog. A cacheless launch waits only for the shared refresh deadline. Recognition is advisory and never modifies radio settings.
 5. **Time Sync**: `sendTime()` syncs device clock
 6. **Session Acquisition**: POST to `/wardrive-api.php/auth` for geo-auth session. Two-stage flow: first attempt with device public key, fallback to registration with signed contact URI if device not registered. Returns `session_id`, `tx_allowed`, `rx_allowed`, `expires_at`, and regional channels.
 7. **Channel Setup**: Create or use existing `#wardriving` channel, plus any regional channels from auth response
@@ -1629,27 +1629,28 @@ When modifying code, update `DEVELOPMENT.md` (this file) for architectural chang
 - Use `debugError()` for logging errors before handling
 - State mutations via `AppStateProvider` with `notifyListeners()`
 
-## Device Model Database
+## Device Catalog
 
-**File**: `assets/device-models.json`
+The app has no bundled device list. `DeviceModelService` loads the last fully
+validated server response from `SharedPreferences`, then starts one shared
+10-second catalog refresh for the launch. It replaces memory and the cache only
+after the whole response passes strict type, bound, and normalized-identity
+validation. A cacheless connection waits only for the remainder of that shared
+deadline at connection workflow step 4, then continues as unknown.
 
-Contains 30+ MeshCore device variants with manufacturer strings, TX power levels, and platform info:
-- **Ikoka**: Stick, Nano, Handheld (22dBm, 30dBm, 33dBm variants)
-- **Heltec**: V2, V3, V4, Wireless Tracker, MeshPocket
-- **RAK**: 4631, 3x72
-- **LilyGo**: T-Echo, T-Deck, T-Beam, T-LoRa
-- **Seeed**: Wio E5, T1000, Xiao variants
+Matching is exact after shared sanitization, approved build-suffix removal, and
+ASCII-only normalization. It considers manufacturer, short name, and aliases,
+and recognizes a result only when exactly one device ID matches. Unknown or
+unavailable-catalog paths remain connectable and preserve the existing manual
+reporting-power flow. Recognition only selects values reported to the API. It
+never writes radio TX settings.
 
-**Detection Flow**:
-1. `deviceQuery()` returns manufacturer string (e.g., "Ikoka Stick-E22-30dBm (Xiao_nrf52)nightly-e31c46f")
-2. `parseDeviceModel()` strips build suffix ("nightly-COMMIT")
-3. `findDeviceConfig()` searches database for exact/partial match
-4. `autoSetPowerLevel()` configures radio power automatically
-
-**Critical Safety**: PA amplifier models MUST use specific power values:
-- 33dBm models: txPower=9, power=2.0
-- 30dBm models: txPower=20, power=1.0
-- Standard (22dBm): txPower=22, power=0.3
+Genuine unknown identities observed against a valid catalog enter a bounded,
+versioned `SharedPreferences` outbox. The outbox is serialized, reports at most
+once per normalized identity per launch, retains failed sends for a later launch,
+and removes an item only after an exact `known`, `pending`, or `dismissed`
+acknowledgement for the submitted generation. A successful catalog refresh
+suppresses queued identities it now recognizes.
 
 ## MeshMapper API Endpoints
 
@@ -1762,4 +1763,3 @@ All API endpoints may return maintenance mode:
 - `lib/utils/public_key.dart` - Full public key normalization (upper-case 64 hex)
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
 - `lib/widgets/noise_floor_chart.dart` - Noise floor graph visualization
-- `assets/device-models.json` - Device database (30+ models)
