@@ -1,6 +1,6 @@
 # Server Managed Device Catalog Design
 
-Status: approved in conversation, revised after architecture review, pending final review of this written specification.
+Status: approved in conversation and revised after architecture review.
 
 ## Purpose
 
