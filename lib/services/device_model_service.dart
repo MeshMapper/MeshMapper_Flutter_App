@@ -90,8 +90,12 @@ class DeviceModelService {
     if (preferences == null) return;
     final encoded = fetched.toJsonString();
     if (utf8.encode(encoded).length > DeviceCatalog.maxEncodedBytes) return;
+    try {
+      await preferences.setString(catalogCacheKey, encoded);
+    } catch (_) {
+      return;
+    }
     _catalog = fetched;
-    await preferences.setString(catalogCacheKey, encoded);
     await _drainOutbox(afterSuccessfulRefresh: true);
   }
 
