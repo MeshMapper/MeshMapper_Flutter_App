@@ -200,6 +200,57 @@ void main() {
           ['01' * 32, '02' * 32]);
     });
 
+    test('skips a malformed CONTACT inside a contact stream', () async {
+      final future = connection.getContacts();
+      await transport.settle();
+
+      transport.emit([ResponseCodes.contactsStart, 3, 0, 0, 0]);
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(1))]);
+      transport.emit([ResponseCodes.contact, 1, 2, 3]);
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(2))]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+
+      final contacts = await future;
+      expect(contacts.map((c) => c.publicKeyHex).toList(),
+          ['01' * 32, '02' * 32]);
+    });
+
+    test('drops an unsolicited CONTACTS_START', () async {
+      final lines = <String>[];
+      final originalDebugPrint = debugPrint;
+      final originalEnabled = DebugLogger.isEnabled;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) lines.add(message);
+      };
+      DebugLogger.setEnabled(true);
+      addTearDown(() {
+        debugPrint = originalDebugPrint;
+        DebugLogger.setEnabled(originalEnabled);
+      });
+
+      transport.emit([ResponseCodes.contactsStart, 1, 0, 0, 0]);
+      await transport.settle();
+
+      expect(lines.any((line) =>
+          line.contains('[CONN] Ignoring unsolicited CONTACTS_START')), isTrue);
+    });
+
+    test('an unsolicited CONTACT cannot seed the contact cache', () async {
+      transport.emit(
+          [ResponseCodes.contact, ...contactPayload(pubkey: key(7))]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      await transport.settle();
+
+      final future = connection.getContacts();
+      await transport.settle();
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+
+      expect(await future, isEmpty);
+    });
+
     test('a second read asks only for changes and merges them in', () async {
       // First read primes the cache and learns the newest lastmod (100).
       final first = connection.getContacts();
@@ -676,6 +727,16 @@ void main() {
       await expectLater(future, throwsA(isA<RadioErrorException>()));
     });
 
+    test('a short SENT is an admin protocol FormatException', () async {
+      final future =
+          connection.sendBinaryRequest(pubkey, Uint8List.fromList([0x06]));
+      await transport.settle();
+
+      transport.emit([ResponseCodes.sent]);
+
+      await expectLater(future, throwsA(isA<FormatException>()));
+    });
+
     test('a second request while one is pending is refused', () async {
       final first = connection.sendBinaryRequest(
           pubkey, Uint8List.fromList([0x05, 0, 0]),
@@ -712,6 +773,21 @@ void main() {
           expectLater(signFuture, throwsA(isA<SignException>()));
       await requestExpectation;
       await signExpectation;
+    });
+
+    test('dispose after SENT aborts a request awaiting its reply', () async {
+      final future = connection.sendBinaryRequest(
+          pubkey, Uint8List.fromList([0x05, 0, 0]));
+      await transport.settle();
+      transport.emit(
+          [ResponseCodes.sent, 0, 0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0]);
+      await transport.settle();
+
+      final failure =
+          expectLater(future, throwsA(isA<RadioAbortedException>()));
+      connection.dispose();
+
+      await failure;
     });
   });
 
