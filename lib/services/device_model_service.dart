@@ -77,7 +77,12 @@ class DeviceModelService {
   Future<void> loadModels() => initialize();
 
   Future<void> _refresh() async {
-    final fetched = await _fetchCatalog();
+    DeviceCatalog? fetched;
+    try {
+      fetched = await _fetchCatalog();
+    } catch (_) {
+      return;
+    }
     if (fetched == null) return;
     final preferences = _preferences;
     if (preferences == null) return;
@@ -119,7 +124,8 @@ class DeviceModelService {
       return;
     }
     final normalized = normalizeDeviceIdentity(manufacturer);
-    if (normalized.isEmpty || !_attempted.add(normalized)) return;
+    if (normalized.isEmpty) return;
+    final isFirstAttempt = _attempted.add(normalized);
     _outboxChain = _outboxChain.then((_) async {
       final preferences = _preferences;
       if (preferences == null) return;
@@ -135,7 +141,7 @@ class DeviceModelService {
       };
       _trimOutbox(entries);
       await _writeOutbox(preferences, entries);
-      await _dispatchOne(normalized, entries[normalized]!);
+      if (isFirstAttempt) await _dispatchOne(normalized, entries[normalized]!);
     });
   }
 

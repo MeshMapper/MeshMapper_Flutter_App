@@ -66,4 +66,51 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(reports, 0);
   });
+
+  test('keeps a newer generation when an older report succeeds', () async {
+    SharedPreferences.setMockInitialValues({});
+    final response = Completer<DeviceReportAcknowledgement?>();
+    var calls = 0;
+    final service = DeviceModelService(
+      fetchCatalog: () async => catalog(),
+      reportUnknown: (_, __, ___) {
+        calls++;
+        return response.future;
+      },
+    );
+    await service.initialize();
+    await service.refreshFuture;
+    service.observeUnknownDevice(manufacturer: 'New radio', appVersion: 'old');
+    await Future<void>.delayed(Duration.zero);
+    service.observeUnknownDevice(manufacturer: 'New radio', appVersion: 'new');
+    response.complete(DeviceReportAcknowledgement.pending);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    final preferences = await SharedPreferences.getInstance();
+    final stored = jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
+    final entry = (stored['entries'] as Map)['newradio'] as Map;
+    expect(calls, 1);
+    expect(entry['app_version'], 'new');
+  });
+
+  test('retains only the fifty newest unknown identities', () async {
+    SharedPreferences.setMockInitialValues({});
+    final service = DeviceModelService(
+      fetchCatalog: () async => catalog(),
+      reportUnknown: (_, __, ___) async => null,
+    );
+    await service.initialize();
+    await service.refreshFuture;
+    for (var i = 0; i < 51; i++) {
+      service.observeUnknownDevice(manufacturer: 'Unknown $i', appVersion: 'APP');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final preferences = await SharedPreferences.getInstance();
+    final stored = jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
+    final entries = stored['entries'] as Map;
+    expect(entries.length, 50);
+    expect(entries.containsKey('unknown0'), isFalse);
+    expect(entries.containsKey('unknown50'), isTrue);
+  });
 }
