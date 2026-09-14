@@ -685,6 +685,44 @@ void main() {
       await expectLater(future, throwsA(isA<RadioErrorException>()));
     });
 
+    test('a late reset OK cannot complete a later addContact', () async {
+      final reset = connection.resetPath(
+        key(4),
+        timeout: const Duration(milliseconds: 20),
+      );
+      await transport.settle();
+      await expectLater(reset, throwsA(isA<TimeoutException>()));
+
+      final contact = ContactRecord.newRepeater(
+          publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+      final rejected = expectLater(
+        connection.addContact(
+          contact,
+          timeout: const Duration(milliseconds: 50),
+        ),
+        throwsA(isA<StateError>()),
+      );
+      await transport.settle();
+
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+      await rejected;
+      expect(transport.writes.length, 1,
+          reason: 'the old reset still owns the uncorrelated OK');
+
+      final add = connection.addContact(contact);
+      var addCompleted = false;
+      unawaited(add.then((_) => addCompleted = true));
+      await transport.settle();
+      expect(transport.writes.length, 2);
+      expect(addCompleted, isFalse,
+          reason: 'the late reset OK was drained before this add started');
+
+      transport.emit([ResponseCodes.ok]);
+      await add;
+      expect(addCompleted, isTrue);
+    });
+
     test('PATH_UPDATED pushes the 32-byte key', () async {
       final seen = <Uint8List>[];
       final sub = connection.pathUpdatedStream.listen(seen.add);
