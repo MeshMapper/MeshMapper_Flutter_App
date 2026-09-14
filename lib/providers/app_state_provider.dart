@@ -493,7 +493,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isConnecting = false;
 
   int _sessionRecoveryGeneration = 0;
-  Future<bool>? _liveSessionRecoveryInFlight;
+  Future<SessionRecoveryResult>? _liveSessionRecoveryInFlight;
 
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
@@ -5690,43 +5690,44 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Extracted from the original BLE disconnect listener
   /// Configure multi-byte path hash mode on the radio during connection
   /// Reads device's current mode, determines effective mode, and sends command if needed
-  Future<void> _configurePathHashMode() async {
-    final deviceInfo = _meshCoreConnection?.deviceInfo;
-    if (deviceInfo == null) return;
+  Future<bool> _configurePathHashMode({
+    bool Function()? owns,
+    bool preserveTraceHopBytes = false,
+  }) async {
+    bool stillOwns() => owns?.call() ?? true;
+    final connection = _meshCoreConnection;
+    final deviceInfo = connection?.deviceInfo;
+    if (deviceInfo == null) return stillOwns();
+    if (!stillOwns()) return false;
+    final savedTraceHopBytes = _traceHopBytes;
 
     // Capture what the radio is CURRENTLY doing before resetting to firmware
     // default — during zone transfer this reflects the previous zone's mode
     final currentRuntimeHopBytes = _hopBytes;
 
-    // Store the device's original firmware mode (from DeviceInfo response)
-    _originalPathHashMode = deviceInfo.pathHashMode;
-
-    // Sync runtime hopBytes from device's firmware mode
-    final deviceMode =
-        _originalPathHashMode ?? 0; // null = old firmware, treat as 0 (1-byte)
+    // Keep replacements local until every asynchronous radio operation proves
+    // this recovery still owns the companion.
+    final originalPathHashMode = deviceInfo.pathHashMode;
+    final deviceMode = originalPathHashMode ?? 0;
     final deviceHopBytes = deviceMode + 1;
-    if (_originalPathHashMode != null) {
-      _hopBytes = deviceHopBytes;
-      _traceHopBytes = deviceHopBytes == 3 ? 4 : deviceHopBytes;
-      _pingService?.traceHopBytes = _traceHopBytes;
-      debugLog(
-          '[PATH] Read device path mode: $deviceHopBytes-byte (trace: $_traceHopBytes-byte)');
-    } else {
-      _hopBytes = 1;
-      _traceHopBytes = 1;
-    }
+    var refreshedHopBytes =
+        originalPathHashMode == null ? 1 : deviceHopBytes;
+    var refreshedTraceHopBytes =
+        originalPathHashMode == null ? 1 : (deviceHopBytes == 3 ? 4 : deviceHopBytes);
 
     final effective = effectiveHopBytes;
 
-    if (effective != currentRuntimeHopBytes && _originalPathHashMode != null) {
+    if (effective != currentRuntimeHopBytes && originalPathHashMode != null) {
       // Need to change the radio's path hash mode
       try {
-        await _meshCoreConnection!.setPathHashMode(effective - 1);
-        _hopBytes = effective;
-        _traceHopBytes = effective == 3 ? 4 : effective;
-        _pingService?.traceHopBytes = _traceHopBytes;
+        await connection!.setPathHashMode(effective - 1);
+        if (!stillOwns()) return false;
+        refreshedHopBytes = effective;
+        if (!preserveTraceHopBytes) {
+          refreshedTraceHopBytes = effective == 3 ? 4 : effective;
+        }
         debugLog(
-            '[PATH] Set path hash mode: radio was $currentRuntimeHopBytes-byte, now $effective-byte (trace: $_traceHopBytes-byte)');
+            '[PATH] Set path hash mode: radio was $currentRuntimeHopBytes-byte, now $effective-byte (trace: $refreshedTraceHopBytes-byte)');
 
         // Show warning popup if changing from 1-byte to multi-byte
         if (deviceMode == 0 && effective > 1) {
@@ -5738,8 +5739,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       } catch (e) {
         debugError('[PATH] Failed to set path hash mode: $e');
+        return false;
       }
-    } else if (_originalPathHashMode == null && effective > 1) {
+    } else if (originalPathHashMode == null && effective > 1) {
       // Old firmware doesn't support multi-byte paths — warn user, fall back to 1-byte
       debugWarn(
           '[PATH] Device firmware does not report path_hash_mode, cannot set $effective-byte paths');
@@ -5752,6 +5754,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugLog(
           '[PATH] Path hash mode OK: radio=$currentRuntimeHopBytes-byte, effective=$effective-byte');
     }
+    if (!stillOwns()) return false;
+    _originalPathHashMode = originalPathHashMode;
+    _hopBytes = refreshedHopBytes;
+    if (preserveTraceHopBytes) {
+      _traceHopBytes = savedTraceHopBytes;
+    } else {
+      _traceHopBytes = refreshedTraceHopBytes;
+    }
+    final pingService = _pingService;
+    pingService?.hopBytes = _hopBytes;
+    pingService?.traceHopBytes = _traceHopBytes;
+    debugLog(
+        '[PATH] Refreshed path widths: TX=$_hopBytes-byte, trace=$_traceHopBytes-byte');
+    return true;
   }
 
   /// Restore radio to original path hash mode on clean disconnect
@@ -5974,6 +5990,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Start auto-reconnect after unexpected transport disconnect
   Future<void> _startAutoReconnect() async {
+    _invalidateLiveSessionRecovery();
+    await _waitForLiveSessionRecovery();
     // Defensive: cancel zone grace period if active
     if (_isInZoneGracePeriod) {
       _cancelZoneGraceTimers();
@@ -6603,12 +6621,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Check session validity before starting a wardrive action
   /// Returns true if session is valid, false if expired (triggers disconnect)
-  Future<bool> _recoverExpiredLiveSession() {
+  Future<SessionRecoveryResult> _recoverExpiredLiveSession() {
     final inFlight = _liveSessionRecoveryInFlight;
     if (inFlight != null) return inFlight;
 
     final generation = _sessionRecoveryGeneration;
-    late final Future<bool> recovery;
+    late final Future<SessionRecoveryResult> recovery;
     recovery = _recoverExpiredLiveSessionImpl(generation).whenComplete(() {
       if (identical(_liveSessionRecoveryInFlight, recovery)) {
         _liveSessionRecoveryInFlight = null;
@@ -6636,12 +6654,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       generation == _sessionRecoveryGeneration &&
       !_preferences.offlineMode &&
       !_isConnecting &&
+      !_isAutoReconnecting &&
       !_isZoneTransferInProgress &&
       _connectionStep == ConnectionStep.connected &&
       identical(_meshCoreConnection, connection) &&
       _devicePublicKey == publicKey;
 
-  Future<bool> _recoverExpiredLiveSessionImpl(int generation) async {
+  Future<SessionRecoveryResult> _recoverExpiredLiveSessionImpl(
+      int generation) async {
     final connection = _meshCoreConnection;
     final publicKey = _devicePublicKey;
     final pingService = _pingService;
@@ -6652,7 +6672,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         _currentPosition == null) {
       debugWarn(
           '[SESSION] Refusing expired-session recovery outside a live connection');
-      return false;
+      return SessionRecoveryResult.superseded;
     }
 
     pingService.setSessionRecoveryInProgress(true);
@@ -6663,7 +6683,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       await pingService.waitForTxWindow();
       if (!_ownsSessionRecovery(generation, connection, publicKey)) {
         debugWarn('[SESSION] Recovery invalidated while waiting for TX window');
-        return false;
+        return SessionRecoveryResult.superseded;
       }
 
       final deviceName = _isAnonymousRenamed
@@ -6673,7 +6693,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (deviceName == null || deviceName.isEmpty) {
         debugWarn(
             '[SESSION] Refusing expired-session recovery without a device name');
-        return false;
+        return SessionRecoveryResult.failed;
       }
 
       final position = _currentPosition!;
@@ -6699,13 +6719,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final replacementSessionId = result?['session_id'] as String?;
       if (result == null || result['success'] != true) {
         debugWarn('[SESSION] Live re-authentication was not accepted');
-        return false;
+        return SessionRecoveryResult.failed;
       }
       if (!_ownsSessionRecovery(generation, connection, publicKey) ||
           replacementSessionId == null ||
           _apiService.sessionId != replacementSessionId) {
         await _releaseRecoveredSession(publicKey, replacementSessionId);
-        return false;
+        return SessionRecoveryResult.superseded;
       }
 
       try {
@@ -6715,18 +6735,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           connection,
           () => _ownsSessionRecovery(generation, connection, publicKey),
         );
-        if (!applied ||
-            !_ownsSessionRecovery(generation, connection, publicKey)) {
+        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
           await _releaseRecoveredSession(publicKey, replacementSessionId);
-          return false;
+          return SessionRecoveryResult.superseded;
+        }
+        if (!applied) {
+          await _releaseRecoveredSession(publicKey, replacementSessionId);
+          return SessionRecoveryResult.failed;
         }
       } catch (e) {
         debugError('[SESSION] Failed to apply replacement session: $e');
         await _releaseRecoveredSession(publicKey, replacementSessionId);
-        return false;
+        return SessionRecoveryResult.failed;
       }
       notifyListeners();
-      return true;
+      return SessionRecoveryResult.recovered;
     } finally {
       pingService.setSessionRecoveryInProgress(false);
     }
@@ -6822,6 +6845,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     _preferences = updated;
     _pingService?.setAutoPingInterval(updated.autoPingInterval * 1000);
+    if (!await _configurePathHashMode(
+      owns: owns,
+      preserveTraceHopBytes: true,
+    )) {
+      return false;
+    }
+    if (!owns()) return false;
     _syncRecentCoverage();
     if (!owns()) return false;
     return true;

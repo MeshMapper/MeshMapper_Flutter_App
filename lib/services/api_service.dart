@@ -31,6 +31,14 @@ enum UploadResult {
   nonRetryable
 }
 
+/// Result of attempting to replace a server-expired session.
+///
+/// A superseded request belongs to an older connection lifecycle. It is not a
+/// server or configuration failure, so callers must leave the current owner
+/// untouched while they quietly stop, hold their upload, or await the next
+/// heartbeat schedule.
+enum SessionRecoveryResult { recovered, superseded, failed }
+
 /// The request never reached the server: no coverage, DNS failure, connection
 /// reset, TLS handshake, or a timeout waiting for the first byte.
 ///
@@ -136,7 +144,7 @@ class ApiService {
   DateTime? _heartbeatWindowStart;
   int _heartbeatWindowCount = 0;
   DateTime? _wardriveBlockedUntil;
-  Future<bool>? _sessionRecoveryInFlight;
+  Future<SessionRecoveryResult>? _sessionRecoveryInFlight;
   Function? _onSessionExpiring;
   List<String> _channels = [];
   List<String> _scopes = [];
@@ -1067,8 +1075,15 @@ class ApiService {
     final message = result['message'] as String?;
     debugWarn('[SESSION] Session invalid: $reason - $message');
 
-    if (reason == 'session_expired' && await _recoverExpiredSession()) {
+    final recovery = reason == 'session_expired'
+        ? await _recoverExpiredSession()
+        : null;
+    if (recovery == SessionRecoveryResult.recovered) {
       return (isValid: true, reason: null, message: null);
+    }
+    if (recovery == SessionRecoveryResult.superseded) {
+      debugLog('[SESSION] Ignoring stale expired-session preflight');
+      return (isValid: false, reason: reason, message: message);
     }
 
     // Trigger session error callback for critical errors
@@ -1102,11 +1117,11 @@ class ApiService {
   /// callback while disconnecting, transferring zones, or offline. Keeping
   /// that policy outside this service lets every wardrive door share one
   /// recovery without coupling ApiService to BLE state.
-  Future<bool> _recoverExpiredSession() {
+  Future<SessionRecoveryResult> _recoverExpiredSession() {
     final inFlight = _sessionRecoveryInFlight;
     if (inFlight != null) return inFlight;
 
-    late final Future<bool> recovery;
+    late final Future<SessionRecoveryResult> recovery;
     recovery = _recoverExpiredSessionImpl().whenComplete(() {
       if (identical(_sessionRecoveryInFlight, recovery)) {
         _sessionRecoveryInFlight = null;
@@ -1116,19 +1131,23 @@ class ApiService {
     return recovery;
   }
 
-  Future<bool> _recoverExpiredSessionImpl() async {
+  Future<SessionRecoveryResult> _recoverExpiredSessionImpl() async {
     final recover = onSessionExpiredRecovery;
     if (recover == null) {
       debugWarn('[SESSION] Session expired with no live recovery handler');
-      return false;
+      return SessionRecoveryResult.failed;
     }
 
     try {
       debugWarn('[SESSION] Session expired, refreshing live auth');
-      final recovered = await recover();
-      if (!recovered || _sessionId == null) {
+      final outcome = await recover();
+      if (outcome == SessionRecoveryResult.superseded) {
+        debugLog('[SESSION] Live session refresh was superseded');
+        return outcome;
+      }
+      if (outcome != SessionRecoveryResult.recovered || _sessionId == null) {
         debugWarn('[SESSION] Live session refresh did not complete');
-        return false;
+        return SessionRecoveryResult.failed;
       }
 
       // A recovery auth replaces expires_at but deliberately does not call
@@ -1140,10 +1159,10 @@ class ApiService {
         scheduleHeartbeat(expiresAt);
       }
       debugLog('[SESSION] Live session refresh complete');
-      return true;
+      return SessionRecoveryResult.recovered;
     } catch (e) {
       debugError('[SESSION] Live session refresh failed: $e');
-      return false;
+      return SessionRecoveryResult.failed;
     }
   }
 
@@ -1331,10 +1350,17 @@ class ApiService {
         'zone_disabled',
       };
 
-      if (reason == 'session_expired' && await _recoverExpiredSession()) {
+      final recovery = reason == 'session_expired'
+          ? await _recoverExpiredSession()
+          : null;
+      if (recovery == SessionRecoveryResult.recovered) {
         _heartbeatRetryCount = 0;
         _heartbeatRetryTimer?.cancel();
         _heartbeatRetryTimer = null;
+        return;
+      }
+      if (recovery == SessionRecoveryResult.superseded) {
+        debugLog('[HEARTBEAT] Stale expired-session heartbeat ended quietly');
         return;
       }
 
@@ -1390,7 +1416,7 @@ class ApiService {
   /// Re-authenticate a still-live companion after the server reports the
   /// one recoverable session error. The provider owns the auth payload and
   /// decides whether its connection state still permits recovery.
-  Future<bool> Function()? onSessionExpiredRecovery;
+  Future<SessionRecoveryResult> Function()? onSessionExpiredRecovery;
 
   /// Callback for session errors (session_expired, bad_session, outside_zone)
   /// Set by AppStateProvider to handle auto-disconnect
@@ -1590,9 +1616,16 @@ class ApiService {
         'zone_full', 'zone_disabled',
       };
 
-      if (reason == 'session_expired' && await _recoverExpiredSession()) {
+      final recovery = reason == 'session_expired'
+          ? await _recoverExpiredSession()
+          : null;
+      if (recovery == SessionRecoveryResult.recovered) {
         debugLog(
             '[API] Upload batch held after live session refresh: ${pings.length} items');
+        return UploadResult.held;
+      }
+      if (recovery == SessionRecoveryResult.superseded) {
+        debugLog('[API] Upload batch held by a superseded session request');
         return UploadResult.held;
       }
 

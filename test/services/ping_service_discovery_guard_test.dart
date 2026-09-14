@@ -102,13 +102,23 @@ class _FakeConnection implements MeshCoreConnection {
       discoveryTransmits++;
       return Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4]));
     }
+    if (invocation.memberName == #sendPing) {
+      return Future<void>.value();
+    }
     throw UnimplementedError('MeshCoreConnection.${invocation.memberName}');
   }
 }
 
 class _FakeApiQueue implements ApiQueueService {
+  _FakeApiQueue({this.txEnqueueGate});
+
+  final Completer<void>? txEnqueueGate;
+
   @override
   dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #enqueueTx) {
+      return txEnqueueGate?.future ?? Future<void>.value();
+    }
     if (invocation.memberName.toString().contains('enqueue')) {
       return Future<void>.value();
     }
@@ -147,11 +157,11 @@ PingService _build(
   _FakeGps gps,
   _FakeConnection conn,
   DiscoveryWindowTimer discoveryWindow,
-) =>
-    PingService(
+  {_FakeApiQueue? queue, bool withSession = false}) {
+  final service = PingService(
       gpsService: gps,
       connection: conn,
-      apiQueue: _FakeApiQueue(),
+      apiQueue: queue ?? _FakeApiQueue(),
       wakelockService: _FakeWakelock(),
       cooldownTimer: CooldownTimer(),
       manualPingCooldownTimer: ManualPingCooldownTimer(),
@@ -159,6 +169,12 @@ PingService _build(
       discoveryWindowTimer: discoveryWindow,
       deviceId: 'TEST',
     )..checkRecentCoverage = (lat, lon) => RecentCoverage.clear;
+  if (withSession) {
+    service.getSessionId = () => 'YYZ-20260914-0001';
+    service.getNextPingCounter = () => 1;
+  }
+  return service;
+}
 
 void main() {
   testWidgets('a discovery timer skips while a ping is in flight',
@@ -216,4 +232,66 @@ void main() {
     await ping.forceDisableAutoPing();
     discoveryWindow.stop();
   });
+
+  testWidgets('aborting or disposing an echo window always opens recovery gate',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final conn = _FakeConnection();
+    final ping = _build(gps, conn, DiscoveryWindowTimer(), withSession: true);
+
+    expect(await ping.sendTxPing(), isTrue);
+    var completed = false;
+    unawaited(ping.waitForTxWindow().then((_) => completed = true));
+    await tester.pump();
+    expect(completed, isFalse);
+
+    ping.stopEchoTracking();
+    await tester.pump();
+    expect(completed, isTrue,
+        reason: 'a cancelled listening window cannot strand recovery');
+    ping.dispose();
+
+    final disposedPing = _build(
+      gps,
+      conn,
+      DiscoveryWindowTimer(),
+      withSession: true,
+    );
+    expect(await disposedPing.sendTxPing(), isTrue);
+    completed = false;
+    unawaited(disposedPing.waitForTxWindow().then((_) => completed = true));
+    disposedPing.dispose();
+    await tester.pump();
+    expect(completed, isTrue,
+        reason: 'disposing a listener must also release its recovery gate');
+  });
+
+  testWidgets('queueing the old TX completes before recovery gate opens',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final conn = _FakeConnection();
+    final enqueueGate = Completer<void>();
+    final ping = _build(
+      gps,
+      conn,
+      DiscoveryWindowTimer(),
+      queue: _FakeApiQueue(txEnqueueGate: enqueueGate),
+      withSession: true,
+    );
+
+    expect(await ping.sendTxPing(), isTrue);
+    var windowFinished = false;
+    unawaited(ping.waitForTxWindow().then((_) => windowFinished = true));
+
+    await tester.pump(const Duration(seconds: 8));
+    expect(windowFinished, isFalse,
+        reason: 'stale-tag cleanup must wait for the old TX queue write');
+
+    enqueueGate.complete();
+    await tester.pump();
+    await tester.pump();
+    expect(windowFinished, isTrue);
+    ping.dispose();
+  });
+
 }

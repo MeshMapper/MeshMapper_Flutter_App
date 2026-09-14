@@ -76,7 +76,7 @@ void main() {
       built.events.add('recover');
       await connect(built.api);
       built.events.add('auth-complete');
-      return true;
+      return SessionRecoveryResult.recovered;
     };
 
     final check = await built.api.checkSessionValid();
@@ -99,7 +99,7 @@ void main() {
       built.events.add('recover');
       await gate.future;
       await connect(built.api);
-      return true;
+      return SessionRecoveryResult.recovered;
     };
 
     final first = built.api.checkSessionValid();
@@ -119,7 +119,7 @@ void main() {
     await connect(built.api);
     built.api.onSessionExpiredRecovery = () async {
       await connect(built.api);
-      return true;
+      return SessionRecoveryResult.recovered;
     };
 
     final result = await built.api.uploadBatch([
@@ -162,7 +162,7 @@ void main() {
     await connect(api);
     api.onSessionExpiredRecovery = () async {
       recoveryCalls++;
-      return true;
+      return SessionRecoveryResult.recovered;
     };
     api.onSessionError = (reason, message, {subReason}) async {
       sessionErrors++;
@@ -213,5 +213,61 @@ void main() {
 
     expect(built.api.sessionId, 'old-session',
         reason: 'cleanup can yield to disconnect, so ownership is checked again');
+  });
+
+  test('a superseded preflight stays invalid without clearing a newer session',
+      () async {
+    final built = build();
+    await connect(built.api);
+    var sessionErrors = 0;
+    built.api.onSessionExpiredRecovery = () async =>
+        SessionRecoveryResult.superseded;
+    built.api.onSessionError = (reason, message, {subReason}) async {
+      sessionErrors++;
+    };
+
+    final check = await built.api.checkSessionValid();
+
+    expect(check.isValid, isFalse);
+    expect(check.reason, 'session_expired');
+    expect(built.api.sessionId, 'old-session');
+    expect(sessionErrors, 0,
+        reason: 'a stale request must not disconnect the replacement owner');
+  });
+
+  test('a superseded upload remains held without fatal cleanup', () async {
+    final built = build();
+    await connect(built.api);
+    var sessionErrors = 0;
+    built.api.onSessionExpiredRecovery = () async =>
+        SessionRecoveryResult.superseded;
+    built.api.onSessionError = (reason, message, {subReason}) async {
+      sessionErrors++;
+    };
+
+    final result = await built.api.uploadBatch([
+      {'type': 'RX', 'lat': 45.0, 'lon': -75.0}
+    ]);
+
+    expect(result, UploadResult.held);
+    expect(built.api.sessionId, 'old-session');
+    expect(sessionErrors, 0);
+  });
+
+  test('a failed recovery stays fatal', () async {
+    final built = build();
+    await connect(built.api);
+    var sessionErrors = 0;
+    built.api.onSessionExpiredRecovery = () async =>
+        SessionRecoveryResult.failed;
+    built.api.onSessionError = (reason, message, {subReason}) async {
+      sessionErrors++;
+    };
+
+    final check = await built.api.checkSessionValid();
+
+    expect(check.isValid, isFalse);
+    expect(built.api.sessionId, isNull);
+    expect(sessionErrors, 1);
   });
 }
