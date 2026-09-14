@@ -4178,8 +4178,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         });
 
         // Execute connection workflow (transport already connected above)
-        final connectionResult = await _meshCoreConnection!.connect(
-          _deviceModelService.resolveForConnection,
+        final connectionResult = await _deviceModelService.runConnection(
+          _meshCoreConnection!.connect,
         );
 
         await _postConnectionSetup(connectionResult, device);
@@ -4345,8 +4345,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
 
-      final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.resolveForConnection,
+      final connectionResult = await _deviceModelService.runConnection(
+        _meshCoreConnection!.connect,
       );
 
       final device = DiscoveredDevice(
@@ -4475,8 +4475,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
 
-      final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.resolveForConnection,
+      final connectionResult = await _deviceModelService.runConnection(
+        _meshCoreConnection!.connect,
       );
 
       final vid = usbDevice['vid'] as int? ?? 0;
@@ -4598,8 +4598,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
 
-      final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.resolveForConnection,
+      final connectionResult = await _deviceModelService.runConnection(
+        _meshCoreConnection!.connect,
       );
 
       final device = DiscoveredDevice(id: deviceId, name: deviceName);

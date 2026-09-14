@@ -40,6 +40,9 @@ class SharedPreferencesDeviceCatalogStorage implements DeviceCatalogStorage {
 /// Owns the validated launch cache, one shared refresh and unknown reports.
 class DeviceModelService {
   static const String catalogCacheKey = 'device_catalog_v1';
+  static const String _catalogPointerKey = 'device_catalog_active_slot_v1';
+  static const String _catalogSlotAKey = 'device_catalog_slot_a_v1';
+  static const String _catalogSlotBKey = 'device_catalog_slot_b_v1';
   static const String outboxKey = 'device_catalog_unknown_outbox_v1';
 
   final DeviceCatalogFetcher _fetchCatalog;
@@ -87,7 +90,7 @@ class DeviceModelService {
   Future<void> _initialize() async {
     final storage = await _loadStorage();
     _storage = storage;
-    final cached = storage.getString(catalogCacheKey);
+    final cached = _readCommittedCatalog(storage);
     if (cached != null) {
       try {
         final decoded = jsonDecode(cached);
@@ -118,33 +121,27 @@ class DeviceModelService {
     if (storage == null) return;
     final encoded = fetched.toJsonString();
     if (utf8.encode(encoded).length > DeviceCatalog.maxEncodedBytes) return;
-    final previous = storage.getString(catalogCacheKey);
+    final activeSlot = storage.getString(_catalogPointerKey);
+    final inactiveSlot = activeSlot == 'a' ? 'b' : 'a';
+    final inactiveKey =
+        inactiveSlot == 'a' ? _catalogSlotAKey : _catalogSlotBKey;
     try {
-      if (!await storage.setString(catalogCacheKey, encoded)) {
-        await _restoreCatalogCache(storage, previous);
+      if (!await storage.setString(inactiveKey, encoded)) {
         return;
       }
+      if (!await storage.setString(_catalogPointerKey, inactiveSlot)) return;
     } catch (_) {
-      await _restoreCatalogCache(storage, previous);
       return;
     }
     _catalog = fetched;
     unawaited(_drainOutbox(afterSuccessfulRefresh: true));
   }
 
-  Future<void> _restoreCatalogCache(
-    DeviceCatalogStorage storage,
-    String? previous,
-  ) async {
-    try {
-      if (previous == null) {
-        await storage.remove(catalogCacheKey);
-      } else {
-        await storage.setString(catalogCacheKey, previous);
-      }
-    } catch (_) {
-      // Best effort only. Some preference implementations mutate before failing.
-    }
+  String? _readCommittedCatalog(DeviceCatalogStorage storage) {
+    final activeSlot = storage.getString(_catalogPointerKey);
+    if (activeSlot == 'a') return storage.getString(_catalogSlotAKey);
+    if (activeSlot == 'b') return storage.getString(_catalogSlotBKey);
+    return storage.getString(catalogCacheKey);
   }
 
   /// Resolves at protocol step 4 against the current catalog.
@@ -168,6 +165,14 @@ class DeviceModelService {
         ? null
         : matchDeviceModel(manufacturer, current.devices);
   }
+
+  /// Invokes one transport handshake with the catalog resolver shared by every
+  /// connection path. The handshake owns device query and self-info before it
+  /// asks this resolver for the fixed model used by that connection.
+  Future<T> runConnection<T>(
+    Future<T> Function(Future<DeviceModel?> Function(String)) handshake,
+  ) =>
+      handshake(resolveForConnection);
 
   /// Queues a genuine unknown only when a valid catalog was available.
   void observeUnknownDevice({
@@ -197,7 +202,9 @@ class DeviceModelService {
       };
       _trimOutbox(entries);
       await _writeOutbox(storage, entries);
-      if (isFirstAttempt) await _dispatchOne(normalized, entries[normalized]!);
+      if (isFirstAttempt) {
+        unawaited(_dispatchOne(normalized, entries[normalized]!));
+      }
     });
   }
 
@@ -273,7 +280,11 @@ class DeviceModelService {
     final entries = _readOutbox(storage);
     if (entries[identity]?['generation'] == submitted['generation']) {
       entries.remove(identity);
-      await _writeOutbox(storage, entries);
+      try {
+        await _writeOutbox(storage, entries);
+      } catch (_) {
+        // A report acknowledgement must not poison later outbox mutations.
+      }
     }
   }
 
@@ -293,7 +304,7 @@ class DeviceModelService {
       await _writeOutbox(storage, entries);
       for (final entry in entries.entries) {
         if (_attempted.add(entry.key)) {
-          await _dispatchOne(entry.key, entry.value);
+          unawaited(_dispatchOne(entry.key, entry.value));
         }
       }
     });

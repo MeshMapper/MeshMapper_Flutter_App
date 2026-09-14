@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -23,6 +25,29 @@ Map<String, dynamic> catalogResponse() => {
     };
 
 void main() {
+  Map<String, dynamic> contractFixture() => jsonDecode(
+        File('test/fixtures/device_catalog_contract.json').readAsStringSync(),
+      ) as Map<String, dynamic>;
+
+  test('executes catalog list and report envelopes from the shared fixture',
+      () async {
+    final fixture = contractFixture();
+    var report = false;
+    final api = ApiService(
+      client: MockClient((_) async => http.Response(
+            jsonEncode(report ? fixture['report'] : fixture['list']),
+            200,
+          )),
+    );
+
+    expect((await api.fetchDeviceCatalog())?.revision, 4);
+    report = true;
+    expect(
+      await api.reportUnknownDevice(manufacturer: 'Unknown', appVersion: 'APP'),
+      DeviceReportAcknowledgement.pending,
+    );
+  });
+
   test('fetches and strictly decodes the device catalog without callbacks',
       () async {
     late http.Request request;
@@ -80,6 +105,24 @@ void main() {
     });
     expect(acknowledgement, DeviceReportAcknowledgement.pending);
   });
+
+  for (final status in <String>['known', 'pending', 'dismissed']) {
+    test('accepts the $status report acknowledgement', () async {
+      final api = ApiService(
+        client: MockClient(
+          (_) async => http.Response(
+            jsonEncode({'success': true, 'status': status}),
+            200,
+          ),
+        ),
+      );
+      expect(
+        await api.reportUnknownDevice(
+            manufacturer: 'Unknown', appVersion: 'APP'),
+        DeviceReportAcknowledgement.values.byName(status),
+      );
+    });
+  }
 
   test('rejects malformed UTF-8 from both catalog operations', () async {
     final api = ApiService(
@@ -150,4 +193,20 @@ void main() {
     expect((await api.fetchDeviceCatalog())?.revision, 1);
     expect(calls, 2);
   });
+
+  for (final report in [false, true]) {
+    test('${report ? 'report' : 'list'} honors its outer timeout', () async {
+      final stuck = Completer<http.Response>();
+      final api = ApiService(
+        deviceCatalogTimeout: const Duration(milliseconds: 10),
+        client: MockClient((_) => stuck.future),
+      );
+
+      final result = report
+          ? await api.reportUnknownDevice(
+              manufacturer: 'Unknown', appVersion: 'APP')
+          : await api.fetchDeviceCatalog();
+      expect(result, isNull);
+    });
+  }
 }
