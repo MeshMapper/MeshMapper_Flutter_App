@@ -1,0 +1,26 @@
+{
+  "normalization": [
+    {"input": "  T1000-E  ", "normalized": "t1000e"},
+    {"input": "T1000E_OTA", "normalized": "t1000eota"},
+    {"input": "Seeed Tracker T1000 nightly-a1b2", "normalized": "seeedtrackert1000"},
+    {"input": "A\u0000 B", "normalized": "ab"},
+    {"input": "T1000e nightly-ab\ufeff", "normalized": "t1000e"}
+  ],
+  "list": {
+    "success": true,
+    "revision": 4,
+    "devices": [
+      {
+        "id": 12,
+        "manufacturer": "Seeed Tracker T1000",
+        "shortName": "Seeed Tracker T1000",
+        "aliases": ["T1000e", "T1000E_OTA"],
+        "power": 0.3,
+        "platform": "nrf52",
+        "txPower": 22,
+        "notes": "Seeed Tracker T1000"
+      }
+    ]
+  },
+  "report": {"success": true, "status": "pending"}
+}

@@ -73,6 +73,8 @@ import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
 import '../services/portal_token_store.dart';
 import '../services/recent_coverage_service.dart';
+import '../services/reporting_power.dart';
+import 'device_connection_setup.dart';
 import '../services/repeater_admin/manage_target.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
 import '../services/repeater_admin/repeater_claim_unclaim.dart';
@@ -661,7 +663,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? repeaterNameForKey(String key) {
     final wanted = key.toUpperCase();
     for (final r in _repeaters) {
-      if (r.hexId.toUpperCase() == wanted) return r.name.isEmpty ? null : r.name;
+      if (r.hexId.toUpperCase() == wanted) {
+        return r.name.isEmpty ? null : r.name;
+      }
     }
     return null;
   }
@@ -3084,9 +3088,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _portalAccountService.onAccountChanged = () {
       _portalAccount = _portalAccountService.account;
       _portalCompanions = _portalAccountService.linkedPubkeys.toList();
-      _portalLinkedPubkeys = _portalCompanions
-          .map((entry) => entry.pubkey.toUpperCase())
-          .toList();
+      _portalLinkedPubkeys =
+          _portalCompanions.map((entry) => entry.pubkey.toUpperCase()).toList();
       _portalOverview = _portalAccountService.overview;
       unawaited(_savePortalAccountState());
       // Account state is NOT map state: plain notify only (Critical Rule 9).
@@ -3686,33 +3689,24 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final overrideKey = _isAnonymousRenamed ? _originalDeviceName : deviceName;
     final saved =
         overrideKey == null ? null : _devicePowerOverrides[overrideKey];
+    final resolved = resolveReportingPower(model: model, savedOverride: saved);
+    _preferences = preferencesForConnectingDevice(
+      preferences: _preferences,
+      model: model,
+      deviceName: overrideKey,
+      savedOverrides: _devicePowerOverrides,
+    );
 
-    if (saved != null) {
-      _preferences = _preferences.copyWith(
-        powerLevel: (saved['powerLevel'] as num).toDouble(),
-        txPower: (saved['txPower'] as num).toInt(),
-        autoPowerSet: false,
-        powerLevelSet: true,
-      );
+    if (resolved.configured) {
       debugLog('[MODEL] Reporting saved override for "$overrideKey": '
-          '${saved['powerLevel']}W');
-    } else if (model != null) {
-      _preferences = _preferences.copyWith(
-        powerLevel: model.power,
-        txPower: model.txPower,
-        autoPowerSet: true,
-        powerLevelSet: false,
-      );
+          '${resolved.power}W');
+    } else if (resolved.autoSet) {
       debugLog(
-          '[MODEL] Reporting ${model.power}W for ${model.shortName} at auth');
+          '[MODEL] Reporting ${resolved.power}W for the matched device at auth');
     } else {
       // Unrecognized radio with nothing saved. Carrying the previous device's
       // flags here would both report its wattage and suppress the prompt that
       // asks the user to set one.
-      _preferences = _preferences.copyWith(
-        autoPowerSet: false,
-        powerLevelSet: false,
-      );
       debugWarn('[MODEL] Unrecognized radio and no saved power, asking the '
           'user rather than reusing the last one');
     }
@@ -3820,7 +3814,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
             '[APP] Radio configuration changed across reconnect: $_sessionRadioConfig -> ${radioConfig ?? 'none'}');
         logError(
             'Your radio\'s settings changed. MeshMapper is now using the new settings.',
-            severity: ErrorSeverity.warning, autoSwitch: false);
+            severity: ErrorSeverity.warning,
+            autoSwitch: false);
       }
       _sessionRadioConfig = radioConfig;
 
@@ -4174,8 +4169,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         });
 
         // Execute connection workflow (transport already connected above)
-        final connectionResult = await _meshCoreConnection!.connect(
-          _deviceModelService.models,
+        final connectionResult = await _deviceModelService.runConnection(
+          _meshCoreConnection!.connect,
         );
 
         await _postConnectionSetup(connectionResult, device);
@@ -4341,8 +4336,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
 
-      final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.models,
+      final connectionResult = await _deviceModelService.runConnection(
+        _meshCoreConnection!.connect,
       );
 
       final device = DiscoveredDevice(
@@ -4471,8 +4466,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
 
-      final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.models,
+      final connectionResult = await _deviceModelService.runConnection(
+        _meshCoreConnection!.connect,
       );
 
       final vid = usbDevice['vid'] as int? ?? 0;
@@ -4594,8 +4589,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
 
-      final connectionResult = await _meshCoreConnection!.connect(
-        _deviceModelService.models,
+      final connectionResult = await _deviceModelService.runConnection(
+        _meshCoreConnection!.connect,
       );
 
       final device = DiscoveredDevice(id: deviceId, name: deviceName);
@@ -4628,19 +4623,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _portalLinkPromptPending = false;
     _portalLinkPromptPubkey = null;
 
-    if (connectionResult.deviceModelMatched &&
-        connectionResult.deviceModel != null) {
-      final matchedDevice = connectionResult.deviceModel!;
-      _preferences = _preferences.copyWith(
-        powerLevel: matchedDevice.power,
-        txPower: matchedDevice.txPower,
-        autoPowerSet: true,
-        powerLevelSet: false,
-      );
-      notifyListeners();
-      debugLog(
-          '[MODEL] Device recognized: ${matchedDevice.shortName} - reporting ${matchedDevice.power}W in API calls');
-    }
+    final reportingName = _isAnonymousRenamed
+        ? _originalDeviceName
+        : (_meshCoreConnection?.selfInfo?.name ?? device.name);
+    _preferences = prepareConnectedDevice(
+      preferences: _preferences,
+      connection: _meshCoreConnection!,
+      catalog: _deviceModelService,
+      deviceName: reportingName,
+      savedOverrides: _devicePowerOverrides,
+      appVersion: AppConstants.appVersion,
+    );
+    notifyListeners();
 
     await _createUnifiedRxHandler();
 
@@ -4706,8 +4700,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // _lastRadioConfig directly instead: that is what any read still running
     // while disconnected (including the racy pre-connect repeater fetch) was
     // filtered on.
-    final priorRepeaterFilterKey = radio_filter.radioFilterKey(
-        radio_filter.radioFilterFromTag(_lastRadioConfig));
+    final priorRepeaterFilterKey = radio_filter
+        .radioFilterKey(radio_filter.radioFilterFromTag(_lastRadioConfig));
     await _rememberRadioConfig();
     if (radioFilterKey != priorRepeaterFilterKey) {
       final zone = zoneCode;
@@ -5712,8 +5706,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final deviceMode = originalPathHashMode ?? 0;
     final deviceHopBytes = deviceMode + 1;
     var refreshedHopBytes = originalPathHashMode == null ? 1 : deviceHopBytes;
-    var refreshedTraceHopBytes =
-        originalPathHashMode == null ? 1 : (deviceHopBytes == 3 ? 4 : deviceHopBytes);
+    var refreshedTraceHopBytes = originalPathHashMode == null
+        ? 1
+        : (deviceHopBytes == 3 ? 4 : deviceHopBytes);
 
     final policy = resolvePathHashModePolicy(
       deviceHopBytes: deviceHopBytes,
@@ -5730,8 +5725,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (!stillOwns()) return false;
         refreshedHopBytes = desiredHopBytes;
         if (!preserveTraceHopBytes) {
-          refreshedTraceHopBytes =
-              desiredHopBytes == 3 ? 4 : desiredHopBytes;
+          refreshedTraceHopBytes = desiredHopBytes == 3 ? 4 : desiredHopBytes;
         }
         debugLog(
             '[PATH] Set path hash mode: radio was $currentRuntimeHopBytes-byte, now $desiredHopBytes-byte (trace: $refreshedTraceHopBytes-byte)');
@@ -5741,8 +5735,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           final reason = enforceHopBytes
               ? 'set by your regional admin'
               : 'set in your app preferences';
-          _pendingPathHashWarning =
-              (hopBytes: desiredHopBytes, reason: reason);
+          _pendingPathHashWarning = (hopBytes: desiredHopBytes, reason: reason);
           notifyListeners();
         }
       } catch (e) {
@@ -5761,8 +5754,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     } else {
       refreshedHopBytes = desiredHopBytes;
       if (!preserveTraceHopBytes) {
-        refreshedTraceHopBytes =
-            desiredHopBytes == 3 ? 4 : desiredHopBytes;
+        refreshedTraceHopBytes = desiredHopBytes == 3 ? 4 : desiredHopBytes;
       }
       debugLog(
           '[PATH] Path hash mode OK: radio=$currentRuntimeHopBytes-byte, desired=$desiredHopBytes-byte');
@@ -6302,7 +6294,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _originalDeviceName = null;
 
     // Do full disconnect cleanup (releases API session, etc.)
-    _fullDisconnectCleanup(releaseExtras: releaseExtras, flushQueue: flushQueue);
+    _fullDisconnectCleanup(
+        releaseExtras: releaseExtras, flushQueue: flushQueue);
     notifyListeners();
   }
 
@@ -6530,7 +6523,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Auto-exit app if preference is enabled (Android only). The airborne
     // block passes closeApp: false so its explanation stays on screen.
-    if (closeApp && _preferences.closeAppAfterDisconnect && Platform.isAndroid) {
+    if (closeApp &&
+        _preferences.closeAppAfterDisconnect &&
+        Platform.isAndroid) {
       debugLog('[APP] Auto-closing app after disconnect (preference enabled)');
       // Small delay to ensure cleanup completes
       Future.delayed(const Duration(milliseconds: 500), () {
@@ -6713,7 +6708,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final model = connection.deviceModel?.manufacturer ??
           connection.deviceInfo?.manufacturer ??
           'Unknown';
-      debugLog('[SESSION] Re-authenticating live companion after session expiry');
+      debugLog(
+          '[SESSION] Re-authenticating live companion after session expiry');
       Map<String, dynamic>? result;
       try {
         result = await _apiService.requestAuth(
@@ -6996,7 +6992,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           message: 'No repeater session is open.');
     }
     if (_preferences.offlineMode || !_apiService.hasSession) {
-      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.noSession);
+      return const RepeaterAdminResult.failed(
+          RepeaterAdminFailureKind.noSession);
     }
     final Map<String, dynamic> proof;
     try {
@@ -7026,7 +7023,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<RepeaterAdminResult> unclaimRepeater(String repeaterHex) async {
     if (_preferences.offlineMode || !_apiService.hasSession) {
-      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.noSession);
+      return const RepeaterAdminResult.failed(
+          RepeaterAdminFailureKind.noSession);
     }
     final result = await RepeaterClaimUnclaim(
       request: _repeaterAdminApi.unclaim,
@@ -7051,7 +7049,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           message: 'No repeater session is open.');
     }
     if (_preferences.offlineMode || !_apiService.hasSession) {
-      return const RepeaterAdminResult.failed(RepeaterAdminFailureKind.noSession);
+      return const RepeaterAdminResult.failed(
+          RepeaterAdminFailureKind.noSession);
     }
     final Map<String, dynamic> table;
     try {
@@ -7085,11 +7084,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _reconcileRepeaterClaims({required String reason}) async {
     if (kIsWeb) return;
     final key = _devicePublicKey?.toUpperCase();
-    if (key == null || !_apiService.hasSession || _preferences.offlineMode) return;
+    if (key == null || !_apiService.hasSession || _preferences.offlineMode) {
+      return;
+    }
     try {
       final result = await _repeaterAdminApi.mine();
       if (!result.ok) {
-        debugLog('[RADMIN] Claims reconcile ($reason) skipped: ${result.failure.name}');
+        debugLog(
+            '[RADMIN] Claims reconcile ($reason) skipped: ${result.failure.name}');
         return;
       }
       final replacement = _repeaterClaimsCache.replaceForCurrent(
@@ -11706,7 +11708,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // enableAutoPing can defer its first attempt before the recording session
     // opens. Keep that event until a successful start; failed starts clear it.
     final awaitingStart = _currentNoiseFloorSession == null &&
-        _autoPingStarting && type == PingEventType.deferred;
+        _autoPingStarting &&
+        type == PingEventType.deferred;
     if ((_currentNoiseFloorSession != null || awaitingStart) &&
         _currentNoiseFloor != null) {
       final markers = awaitingStart
