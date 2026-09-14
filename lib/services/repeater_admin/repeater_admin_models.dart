@@ -219,7 +219,8 @@ class AccessList {
   final List<AccessEntry> entries;
 
   /// Builds an access list from its entries.
-  const AccessList({required this.entries});
+  AccessList({required List<AccessEntry> entries})
+      : entries = List.unmodifiable(entries);
 }
 
 /// The bytes a binary reply reaches the app with. The repeater prefixes
@@ -301,11 +302,11 @@ class NeighbourPage {
   final List<RepeaterNeighbour> entries;
 
   /// Builds a neighbour page from its header and entries.
-  const NeighbourPage({
+  NeighbourPage({
     required this.total,
     required this.returned,
-    required this.entries,
-  });
+    required List<RepeaterNeighbour> entries,
+  }) : entries = List.unmodifiable(entries);
 }
 
 /// Parses a GET_NEIGHBOURS response. Throws [FormatException] when [data]
@@ -315,6 +316,10 @@ class NeighbourPage {
 /// entry (cipher padding) are ignored. `snrDb` is the signed SNR byte
 /// divided by 4.
 NeighbourPage parseNeighbourPage(Uint8List data, {required int prefixLen}) {
+  if (prefixLen < 1) {
+    throw FormatException(
+        'Neighbour prefix length must be at least 1: $prefixLen');
+  }
   if (data.length < 4) {
     throw FormatException('Neighbour page response too short: ${data.length} bytes');
   }
@@ -396,16 +401,18 @@ class RepeaterClaim {
   /// Parses a claim from JSON. Throws [FormatException] when neither
   /// `repeater` nor `repeater_hex` normalizes to a full public key.
   factory RepeaterClaim.fromJson(Map<String, dynamic> json) {
-    final rawKey = json['repeater'] as String? ?? json['repeater_hex'] as String?;
+    final rawKey =
+        _asString(json['repeater']) ?? _asString(json['repeater_hex']);
     final key = normalizePublicKey(rawKey);
     if (key == null) {
-      throw FormatException('Invalid repeater key in claim JSON: $rawKey');
+      throw FormatException(
+          'Invalid repeater key in claim JSON: ${_truncateForMessage(rawKey ?? 'null')}');
     }
     return RepeaterClaim(
       repeaterHex: key,
-      name: json['name'] as String? ?? '',
-      iata: json['iata'] as String?,
-      groupCode: json['group_code'] as String?,
+      name: _asString(json['name']) ?? '',
+      iata: _asString(json['iata']),
+      groupCode: _asString(json['group_code']),
       claimedAt: _asInt(json['claimed_at']),
       updatedAt: _asInt(json['updated_at']),
     );
@@ -431,6 +438,8 @@ class RepeaterClaim {
         'updated_at': updatedAt,
       };
 }
+
+String? _asString(dynamic value) => value is String ? value : null;
 
 int _asInt(dynamic value) {
   if (value is int) return value;
