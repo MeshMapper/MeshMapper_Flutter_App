@@ -90,7 +90,7 @@ void main() {
     final beforeResponse =
         jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
     final beforeEntry = (beforeResponse['entries'] as Map)['newradio'] as Map;
-    expect(beforeEntry['generation'], 2);
+    expect(beforeEntry['generation'], endsWith(':2'));
     expect(beforeEntry['app_version'], 'new');
 
     response.complete(DeviceReportAcknowledgement.pending);

@@ -1657,6 +1657,11 @@ and removes an item only after an exact `known`, `pending`, or `dismissed`
 acknowledgement for the submitted generation. A successful catalog refresh
 suppresses queued identities it now recognizes.
 
+New observation generations combine a random launch nonce with a monotonic
+counter. Evicting and reinserting an identity cannot reuse the token of an older
+in-flight report. Positive integer generations from older saved outboxes remain
+readable and can still be acknowledged on a later launch.
+
 Network requests run outside the mutation chain. Acknowledgements re-enter it
 before reading the stored generation and publishing a removal, so delayed writes
 cannot overwrite newer observations or refresh cleanup. Failed local writes do
