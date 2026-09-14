@@ -95,6 +95,7 @@ WhatToTest.txt
 /HANDOFF*.md
 /PLAN[-_]*.md
 /SPEC[-_]*.md
+/docs/superpowers/
 
 # SwiftPM build products for the watch wire-rule tests
 ios/WatchLogicTests/.build/
