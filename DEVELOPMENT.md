@@ -1684,6 +1684,7 @@ Offline Mode follows the same post-connect decisions without the auth step.
 
 - **POST /wardrive-api.php/status**: Check zone status (geo-auth)
 - **POST /wardrive-api.php/auth**: Acquire/release session (geo-auth)
+- **POST /wardrive-api.php/devices**: Refresh supported devices or report an unknown identity (App key)
 - **POST /wardrive-api.php/wardrive**: Submit wardrive data + heartbeat
 - Auth: API key in JSON body (`key` field), NOT query string
 
