@@ -492,6 +492,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Connection guard — prevents concurrent connect attempts and provides instant UI feedback
   bool _isConnecting = false;
 
+  int _sessionRecoveryGeneration = 0;
+  Future<bool>? _liveSessionRecoveryInFlight;
+
   // Auto-reconnect state
   bool _userRequestedDisconnect = false;
 
@@ -6292,12 +6295,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     Map<String, dynamic>? releaseExtras,
   }) async {
     _finishLiveActivitySession();
+    _invalidateLiveSessionRecovery();
     // Mark as user-requested so BLE disconnect listener doesn't trigger auto-reconnect
     _userRequestedDisconnect = true;
 
     // Immediate UI feedback
     _connectionStep = ConnectionStep.disconnecting;
     notifyListeners();
+    await _waitForLiveSessionRecovery();
 
     // Release the sign gate before any teardown write (advert-name restore,
     // path-hash restore, flood scope, channel deletion) is parked behind it.
@@ -6598,64 +6603,159 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Check session validity before starting a wardrive action
   /// Returns true if session is valid, false if expired (triggers disconnect)
-  Future<bool> _recoverExpiredLiveSession() async {
-    if (_isDisposed ||
-        _preferences.offlineMode ||
-        _isConnecting ||
-        _isZoneTransferInProgress ||
-        _connectionStep != ConnectionStep.connected ||
-        _meshCoreConnection == null ||
-        _devicePublicKey == null ||
+  Future<bool> _recoverExpiredLiveSession() {
+    final inFlight = _liveSessionRecoveryInFlight;
+    if (inFlight != null) return inFlight;
+
+    final generation = _sessionRecoveryGeneration;
+    late final Future<bool> recovery;
+    recovery = _recoverExpiredLiveSessionImpl(generation).whenComplete(() {
+      if (identical(_liveSessionRecoveryInFlight, recovery)) {
+        _liveSessionRecoveryInFlight = null;
+      }
+    });
+    _liveSessionRecoveryInFlight = recovery;
+    return recovery;
+  }
+
+  void _invalidateLiveSessionRecovery() {
+    _sessionRecoveryGeneration++;
+  }
+
+  Future<void> _waitForLiveSessionRecovery() async {
+    final recovery = _liveSessionRecoveryInFlight;
+    if (recovery != null) await recovery;
+  }
+
+  bool _ownsSessionRecovery(
+    int generation,
+    MeshCoreConnection connection,
+    String publicKey,
+  ) =>
+      !_isDisposed &&
+      generation == _sessionRecoveryGeneration &&
+      !_preferences.offlineMode &&
+      !_isConnecting &&
+      !_isZoneTransferInProgress &&
+      _connectionStep == ConnectionStep.connected &&
+      identical(_meshCoreConnection, connection) &&
+      _devicePublicKey == publicKey;
+
+  Future<bool> _recoverExpiredLiveSessionImpl(int generation) async {
+    final connection = _meshCoreConnection;
+    final publicKey = _devicePublicKey;
+    final pingService = _pingService;
+    if (connection == null ||
+        publicKey == null ||
+        pingService == null ||
+        !_ownsSessionRecovery(generation, connection, publicKey) ||
         _currentPosition == null) {
       debugWarn(
           '[SESSION] Refusing expired-session recovery outside a live connection');
       return false;
     }
 
-    final deviceName = _isAnonymousRenamed
-        ? 'Anonymous'
-        : (_meshCoreConnection!.selfInfo?.name ??
-            connectedDeviceName?.replaceFirst('MeshCore-', ''));
-    if (deviceName == null || deviceName.isEmpty) {
-      debugWarn(
-          '[SESSION] Refusing expired-session recovery without a device name');
-      return false;
-    }
+    pingService.setSessionRecoveryInProgress(true);
+    try {
+      // A TX already sent carries the old wire tag until its listening window
+      // queues it. Do not clean stale tags or install a new session before it
+      // reaches the queue.
+      await pingService.waitForTxWindow();
+      if (!_ownsSessionRecovery(generation, connection, publicKey)) {
+        debugWarn('[SESSION] Recovery invalidated while waiting for TX window');
+        return false;
+      }
 
-    final position = _currentPosition!;
-    final model = _meshCoreConnection!.deviceModel?.manufacturer ??
-        _meshCoreConnection!.deviceInfo?.manufacturer ??
-        'Unknown';
-    debugLog('[SESSION] Re-authenticating live companion after session expiry');
-    final result = await _apiService.requestAuth(
-      reason: 'connect',
-      publicKey: _devicePublicKey!,
-      who: deviceName,
-      appVersion: _appVersion,
-      power: _preferences.powerLevel,
-      iataCode: zoneCode ?? _preferences.iataCode,
-      model: model,
-      radioFreq: _meshCoreConnection!.selfInfo?.radioConfigApi,
-      lat: position.latitude,
-      lon: position.longitude,
-      accuracyMeters: position.accuracy,
-    );
-    if (result == null || result['success'] != true) {
-      debugWarn('[SESSION] Live re-authentication was not accepted');
-      return false;
-    }
+      final deviceName = _isAnonymousRenamed
+          ? 'Anonymous'
+          : (connection.selfInfo?.name ??
+              connectedDeviceName?.replaceFirst('MeshCore-', ''));
+      if (deviceName == null || deviceName.isEmpty) {
+        debugWarn(
+            '[SESSION] Refusing expired-session recovery without a device name');
+        return false;
+      }
 
-    if (result['type'] is String) _authType = result['type'] as String;
-    _syncZoneCapacityFromAuth(result);
-    await _applyRecoveredSessionConfiguration();
-    notifyListeners();
-    return true;
+      final position = _currentPosition!;
+      final model = connection.deviceModel?.manufacturer ??
+          connection.deviceInfo?.manufacturer ??
+          'Unknown';
+      debugLog('[SESSION] Re-authenticating live companion after session expiry');
+      final result = await _apiService.requestAuth(
+        reason: 'connect',
+        publicKey: publicKey,
+        who: deviceName,
+        appVersion: _appVersion,
+        power: _preferences.powerLevel,
+        iataCode: zoneCode ?? _preferences.iataCode,
+        model: model,
+        radioFreq: connection.selfInfo?.radioConfigApi,
+        lat: position.latitude,
+        lon: position.longitude,
+        accuracyMeters: position.accuracy,
+        shouldStoreSession: () =>
+            _ownsSessionRecovery(generation, connection, publicKey),
+      );
+      final replacementSessionId = result?['session_id'] as String?;
+      if (result == null || result['success'] != true) {
+        debugWarn('[SESSION] Live re-authentication was not accepted');
+        return false;
+      }
+      if (!_ownsSessionRecovery(generation, connection, publicKey) ||
+          replacementSessionId == null ||
+          _apiService.sessionId != replacementSessionId) {
+        await _releaseRecoveredSession(publicKey, replacementSessionId);
+        return false;
+      }
+
+      try {
+        if (result['type'] is String) _authType = result['type'] as String;
+        _syncZoneCapacityFromAuth(result);
+        final applied = await _applyRecoveredSessionConfiguration(
+          connection,
+          () => _ownsSessionRecovery(generation, connection, publicKey),
+        );
+        if (!applied ||
+            !_ownsSessionRecovery(generation, connection, publicKey)) {
+          await _releaseRecoveredSession(publicKey, replacementSessionId);
+          return false;
+        }
+      } catch (e) {
+        debugError('[SESSION] Failed to apply replacement session: $e');
+        await _releaseRecoveredSession(publicKey, replacementSessionId);
+        return false;
+      }
+      notifyListeners();
+      return true;
+    } finally {
+      pingService.setSessionRecoveryInProgress(false);
+    }
+  }
+
+  Future<void> _releaseRecoveredSession(
+      String publicKey, String? sessionId) async {
+    if (sessionId == null || sessionId.isEmpty) return;
+    debugWarn('[SESSION] Releasing replacement session that was not applied');
+    try {
+      await _apiService.requestAuth(
+        reason: 'disconnect',
+        publicKey: publicKey,
+        sessionId: sessionId,
+      );
+    } catch (e) {
+      debugError('[SESSION] Failed to release replacement session: $e');
+    }
   }
 
   /// Apply the live settings supplied by a replacement auth without touching
   /// the companion connection or the current auto-ping lane.
-  Future<void> _applyRecoveredSessionConfiguration() async {
+  Future<bool> _applyRecoveredSessionConfiguration(
+    MeshCoreConnection connection,
+    bool Function() owns,
+  ) async {
+    if (!owns()) return false;
     await ChannelService.setRegionalChannels(_apiService.channels);
+    if (!owns()) return false;
     _regionalChannels = ChannelService.getRegionalChannelNames();
     debugLog('[SESSION] Refreshed regional channels: $_regionalChannels');
 
@@ -6682,15 +6782,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final isWildcard = scope == null || scope == '*' || scope == '#*';
     if (isWildcard) {
       if (_scope != null) {
-        await _meshCoreConnection?.clearFloodScope();
+        await connection.clearFloodScope();
+        if (!owns()) return false;
       }
       _scope = null;
     } else {
       final scopeName = scope;
       final bareScope =
           scopeName.startsWith('#') ? scopeName.substring(1) : scopeName;
-      await _meshCoreConnection!
-          .setFloodScope(CryptoService.deriveScopeKey(bareScope));
+      await connection.setFloodScope(CryptoService.deriveScopeKey(bareScope));
+      if (!owns()) return false;
       _scope = '#$bareScope';
     }
 
@@ -6720,12 +6821,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       updated = updated.copyWith(autoPingInterval: _apiService.minModeInterval);
     }
     _preferences = updated;
+    _pingService?.setAutoPingInterval(updated.autoPingInterval * 1000);
     _syncRecentCoverage();
-    await _configurePathHashMode();
-    if (_pingService != null) {
-      _pingService!.hopBytes = effectiveHopBytes;
-      _pingService!.traceHopBytes = _traceHopBytes;
-    }
+    if (!owns()) return false;
+    return true;
   }
 
   Future<bool> _checkSessionBeforeAction() async {
@@ -7565,6 +7664,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Switch from online to offline mode while connected
   Future<({bool success, String? error})> _switchToOfflineMode() async {
     debugLog('[APP] Hot-switching to offline mode while connected');
+    _invalidateLiveSessionRecovery();
+    await _waitForLiveSessionRecovery();
     _isSwitchingMode = true;
     _modeSwitchError = null;
     notifyListeners();
@@ -9651,6 +9752,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isZoneTransferInProgress = true;
     _zoneTransferFrom = oldZoneCode;
     _zoneTransferTo = newZoneCode;
+    _invalidateLiveSessionRecovery();
+    await _waitForLiveSessionRecovery();
     debugLog('[ZONE] Starting zone transfer: $oldZoneCode → $newZoneCode');
     notifyListeners();
 
@@ -11698,6 +11801,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     _isDisposed = true;
+    _invalidateLiveSessionRecovery();
     // No notify in dispose: the session just has to let the radio go.
     _repeaterAdminSession?.close();
     _repeaterAdminSession = null;

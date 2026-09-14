@@ -108,10 +108,12 @@ class PingService {
   int? _pendingTxNoiseFloor;
   int? _pendingTxPingCounter; // wire-tag ping counter (null in coords mode)
   String? _pendingTxWireTag; // wire-tag body sent on air (null in coords mode)
+  Completer<void>? _txWindowCompletion;
 
   // Ping in progress guard (prevents concurrent BLE GATT errors)
   // Reference: state.pingInProgress in wardrive.js
   bool _pingInProgress = false;
+  bool _sessionRecoveryInProgress = false;
 
   /// Which auto session a send belongs to. Bumped by [forceDisableAutoPing],
   /// the one stop that clears [_pingInProgress] out from under a send that is
@@ -325,6 +327,18 @@ class PingService {
   /// Get current auto-ping interval in milliseconds
   int get autoPingIntervalMs => _autoPingIntervalMs;
 
+  /// Hold new TX attempts while a replacement API session is being installed.
+  /// Any TX already on air drains through its normal listening window first.
+  void setSessionRecoveryInProgress(bool value) {
+    _sessionRecoveryInProgress = value;
+    debugLog('[SESSION] TX ${value ? 'held for session recovery' : 'released after session recovery'}');
+  }
+
+  /// Wait until a transmitted TX has been queued with its original wire tag.
+  Future<void> waitForTxWindow() async {
+    await _txWindowCompletion?.future;
+  }
+
   /// Check if a disable is pending (waiting for RX window to complete)
   bool get pendingDisable => _pendingDisable;
 
@@ -441,6 +455,19 @@ class PingService {
     } else {
       debugWarn('[PING] Invalid interval $intervalMs, defaulting to 30000ms');
       _autoPingIntervalMs = 30000;
+    }
+
+    if (_autoTimer != null && !_pingInProgress) {
+      _autoTimer?.cancel();
+      if (_hybridModeEnabled) {
+        _scheduleNextHybridPing();
+      } else if (_autoPingEnabled && !_passiveModeEnabled) {
+        _scheduleNextAutoPing();
+      }
+    }
+    if (_targetedTimer != null && !_pingInProgress && _targetedModeEnabled) {
+      _targetedTimer?.cancel();
+      _scheduleNextTargetedPing();
     }
   }
 
@@ -725,6 +752,11 @@ class PingService {
       return false;
     }
 
+    if (_sessionRecoveryInProgress) {
+      debugLog('[SESSION] Ignoring TX ping while session recovery is installing');
+      return false;
+    }
+
     // Early guard: prevent concurrent ping execution (critical for preventing BLE GATT errors)
     // Reference: state.pingInProgress check in wardrive.js
     if (_pingInProgress) {
@@ -732,6 +764,7 @@ class PingService {
       return false;
     }
     _pingInProgress = true;
+    _txWindowCompletion = Completer<void>();
     final epoch = _sendEpoch;
 
     try {
@@ -747,6 +780,11 @@ class PingService {
         // not this one.
         if (epoch != _sendEpoch) {
           debugLog('[PING] Session ended during the fresh fix, not sending');
+          return false;
+        }
+        if (_sessionRecoveryInProgress) {
+          debugLog('[SESSION] Session recovery started during fresh fix, not sending');
+          _pingInProgress = false;
           return false;
         }
 
@@ -1073,6 +1111,10 @@ class PingService {
       if (!_pingInProgress && _pendingDisable) {
         await _executePendingDisable('ping ended without RX window');
       }
+      if (!_pingInProgress && !(_txWindowCompletion?.isCompleted ?? true)) {
+        _txWindowCompletion?.complete();
+        _txWindowCompletion = null;
+      }
     }
   }
 
@@ -1194,6 +1236,8 @@ class PingService {
       // Clear pending TX context
       _pendingTxTimestamp = null;
       _pendingTxNoiseFloor = null;
+      _txWindowCompletion?.complete();
+      _txWindowCompletion = null;
     }
 
     // Unlock ping controls immediately (don't wait for API)
