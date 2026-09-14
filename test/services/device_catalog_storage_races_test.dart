@@ -47,6 +47,119 @@ Future<void> settle() async {
 }
 
 void main() {
+  test('accepts legacy and current generations but rejects malformed tokens',
+      () async {
+    const nonce = '8f17e0bf-d2f1-47b8-beb2-68050e770c18';
+    final generations = <Object?>[
+      0,
+      -1,
+      1.5,
+      null,
+      true,
+      '1',
+      'bad',
+      '$nonce:0',
+      '$nonce:01',
+      '$nonce:1suffix',
+      '$nonce:1\n',
+      '8f17e0bf-d2f1-37b8-beb2-68050e770c18:1',
+      1,
+      '$nonce:2',
+    ];
+    final storage = DurableStorage({
+      DeviceModelService.outboxKey: jsonEncode({
+        'version': 1,
+        'entries': {
+          for (var i = 0; i < generations.length; i++)
+            'radio$i': {
+              'manufacturer': 'Radio $i',
+              'app_version': 'APP',
+              'firmware_version': '',
+              'observed_at': '2026-01-01T00:00:00.000Z',
+              'generation': generations[i],
+            },
+        },
+      }),
+    });
+    final reports = <String>[];
+    final service = DeviceModelService(
+      loadStorage: () async => storage,
+      fetchCatalog: () async => DeviceCatalog.fromJson(catalogJson(1)),
+      reportUnknown: (name, _, __) async {
+        reports.add(name);
+        return null;
+      },
+    );
+    await service.initialize();
+    await service.refreshFuture;
+    await settle();
+    expect(reports, ['Radio 12', 'Radio 13']);
+    expect(storage.entries.keys, ['radio12', 'radio13']);
+  });
+
+  for (final persistedGeneration in [1, 2]) {
+    test(
+        'evicted identity keeps newer metadata after generation $persistedGeneration acknowledgement',
+        () async {
+      Map<String, dynamic> entry(String name, String observedAt) => {
+            'manufacturer': name,
+            'app_version': 'old',
+            'firmware_version': 'old firmware',
+            'observed_at': observedAt,
+            'generation': persistedGeneration,
+          };
+      final storage = DurableStorage({
+        DeviceModelService.outboxKey: jsonEncode({
+          'version': 1,
+          'entries': {
+            'radioa': entry('Radio A', '2025-01-01T00:00:00.000Z'),
+            for (var i = 0; i < 49; i++)
+              'filler$i': entry('Filler $i', '2026-01-01T00:00:00.000Z'),
+          },
+        }),
+      });
+      final oldResponse = Completer<DeviceReportAcknowledgement?>();
+      final reports = <String>[];
+      final service = DeviceModelService(
+        loadStorage: () async => storage,
+        fetchCatalog: () async => DeviceCatalog.fromJson(catalogJson(1)),
+        reportUnknown: (name, _, __) {
+          reports.add(name);
+          return name == 'Radio A' ? oldResponse.future : Future.value(null);
+        },
+      );
+      await service.initialize();
+      await service.refreshFuture;
+      await settle();
+      expect(storage.entries, hasLength(50));
+      expect(storage.entries['radioa']['generation'], persistedGeneration);
+      expect(reports.where((name) => name == 'Radio A'), hasLength(1));
+
+      service.observeUnknownDevice(
+          manufacturer: 'New identity', appVersion: 'APP');
+      await settle();
+      expect(storage.entries, hasLength(50));
+      expect(storage.entries, isNot(contains('radioa')));
+
+      service.observeUnknownDevice(
+          manufacturer: 'Radio A',
+          appVersion: 'new',
+          firmwareVersion: 'new firmware');
+      await settle();
+      expect(storage.entries['radioa']['app_version'], 'new');
+      expect(reports.where((name) => name == 'Radio A'), hasLength(1));
+
+      oldResponse.complete(DeviceReportAcknowledgement.pending);
+      await settle();
+      expect(storage.entries, contains('radioa'));
+      expect(storage.entries['radioa']['app_version'], 'new');
+      expect(storage.entries['radioa']['firmware_version'], 'new firmware');
+      expect(
+          storage.entries['radioa']['generation'], isNot(persistedGeneration));
+      expect(reports.where((name) => name == 'Radio A'), hasLength(1));
+    });
+  }
+
   for (final failure in ['false', 'throw']) {
     test('outbox $failure cannot dispatch unpersisted data or poison retry',
         () async {
@@ -80,7 +193,7 @@ void main() {
       service.observeUnknownDevice(manufacturer: 'Other', appVersion: 'new');
       await settle();
       expect(reports, ['Retry', 'Other']);
-      expect(storage.entries['retry']['generation'], 1);
+      expect(storage.entries['retry']['generation'], endsWith(':2'));
       expect(storage.entries['retry']['app_version'], 'new');
     });
   }

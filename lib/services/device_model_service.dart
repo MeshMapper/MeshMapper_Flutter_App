@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 import '../models/device_catalog.dart';
 import '../models/device_model.dart';
@@ -62,6 +63,11 @@ class DeviceModelService {
   DateTime? _refreshDeadline;
   Future<void> _outboxChain = Future<void>.value();
   final Set<String> _attempted = <String>{};
+  final String _outboxLaunchNonce = const Uuid().v4();
+  int _outboxObservation = 0;
+  static final RegExp _generationToken = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[1-9][0-9]*$',
+  );
 
   DeviceModelService({
     DeviceCatalogFetcher? fetchCatalog,
@@ -199,8 +205,10 @@ class DeviceModelService {
       if (storage == null) return;
       if (matchDeviceModel(manufacturer, _catalog!.devices) != null) return;
       final entries = _readOutbox(storage);
-      final previous = entries[normalized];
-      final generation = (previous?['generation'] as int? ?? 0) + 1;
+      // Eviction removes the persisted entry, but its report can still be in
+      // flight. Tokens must therefore outlive entries and never restart for a
+      // reinserted identity. The launch nonce also separates service instances.
+      final generation = '$_outboxLaunchNonce:${++_outboxObservation}';
       entries[normalized] = {
         'manufacturer': manufacturer,
         'app_version': appVersion,
@@ -253,8 +261,12 @@ class DeviceModelService {
       value['app_version'] is String &&
       value['firmware_version'] is String &&
       value['observed_at'] is String &&
-      value['generation'] is int &&
-      (value['generation'] as int) > 0;
+      _isValidGeneration(value['generation']);
+
+  bool _isValidGeneration(Object? value) =>
+      // Positive integers are retained for outboxes saved by earlier versions.
+      (value is int && value > 0) ||
+      (value is String && _generationToken.hasMatch(value));
 
   Future<void> _writeOutbox(
     DeviceCatalogStorage storage,
