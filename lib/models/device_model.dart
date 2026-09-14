@@ -1,92 +1,75 @@
-/// Represents a MeshCore device model with its power configuration.
-///
-/// This maps to the device-models.json database from the WebClient repo.
-/// Power configuration is critical for PA amplifier models to prevent hardware damage.
+/// A device record from the public server-managed catalog.
 class DeviceModel {
-  /// Full manufacturer string reported by device (e.g., "Ikoka Stick-E22-30dBm (Xiao_nrf52)")
+  final int id;
   final String manufacturer;
-
-  /// Short display name (e.g., "Ikoka Stick")
   final String shortName;
-
-  /// Power setting for wardrive.js (0.3, 0.6, 1.0, 2.0)
-  /// CRITICAL: PA amplifier models require exact values
+  final List<String> aliases;
   final double power;
-
-  /// Hardware platform (nrf52, esp32, esp32-s3, etc.)
   final String platform;
-
-  /// Firmware TX power setting in dBm
   final int txPower;
-
-  /// Additional notes about the device
   final String notes;
 
-  const DeviceModel({
+  DeviceModel({
+    required this.id,
     required this.manufacturer,
     required this.shortName,
+    required List<String> aliases,
     required this.power,
     required this.platform,
     required this.txPower,
     required this.notes,
-  });
+  }) : aliases = List.unmodifiable(aliases);
 
-  /// Parse from JSON object in device-models.json
   factory DeviceModel.fromJson(Map<String, dynamic> json) {
+    final id = json['id'];
+    final manufacturer = json['manufacturer'];
+    final shortName = json['shortName'];
+    final aliases = json['aliases'];
+    final power = json['power'];
+    final platform = json['platform'];
+    final txPower = json['txPower'];
+    final notes = json['notes'];
+    if (id is! int ||
+        id < 0 ||
+        manufacturer is! String ||
+        shortName is! String ||
+        aliases is! List ||
+        aliases.any((value) => value is! String) ||
+        power is! num ||
+        !power.isFinite ||
+        power <= 0 ||
+        power > 100 ||
+        platform is! String ||
+        txPower is! int ||
+        txPower < -30 ||
+        txPower > 100 ||
+        notes is! String) {
+      throw const FormatException('Invalid device catalog record');
+    }
     return DeviceModel(
-      manufacturer: json['manufacturer'] as String,
-      shortName: json['shortName'] as String,
-      power: (json['power'] as num).toDouble(),
-      platform: json['platform'] as String,
-      txPower: json['txPower'] as int,
-      notes: json['notes'] as String? ?? '',
+      id: id,
+      manufacturer: manufacturer,
+      shortName: shortName,
+      aliases: aliases.cast<String>(),
+      power: power.toDouble(),
+      platform: platform,
+      txPower: txPower,
+      notes: notes,
     );
   }
 
-  Map<String, dynamic> toJson() {
-    return {
-      'manufacturer': manufacturer,
-      'shortName': shortName,
-      'power': power,
-      'platform': platform,
-      'txPower': txPower,
-      'notes': notes,
-    };
-  }
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'manufacturer': manufacturer,
+        'shortName': shortName,
+        'aliases': aliases,
+        'power': power,
+        'platform': platform,
+        'txPower': txPower,
+        'notes': notes,
+      };
 
   @override
   String toString() =>
       'DeviceModel($shortName, power=$power, txPower=$txPower)';
-}
-
-/// Container for the full device models database
-class DeviceModelsDatabase {
-  final String version;
-  final String generated;
-  final String source;
-  final List<DeviceModel> devices;
-  final Map<String, String> powerMapping;
-  final List<String> notes;
-
-  const DeviceModelsDatabase({
-    required this.version,
-    required this.generated,
-    required this.source,
-    required this.devices,
-    required this.powerMapping,
-    required this.notes,
-  });
-
-  factory DeviceModelsDatabase.fromJson(Map<String, dynamic> json) {
-    return DeviceModelsDatabase(
-      version: json['version'] as String,
-      generated: json['generated'] as String,
-      source: json['source'] as String,
-      devices: (json['devices'] as List)
-          .map((e) => DeviceModel.fromJson(e as Map<String, dynamic>))
-          .toList(),
-      powerMapping: Map<String, String>.from(json['powerMapping'] as Map),
-      notes: List<String>.from(json['notes'] as List),
-    );
-  }
 }
