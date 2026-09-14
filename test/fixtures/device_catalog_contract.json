@@ -3,7 +3,8 @@
     {"input": "  T1000-E  ", "normalized": "t1000e"},
     {"input": "T1000E_OTA", "normalized": "t1000eota"},
     {"input": "Seeed Tracker T1000 nightly-a1b2", "normalized": "seeedtrackert1000"},
-    {"input": "A\u0000 B", "normalized": "ab"}
+    {"input": "A\u0000 B", "normalized": "ab"},
+    {"input": "T1000e nightly-ab\ufeff", "normalized": "t1000e"}
   ],
   "list": {
     "success": true,
