@@ -79,7 +79,6 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   assets:
-    - assets/device-models.json
     - assets/wardrive.png
     - assets/transmitted_packet.mp3
     - assets/received_packet.mp3
