@@ -1469,8 +1469,14 @@ class ApiService {
   /// fresh tile bytes back so the caller can patch the user's own cells onto
   /// the map without touching the rest of the overlay.
   ///
+  /// z11-13 only warm the server cache. If-None-Match: * lets the server
+  /// finish the fresh render and return its change verdict without a body.
+  /// z14 stays unconditional: its bytes supply the live coverage patch even
+  /// when the server's previous cached copy was already up to date.
+  ///
   /// `changed`: true/false from the X-Tile-Changed header; null on network
-  /// failure, non-2xx, or a server that doesn't implement fresh=1 yet.
+  /// failure, an unexpected status, or an absent header. A requested z11-13
+  /// 304 retains this verdict; it does not mean the render was unchanged.
   /// `body`: the uncompressed MVT bytes on a 200, null otherwise (204 = tile
   /// is empty; package:http has already gunzipped the response).
   Future<({bool? changed, Uint8List? body})> freshenVectorTile({
@@ -1486,19 +1492,24 @@ class ApiService {
     final url =
         Uri.parse('https://${zone.toLowerCase()}.meshmapper.net/vector_tile.php'
             '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter');
+    final verdictOnly = z >= 11 && z <= 13;
     final sw = Stopwatch()..start();
     debugLog(
         '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter (zone ${zone.toLowerCase()})');
     try {
       final response = await _send(
         'GET /vector_tile.php?z=$z&x=$x&y=$y (fresh)',
-        () => _client.get(url).timeout(const Duration(seconds: 8)),
+        () => _client
+            .get(url, headers: verdictOnly ? {'If-None-Match': '*'} : null)
+            .timeout(const Duration(seconds: 8)),
       );
       final changed = response.headers['x-tile-changed'];
       debugLog(
           '[API]   Tile $z/$x/$y response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
           '${response.bodyBytes.length}B, X-Tile-Changed=${changed ?? 'absent'}');
-      if (response.statusCode != 200 && response.statusCode != 204) {
+      if (response.statusCode != 200 &&
+          response.statusCode != 204 &&
+          !(verdictOnly && response.statusCode == 304)) {
         return (changed: null, body: null);
       }
       final body = response.statusCode == 200 ? response.bodyBytes : null;
