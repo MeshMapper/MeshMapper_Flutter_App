@@ -80,4 +80,74 @@ void main() {
     });
     expect(acknowledgement, DeviceReportAcknowledgement.pending);
   });
+
+  test('rejects malformed UTF-8 from both catalog operations', () async {
+    final api = ApiService(
+      client: MockClient(
+        (_) async => http.Response.bytes(<int>[0xc3, 0x28], 200),
+      ),
+    );
+    expect(await api.fetchDeviceCatalog(), isNull);
+    expect(
+      await api.reportUnknownDevice(manufacturer: 'Unknown', appVersion: 'APP'),
+      isNull,
+    );
+  });
+
+  test('rejects report envelopes with unknown status or extra fields',
+      () async {
+    final api = ApiService(
+      client: MockClient(
+        (_) async => http.Response(
+          '{"success":true,"status":"pending","extra":true}',
+          200,
+        ),
+      ),
+    );
+    expect(
+      await api.reportUnknownDevice(manufacturer: 'Unknown', appVersion: 'APP'),
+      isNull,
+    );
+  });
+
+  test('does not replay a catalog request after its deadline', () async {
+    var now = DateTime.utc(2026, 1, 1);
+    var calls = 0;
+    final api = ApiService(
+      deviceCatalogTimeout: const Duration(seconds: 1),
+      now: () => now,
+      client: MockClient((_) async {
+        calls++;
+        now = now.add(const Duration(seconds: 1));
+        throw http.ClientException(
+          'Connection closed before full header was received',
+        );
+      }),
+    );
+
+    expect(await api.fetchDeviceCatalog(), isNull);
+    expect(calls, 1);
+  });
+
+  test('replays a catalog request before its deadline', () async {
+    var now = DateTime.utc(2026, 1, 1);
+    var calls = 0;
+    final api = ApiService(
+      deviceCatalogTimeout: const Duration(seconds: 1),
+      now: () => now,
+      client: MockClient((_) async {
+        calls++;
+        if (calls == 1) {
+          now = now.add(const Duration(milliseconds: 999));
+          throw http.ClientException(
+            'Connection closed before full header was received',
+          );
+        }
+        return http.Response(jsonEncode(catalogResponse()), 200);
+      }),
+    );
+
+    expect((await api.fetchDeviceCatalog())?.revision, 1);
+    expect(calls, 2);
+  });
 }
