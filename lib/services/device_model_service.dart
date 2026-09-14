@@ -1,89 +1,208 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/device_catalog.dart';
 import '../models/device_model.dart';
+import 'api_service.dart';
+import 'device_model_matcher.dart';
 
-/// Device model service for auto-power selection
-/// Ported from parseDeviceModel() and autoSetPowerLevel() in wardrive.js
-///
-/// CRITICAL: Correct power configuration is essential for PA amplifier models
-/// to prevent hardware damage.
+typedef DeviceCatalogFetcher = Future<DeviceCatalog?> Function();
+typedef UnknownDeviceReporter = Future<DeviceReportAcknowledgement?> Function(
+  String manufacturer,
+  String appVersion,
+  String? firmwareVersion,
+);
+
+/// Owns the validated launch cache, one shared refresh and unknown reports.
 class DeviceModelService {
-  List<DeviceModel> _models = [];
-  bool _isLoaded = false;
+  static const String catalogCacheKey = 'device_catalog_v1';
+  static const String outboxKey = 'device_catalog_unknown_outbox_v1';
 
-  /// Check if models are loaded
-  bool get isLoaded => _isLoaded;
+  final DeviceCatalogFetcher _fetchCatalog;
+  final UnknownDeviceReporter _reportUnknown;
+  final Future<SharedPreferences> Function() _loadPreferences;
+  final Duration _launchTimeout;
 
-  /// Get all loaded device models
-  List<DeviceModel> get models => List.unmodifiable(_models);
+  SharedPreferences? _preferences;
+  DeviceCatalog? _catalog;
+  Future<void>? _refreshFuture;
+  DateTime? _refreshDeadline;
+  Future<void> _outboxChain = Future<void>.value();
+  final Set<String> _attempted = <String>{};
 
-  /// Load device models from assets
-  Future<void> loadModels() async {
-    if (_isLoaded) return;
+  DeviceModelService({
+    DeviceCatalogFetcher? fetchCatalog,
+    UnknownDeviceReporter? reportUnknown,
+    Future<SharedPreferences> Function()? loadPreferences,
+    Duration launchTimeout = const Duration(seconds: 10),
+  })  : _fetchCatalog = fetchCatalog ?? ApiService().fetchDeviceCatalog,
+        _reportUnknown = reportUnknown ??
+            ((manufacturer, appVersion, firmwareVersion) => ApiService()
+                .reportUnknownDevice(
+                  manufacturer: manufacturer,
+                  appVersion: appVersion,
+                  firmwareVersion: firmwareVersion,
+                )),
+        _loadPreferences = loadPreferences ?? SharedPreferences.getInstance,
+        _launchTimeout = launchTimeout;
 
+  bool get isLoaded => _preferences != null;
+  List<DeviceModel> get models => List.unmodifiable(_catalog?.devices ?? const []);
+  DeviceCatalog? get catalog => _catalog;
+  Future<void> get refreshFuture => _refreshFuture ?? Future<void>.value();
+
+  /// Loads only local storage, then begins the single non-blocking refresh.
+  Future<void> initialize() async {
+    if (_preferences != null) return;
+    final preferences = await _loadPreferences();
+    _preferences = preferences;
+    final cached = preferences.getString(catalogCacheKey);
+    if (cached != null) {
+      try {
+        final decoded = jsonDecode(cached);
+        if (decoded is Map<String, dynamic>) {
+          _catalog = DeviceCatalog.fromJson(decoded, encodedLength: utf8.encode(cached).length);
+        }
+      } catch (_) {
+        // A corrupt local value is never a catalog fallback.
+      }
+    }
+    _refreshDeadline = DateTime.now().add(_launchTimeout);
+    _refreshFuture = _refresh();
+  }
+
+  /// Compatibility name for the app's existing initialization call.
+  Future<void> loadModels() => initialize();
+
+  Future<void> _refresh() async {
+    final fetched = await _fetchCatalog();
+    if (fetched == null) return;
+    final preferences = _preferences;
+    if (preferences == null) return;
+    final encoded = fetched.toJsonString();
+    if (utf8.encode(encoded).length > DeviceCatalog.maxEncodedBytes) return;
+    _catalog = fetched;
+    await preferences.setString(catalogCacheKey, encoded);
+    await _drainOutbox(afterSuccessfulRefresh: true);
+  }
+
+  /// Resolves at protocol step 4 against the current catalog.
+  Future<DeviceModel?> resolveForConnection(String manufacturer) async {
+    await initialize();
+    var current = _catalog;
+    if (current == null) {
+      final deadline = _refreshDeadline;
+      if (deadline != null) {
+        final remaining = deadline.difference(DateTime.now());
+        if (!remaining.isNegative) {
+          await Future.any<void>([
+            refreshFuture,
+            Future<void>.delayed(remaining),
+          ]);
+        }
+      }
+      current = _catalog;
+    }
+    return current == null ? null : matchDeviceModel(manufacturer, current.devices);
+  }
+
+  /// Queues a genuine unknown only when a valid catalog was available.
+  void observeUnknownDevice({
+    required String manufacturer,
+    required String appVersion,
+    String? firmwareVersion,
+  }) {
+    if (_catalog == null ||
+        matchDeviceModel(manufacturer, _catalog!.devices) != null) {
+      return;
+    }
+    final normalized = normalizeDeviceIdentity(manufacturer);
+    if (normalized.isEmpty || !_attempted.add(normalized)) return;
+    _outboxChain = _outboxChain.then((_) async {
+      final preferences = _preferences;
+      if (preferences == null) return;
+      final entries = _readOutbox(preferences);
+      final previous = entries[normalized];
+      final generation = (previous?['generation'] as int? ?? 0) + 1;
+      entries[normalized] = {
+        'manufacturer': manufacturer,
+        'app_version': appVersion,
+        'firmware_version': firmwareVersion ?? '',
+        'observed_at': DateTime.now().toUtc().toIso8601String(),
+        'generation': generation,
+      };
+      _trimOutbox(entries);
+      await _writeOutbox(preferences, entries);
+      await _dispatchOne(normalized, entries[normalized]!);
+    });
+  }
+
+  Map<String, Map<String, dynamic>> _readOutbox(SharedPreferences preferences) {
+    final raw = preferences.getString(outboxKey);
+    if (raw == null) return <String, Map<String, dynamic>>{};
     try {
-      final jsonString =
-          await rootBundle.loadString('assets/device-models.json');
-      final jsonData = json.decode(jsonString) as Map<String, dynamic>;
-
-      final database = DeviceModelsDatabase.fromJson(jsonData);
-      _models = database.devices;
-      _isLoaded = true;
-    } catch (e) {
-      // If loading fails, use empty list (will default to safe power settings)
-      _models = [];
-      _isLoaded = true;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['version'] != 1 || decoded['entries'] is! Map) {
+        return <String, Map<String, dynamic>>{};
+      }
+      return (decoded['entries'] as Map).map((key, value) => MapEntry(
+            key.toString(),
+            Map<String, dynamic>.from(value as Map),
+          ));
+    } catch (_) {
+      return <String, Map<String, dynamic>>{};
     }
   }
 
-  /// Match device manufacturer string to known model
-  /// Reference: parseDeviceModel() in wardrive.js
-  ///
-  /// Strips build suffix (e.g., "nightly-e31c46f") and matches against database
-  DeviceModel? matchDevice(String manufacturerString) {
-    if (_models.isEmpty) return null;
+  Future<void> _writeOutbox(
+    SharedPreferences preferences,
+    Map<String, Map<String, dynamic>> entries,
+  ) => preferences.setString(outboxKey, jsonEncode({'version': 1, 'entries': entries}));
 
-    // Clean up manufacturer string
-    // Strip build suffix like "nightly-e31c46f"
-    String cleanManufacturer = manufacturerString;
-    final suffixPatterns = [
-      RegExp(r'\s+nightly-[a-f0-9]+$', caseSensitive: false),
-      RegExp(r'\s+stable-[a-f0-9]+$', caseSensitive: false),
-      RegExp(r'\s+dev-[a-f0-9]+$', caseSensitive: false),
-    ];
-    for (final pattern in suffixPatterns) {
-      cleanManufacturer = cleanManufacturer.replaceAll(pattern, '');
+  void _trimOutbox(Map<String, Map<String, dynamic>> entries) {
+    if (entries.length <= 50) return;
+    final oldest = entries.entries.toList()
+      ..sort((a, b) => (a.value['observed_at'] as String)
+          .compareTo(b.value['observed_at'] as String));
+    for (final entry in oldest.take(entries.length - 50)) {
+      entries.remove(entry.key);
     }
+  }
 
-    // Try exact match first
-    for (final model in _models) {
-      if (manufacturerString.contains(model.manufacturer) ||
-          cleanManufacturer.contains(model.manufacturer)) {
-        return model;
-      }
+  Future<void> _dispatchOne(String identity, Map<String, dynamic> submitted) async {
+    final acknowledgement = await _reportUnknown(
+      submitted['manufacturer'] as String,
+      submitted['app_version'] as String,
+      submitted['firmware_version'] as String,
+    ).timeout(const Duration(seconds: 10), onTimeout: () => null);
+    if (acknowledgement == null) return;
+    final preferences = _preferences;
+    if (preferences == null) return;
+    final entries = _readOutbox(preferences);
+    if (entries[identity]?['generation'] == submitted['generation']) {
+      entries.remove(identity);
+      await _writeOutbox(preferences, entries);
     }
+  }
 
-    // Try partial match on manufacturer string parts
-    final parts = cleanManufacturer.split(RegExp(r'[\s\-_()]+'));
-    for (final model in _models) {
-      final modelParts = model.manufacturer.split(RegExp(r'[\s\-_()]+'));
-
-      // Check if key identifying parts match
-      int matchCount = 0;
-      for (final modelPart in modelParts) {
-        if (parts.any((p) => p.toLowerCase() == modelPart.toLowerCase())) {
-          matchCount++;
+  Future<void> _drainOutbox({required bool afterSuccessfulRefresh}) {
+    if (!afterSuccessfulRefresh || _catalog == null) return Future<void>.value();
+    _outboxChain = _outboxChain.then((_) async {
+      final preferences = _preferences;
+      if (preferences == null) return;
+      final entries = _readOutbox(preferences);
+      for (final identity in entries.keys.toList()) {
+        if (matchDeviceModel(identity, _catalog!.devices) != null) {
+          entries.remove(identity);
         }
       }
-
-      // Require at least 2 matching parts
-      if (matchCount >= 2) {
-        return model;
+      await _writeOutbox(preferences, entries);
+      for (final entry in entries.entries) {
+        if (_attempted.add(entry.key)) await _dispatchOne(entry.key, entry.value);
       }
-    }
-
-    return null;
+    });
+    return _outboxChain;
   }
 }
