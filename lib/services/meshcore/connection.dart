@@ -561,7 +561,7 @@ class MeshCoreConnection {
   /// Returns (deviceModel, deviceModelMatched) for display/reporting purposes
   /// Note: This method does NOT modify radio TX power settings - it only reads device info
   Future<({DeviceModel? deviceModel, bool deviceModelMatched})> connect(
-      List<DeviceModel> deviceModels) async {
+      Future<DeviceModel?> Function(String manufacturer) resolveDeviceModel) async {
     if (_disposed) {
       throw Exception('Connection instance has been disposed');
     }
@@ -601,7 +601,12 @@ class MeshCoreConnection {
       _updateStep(ConnectionStep.powerConfiguration);
       final deviceInfo = _deviceInfo;
       if (deviceInfo == null) throw Exception('Device query returned null');
-      _deviceModel = _matchDeviceModel(deviceInfo.manufacturer, deviceModels);
+      try {
+        _deviceModel = await resolveDeviceModel(deviceInfo.manufacturer);
+      } catch (error) {
+        _deviceModel = null;
+        debugWarn('[CONN] Device catalog resolver failed: $error');
+      }
       final matchedModel = _deviceModel;
       if (matchedModel != null) {
         deviceModelMatched = true;
@@ -729,30 +734,6 @@ class MeshCoreConnection {
       debugError('[CONN] Disconnect error: $e');
       _updateStep(ConnectionStep.disconnected);
     }
-  }
-
-  /// Match manufacturer string to device model
-  /// Reference: parseDeviceModel() in wardrive.js
-  DeviceModel? _matchDeviceModel(
-      String manufacturer, List<DeviceModel> models) {
-    // Strip build suffix (e.g., "nightly-e31c46f")
-    final cleanManufacturer = manufacturer.split(' ').first;
-
-    for (final model in models) {
-      if (manufacturer.contains(model.manufacturer) ||
-          cleanManufacturer.contains(model.manufacturer)) {
-        return model;
-      }
-    }
-
-    // Try partial match on short name
-    for (final model in models) {
-      if (manufacturer.toLowerCase().contains(model.shortName.toLowerCase())) {
-        return model;
-      }
-    }
-
-    return null;
   }
 
   /// Handle incoming frame from device
