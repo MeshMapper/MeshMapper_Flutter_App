@@ -353,6 +353,45 @@ void main() {
       expect(session.route?.flood, isTrue);
     });
 
+    test('a retained reset reply refuses session retries without throwing',
+        () async {
+      final learned = contactPayload(repeaterKey,
+          outPathLen: 0x81, outPath: [0x4E, 0x31, 0x92]);
+      final login = session.login('wrong');
+      await answerContacts([learned]);
+      await answerLogin(null);
+      expect(await login, isFalse);
+      expect(session.route?.flood, isFalse);
+
+      final firstReset = session.resetRoute();
+      await transport.settle();
+      expect(transport.writes.last,
+          [CommandCodes.resetPath, ...repeaterKey]);
+      expect(await firstReset, isFalse);
+      expect(session.lastError, 'The radio did not confirm the reset.');
+      expect(session.busy, isFalse);
+
+      final writesWhileReplyPending = transport.writes.length;
+      expect(await session.resetRoute(), isFalse);
+      expect(session.lastError,
+          'The radio is still finishing the previous request. '
+          'Wait for its reply, or close Manage and try again.');
+      expect(await session.login('admin-pw'), isFalse,
+          reason: 'the shared session boundary also refuses other actions');
+      expect(transport.writes.length, writesWhileReplyPending,
+          reason: 'no retry reaches the occupied connection lane');
+
+      transport.emit([ResponseCodes.ok]);
+      await transport.settle();
+
+      final retry = session.resetRoute();
+      await transport.settle();
+      expect(transport.writes.last,
+          [CommandCodes.resetPath, ...repeaterKey]);
+      transport.emit([ResponseCodes.ok]);
+      expect(await retry, isTrue);
+    });
+
     test('PATH_UPDATED re-reads the contact', () async {
       await loginAsAdmin();
       final writes = transport.writes.length;

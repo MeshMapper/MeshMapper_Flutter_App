@@ -1123,6 +1123,10 @@ class MeshCoreConnection {
   /// Public for the provider's disconnect sequence (mirrors abortPendingSign).
   void abortPendingAdmin() => _abortPendingAdmin();
 
+  /// Whether the single repeater-admin lane is still owned, including while
+  /// an untagged reply is being drained after its caller timed out.
+  bool get hasPendingAdminCommand => _adminCommandInFlight != null;
+
   /// Tear down an in-flight sign on disconnect/dispose.
   ///
   /// Releasing the gate here is what keeps disconnect fast: the wardriving

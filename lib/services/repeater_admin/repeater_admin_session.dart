@@ -25,6 +25,9 @@ const String kNeighboursUnansweredSentence =
     "This repeater's firmware cannot report neighbours.";
 const String kNeighboursTimeoutSentence =
     'No reply from the repeater. Try again.';
+const String kAdminCommandPendingSentence =
+    'The radio is still finishing the previous request. '
+    'Wait for its reply, or close Manage and try again.';
 
 /// Consecutive unanswered logins along a learned route before the session
 /// resets the route itself. The radio never falls back to flood on its own,
@@ -487,6 +490,12 @@ class RepeaterAdminSession extends ChangeNotifier {
   bool _begin() {
     if (_closed || _busy) {
       debugLog('[RADMIN] Command refused: ${_closed ? 'closed' : 'busy'}');
+      return false;
+    }
+    if (_connection.hasPendingAdminCommand) {
+      _lastError = kAdminCommandPendingSentence;
+      debugLog('[RADMIN] Command refused: radio request still pending');
+      _notify();
       return false;
     }
     _busy = true;
