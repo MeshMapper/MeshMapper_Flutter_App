@@ -30,11 +30,14 @@ class ProvenNeighbour {
     final resolved = resolvedRaw == true || resolvedRaw == 1;
     final snr = json['snr'];
     final heard = json['heard_at'];
-    final heardAt = heard is num
-        ? heard.toInt()
+    final heardValue = heard is num
+        ? heard
         : heard is String
-            ? num.tryParse(heard)?.toInt()
+            ? num.tryParse(heard)
             : null;
+    final heardAt = heardValue == null || !heardValue.isFinite
+        ? null
+        : heardValue.toInt();
     return ProvenNeighbour(
       hex: raw.toUpperCase(),
       resolved: resolved,
