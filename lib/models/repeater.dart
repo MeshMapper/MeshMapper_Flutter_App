@@ -23,17 +23,23 @@ class ProvenNeighbour {
   static const int minHexChars = 8;
 
   static ProvenNeighbour? tryFromJson(Map<String, dynamic> json) {
-    final raw = ((json['hex'] ?? json['prefix']) as String?)?.trim();
+    final rawValue = json['hex'] is String ? json['hex'] : json['prefix'];
+    final raw = rawValue is String ? rawValue.trim() : null;
     if (raw == null || raw.length < minHexChars) return null;
     final resolvedRaw = json['resolved'];
     final resolved = resolvedRaw == true || resolvedRaw == 1;
     final snr = json['snr'];
     final heard = json['heard_at'];
+    final heardAt = heard is num
+        ? heard.toInt()
+        : heard is String
+            ? num.tryParse(heard)?.toInt()
+            : null;
     return ProvenNeighbour(
       hex: raw.toUpperCase(),
       resolved: resolved,
       snr: snr is num ? snr.toDouble() : null,
-      heardAt: heard is int ? heard : (heard is String ? int.tryParse(heard) : null),
+      heardAt: heardAt,
     );
   }
 

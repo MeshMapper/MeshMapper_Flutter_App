@@ -106,6 +106,18 @@ void main() {
     test('request bytes', () {
       expect(buildAccessListRequest(), [0x05, 0, 0]);
     });
+    test('entries are immutable for parsed and public-constructed lists', () {
+      final source = <AccessEntry>[
+        AccessEntry(prefix: Uint8List.fromList([1, 2, 3, 4, 5, 6]), perms: 3),
+      ];
+      final acl = AccessList(entries: source);
+      source.add(AccessEntry(prefix: Uint8List(6), perms: 0));
+
+      expect(acl.entries, hasLength(1));
+      expect(() => acl.entries.add(source.last), throwsUnsupportedError);
+      expect(() => parseAccessList(Uint8List(7)).entries.add(source.first),
+          throwsUnsupportedError);
+    });
   });
 
   group('neighbour page', () {
@@ -136,6 +148,12 @@ void main() {
     });
     test('shorter than 4 bytes throws', () {
       expect(() => parseNeighbourPage(Uint8List(3), prefixLen: 8),
+          throwsFormatException);
+    });
+    test('a prefix length below one throws FormatException', () {
+      expect(() => parseNeighbourPage(Uint8List(4), prefixLen: 0),
+          throwsFormatException);
+      expect(() => parseNeighbourPage(Uint8List(4), prefixLen: -1),
           throwsFormatException);
     });
     test('a real page: header, entries, cipher padding ignored', () {
@@ -180,6 +198,18 @@ void main() {
       expect(n.withName(null).name, isNull);
       expect(n.toWire(), {'prefix': 'AB' * 8, 'snr': -1.5, 'heard_secs_ago': 3});
     });
+    test('entries are immutable for parsed and public-constructed pages', () {
+      final source = <RepeaterNeighbour>[
+        const RepeaterNeighbour(prefixHex: 'AB', heardSecsAgo: 1, snrDb: 1),
+      ];
+      final page = NeighbourPage(total: 1, returned: 1, entries: source);
+      source.add(const RepeaterNeighbour(prefixHex: 'CD', heardSecsAgo: 2, snrDb: 2));
+
+      expect(page.entries, hasLength(1));
+      expect(() => page.entries.add(source.last), throwsUnsupportedError);
+      expect(() => parseNeighbourPage(Uint8List(4), prefixLen: 8).entries.add(source.first),
+          throwsUnsupportedError);
+    });
   });
 
   group('AdminProof', () {
@@ -222,6 +252,43 @@ void main() {
     });
     test('fromJson throws on a bad key', () {
       expect(() => RepeaterClaim.fromJson({'repeater': 'nope'}), throwsFormatException);
+    });
+    test('non-string fields are ignored while a fallback key parses', () {
+      final c = RepeaterClaim.fromJson({
+        'repeater': 123,
+        'repeater_hex': 'ab' * 32,
+        'name': 456,
+        'iata': <int>[1, 2, 3],
+        'group_code': true,
+      });
+      expect(c.repeaterHex, 'AB' * 32);
+      expect(c.name, '');
+      expect(c.iata, isNull);
+      expect(c.groupCode, isNull);
+    });
+    test('a non-string alternate key is tolerated', () {
+      final c = RepeaterClaim.fromJson({
+        'repeater': 'cd' * 32,
+        'repeater_hex': <int>[1, 2],
+      });
+      expect(c.repeaterHex, 'CD' * 32);
+    });
+    test('tryFromJson drops non-string invalid keys', () {
+      expect(
+        RepeaterClaim.tryFromJson({'repeater': 123, 'repeater_hex': false}),
+        isNull,
+      );
+    });
+    test('invalid key errors truncate the raw key', () {
+      final invalidKey = 'Z' * 64;
+      expect(
+        () => RepeaterClaim.fromJson({'repeater': invalidKey}),
+        throwsA(predicate<FormatException>((e) {
+          expect(e.message, contains('ZZZZZZZZ...'));
+          expect(e.message, isNot(contains(invalidKey)));
+          return true;
+        })),
+      );
     });
   });
 
