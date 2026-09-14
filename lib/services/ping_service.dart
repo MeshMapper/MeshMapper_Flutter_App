@@ -1076,6 +1076,19 @@ class PingService {
       // Send ping via BLE (pre-composed body — wire tag or legacy coords)
       await _connection.sendPing(pingMessage);
 
+      // A force teardown can land while BLE is awaiting its sent confirmation.
+      // The radio may have accepted the packet, but this stale send must not
+      // create a listening window or enqueue its old wire tag afterwards.
+      // Only stop a tracker that still names this exact payload: a newer epoch
+      // may have started tracking its own packet on the shared tracker.
+      if (epoch != _sendEpoch) {
+        if (_txTracker?.sentPayload == pingMessage) {
+          _txTracker?.stopTracking();
+        }
+        debugLog('[PING] Session ended during BLE send, not arming TX window');
+        return false;
+      }
+
       // Mark ping time and position
       _lastTxTime = DateTime.now();
       _gpsService.markPingPosition(position);
