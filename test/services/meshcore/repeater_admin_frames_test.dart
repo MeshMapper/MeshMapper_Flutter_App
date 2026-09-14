@@ -284,6 +284,52 @@ void main() {
       // fails this test.
       connection.dispose();
     });
+
+    test('an aborted parked command cannot clear a replacement command slot',
+        () async {
+      final sign = connection.sign(
+        Uint8List.fromList([9, 9, 9]),
+        timeout: const Duration(milliseconds: 20),
+      );
+      final signFailure = expectLater(sign, throwsA(isA<TimeoutException>()));
+      await transport.settle();
+      expect(transport.writes.single[0], CommandCodes.signStart);
+
+      final first = connection.login(key(5), 'first');
+      await transport.settle();
+      expect(transport.writes.length, 1,
+          reason: 'the first login is parked behind the sign');
+
+      final firstFailure =
+          expectLater(first, throwsA(isA<RadioAbortedException>()));
+      connection.abortPendingAdmin();
+      final replacement = connection.login(key(6), 'replacement');
+      await transport.settle();
+      expect(transport.writes.length, 1,
+          reason: 'the replacement is parked behind the same sign');
+
+      await signFailure;
+      await firstFailure;
+      await transport.settle();
+      await transport.settle();
+      expect(
+        transport.writes.where((w) => w[0] == CommandCodes.sendLogin).length,
+        2,
+      );
+
+      await expectLater(
+        connection.resetPath(
+          key(3),
+          timeout: const Duration(milliseconds: 10),
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      final replacementFailure =
+          expectLater(replacement, throwsA(isA<RadioAbortedException>()));
+      connection.abortPendingAdmin();
+      await replacementFailure;
+    });
   });
 
   group('addContact', () {

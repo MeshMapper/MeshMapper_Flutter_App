@@ -155,6 +155,12 @@ class RadioAbortedException implements Exception {
   String toString() => 'RadioAbortedException: connection closed';
 }
 
+class _AdminCommandToken {
+  final String name;
+
+  const _AdminCommandToken(this.name);
+}
+
 /// The parsed RESP_CODE_SENT frame: [flood:1][tag:4][est_timeout_ms:u32].
 class SentInfo {
   final bool flood;
@@ -373,7 +379,7 @@ class MeshCoreConnection {
   // Repeater-admin commands (contacts, login, binary request, reset path).
   // One at a time: the companion keeps a single pending request and a login
   // clears it (clearPendingReqs), so overlapping two would lose a reply.
-  String? _adminCommandInFlight;
+  _AdminCommandToken? _adminCommandInFlight;
   Completer<SentInfo>? _adminSentCompleter;
   Completer<void>? _adminOkCompleter;
   Completer<List<ContactRecord>>? _contactsCompleter;
@@ -812,7 +818,7 @@ class MeshCoreConnection {
               _exportContactCompleter == null &&
               _getTimeCompleter == null) {
             _failPendingAdmin(RadioErrorException(
-                _adminCommandInFlight ?? 'admin', errorCode));
+                _adminCommandInFlight?.name ?? 'admin', errorCode));
           }
           // Complete any pending completers with error
           final errException = Exception('Command error (code $errorCode)');
@@ -1013,17 +1019,22 @@ class MeshCoreConnection {
   }
 
   /// Claim the single repeater-admin command slot, or throw.
-  void _beginAdminCommand(String name) {
+  _AdminCommandToken _beginAdminCommand(String name) {
     if (_disposed) throw StateError('Connection disposed');
     final running = _adminCommandInFlight;
     if (running != null) {
-      throw StateError('Repeater admin command $running is still in flight');
+      throw StateError(
+          'Repeater admin command ${running.name} is still in flight');
     }
-    _adminCommandInFlight = name;
+    final token = _AdminCommandToken(name);
+    _adminCommandInFlight = token;
+    return token;
   }
 
-  void _endAdminCommand() {
-    _adminCommandInFlight = null;
+  void _endAdminCommand(_AdminCommandToken token) {
+    if (identical(_adminCommandInFlight, token)) {
+      _adminCommandInFlight = null;
+    }
   }
 
   /// Complete every pending repeater-admin completer with [error]. Returns
@@ -1897,7 +1908,7 @@ class MeshCoreConnection {
   /// Read the radio's whole contact list (CMD_GET_CONTACTS with since = 0).
   Future<List<ContactRecord>> getContacts(
       {Duration timeout = const Duration(seconds: 20)}) async {
-    _beginAdminCommand('getContacts');
+    final token = _beginAdminCommand('getContacts');
     final completer = Completer<List<ContactRecord>>();
     try {
       _contactsCompleter = completer;
@@ -1923,7 +1934,7 @@ class MeshCoreConnection {
         _contactsCompleter = null;
         _contactsBuffer = [];
       }
-      _endAdminCommand();
+      _endAdminCommand(token);
     }
   }
 
@@ -1931,7 +1942,7 @@ class MeshCoreConnection {
   /// throws [RadioErrorException] (code 3 = table full) on ERR.
   Future<void> addContact(ContactRecord contact,
       {Duration timeout = const Duration(seconds: 5)}) async {
-    _beginAdminCommand('addContact');
+    final token = _beginAdminCommand('addContact');
     final completer = Completer<void>();
     try {
       _adminOkCompleter = completer;
@@ -1955,7 +1966,7 @@ class MeshCoreConnection {
       if (identical(_adminOkCompleter, completer)) {
         _adminOkCompleter = null;
       }
-      _endAdminCommand();
+      _endAdminCommand(token);
     }
   }
 
@@ -1974,7 +1985,7 @@ class MeshCoreConnection {
     Duration sentTimeout = const Duration(seconds: 5),
     Duration Function(int estTimeoutMs) replyTimeout = _defaultReplyTimeout,
   }) async {
-    _beginAdminCommand('login');
+    final token = _beginAdminCommand('login');
     final sentCompleter = Completer<SentInfo>();
     final loginCompleter = Completer<LoginResult>();
     try {
@@ -2028,7 +2039,7 @@ class MeshCoreConnection {
         _loginCompleter = null;
         _loginPrefix = null;
       }
-      _endAdminCommand();
+      _endAdminCommand(token);
     }
   }
 
@@ -2046,7 +2057,7 @@ class MeshCoreConnection {
     Duration sentTimeout = const Duration(seconds: 5),
     Duration Function(int estTimeoutMs) replyTimeout = _defaultReplyTimeout,
   }) async {
-    _beginAdminCommand('sendBinaryRequest');
+    final token = _beginAdminCommand('sendBinaryRequest');
     final sentCompleter = Completer<SentInfo>();
     final responseCompleter = Completer<Uint8List>();
     try {
@@ -2104,14 +2115,14 @@ class MeshCoreConnection {
         _binaryResponseCompleter = null;
         _binaryResponseTag = null;
       }
-      _endAdminCommand();
+      _endAdminCommand(token);
     }
   }
 
   /// CMD_RESET_PATH: [13][pubkey:32]. The next send to that contact floods.
   Future<void> resetPath(Uint8List pubkey,
       {Duration timeout = const Duration(seconds: 5)}) async {
-    _beginAdminCommand('resetPath');
+    final token = _beginAdminCommand('resetPath');
     final completer = Completer<void>();
     try {
       _adminOkCompleter = completer;
@@ -2146,7 +2157,7 @@ class MeshCoreConnection {
       if (identical(_adminOkCompleter, completer)) {
         _adminOkCompleter = null;
       }
-      _endAdminCommand();
+      _endAdminCommand(token);
     }
   }
 
@@ -2290,7 +2301,8 @@ class MeshCoreConnection {
   Future<void> _fetchNoiseFloor() async {
     if (_isFetchingNoiseFloor) return; // Skip if previous fetch still in flight
     if (_pollsHeld) {
-      debugLog('[CONN] Noise floor poll skipped: $_adminCommandInFlight in flight');
+      debugLog('[CONN] Noise floor poll skipped: '
+          '${_adminCommandInFlight?.name} in flight');
       return;
     }
     _isFetchingNoiseFloor = true;
@@ -2335,7 +2347,8 @@ class MeshCoreConnection {
 
   Future<void> _fetchBattery() async {
     if (_pollsHeld) {
-      debugLog('[CONN] Battery poll skipped: $_adminCommandInFlight in flight');
+      debugLog('[CONN] Battery poll skipped: '
+          '${_adminCommandInFlight?.name} in flight');
       return;
     }
     try {
