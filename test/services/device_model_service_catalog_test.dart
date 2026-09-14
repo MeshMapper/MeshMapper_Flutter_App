@@ -31,6 +31,9 @@ class MemoryCatalogStorage implements DeviceCatalogStorage {
   MemoryCatalogStorage(this.values, {this.onSet});
 
   @override
+  Future<void> reload() async {}
+
+  @override
   String? getString(String key) => values[key];
 
   @override

@@ -16,6 +16,8 @@ typedef UnknownDeviceReporter = Future<DeviceReportAcknowledgement?> Function(
 );
 
 abstract interface class DeviceCatalogStorage {
+  /// Reloads durable values, discarding speculative process-cache writes.
+  Future<void> reload();
   String? getString(String key);
   Future<bool> setString(String key, String value);
   Future<bool> remove(String key);
@@ -25,6 +27,9 @@ class SharedPreferencesDeviceCatalogStorage implements DeviceCatalogStorage {
   final SharedPreferences _preferences;
 
   SharedPreferencesDeviceCatalogStorage(this._preferences);
+
+  @override
+  Future<void> reload() => _preferences.reload();
 
   @override
   String? getString(String key) => _preferences.getString(key);
@@ -89,6 +94,9 @@ class DeviceModelService {
 
   Future<void> _initialize() async {
     final storage = await _loadStorage();
+    // SharedPreferences updates its process cache before a write is accepted.
+    // A reconstructed service must read the durable publication pointer.
+    await storage.reload();
     _storage = storage;
     final cached = _readCommittedCatalog(storage);
     if (cached != null) {
@@ -186,10 +194,10 @@ class DeviceModelService {
     }
     final normalized = normalizeDeviceIdentity(manufacturer);
     if (normalized.isEmpty) return;
-    final isFirstAttempt = _attempted.add(normalized);
     _enqueueOutbox(() async {
       final storage = _storage;
       if (storage == null) return;
+      if (matchDeviceModel(manufacturer, _catalog!.devices) != null) return;
       final entries = _readOutbox(storage);
       final previous = entries[normalized];
       final generation = (previous?['generation'] as int? ?? 0) + 1;
@@ -202,7 +210,10 @@ class DeviceModelService {
       };
       _trimOutbox(entries);
       await _writeOutbox(storage, entries);
-      if (isFirstAttempt) {
+      // Refresh may finish while storage is publishing the observation.
+      // Claim only persisted, still-unknown work, before the network await.
+      if (matchDeviceModel(manufacturer, _catalog!.devices) == null &&
+          _attempted.add(normalized)) {
         unawaited(_dispatchOne(normalized, entries[normalized]!));
       }
     });
@@ -248,9 +259,18 @@ class DeviceModelService {
   Future<void> _writeOutbox(
     DeviceCatalogStorage storage,
     Map<String, Map<String, dynamic>> entries,
-  ) =>
-      storage.setString(
-          outboxKey, jsonEncode({'version': 1, 'entries': entries}));
+  ) async {
+    try {
+      if (!await storage.setString(
+          outboxKey, jsonEncode({'version': 1, 'entries': entries}))) {
+        throw StateError('Outbox storage rejected write');
+      }
+    } catch (_) {
+      // Do not allow a failed speculative write to become the next read.
+      await storage.reload();
+      rethrow;
+    }
+  }
 
   void _trimOutbox(Map<String, Map<String, dynamic>> entries) {
     if (entries.length <= 50) return;
@@ -275,17 +295,15 @@ class DeviceModelService {
       return;
     }
     if (acknowledgement == null) return;
-    final storage = _storage;
-    if (storage == null) return;
-    final entries = _readOutbox(storage);
-    if (entries[identity]?['generation'] == submitted['generation']) {
-      entries.remove(identity);
-      try {
+    _enqueueOutbox(() async {
+      final storage = _storage;
+      if (storage == null) return;
+      final entries = _readOutbox(storage);
+      if (entries[identity]?['generation'] == submitted['generation']) {
+        entries.remove(identity);
         await _writeOutbox(storage, entries);
-      } catch (_) {
-        // A report acknowledgement must not poison later outbox mutations.
       }
-    }
+    });
   }
 
   Future<void> _drainOutbox({required bool afterSuccessfulRefresh}) {
