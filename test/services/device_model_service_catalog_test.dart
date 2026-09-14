@@ -11,7 +11,7 @@ Map<String, dynamic> catalogJson(int revision) => {
       'success': true,
       'revision': revision,
       'devices': [
-        {
+        <String, dynamic>{
           'id': 1,
           'manufacturer': 'Tracker',
           'shortName': 'Tracker',

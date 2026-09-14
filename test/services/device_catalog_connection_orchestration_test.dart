@@ -1,88 +1,104 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mesh_mapper/models/connection_state.dart';
 import 'package:mesh_mapper/models/device_catalog.dart';
 import 'package:mesh_mapper/services/device_model_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mesh_mapper/services/meshcore/connection.dart';
+import 'package:mesh_mapper/services/meshcore/protocol_constants.dart';
 
-DeviceCatalog _catalog() => DeviceCatalog.fromJson({
-      'success': true,
-      'revision': 1,
-      'devices': [
-        {
-          'id': 1,
-          'manufacturer': 'Known',
-          'shortName': 'Known',
-          'aliases': <String>[],
-          'power': 1,
-          'platform': 'nrf52',
-          'txPower': 22,
-          'notes': '',
-        }
-      ],
-    });
+import 'device_catalog_storage_races_test.dart' show DurableStorage;
+import 'device_model_service_catalog_test.dart' show catalogJson;
+import 'meshcore/catalog_protocol_transport.dart';
 
 void main() {
-  for (final transport in ['BLE', 'TCP', 'Android USB', 'generic']) {
-    test('$transport handshake resolves after query and self-info', () async {
-      SharedPreferences.setMockInitialValues({});
-      final service = DeviceModelService(fetchCatalog: () async => _catalog());
-      final events = <String>[];
+  test(
+      'real handshake resolves after query and self-info using refreshed catalog',
+      () async {
+    final refresh = Completer<DeviceCatalog?>();
+    final storage = DurableStorage({
+      DeviceModelService.catalogCacheKey:
+          DeviceCatalog.fromJson(catalogJson(1)).toJsonString()
+    });
+    final service = DeviceModelService(
+        loadStorage: () async => storage, fetchCatalog: () => refresh.future);
+    await service.initialize();
+    final transport = CatalogProtocolTransport(beforeSelfInfo: () async {
+      final fresh = catalogJson(2);
+      (fresh['devices'] as List).single['power'] = 2.0;
+      refresh.complete(DeviceCatalog.fromJson(fresh));
+      await service.refreshFuture;
+    });
+    final connection = MeshCoreConnection(transport: transport);
+    addTearDown(() {
+      connection.dispose();
+      transport.dispose();
+    });
+    var resolutions = 0;
+    final result = await connection.connect((name) {
+      resolutions++;
+      expect(transport.writes.map((frame) => frame.first), [
+        CommandCodes.deviceQuery,
+        CommandCodes.appStart,
+        CommandCodes.appStart
+      ]);
+      expect(connection.selfInfo?.name, 'Radio B');
+      expect(connection.devicePublicKey, isNotNull);
+      expect(name, 'Tracker');
+      return service.resolveForConnection(name);
+    });
+    expect(result.deviceModelMatched, isTrue);
+    expect(result.deviceModel?.power, 2.0);
+    expect(connection.currentStep, ConnectionStep.connected);
+    expect(resolutions, 1);
+    expect(
+        transport.writes.any((frame) => frame.first == CommandCodes.setTxPower),
+        isFalse);
+  });
 
-      final model = await service.runConnection((resolve) async {
-        events.add('device-query');
-        events.add('self-info');
-        final selected = await resolve('Known');
-        events.add('resolved');
-        return selected;
+  for (final outcome in ['null', 'throw']) {
+    test('real handshake continues unknown when resolver returns $outcome',
+        () async {
+      final transport = CatalogProtocolTransport();
+      final connection = MeshCoreConnection(transport: transport);
+      addTearDown(() {
+        connection.dispose();
+        transport.dispose();
       });
-
-      expect(events, ['device-query', 'self-info', 'resolved']);
-      expect(model?.manufacturer, 'Known');
+      final result = await connection.connect((_) async {
+        if (outcome == 'throw') throw StateError('catalog unavailable');
+        return null;
+      });
+      expect(result.deviceModel, isNull);
+      expect(result.deviceModelMatched, isFalse);
+      expect(connection.currentStep, ConnectionStep.connected);
+      expect(transport.writes.map((frame) => frame.first),
+          contains(CommandCodes.getChannel));
     });
   }
 
-  test('unmatched and unavailable catalogs are unknown without reporting',
+  test('late refresh cannot replace the model selected by a real connection',
       () async {
-    SharedPreferences.setMockInitialValues({});
-    final unavailable = DeviceModelService(fetchCatalog: () async => null);
-    final unmatched = DeviceModelService(fetchCatalog: () async => _catalog());
-
-    expect(
-      await unavailable.runConnection((resolve) => resolve('Unknown')),
-      isNull,
-    );
-    expect(
-      await unmatched.runConnection((resolve) => resolve('Unknown')),
-      isNull,
-    );
-  });
-
-  test('resolver errors fail the handshake before connection success',
-      () async {
-    SharedPreferences.setMockInitialValues({});
-    final service = DeviceModelService(
-      loadStorage: () async => throw StateError('storage failed'),
-    );
-
-    expect(
-      () => service.runConnection((resolve) => resolve('Known')),
-      throwsStateError,
-    );
-  });
-
-  test('the selected model remains fixed after a late refresh', () async {
-    SharedPreferences.setMockInitialValues({});
     final refresh = Completer<DeviceCatalog?>();
-    final service = DeviceModelService(fetchCatalog: () => refresh.future);
-    final selected = await service.runConnection((resolve) async {
-      final initial = await resolve('Known');
-      refresh.complete(_catalog());
-      await service.refreshFuture;
-      return initial;
+    final service = DeviceModelService(
+        loadStorage: () async => DurableStorage({
+              DeviceModelService.catalogCacheKey:
+                  DeviceCatalog.fromJson(catalogJson(1)).toJsonString()
+            }),
+        fetchCatalog: () => refresh.future);
+    final transport = CatalogProtocolTransport();
+    final connection = MeshCoreConnection(transport: transport);
+    addTearDown(() {
+      connection.dispose();
+      transport.dispose();
     });
-
-    expect(selected, isNull);
-    expect(service.catalog?.revision, 1);
+    final result = await connection.connect(service.resolveForConnection);
+    final fresh = catalogJson(2);
+    (fresh['devices'] as List).single['power'] = 2.0;
+    refresh.complete(DeviceCatalog.fromJson(fresh));
+    await service.refreshFuture;
+    expect(connection.deviceModel, same(result.deviceModel));
+    expect(connection.deviceModel?.power, 0.3);
+    expect((await service.resolveForConnection('Tracker'))?.power, 2.0);
   });
 }
