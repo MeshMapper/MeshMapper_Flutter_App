@@ -91,6 +91,7 @@ WhatToTest.txt
 /.agents/
 /.codex/
 /.ai/
+/.worktrees/
 /AGENTS.md
 /HANDOFF*.md
 /PLAN[-_]*.md
