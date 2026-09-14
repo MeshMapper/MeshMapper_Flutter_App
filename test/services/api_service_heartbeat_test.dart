@@ -194,7 +194,7 @@ void main() {
             lat: 45.0,
             lon: -75.0,
           );
-          return true;
+          return SessionRecoveryResult.recovered;
         };
 
         api.requestAuth(

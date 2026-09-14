@@ -339,6 +339,16 @@ class PingService {
     await _txWindowCompletion?.future;
   }
 
+  /// Release the recovery gate exactly once when a TX window reaches any
+  /// terminal state. A cancelled tracker has no timer callback to do this.
+  void _completeTxWindowGate() {
+    final completion = _txWindowCompletion;
+    if (completion != null && !completion.isCompleted) {
+      completion.complete();
+    }
+    _txWindowCompletion = null;
+  }
+
   /// Check if a disable is pending (waiting for RX window to complete)
   bool get pendingDisable => _pendingDisable;
 
@@ -1111,10 +1121,7 @@ class PingService {
       if (!_pingInProgress && _pendingDisable) {
         await _executePendingDisable('ping ended without RX window');
       }
-      if (!_pingInProgress && !(_txWindowCompletion?.isCompleted ?? true)) {
-        _txWindowCompletion?.complete();
-        _txWindowCompletion = null;
-      }
+      if (!_pingInProgress) _completeTxWindowGate();
     }
   }
 
@@ -1196,20 +1203,26 @@ class PingService {
     // Queue TX entry with heard_repeats AFTER RX window ends
     final txTimestamp = _pendingTxTimestamp;
     if (txTimestamp != null) {
-      _apiQueue.enqueueTx(
-        latitude: txPosition.latitude,
-        longitude: txPosition.longitude,
-        heardRepeats: heardRepeats,
-        timestamp: txTimestamp,
-        externalAntenna: getExternalAntenna?.call() ?? false,
-        noiseFloor: _pendingTxNoiseFloor,
-        power: getPowerLevel?.call(),
-        pingCounter:
-            _pendingTxPingCounter, // null in coords mode → server coords path
-        wireTag: _pendingTxWireTag, // null in coords mode → server coords path
-        altitude: GpsService.altitudeOrNull(txPosition),
-      );
-      debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
+      try {
+        await _apiQueue.enqueueTx(
+          latitude: txPosition.latitude,
+          longitude: txPosition.longitude,
+          heardRepeats: heardRepeats,
+          timestamp: txTimestamp,
+          externalAntenna: getExternalAntenna?.call() ?? false,
+          noiseFloor: _pendingTxNoiseFloor,
+          power: getPowerLevel?.call(),
+          pingCounter:
+              _pendingTxPingCounter, // null in coords mode → server coords path
+          wireTag: _pendingTxWireTag, // null in coords mode → server coords path
+          altitude: GpsService.altitudeOrNull(txPosition),
+        );
+        debugLog('[PING] Queued TX entry with heard_repeats: $heardRepeats');
+      } catch (e) {
+        // ApiQueueService normally handles Hive recovery itself. This final
+        // guard still releases a recovery waiter if a replacement queue throws.
+        debugError('[PING] Failed to queue TX after RX window: $e');
+      }
 
       // Queue multi-hop echoes as individual RX API entries
       if (multiHopEchoes.isNotEmpty) {
@@ -1236,8 +1249,7 @@ class PingService {
       // Clear pending TX context
       _pendingTxTimestamp = null;
       _pendingTxNoiseFloor = null;
-      _txWindowCompletion?.complete();
-      _txWindowCompletion = null;
+      _completeTxWindowGate();
     }
 
     // Unlock ping controls immediately (don't wait for API)
@@ -1683,6 +1695,7 @@ class PingService {
     // the flag to whoever holds it by then.
     _sendEpoch++;
     _pingInProgress = false;
+    _completeTxWindowGate();
     _pendingDisable = false; // Clear any pending disable
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = null;
@@ -2520,23 +2533,29 @@ class PingService {
     debugLog('[PING] Stopping TX echo tracking and RX window timer');
     _rxWindowTimer?.cancel();
     _rxWindowTimer = null;
+    _rxWindowCountdown.stop();
     _txTracker?.stopTracking();
     // Clear pending TX context since we're aborting the window
     _pendingTxTimestamp = null;
     _pendingTxNoiseFloor = null;
     // Unlock ping controls if the window was in progress
     _pingInProgress = false;
+    _completeTxWindowGate();
   }
 
   /// Dispose of resources
   void dispose() {
     _rxWindowTimer?.cancel();
     _rxWindowTimer = null;
+    _rxWindowCountdown.stop();
     _autoTimer?.cancel();
     _autoTimer = null;
     _pendingDisableTimeout?.cancel();
     _pendingDisableTimeout = null;
     _bankedPing = null;
+    _completeTxWindowGate();
+    _cooldownTimer.stop();
+    _manualPingCooldownTimer.stop();
     _stopDiscoveryMode();
     _stopTargetedMode();
     _wakelockService.dispose();
