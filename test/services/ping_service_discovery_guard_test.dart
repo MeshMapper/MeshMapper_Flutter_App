@@ -69,6 +69,9 @@ class _FakeGps implements GpsService {
 }
 
 class _FakeConnection implements MeshCoreConnection {
+  _FakeConnection({this.sendPingGate});
+
+  final Completer<void>? sendPingGate;
   int discoveryTransmits = 0;
 
   @override
@@ -103,7 +106,7 @@ class _FakeConnection implements MeshCoreConnection {
       return Future<Uint8List>.value(Uint8List.fromList([1, 2, 3, 4]));
     }
     if (invocation.memberName == #sendPing) {
-      return Future<void>.value();
+      return sendPingGate?.future ?? Future<void>.value();
     }
     throw UnimplementedError('MeshCoreConnection.${invocation.memberName}');
   }
@@ -348,6 +351,31 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(gateOpened, isTrue);
+    ping.dispose();
+  });
+
+  testWidgets('force teardown during BLE send cannot arm an old TX window',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final sendGate = Completer<void>();
+    final queue = _FakeApiQueue();
+    final ping = _build(
+      gps,
+      _FakeConnection(sendPingGate: sendGate),
+      DiscoveryWindowTimer(),
+      queue: queue,
+      withSession: true,
+    );
+
+    final send = ping.sendTxPing();
+    await tester.pump();
+    await ping.forceDisableAutoPing();
+    sendGate.complete();
+
+    expect(await send, isFalse);
+    await tester.pump(const Duration(seconds: 8));
+    expect(queue.txEnqueueCalls, 0,
+        reason: 'the pre-force wire tag must never be queued after BLE resumes');
     ping.dispose();
   });
 

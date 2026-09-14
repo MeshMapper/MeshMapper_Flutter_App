@@ -6767,6 +6767,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         if (!applied) {
           await _releaseRecoveredSession(publicKey, replacementSessionId);
+          if (!_ownsSessionRecovery(generation, connection, publicKey)) {
+            return SessionRecoveryResult.superseded;
+          }
           return SessionRecoveryResult.failed;
         }
       } catch (e) {
@@ -6776,6 +6779,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         debugError('[SESSION] Failed to apply replacement session: $e');
         await _releaseRecoveredSession(publicKey, replacementSessionId);
+        if (!_ownsSessionRecovery(generation, connection, publicKey)) {
+          return SessionRecoveryResult.superseded;
+        }
         return SessionRecoveryResult.failed;
       }
       notifyListeners();
