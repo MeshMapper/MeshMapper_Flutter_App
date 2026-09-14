@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:clock/clock.dart';
 import 'package:http/http.dart' as http;
 
+import '../models/device_catalog.dart';
 import '../models/repeater.dart';
 import '../utils/debug_logger_io.dart';
 import 'meshcore/regional_carpeater_filter.dart';
@@ -38,6 +39,9 @@ enum UploadResult {
 /// untouched while they quietly stop, hold their upload, or await the next
 /// heartbeat schedule.
 enum SessionRecoveryResult { recovered, superseded, failed }
+
+/// A report response that is safe to remove from the local outbox.
+enum DeviceReportAcknowledgement { known, pending, dismissed }
 
 /// The request never reached the server: no coverage, DNS failure, connection
 /// reset, TLS handshake, or a timeout waiting for the first byte.
@@ -96,6 +100,7 @@ class ApiService {
   static const String geoAuthStatusUrl = '$baseUrl/wardrive-api.php/status';
   static const String geoAuthUrl = '$baseUrl/wardrive-api.php/auth';
   static const String borderUrl = '$baseUrl/wardrive-api.php/border';
+  static const String deviceCatalogUrl = '$baseUrl/wardrive-api.php/devices';
 
   /// API key — injected at build time via --dart-define=API_KEY=...
   static const String apiKey = String.fromEnvironment('API_KEY');
@@ -126,6 +131,8 @@ class ApiService {
 
   final http.Client _client;
   final NetworkStateSource _networkState;
+  final Duration _deviceCatalogTimeout;
+  final DateTime Function() _now;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
   bool _txAllowed = false;
@@ -215,8 +222,107 @@ class ApiService {
   ApiService({
     http.Client? client,
     NetworkStateSource? networkState,
+    Duration deviceCatalogTimeout = const Duration(seconds: 10),
+    DateTime Function()? now,
   })  : _client = client ?? http.Client(),
-        _networkState = networkState ?? NetworkStateService.instance;
+        _networkState = networkState ?? NetworkStateService.instance,
+        _deviceCatalogTimeout = deviceCatalogTimeout,
+        _now = now ?? DateTime.now;
+
+  /// Fetches the public model catalog without affecting session callbacks.
+  Future<DeviceCatalog?> fetchDeviceCatalog() async {
+    final stopwatch = Stopwatch()..start();
+    final payload = <String, dynamic>{'key': apiKey, 'action': 'list'};
+    final deadline = _now().add(_deviceCatalogTimeout);
+    try {
+      final response = await _send(
+        'POST /wardrive-api.php/devices list',
+        () => _client.post(
+          Uri.parse(deviceCatalogUrl),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ),
+        deadline: deadline,
+      );
+      stopwatch.stop();
+      if (response.statusCode != 200 ||
+          response.bodyBytes.length > DeviceCatalog.maxEncodedBytes) {
+        debugWarn('[API] Device catalog request was rejected');
+        return null;
+      }
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is! Map<String, dynamic>) {
+        debugWarn('[API] Device catalog response was not an object');
+        return null;
+      }
+      final catalog = DeviceCatalog.fromJson(
+        decoded,
+        encodedLength: response.bodyBytes.length,
+      );
+      _logApiCall(
+        endpoint: '/wardrive-api.php/devices',
+        method: 'POST',
+        stopwatch: stopwatch,
+        statusCode: response.statusCode,
+        request: payload,
+        response: {
+          'revision': catalog.revision,
+          'device_count': catalog.devices.length
+        },
+      );
+      return catalog;
+    } catch (error) {
+      stopwatch.stop();
+      debugWarn('[API] Device catalog refresh failed: $error');
+      return null;
+    }
+  }
+
+  /// Reports an unmatched firmware identity without using a session.
+  Future<DeviceReportAcknowledgement?> reportUnknownDevice({
+    required String manufacturer,
+    required String appVersion,
+    String? firmwareVersion,
+  }) async {
+    final payload = <String, dynamic>{
+      'key': apiKey,
+      'action': 'report_unknown',
+      'manufacturer': manufacturer,
+      'app_version': appVersion,
+      'firmware_version': firmwareVersion ?? '',
+    };
+    final deadline = _now().add(_deviceCatalogTimeout);
+    try {
+      final response = await _send(
+        'POST /wardrive-api.php/devices report_unknown',
+        () => _client.post(
+          Uri.parse(deviceCatalogUrl),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ),
+        deadline: deadline,
+      );
+      if (response.statusCode != 200 ||
+          response.bodyBytes.length > DeviceCatalog.maxEncodedBytes) {
+        return null;
+      }
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is! Map<String, dynamic> ||
+          decoded.length != 2 ||
+          decoded['success'] != true) {
+        return null;
+      }
+      return switch (decoded['status']) {
+        'known' => DeviceReportAcknowledgement.known,
+        'pending' => DeviceReportAcknowledgement.pending,
+        'dismissed' => DeviceReportAcknowledgement.dismissed,
+        _ => null,
+      };
+    } catch (error) {
+      debugWarn('[API] Unknown device report failed: $error');
+      return null;
+    }
+  }
 
   /// Send [request], replaying it once when the first attempt was written onto
   /// a keep-alive socket the server had already closed.
@@ -233,15 +339,36 @@ class ApiService {
   /// own full allowance rather than the remains of the first one's.
   Future<http.Response> _send(
     String label,
-    Future<http.Response> Function() request,
-  ) async {
+    Future<http.Response> Function() request, {
+    DateTime? deadline,
+  }) async {
+    Future<http.Response> sendAttempt() {
+      if (deadline == null) return request();
+      final remaining = deadline.difference(_now());
+      if (remaining <= Duration.zero) {
+        throw TimeoutException('$label deadline expired');
+      }
+      return request().timeout(remaining);
+    }
+
+    Future<http.Response> completeWithinDeadline() async {
+      final response = await sendAttempt();
+      if (deadline != null && !_now().isBefore(deadline)) {
+        throw TimeoutException('$label deadline expired');
+      }
+      return response;
+    }
+
     try {
-      return await request();
+      return await completeWithinDeadline();
     } catch (e) {
       if (!_connectionWasAlreadyClosed(e)) rethrow;
+      if (deadline != null && !_now().isBefore(deadline)) {
+        throw TimeoutException('$label deadline expired');
+      }
       debugWarn('[API] $label found the connection already closed by the '
           'server, sending it again');
-      return request();
+      return completeWithinDeadline();
     }
   }
 
@@ -648,7 +775,8 @@ class ApiService {
                 'Queued wire tags are stale');
             await onSessionIdChanged?.call(previousSessionId, newSessionId);
             if (shouldStoreSession?.call() == false) {
-              debugWarn('[SESSION] Auth owner became stale during queue cleanup');
+              debugWarn(
+                  '[SESSION] Auth owner became stale during queue cleanup');
               return data;
             }
           }
@@ -764,7 +892,8 @@ class ApiService {
             carpeaterError is String && carpeaterError.isNotEmpty
                 ? carpeaterError
                 : null;
-        debugLog('[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
+        debugLog(
+            '[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
             '${_lastCarpeaterError != null ? ', carpeater refused: $_lastCarpeaterError' : ''}');
         // Nothing on this lane may fail a connection: a throw from the
         // listener would otherwise land in the outer catch and read as a
@@ -1075,9 +1204,8 @@ class ApiService {
     final message = result['message'] as String?;
     debugWarn('[SESSION] Session invalid: $reason - $message');
 
-    final recovery = reason == 'session_expired'
-        ? await _recoverExpiredSession()
-        : null;
+    final recovery =
+        reason == 'session_expired' ? await _recoverExpiredSession() : null;
     if (recovery == SessionRecoveryResult.recovered) {
       return (isValid: true, reason: null, message: null);
     }
@@ -1350,9 +1478,8 @@ class ApiService {
         'zone_disabled',
       };
 
-      final recovery = reason == 'session_expired'
-          ? await _recoverExpiredSession()
-          : null;
+      final recovery =
+          reason == 'session_expired' ? await _recoverExpiredSession() : null;
       if (recovery == SessionRecoveryResult.recovered) {
         _heartbeatRetryCount = 0;
         _heartbeatRetryTimer?.cancel();
@@ -1627,9 +1754,8 @@ class ApiService {
         'zone_full', 'zone_disabled',
       };
 
-      final recovery = reason == 'session_expired'
-          ? await _recoverExpiredSession()
-          : null;
+      final recovery =
+          reason == 'session_expired' ? await _recoverExpiredSession() : null;
       if (recovery == SessionRecoveryResult.recovered) {
         debugLog(
             '[API] Upload batch held after live session refresh: ${pings.length} items');
