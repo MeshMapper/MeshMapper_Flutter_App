@@ -11,8 +11,19 @@ class CoalescedAsyncRunner {
   Future<void>? _active;
   AsyncOperation? _pending;
   bool _running = false;
+  bool _cancelRequested = false;
 
   bool get isRunning => _running;
+
+  bool get isCancelled => _cancelRequested;
+
+  /// Stops any pending follow-up and lets the active operation finish its
+  /// current await boundary. The next [run] after the drain starts fresh.
+  void cancel() {
+    if (!_running) return;
+    _cancelRequested = true;
+    _pending = null;
+  }
 
   Future<void> run(AsyncOperation operation) {
     if (_running) {
@@ -47,13 +58,14 @@ class CoalescedAsyncRunner {
           }
         }
 
+        if (_cancelRequested) break;
         final next = _pending;
         _pending = null;
         if (next == null) break;
         operation = next;
       }
 
-      if (failed) {
+      if (failed && !_cancelRequested) {
         completion.completeError(firstError!, firstStack!);
       } else {
         completion.complete();
@@ -62,6 +74,7 @@ class CoalescedAsyncRunner {
       _pending = null;
       _active = null;
       _running = false;
+      _cancelRequested = false;
     }
   }
 }

@@ -20,6 +20,7 @@ import '../models/repeater.dart';
 import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
 import '../services/repeater_admin/repeater_admin_models.dart';
+import '../utils/async_callback_boundary.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
 import '../utils/coalesced_async_runner.dart';
@@ -984,6 +985,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _styleLoadRunner.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _patchProviderRef?.removeListener(_onCoveragePatchNotify);
     _patchProviderRef?.removeListener(_onPositionNotify);
@@ -2234,7 +2236,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // marker overlay updates.
           trackCameraPosition: true,
           onMapCreated: _onMapCreated,
-          onStyleLoadedCallback: () => _onStyleLoaded(appState),
+          onStyleLoadedCallback: () => _handleStyleLoadedCallback(appState),
           onMapIdle: _onMapIdle,
           onCameraIdle: _onCameraIdle,
           // onMapClick fires ONLY for taps that DON'T hit an interactive
@@ -2935,7 +2937,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _applyCoverageOverlayOpacity(restore);
   }
 
+  void _handleStyleLoadedCallback(AppStateProvider appState) {
+    if (!mounted) return;
+    runAsyncCallbackSafely(
+      () => _onStyleLoaded(appState),
+      onError: (error, stackTrace) {
+        debugError('[MAP] Style restoration failed: $error', stackTrace);
+      },
+    );
+  }
+
   Future<void> _onStyleLoaded(AppStateProvider appState) {
+    if (!mounted) return Future<void>.value();
     if (_styleLoadRunner.isRunning) {
       debugLog(
           '[MAP] _onStyleLoaded re-entered while already running, scheduling one follow-up');
@@ -2943,12 +2956,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return _styleLoadRunner.run(() => _restoreStyle(appState));
   }
 
+  bool _canContinueStyleRestore() =>
+      mounted && !_styleLoadRunner.isCancelled && _mapController != null;
+
   Future<void> _restoreStyle(AppStateProvider appState) async {
-    // Re-entrance guard. iOS plugin sometimes fires onStyleLoadedCallback
-    // multiple times during a single setStyle. The race causes "Layer not
-    // found" errors during the symbol manager's _rebuildLayers and
-    // double-registers images. Bail any nested call so the first invocation
-    // runs to completion uninterrupted.
+    // Defensive guard for any direct nested invocation. The callback boundary
+    // above coalesces normal plugin re-entry before reaching this method.
+    if (!_canContinueStyleRestore()) return;
     if (_styleLoadInProgress) {
       debugLog(
           '[MAP] _onStyleLoaded re-entered while already running, skipping');
@@ -3031,39 +3045,51 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // reduce visual clutter — but for wardriving we want every coverage
       // marker visible regardless of density. (Repeaters are now in their own
       // cluster-enabled GeoJSON layer with its own per-layer overlap settings.)
+      if (!_canContinueStyleRestore()) return;
       await _configureSymbolDecluttering();
+      if (!_canContinueStyleRestore()) return;
 
       // Pre-render and register all marker bitmaps for native annotations.
       // Style reloads (e.g., user switches dark→liberty) wipe registered images,
       // so we always re-register on every style load. Awaited so the cluster
       // layer (which references icon image names) sees them when it's created.
       _imagesRegistered = false;
+      if (!_canContinueStyleRestore()) return;
       await _registerMapImages(appState);
+      if (!_canContinueStyleRestore()) return;
 
       // Set up the repeater source + layers. Must run AFTER images are
       // registered, since the individual symbol layer's iconImage expression
       // looks up names registered by _registerMapImages. Clustering follows the
       // Grid Mode pref: Detailed (gsize 100) renders every repeater individually.
+      if (!_canContinueStyleRestore()) return;
       await _setupRepeaterClusterLayers(
           clustered: appState.preferences.coverageGridSize != 100);
+      if (!_canContinueStyleRestore()) return;
 
       // Re-add coverage overlay AFTER cluster layers exist so _addCoverageOverlay
       // can target the bottom repeater layer as its belowLayerId reference. This
       // keeps the insertion point consistent with the zoneCode watcher path —
       // both end up with raster at the bottom of the repeater stack, not above it.
+      if (!_canContinueStyleRestore()) return;
       await _refreshCoverageOverlay(appState);
+      if (!_canContinueStyleRestore()) return;
       _lastOverlayZoneCode = appState.zoneCode;
 
       // Regional boundary layer — style reload wipes custom sources/layers.
       // Reset the signature so the build()-driven watcher will repaint even
       // if the polygon list hasn't changed (it almost always hasn't).
       _lastBordersSignature = -1;
+      if (!_canContinueStyleRestore()) return;
       await _refreshRegionBorders(appState);
+      if (!_canContinueStyleRestore()) return;
 
       // GPS puck: dedicated top-most source+layer. Install AFTER coverage +
       // repeaters + borders so it sits above them all (always-on-top by layer
       // order). Idempotent; _syncGpsSymbol also ensures it before its first push.
+      if (!_canContinueStyleRestore()) return;
       await _ensureGpsPuckLayer();
+      if (!_canContinueStyleRestore()) return;
 
       // Start tile-load timeout. If onMapIdle doesn't fire within N seconds,
       // we assume tiles are failing to load (network down, server error, etc.)
@@ -3105,7 +3131,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         final stylePos = appState.currentPosition;
         if (stylePos != null &&
             isValidLatLng(stylePos.latitude, stylePos.longitude) &&
-            _canAnimateCamera) {
+            _canAnimateCamera &&
+            _canContinueStyleRestore()) {
           final center = LatLng(stylePos.latitude, stylePos.longitude);
           _mapController!.animateCamera(
             CameraUpdate.newLatLngZoom(center, _defaultZoom),
@@ -3120,8 +3147,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // cluster source/layers exist. This pushes the current app state into the
       // newly-created native annotations on first style load (and again whenever
       // the style is reloaded, since style reloads wipe everything).
-      if (mounted) {
+      if (_canContinueStyleRestore()) {
         await _syncAllAnnotations(appState);
+        if (!_canContinueStyleRestore()) return;
         // Update the data version to match what we just synced. Without this,
         // the build()-driven post-frame sync would fire AGAIN with the same
         // data because _lastMarkerDataVersion still holds the previous value
