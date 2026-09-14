@@ -10987,7 +10987,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugWarn('[ACCOUNT] Nonce refused: not 64 hex characters');
       return _recordLinkFailure(pubkey, 'bad_nonce');
     }
-    final nonceBytes = _hexToBytes(nonceHex);
+    final nonceBytes = hexToBytes(nonceHex);
     if (nonceBytes.length != 32) {
       debugWarn('[ACCOUNT] Nonce refused: ${nonceBytes.length} bytes, '
           'expected 32');
@@ -11133,15 +11133,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugLog('[ACCOUNT] Link attempt $attempts failed ($reason) for '
         '${_pkPrefix(pubkey)} — next try in ${backoffSeconds}s');
     return const PortalLinkOutcome(PortalLinkStatus.failed);
-  }
-
-  Uint8List _hexToBytes(String hex) {
-    final length = hex.length ~/ 2;
-    final bytes = Uint8List(length);
-    for (var i = 0; i < length; i++) {
-      bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
-    }
-    return bytes;
   }
 
   String _bytesToHex(Uint8List bytes) =>
