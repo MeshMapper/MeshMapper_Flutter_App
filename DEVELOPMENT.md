@@ -1638,6 +1638,11 @@ after the whole response passes strict type, bound, and normalized-identity
 validation. A cacheless connection waits only for the remainder of that shared
 deadline at connection workflow step 4, then continues as unknown.
 
+Cache publication writes an inactive slot before switching the active pointer.
+Startup reloads durable preferences before reading that pointer, because a failed
+SharedPreferences write can still change its process cache. Legacy cached JSON
+is retained as the fallback until a slot is successfully published.
+
 Matching is exact after shared sanitization, approved build-suffix removal, and
 ASCII-only normalization. It considers manufacturer, short name, and aliases,
 and recognizes a result only when exactly one device ID matches. Unknown or
@@ -1651,6 +1656,20 @@ once per normalized identity per launch, retains failed sends for a later launch
 and removes an item only after an exact `known`, `pending`, or `dismissed`
 acknowledgement for the submitted generation. A successful catalog refresh
 suppresses queued identities it now recognizes.
+
+Network requests run outside the mutation chain. Acknowledgements re-enter it
+before reading the stored generation and publishing a removal, so delayed writes
+cannot overwrite newer observations or refresh cleanup. Failed local writes do
+not dispatch a report or consume an attempt, and refresh recognition is checked
+again after an observation finishes persisting.
+
+The provider uses `preferencesForConnectingDevice` before online auth and
+`prepareConnectedDevice` after every successful transport handshake. These
+decisions live in `lib/providers/device_connection_setup.dart`: the current
+radio's saved power overrides its selected model, and an unknown radio with no
+saved choice clears the previous radio's configured flags. The post-connect
+function also gates asynchronous unknown reporting on a completed connection.
+Offline Mode follows the same post-connect decisions without the auth step.
 
 ## MeshMapper API Endpoints
 

@@ -74,6 +74,7 @@ import '../services/portal_account_service.dart';
 import '../services/portal_token_store.dart';
 import '../services/recent_coverage_service.dart';
 import '../services/reporting_power.dart';
+import 'device_connection_setup.dart';
 import '../services/repeater_admin/manage_target.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
 import '../services/repeater_admin/repeater_claim_unclaim.dart';
@@ -3689,33 +3690,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final saved =
         overrideKey == null ? null : _devicePowerOverrides[overrideKey];
     final resolved = resolveReportingPower(model: model, savedOverride: saved);
+    _preferences = preferencesForConnectingDevice(
+      preferences: _preferences,
+      model: model,
+      deviceName: overrideKey,
+      savedOverrides: _devicePowerOverrides,
+    );
 
     if (resolved.configured) {
-      _preferences = _preferences.copyWith(
-        powerLevel: resolved.power!,
-        txPower: resolved.txPower!,
-        autoPowerSet: false,
-        powerLevelSet: true,
-      );
       debugLog('[MODEL] Reporting saved override for "$overrideKey": '
           '${resolved.power}W');
     } else if (resolved.autoSet) {
-      _preferences = _preferences.copyWith(
-        powerLevel: resolved.power!,
-        txPower: resolved.txPower!,
-        autoPowerSet: true,
-        powerLevelSet: false,
-      );
       debugLog(
           '[MODEL] Reporting ${resolved.power}W for the matched device at auth');
     } else {
       // Unrecognized radio with nothing saved. Carrying the previous device's
       // flags here would both report its wattage and suppress the prompt that
       // asks the user to set one.
-      _preferences = _preferences.copyWith(
-        autoPowerSet: false,
-        powerLevelSet: false,
-      );
       debugWarn('[MODEL] Unrecognized radio and no saved power, asking the '
           'user rather than reusing the last one');
     }
@@ -4635,19 +4626,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final reportingName = _isAnonymousRenamed
         ? _originalDeviceName
         : (_meshCoreConnection?.selfInfo?.name ?? device.name);
-    _applyConnectingDevicePower(reportingName);
-
-    if (!connectionResult.deviceModelMatched) {
-      final manufacturer = _meshCoreConnection?.deviceInfo?.manufacturer;
-      if (manufacturer != null) {
-        _deviceModelService.observeUnknownDevice(
-          manufacturer: manufacturer,
-          appVersion: AppConstants.appVersion,
-          firmwareVersion:
-              _meshCoreConnection?.deviceInfo?.firmwareVersionString,
-        );
-      }
-    }
+    _preferences = prepareConnectedDevice(
+      preferences: _preferences,
+      connection: _meshCoreConnection!,
+      catalog: _deviceModelService,
+      deviceName: reportingName,
+      savedOverrides: _devicePowerOverrides,
+      appVersion: AppConstants.appVersion,
+    );
+    notifyListeners();
 
     await _createUnifiedRxHandler();
 
