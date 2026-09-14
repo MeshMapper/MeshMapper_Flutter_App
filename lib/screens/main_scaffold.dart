@@ -18,6 +18,7 @@ import 'connection_screen.dart';
 import 'settings_screen.dart';
 import 'settings/wardriving_settings_page.dart';
 import 'graph_screen.dart';
+import 'onboarding/onboarding_prompt_gate.dart';
 
 /// Main scaffold with bottom navigation
 class MainScaffold extends StatefulWidget {
@@ -35,6 +36,10 @@ class _MainScaffoldState extends State<MainScaffold> {
   bool _carpeaterNoticeOpen = false;
   bool _linkPromptDialogOpen = false;
   bool _signInErrorToastOpen = false;
+  final _onboardingGate = OnboardingPromptGate();
+  final _onboardingGuidePresenter = OnboardingGuidePresenter();
+  bool _startupPromptsSettled = false;
+  bool _onboardingGuideOpen = false;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -47,10 +52,23 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   void initState() {
     super.initState();
+    _onboardingGuidePresenter.coordinator
+        .addListener(_onOnboardingReservationChanged);
     // Check disclosure after first frame (needs context)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAndShowDisclosure();
     });
+  }
+
+  @override
+  void dispose() {
+    _onboardingGuidePresenter.coordinator
+        .removeListener(_onOnboardingReservationChanged);
+    super.dispose();
+  }
+
+  void _onOnboardingReservationChanged() {
+    if (mounted) setState(() {});
   }
 
   /// Check if location disclosure has been shown, show it if not, then request permissions
@@ -58,26 +76,48 @@ class _MainScaffoldState extends State<MainScaffold> {
     if (_hasCheckedDisclosure) return;
     _hasCheckedDisclosure = true;
 
-    if (kIsWeb) {
-      // Web: No disclosure dialog needed, just request permission
-      // This triggers the browser's native location permission prompt
-      debugLog(
-          '[DISCLOSURE] Web platform - requesting GPS permission directly');
-      await _requestWebGpsPermission();
-      return;
-    }
+    try {
+      if (kIsWeb) {
+        // Web: No disclosure dialog needed, just request permission
+        // This triggers the browser's native location permission prompt
+        debugLog(
+            '[DISCLOSURE] Web platform - requesting GPS permission directly');
+        await _requestWebGpsPermission();
+        return;
+      }
 
-    // Check if disclosure was already shown
-    final hasShown = await PermissionDisclosureService.hasShownDisclosure();
-    if (!hasShown) {
-      // Show the disclosure dialog
-      if (!mounted) return;
-      debugLog('[DISCLOSURE] Showing location disclosure dialog');
-      await PermissionDisclosureService.showLocationDisclosure(context);
-    }
+      // Check if disclosure was already shown
+      final hasShown = await PermissionDisclosureService.hasShownDisclosure();
+      if (!hasShown) {
+        // Show the disclosure dialog
+        if (!mounted) return;
+        debugLog('[DISCLOSURE] Showing location disclosure dialog');
+        await PermissionDisclosureService.showLocationDisclosure(context);
+      }
 
-    debugLog('[DISCLOSURE] Ensuring location permission after disclosure');
-    await _ensureLocationPermission();
+      debugLog('[DISCLOSURE] Ensuring location permission after disclosure');
+      await _ensureLocationPermission();
+    } finally {
+      if (mounted) {
+        setState(() => _startupPromptsSettled = true);
+      }
+    }
+  }
+
+  Future<void> _showOnboardingGuide() async {
+    final appState = context.read<AppStateProvider>();
+    try {
+      await _onboardingGuidePresenter.showAutomatic(
+        context,
+        complete: appState.completeOnboardingGuide,
+        returnToMap: () => setState(() => _selectedIndex = 0),
+      );
+    } finally {
+      _onboardingGate.markAutomaticAttemptClosed();
+      if (mounted) {
+        setState(() => _onboardingGuideOpen = false);
+      }
+    }
   }
 
   /// Request GPS permission on web (triggers browser's native prompt)
@@ -327,6 +367,13 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppStateProvider>();
+    final onboardingModalLaneReserved = _onboardingGate.reservesModalLane(
+      isMobile: !kIsWeb,
+      stateLoaded: appState.onboardingGuideStateLoaded,
+      isDue: appState.shouldShowOnboardingGuide,
+    );
+    final onboardingPresentationReserved =
+        _onboardingGuidePresenter.coordinator.isReserved;
 
     // Listen for map navigation requests from log screen
     if (appState.requestMapTabSwitch && _selectedIndex != 0) {
@@ -352,12 +399,31 @@ class _MainScaffoldState extends State<MainScaffold> {
       });
     }
 
+    if (!onboardingPresentationReserved &&
+        _onboardingGate.shouldSchedule(
+          isMobile: !kIsWeb,
+          startupPromptsSettled: _startupPromptsSettled,
+          stateLoaded: appState.onboardingGuideStateLoaded,
+          isDue: appState.shouldShowOnboardingGuide,
+        )) {
+      _onboardingGate.markScheduled();
+      _onboardingGuideOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showOnboardingGuide();
+        }
+      });
+    }
+
     // MyMeshMapper account link offer (post-connection, non-fatal).
     // A pending prompt survives disconnect by design (the provider no-ops
     // safely if it is answered afterwards), but never RAISE the dialog for a
     // dead connection — the link handshake needs the radio to sign a nonce.
     if (appState.isConnected &&
         appState.portalLinkPromptPending &&
+        !onboardingModalLaneReserved &&
+        !onboardingPresentationReserved &&
+        !_onboardingGuideOpen &&
         !_linkPromptDialogOpen) {
       _linkPromptDialogOpen = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -384,7 +450,11 @@ class _MainScaffoldState extends State<MainScaffold> {
 
     // The CARpeater re-entry prompt is raised by the provider at the end of a
     // connect and shown here, whichever tab the user is on.
-    if (appState.carpeaterReentryPromptDue && !_carpeaterPromptOpen) {
+    if (appState.carpeaterReentryPromptDue &&
+        !onboardingModalLaneReserved &&
+        !onboardingPresentationReserved &&
+        !_onboardingGuideOpen &&
+        !_carpeaterPromptOpen) {
       _carpeaterPromptOpen = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _carpeaterPromptOpen = false;
@@ -395,7 +465,11 @@ class _MainScaffoldState extends State<MainScaffold> {
       });
     }
 
-    if (appState.carpeaterCapNotice != null && !_carpeaterNoticeOpen) {
+    if (appState.carpeaterCapNotice != null &&
+        !onboardingModalLaneReserved &&
+        !onboardingPresentationReserved &&
+        !_onboardingGuideOpen &&
+        !_carpeaterNoticeOpen) {
       _carpeaterNoticeOpen = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _carpeaterNoticeOpen = false;

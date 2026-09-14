@@ -18,6 +18,7 @@ import '../services/transport/tcp_service.dart';
 import '../services/transport/web_serial_factory.dart';
 import '../widgets/offline_mode_toggle.dart';
 import '../widgets/regional_config_card.dart';
+import 'onboarding/onboarding_prompt_gate.dart';
 
 /// BLE device selection and connection screen
 class ConnectionScreen extends StatefulWidget {
@@ -34,11 +35,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   bool _tcpConnecting = false;
   Future<List<Map<String, dynamic>>>? _usbDevicesFuture;
   Future<List<SavedTcpConnection>>? _savedTcpFuture;
+  final _onboardingCoordinator = OnboardingGuideCoordinator.shared;
+  bool _pathHashWarningScheduled = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _onboardingCoordinator.addListener(_onOnboardingChanged);
     _savedTcpFuture = TcpService.getSavedConnections();
   }
 
@@ -47,7 +51,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _tcpHostController.dispose();
     _tcpPortController.dispose();
     WidgetsBinding.instance.removeObserver(this);
+    _onboardingCoordinator.removeListener(_onOnboardingChanged);
     super.dispose();
+  }
+
+  void _onOnboardingChanged() {
+    if (mounted && !_onboardingCoordinator.isReserved) setState(() {});
   }
 
   @override
@@ -154,11 +163,21 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     // Show connected state
     if (appState.isConnected) {
       final pathWarning = appState.pendingPathHashWarning;
-      if (pathWarning != null) {
+      if (pathWarning != null &&
+          !_onboardingCoordinator.isReserved &&
+          !_pathHashWarningScheduled) {
+        _pathHashWarningScheduled = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
+          _pathHashWarningScheduled = false;
           if (!mounted) return;
+          // A guide may have reserved the lane since this frame was built.
+          if (_onboardingCoordinator.isReserved || !appState.isConnected) {
+            return;
+          }
+          final pendingWarning = appState.pendingPathHashWarning;
+          if (pendingWarning == null) return;
           _showPathHashWarning(
-              context, pathWarning.hopBytes, pathWarning.reason);
+              context, pendingWarning.hopBytes, pendingWarning.reason);
           appState.clearPathHashWarning();
         });
       }

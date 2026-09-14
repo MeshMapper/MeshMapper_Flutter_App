@@ -18,6 +18,7 @@ import 'package:http/http.dart' as http;
 import '../models/connection_state.dart';
 import '../models/device_model.dart';
 import '../models/noise_floor_session.dart';
+import '../models/onboarding_guide_progress.dart';
 import '../models/ping_data.dart';
 import '../models/log_entry.dart';
 import '../models/remembered_device.dart';
@@ -781,6 +782,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Flag to track if preferences have been loaded from storage
   bool _preferencesLoaded = false;
 
+  OnboardingGuideProgress _onboardingGuideProgress =
+      const OnboardingGuideProgress();
+
   // Disposed flag to prevent operations after disposal
   bool _isDisposed = false;
 
@@ -893,6 +897,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   String get deviceId => _deviceId;
   bool get preferencesLoaded => _preferencesLoaded;
+  bool get onboardingGuideStateLoaded => _onboardingGuideProgress.isLoaded;
+  bool get shouldShowOnboardingGuide => _onboardingGuideProgress.isDue;
   WatchBridgeService get watchBridge => _watchBridge;
   bool get shouldShowWatchDiagnostics {
     final status = _watchBridge.diagnostics.value;
@@ -10553,6 +10559,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   static const String _rememberedDeviceBoxName = 'remembered_device';
   static const String _preferencesBoxName = 'user_preferences';
+  static const String _onboardingGuideVersionKey =
+      'onboarding_guide_version_seen';
 
   /// Set when the pre-share 6-hex CARpeater prefix was wiped at load. Cleared
   /// when the user sets a full key or says they have no CARpeater. Persisted
@@ -10746,6 +10754,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _loadPreferences() async {
     final box = await _openBoxSafely(_preferencesBoxName);
     if (box == null) {
+      _onboardingGuideProgress = OnboardingGuideProgress.fromStored(null);
       _preferencesLoaded = true;
       notifyListeners();
       return;
@@ -10753,6 +10762,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       final json = box.get('preferences');
+      _onboardingGuideProgress =
+          OnboardingGuideProgress.fromStored(box.get(_onboardingGuideVersionKey));
       if (json != null) {
         // The pre-share 6-hex prefix is wiped, not migrated: the filter needs
         // the full key now, and the user is asked for it after the next
@@ -10788,10 +10799,31 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
     } catch (e) {
+      if (!_onboardingGuideProgress.isLoaded) {
+        _onboardingGuideProgress = OnboardingGuideProgress.fromStored(null);
+      }
       debugLog('[APP] Failed to load preferences: $e');
     }
     _preferencesLoaded = true;
     notifyListeners();
+  }
+
+  Future<bool> completeOnboardingGuide() async {
+    final box = await _openBoxSafely(_preferencesBoxName);
+    if (box == null) return false;
+    try {
+      await box.put(
+        _onboardingGuideVersionKey,
+        OnboardingGuideProgress.currentVersion,
+      );
+      _onboardingGuideProgress = _onboardingGuideProgress.completed();
+      debugLog('[APP] Onboarding guide completed');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugError('[APP] Failed to persist onboarding guide completion: $e');
+      return false;
+    }
   }
 
   Future<void> _loadRegionalCarpeaters() async {

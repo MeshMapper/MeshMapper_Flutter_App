@@ -15,6 +15,7 @@ import '../../utils/constants.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/bug_report_dialog.dart';
 import '../../widgets/upload_logs_dialog.dart';
+import '../onboarding/onboarding_prompt_gate.dart';
 import 'settings_section_card.dart';
 
 /// Settings folder: About & Support.
@@ -141,6 +142,15 @@ class _AboutSettingsPageState extends State<AboutSettingsPage> {
               ),
           ]),
           SettingsSectionCard(title: 'Support', children: [
+            if (!kIsWeb)
+              ListTile(
+                leading: const Icon(Icons.help_outline),
+                title: const Text('Quick Guide'),
+                subtitle:
+                    const Text('Learn connections, modes, mapping, and data'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => OnboardingGuidePresenter().showManual(context),
+              ),
             ListTile(
               leading: const Icon(Icons.feedback_outlined),
               title: const Text('Submit Feedback'),
