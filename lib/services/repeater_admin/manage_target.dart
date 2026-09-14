@@ -3,32 +3,17 @@ import '../../utils/public_key.dart';
 
 const String kChooseFromListHint = 'Choose from the list';
 const String kCompanionFirmwareFloorHint =
-    'Manage needs companion firmware v1.9.0 or newer';
+    'Update companion firmware to use Manage';
 
-/// The companion firmware floor for repeater administration: v1.9.0 added
-/// the login reply's trailing bytes and is the release pair of the repeater
-/// side's GET_ACCESS_LIST and GET_NEIGHBOURS.
-const int kCompanionFloorMajor = 1;
-const int kCompanionFloorMinor = 9;
-const int kCompanionFloorPatch = 0;
+/// Companion capability code introduced with MeshCore v1.9.0, which forwards
+/// the login reply's ACL permissions and repeater firmware level.
+/// This is FIRMWARE_VER_CODE, byte 1 of RESP_CODE_DEVICE_INFO, not the release
+/// string: forks can use their own release numbering.
+const int kRepeaterAdminCompanionVersionCode = 7;
 
-final RegExp _versionRe = RegExp(r'^v?(\d+)\.(\d+)\.(\d+)');
-
-/// True when the radio's version string ("v1.14.0-9f1a3ea", "1.9.1") is at
-/// or above major.minor.patch. Null, empty or unparseable is below the floor:
-/// firmware old enough to omit the string is older than v1.9.0.
-bool companionFirmwareAtLeast(String? versionString,
-    {required int major, required int minor, required int patch}) {
-  if (versionString == null) return false;
-  final m = _versionRe.firstMatch(versionString.trim());
-  if (m == null) return false;
-  final v = [int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!)];
-  final floor = [major, minor, patch];
-  for (var i = 0; i < 3; i++) {
-    if (v[i] != floor[i]) return v[i] > floor[i];
-  }
-  return true;
-}
+bool companionSupportsRepeaterAdmin(int? firmwareVersionCode) =>
+    firmwareVersionCode != null &&
+    firmwareVersionCode >= kRepeaterAdminCompanionVersionCode;
 
 /// Which repeater the Trace row's Manage button would open.
 ///

@@ -735,9 +735,13 @@ the app shows as "This region does not support claiming yet."
   contact list is full."). Step 2 logs in (`login`, `CMD_SEND_LOGIN` with the raw UTF-8
   password, no NUL; the firmware terminates the frame). The 14-byte `LOGIN_SUCCESS` carries
   an explicit admin flag, the ACL perms byte and the firmware level. **Firmware floor, no
-  legacy support:** companion firmware v1.9.0 or newer is required and enforced from the
-  version string read at connect (`companionFirmwareAtLeast`; Manage is disabled with "Manage
-  needs companion firmware v1.9.0 or newer"), and repeater firmware v1.9.0 or newer is
+  legacy support:** companion `FIRMWARE_VER_CODE >= 7` is required (the capability code
+  introduced with MeshCore v1.9.0). It comes from byte 1 of `RESP_CODE_DEVICE_INFO`, already
+  parsed as `DeviceQueryResponse.protocolVersion` and exposed by the provider as
+  `companionFirmwareVersionCode`. Both Manage gates use `companionSupportsRepeaterAdmin`;
+  unknown or lower codes disable Manage with "Update companion firmware to use Manage".
+  The display version string is not a capability check, so forks can use their own release
+  numbering. Repeater firmware v1.9.0 or newer is
   required and detected at login (that release added `GET_ACCESS_LIST`, `GET_NEIGHBOURS` and
   the firmware-level byte; an older repeater's 12-byte reply has no such byte, the companion
   forwards the cipher's zero pad in its place, so a level of 0 stops the session with "This

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mesh_mapper/models/repeater.dart';
+import 'package:mesh_mapper/services/meshcore/connection.dart';
 import 'package:mesh_mapper/services/repeater_admin/manage_target.dart';
 
 Repeater rep(String hex, {String id = '00'}) => Repeater(
@@ -59,28 +60,38 @@ void main() {
     test('connection outranks the mode', () =>
         expect(reason(connected: false, mode: true), 'Connect a radio to manage this repeater'));
     test('old companion firmware, once connected', () {
-      expect(reason(firmwareOk: false), 'Manage needs companion firmware v1.9.0 or newer');
+      expect(reason(firmwareOk: false), 'Update companion firmware to use Manage');
       expect(reason(connected: false, firmwareOk: false), 'Connect a radio to manage this repeater');
     });
   });
 
-  group('companionFirmwareAtLeast', () {
-    bool ok(String? v) => companionFirmwareAtLeast(v, major: 1, minor: 9, patch: 0);
-    test('parses the radio version string', () {
-      expect(ok('v1.14.0-9f1a3ea'), isTrue);
-      expect(ok('v1.9.0'), isTrue);
-      expect(ok('1.9.1-abc'), isTrue);
-      expect(ok('v2.0.0'), isTrue);
+  group('companion repeater administration support', () {
+    bool supported(int code, String? version) {
+      final device = DeviceQueryResponse(
+        protocolVersion: code,
+        manufacturer: 'Test companion',
+        firmwareVersionString: version,
+      );
+      return companionSupportsRepeaterAdmin(device.protocolVersion);
+    }
+
+    test('unknown companion capabilities are refused', () {
+      expect(companionSupportsRepeaterAdmin(null), isFalse);
     });
-    test('below the floor', () {
-      expect(ok('v1.8.3-deadbee'), isFalse);
-      expect(ok('v1.7.3'), isFalse);
-      expect(ok('v0.99.9'), isFalse);
+    test('accepts the minimum companion capability code', () {
+      expect(supported(7, 'v1.9.0'), isTrue);
     });
-    test('unknown is below the floor', () {
-      expect(ok(null), isFalse);
-      expect(ok(''), isFalse);
-      expect(ok('nightly'), isFalse);
+    test('accepts a fork with independent release numbering', () {
+      expect(supported(14, 'v1.4.4'), isTrue);
+    });
+    test('accepts supported firmware without a release string', () {
+      expect(supported(7, null), isTrue);
+      expect(supported(7, ''), isTrue);
+      expect(supported(14, 'nightly'), isTrue);
+    });
+    test('rejects an old capability code despite a newer release string', () {
+      expect(supported(6, 'v1.14.0'), isFalse);
+      expect(supported(0, 'v2.0.0'), isFalse);
     });
   });
 }
