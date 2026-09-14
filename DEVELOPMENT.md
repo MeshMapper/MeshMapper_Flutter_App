@@ -871,6 +871,11 @@ vector-only — every region server must serve `vector_tile.php` (the legacy ras
   The base source is never swapped — nothing visibly changes except the changed cells.
   A second check runs at +10 s only when the first found no changes. Logged under
   `[COVERAGE]`.
+  z11-13 refreshes send `If-None-Match: *`: the server still renders and warms
+  its cache, but returns a body-free 304 with its `X-Tile-Changed` verdict.
+  That verdict still drives the existing retry decision. A server returning
+  200 remains supported. z14 stays unconditional and supplies the complete
+  tile bytes for live cell updates, including unchanged server verdicts.
 - **GOTCHA — never partial-update a fill layer**: `setLayerProperties` serializes with
   `skipNulls: false`; any `FillLayerProperties` field left null is RESET to its
   style-spec default on iOS/web (`fill-color` → black). Always resend the full colour
