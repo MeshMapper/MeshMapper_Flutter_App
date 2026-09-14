@@ -27,7 +27,10 @@ class DeviceCatalog {
     }
     final revision = json['revision'] as int;
     final records = json['devices'];
-    if (revision < 0 || records is! List || records.isEmpty || records.length > maxDevices) {
+    if (revision < 0 ||
+        records is! List ||
+        records.isEmpty ||
+        records.length > maxDevices) {
       throw const FormatException('Invalid device catalog bounds');
     }
     final devices = <DeviceModel>[];
