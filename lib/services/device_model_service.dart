@@ -15,6 +15,28 @@ typedef UnknownDeviceReporter = Future<DeviceReportAcknowledgement?> Function(
   String? firmwareVersion,
 );
 
+abstract interface class DeviceCatalogStorage {
+  String? getString(String key);
+  Future<bool> setString(String key, String value);
+  Future<bool> remove(String key);
+}
+
+class SharedPreferencesDeviceCatalogStorage implements DeviceCatalogStorage {
+  final SharedPreferences _preferences;
+
+  SharedPreferencesDeviceCatalogStorage(this._preferences);
+
+  @override
+  String? getString(String key) => _preferences.getString(key);
+
+  @override
+  Future<bool> remove(String key) => _preferences.remove(key);
+
+  @override
+  Future<bool> setString(String key, String value) =>
+      _preferences.setString(key, value);
+}
+
 /// Owns the validated launch cache, one shared refresh and unknown reports.
 class DeviceModelService {
   static const String catalogCacheKey = 'device_catalog_v1';
@@ -22,10 +44,11 @@ class DeviceModelService {
 
   final DeviceCatalogFetcher _fetchCatalog;
   final UnknownDeviceReporter _reportUnknown;
-  final Future<SharedPreferences> Function() _loadPreferences;
+  final Future<DeviceCatalogStorage> Function() _loadStorage;
   final Duration _launchTimeout;
 
-  SharedPreferences? _preferences;
+  DeviceCatalogStorage? _storage;
+  Future<void>? _initializeFuture;
   DeviceCatalog? _catalog;
   Future<void>? _refreshFuture;
   DateTime? _refreshDeadline;
@@ -36,6 +59,7 @@ class DeviceModelService {
     DeviceCatalogFetcher? fetchCatalog,
     UnknownDeviceReporter? reportUnknown,
     Future<SharedPreferences> Function()? loadPreferences,
+    Future<DeviceCatalogStorage> Function()? loadStorage,
     Duration launchTimeout = const Duration(seconds: 10),
   })  : _fetchCatalog = fetchCatalog ?? ApiService().fetchDeviceCatalog,
         _reportUnknown = reportUnknown ??
@@ -45,21 +69,25 @@ class DeviceModelService {
                   appVersion: appVersion,
                   firmwareVersion: firmwareVersion,
                 )),
-        _loadPreferences = loadPreferences ?? SharedPreferences.getInstance,
+        _loadStorage = loadStorage ??
+            (() async => SharedPreferencesDeviceCatalogStorage(
+                  await (loadPreferences ?? SharedPreferences.getInstance)(),
+                )),
         _launchTimeout = launchTimeout;
 
-  bool get isLoaded => _preferences != null;
+  bool get isLoaded => _storage != null;
   List<DeviceModel> get models =>
       List.unmodifiable(_catalog?.devices ?? const []);
   DeviceCatalog? get catalog => _catalog;
   Future<void> get refreshFuture => _refreshFuture ?? Future<void>.value();
 
   /// Loads only local storage, then begins the single non-blocking refresh.
-  Future<void> initialize() async {
-    if (_preferences != null) return;
-    final preferences = await _loadPreferences();
-    _preferences = preferences;
-    final cached = preferences.getString(catalogCacheKey);
+  Future<void> initialize() => _initializeFuture ??= _initialize();
+
+  Future<void> _initialize() async {
+    final storage = await _loadStorage();
+    _storage = storage;
+    final cached = storage.getString(catalogCacheKey);
     if (cached != null) {
       try {
         final decoded = jsonDecode(cached);
@@ -86,17 +114,37 @@ class DeviceModelService {
       return;
     }
     if (fetched == null) return;
-    final preferences = _preferences;
-    if (preferences == null) return;
+    final storage = _storage;
+    if (storage == null) return;
     final encoded = fetched.toJsonString();
     if (utf8.encode(encoded).length > DeviceCatalog.maxEncodedBytes) return;
+    final previous = storage.getString(catalogCacheKey);
     try {
-      await preferences.setString(catalogCacheKey, encoded);
+      if (!await storage.setString(catalogCacheKey, encoded)) {
+        await _restoreCatalogCache(storage, previous);
+        return;
+      }
     } catch (_) {
+      await _restoreCatalogCache(storage, previous);
       return;
     }
     _catalog = fetched;
-    await _drainOutbox(afterSuccessfulRefresh: true);
+    unawaited(_drainOutbox(afterSuccessfulRefresh: true));
+  }
+
+  Future<void> _restoreCatalogCache(
+    DeviceCatalogStorage storage,
+    String? previous,
+  ) async {
+    try {
+      if (previous == null) {
+        await storage.remove(catalogCacheKey);
+      } else {
+        await storage.setString(catalogCacheKey, previous);
+      }
+    } catch (_) {
+      // Best effort only. Some preference implementations mutate before failing.
+    }
   }
 
   /// Resolves at protocol step 4 against the current catalog.
@@ -134,10 +182,10 @@ class DeviceModelService {
     final normalized = normalizeDeviceIdentity(manufacturer);
     if (normalized.isEmpty) return;
     final isFirstAttempt = _attempted.add(normalized);
-    _outboxChain = _outboxChain.then((_) async {
-      final preferences = _preferences;
-      if (preferences == null) return;
-      final entries = _readOutbox(preferences);
+    _enqueueOutbox(() async {
+      final storage = _storage;
+      if (storage == null) return;
+      final entries = _readOutbox(storage);
       final previous = entries[normalized];
       final generation = (previous?['generation'] as int? ?? 0) + 1;
       entries[normalized] = {
@@ -148,13 +196,20 @@ class DeviceModelService {
         'generation': generation,
       };
       _trimOutbox(entries);
-      await _writeOutbox(preferences, entries);
+      await _writeOutbox(storage, entries);
       if (isFirstAttempt) await _dispatchOne(normalized, entries[normalized]!);
     });
   }
 
-  Map<String, Map<String, dynamic>> _readOutbox(SharedPreferences preferences) {
-    final raw = preferences.getString(outboxKey);
+  void _enqueueOutbox(Future<void> Function() operation) {
+    _outboxChain = _outboxChain
+        .catchError((_) {})
+        .then((_) => operation())
+        .catchError((_) {});
+  }
+
+  Map<String, Map<String, dynamic>> _readOutbox(DeviceCatalogStorage storage) {
+    final raw = storage.getString(outboxKey);
     if (raw == null) return <String, Map<String, dynamic>>{};
     try {
       final decoded = jsonDecode(raw);
@@ -163,20 +218,31 @@ class DeviceModelService {
           decoded['entries'] is! Map) {
         return <String, Map<String, dynamic>>{};
       }
-      return (decoded['entries'] as Map).map((key, value) => MapEntry(
-            key.toString(),
-            Map<String, dynamic>.from(value as Map),
-          ));
+      final entries = <String, Map<String, dynamic>>{};
+      for (final entry in (decoded['entries'] as Map).entries) {
+        if (entry.key is! String || entry.value is! Map) continue;
+        final value = Map<String, dynamic>.from(entry.value as Map);
+        if (_isValidOutboxEntry(value)) entries[entry.key as String] = value;
+      }
+      return entries;
     } catch (_) {
       return <String, Map<String, dynamic>>{};
     }
   }
 
+  bool _isValidOutboxEntry(Map<String, dynamic> value) =>
+      value['manufacturer'] is String &&
+      value['app_version'] is String &&
+      value['firmware_version'] is String &&
+      value['observed_at'] is String &&
+      value['generation'] is int &&
+      (value['generation'] as int) > 0;
+
   Future<void> _writeOutbox(
-    SharedPreferences preferences,
+    DeviceCatalogStorage storage,
     Map<String, Map<String, dynamic>> entries,
   ) =>
-      preferences.setString(
+      storage.setString(
           outboxKey, jsonEncode({'version': 1, 'entries': entries}));
 
   void _trimOutbox(Map<String, Map<String, dynamic>> entries) {
@@ -191,18 +257,23 @@ class DeviceModelService {
 
   Future<void> _dispatchOne(
       String identity, Map<String, dynamic> submitted) async {
-    final acknowledgement = await _reportUnknown(
-      submitted['manufacturer'] as String,
-      submitted['app_version'] as String,
-      submitted['firmware_version'] as String,
-    ).timeout(const Duration(seconds: 10), onTimeout: () => null);
+    DeviceReportAcknowledgement? acknowledgement;
+    try {
+      acknowledgement = await _reportUnknown(
+        submitted['manufacturer'] as String,
+        submitted['app_version'] as String,
+        submitted['firmware_version'] as String,
+      ).timeout(const Duration(seconds: 10));
+    } catch (_) {
+      return;
+    }
     if (acknowledgement == null) return;
-    final preferences = _preferences;
-    if (preferences == null) return;
-    final entries = _readOutbox(preferences);
+    final storage = _storage;
+    if (storage == null) return;
+    final entries = _readOutbox(storage);
     if (entries[identity]?['generation'] == submitted['generation']) {
       entries.remove(identity);
-      await _writeOutbox(preferences, entries);
+      await _writeOutbox(storage, entries);
     }
   }
 
@@ -210,16 +281,16 @@ class DeviceModelService {
     if (!afterSuccessfulRefresh || _catalog == null) {
       return Future<void>.value();
     }
-    _outboxChain = _outboxChain.then((_) async {
-      final preferences = _preferences;
-      if (preferences == null) return;
-      final entries = _readOutbox(preferences);
+    _enqueueOutbox(() async {
+      final storage = _storage;
+      if (storage == null) return;
+      final entries = _readOutbox(storage);
       for (final identity in entries.keys.toList()) {
         if (matchDeviceModel(identity, _catalog!.devices) != null) {
           entries.remove(identity);
         }
       }
-      await _writeOutbox(preferences, entries);
+      await _writeOutbox(storage, entries);
       for (final entry in entries.entries) {
         if (_attempted.add(entry.key)) {
           await _dispatchOne(entry.key, entry.value);

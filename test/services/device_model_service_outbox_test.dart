@@ -117,4 +117,53 @@ void main() {
     expect(entries.containsKey('unknown0'), isFalse);
     expect(entries.containsKey('unknown50'), isTrue);
   });
+
+  test('a failed serialized operation does not block a later identity',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    var calls = 0;
+    final service = DeviceModelService(
+      fetchCatalog: () async => catalog(),
+      reportUnknown: (name, _, __) async {
+        calls++;
+        if (name == 'First') throw StateError('report failure');
+        return DeviceReportAcknowledgement.pending;
+      },
+    );
+    await service.initialize();
+    await service.refreshFuture;
+    service.observeUnknownDevice(manufacturer: 'First', appVersion: 'APP');
+    await Future<void>.delayed(Duration.zero);
+    service.observeUnknownDevice(manufacturer: 'Second', appVersion: 'APP');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(calls, 2);
+  });
+
+  test('drops malformed persisted entries and accepts later valid work',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      DeviceModelService.outboxKey: jsonEncode({
+        'version': 1,
+        'entries': {
+          'broken': {'manufacturer': 7, 'generation': 'bad'},
+        },
+      }),
+    });
+    final calls = <String>[];
+    final service = DeviceModelService(
+      fetchCatalog: () async => catalog(),
+      reportUnknown: (manufacturer, _, __) async {
+        calls.add(manufacturer);
+        return null;
+      },
+    );
+    await service.initialize();
+    await service.refreshFuture;
+    service.observeUnknownDevice(manufacturer: 'Valid', appVersion: 'APP');
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(calls, ['Valid']);
+  });
 }

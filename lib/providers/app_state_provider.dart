@@ -73,6 +73,7 @@ import '../services/custom_api_service.dart';
 import '../services/portal_account_service.dart';
 import '../services/portal_token_store.dart';
 import '../services/recent_coverage_service.dart';
+import '../services/reporting_power.dart';
 import '../services/repeater_admin/manage_target.dart';
 import '../services/repeater_admin/repeater_admin_api.dart';
 import '../services/repeater_admin/repeater_claim_unclaim.dart';
@@ -3687,25 +3688,26 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     final overrideKey = _isAnonymousRenamed ? _originalDeviceName : deviceName;
     final saved =
         overrideKey == null ? null : _devicePowerOverrides[overrideKey];
+    final resolved = resolveReportingPower(model: model, savedOverride: saved);
 
-    if (saved != null) {
+    if (resolved.configured) {
       _preferences = _preferences.copyWith(
-        powerLevel: (saved['powerLevel'] as num).toDouble(),
-        txPower: (saved['txPower'] as num).toInt(),
+        powerLevel: resolved.power!,
+        txPower: resolved.txPower!,
         autoPowerSet: false,
         powerLevelSet: true,
       );
       debugLog('[MODEL] Reporting saved override for "$overrideKey": '
-          '${saved['powerLevel']}W');
-    } else if (model != null) {
+          '${resolved.power}W');
+    } else if (resolved.autoSet) {
       _preferences = _preferences.copyWith(
-        powerLevel: model.power,
-        txPower: model.txPower,
+        powerLevel: resolved.power!,
+        txPower: resolved.txPower!,
         autoPowerSet: true,
         powerLevelSet: false,
       );
       debugLog(
-          '[MODEL] Reporting ${model.power}W for ${model.shortName} at auth');
+          '[MODEL] Reporting ${resolved.power}W for the matched device at auth');
     } else {
       // Unrecognized radio with nothing saved. Carrying the previous device's
       // flags here would both report its wattage and suppress the prompt that
@@ -4630,20 +4632,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _portalLinkPromptPending = false;
     _portalLinkPromptPubkey = null;
 
-    if (connectionResult.deviceModelMatched &&
-        connectionResult.deviceModel != null &&
-        !_preferences.powerLevelSet) {
-      final matchedDevice = connectionResult.deviceModel!;
-      _preferences = _preferences.copyWith(
-        powerLevel: matchedDevice.power,
-        txPower: matchedDevice.txPower,
-        autoPowerSet: true,
-        powerLevelSet: false,
-      );
-      notifyListeners();
-      debugLog(
-          '[MODEL] Device recognized: ${matchedDevice.shortName} - reporting ${matchedDevice.power}W in API calls');
-    }
+    final reportingName = _isAnonymousRenamed
+        ? _originalDeviceName
+        : (_meshCoreConnection?.selfInfo?.name ?? device.name);
+    _applyConnectingDevicePower(reportingName);
 
     if (!connectionResult.deviceModelMatched) {
       final manufacturer = _meshCoreConnection?.deviceInfo?.manufacturer;

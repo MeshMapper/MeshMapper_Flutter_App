@@ -132,6 +132,7 @@ class ApiService {
   final http.Client _client;
   final NetworkStateSource _networkState;
   final Duration _deviceCatalogTimeout;
+  final DateTime Function() _now;
   bool _heartbeatEnabled = false; // Track if heartbeat mode is active
   String? _sessionId;
   bool _txAllowed = false;
@@ -222,14 +223,17 @@ class ApiService {
     http.Client? client,
     NetworkStateSource? networkState,
     Duration deviceCatalogTimeout = const Duration(seconds: 10),
+    DateTime Function()? now,
   })  : _client = client ?? http.Client(),
         _networkState = networkState ?? NetworkStateService.instance,
-        _deviceCatalogTimeout = deviceCatalogTimeout;
+        _deviceCatalogTimeout = deviceCatalogTimeout,
+        _now = now ?? DateTime.now;
 
   /// Fetches the public model catalog without affecting session callbacks.
   Future<DeviceCatalog?> fetchDeviceCatalog() async {
     final stopwatch = Stopwatch()..start();
     final payload = <String, dynamic>{'key': apiKey, 'action': 'list'};
+    final deadline = _now().add(_deviceCatalogTimeout);
     try {
       final response = await _send(
         'POST /wardrive-api.php/devices list',
@@ -238,6 +242,7 @@ class ApiService {
           headers: const {'Content-Type': 'application/json'},
           body: jsonEncode(payload),
         ),
+        deadline: deadline,
       ).timeout(_deviceCatalogTimeout);
       stopwatch.stop();
       if (response.statusCode != 200 ||
@@ -245,7 +250,7 @@ class ApiService {
         debugWarn('[API] Device catalog request was rejected');
         return null;
       }
-      final decoded = jsonDecode(response.body);
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
       if (decoded is! Map<String, dynamic>) {
         debugWarn('[API] Device catalog response was not an object');
         return null;
@@ -286,6 +291,7 @@ class ApiService {
       'app_version': appVersion,
       'firmware_version': firmwareVersion ?? '',
     };
+    final deadline = _now().add(_deviceCatalogTimeout);
     try {
       final response = await _send(
         'POST /wardrive-api.php/devices report_unknown',
@@ -294,10 +300,13 @@ class ApiService {
           headers: const {'Content-Type': 'application/json'},
           body: jsonEncode(payload),
         ),
+        deadline: deadline,
       ).timeout(_deviceCatalogTimeout);
       if (response.statusCode != 200) return null;
-      final decoded = jsonDecode(response.body);
-      if (decoded is! Map<String, dynamic> || decoded['success'] != true) {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is! Map<String, dynamic> ||
+          decoded.length != 2 ||
+          decoded['success'] != true) {
         return null;
       }
       return switch (decoded['status']) {
@@ -327,12 +336,19 @@ class ApiService {
   /// own full allowance rather than the remains of the first one's.
   Future<http.Response> _send(
     String label,
-    Future<http.Response> Function() request,
-  ) async {
+    Future<http.Response> Function() request, {
+    DateTime? deadline,
+  }) async {
     try {
+      if (deadline != null && !_now().isBefore(deadline)) {
+        throw TimeoutException('$label deadline expired');
+      }
       return await request();
     } catch (e) {
       if (!_connectionWasAlreadyClosed(e)) rethrow;
+      if (deadline != null && !_now().isBefore(deadline)) {
+        throw TimeoutException('$label deadline expired');
+      }
       debugWarn('[API] $label found the connection already closed by the '
           'server, sending it again');
       return request();
