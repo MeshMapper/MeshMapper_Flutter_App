@@ -143,7 +143,7 @@ typedef _TargetedDeps = ({
   bool isPingSending,
   bool isAutoReconnecting,
   int repeaterCount,
-  String? firmwareVersionString,
+  int? companionFirmwareVersionCode,
 });
 
 _TargetedDeps _targetedDepsOf(AppStateProvider s) {
@@ -163,7 +163,7 @@ _TargetedDeps _targetedDepsOf(AppStateProvider s) {
     isPingSending: s.isPingSending,
     isAutoReconnecting: s.isAutoReconnecting,
     repeaterCount: s.repeaterCount,
-    firmwareVersionString: s.firmwareVersionString,
+    companionFirmwareVersionCode: s.companionFirmwareVersionCode,
   );
 }
 
@@ -718,11 +718,8 @@ class _TargetedPingSectionState extends State<_TargetedPingSection> {
           isPingSending: appState.isPingSending,
           isRepeaterAdminActive: appState.isRepeaterAdminActive,
           isAutoReconnecting: appState.isAutoReconnecting,
-          companionFirmwareSupported: companionFirmwareAtLeast(
-              appState.firmwareVersionString,
-              major: kCompanionFloorMajor,
-              minor: kCompanionFloorMinor,
-              patch: kCompanionFloorPatch),
+          companionFirmwareSupported: companionSupportsRepeaterAdmin(
+              appState.companionFirmwareVersionCode),
         );
         final manageHint = manageBlock ??
             (manageTarget == null ? kChooseFromListHint : 'Manage repeater');

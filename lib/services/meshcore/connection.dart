@@ -15,6 +15,8 @@ import 'protocol_constants.dart';
 
 /// Response from device query command
 class DeviceQueryResponse {
+  /// Companion FIRMWARE_VER_CODE (byte 1 of RESP_CODE_DEVICE_INFO).
+  /// Describes companion API capabilities, independent of the release string.
   final int protocolVersion;
   final String manufacturer;
   final String? firmwareBuildDate; // Added in protocol v8

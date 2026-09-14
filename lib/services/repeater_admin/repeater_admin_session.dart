@@ -9,12 +9,13 @@ import 'repeater_admin_models.dart';
 
 enum RepeaterAdminState { idle, ensuringContact, loggingIn, admin, guest, failed }
 
-/// The firmware floor. Companion: enforced before a session opens. Repeater:
+/// The firmware floor. Companion: capability code >= 7, checked before opening.
+/// Repeater:
 /// detected at login, because a repeater older than v1.9.0 sends no
 /// firmware-level byte and the companion forwards the cipher's zero pad
 /// byte in its place, so a level of 0 is that repeater.
 const String kCompanionFirmwareFloorSentence =
-    'Manage needs companion firmware v1.9.0 or newer.';
+    'Update companion firmware to use Manage.';
 const String kRepeaterFirmwareFloorSentence =
     'This repeater seems to be running firmware older than v1.9.0. '
     'Manage needs repeater firmware v1.9.0 or newer.';

@@ -702,11 +702,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         isPingSending: _isPingSending,
         isRepeaterAdminActive: isRepeaterAdminActive,
         isAutoReconnecting: _isAutoReconnecting,
-        companionFirmwareSupported: companionFirmwareAtLeast(
-            _firmwareVersionString,
-            major: kCompanionFloorMajor,
-            minor: kCompanionFloorMinor,
-            patch: kCompanionFloorPatch),
+        companionFirmwareSupported:
+            companionSupportsRepeaterAdmin(companionFirmwareVersionCode),
       );
 
   /// The connected companion's cached claims when it has an entry, otherwise
@@ -929,6 +926,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   DeviceModel? get deviceModel => _deviceModel;
   String? get manufacturerString => _manufacturerString;
   String? get firmwareVersionString => _firmwareVersionString;
+
+  /// FIRMWARE_VER_CODE from the connected companion's DEVICE_INFO response.
+  int? get companionFirmwareVersionCode =>
+      _meshCoreConnection?.deviceInfo?.protocolVersion;
 
   /// Human-readable radio config from the connected device's SelfInfo
   /// (e.g. "910.525 MHz · 62.5 kHz · SF7 · CR5"); null on older firmware/no device.
