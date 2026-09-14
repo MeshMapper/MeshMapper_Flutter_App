@@ -59,4 +59,7 @@ class DeviceCatalog {
         'revision': revision,
         'devices': devices.map((model) => model.toJson()).toList(),
       };
+
+  /// Stable JSON used for the validated local cache.
+  String toJsonString() => jsonEncode(toJson());
 }
