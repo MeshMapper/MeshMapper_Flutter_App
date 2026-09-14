@@ -381,7 +381,11 @@ class MeshCoreConnection {
   // clears it (clearPendingReqs), so overlapping two would lose a reply.
   _AdminCommandToken? _adminCommandInFlight;
   Completer<SentInfo>? _adminSentCompleter;
+  // A bare OK carries no command tag. After its caller times out, keep the
+  // receiver and owner until that old reply, an ERR, or an abort drains it.
   Completer<void>? _adminOkCompleter;
+  _AdminCommandToken? _adminOkOwner;
+  bool _adminOkAwaitingLateResponse = false;
   Completer<List<ContactRecord>>? _contactsCompleter;
   List<ContactRecord> _contactsBuffer = [];
 
@@ -755,8 +759,15 @@ class MeshCoreConnection {
             }
             final adminOk = _adminOkCompleter;
             if (adminOk != null) {
+              final owner = _adminOkOwner;
+              final awaitingLateResponse = _adminOkAwaitingLateResponse;
               _adminOkCompleter = null;
+              _adminOkOwner = null;
+              _adminOkAwaitingLateResponse = false;
               if (!adminOk.isCompleted) adminOk.complete();
+              if (awaitingLateResponse && owner != null) {
+                _endAdminCommand(owner);
+              }
               break;
             }
             _setTimeCompleter?.complete();
@@ -1041,6 +1052,7 @@ class MeshCoreConnection {
   /// true when at least one was pending.
   bool _failPendingAdmin(Object error) {
     var any = false;
+    final lateOkOwner = _adminOkAwaitingLateResponse ? _adminOkOwner : null;
     void fail<T>(Completer<T>? c) {
       if (c != null && !c.isCompleted) {
         c.completeError(error);
@@ -1055,12 +1067,15 @@ class MeshCoreConnection {
     fail(_binaryResponseCompleter);
     _adminSentCompleter = null;
     _adminOkCompleter = null;
+    _adminOkOwner = null;
+    _adminOkAwaitingLateResponse = false;
     _contactsCompleter = null;
     _contactsBuffer = [];
     _loginCompleter = null;
     _loginPrefix = null;
     _binaryResponseCompleter = null;
     _binaryResponseTag = null;
+    if (lateOkOwner != null) _endAdminCommand(lateOkOwner);
     return any;
   }
 
@@ -1944,12 +1959,19 @@ class MeshCoreConnection {
       {Duration timeout = const Duration(seconds: 5)}) async {
     final token = _beginAdminCommand('addContact');
     final completer = Completer<void>();
+    var awaitingLateResponse = false;
     try {
       _adminOkCompleter = completer;
+      _adminOkOwner = token;
+      _adminOkAwaitingLateResponse = false;
       await _write(contact.toFrame(CommandCodes.addUpdateContact));
       debugLog('[CONN] addContact ${contact.publicKeyHex.substring(0, 8)}');
       await completer.future.timeout(timeout, onTimeout: () {
-        _adminOkCompleter = null;
+        if (identical(_adminOkCompleter, completer) &&
+            identical(_adminOkOwner, token)) {
+          awaitingLateResponse = true;
+          _adminOkAwaitingLateResponse = true;
+        }
         throw TimeoutException('addContact timed out');
       });
       // The firmware stamps lastmod from the frame (the phone's clock), which
@@ -1963,10 +1985,14 @@ class MeshCoreConnection {
       // completer.future was awaited must not leave this call's completer
       // registered for a later ERR or _abortPendingAdmin() to complete
       // unheard.
-      if (identical(_adminOkCompleter, completer)) {
+      if (!awaitingLateResponse &&
+          identical(_adminOkCompleter, completer) &&
+          identical(_adminOkOwner, token)) {
         _adminOkCompleter = null;
+        _adminOkOwner = null;
+        _adminOkAwaitingLateResponse = false;
       }
-      _endAdminCommand(token);
+      if (!awaitingLateResponse) _endAdminCommand(token);
     }
   }
 
@@ -2090,9 +2116,12 @@ class MeshCoreConnection {
         }
         throw TimeoutException('binary request: SENT timed out');
       });
-      // Set only after SENT arrives: the companion emits SENT before any
-      // response can exist, and both frames arrive on one ordered stream,
-      // so a response cannot precede this assignment.
+      // Set after the SENT await resumes. TCP or USB can decode SENT and
+      // BINARY_RESPONSE from one read and dispatch them in adjacent stream
+      // microtasks, leaving a narrow window where the response arrives before
+      // this assignment and is treated as unsolicited. Mesh transit normally
+      // leaves seconds between the two frames, so this remains a practical
+      // expectation rather than a broader response-buffering change.
       _binaryResponseTag = sent.tag;
       return await responseCompleter.future.timeout(
           replyTimeout(sent.estTimeoutMs), onTimeout: () {
@@ -2124,8 +2153,11 @@ class MeshCoreConnection {
       {Duration timeout = const Duration(seconds: 5)}) async {
     final token = _beginAdminCommand('resetPath');
     final completer = Completer<void>();
+    var awaitingLateResponse = false;
     try {
       _adminOkCompleter = completer;
+      _adminOkOwner = token;
+      _adminOkAwaitingLateResponse = false;
       // Same orphan-completer hazard as login/sendBinaryRequest: attach a
       // no-op listener right away so a _failPendingAdmin error delivered
       // while this call is still parked behind the sign gate (inside
@@ -2138,8 +2170,10 @@ class MeshCoreConnection {
       debugLog('[CONN] resetPath '
           '${pubkey.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join()}');
       await completer.future.timeout(timeout, onTimeout: () {
-        if (identical(_adminOkCompleter, completer)) {
-          _adminOkCompleter = null;
+        if (identical(_adminOkCompleter, completer) &&
+            identical(_adminOkOwner, token)) {
+          awaitingLateResponse = true;
+          _adminOkAwaitingLateResponse = true;
         }
         throw TimeoutException('resetPath timed out');
       });
@@ -2154,10 +2188,14 @@ class MeshCoreConnection {
         _contactCache[hex] = cached.withRouteCleared();
       }
     } finally {
-      if (identical(_adminOkCompleter, completer)) {
+      if (!awaitingLateResponse &&
+          identical(_adminOkCompleter, completer) &&
+          identical(_adminOkOwner, token)) {
         _adminOkCompleter = null;
+        _adminOkOwner = null;
+        _adminOkAwaitingLateResponse = false;
       }
-      _endAdminCommand(token);
+      if (!awaitingLateResponse) _endAdminCommand(token);
     }
   }
 
