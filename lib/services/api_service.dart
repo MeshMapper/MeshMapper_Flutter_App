@@ -243,7 +243,7 @@ class ApiService {
           body: jsonEncode(payload),
         ),
         deadline: deadline,
-      ).timeout(_deviceCatalogTimeout);
+      );
       stopwatch.stop();
       if (response.statusCode != 200 ||
           response.bodyBytes.length > DeviceCatalog.maxEncodedBytes) {
@@ -301,8 +301,11 @@ class ApiService {
           body: jsonEncode(payload),
         ),
         deadline: deadline,
-      ).timeout(_deviceCatalogTimeout);
-      if (response.statusCode != 200) return null;
+      );
+      if (response.statusCode != 200 ||
+          response.bodyBytes.length > DeviceCatalog.maxEncodedBytes) {
+        return null;
+      }
       final decoded = jsonDecode(utf8.decode(response.bodyBytes));
       if (decoded is! Map<String, dynamic> ||
           decoded.length != 2 ||
@@ -339,11 +342,25 @@ class ApiService {
     Future<http.Response> Function() request, {
     DateTime? deadline,
   }) async {
-    try {
+    Future<http.Response> sendAttempt() {
+      if (deadline == null) return request();
+      final remaining = deadline.difference(_now());
+      if (remaining <= Duration.zero) {
+        throw TimeoutException('$label deadline expired');
+      }
+      return request().timeout(remaining);
+    }
+
+    Future<http.Response> completeWithinDeadline() async {
+      final response = await sendAttempt();
       if (deadline != null && !_now().isBefore(deadline)) {
         throw TimeoutException('$label deadline expired');
       }
-      return await request();
+      return response;
+    }
+
+    try {
+      return await completeWithinDeadline();
     } catch (e) {
       if (!_connectionWasAlreadyClosed(e)) rethrow;
       if (deadline != null && !_now().isBefore(deadline)) {
@@ -351,7 +368,7 @@ class ApiService {
       }
       debugWarn('[API] $label found the connection already closed by the '
           'server, sending it again');
-      return request();
+      return completeWithinDeadline();
     }
   }
 
