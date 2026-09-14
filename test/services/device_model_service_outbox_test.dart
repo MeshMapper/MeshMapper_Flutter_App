@@ -84,10 +84,18 @@ void main() {
     service.observeUnknownDevice(manufacturer: 'New radio', appVersion: 'old');
     await Future<void>.delayed(Duration.zero);
     service.observeUnknownDevice(manufacturer: 'New radio', appVersion: 'new');
+    await Future<void>.delayed(Duration.zero);
+
+    final preferences = await SharedPreferences.getInstance();
+    final beforeResponse =
+        jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
+    final beforeEntry = (beforeResponse['entries'] as Map)['newradio'] as Map;
+    expect(beforeEntry['generation'], 2);
+    expect(beforeEntry['app_version'], 'new');
+
     response.complete(DeviceReportAcknowledgement.pending);
     await Future<void>.delayed(const Duration(milliseconds: 10));
 
-    final preferences = await SharedPreferences.getInstance();
     final stored =
         jsonDecode(preferences.getString(DeviceModelService.outboxKey)!);
     final entry = (stored['entries'] as Map)['newradio'] as Map;
