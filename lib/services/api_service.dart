@@ -501,6 +501,7 @@ class ApiService {
     double? accuracyMeters,
     bool offlineMode = false,
     bool skipSessionStore = false,
+    bool Function()? shouldStoreSession,
     String? sessionId,
     Map<String, dynamic>? extras,
   }) async {
@@ -620,6 +621,10 @@ class ApiService {
       if ((reason == 'connect' || reason == 'register') &&
           data['success'] == true) {
         if (!skipSessionStore) {
+          if (shouldStoreSession?.call() == false) {
+            debugWarn('[SESSION] Auth succeeded after its owner became stale');
+            return data;
+          }
           // A wire tag only re-derives under the session that minted it. When
           // the server hands back a DIFFERENT session id (it reuses one only
           // while status=1 and unexpired), anything still sitting in the queue
@@ -634,6 +639,10 @@ class ApiService {
                 '[SESSION] New session id issued (was $previousSessionId, now $newSessionId). '
                 'Queued wire tags are stale');
             await onSessionIdChanged?.call(previousSessionId, newSessionId);
+            if (shouldStoreSession?.call() == false) {
+              debugWarn('[SESSION] Auth owner became stale during queue cleanup');
+              return data;
+            }
           }
           _sessionId = newSessionId;
           // The storm brake is keyed on the session id, so a hold belongs to

@@ -175,4 +175,43 @@ void main() {
     expect(sessionErrors, 1);
     expect(api.sessionId, isNull);
   });
+
+  test('an invalidated replacement auth leaves the live session untouched',
+      () async {
+    final built = build();
+    await connect(built.api);
+
+    final replacement = await built.api.requestAuth(
+      reason: 'connect',
+      publicKey: 'AB',
+      lat: 45.0,
+      lon: -75.0,
+      shouldStoreSession: () => false,
+    );
+
+    expect(replacement?['success'], isTrue);
+    expect(built.api.sessionId, 'old-session',
+        reason: 'a delayed recovery must not replace a connection it no longer owns');
+  });
+
+  test('invalidation during stale-tag cleanup prevents the session swap',
+      () async {
+    final built = build();
+    await connect(built.api);
+    var ownsRecovery = true;
+    built.api.onSessionIdChanged = (oldId, newId) async {
+      ownsRecovery = false;
+    };
+
+    await built.api.requestAuth(
+      reason: 'connect',
+      publicKey: 'AB',
+      lat: 45.0,
+      lon: -75.0,
+      shouldStoreSession: () => ownsRecovery,
+    );
+
+    expect(built.api.sessionId, 'old-session',
+        reason: 'cleanup can yield to disconnect, so ownership is checked again');
+  });
 }
