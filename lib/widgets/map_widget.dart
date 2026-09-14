@@ -22,6 +22,7 @@ import '../services/gps_service.dart';
 import '../services/repeater_admin/repeater_admin_models.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
+import '../utils/coalesced_async_runner.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
 import '../utils/mvt_cells.dart';
@@ -692,6 +693,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // which causes the sync logic to race against itself. This flag bails
   // any nested call.
   bool _styleLoadInProgress = false;
+  final CoalescedAsyncRunner _styleLoadRunner = CoalescedAsyncRunner();
 
   // True only after _setupRepeaterClusterLayers has finished creating the
   // cluster GeoJSON source AND all 3 layers. Set to false at the start of
@@ -2933,7 +2935,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _applyCoverageOverlayOpacity(restore);
   }
 
-  Future<void> _onStyleLoaded(AppStateProvider appState) async {
+  Future<void> _onStyleLoaded(AppStateProvider appState) {
+    if (_styleLoadRunner.isRunning) {
+      debugLog(
+          '[MAP] _onStyleLoaded re-entered while already running, scheduling one follow-up');
+    }
+    return _styleLoadRunner.run(() => _restoreStyle(appState));
+  }
+
+  Future<void> _restoreStyle(AppStateProvider appState) async {
     // Re-entrance guard. iOS plugin sometimes fires onStyleLoadedCallback
     // multiple times during a single setStyle. The race causes "Layer not
     // found" errors during the symbol manager's _rebuildLayers and
