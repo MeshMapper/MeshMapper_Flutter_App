@@ -3136,12 +3136,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // undeliverable (auto-reconnect preserves the queue across re-auth). Drop
     // those pings honestly instead of uploading claims the server will skip
     // while reporting success.
-    _apiService.onSessionIdChanged = () {
-      unawaited(_apiQueueService.dropStaleTaggedItems());
+    _apiService.onSessionIdChanged = (previousSessionId, newSessionId) async {
+      await _apiQueueService.dropStaleTaggedItems();
       // The server credits one deferred square per session id, so a square
       // reported under the old session is owed again under the new one.
       _recentCoverage.clearDeferred();
     };
+
+    _apiService.onSessionExpiredRecovery = _recoverExpiredLiveSession;
 
     _apiService.onRegionalCarpeaters = (keys, error) {
       unawaited(_onRegionalCarpeaters(keys, error));
@@ -6596,6 +6598,136 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Check session validity before starting a wardrive action
   /// Returns true if session is valid, false if expired (triggers disconnect)
+  Future<bool> _recoverExpiredLiveSession() async {
+    if (_isDisposed ||
+        _preferences.offlineMode ||
+        _isConnecting ||
+        _isZoneTransferInProgress ||
+        _connectionStep != ConnectionStep.connected ||
+        _meshCoreConnection == null ||
+        _devicePublicKey == null ||
+        _currentPosition == null) {
+      debugWarn(
+          '[SESSION] Refusing expired-session recovery outside a live connection');
+      return false;
+    }
+
+    final deviceName = _isAnonymousRenamed
+        ? 'Anonymous'
+        : (_meshCoreConnection!.selfInfo?.name ??
+            connectedDeviceName?.replaceFirst('MeshCore-', ''));
+    if (deviceName == null || deviceName.isEmpty) {
+      debugWarn(
+          '[SESSION] Refusing expired-session recovery without a device name');
+      return false;
+    }
+
+    final position = _currentPosition!;
+    final model = _meshCoreConnection!.deviceModel?.manufacturer ??
+        _meshCoreConnection!.deviceInfo?.manufacturer ??
+        'Unknown';
+    debugLog('[SESSION] Re-authenticating live companion after session expiry');
+    final result = await _apiService.requestAuth(
+      reason: 'connect',
+      publicKey: _devicePublicKey!,
+      who: deviceName,
+      appVersion: _appVersion,
+      power: _preferences.powerLevel,
+      iataCode: zoneCode ?? _preferences.iataCode,
+      model: model,
+      radioFreq: _meshCoreConnection!.selfInfo?.radioConfigApi,
+      lat: position.latitude,
+      lon: position.longitude,
+      accuracyMeters: position.accuracy,
+    );
+    if (result == null || result['success'] != true) {
+      debugWarn('[SESSION] Live re-authentication was not accepted');
+      return false;
+    }
+
+    if (result['type'] is String) _authType = result['type'] as String;
+    _syncZoneCapacityFromAuth(result);
+    await _applyRecoveredSessionConfiguration();
+    notifyListeners();
+    return true;
+  }
+
+  /// Apply the live settings supplied by a replacement auth without touching
+  /// the companion connection or the current auto-ping lane.
+  Future<void> _applyRecoveredSessionConfiguration() async {
+    await ChannelService.setRegionalChannels(_apiService.channels);
+    _regionalChannels = ChannelService.getRegionalChannelNames();
+    debugLog('[SESSION] Refreshed regional channels: $_regionalChannels');
+
+    final handler = _unifiedRxHandler;
+    if (handler != null) {
+      final source = ChannelService.getAllowedChannelsForValidator();
+      final allowed = <int, ChannelInfo>{};
+      for (final entry in source.entries) {
+        allowed[entry.key] = ChannelInfo(
+          channelName: entry.value.channelName,
+          key: entry.value.key,
+          hash: entry.value.hash,
+        );
+      }
+      handler.updateValidator(PacketValidator(
+        allowedChannels: allowed,
+        disableRssiFilter: _preferences.disableRssiFilter,
+      ));
+      debugLog(
+          '[SESSION] PacketValidator refreshed with ${allowed.length} channels');
+    }
+
+    final scope = _apiService.scopes.isEmpty ? null : _apiService.scopes.first;
+    final isWildcard = scope == null || scope == '*' || scope == '#*';
+    if (isWildcard) {
+      if (_scope != null) {
+        await _meshCoreConnection?.clearFloodScope();
+      }
+      _scope = null;
+    } else {
+      final scopeName = scope;
+      final bareScope =
+          scopeName.startsWith('#') ? scopeName.substring(1) : scopeName;
+      await _meshCoreConnection!
+          .setFloodScope(CryptoService.deriveScopeKey(bareScope));
+      _scope = '#$bareScope';
+    }
+
+    var updated = _preferences;
+    if (_userOriginalAutoPingInterval != null) {
+      updated =
+          updated.copyWith(autoPingInterval: _userOriginalAutoPingInterval!);
+    }
+    if (_userOriginalHybridMode != null) {
+      updated = updated.copyWith(hybridModeEnabled: _userOriginalHybridMode!);
+    }
+    if (_userOriginalDiscDrop != null) {
+      updated = updated.copyWith(discDropEnabled: _userOriginalDiscDrop!);
+    }
+    if (_userOriginalFloodTraffic != null) {
+      updated =
+          updated.copyWith(floodTrafficEnabled: _userOriginalFloodTraffic!);
+    }
+    if (_apiService.enforceHybrid) {
+      updated = updated.copyWith(hybridModeEnabled: true);
+    }
+    if (_apiService.enforceDiscDrop) {
+      updated = updated.copyWith(discDropEnabled: true);
+    }
+    updated = updated.copyWith(floodTrafficEnabled: !_apiService.floodDisabled);
+    if (updated.autoPingInterval < _apiService.minModeInterval) {
+      updated = updated.copyWith(autoPingInterval: _apiService.minModeInterval);
+    }
+    _preferences = updated;
+    _syncRecentCoverage();
+    await _configurePathHashMode();
+    if (_pingService != null) {
+      _pingService!.hopBytes = effectiveHopBytes;
+      _pingService!.traceHopBytes = _traceHopBytes;
+    }
+  }
+
   Future<bool> _checkSessionBeforeAction() async {
     _lastSessionCheckFailureReason = null;
     final pos = _gpsService.lastPosition;
