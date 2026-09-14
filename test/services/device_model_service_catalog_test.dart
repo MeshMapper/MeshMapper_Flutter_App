@@ -48,4 +48,19 @@ void main() {
 
     expect(service.catalog?.revision, 2);
   });
+
+  test('retains a valid cache when the launch refresh throws', () async {
+    final cached = DeviceCatalog.fromJson(catalogJson(1));
+    SharedPreferences.setMockInitialValues({
+      DeviceModelService.catalogCacheKey: cached.toJsonString(),
+    });
+    final service = DeviceModelService(
+      fetchCatalog: () async => throw StateError('network unavailable'),
+    );
+
+    await service.initialize();
+    await service.refreshFuture;
+
+    expect(service.catalog?.revision, 1);
+  });
 }
