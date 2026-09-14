@@ -134,7 +134,6 @@ typedef _TargetedDeps = ({
   int traceHopBytes,
   String? targetRepeaterId,
   bool isConnected,
-  bool hasRepeaters,
   bool externalAntennaSet,
   bool isPowerSet,
   bool isAutoPingStarting,
@@ -153,7 +152,6 @@ _TargetedDeps _targetedDepsOf(AppStateProvider s) {
     traceHopBytes: s.traceHopBytes,
     targetRepeaterId: s.targetRepeaterId,
     isConnected: s.isConnected,
-    hasRepeaters: s.repeaterCount > 0,
     externalAntennaSet: prefs.externalAntennaSet,
     isPowerSet:
         prefs.autoPowerSet || prefs.powerLevelSet || s.deviceModel != null,
