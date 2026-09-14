@@ -820,7 +820,8 @@ the app shows as "This region does not support claiming yet."
   old server). A successful claim awaits a fresh `mine` response instead of creating a
   local row with the phone's zone. If that refresh fails, the existing cache is kept.
   Passwords go through `SecureTokenStore` under `repeater_admin_pw_<HEX>`,
-  never logged, never sent. Nothing here bumps `mapRevision`.
+  are sent to the repeater over the mesh, but are never logged or sent to the MeshMapper
+  server. Nothing here bumps `mapRevision`.
 - **Entry points**: the Trace row is three pieces, `[list + ID]` (one neutral group), `[Trace]`
   and `[Manage]` (each its own tinted box); Manage needs
   the full key, so a picked repeater carries it and a typed ID counts only when it prefixes
