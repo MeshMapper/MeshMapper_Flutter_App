@@ -91,6 +91,25 @@ class GuideParagraph extends StatelessWidget {
   }
 }
 
+class GuideSectionLabel extends StatelessWidget {
+  const GuideSectionLabel(this.text, {super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+}
+
 class GuideBullet extends StatelessWidget {
   const GuideBullet(this.text, {this.icon = Icons.check_circle, super.key});
 
@@ -364,8 +383,11 @@ Widget buildConnectPage(BuildContext context) {
         text: 'The setup steps finish before wardriving controls are enabled.',
         color: accent,
       ),
-      GuideParagraph(
-        'MeshMapper checks your GPS location, signs into your regional zone, prepares the wardriving channel, and detects your radio model. A previously connected radio will be remembered for quicker reconnection.',
+      GuideCallout(
+        text:
+            'MeshMapper checks your GPS location, signs into your regional zone, prepares the wardriving channel, and detects your radio model. A previously connected radio will be remembered for quicker reconnection.',
+        icon: Icons.sync,
+        color: accent,
       ),
       GuideCallout(
         text:
@@ -422,9 +444,10 @@ Widget buildAntennaPage(BuildContext context) {
         icon: Icons.analytics_outlined,
         color: accent,
       ),
-      GuideParagraph(
-        'Choose Yes or No on the Map screen before starting a mode.',
-        emphasis: true,
+      GuideCallout(
+        text: 'Choose Yes or No on the Map screen before starting a mode.',
+        icon: Icons.touch_app,
+        color: accent,
       ),
     ],
   );
@@ -436,50 +459,18 @@ Widget buildModesPage(BuildContext context) {
     title: 'Wardriving Modes',
     accent: accent,
     children: [
-      _VisualPanel(
-        label: 'Four wardriving mode cards in airtime order',
-        color: accent,
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          alignment: WrapAlignment.center,
-          children: [
-            const _ModeBadge(
-              label: 'Passive',
-              icon: Icons.hearing,
-              color: accent,
-              emphasized: true,
-            ),
-            const _ModeBadge(
-              label: 'Trace',
-              icon: Icons.gps_fixed,
-              color: Colors.cyan,
-            ),
-            const _ModeBadge(
-              label: 'Hybrid',
-              icon: Icons.compare_arrows,
-              color: Colors.purple,
-            ),
-            _ModeBadge(
-              label: 'Active',
-              icon: Icons.sensors,
-              color: PingColors.txSuccess,
-            ),
-          ],
-        ),
-      ),
       const GuideIconRow(
         icon: Icons.hearing,
         title: 'Passive Mode',
         text:
-            'Sends a zero-hop discovery request to every repeater that can hear you, and each repeater replies directly. It also continuously listens for received mesh traffic. This is the most airtime-conservative general mapping mode.',
+            'Sends a zero-hop discovery request to every repeater that can hear you, and each repeater replies directly. It also continuously listens for received mesh traffic. This provides the best balance of broad mesh coverage and low airtime use.',
         color: accent,
       ),
       const GuideIconRow(
         icon: Icons.gps_fixed,
         title: 'Trace Mode',
         text:
-            'Sends a zero-hop trace to one specific repeater. Only that repeater responds. It is the most airtime-friendly mode and is useful for antenna alignment or checking a specific node.',
+            'Sends a zero-hop trace to one specific repeater. Only that repeater responds. It uses the least airtime but focuses on a single repeater, making it useful for antenna alignment or checking a specific node.',
         color: Colors.cyan,
       ),
       const GuideIconRow(
@@ -508,8 +499,18 @@ Widget buildModesPage(BuildContext context) {
         icon: Icons.straighten,
         color: Colors.orange,
       ),
-      const GuideParagraph(
-        'Tap a mode to start it and tap the running mode again to stop. Wait for Stopping to finish before disconnecting. Status text explains when the app is waiting for GPS, movement, or cooldown.',
+      const GuideIconRow(
+        icon: Icons.touch_app,
+        title: 'Start and stop',
+        text:
+            'Tap a mode to start it and tap the running mode again to stop. Wait for Stopping to finish before disconnecting. Status text explains when the app is waiting for GPS, movement, or cooldown.',
+        color: accent,
+      ),
+      const GuideCallout(
+        text:
+            'Use the ? button on the wardriving control panel to reopen help for the antenna and mode buttons.',
+        icon: Icons.help_outline,
+        color: accent,
       ),
     ],
   );
@@ -564,9 +565,6 @@ Widget buildMapControlsPage(BuildContext context) {
         icon: Icons.cell_tower,
         color: accent,
       ),
-      const GuideParagraph(
-        'Use the ? button on the wardriving control panel to reopen help for the antenna and mode buttons.',
-      ),
     ],
   );
 }
@@ -601,11 +599,19 @@ Widget buildSmartPingingPage(BuildContext context) {
           ),
         ),
       ),
-      GuideParagraph(
-        'If the control says Deferred, the app is working normally. It holds one ping and sends it as soon as you enter a square without recent two-way or discovery coverage.',
+      GuideIconRow(
+        icon: Icons.pending_outlined,
+        title: 'Deferred is normal',
+        text:
+            'The app holds one ping and sends it as soon as you enter a square without recent two-way or discovery coverage.',
+        color: Colors.orange,
       ),
-      GuideParagraph(
-        'Received mesh traffic is always recorded because listening adds coverage without transmitting. Manual pings and Trace Mode are not deferred by Smart Pinging.',
+      GuideIconRow(
+        icon: Icons.hearing,
+        title: 'Listening continues',
+        text:
+            'Received mesh traffic is always recorded because listening adds coverage without transmitting. Manual pings and Trace Mode are not deferred by Smart Pinging.',
+        color: accent,
       ),
       GuideCallout(
         text:
@@ -613,8 +619,12 @@ Widget buildSmartPingingPage(BuildContext context) {
         icon: Icons.admin_panel_settings,
         color: accent,
       ),
-      GuideParagraph(
-        'Hollow trail markers show where a ping was deferred. You can adjust the recent-coverage window under Settings > Wardriving.',
+      GuideIconRow(
+        icon: Icons.tune,
+        title: 'Trail and settings',
+        text:
+            'Hollow trail markers show where a ping was deferred. Adjust the recent-coverage window under Settings > Wardriving.',
+        color: accent,
       ),
     ],
   );
@@ -688,28 +698,44 @@ Widget buildCarpeaterPage(BuildContext context) {
           label: const Text('Configure CARpeater'),
         ),
       ),
-      const GuideParagraph(
-        'You can also change this later under Settings > Wardriving > CARpeater.',
-        emphasis: true,
-      ),
-      const GuideParagraph(
-        'MeshMapper can only use valid data passing through your CARpeater when you have enabled the filter and reported which repeater is yours. The app removes your CARpeater from the route and credits the fixed repeater behind it.',
-      ),
-      const GuideParagraph(
-        'If your CARpeater is not reported, its signals look like unreliable, excessively strong readings and the data is dropped.',
-      ),
-      const GuideBullet(
-          "A direct reading from only the user's CARpeater is dropped."),
-      const GuideBullet(
-          "A route through the user's CARpeater can still contribute coverage for the repeater behind it."),
-      const GuideBullet(
-          "Other reported CARpeaters in the region are filtered from the user's results."),
-      const GuideParagraph(
-        'Your CARpeater public key is shared with MeshMapper while the filter is enabled. This allows other wardrivers in your region to filter the same CARpeater too.',
+      const GuideCallout(
+        text: 'Change this later under Settings > Wardriving > CARpeater.',
+        icon: Icons.settings,
+        color: accent,
       ),
       const GuideCallout(
         text:
-            'Do not disable the strong-signal RSSI filter unless you are certain there is no co-located repeater nearby. Incorrect settings can create false coverage data.',
+            "Enable the filter and report your CARpeater's public key. Coverage involving an unreported CARpeater is dropped.",
+        icon: Icons.key,
+        color: accent,
+      ),
+      const GuideIconRow(
+        icon: Icons.block,
+        title: 'Direct CARpeater signal',
+        text: 'Dropped',
+        color: Colors.red,
+      ),
+      const GuideIconRow(
+        icon: Icons.cell_tower,
+        title: 'Fixed repeater behind it',
+        text: 'Coverage counted',
+        color: Colors.green,
+      ),
+      const GuideIconRow(
+        icon: Icons.filter_alt,
+        title: 'Other reported CARpeaters',
+        text: 'Filtered from your results',
+        color: Colors.blue,
+      ),
+      const GuideCallout(
+        text:
+            'While enabled, the public key is shared with MeshMapper so nearby wardrivers can filter the same CARpeater.',
+        icon: Icons.public,
+        color: Colors.blue,
+      ),
+      const GuideCallout(
+        text:
+            'Leave the strong-signal filter enabled unless you are certain no repeater travels near your companion. Turning it off can create false coverage.',
         icon: Icons.warning_amber,
         color: Colors.red,
       ),
@@ -752,8 +778,12 @@ Widget buildBackgroundPage(BuildContext context) {
         ),
       ),
       if (isIos) ...[
-        const GuideParagraph(
-          'Background Location is required for reliable background wardriving. Open Settings > General > Background Location and allow location access Always.',
+        const GuideIconRow(
+          icon: Icons.location_on,
+          title: 'iPhone setup',
+          text:
+              'Background Location is required for reliable background wardriving. Open Settings > General > Background Location and allow location access Always.',
+          color: accent,
         ),
         Padding(
           padding: const EdgeInsets.only(bottom: 16),
@@ -769,11 +799,12 @@ Widget buildBackgroundPage(BuildContext context) {
           ),
         ),
       ] else ...[
-        const GuideParagraph(
-          'No additional background location permission is required. MeshMapper uses a persistent notification while a wardriving mode is active to keep Bluetooth and GPS running.',
-        ),
-        const GuideParagraph(
-          'Allow MeshMapper notifications so you can see when the background session is active.',
+        const GuideIconRow(
+          icon: Icons.notifications_active,
+          title: 'Android setup',
+          text:
+              'No additional background location permission is required. Allow MeshMapper notifications so you can see when the active mode keeps Bluetooth and GPS running.',
+          color: accent,
         ),
       ],
       const GuideCallout(
@@ -791,7 +822,7 @@ Widget buildResultsPage(BuildContext context) {
   final results = <(String, String, Color)>[
     (
       'BIDIR',
-      'the message routed through the mesh and a repeat was heard back.',
+      'the message routed through the mesh and a repeat was heard.',
       PingColors.coverageBidir
     ),
     (
@@ -801,22 +832,22 @@ Widget buildResultsPage(BuildContext context) {
     ),
     (
       'TX',
-      'the message routed successfully, but no repeat was heard back.',
+      'the route succeeded, but no repeat was heard.',
       PingColors.coverageTx
     ),
     (
       'RX',
-      'the radio heard mesh traffic without transmitting.',
+      'mesh traffic was heard without transmitting.',
       PingColors.coverageRx
     ),
     (
       'DEAD',
-      'the attempt did not produce confirmed coverage.',
+      'a repeater heard it, but no other radio received the repeat.',
       PingColors.coverageDead
     ),
     (
       'DROP',
-      'the attempt did not produce confirmed coverage.',
+      'no repeat was heard and the route did not succeed.',
       PingColors.coverageDrop
     ),
   ];
@@ -824,9 +855,23 @@ Widget buildResultsPage(BuildContext context) {
     title: 'See What You Mapped',
     accent: accent,
     children: [
-      const GuideParagraph(
-        'New observations appear on the Map as you travel. Tap a marker or coverage square to see its details, route, signal information, and repeaters.',
+      const _MapResultKindRow(
+        swatchKey: ValueKey('guide-wardriving-marker-swatch'),
+        title: 'Wardriving markers',
+        text:
+            'Dots show your TX, RX, discovery, trace, failed, and deferred events. Tap one for details.',
+        color: accent,
+        shape: BoxShape.circle,
       ),
+      const _MapResultKindRow(
+        swatchKey: ValueKey('guide-coverage-tile-swatch'),
+        title: 'Coverage tiles',
+        text:
+            'Colored background squares summarize community coverage in that area. Tap one for details.',
+        color: Colors.green,
+        shape: BoxShape.rectangle,
+      ),
+      const GuideSectionLabel('Coverage tile colors'),
       for (final result in results)
         _CoverageLegendRow(
           key: ValueKey('guide-coverage-result-${result.$1}'),
@@ -834,22 +879,156 @@ Widget buildResultsPage(BuildContext context) {
           description: result.$2,
           color: result.$3,
         ),
-      const GuideIconRow(
-        icon: Icons.list_alt,
-        title: 'Log',
-        text:
-            'The Log tab shows every TX, RX, discovery, and trace event. The Errors section explains dropped data, connection problems, and CARpeater filtering.',
-        color: accent,
-      ),
-      const GuideIconRow(
-        icon: Icons.history,
-        title: 'History',
-        text:
-            'The History tab saves automatic wardriving sessions. Open a session to review its route on the map, event timeline, and noise-floor graph.',
-        color: accent,
-      ),
+      const _GuideResultsDestinations(),
     ],
   );
+}
+
+class _MapResultKindRow extends StatelessWidget {
+  const _MapResultKindRow({
+    required this.swatchKey,
+    required this.title,
+    required this.text,
+    required this.color,
+    required this.shape,
+  });
+
+  final Key swatchKey;
+  final String title;
+  final String text;
+  final Color color;
+  final BoxShape shape;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            key: swatchKey,
+            width: 26,
+            height: 26,
+            decoration: BoxDecoration(
+              color: color,
+              shape: shape,
+              borderRadius:
+                  shape == BoxShape.rectangle ? BorderRadius.circular(3) : null,
+              border: Border.all(
+                color: Theme.of(context).colorScheme.surface,
+                width: 1.5,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  text,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        height: 1.35,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GuideResultsDestinations extends StatelessWidget {
+  const _GuideResultsDestinations();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      key: const ValueKey('guide-results-destinations'),
+      margin: const EdgeInsets.only(top: 2, bottom: 14),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.55),
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          children: [
+            const Expanded(
+              child: _GuideResultDestination(
+                icon: Icons.list_alt,
+                title: 'Log',
+                text: 'Events and errors',
+              ),
+            ),
+            VerticalDivider(width: 1, color: colors.outlineVariant),
+            const Expanded(
+              child: _GuideResultDestination(
+                icon: Icons.history,
+                title: 'History',
+                text: 'Saved sessions and routes',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GuideResultDestination extends StatelessWidget {
+  const _GuideResultDestination({
+    required this.icon,
+    required this.title,
+    required this.text,
+  });
+
+  final IconData icon;
+  final String title;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+      child: Row(
+        children: [
+          Icon(icon, color: accent, size: 24),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                Text(
+                  text,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _CoverageLegendRow extends StatelessWidget {
@@ -956,11 +1135,18 @@ Widget buildOnlineOfflinePage(BuildContext context) {
         icon: Icons.upload_file,
         color: Colors.orange,
       ),
-      GuideParagraph(
-        'Use Go Offline or Go Online on the Connect tab. You can switch before connecting or during a connected session.',
+      GuideIconRow(
+        icon: Icons.swap_horiz,
+        title: 'Switch anytime',
+        text:
+            'Use Go Offline or Go Online on the Connect tab. You can switch before connecting or during a connected session.',
+        color: accent,
       ),
-      GuideParagraph(
-        'Hybrid and Active are unavailable offline because the app cannot reach MeshMapper to check out a regional airtime slot. Smart Pinging is also unavailable because the app cannot check recent server coverage.',
+      GuideCallout(
+        text:
+            'Hybrid and Active are unavailable offline because the app cannot reach MeshMapper to check out a regional airtime slot. Smart Pinging is also unavailable because the app cannot check recent server coverage.',
+        icon: Icons.cloud_off,
+        color: Colors.blueGrey,
       ),
     ],
   );
@@ -1034,13 +1220,13 @@ Widget buildAccountPage(BuildContext context) {
           ],
         ),
       ),
-      GuideParagraph(
-        'When you link a connected companion, the app asks the radio to cryptographically sign a challenge. This proves that you control that companion without sharing its private key.',
+      GuideCallout(
+        text:
+            'When you link a connected companion, the app asks the radio to cryptographically sign a challenge. This proves that you control that companion without sharing its private key.',
+        icon: Icons.verified_user,
+        color: accent,
       ),
-      GuideParagraph(
-        'MyMeshMapper allows you to:',
-        emphasis: true,
-      ),
+      GuideSectionLabel('MyMeshMapper allows you to:'),
       GuideBullet('See every companion linked to the account.'),
       GuideBullet(
           'View the data and coverage points your companions reported.'),
@@ -1693,41 +1879,6 @@ class _MapSquare extends StatelessWidget {
         const SizedBox(height: 4),
         Text(label, style: Theme.of(context).textTheme.labelSmall),
       ],
-    );
-  }
-}
-
-class _ModeBadge extends StatelessWidget {
-  const _ModeBadge({
-    required this.label,
-    required this.icon,
-    required this.color,
-    this.emphasized = false,
-  });
-
-  final String label;
-  final IconData icon;
-  final Color color;
-  final bool emphasized;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 112,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: emphasized ? 0.2 : 0.07),
-        border: Border.all(color: color, width: emphasized ? 2 : 1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(height: 5),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
-        ],
-      ),
     );
   }
 }
