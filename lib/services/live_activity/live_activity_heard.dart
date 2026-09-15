@@ -16,8 +16,8 @@ import 'live_activity_models.dart';
 /// same id twice.
 ///
 /// "Current" means refreshed since the latest send, [cycleStartedAt]. A ping
-/// that hears nothing leaves the box alone, so its rows come back here marked
-/// not current and the card dims them as last heard instead of wiping them.
+/// that hears nothing shows no rows at all: the card is empty rather than
+/// dimmed, so a silent ping never reads as an old result left on screen.
 /// A fresh RX observation during such a cycle is the only current thing, so it
 /// is shown on its own.
 ({List<LiveActivityRepeater> repeaters, int totalCount, bool isCurrent})
@@ -36,13 +36,19 @@ import 'live_activity_models.dart';
   final rxIsCurrent =
       cycleStartedAt != null && rxAt != null && !rxAt.isBefore(cycleStartedAt);
   final hasCurrent = topIsCurrent || rxIsCurrent;
-  final includeTop = !hasCurrent || topIsCurrent;
-  final includeRx = !hasCurrent || rxIsCurrent;
+
+  if (!hasCurrent) {
+    return (
+      repeaters: const <LiveActivityRepeater>[],
+      totalCount: 0,
+      isCurrent: false,
+    );
+  }
 
   final repeaters = <LiveActivityRepeater>[];
   final shown = <String>{};
 
-  if (includeTop) {
+  if (topIsCurrent) {
     for (final row in top) {
       if (!row.snr.isFinite) continue;
       final id = row.repeaterId.toUpperCase();
@@ -57,8 +63,8 @@ import 'live_activity_models.dart';
     }
   }
 
-  var totalCount = includeTop ? topTotalCount : 0;
-  if (includeRx && rxSlot != null && rxSlot.snr.isFinite) {
+  var totalCount = topIsCurrent ? topTotalCount : 0;
+  if (rxIsCurrent && rxSlot != null && rxSlot.snr.isFinite) {
     final id = rxSlot.repeaterId.toUpperCase();
     if (shown.add(id)) {
       repeaters.add(LiveActivityRepeater(
