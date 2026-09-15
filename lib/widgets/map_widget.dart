@@ -6069,7 +6069,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       if (t.success) traceSuccessTotal++;
     }
 
-    return Object.hash(
+    return Object.hashAll([
       appState.txPings.length,
       appState.rxPings.length,
       appState.discLogEntries.length,
@@ -6088,9 +6088,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       txEchoTotal,
       discNodeTotal,
       traceSuccessTotal,
+      appState.preferences.showDeferredMarkers,
       appState.viewingHistorySession,
       appState.historySessionMarkers?.length ?? 0,
-    );
+    ]);
   }
 
   /// Color for the overlay ping-type dot
