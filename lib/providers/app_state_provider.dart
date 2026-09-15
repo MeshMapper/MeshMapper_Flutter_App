@@ -241,6 +241,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// session" and mean it rather than "whatever is in the recent history".
   DateTime? _liveActivitySessionStartedAt;
   DateTime? _liveActivityCycleStartedAt;
+  DateTime? _pendingLiveActivityCycleStart;
   SessionOperation? _liveActivityOperation;
   MeshCoreConnection? _meshCoreConnection;
   PingService? _pingService;
@@ -1706,6 +1707,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _liveActivityManualSession = false;
     _liveActivityOperation = null;
     _liveActivityCycleStartedAt = null;
+    _pendingLiveActivityCycleStart = null;
     _scheduleLiveActivitySync(immediate: true);
     _liveActivitySessionId = null;
     _liveActivitySessionStartedAt = null;
@@ -1717,9 +1719,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // it here left the fact unrecorded on Android, so the branches reading it
     // were dead there.
     if (!_liveActivitySessionActive) return;
-    final now = DateTime.now();
     _liveActivityOperation = operation;
-    _liveActivityCycleStartedAt = now;
+    // Stash the send time but don't advance the cycle boundary yet. The
+    // previous heard list stays "current" during the echo/discovery window so
+    // the Live Activity never flashes "Nothing heard" before results arrive.
+    // The boundary is applied at window close by _commitLiveActivityCycleStart.
+    _pendingLiveActivityCycleStart = DateTime.now();
+    _scheduleLiveActivitySync(immediate: true);
+  }
+
+  /// Apply the pending cycle boundary and publish the heard list.
+  ///
+  /// Called at the close of each echo/discovery/trace window. If echoes arrived,
+  /// the overlay's timestamp is after the send time and the results are shown.
+  /// If nothing was heard, the overlay is stale and the card reads empty.
+  void _commitLiveActivityCycleStart() {
+    final pending = _pendingLiveActivityCycleStart;
+    if (pending == null) return;
+    _liveActivityCycleStartedAt = pending;
+    _pendingLiveActivityCycleStart = null;
     _scheduleLiveActivitySync(immediate: true);
   }
 
@@ -5071,6 +5089,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _pingService!.onTxWindowComplete = (directSuccess, multiHopEchoes) {
       _liveActivityOperation = null;
+      _commitLiveActivityCycleStart();
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? allRepeaters;
@@ -5121,6 +5140,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _pingService!.onDiscoveryWindowComplete = (success) {
       _liveActivityOperation = null;
+      _commitLiveActivityCycleStart();
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? repeaters;
@@ -5165,6 +5185,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _pingService!.onTraceWindowComplete = (result) {
       _liveActivityOperation = null;
+      _commitLiveActivityCycleStart();
       double? lat;
       double? lon;
       List<MarkerRepeaterInfo>? repeaters;

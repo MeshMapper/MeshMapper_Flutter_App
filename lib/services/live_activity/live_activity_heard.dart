@@ -15,7 +15,9 @@ import 'live_activity_models.dart';
 /// the SwiftUI `ForEach` on the card identifies rows by id and cannot draw the
 /// same id twice.
 ///
-/// "Current" means refreshed since the latest send, [cycleStartedAt]. A ping
+/// "Current" means refreshed since the latest send, [cycleStartedAt].
+/// [cycleStartedAt] is advanced at window close (not at ping send), so the
+/// previous cycle's results stay visible while the new window listens. A ping
 /// that hears nothing shows no rows at all: the card is empty rather than
 /// dimmed, so a silent ping never reads as an old result left on screen.
 /// A fresh RX observation during such a cycle is the only current thing, so it
