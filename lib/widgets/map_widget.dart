@@ -6107,15 +6107,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Build a single overlay table row with colored dot, repeater ID, and SNR
   TableRow _overlayRow(String repeaterId, double snr, Color dotColor,
       {bool isLarge = false}) {
-    final dotSize = isLarge ? 12.0 : 6.0;
-    final fontSize = isLarge ? 22.0 : 11.0;
-    final rowVerticalPadding = isLarge ? 2.0 : 1.0;
+    final dotSize = isLarge ? 9.0 : 6.0;
+    final fontSize = isLarge ? 17.0 : 11.0;
+    final rowVerticalPadding = isLarge ? 1.5 : 1.0;
     return TableRow(
       children: [
         TableCell(
           verticalAlignment: TableCellVerticalAlignment.middle,
           child: Padding(
-            padding: EdgeInsets.only(right: isLarge ? 8 : 4),
+            padding: EdgeInsets.only(right: isLarge ? 6 : 4),
             child: Container(
               width: dotSize,
               height: dotSize,
@@ -6165,12 +6165,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     return Container(
       padding: EdgeInsets.symmetric(
-        horizontal: isLarge ? 20 : 10,
-        vertical: isLarge ? 12 : 6,
+        horizontal: isLarge ? 15 : 10,
+        vertical: isLarge ? 9 : 6,
       ),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(isLarge ? 16 : 8),
+        borderRadius: BorderRadius.circular(isLarge ? 12 : 8),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -6179,7 +6179,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           Text(
             'Top Heard',
             style: TextStyle(
-              fontSize: isLarge ? 18 : 9,
+              fontSize: isLarge ? 14 : 9,
               fontWeight: FontWeight.w500,
               color: Colors.white54,
               letterSpacing: 0.5,
@@ -6190,7 +6190,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             Text(
               '---',
               style: TextStyle(
-                fontSize: isLarge ? 22 : 11,
+                fontSize: isLarge ? 17 : 11,
                 fontFamily: 'monospace',
                 color: Colors.white38,
               ),
@@ -6201,7 +6201,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               columnWidths: {
                 0: const IntrinsicColumnWidth(), // dot
                 1: const IntrinsicColumnWidth(), // ID
-                2: FixedColumnWidth(isLarge ? 16 : 8), // spacer
+                2: FixedColumnWidth(isLarge ? 12 : 8), // spacer
                 3: const IntrinsicColumnWidth(), // SNR
               },
               children: [
