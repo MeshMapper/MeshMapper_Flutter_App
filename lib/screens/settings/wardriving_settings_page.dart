@@ -138,7 +138,7 @@ class WardrivingSettingsPage extends StatelessWidget {
                 secondary: const Icon(Icons.layers_outlined),
                 title: const Text('Show only recent coverage'),
                 subtitle: const Text(
-                    'Show coverage within the Smart Ping time window'),
+                    'Show all coverage colors within the Smart Ping time window'),
                 value: prefs.smartPingRecentCoverageOnly,
                 onChanged: (value) => appState.updatePreferences(
                     prefs.copyWith(smartPingRecentCoverageOnly: value)),
