@@ -4845,7 +4845,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         );
       }
 
-      for (final marker in appState.deferredPingMarkers) {
+      final deferredMarkersToShow = appState.preferences.showDeferredMarkers
+          ? appState.deferredPingMarkers
+          : const <PingEventMarker>[];
+      for (final marker in deferredMarkersToShow) {
         final id = _deferredMarkerId(marker);
         await syncOne(
           type: 'deferred',
@@ -6101,16 +6104,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Build a single overlay table row with colored dot, repeater ID, and SNR
-  TableRow _overlayRow(String repeaterId, double snr, Color dotColor) {
+  TableRow _overlayRow(String repeaterId, double snr, Color dotColor,
+      {bool isLarge = false}) {
+    final dotSize = isLarge ? 12.0 : 6.0;
+    final fontSize = isLarge ? 22.0 : 11.0;
+    final rowVerticalPadding = isLarge ? 2.0 : 1.0;
     return TableRow(
       children: [
         TableCell(
           verticalAlignment: TableCellVerticalAlignment.middle,
           child: Padding(
-            padding: const EdgeInsets.only(right: 4),
+            padding: EdgeInsets.only(right: isLarge ? 8 : 4),
             child: Container(
-              width: 6,
-              height: 6,
+              width: dotSize,
+              height: dotSize,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: dotColor,
@@ -6119,11 +6126,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
+          padding: EdgeInsets.symmetric(vertical: rowVerticalPadding),
           child: Text(
             repeaterId,
-            style: const TextStyle(
-              fontSize: 11,
+            style: TextStyle(
+              fontSize: fontSize,
               fontWeight: FontWeight.w600,
               fontFamily: 'monospace',
               color: Colors.white,
@@ -6132,12 +6139,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ),
         const SizedBox(),
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
+          padding: EdgeInsets.symmetric(vertical: rowVerticalPadding),
           child: Text(
             snr.toStringAsFixed(1),
             textAlign: TextAlign.right,
             style: TextStyle(
-              fontSize: 11,
+              fontSize: fontSize,
               fontWeight: FontWeight.w600,
               fontFamily: 'monospace',
               color: _snrColor(snr),
@@ -6153,21 +6160,25 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final topRepeaters = appState.topRepeatersBySnr;
     final rxSlot = appState.rxOverlaySlot;
     final isEmpty = topRepeaters.isEmpty && rxSlot == null;
+    final isLarge = appState.preferences.largerTopRepeaters;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: EdgeInsets.symmetric(
+        horizontal: isLarge ? 20 : 10,
+        vertical: isLarge ? 12 : 6,
+      ),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(isLarge ? 16 : 8),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Top Heard',
             style: TextStyle(
-              fontSize: 9,
+              fontSize: isLarge ? 18 : 9,
               fontWeight: FontWeight.w500,
               color: Colors.white54,
               letterSpacing: 0.5,
@@ -6175,10 +6186,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 2),
           if (isEmpty)
-            const Text(
+            Text(
               '---',
               style: TextStyle(
-                fontSize: 11,
+                fontSize: isLarge ? 22 : 11,
                 fontFamily: 'monospace',
                 color: Colors.white38,
               ),
@@ -6186,18 +6197,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           if (!isEmpty)
             Table(
               defaultColumnWidth: const IntrinsicColumnWidth(),
-              columnWidths: const {
-                0: IntrinsicColumnWidth(), // dot
-                1: IntrinsicColumnWidth(), // ID
-                2: FixedColumnWidth(8), // spacer
-                3: IntrinsicColumnWidth(), // SNR
+              columnWidths: {
+                0: const IntrinsicColumnWidth(), // dot
+                1: const IntrinsicColumnWidth(), // ID
+                2: FixedColumnWidth(isLarge ? 16 : 8), // spacer
+                3: const IntrinsicColumnWidth(), // SNR
               },
               children: [
                 for (final r in topRepeaters)
-                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type)),
+                  _overlayRow(r.repeaterId, r.snr, _overlayTypeColor(r.type),
+                      isLarge: isLarge),
                 if (rxSlot != null)
                   _overlayRow(rxSlot.repeaterId, rxSlot.snr,
-                      _overlayTypeColor(OverlayPingType.rx)),
+                      _overlayTypeColor(OverlayPingType.rx),
+                      isLarge: isLarge),
               ],
             ),
         ],
