@@ -896,32 +896,32 @@ Widget buildResultsPage(BuildContext context) {
   final results = <(String, String, Color)>[
     (
       'BIDIR',
-      'the message routed through the mesh and a repeat was heard.',
+      'your channel message routed through the mesh to an observer and your radio heard a repeat. Happens in Active and Hybrid modes.',
       PingColors.coverageBidir
     ),
     (
       'DISC',
-      'a repeater answered a discovery request.',
+      'a repeater responded to your discovery or trace request. Happens in Passive, Hybrid, and Trace modes.',
       PingColors.coverageDisc
     ),
     (
       'TX',
-      'the route succeeded, but no repeat was heard.',
+      'your channel message reached an observer through the mesh, but your radio heard no repeats. Happens in Active and Hybrid modes.',
       PingColors.coverageTx
     ),
     (
       'RX',
-      'mesh traffic was heard without transmitting.',
+      'your radio heard mesh traffic not generated from your own wardriving. Can happen in any mode.',
       PingColors.coverageRx
     ),
     (
       'DEAD',
-      'a repeater heard it, but no other radio received the repeat.',
+      'your radio heard a repeat, but the message never reached an observer. Happens in Active and Hybrid modes.',
       PingColors.coverageDead
     ),
     (
       'DROP',
-      'no repeat was heard and the route did not succeed.',
+      'either no repeater was heard or no repeater responded to your discovery request. Happens in Active, Hybrid, and Passive modes.',
       PingColors.coverageDrop
     ),
   ];
@@ -935,7 +935,7 @@ Widget buildResultsPage(BuildContext context) {
         swatchKey: ValueKey('guide-wardriving-marker-swatch'),
         title: 'Wardriving markers',
         text:
-            'Dots show your TX, RX, discovery, trace, failed, and deferred events. Tap one for details.',
+            'Dots show what your app saw locally: TX, RX, discovery, trace, failed, and deferred events. A green dot means your radio heard a repeat, but the tile color depends on what the MeshMapper servers observed. Markers and tiles show two different things. Tap one for details.',
         color: accent,
         shape: BoxShape.circle,
       ),
@@ -943,7 +943,7 @@ Widget buildResultsPage(BuildContext context) {
         swatchKey: ValueKey('guide-coverage-tile-swatch'),
         title: 'Coverage tiles',
         text:
-            'Colored background squares summarize community coverage in that area. Tap one for details.',
+            'Colored background squares summarize what the MeshMapper servers observed for community coverage in that area. Tap one for details.',
         color: Colors.green,
         shape: BoxShape.rectangle,
       ),
@@ -1283,12 +1283,17 @@ Widget buildAccountPage(BuildContext context) {
           'View the data and coverage points your companions reported.'),
       GuideBullet('Delete coverage points from MeshMapper.'),
       GuideBullet('Track your mapping points and awards.'),
-      GuideIconRow(
-        icon: Icons.cell_tower,
-        title: 'Claim and manage repeaters',
-        text:
-            'Select a repeater on the Map, tap Manage, sign in with its admin password, and tap Claim. Once claimed, your MyMeshMapper identity is publicly listed as an administrator. You can then add build and deployment information for that repeater through the MyMeshMapper portal.',
-        color: accent,
+      GuideBullet('Claim and manage repeaters you administer.'),
+      _GuideDetails(
+        title: 'How to claim a repeater',
+        children: [
+          GuideBullet(
+              'Select a repeater on the Map, tap Manage, sign in with its admin password, and tap Claim.'),
+          GuideBullet(
+              'Once claimed, your MyMeshMapper identity is publicly listed as an administrator.'),
+          GuideBullet(
+              'You can then add build and deployment information for that repeater through the MyMeshMapper portal.'),
+        ],
       ),
       _GuideDetails(
         title: 'How linking protects your radio',
