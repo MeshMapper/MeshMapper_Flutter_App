@@ -104,7 +104,13 @@ Skip and Finish persist completion; simply opening or interrupting the guide
 does not. `MainScaffold` serializes the welcome prompt with other global
 dialogs, and About & Support offers manual replay on mobile. The guide is a
 self-contained Flutter PageView and never changes connection, wardriving, or
-upload state.
+upload state. Its 12 pages cover connection, online/offline storage, privacy,
+antenna setup, CARpeater setup, background operation, modes, Smart Pinging,
+map controls, results, accounts, and a final recap. Optional explanations
+expand within a page so the main setup steps stay easy to scan. Shared guide
+components adapt accent brightness for dark mode; coverage swatches keep the
+map's exact colors. The CARpeater and background-location setup actions use
+the existing provider-backed flows.
 
 ### Service-Oriented Architecture
 

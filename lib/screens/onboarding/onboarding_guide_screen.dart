@@ -138,22 +138,27 @@ class _OnboardingGuideScreenState extends State<OnboardingGuideScreen> {
                       )
                     else
                       const SizedBox(width: 104),
-                    const Spacer(),
-                    FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size(128, 48),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size(128, 48),
+                          ),
+                          onPressed: _completionInFlight
+                              ? null
+                              : isLastPage
+                                  ? () => _completeAndPop(
+                                        OnboardingGuideResult.finished,
+                                      )
+                                  : _goForward,
+                          icon: Icon(
+                              isLastPage ? Icons.check : Icons.arrow_forward),
+                          iconAlignment: IconAlignment.end,
+                          label: Text(isLastPage ? 'Finish Guide' : 'Next'),
+                        ),
                       ),
-                      onPressed: _completionInFlight
-                          ? null
-                          : isLastPage
-                              ? () => _completeAndPop(
-                                    OnboardingGuideResult.finished,
-                                  )
-                              : _goForward,
-                      icon:
-                          Icon(isLastPage ? Icons.check : Icons.arrow_forward),
-                      iconAlignment: IconAlignment.end,
-                      label: Text(isLastPage ? 'Finish Guide' : 'Next'),
                     ),
                   ],
                 ),
