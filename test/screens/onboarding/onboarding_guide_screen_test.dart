@@ -107,6 +107,34 @@ void main() {
     expect(find.text('Next'), findsOneWidget);
   });
 
+  testWidgets('plain paragraphs are only used as page introductions',
+      (tester) async {
+    late List<Widget> pages;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) {
+            pages = buildOnboardingGuidePages(context);
+            return const SizedBox.shrink();
+          },
+        ),
+      ),
+    );
+
+    for (final page in pages.cast<OnboardingGuidePage>()) {
+      final paragraphIndexes = <int>[
+        for (var index = 0; index < page.children.length; index++)
+          if (page.children[index] is GuideParagraph) index,
+      ];
+      expect(
+        paragraphIndexes.every((index) => index == 0),
+        isTrue,
+        reason:
+            '${page.title} should not return to loose paragraphs after structured content.',
+      );
+    }
+  });
+
   testWidgets('first page mirrors both Connection screen states',
       (tester) async {
     await tester.pumpWidget(host());
@@ -312,7 +340,7 @@ void main() {
 
     await goForward(tester, 1);
     expect(
-      find.textContaining('If your CARpeater is not reported'),
+      find.textContaining('Coverage involving an unreported CARpeater'),
       findsOneWidget,
     );
 
@@ -356,9 +384,9 @@ void main() {
     for (final claim in <String>[
       'zero-hop discovery request to every repeater that can hear you',
       'each repeater replies directly',
-      'most airtime-conservative general mapping mode',
+      'best balance of broad mesh coverage and low airtime use',
       'Only that repeater responds',
-      'most airtime-friendly mode',
+      'uses the least airtime but focuses on a single repeater',
       'Alternates between zero-hop discovery requests and channel flood messages',
       'flood messages use more airtime than a zero-hop discovery request',
       'uses the most airtime on the mesh',
@@ -371,6 +399,21 @@ void main() {
 
     expect(find.textContaining('Like Active Mode'), findsNothing);
     expect(find.textContaining('or a regional rule'), findsNothing);
+  });
+
+  testWidgets('page 3 shows each mode icon only beside its explanation',
+      (tester) async {
+    await tester.pumpWidget(host());
+    await goForward(tester, 2);
+
+    for (final icon in <IconData>[
+      Icons.hearing,
+      Icons.gps_fixed,
+      Icons.compare_arrows,
+      Icons.sensors,
+    ]) {
+      expect(find.byIcon(icon), findsOneWidget);
+    }
   });
 
   testWidgets('page 3 centralizes regional flood policy in one callout',
@@ -423,6 +466,23 @@ void main() {
     await goForward(tester, 2);
     expect(
       find.textContaining('at least 25 metres of movement'),
+      findsNothing,
+    );
+  });
+
+  testWidgets('controls help note appears with modes instead of map controls',
+      (tester) async {
+    await tester.pumpWidget(host());
+    await goForward(tester, 2);
+
+    expect(
+      find.textContaining('Use the ? button on the wardriving control panel'),
+      findsOneWidget,
+    );
+
+    await goForward(tester, 1);
+    expect(
+      find.textContaining('Use the ? button on the wardriving control panel'),
       findsNothing,
     );
   });
@@ -495,7 +555,62 @@ void main() {
     expect(appState.preferences.ignoreCarpeater, isTrue);
   });
 
-  testWidgets('page 8 uses one square coverage legend', (tester) async {
+  testWidgets('page 6 presents CARpeater outcomes as compact rows',
+      (tester) async {
+    await tester.pumpWidget(host());
+    await goForward(tester, 5);
+
+    const outcomes = <(String, String)>[
+      ('Direct CARpeater signal', 'Dropped'),
+      ('Fixed repeater behind it', 'Coverage counted'),
+      ('Other reported CARpeaters', 'Filtered from your results'),
+    ];
+    for (final (title, result) in outcomes) {
+      final row = find.widgetWithText(GuideIconRow, title);
+      expect(row, findsOneWidget);
+      expect(
+        find.descendant(of: row, matching: find.text(result)),
+        findsOneWidget,
+      );
+    }
+  });
+
+  testWidgets('page 8 distinguishes marker dots from coverage tiles',
+      (tester) async {
+    await tester.pumpWidget(host());
+    await goForward(tester, 7);
+
+    final markerSwatch = find.byKey(
+      const ValueKey('guide-wardriving-marker-swatch'),
+    );
+    final tileSwatch = find.byKey(
+      const ValueKey('guide-coverage-tile-swatch'),
+    );
+    expect(markerSwatch, findsOneWidget);
+    expect(tileSwatch, findsOneWidget);
+
+    final markerDecoration =
+        tester.widget<Container>(markerSwatch).decoration! as BoxDecoration;
+    final tileDecoration =
+        tester.widget<Container>(tileSwatch).decoration! as BoxDecoration;
+    expect(markerDecoration.shape, BoxShape.circle);
+    expect(tileDecoration.shape, BoxShape.rectangle);
+
+    final destinations = find.byKey(
+      const ValueKey('guide-results-destinations'),
+    );
+    expect(destinations, findsOneWidget);
+    expect(
+      find.descendant(of: destinations, matching: find.text('Log')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: destinations, matching: find.text('History')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('page 8 uses a square coverage tile legend', (tester) async {
     PingColors.setColorVisionType(ColorVisionType.none);
     await tester.pumpWidget(host());
     await goForward(tester, 7);
