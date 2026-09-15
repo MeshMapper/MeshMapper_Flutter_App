@@ -327,8 +327,10 @@ untouched. On by default with a 14 day window.
   Smart Pinging is enabled. `coverageOverlayDays` uses that effective window, including
   regional overrides, and is null when the view is off or Smart Pinging is disabled.
   A direct map listener observes the effective window even on UI-only auth/release
-  notifications. The overlay and live fresh-tile requests both use `f_days` and `f_types=green,cyan`,
-  leaving old or never-mapped places as gaps. Filter changes rebuild the overlay and
+  notifications. The overlay and live fresh-tile requests use `f_days` with all coverage
+  types, so recent grey, purple, orange and red results remain visible alongside green
+  and cyan. Only the Smart Pinging lookup uses `f_types=green,cyan` to decide whether
+  to defer a ping. Old or never-mapped places remain gaps. Filter changes rebuild the overlay and
   clear its patch; patch bodies belong to a region/grid/radio/window context, and an
   in-flight fetch from an old context is discarded. This changes the coverage squares,
   not the session's ping markers or the Smart Pinging send rules.

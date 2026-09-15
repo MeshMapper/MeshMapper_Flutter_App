@@ -3237,8 +3237,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final zone = appState.zoneCode!.toLowerCase();
     final gridSize = prefs.coverageGridSize;
     final recentDays = appState.coverageOverlayDays;
-    final recentSuffix =
-        recentDays == null ? '' : '&f_days=$recentDays&f_types=green,cyan';
+    // Display every recent result. Only the Smart Pinging lookup filters types.
+    final recentSuffix = recentDays == null ? '' : '&f_days=$recentDays';
     // The preset filter (f_freq, f_bw, f_sf; never f_cr) so the overlay
     // paints the preset the radio is on, or was last on. Values are digits
     // and dots, so no encoding. Absent = the region's default layer.
@@ -6709,7 +6709,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                           Padding(
                             padding: const EdgeInsets.only(top: 4),
                             child: Text(
-                              'Showing successful coverage from the last '
+                              'Showing all coverage results from the last '
                               '$recentDays ${recentDays == 1 ? 'day' : 'days'}.',
                               style: const TextStyle(fontSize: 12),
                             ),

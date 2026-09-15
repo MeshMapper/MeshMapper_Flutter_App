@@ -23,7 +23,6 @@ void main() {
             'f_bw': '62.5',
             'f_sf': '7',
             'f_days': '30',
-            'f_types': 'green,cyan',
           });
           return http.Response('', 304, headers: {'x-tile-changed': '1'});
         }));
