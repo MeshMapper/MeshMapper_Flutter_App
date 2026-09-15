@@ -1136,8 +1136,10 @@ extension MeshMapperActivityAttributes.ContentState {
       traceCount: 0,
       queueSize: 0,
       repeaters: [],
+      // A silent cycle reports no rows and no current rows, never an empty
+      // list marked current: the two flags always agree.
       totalHeardCount: 0,
-      repeatersAreCurrent: true,
+      repeatersAreCurrent: false,
       updatedAt: Date()
     )
   }

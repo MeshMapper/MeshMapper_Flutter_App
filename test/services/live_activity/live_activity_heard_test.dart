@@ -41,7 +41,7 @@ void main() {
       expect(result.isCurrent, isTrue);
     });
 
-    test('a silent ping keeps the rows and marks them not current', () {
+    test('a silent ping clears the rows instead of dimming them', () {
       final result = buildLiveActivityHeard(
         top: const [(repeaterId: 'A1', snr: 8.5, type: OverlayPingType.tx)],
         topTotalCount: 1,
@@ -52,12 +52,11 @@ void main() {
         nameFor: nameFor,
       );
 
-      expect(result.repeaters.map((r) => r.id), ['A1'],
-          reason: 'a ping that hears nothing leaves the map box alone, '
-              'so the card keeps the last rows too');
-      expect(result.isCurrent, isFalse,
-          reason: 'rows from before the latest send are last heard, not now');
-      expect(result.totalCount, 1);
+      expect(result.repeaters, isEmpty,
+          reason: 'a ping that hears nothing shows an empty card, not the '
+              'previous rows dimmed');
+      expect(result.isCurrent, isFalse);
+      expect(result.totalCount, 0);
     });
 
     test('an RX slot sharing a top row id is not duplicated', () {
