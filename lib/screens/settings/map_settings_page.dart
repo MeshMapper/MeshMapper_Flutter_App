@@ -117,6 +117,18 @@ class MapSettingsPage extends StatelessWidget {
                     .updatePreferences(prefs.copyWith(showTopRepeaters: value));
               },
             ),
+            if (prefs.showTopRepeaters)
+              SwitchListTile(
+                secondary: const Icon(Icons.text_increase),
+                title: const Text('Larger Top 3 Overlay'),
+                subtitle: const Text(
+                    'Double the size of the overlay for easier reading'),
+                value: prefs.largerTopRepeaters,
+                onChanged: (value) {
+                  appState.updatePreferences(
+                      prefs.copyWith(largerTopRepeaters: value));
+                },
+              ),
           ]),
         ],
       ),

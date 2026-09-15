@@ -68,6 +68,10 @@ class UserPreferences {
   /// Limit the map overlay to the effective Smart Pinging coverage window.
   final bool smartPingRecentCoverageOnly;
 
+  /// Show hollow circle markers on the map where pings were deferred by
+  /// Smart Pinging.
+  final bool showDeferredMarkers;
+
   /// Map auto-follow GPS position
   final bool mapAutoFollow;
 
@@ -106,6 +110,9 @@ class UserPreferences {
 
   /// Show top 3 repeaters by SNR on the map during wardriving
   final bool showTopRepeaters;
+
+  /// Double the size of the Top 3 repeaters overlay for easier reading
+  final bool largerTopRepeaters;
 
   /// Live Activity heard rows show resolved repeater names (fewer, named
   /// rows). When false the card packs a two-column hex grid instead.
@@ -173,6 +180,7 @@ class UserPreferences {
     this.smartPingEnabled = true,
     this.smartPingDays = SmartPingDays.defaultDays,
     this.smartPingRecentCoverageOnly = false,
+    this.showDeferredMarkers = true,
     this.mapAutoFollow = false,
     this.mapAlwaysNorth = true,
     this.mapRotationLocked = false,
@@ -185,6 +193,7 @@ class UserPreferences {
     this.minPingDistanceMeters = 25,
     this.autoStopAfterIdle = true,
     this.showTopRepeaters = false,
+    this.largerTopRepeaters = false,
     this.liveActivityShowNames = true,
     this.markerStyle = 'dot',
     this.gpsMarkerStyle = 'arrow',
@@ -226,6 +235,7 @@ class UserPreferences {
       smartPingEnabled: (json['smartPingEnabled'] as bool?) ?? true,
       smartPingRecentCoverageOnly:
           (json['smartPingRecentCoverageOnly'] as bool?) ?? false,
+      showDeferredMarkers: (json['showDeferredMarkers'] as bool?) ?? true,
       smartPingDays: switch ((json['smartPingDays'] as num?)?.toInt()) {
         final int d when d >= SmartPingDays.min && d <= SmartPingDays.max => d,
         _ => SmartPingDays.defaultDays,
@@ -243,6 +253,7 @@ class UserPreferences {
       minPingDistanceMeters: (json['minPingDistanceMeters'] as int?) ?? 25,
       autoStopAfterIdle: (json['autoStopAfterIdle'] as bool?) ?? true,
       showTopRepeaters: (json['showTopRepeaters'] as bool?) ?? false,
+      largerTopRepeaters: (json['largerTopRepeaters'] as bool?) ?? false,
       liveActivityShowNames: (json['liveActivityShowNames'] as bool?) ?? true,
       markerStyle: (json['markerStyle'] as String?) ?? 'dot',
       gpsMarkerStyle: _migrateGpsMarkerStyle(json['gpsMarkerStyle'] as String?),
@@ -319,6 +330,7 @@ class UserPreferences {
       'smartPingEnabled': smartPingEnabled,
       'smartPingDays': smartPingDays,
       'smartPingRecentCoverageOnly': smartPingRecentCoverageOnly,
+      'showDeferredMarkers': showDeferredMarkers,
       'mapAutoFollow': mapAutoFollow,
       'mapAlwaysNorth': mapAlwaysNorth,
       'mapRotationLocked': mapRotationLocked,
@@ -331,6 +343,7 @@ class UserPreferences {
       'minPingDistanceMeters': minPingDistanceMeters,
       'autoStopAfterIdle': autoStopAfterIdle,
       'showTopRepeaters': showTopRepeaters,
+      'largerTopRepeaters': largerTopRepeaters,
       'liveActivityShowNames': liveActivityShowNames,
       'markerStyle': markerStyle,
       'gpsMarkerStyle': gpsMarkerStyle,
@@ -371,6 +384,7 @@ class UserPreferences {
     bool? smartPingEnabled,
     int? smartPingDays,
     bool? smartPingRecentCoverageOnly,
+    bool? showDeferredMarkers,
     bool? mapAutoFollow,
     bool? mapAlwaysNorth,
     bool? mapRotationLocked,
@@ -383,6 +397,7 @@ class UserPreferences {
     int? minPingDistanceMeters,
     bool? autoStopAfterIdle,
     bool? showTopRepeaters,
+    bool? largerTopRepeaters,
     bool? liveActivityShowNames,
     String? markerStyle,
     String? gpsMarkerStyle,
@@ -424,6 +439,7 @@ class UserPreferences {
       smartPingDays: smartPingDays ?? this.smartPingDays,
       smartPingRecentCoverageOnly:
           smartPingRecentCoverageOnly ?? this.smartPingRecentCoverageOnly,
+      showDeferredMarkers: showDeferredMarkers ?? this.showDeferredMarkers,
       mapAutoFollow: mapAutoFollow ?? this.mapAutoFollow,
       mapAlwaysNorth: mapAlwaysNorth ?? this.mapAlwaysNorth,
       mapRotationLocked: mapRotationLocked ?? this.mapRotationLocked,
@@ -438,6 +454,7 @@ class UserPreferences {
           minPingDistanceMeters ?? this.minPingDistanceMeters,
       autoStopAfterIdle: autoStopAfterIdle ?? this.autoStopAfterIdle,
       showTopRepeaters: showTopRepeaters ?? this.showTopRepeaters,
+      largerTopRepeaters: largerTopRepeaters ?? this.largerTopRepeaters,
       liveActivityShowNames:
           liveActivityShowNames ?? this.liveActivityShowNames,
       markerStyle: markerStyle ?? this.markerStyle,

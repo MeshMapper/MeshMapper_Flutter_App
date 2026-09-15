@@ -143,6 +143,20 @@ class WardrivingSettingsPage extends StatelessWidget {
                 onChanged: (value) => appState.updatePreferences(
                     prefs.copyWith(smartPingRecentCoverageOnly: value)),
               ),
+            if (appState.smartPingEnabled)
+              SwitchListTile(
+                secondary: const Icon(Icons.circle_outlined),
+                title: const Text('Show Deferred Markers'),
+                subtitle: const Text(
+                    'Show hollow circles on the map where pings were deferred'),
+                value: prefs.showDeferredMarkers,
+                onChanged: isAutoMode
+                    ? null
+                    : (value) {
+                        appState.updatePreferences(
+                            prefs.copyWith(showDeferredMarkers: value));
+                      },
+              ),
             SwitchListTile(
               secondary: const Icon(Icons.timer_off),
               title: const Text('Auto-Stop After Idle'),
