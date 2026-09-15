@@ -17,15 +17,21 @@ Widget host({TargetPlatform platform = TargetPlatform.android}) {
   );
 }
 
-Future<void> goForward(WidgetTester tester, int times) async {
-  for (var i = 0; i < times; i++) {
-    await tester.tap(find.text('Next'));
-    await tester.pumpAndSettle();
-  }
+Future<void> goToPage(WidgetTester tester, int page) async {
+  final controller = tester.widget<PageView>(find.byType(PageView)).controller!;
+  controller.jumpToPage(page - 1);
+  await tester.pumpAndSettle();
+}
+
+Future<void> openDetails(WidgetTester tester, String title) async {
+  final toggle = find.text(title);
+  await tester.ensureVisible(toggle);
+  await tester.tap(toggle);
+  await tester.pumpAndSettle();
 }
 
 void main() {
-  testWidgets('page 7 locks setup and swiping during completion',
+  testWidgets('page 6 locks setup and swiping during completion',
       (tester) async {
     final persistence = Completer<bool>();
     final appState = _UnusedAppState();
@@ -58,7 +64,7 @@ void main() {
     );
     await tester.tap(find.text('Open Guide'));
     await tester.pumpAndSettle();
-    await goForward(tester, 6);
+    await goToPage(tester, 6);
     final setup = find.text('Set Up Background Location');
     await tester.ensureVisible(setup);
     await tester.tap(setup);
@@ -69,10 +75,10 @@ void main() {
 
     await tester.drag(find.byType(PageView), const Offset(-600, 0));
     await tester.pumpAndSettle();
-    expect(find.text('Page 8 of 12'), findsOneWidget);
+    expect(find.text('Page 7 of 12'), findsOneWidget);
     await tester.drag(find.byType(PageView), const Offset(600, 0));
     await tester.pumpAndSettle();
-    expect(find.text('Page 7 of 12'), findsOneWidget);
+    expect(find.text('Page 6 of 12'), findsOneWidget);
     await tester.ensureVisible(setup);
     await tester.tap(find.text('Skip Guide'));
     await tester.pump();
@@ -86,7 +92,7 @@ void main() {
       const Offset(-600, 0),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Page 7 of 12'), findsOneWidget);
+    expect(find.text('Page 6 of 12'), findsOneWidget);
     expect(result, isNull);
 
     persistence.complete(true);
@@ -135,94 +141,20 @@ void main() {
     }
   });
 
-  testWidgets('first page mirrors both Connection screen states',
+  testWidgets('connection steps precede the first-time preview',
       (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(host());
-
-    final disconnected = find.byKey(
-      const ValueKey('guide-disconnected-connection-preview'),
-    );
-    final connected = find.byKey(
-      const ValueKey('guide-connected-connection-preview'),
-    );
-
-    expect(disconnected, findsOneWidget);
-    expect(connected, findsOneWidget);
-
-    for (final label in <String>[
-      'Connection',
-      'Last Connected Device',
-      'MeshCore Radio',
-      'Reconnect',
-      'Scan',
-      'Forget',
-      'Go Offline',
-      'BLE',
-      'TCP',
-    ]) {
-      expect(
-        find.descendant(of: disconnected, matching: find.text(label)),
-        findsWidgets,
-        reason: 'The disconnected preview should show $label.',
-      );
-    }
-
-    for (final label in <String>[
-      'Connection',
-      'MeshCore Radio',
-      'Connected',
-      'Power Level',
-      'Radio',
-      'Go Offline',
-      'Disconnect',
-    ]) {
-      expect(
-        find.descendant(of: connected, matching: find.text(label)),
-        findsWidgets,
-        reason: 'The connected preview should show $label.',
-      );
-    }
-
-    final disconnectedNav = find.byKey(
-      const ValueKey('guide-disconnected-connection-nav'),
-    );
-    final connectedNav = find.byKey(
-      const ValueKey('guide-connected-connection-nav'),
-    );
-    final disconnectedLabels = <String>[
-      'Map',
-      'Log',
-      'History',
-      'Connect',
-      'Settings',
-    ];
-    final connectedLabels = <String>[
-      'Map',
-      'Log',
-      'History',
-      'Connected',
-      'Settings',
-    ];
-
-    for (final (nav, labels) in <(Finder, List<String>)>[
-      (disconnectedNav, disconnectedLabels),
-      (connectedNav, connectedLabels),
-    ]) {
-      final positions = labels
-          .map(
-            (label) => tester.getCenter(
-              find.descendant(of: nav, matching: find.text(label)),
-            ),
-          )
-          .toList();
-      for (var index = 1; index < positions.length; index++) {
-        expect(
-          positions[index - 1].dx,
-          lessThan(positions[index].dx),
-          reason: 'The Connection navigation should match the app order.',
-        );
-      }
-    }
+    final lastStep = find.text('3. Wait for Connected');
+    expect(tester.getBottomLeft(lastStep).dy,
+        lessThan(tester.getTopLeft(find.text('Next')).dy));
+    expect(find.text('Last Connected Device'), findsNothing);
+    expect(find.text('Reconnect'), findsNothing);
+    expect(find.byKey(const ValueKey('guide-first-connection-preview')),
+        findsOneWidget);
   });
 
   testWidgets('Next and Back move through the guide', (tester) async {
@@ -230,7 +162,7 @@ void main() {
 
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    expect(find.text('Is Your Antenna Exposed?'), findsOneWidget);
+    expect(find.text('Choose Where Your Data Goes'), findsOneWidget);
     expect(find.text('Page 2 of 12'), findsOneWidget);
     expect(find.text('Back'), findsOneWidget);
 
@@ -290,7 +222,7 @@ void main() {
 
     await tester.tap(find.text('Open Guide'));
     await tester.pumpAndSettle();
-    await goForward(tester, 11);
+    await goToPage(tester, 12);
     await tester.tap(find.text('Finish Guide'));
     await tester.pumpAndSettle();
 
@@ -299,7 +231,7 @@ void main() {
 
   testWidgets('Android needs no extra background permission', (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 6);
+    await goToPage(tester, 6);
 
     expect(
       find.textContaining(
@@ -313,7 +245,7 @@ void main() {
   testWidgets('iPhone explains Always permission and offers setup',
       (tester) async {
     await tester.pumpWidget(host(platform: TargetPlatform.iOS));
-    await goForward(tester, 6);
+    await goToPage(tester, 6);
 
     expect(
       find.textContaining('allow location access Always'),
@@ -326,35 +258,37 @@ void main() {
       (tester) async {
     await tester.pumpWidget(host());
 
-    await goForward(tester, 2);
+    await goToPage(tester, 7);
     expect(
       find.textContaining('Active Mode is disabled by default in MeshMapper'),
       findsOneWidget,
     );
 
-    await goForward(tester, 2);
+    await goToPage(tester, 8);
     expect(
       find.textContaining('Regional administrators may require Smart Pinging'),
       findsOneWidget,
     );
 
-    await goForward(tester, 1);
+    await goToPage(tester, 5);
     expect(
       find.textContaining('Coverage involving an unreported CARpeater'),
       findsOneWidget,
     );
 
-    await goForward(tester, 5);
+    await goToPage(tester, 11);
+    await openDetails(tester, 'How linking protects your radio');
     expect(
       find.textContaining('cryptographically sign a challenge'),
       findsOneWidget,
     );
   });
 
-  testWidgets('page 3 teaches the modes in airtime order with map icons',
+  testWidgets(
+      'page 7 explains the recommended mode and airtime tradeoffs with map icons',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 2);
+    await goToPage(tester, 7);
 
     const modes = <(String, IconData)>[
       ('Passive Mode', Icons.hearing),
@@ -377,22 +311,24 @@ void main() {
       expect(
         positions[index - 1].dy,
         lessThan(positions[index].dy),
-        reason: 'Modes should progress from least to most mesh airtime.',
+        reason:
+            'Introduce the recommended mode before specialist and higher-airtime modes.',
       );
     }
 
     for (final claim in <String>[
-      'zero-hop discovery request to every repeater that can hear you',
-      'each repeater replies directly',
+      'Start with Passive Mode for general mapping',
+      'nearby repeaters directly, without forwarding',
+      'which reply directly',
       'best balance of broad mesh coverage and low airtime use',
       'Only that repeater responds',
-      'uses the least airtime but focuses on a single repeater',
-      'Alternates between zero-hop discovery requests and channel flood messages',
-      'flood messages use more airtime than a zero-hop discovery request',
-      'uses the most airtime on the mesh',
-      'It only sends channel flood messages that propagate through the mesh',
+      'uses the least airtime',
+      'Alternates between discovery requests and channel flood messages',
+      'Flood messages use more airtime',
+      'uses the most airtime',
+      'Only sends channel flood messages through the mesh',
       'disabled by default in MeshMapper',
-      'most aggressive mode',
+      'most aggressive mapping mode',
     ]) {
       expect(find.textContaining(claim), findsOneWidget);
     }
@@ -401,10 +337,10 @@ void main() {
     expect(find.textContaining('or a regional rule'), findsNothing);
   });
 
-  testWidgets('page 3 shows each mode icon only beside its explanation',
+  testWidgets('page 7 shows each mode icon only beside its explanation',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 2);
+    await goToPage(tester, 7);
 
     for (final icon in <IconData>[
       Icons.hearing,
@@ -416,10 +352,10 @@ void main() {
     }
   });
 
-  testWidgets('page 3 centralizes regional flood policy in one callout',
+  testWidgets('page 7 centralizes regional flood policy in one callout',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 2);
+    await goToPage(tester, 7);
 
     expect(
       find.textContaining('Regional administrators may disable flood traffic'),
@@ -454,16 +390,16 @@ void main() {
     }
   });
 
-  testWidgets('page 3 owns the single 25 metre explanation', (tester) async {
+  testWidgets('page 7 owns the single 25 metre explanation', (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 2);
+    await goToPage(tester, 7);
 
     expect(
       find.textContaining('at least 25 metres of movement'),
       findsOneWidget,
     );
 
-    await goForward(tester, 2);
+    await goToPage(tester, 8);
     expect(
       find.textContaining('at least 25 metres of movement'),
       findsNothing,
@@ -473,26 +409,26 @@ void main() {
   testWidgets('controls help note appears with modes instead of map controls',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 2);
+    await goToPage(tester, 7);
 
     expect(
       find.textContaining('Use the ? button on the wardriving control panel'),
       findsOneWidget,
     );
 
-    await goForward(tester, 1);
+    await goToPage(tester, 9);
     expect(
       find.textContaining('Use the ? button on the wardriving control panel'),
       findsNothing,
     );
   });
 
-  testWidgets('page 4 identifies Map tab controls without an icon gallery',
+  testWidgets('page 9 identifies Map tab controls without an icon gallery',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 3);
+    await goToPage(tester, 9);
 
-    expect(find.text('Map Tab Controls'), findsOneWidget);
+    expect(find.text('Map Controls'), findsOneWidget);
     expect(
       find.textContaining(
         'These buttons are on the Map tab. They control what appears on the map',
@@ -505,10 +441,10 @@ void main() {
     );
   });
 
-  testWidgets('page 5 states the regional Smart Pinging requirement once',
+  testWidgets('page 8 states the regional Smart Pinging requirement once',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 4);
+    await goToPage(tester, 8);
 
     expect(
       find.textContaining('Regional administrators may require Smart Pinging'),
@@ -522,7 +458,7 @@ void main() {
     );
   });
 
-  testWidgets('CARpeater setup returns to page 6 of the guide', (tester) async {
+  testWidgets('CARpeater setup returns to page 5 of the guide', (tester) async {
     final appState = _CarpeaterAppState();
     addTearDown(appState.dispose);
     await tester.pumpWidget(
@@ -534,7 +470,7 @@ void main() {
         ),
       ),
     );
-    await goForward(tester, 5);
+    await goToPage(tester, 5);
 
     final configureButton = find.text('Configure CARpeater');
     await tester.ensureVisible(configureButton);
@@ -550,16 +486,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('My CARpeater'), findsNothing);
-    expect(find.text('Page 6 of 12'), findsOneWidget);
+    expect(find.text('Page 5 of 12'), findsOneWidget);
     expect(appState.preferences.carpeaterPublicKey, publicKey);
     expect(appState.preferences.ignoreCarpeater, isTrue);
   });
 
-  testWidgets('page 6 presents CARpeater outcomes as compact rows',
+  testWidgets('page 5 presents CARpeater outcomes as compact rows',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 5);
+    await goToPage(tester, 5);
 
+    await openDetails(tester, 'How CARpeater filtering works');
     const outcomes = <(String, String)>[
       ('Direct CARpeater signal', 'Dropped'),
       ('Fixed repeater behind it', 'Coverage counted'),
@@ -575,10 +512,10 @@ void main() {
     }
   });
 
-  testWidgets('page 8 distinguishes marker dots from coverage tiles',
+  testWidgets('page 10 distinguishes marker dots from coverage tiles',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 7);
+    await goToPage(tester, 10);
 
     final markerSwatch = find.byKey(
       const ValueKey('guide-wardriving-marker-swatch'),
@@ -610,10 +547,10 @@ void main() {
     );
   });
 
-  testWidgets('page 8 uses a square coverage tile legend', (tester) async {
+  testWidgets('page 10 uses a square coverage tile legend', (tester) async {
     PingColors.setColorVisionType(ColorVisionType.none);
     await tester.pumpWidget(host());
-    await goForward(tester, 7);
+    await goToPage(tester, 10);
 
     expect(
       find.bySemanticsLabel(
@@ -650,10 +587,10 @@ void main() {
     }
   });
 
-  testWidgets('page 9 explains online and offline mode availability',
+  testWidgets('page 2 explains online and offline mode availability',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 8);
+    await goToPage(tester, 2);
 
     final onlineMode = find.widgetWithText(GuideIconRow, 'Online Mode');
     expect(
@@ -683,6 +620,7 @@ void main() {
       ),
       findsOneWidget,
     );
+    await openDetails(tester, 'Why modes differ offline');
     expect(
       find.textContaining('checks out a regional airtime slot'),
       findsWidgets,
@@ -699,10 +637,10 @@ void main() {
     );
   });
 
-  testWidgets('page 10 explains coverage access and public privacy',
+  testWidgets('page 3 explains coverage access and public privacy',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 9);
+    await goToPage(tester, 3);
 
     expect(
       find.textContaining(
@@ -750,30 +688,31 @@ void main() {
       (tester) async {
     await tester.pumpWidget(host());
 
+    await openDetails(tester, 'Connection details');
     expect(
       find.textContaining("It never changes the radio's actual transmit power"),
       findsOneWidget,
     );
 
-    await goForward(tester, 1);
+    await goToPage(tester, 4);
     expect(find.textContaining('External Antenna: Yes / No'), findsOneWidget);
 
-    await goForward(tester, 2);
+    await goToPage(tester, 9);
     expect(find.text('Legend & Info'), findsOneWidget);
 
-    await goForward(tester, 4);
+    await goToPage(tester, 10);
     expect(
       find.textContaining('the message routed through the mesh'),
       findsWidgets,
     );
 
-    await goForward(tester, 1);
+    await goToPage(tester, 2);
     expect(
       find.textContaining('Offline sessions are not uploaded automatically'),
       findsOneWidget,
     );
 
-    await goForward(tester, 1);
+    await goToPage(tester, 3);
     expect(
       find.textContaining('It does not make the device anonymous'),
       findsOneWidget,
@@ -783,7 +722,7 @@ void main() {
   testWidgets('page 11 introduces account benefits without repeating claims',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 10);
+    await goToPage(tester, 11);
 
     expect(find.text('MyMeshMapper allows you to:'), findsOneWidget);
     expect(find.textContaining('Claim repeaters the user administers'),
@@ -802,9 +741,12 @@ void main() {
   testWidgets('final page explains bug reports and driving safety',
       (tester) async {
     await tester.pumpWidget(host());
-    await goForward(tester, 11);
+    await goToPage(tester, 12);
 
-    expect(find.text('Need Help?'), findsOneWidget);
+    expect(find.text('Ready to Map'), findsOneWidget);
+    expect(find.textContaining('Settings > About & Support > Quick Guide'),
+        findsOneWidget);
+    await openDetails(tester, 'Including debug logs');
     expect(
       find.textContaining(
         'Settings > About & Support > Submit Feedback',
@@ -830,7 +772,11 @@ void main() {
     expect(find.text('Finish Guide'), findsOneWidget);
   });
 
-  for (final size in <Size>[const Size(390, 844), const Size(844, 390)]) {
+  for (final size in <Size>[
+    const Size(320, 568),
+    const Size(390, 844),
+    const Size(844, 390)
+  ]) {
     testWidgets('all pages fit at ${size.width.toInt()}x${size.height.toInt()}',
         (tester) async {
       tester.view.physicalSize = size;

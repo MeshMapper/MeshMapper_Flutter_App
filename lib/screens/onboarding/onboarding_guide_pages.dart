@@ -8,18 +8,24 @@ import '../../widgets/carpeater_setup_dialog.dart';
 
 List<Widget> buildOnboardingGuidePages(BuildContext context) => [
       buildConnectPage(context),
-      buildAntennaPage(context),
-      buildModesPage(context),
-      buildMapControlsPage(context),
-      buildSmartPingingPage(context),
-      buildCarpeaterPage(context),
-      buildBackgroundPage(context),
-      buildResultsPage(context),
       buildOnlineOfflinePage(context),
       buildPrivacyPage(context),
+      buildAntennaPage(context),
+      buildCarpeaterPage(context),
+      buildBackgroundPage(context),
+      buildModesPage(context),
+      buildSmartPingingPage(context),
+      buildMapControlsPage(context),
+      buildResultsPage(context),
       buildAccountPage(context),
-      buildAutomaticUploadsPage(context),
+      buildHelpPage(context),
     ];
+
+Color _guideAccent(BuildContext context, Color color) {
+  if (Theme.of(context).brightness != Brightness.dark) return color;
+  final hsl = HSLColor.fromColor(color);
+  return hsl.withLightness(hsl.lightness.clamp(0.70, 1.0)).toColor();
+}
 
 class OnboardingGuidePage extends StatelessWidget {
   const OnboardingGuidePage({
@@ -44,13 +50,16 @@ class OnboardingGuidePage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(
-                width: 44,
-                height: 5,
-                margin: const EdgeInsets.only(bottom: 12),
-                decoration: BoxDecoration(
-                  color: accent,
-                  borderRadius: BorderRadius.circular(99),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  width: 44,
+                  height: 5,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: _guideAccent(context, accent),
+                    borderRadius: BorderRadius.circular(99),
+                  ),
                 ),
               ),
               Text(
@@ -157,7 +166,8 @@ class GuideCallout extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final accent = color ?? Theme.of(context).colorScheme.primary;
+    final accent =
+        _guideAccent(context, color ?? Theme.of(context).colorScheme.primary);
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(14),
@@ -236,9 +246,9 @@ class GuideIconRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final accent = color ?? colors.primary;
+    final accent = _guideAccent(context, color ?? colors.primary);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: 14),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -263,7 +273,7 @@ class GuideIconRow extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(text,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          height: 1.35,
+                          height: 1.4,
                         )),
               ],
             ),
@@ -288,7 +298,7 @@ class _VisualPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final accent = color ?? colors.primary;
+    final accent = _guideAccent(context, color ?? colors.primary);
     return Semantics(
       label: label,
       image: true,
@@ -321,11 +331,12 @@ class _CompactCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = _guideAccent(context, color);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        color: accent.withValues(alpha: 0.08),
+        border: Border.all(color: accent.withValues(alpha: 0.3)),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -333,7 +344,7 @@ class _CompactCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, color: color),
+              Icon(icon, color: accent),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(title,
@@ -358,45 +369,100 @@ Widget buildConnectPage(BuildContext context) {
     accent: accent,
     children: [
       GuideParagraph(
-        'Open the Connect tab and choose how your radio is connected. Bluetooth is the usual choice. TCP and USB may also be available on supported devices.',
-      ),
-      _VisualPanel(
-        label: 'Disconnected Connection screen with remembered radio controls',
-        color: accent,
-        child: _DisconnectedConnectionPreview(),
-      ),
-      _VisualPanel(
-        label: 'Connected Connection screen with radio details',
-        color: accent,
-        child: _ConnectedConnectionPreview(),
+        'MeshMapper records mesh coverage as you travel. Start with a MeshCore radio running companion firmware, then open the Connect tab.',
       ),
       GuideIconRow(
-          icon: Icons.radar, title: '1. Tap Scan', text: 'Find nearby radios.'),
+        icon: Icons.radar,
+        title: '1. Tap Scan',
+        text: 'Turn on your radio and choose Bluetooth to find nearby radios.',
+        color: accent,
+      ),
       GuideIconRow(
         icon: Icons.memory,
-        title: '2. Select your MeshCore companion',
-        text: 'Choose the radio you want to map with.',
+        title: '2. Select your radio',
+        text: 'Choose the MeshCore companion you want to map with.',
+        color: accent,
       ),
       GuideIconRow(
         icon: Icons.check_circle_outline,
         title: '3. Wait for Connected',
-        text: 'The setup steps finish before wardriving controls are enabled.',
+        text:
+            'MeshMapper checks your location and prepares the wardriving channel.',
         color: accent,
       ),
-      GuideCallout(
-        text:
-            'MeshMapper checks your GPS location, signs into your regional zone, prepares the wardriving channel, and detects your radio model. A previously connected radio will be remembered for quicker reconnection.',
-        icon: Icons.sync,
+      _VisualPanel(
+        label: 'First connection: choose Bluetooth and tap Scan',
         color: accent,
+        child: _FirstConnectionPreview(),
       ),
-      GuideCallout(
-        text:
-            "MeshMapper detects and reports the radio's expected power. It never changes the radio's actual transmit power.",
-        icon: Icons.power_settings_new,
-        color: Colors.orange,
+      _GuideDetails(
+        title: 'Find your way around',
+        children: [
+          GuideIconRow(
+              icon: Icons.bluetooth,
+              title: 'Connect',
+              text:
+                  'Connect your radio, check its details, or switch Online and Offline modes.'),
+          GuideIconRow(
+              icon: Icons.map_outlined,
+              title: 'Map',
+              text:
+                  'Start and stop mapping, explore repeaters, and see coverage.'),
+          GuideIconRow(
+              icon: Icons.list_alt,
+              title: 'Log',
+              text: 'Check what your radio sent or heard and review errors.'),
+          GuideIconRow(
+              icon: Icons.history,
+              title: 'History',
+              text: 'Revisit saved mapping sessions and their routes.'),
+          GuideIconRow(
+              icon: Icons.settings_outlined,
+              title: 'Settings',
+              text:
+                  'Adjust mapping preferences, manage saved data, and find help.'),
+        ],
+      ),
+      _GuideDetails(
+        title: 'Connection details',
+        children: [
+          GuideBullet(
+              'TCP and USB are also available on supported devices. A previously connected radio is remembered for quicker reconnection.'),
+          GuideBullet(
+              "MeshMapper detects and reports the radio's expected power. It never changes the radio's actual transmit power."),
+        ],
       ),
     ],
   );
+}
+
+class _GuideDetails extends StatelessWidget {
+  const _GuideDetails({required this.title, required this.children});
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 14),
+        childrenPadding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
+        collapsedBackgroundColor:
+            Theme.of(context).colorScheme.surfaceContainerLow,
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        collapsedShape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: Text(title,
+            style: Theme.of(context)
+                .textTheme
+                .titleSmall
+                ?.copyWith(fontWeight: FontWeight.w700)),
+        children: children,
+      ),
+    );
+  }
 }
 
 Widget buildAntennaPage(BuildContext context) {
@@ -418,7 +484,7 @@ Widget buildAntennaPage(BuildContext context) {
               Icon(Icons.wifi_tethering_off, size: 44),
               SizedBox(height: 8),
               Text(
-                'The antenna is inside a metal vehicle cabin, metal box, or another enclosure that can reduce RF reception. Example: the radio and antenna are inside the car.',
+                'The antenna is inside a metal vehicle cabin, metal box, or another enclosure that can reduce radio reception. Example: the radio and antenna are inside the car.',
               ),
             ],
           ),
@@ -432,7 +498,7 @@ Widget buildAntennaPage(BuildContext context) {
               Icon(Icons.wifi_tethering, size: 44),
               SizedBox(height: 8),
               Text(
-                'The antenna is not enclosed by metal or another object that significantly blocks RF reception. Examples: a roof-mounted antenna, a handheld radio, or walking with the radio in a pocket.',
+                'The antenna is not enclosed by metal or another object that significantly blocks radio reception. Examples: a roof-mounted antenna, a handheld radio, or walking with the radio in a pocket.',
               ),
             ],
           ),
@@ -459,32 +525,34 @@ Widget buildModesPage(BuildContext context) {
     title: 'Wardriving Modes',
     accent: accent,
     children: [
+      const GuideParagraph(
+          'Start with Passive Mode for general mapping. A zero-hop request reaches nearby repeaters directly, without forwarding. Flood messages are forwarded through the mesh.'),
       const GuideIconRow(
         icon: Icons.hearing,
         title: 'Passive Mode',
         text:
-            'Sends a zero-hop discovery request to every repeater that can hear you, and each repeater replies directly. It also continuously listens for received mesh traffic. This provides the best balance of broad mesh coverage and low airtime use.',
+            'Sends a discovery request to nearby repeaters, which reply directly. It also listens for mesh traffic. This provides the best balance of broad mesh coverage and low airtime use.',
         color: accent,
       ),
       const GuideIconRow(
         icon: Icons.gps_fixed,
         title: 'Trace Mode',
         text:
-            'Sends a zero-hop trace to one specific repeater. Only that repeater responds. It uses the least airtime but focuses on a single repeater, making it useful for antenna alignment or checking a specific node.',
+            'Checks one selected repeater directly. Only that repeater responds. It uses the least airtime and is useful for antenna alignment or checking a specific repeater.',
         color: Colors.cyan,
       ),
       const GuideIconRow(
         icon: Icons.compare_arrows,
         title: 'Hybrid Mode',
         text:
-            'Alternates between zero-hop discovery requests and channel flood messages that propagate through the mesh. The flood messages use more airtime than a zero-hop discovery request.',
+            'Alternates between discovery requests and channel flood messages. Flood messages use more airtime because repeaters forward them through the mesh.',
         color: Colors.purple,
       ),
       GuideIconRow(
         icon: Icons.sensors,
         title: 'Active Mode',
         text:
-            'Active Mode uses the most airtime on the mesh. It only sends channel flood messages that propagate through the mesh. It is the most aggressive mode and provides more detailed mapping at the cost of higher airtime utilization.',
+            'Only sends channel flood messages through the mesh. It uses the most airtime and is the most aggressive mapping mode.',
         color: PingColors.txSuccess,
       ),
       const GuideCallout(
@@ -519,29 +587,29 @@ Widget buildModesPage(BuildContext context) {
 Widget buildMapControlsPage(BuildContext context) {
   const accent = Color(0xFF1565C0);
   const controls = <(IconData, String, String)>[
-    (Icons.dark_mode, 'Map style', 'change the map background.'),
-    (Icons.layers, 'Coverage', 'show or hide MeshMapper coverage.'),
-    (Icons.cell_tower, 'Repeaters', 'show or hide repeater markers.'),
-    (Icons.fence, 'Regions', 'show or hide regional boundaries.'),
+    (Icons.dark_mode, 'Map style', 'Change the map background.'),
+    (Icons.layers, 'Coverage', 'Show or hide MeshMapper coverage.'),
+    (Icons.cell_tower, 'Repeaters', 'Show or hide repeater markers.'),
+    (Icons.fence, 'Regions', 'Show or hide regional boundaries.'),
     (
       Icons.my_location,
       'Location',
-      'center the map on the GPS position and follow movement.'
+      'Center the map on the GPS position and follow movement.'
     ),
     (
       Icons.navigation,
       'Direction',
-      'keep north at the top or rotate with the direction of travel.'
+      'Keep north at the top or rotate with the direction of travel.'
     ),
-    (Icons.sync_disabled, 'Rotation lock', 'prevent accidental map rotation.'),
+    (Icons.sync_disabled, 'Rotation lock', 'Prevent accidental map rotation.'),
     (
       Icons.info_outline,
       'Legend & Info',
-      'explain coverage colors, marker types, and map symbols.'
+      'Explain coverage colors, marker types, and map symbols.'
     ),
   ];
   return OnboardingGuidePage(
-    title: 'Map Tab Controls',
+    title: 'Map Controls',
     accent: accent,
     children: [
       const GuideParagraph(
@@ -572,7 +640,7 @@ Widget buildMapControlsPage(BuildContext context) {
 Widget buildSmartPingingPage(BuildContext context) {
   const accent = Color(0xFF00897B);
   return const OnboardingGuidePage(
-    title: 'Put Airtime Where It Helps',
+    title: 'Smart Pinging',
     accent: accent,
     children: [
       GuideParagraph(
@@ -594,7 +662,7 @@ Widget buildSmartPingingPage(BuildContext context) {
                   label: 'Uncovered',
                   color: Colors.orange),
               _FlowArrow(label: 'Sent'),
-              Icon(Icons.send, color: accent),
+              _GuideIllustrationIcon(Icons.send, color: accent),
             ],
           ),
         ),
@@ -705,33 +773,38 @@ Widget buildCarpeaterPage(BuildContext context) {
       ),
       const GuideCallout(
         text:
-            "Enable the filter and report your CARpeater's public key. Coverage involving an unreported CARpeater is dropped.",
+            "Enable the filter and add your CARpeater's public key (its radio ID). Coverage involving an unreported CARpeater is dropped.",
         icon: Icons.key,
         color: accent,
       ),
-      const GuideIconRow(
-        icon: Icons.block,
-        title: 'Direct CARpeater signal',
-        text: 'Dropped',
-        color: Colors.red,
-      ),
-      const GuideIconRow(
-        icon: Icons.cell_tower,
-        title: 'Fixed repeater behind it',
-        text: 'Coverage counted',
-        color: Colors.green,
-      ),
-      const GuideIconRow(
-        icon: Icons.filter_alt,
-        title: 'Other reported CARpeaters',
-        text: 'Filtered from your results',
-        color: Colors.blue,
-      ),
-      const GuideCallout(
-        text:
-            'While enabled, the public key is shared with MeshMapper so nearby wardrivers can filter the same CARpeater.',
-        icon: Icons.public,
-        color: Colors.blue,
+      const _GuideDetails(
+        title: 'How CARpeater filtering works',
+        children: [
+          GuideIconRow(
+            icon: Icons.block,
+            title: 'Direct CARpeater signal',
+            text: 'Dropped',
+            color: Colors.red,
+          ),
+          GuideIconRow(
+            icon: Icons.cell_tower,
+            title: 'Fixed repeater behind it',
+            text: 'Coverage counted',
+            color: Colors.green,
+          ),
+          GuideIconRow(
+            icon: Icons.filter_alt,
+            title: 'Other reported CARpeaters',
+            text: 'Filtered from your results',
+            color: Colors.blue,
+          ),
+          GuideCallout(
+            text:
+                'While enabled, the public key is shared with MeshMapper so nearby wardrivers can filter the same CARpeater.',
+            icon: Icons.public,
+            color: Colors.blue,
+          ),
+        ],
       ),
       const GuideCallout(
         text:
@@ -763,12 +836,13 @@ Widget buildBackgroundPage(BuildContext context) {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.phone_iphone, size: 68, color: accent),
+              const _GuideIllustrationIcon(Icons.phone_iphone,
+                  size: 68, color: accent),
               const SizedBox(width: 14),
-              const Icon(Icons.lock, size: 34, color: accent),
+              const _GuideIllustrationIcon(Icons.lock, size: 34, color: accent),
               const SizedBox(width: 14),
               Chip(
-                avatar: Icon(
+                avatar: _GuideIllustrationIcon(
                     isIos ? Icons.location_on : Icons.notifications_active,
                     color: accent),
                 label: Text(isIos ? 'Always' : 'Session active'),
@@ -782,7 +856,7 @@ Widget buildBackgroundPage(BuildContext context) {
           icon: Icons.location_on,
           title: 'iPhone setup',
           text:
-              'Background Location is required for reliable background wardriving. Open Settings > General > Background Location and allow location access Always.',
+              'Background Location is required for reliable background wardriving. In MeshMapper, open Settings > General > Background Location and allow location access Always.',
           color: accent,
         ),
         Padding(
@@ -855,6 +929,8 @@ Widget buildResultsPage(BuildContext context) {
     title: 'See What You Mapped',
     accent: accent,
     children: [
+      const GuideParagraph(
+          'Use the Map for coverage, the Log for individual events, and History to revisit a saved drive.'),
       const _MapResultKindRow(
         swatchKey: ValueKey('guide-wardriving-marker-swatch'),
         title: 'Wardriving markers',
@@ -936,7 +1012,7 @@ class _MapResultKindRow extends StatelessWidget {
                 Text(
                   text,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        height: 1.35,
+                        height: 1.4,
                       ),
                 ),
               ],
@@ -969,7 +1045,7 @@ class _GuideResultsDestinations extends StatelessWidget {
               child: _GuideResultDestination(
                 icon: Icons.list_alt,
                 title: 'Log',
-                text: 'Events and errors',
+                text: 'Review sent and received events or check an error.',
               ),
             ),
             VerticalDivider(width: 1, color: colors.outlineVariant),
@@ -977,7 +1053,7 @@ class _GuideResultsDestinations extends StatelessWidget {
               child: _GuideResultDestination(
                 icon: Icons.history,
                 title: 'History',
-                text: 'Saved sessions and routes',
+                text: 'Open a saved session to revisit its route and markers.',
               ),
             ),
           ],
@@ -1091,24 +1167,8 @@ Widget buildOnlineOfflinePage(BuildContext context) {
     title: 'Choose Where Your Data Goes',
     accent: accent,
     children: [
-      _VisualPanel(
-        label: 'Online server cloud beside offline phone storage',
-        color: accent,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            Column(children: [
-              Icon(Icons.cloud_upload, size: 54, color: accent),
-              Text('Online')
-            ]),
-            Icon(Icons.swap_horiz, size: 34),
-            Column(children: [
-              Icon(Icons.phone_android, size: 54, color: Colors.blueGrey),
-              Text('Offline')
-            ]),
-          ],
-        ),
-      ),
+      GuideParagraph(
+          'Choose Online for automatic uploads or Offline to save coverage on your phone for later.'),
       GuideIconRow(
         icon: Icons.cloud_done,
         title: 'Online Mode',
@@ -1116,17 +1176,11 @@ Widget buildOnlineOfflinePage(BuildContext context) {
             'Coverage is queued and uploaded to MeshMapper while you drive. Online Mode enables Hybrid and Active modes where allowed by your region. Smart Pinging is enabled by default.',
         color: accent,
       ),
-      GuideCallout(
-        text:
-            'Before Hybrid or Active sends flood traffic, MeshMapper checks out a regional airtime slot. These slots limit simultaneous flood traffic and protect the mesh from excessive load.',
-        icon: Icons.air,
-        color: accent,
-      ),
       GuideIconRow(
         icon: Icons.phone_android,
         title: 'Offline Mode',
         text:
-            'Coverage is saved locally on your phone instead of being uploaded. Only Passive and Trace modes are available. Use it when mobile data is poor, MeshMapper is undergoing maintenance, or you want to collect without sending anything yet.',
+            'Coverage is saved locally on your phone instead of being uploaded. Only Passive and Trace modes are available. Use it when mobile data is poor, MeshMapper is undergoing maintenance, or you want to collect without uploading coverage to MeshMapper yet.',
         color: Colors.blueGrey,
       ),
       GuideCallout(
@@ -1142,11 +1196,22 @@ Widget buildOnlineOfflinePage(BuildContext context) {
             'Use Go Offline or Go Online on the Connect tab. You can switch before connecting or during a connected session.',
         color: accent,
       ),
-      GuideCallout(
-        text:
-            'Hybrid and Active are unavailable offline because the app cannot reach MeshMapper to check out a regional airtime slot. Smart Pinging is also unavailable because the app cannot check recent server coverage.',
-        icon: Icons.cloud_off,
-        color: Colors.blueGrey,
+      _GuideDetails(
+        title: 'Why modes differ offline',
+        children: [
+          GuideCallout(
+            text:
+                'Before Hybrid or Active sends flood traffic, MeshMapper checks out a regional airtime slot. These slots limit simultaneous flood traffic and protect the mesh from excessive load.',
+            icon: Icons.air,
+            color: accent,
+          ),
+          GuideCallout(
+            text:
+                'Hybrid and Active are unavailable offline because the app cannot reach MeshMapper to check out a regional airtime slot. Smart Pinging is also unavailable because the app cannot check recent server coverage.',
+            icon: Icons.cloud_off,
+            color: Colors.blueGrey,
+          ),
+        ],
       ),
     ],
   );
@@ -1158,6 +1223,8 @@ Widget buildPrivacyPage(BuildContext context) {
     title: 'Know What You Share',
     accent: accent,
     children: [
+      GuideParagraph(
+          'Review how MeshMapper shares coverage and location details before you start mapping.'),
       GuideIconRow(
         icon: Icons.public,
         title: 'Public coverage',
@@ -1176,14 +1243,14 @@ Widget buildPrivacyPage(BuildContext context) {
         icon: Icons.visibility_off,
         title: 'What the public sees',
         text:
-            'The public coverage maps do not expose your individual coverage points, precise GPS coordinates, or companion public key. They show the resulting coverage without publicly displaying the detailed information behind each observation.',
+            'The public coverage maps do not expose your individual coverage points, precise GPS coordinates, or companion public key.',
         color: accent,
       ),
       GuideIconRow(
         icon: Icons.cell_tower,
-        title: 'Broadcast Coordinates',
+        title: 'Broadcast My Coordinates',
         text:
-            'Broadcast Coordinates is off by default. When it is off, your real location goes to the MeshMapper server but is not included in the wardriving message sent over the mesh. Turning it on allows other mesh users to receive the coordinates in that message.',
+            'Off by default: your location goes to MeshMapper, but is not included in the wardriving message sent over the mesh. Turn it on to include your coordinates in that message.',
         color: Colors.blue,
       ),
       GuideIconRow(
@@ -1193,6 +1260,10 @@ Widget buildPrivacyPage(BuildContext context) {
             'Anonymous Mode hides your companion name and removes you from the public leaderboard. It does not make the device anonymous to MeshMapper. Its public key is still used to authenticate and associate the session.',
         color: accent,
       ),
+      GuideCallout(
+          text: 'Find these controls under Settings > Wardriving.',
+          icon: Icons.settings,
+          color: accent),
     ],
   );
 }
@@ -1200,31 +1271,11 @@ Widget buildPrivacyPage(BuildContext context) {
 Widget buildAccountPage(BuildContext context) {
   const accent = Color(0xFF6A1B9A);
   return const OnboardingGuidePage(
-    title: 'Own and Manage Your Mapping Data',
+    title: 'Your MeshMapper Account',
     accent: accent,
     children: [
       GuideParagraph(
         'Signing in to MyMeshMapper is optional, but linking your companion gives you control over the data it reports.',
-      ),
-      _VisualPanel(
-        label: 'Signed challenge linking a radio and claimed repeater',
-        color: accent,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            Icon(Icons.memory, size: 42, color: accent),
-            Icon(Icons.draw, size: 34),
-            Icon(Icons.verified_user, size: 42, color: Colors.green),
-            Icon(Icons.link, size: 34),
-            Icon(Icons.cell_tower, size: 42, color: accent),
-          ],
-        ),
-      ),
-      GuideCallout(
-        text:
-            'When you link a connected companion, the app asks the radio to cryptographically sign a challenge. This proves that you control that companion without sharing its private key.',
-        icon: Icons.verified_user,
-        color: accent,
       ),
       GuideSectionLabel('MyMeshMapper allows you to:'),
       GuideBullet('See every companion linked to the account.'),
@@ -1239,6 +1290,13 @@ Widget buildAccountPage(BuildContext context) {
             'Select a repeater on the Map, tap Manage, sign in with its admin password, and tap Claim. Once claimed, your MyMeshMapper identity is publicly listed as an administrator. You can then add build and deployment information for that repeater through the MyMeshMapper portal.',
         color: accent,
       ),
+      _GuideDetails(
+        title: 'How linking protects your radio',
+        children: [
+          GuideBullet(
+              'The app asks your connected radio to cryptographically sign a challenge. This proves you control it without sharing its private key.'),
+        ],
+      ),
       GuideCallout(
         text:
             'Open Settings > MeshMapper Account to sign in. Connect your companion afterward to link it.',
@@ -1249,12 +1307,21 @@ Widget buildAccountPage(BuildContext context) {
   );
 }
 
-Widget buildAutomaticUploadsPage(BuildContext context) {
+Widget buildHelpPage(BuildContext context) {
   const accent = Color(0xFF0277BD);
   return const OnboardingGuidePage(
-    title: 'Need Help?',
+    title: 'Ready to Map',
     accent: accent,
     children: [
+      GuideParagraph(
+          'You are ready for your first session. Set everything up while you are parked.'),
+      GuideSectionLabel('Before you start'),
+      GuideBullet('Connect your radio and choose Online or Offline.'),
+      GuideBullet(
+          'Set External Antenna to Yes or No. Configure a CARpeater if one travels with you.'),
+      GuideBullet(
+          'On the Map, start Passive Mode for general mapping. Tap the running mode again to stop.'),
+      GuideSectionLabel('Need help?'),
       GuideIconRow(
         icon: Icons.feedback_outlined,
         title: 'Report a bug',
@@ -1263,12 +1330,20 @@ Widget buildAutomaticUploadsPage(BuildContext context) {
         color: accent,
       ),
       GuideIconRow(
-        icon: Icons.bug_report,
-        title: 'Debug logs',
-        text:
-            'If relevant debug logs are available, you can attach them to the report. Only include debug logs when you experienced an issue or a developer asked for them. Uploading debug logs does not upload your coverage data.',
-        color: Colors.orange,
+        icon: Icons.menu_book,
+        title: 'Reopen this guide',
+        text: 'Open Settings > About & Support > Quick Guide anytime.',
+        color: accent,
       ),
+      _GuideDetails(title: 'Including debug logs', children: [
+        GuideIconRow(
+          icon: Icons.bug_report,
+          title: 'Debug logs',
+          text:
+              'If relevant debug logs are available, you can attach them to the report. Only include debug logs when you experienced an issue or a developer asked for them. Uploading debug logs does not upload your coverage data.',
+          color: Colors.orange,
+        ),
+      ]),
       GuideCallout(
         text:
             'Set up your radio and choose a mode before moving. Do not operate the app while driving.',
@@ -1279,581 +1354,51 @@ Widget buildAutomaticUploadsPage(BuildContext context) {
   );
 }
 
-class _DisconnectedConnectionPreview extends StatelessWidget {
-  const _DisconnectedConnectionPreview();
+class _FirstConnectionPreview extends StatelessWidget {
+  const _FirstConnectionPreview();
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return _ConnectionPreviewFrame(
-      key: const ValueKey('guide-disconnected-connection-preview'),
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-            child: Column(
-              children: [
-                Icon(
-                  Icons.bluetooth,
-                  size: 50,
-                  color: colors.primary,
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  'Last Connected Device',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  'MeshCore Radio',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 12),
-                _PreviewActionButton(
-                  icon: Icons.bluetooth_connected,
-                  label: 'Reconnect',
-                  color: colors.primary,
-                  filled: true,
-                  width: 170,
-                ),
-                const SizedBox(height: 5),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.bluetooth_searching,
-                        size: 16, color: colors.primary),
-                    const SizedBox(width: 4),
-                    Text('Scan', style: TextStyle(color: colors.primary)),
-                    const SizedBox(width: 20),
-                    Icon(Icons.delete_outline,
-                        size: 16, color: colors.onSurfaceVariant),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Forget',
-                      style: TextStyle(color: colors.onSurfaceVariant),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: _PreviewActionButton(
-                    icon: Icons.cloud_outlined,
-                    label: 'Go Offline',
-                    color: Colors.green,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _PreviewActionButton(
-                    icon: Icons.bluetooth_searching,
-                    label: 'Scan',
-                    color: colors.primary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          _PreviewTransportPicker(primary: colors.primary),
-          const _PreviewConnectionNavBar(connected: false),
-        ],
-      ),
-    );
-  }
-}
-
-class _ConnectedConnectionPreview extends StatelessWidget {
-  const _ConnectedConnectionPreview();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return _ConnectionPreviewFrame(
-      key: const ValueKey('guide-connected-connection-preview'),
-      child: Column(
-        children: [
-          Container(
-            margin: const EdgeInsets.all(10),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: colors.surfaceContainerHigh,
-              border: Border.all(color: colors.outlineVariant),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.bluetooth_connected,
-                        color: Colors.green, size: 22),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'MeshCore Radio',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          Text(
-                            'Connected',
-                            style: TextStyle(
-                              color: Colors.green,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 9),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 5,
-                  children: [
-                    _PreviewDetailChip(Icons.memory, 'Hardware'),
-                    _PreviewDetailChip(Icons.code, 'Firmware'),
-                    _PreviewDetailChip(Icons.developer_board, 'Platform'),
-                  ],
-                ),
-                SizedBox(height: 10),
-                _PreviewInfoRow(
-                  label: 'Power Level',
-                  icon: Icons.bolt,
-                  value: '1.0 W  Auto',
-                  color: Colors.orange,
-                ),
-                SizedBox(height: 8),
-                _PreviewInfoRow(
-                  label: 'Radio',
-                  icon: Icons.radio,
-                  value: 'Frequency  Bandwidth  SF  CR',
-                  color: Colors.blue,
-                ),
-              ],
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(10, 0, 10, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _PreviewActionButton(
-                    icon: Icons.cloud_outlined,
-                    label: 'Go Offline',
-                    color: Colors.green,
-                  ),
-                ),
-                SizedBox(width: 8),
-                Expanded(
-                  child: _PreviewActionButton(
-                    icon: Icons.link_off,
-                    label: 'Disconnect',
-                    color: Colors.red,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const _PreviewConnectionNavBar(connected: true),
-        ],
-      ),
-    );
-  }
-}
-
-class _ConnectionPreviewFrame extends StatelessWidget {
-  const _ConnectionPreviewFrame({
-    required this.child,
-    super.key,
-  });
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: colors.surface,
-        border: Border.all(color: colors.outlineVariant),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 9),
-            child: Text(
-              'Connection',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            color: colors.surfaceContainerLowest,
-            child: const Row(
-              children: [
-                Expanded(
-                  child: _PreviewStatusPill(
-                    icon: Icons.location_on,
-                    label: 'Regional Zone',
-                    color: Colors.green,
-                  ),
-                ),
-                SizedBox(width: 5),
-                Expanded(
-                  child: _PreviewStatusPill(
-                    icon: Icons.flight,
-                    label: 'Code',
-                    color: Colors.blue,
-                  ),
-                ),
-                SizedBox(width: 5),
-                Expanded(
-                  child: _PreviewStatusPill(
-                    icon: Icons.group_outlined,
-                    label: 'Open',
-                    color: Colors.green,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewStatusPill extends StatelessWidget {
-  const _PreviewStatusPill({
-    required this.icon,
-    required this.label,
-    required this.color,
-  });
-
-  final IconData icon;
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        border: Border.all(color: color.withValues(alpha: 0.45)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 3),
-          Flexible(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: color,
-                fontSize: 9,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewActionButton extends StatelessWidget {
-  const _PreviewActionButton({
-    required this.icon,
-    required this.label,
-    required this.color,
-    this.filled = false,
-    this.width,
-  });
-
-  final IconData icon;
-  final String label;
-  final Color color;
-  final bool filled;
-  final double? width;
-
-  @override
-  Widget build(BuildContext context) {
-    final button = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-      decoration: BoxDecoration(
-        color: filled ? color : color.withValues(alpha: 0.08),
-        border: Border.all(color: color.withValues(alpha: filled ? 1 : 0.55)),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 17, color: filled ? Colors.white : color),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: filled ? Colors.white : color,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (width == null) return button;
-    return SizedBox(width: width, child: button);
-  }
-}
-
-class _PreviewTransportPicker extends StatelessWidget {
-  const _PreviewTransportPicker({required this.primary});
-
-  final Color primary;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-      decoration: BoxDecoration(
-        border: Border.all(color: primary.withValues(alpha: 0.35)),
-        borderRadius: BorderRadius.circular(9),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Row(
-        children: [
-          Expanded(
-            child: Container(
-              color: primary.withValues(alpha: 0.18),
-              padding: const EdgeInsets.symmetric(vertical: 7),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.bluetooth, size: 15, color: primary),
-                  const SizedBox(width: 5),
-                  Text(
-                    'BLE',
-                    style: TextStyle(
-                      color: primary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 7),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.lan,
-                      size: 15,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant),
-                  const SizedBox(width: 5),
-                  Text(
-                    'TCP',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewDetailChip extends StatelessWidget {
-  const _PreviewDetailChip(this.icon, this.label);
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = Theme.of(context).colorScheme.onSurfaceVariant;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(7),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(label, style: TextStyle(color: color, fontSize: 10)),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewInfoRow extends StatelessWidget {
-  const _PreviewInfoRow({
-    required this.label,
-    required this.icon,
-    required this.value,
-    required this.color,
-  });
-
-  final String label;
-  final IconData icon;
-  final String value;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 86,
-          child: Text(
-            label,
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-          ),
-        ),
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: 5),
-        Expanded(
-          child: Text(
-            value,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _PreviewConnectionNavBar extends StatelessWidget {
-  const _PreviewConnectionNavBar({required this.connected});
-
-  final bool connected;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      key: ValueKey(
-        connected
-            ? 'guide-connected-connection-nav'
-            : 'guide-disconnected-connection-nav',
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        border: Border(
-          top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
-        ),
-      ),
-      child: Row(
-        children: [
-          const Expanded(
-            child: _PreviewConnectionNavItem(
-              icon: Icons.map_outlined,
-              label: 'Map',
-            ),
-          ),
-          const Expanded(
-            child: _PreviewConnectionNavItem(
-              icon: Icons.list_alt_outlined,
-              label: 'Log',
-            ),
-          ),
-          const Expanded(
-            child: _PreviewConnectionNavItem(
-              icon: Icons.history_outlined,
-              label: 'History',
-            ),
-          ),
-          Expanded(
-            child: _PreviewConnectionNavItem(
-              icon: connected ? Icons.bluetooth_connected : Icons.bluetooth,
-              label: connected ? 'Connected' : 'Connect',
-              active: true,
-              connected: connected,
-            ),
-          ),
-          const Expanded(
-            child: _PreviewConnectionNavItem(
-              icon: Icons.settings_outlined,
-              label: 'Settings',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewConnectionNavItem extends StatelessWidget {
-  const _PreviewConnectionNavItem({
-    required this.icon,
-    required this.label,
-    this.active = false,
-    this.connected = false,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool active;
-  final bool connected;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = connected
-        ? Colors.green
-        : active
-            ? Theme.of(context).colorScheme.primary
-            : Theme.of(context).colorScheme.onSurfaceVariant;
+    final accent = _guideAccent(context, Theme.of(context).colorScheme.primary);
     return Column(
-      mainAxisSize: MainAxisSize.min,
+      key: const ValueKey('guide-first-connection-preview'),
       children: [
-        Icon(icon, color: color, size: 18),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: color,
-            fontSize: 9,
-            fontWeight: active ? FontWeight.w600 : null,
-          ),
+        Row(children: [
+          Icon(Icons.bluetooth, color: accent),
+          const SizedBox(width: 10),
+          Text('Bluetooth', style: Theme.of(context).textTheme.titleSmall),
+          const Spacer(),
+          Icon(Icons.check_circle, color: accent, size: 20),
+        ]),
+        const SizedBox(height: 14),
+        const Text('Tap Scan to search for MeshCore devices'),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+          decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.bluetooth_searching, color: accent, size: 20),
+            const SizedBox(width: 8),
+            Text('Scan',
+                style: TextStyle(color: accent, fontWeight: FontWeight.w700)),
+          ]),
         ),
       ],
     );
   }
+}
+
+class _GuideIllustrationIcon extends StatelessWidget {
+  const _GuideIllustrationIcon(this.icon, {required this.color, this.size});
+  final IconData icon;
+  final Color color;
+  final double? size;
+
+  @override
+  Widget build(BuildContext context) =>
+      Icon(icon, color: _guideAccent(context, color), size: size);
 }
 
 class _MapSquare extends StatelessWidget {
@@ -1871,10 +1416,10 @@ class _MapSquare extends StatelessWidget {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.15),
-            border: Border.all(color: color, width: 2),
+            color: _guideAccent(context, color).withValues(alpha: 0.15),
+            border: Border.all(color: _guideAccent(context, color), width: 2),
           ),
-          child: Icon(icon, color: color),
+          child: Icon(icon, color: _guideAccent(context, color)),
         ),
         const SizedBox(height: 4),
         Text(label, style: Theme.of(context).textTheme.labelSmall),
