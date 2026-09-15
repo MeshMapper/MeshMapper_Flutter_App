@@ -122,7 +122,7 @@ class MapSettingsPage extends StatelessWidget {
                 secondary: const Icon(Icons.text_increase),
                 title: const Text('Larger Top 3 Overlay'),
                 subtitle: const Text(
-                    'Double the size of the overlay for easier reading'),
+                    'Increase the size of the overlay for easier reading'),
                 value: prefs.largerTopRepeaters,
                 onChanged: (value) {
                   appState.updatePreferences(
