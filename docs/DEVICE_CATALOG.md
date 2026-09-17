@@ -22,7 +22,7 @@ The server has no catalog source of truth and `master_admin.php` has no workflow
 - Let MASTER and GLOBAL admins see supported devices and unknown reports.
 - Require a MASTER admin to approve every addition to the supported catalog.
 - Put pending unknown devices at the top of the Devices page.
-- Refresh the app catalog once per app process launch and cache the last valid response locally.
+- Refresh the app catalog once per app process launch, cache the last valid response locally, and allow one bounded connect-time retry when that launch left no catalog behind.
 - Report genuinely unknown firmware identities without delaying or preventing connection.
 - Centralize app matching so every transport uses the same rules.
 
@@ -40,7 +40,7 @@ The server stores live data in `device_models.db`. A committed PHP seed resource
 
 Bootstrap is permitted only when the database file is absent or when a failed initial transaction left a valid SQLite file containing no committed catalog tables or rows. Initialization is serialized, and schema, seed data, aliases, and metadata commit together so concurrent first requests cannot seed twice. An existing database containing catalog tables or rows but missing valid metadata is an initialization error and must not be automatically seeded, repaired, or overwritten. A corrupt database is also an error. Both cases return the normal non-fatal catalog failure and require operator recovery.
 
-After bootstrap, SQLite is authoritative. The seed is never reread into an existing initialized database, so subsequent admin edits are not overwritten. The Flutter asset and its `pubspec.yaml` registration are removed. If an installation has no local cache and the server is unavailable, the app has no catalog for that launch and treats the connected device as unknown without reporting it.
+After bootstrap, SQLite is authoritative. The seed is never reread into an existing initialized database, so subsequent admin edits are not overwritten. The Flutter asset and its `pubspec.yaml` registration are removed. If an installation has no local cache and the server is unavailable, the app has no catalog and treats the connected device as unknown without reporting it, until the launch refresh or a bounded connect-time retry succeeds.
 
 Direct HTTP access to the seed or catalog helper returns 404 without emitting catalog data or opening or creating the database. Deployment verifies the active `/etc/apache2/conf-available/meshmapper-security.conf` rule returns 403 for `device_models.db`, `device_models.db-wal`, and `device_models.db-shm`. The implementation must not rely on `.htaccess` because production uses `AllowOverride None`.
 
@@ -217,7 +217,11 @@ On every app process launch:
 
 The refresh has one 10-second total deadline measured from its initial start. That deadline includes a stale-connection replay and reading the response body, so a replay cannot start a second 10-second budget.
 
-The connection UI does not wait on the refresh when a cached catalog is available. At connection workflow step 4, identification obtains the service's current catalog rather than using a list copied before the protocol handshake. If no cache exists, identification awaits only the remaining lifetime of the already-running refresh. It proceeds as unknown when that shared deadline expires.
+The connection UI does not wait on the refresh when a cached catalog is available. At connection workflow step 4, identification obtains the service's current catalog rather than using a list copied before the protocol handshake.
+
+If no catalog is available at step 4, identification may arm one further refresh before it waits. That retry is bounded: at most one per connect resolve, never while a refresh is already in flight, and never sooner than 30 seconds after the previous refresh ended. A launch that began with no network therefore still recognizes the radio once connectivity returns, and a persistently unreachable server cannot turn every connect attempt into a fetch.
+
+Identification then waits at most 3 seconds for a catalog to become available, regardless of which deadline the refresh in flight is running to, and proceeds as unknown when that cap expires. The cap exists because step 4 runs before the first radio write of the protocol handshake, and the app allows a link that dies immediately after the transport connect a 20-second window in which to earn a single workflow rerun. Spending a full 10-second fetch deadline at step 4 would consume most of that window. The refresh continues to its own deadline after identification gives up, and a valid response still replaces the cache for the next connection.
 
 Once identification finishes, its selected model and reporting power remain fixed for that connection. A refresh that completes later applies only to a subsequent connection and never replaces a user's manual reporting-power override.
 

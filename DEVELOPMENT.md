@@ -98,11 +98,30 @@ updated by adding the developer-portal capability.
 
 The iOS and Android apps show a versioned Quick Guide after the required
 first-run permission flow. `AppStateProvider` owns the seen-version state and
-stores it as a separate key in the `user_preferences` Hive box, so a missing
-key makes the current guide due for both new installs and existing upgrades.
-Skip and Finish persist completion; simply opening or interrupting the guide
-does not. `MainScaffold` serializes the welcome prompt with other global
-dialogs, and About & Support offers manual replay on mobile. The guide is a
+stores it as a separate key in the `user_preferences` Hive box
+(`onboarding_guide_version_seen`, read into `OnboardingGuideProgress`), so a
+missing key makes the current guide due for both new installs and existing
+upgrades: `shouldShowOnboardingGuide` is `isLoaded && seenVersion <
+currentVersion`. EVERY way out persists the seen version, including the X, the
+Android back gesture out of the guide and the back gesture out of the welcome
+prompt, or the welcome prompt came back on every launch. The two kinds of exit
+differ only in what a FAILED persist does: Skip Guide and Finish Guide are
+deliberate answers, so a failure keeps the surface up and re-enables the button
+for another try; a dismiss may never be a dead end, so it closes anyway, logs
+under `[APP]`, and the guide is simply due again next launch. Both keep the
+in-flight guard, so a second tap or gesture during a persist is a no-op.
+`MainScaffold` serializes the welcome prompt with other global
+dialogs through `OnboardingGuideCoordinator.shared`, a one-slot reservation held
+for the whole automatic presentation (welcome prompt plus guide route) and for a
+manual replay. The link-offer dialog, the CARpeater re-entry prompt, the
+CARpeater cap toast and the portal sign-in error toast all gate on that
+reservation plus `OnboardingPromptGate.reservesModalLane` (which also holds the
+lane while the seen state is still loading) and the open-guide flag. The sign-in
+error is HELD, not cleared, while the lane is busy: a toast raised under the
+welcome dialog or the fullscreen guide is never seen, and clearing it there would
+lose the report entirely. Scheduling additionally waits for the first-run
+permission disclosure flow to settle. About & Support offers manual replay on
+mobile. The guide is a
 self-contained Flutter PageView and never changes connection, wardriving, or
 upload state. Its 12 pages cover connection, online/offline storage, privacy,
 antenna setup, CARpeater setup, background operation, modes, Smart Pinging,
@@ -206,6 +225,38 @@ silently defeating the isolation. `_buildMapSelector` therefore caches the
 identity survives parent rebuilds and the value comparison actually gates the
 map.
 
+**A style reload re-pushes everything, and on Android a second time.** Handing
+`MapLibreMap` a new `styleString` makes the plugin fire a native `setStyle`, and
+every source, layer and registered image is gone from that moment, so `_buildMap`
+sets `_styleLoaded = false` right there instead of waiting for `onStyleLoaded`.
+Nothing may push into a style being torn down, and every reader gates on the flag
+before it latches anything, so an update dropped during a reload is re-detected
+by the restore. `_buildMap` also bumps `_androidStyleResyncGen` so a callback
+armed by the previous load bails rather than pushing into the incoming style, and
+`_restoreStyle` bumps it again at the top for a programmatic swap that never
+routes through `_buildMap`. On Android a style RELOAD (the user cycling the
+basemap) can have its first push silently dropped: the native style object is
+valid and every method-channel call succeeds, but the GL render thread has not
+committed the new style yet, so the data is accepted and never drawn. 250 ms
+later `_runAndroidStyleResync` re-pushes it all, push for push: coverage overlay
+and its cell-highlight layers, region borders (signature reset to `-1` first so
+the build-driven watcher repaints them if this push is the one that gets
+dropped), then the full annotation sync (repeaters, coverage ping symbols
+including the deferred pins, GPS puck source, focus lines, distance labels),
+followed by `_repushCoverageSymbols`, because the annotation manager only
+rewrites its GeoJSON source on an add or update and a sync that finds nothing
+changed pushes nothing at all. `_androidResyncStillValid(gen)` is re-read before
+every leg, and `_lastMarkerDataVersion` is stamped ONLY once the resync's own
+push has landed: the style-loaded pass hands the stamp over rather than claiming
+it, and every bail goes through `_abandonAndroidResync`, which resets it to `-1`
+and calls `setState` so the next build re-syncs. Leaving the old value would not
+do, since when nothing about the marker data changed across the reload it still
+matches what `build()` computes and the build-driven sync never fires. First load,
+iOS and web skip the resync. The history view answers
+`preferences.showDeferredMarkers` exactly as the live view does, so toggling it
+re-syncs (the marker data version reads it) and the cleanup loop takes the
+now-unwanted pins off the map.
+
 ### 9-Step Connection Workflow
 
 Critical safety: The connection sequence MUST complete in order.
@@ -213,7 +264,7 @@ Critical safety: The connection sequence MUST complete in order.
 1. **Transport Connect**: Platform-specific transport connection (BLE GATT, TCP socket, or USB Serial port)
 2. **Protocol Handshake**: `deviceQuery()` with protocol version
 3. **Device Info**: `deviceQuery()` returns manufacturer string, then `getSelfInfo()` acquires device public key (required for geo-auth API authentication). If `getSelfInfo()` fails, the entire connection fails.
-4. **Device Identification**: Resolve the queried manufacturer against the current server-managed catalog. A cacheless launch waits only for the shared refresh deadline. Recognition is advisory and never modifies radio settings.
+4. **Device Identification**: Resolve the queried manufacturer against the current server-managed catalog. With nothing cached, this connect may arm one more refresh and waits at most 3 s for it. Recognition is advisory and never modifies radio settings.
 5. **Time Sync**: `sendTime()` syncs device clock
 6. **Session Acquisition**: POST to `/wardrive-api.php/auth` for geo-auth session. Two-stage flow: first attempt with device public key, fallback to registration with signed contact URI if device not registered. Returns `session_id`, `tx_allowed`, `rx_allowed`, `expires_at`, and regional channels.
 7. **Channel Setup**: Create or use existing `#wardriving` channel, plus any regional channels from auth response
@@ -297,13 +348,26 @@ disconnect timer restarted, top-heard overlay cleared, 5 second cooldown started
 is refused after its session check (`toggleAutoPing`'s start branch) restarts the idle
 disconnect timer it cancelled, in its `finally`.
 
+That finish is one method, `AppStateProvider._finishAutoPingStop`, and the Offline Mode hot
+switch (`_stopAutoPingGracefully`) ends through it too, with `keepHeartbeat: false`: the
+session is being left behind either way and the switch releases or re-mints it straight after,
+which is the one documented difference. Each of the three used to carry its own copy of the
+tail, so what a stop left behind depended on which one ran. The hot switch stopped the 5 second
+cooldown the drain had just armed (the cooldown is now armed and LEFT RUNNING, so a mode cannot
+be restarted into the switch), and it wrote the offline session file a second time. The switch
+now owns that save for the length of the call (`_modeSwitchOwnsOfflineSave`), so the shared
+finish holds its own back and the file is written once, after everything the stop flushed has
+landed in the queue. The discovery countdown is the one timer the user stop paths leave alone
+and the hot switch stops, because a discovery window still open belongs to the session being
+torn down.
+
 ### GPS & Zone Validation
 
 - Uses `geolocator` package with high accuracy and continuous tracking
 - **Zone Validation**: Server-side — client sends GPS coordinates to the API, server returns zone status (in-zone, nearest zone, or error)
 - **Min Distance Filter**: 25m between pings prevents spam
 - **Airborne block** (`GpsService.positionLooksAirborne`): a fix counts as in the air when its altitude, less its own vertical accuracy, is above 6,000 m (higher than any road on Earth, below airliner cruise) OR its ground speed is above 250 km/h (catches take-off, approach and most small aircraft; a high-speed train trips it too, by design). Three consecutive airborne fixes set `GpsService.isAirborne`, three consecutive ground fixes clear it, and one fix of the other kind restarts the count. The latch records which test fired (`airborneGate`) and BOTH readings of the fix that set it (`airborneAltitude`, `airborneSpeed`, each null when unknown; `speedOrNull` mirrors `altitudeOrNull`), and reports every flip once through `onAirborneChanged`. Unknown altitude and speed arrive from geolocator as 0.0 and never qualify (fail open). Every accepted fix feeds the latch (`trackAirborne`): the position stream, the simulator and `getFreshPosition()`, which TX, discovery and trace sends all take. A fix handed over twice (stream plus fresh read, same platform timestamp) counts once, so the streak really is three distinct fixes. The latch resets whenever the fix source restarts (`startWatching`, `enableSimulator`), because the stream only fires on movement and a phone left on a desk after a simulated flight would otherwise stay locked out. `GpsService.altitudeOrNull` is the shared "does this fix know its altitude" test (only the 0.0/0.0 pair means unknown; Android omits the accuracy on fixes that do carry an altitude).
-- **What the block does**: `AppStateProvider._checkAirborne()` is level-triggered from the position listener and from the auto-ping scheduling hook (on iOS the position stream is quiet in the background, so the fresh fix each ping takes is the only sample then). With a live session it calls `_endSessionForAirborne()`: disconnect alert, error-log entry with the altitude or speed in the user's units, then `disconnect(closeApp: false, releaseExtras: ...)`, the normal user-disconnect path (auto-ping off, RX logging off, queue cleared, offline session kept in Offline Mode, API session released, no auto-reconnect). It defers while a zone transfer is in progress, since that flow re-acquires a session after its awaits with no cancellation check. The listener returns early on that tick so it cannot run a zone check on the way out, and the 100 m zone recheck while disconnected is skipped while airborne (a flight would otherwise POST once a second for hours). The four connect entry points refuse via `_refuseConnectIfAirborne()` (which sets no `connectionError`: the Connection screen's Airborne panel outranks the error card, and a message set there would survive the landing until the next attempt), the Connection screen disables Connect and shows "Airborne" with the reading that set the latch (`airborneCause`, "Your altitude is 10000m." or "You are moving at 300 km/h."), the map's GPS chip shows the fix's altitude when known, `PingValidation.airborne` blocks all three validators, Siri and the watch get `ExternalCommandReasonCode.airborne`, and auto-reconnect abandons instead of retrying into a flight (same alert, error-log entry and release telemetry, preserved queue dropped; the check sits below the reconnect prep so the foreground service and RX-side objects are torn down first). The check skips while `_isConnecting`, because the step flips to connected before `_postConnectionSetup` finishes and a disconnect inside that window would null objects the setup still uses; the next fix catches it. The release call carries `disconnect_cause: airborne`, `airborne_gate` (the test that fired) and `airborne_value` (its reading, raw meters or km/h), plus `airborne_alt_m` and `airborne_speed_kmh`, BOTH readings of the fix that set the latch (each omitted when the platform did not know it, metric ints regardless of the unit setting), so a speed-gate fire can be told apart from a high-speed train; built by the pure `airborneReleaseInfo` in `lib/services/airborne_release.dart` and logged by the server. In Offline Mode the offline recording is paused for as long as the latch is set (`ApiQueueService.setOfflineRecordingPaused`, driven by `GpsService.onAirborneChanged`, logged once on pause and once on resume), so the RX flush at disconnect and any straggler row cannot land in the offline file; the server owner chose the app as the only control on that path. Known gaps: a small aircraft below both limits passes. Thresholds are compiled in (server-delivered limits and a server-side guard were considered and left out). Logged under `[GPS]`, `[APP]`, `[CONN]`.
+- **What the block does**: `AppStateProvider._checkAirborne()` is level-triggered from the position listener and from the auto-ping scheduling hook (on iOS the position stream is quiet in the background, so the fresh fix each ping takes is the only sample then). With a live session it calls `_endSessionForAirborne()`: disconnect alert, error-log entry with the altitude or speed in the user's units, then `disconnect(closeApp: false, releaseExtras: ...)`, the normal user-disconnect path (auto-ping off, RX logging off, queue cleared, offline session kept in Offline Mode, API session released, no auto-reconnect). It defers while a zone transfer is in progress, since that flow re-acquires a session after its awaits with no cancellation check. The listener returns early on that tick so it cannot run a zone check on the way out, and the 100 m zone recheck while disconnected is skipped while airborne (a flight would otherwise POST once a second for hours). The four connect entry points refuse via `_refuseConnectIfAirborne()` (which sets no `connectionError`: the Connection screen's Airborne panel outranks the error card, and a message set there would survive the landing until the next attempt), the Connection screen disables Connect and shows "Airborne" with the reading that set the latch (`airborneCause`, "Your altitude is 10000m." or "You are moving at 300 km/h."), the map's GPS chip shows the fix's altitude when known, `PingValidation.airborne` blocks all three validators, the discovery and trace send lanes read the latch again after their own fresh fix and bow out without transmitting (a TX is already covered by `canPing()`, which re-reads it after the same suspension; on iOS in the background that fresh fix is the sample that sets the latch, so without the re-read each of those lanes put one more packet on the air after the block engaged, and neither reschedules, since the provider's handler is ending the session), Siri and the watch get `ExternalCommandReasonCode.airborne`, and auto-reconnect abandons instead of retrying into a flight (same alert, error-log entry and release telemetry, preserved queue dropped; the check sits below the reconnect prep so the foreground service and RX-side objects are torn down first). The check skips while `_isConnecting`, because the step flips to connected before `_postConnectionSetup` finishes and a disconnect inside that window would null objects the setup still uses; the next fix catches it. The release call carries `disconnect_cause: airborne`, `airborne_gate` (the test that fired) and `airborne_value` (its reading, raw meters or km/h), plus `airborne_alt_m` and `airborne_speed_kmh`, BOTH readings of the fix that set the latch (each omitted when the platform did not know it, metric ints regardless of the unit setting), so a speed-gate fire can be told apart from a high-speed train; built by the pure `airborneReleaseInfo` in `lib/services/airborne_release.dart` and logged by the server. In Offline Mode the offline recording is paused for as long as the latch is set (`ApiQueueService.setOfflineRecordingPaused`, driven by `GpsService.onAirborneChanged`, logged once on pause and once on resume), so the RX flush at disconnect and any straggler row cannot land in the offline file; the server owner chose the app as the only control on that path. Known gaps: a small aircraft below both limits passes. Thresholds are compiled in (server-delivered limits and a server-side guard were considered and left out). Logged under `[GPS]`, `[APP]`, `[CONN]`.
 
 ### Smart Pinging
 
@@ -318,10 +382,17 @@ untouched. On by default with a 14 day window.
   `SmartPingDays`). A stored value outside the range falls back to 14. The window tile is
   hidden while the switch is off. An (i) button beside the switch opens `_showSmartPingInfo`,
   a dialog explaining the deferral in user-facing words.
-- **Map trail**: every actual TX or discovery deferral adds a hollow yellow marker
-  (`PingColors.deferred`, with color-vision palette variants). Overlapping deferrals are
-  kept, including repeated attempts at the same position; marker identity is independent
-  of the server-credit dedupe below. `AppStateProvider.deferredPingMarkers` follows the
+- **Map trail**: a deferral adds a hollow yellow marker (`PingColors.deferred`, with
+  color-vision palette variants), but only the FIRST deferral in a fixed 300 m square per API
+  session: `AppStateProvider`'s `onPingDeferred` handler asks
+  `RecentCoverageService.markDeferred` before it records anything and returns on a repeat, so
+  the one check gates the marker, the noise-floor event and the `DEFER` enqueue below
+  together. The coverage check runs before the 25 m rule, so a phone parked on already mapped
+  ground defers on every interval tick; a marker per tick grew the noise floor session's Hive
+  record and the map's deferred list without bound and bumped `mapRevision` (Critical Rule 9)
+  for a square that already had a marker on it. The countdown still reads "Deferred" on every
+  tick, because that comes from the skip reason, which `PingService` sets whether or not the
+  square is new. `AppStateProvider.deferredPingMarkers` follows the
   normal log limit and clears with map markers or logs, with a `mapRevision` bump.
   Deferred events are also recorded in noise-floor sessions when a reading is available,
   so saved-session maps and the graph preserve them. Startup deferrals are held until
@@ -527,8 +598,8 @@ Continuous RSSI measurement of the idle channel, providing ambient noise data fo
 
 "Carpeater" = co-located repeater with very strong signal, indicating the device is too close for meaningful coverage data. Three layers, checked in `TxTracker` and `RxLogger` in this order, and in `DiscTracker` with the regional check first:
 
-- **The user's own CARpeater** (`UserPreferences.carpeaterPublicKey`, a full upper-case 64-hex public key, on while `ignoreCarpeater` is set; entered in Settings by the trace repeater picker or a validated text field). Pass-through: a TX echo or RX packet whose hop matches is stripped and the repeater behind it is credited with null SNR/RSSI; a single-hop packet via it is dropped; a discovery response from it is dropped. The hop is compared at its own width (2 to 8 hex) via `PacketValidator.isCarpeaterIdMatch`. The pre-share 6-hex prefix is wiped at load (`UserPreferences.stripLegacyCarpeater`), never migrated, and a persisted `carpeater_reentry_pending` flag makes `MainScaffold` prompt for the full key after the next connect (with a button to the Wardriving settings page; "Not now" repeats after the next connect, "I don't use a CARpeater" clears it, so does setting a key).
-- **Regional CARpeaters** (`RegionalCarpeaterFilter`, `lib/services/meshcore/regional_carpeater_filter.dart`): the region's shared list. The app sends its own key as `carpeater` on connect and register auths (never on an offline-mode auth) and every auth answer carries `carpeaters`, which replaces the Hive cache (`user_preferences` box, key `regional_carpeaters`) in full, so an entry an admin deleted or retention aged out leaves the phone at the next auth and Offline Mode keeps the last copy. A missing field is an empty list. The filter excludes the user's own key while their switch is on; every other key is a plain drop, always, even with the user's filter off: someone else's CARpeater is in someone else's car, so neither it nor the repeater behind it may be credited. TX checks the first hop and the credited hop, RX the credited hop, both AFTER the own-CARpeater strip; discovery matches the full key. Regional drops are debug-log only (`[TX LOG]`, `[RX LOG]`, `[DISC]`), never error-log entries. Settings shows "Filtering N regional CARpeaters" with a list. The server caps one radio at 5 live tags per zone; `carpeater_error: max_reached` becomes an error-log entry plus a toast and never affects the connection. Contract: `MeshMapper_Server/docs/APP_API.md`.
+- **The user's own CARpeater** (`UserPreferences.carpeaterPublicKey`, a full upper-case 64-hex public key, on while `ignoreCarpeater` is set; entered in Settings by the trace repeater picker or a validated text field). Pass-through: a TX echo or RX packet whose hop matches is stripped and the repeater behind it is credited with null SNR/RSSI; a single-hop packet via it is dropped; a discovery response from it is dropped. The hop is compared at its own width (2 to 8 hex) via `PacketValidator.isCarpeaterIdMatch`. The pre-share 6-hex prefix is wiped at load (`UserPreferences.stripLegacyCarpeater`), never migrated, and a persisted `carpeater_reentry_pending` flag makes `MainScaffold` prompt for the full key after the next connect (with a button to the Wardriving settings page; "Not now" repeats after the next connect, "I don't use a CARpeater" clears it, so does setting a key). Saving the setup dialog with the field EMPTY clears the flag too (`carpeater_setup_dialog.dart` calls `dismissCarpeaterReentry()` on that path): it is the same answer as "I don't use a CARpeater" and takes the same provider path, and the provider only dismisses the prompt when a key is SET, so without it the prompt came back after every connect.
+- **Regional CARpeaters** (`RegionalCarpeaterFilter`, `lib/services/meshcore/regional_carpeater_filter.dart`): the region's shared list. The app sends its own key as `carpeater` on connect and register auths (never on an offline-mode auth), and a LIVE auth answer carries `carpeaters`, which replaces the Hive cache (`user_preferences` box, key `regional_carpeaters`) in full, so an entry an admin deleted or retention aged out leaves the phone at the next auth and Offline Mode keeps the last copy. A missing field on a live answer is an empty list. The replace runs only on a live connect or register auth: an offline-mode or `skipSessionStore` auth is not one (the offline upload authenticates only to close out its own isolated session and never sends the user's `carpeater`), and a server that answered it without the field would wipe the very cache Offline Mode exists to keep. The filter excludes the user's own key while their switch is on; every other key is a plain drop, always, even with the user's filter off: someone else's CARpeater is in someone else's car, so neither it nor the repeater behind it may be credited. TX checks the first hop and the credited hop, RX the credited hop, both AFTER the own-CARpeater strip; discovery matches the full key. Regional drops are debug-log only (`[TX LOG]`, `[RX LOG]`, `[DISC]`), never error-log entries. A raw `/auth` body is never logged verbatim, because the answer carries the region's whole key list and a debug log file ships with bug reports: `ApiService._redactBodyForLog` puts a body that parses as a JSON object through the same `_sanitizePayload` redaction the request and response summaries get, and cuts anything else (an HTML error page, a truncated stream) to 200 characters. Both the non-200 and the non-JSON `/auth` log lines go through it. Settings shows "Filtering N regional CARpeaters" with a list. The server caps one radio at 5 live tags per zone; `carpeater_error: max_reached` becomes an error-log entry plus a toast and never affects the connection. Contract: `MeshMapper_Server/docs/APP_API.md`.
 - **RSSI threshold**: Packets with RSSI >= -30 dBm are dropped as carpeater (constant `maxRssiThreshold`), skipped for an own-CARpeater pass-through; logged to the error log without auto-switching tabs under `[RX FILTER]`.
 - **Validation pipeline**: RSSI check → packet type (GROUP_TEXT/ADVERT) → channel hash match → AES-ECB decryption → printable character ratio (60% minimum)
 - **Files**: `lib/services/meshcore/packet_validator.dart`, `lib/services/meshcore/regional_carpeater_filter.dart`, `lib/utils/public_key.dart`
@@ -569,10 +640,11 @@ Prevents session timeout during long wardriving sessions by periodically refresh
 
 - **Trigger**: Enabled when the API session is acquired at connect (`enableHeartbeat()`), and again on every auto-ping start, zone re-entry and zone transfer. Disabled on disconnect, on entering zone grace or a zone transfer, and by the Offline Mode hot switch. Stopping an auto mode does NOT disable it, on either stop path: the session stays valid while the radio is connected and idle, and the 15 minute idle disconnect is what ends it. (The pending-disable drain used to disable it, so a stop tapped during an echo window let the session lapse and the next Start came back `session_expired`.)
 - **Timing**: Heartbeat fires **1 minute before** session `expires_at`. If already expired, sends immediately, but never more than one send per 30s (`minHeartbeatSpacing`). The floor matters because `expires_at` is server-clock while the delay math runs on the device clock: a device clock 4+ minutes fast (server TTL is 300s) makes every fresh expiry read as already due, and without the floor the "send immediately" path re-fired one POST per network round trip (the 2026-08-29 storm: 361k POSTs in 64 minutes from one device). An in-flight guard keeps re-entrant `scheduleHeartbeat` callers (upload success, per-ping session check) from stacking concurrent send chains, and a circuit breaker (`maxHeartbeatsPerMinute` = 6) pauses the lane for 60s as a backstop. Regression tests: `test/services/api_service_heartbeat_test.dart`.
-- **Storm brake (429)**: a `rate_limited` answer from `/wardrive` carries `Retry-After` (75s by default) and keeps the session valid (server contract: `docs/APP_API.md` Appendix C item 9, "a 429 is not a sign-out"). `ApiService` parses it into one per-session hold, `wardriveBackoff`, that every sender on that door respects: `uploadBatch` returns `UploadResult.held` (no retry spent), `checkSessionValid` skips the post and reports the last known verdict so the ping itself proceeds, and the keepalive reschedules after the hold instead of going quiet. The brake re-arms its penalty on every blocked hit, so one lane knocking through it would keep all of them locked out. Without the keepalive reschedule, a braked session lapsed while the car was stopped (no ping or upload restarted the lane), the next post got a 401 and the app re-minted a fresh session id, which is exactly what the brake must not cause (VLC-20260903-0002). A new session id drops the hold. Tests: `test/services/api_service_rate_limit_test.dart`.
+- **Storm brake (429)**: a `rate_limited` answer from `/wardrive` carries `Retry-After` (75s by default) and keeps the session valid (server contract: `docs/APP_API.md` Appendix C item 9, "a 429 is not a sign-out"). `ApiService` parses it into one per-session hold, `wardriveBackoff`, that every sender on that door respects: `uploadBatch` returns `UploadResult.held` (no retry spent), `checkSessionValid` skips the post and reports the last known verdict so the ping itself proceeds, and the keepalive reschedules after the hold instead of going quiet. The brake re-arms its penalty on every blocked hit, so one lane knocking through it would keep all of them locked out. Without the keepalive reschedule, a braked session lapsed while the car was stopped (no ping or upload restarted the lane), the next post got a 401 and the app re-minted a fresh session id, which is exactly what the brake must not cause (VLC-20260903-0002). A new session id drops the hold. The hold is clamped to `maxWardriveRetryAfter` (240 s in `api_service.dart`), deliberately below the server's 300 s session TTL: the keepalive is the only sender that renews a session and the brake holds it like every other sender on that door, so an hour-long hold silenced it for the whole hour, the session lapsed with nothing left to renew it, TX pings kept queueing behind wire tags minted under it, and the fresh session id the next `/auth` returned dropped every one of them. Clamped below the TTL the lane is back on its feet inside one session lifetime, and a server that really wants longer answers that one retry with a fresh 429 and the brake re-arms from there: one request every four minutes, which is not the traffic the brake exists to stop. Tests: `test/services/api_service_rate_limit_test.dart`.
 - **Mechanism**: POST to `/wardrive-api.php/wardrive` with `heartbeat: true` flag and optional GPS coordinates
 - **Response**: Returns updated `expires_at`, which schedules the next heartbeat
 - **Expiry recovery**: A live online companion treats only `session_expired` as recoverable. It serializes one replacement `/auth`, preserves the BLE connection and current auto mode, refreshes the region channels, validator, flood scope, capacity, Smart Pinging settings and path widths, then lets the recovered heartbeat lane own its next schedule. A recovered path policy applies the enforced regional width when present and otherwise restores the device firmware width, while retaining the user's trace-width preference. A recovery captures the exact connection and lifecycle generation, blocks new TX, and waits for an on-air TX window to finish its queued old wire tag before cleanup and session swap. Disconnect, zone transfer, Offline Mode, reconnect and disposal invalidate that ownership and wait for the recovery before releasing the current session. A superseded request is distinct from a failed recovery: stale preflights stop without a disconnect, stale heartbeats end quietly, and stale uploads stay held. If replacement configuration cannot be applied, the replacement session is explicitly released before the ordinary fatal path. Stale wire-tagged TX rows are removed before the new session ID is installed; untagged passive observations stay queued. Recovery is refused during disconnect, zone transfer, connection setup and Offline Mode. Other session and auth errors still follow the normal fatal-session path.
+- **Bounding the recovery wait**: ownership is one predicate, `_ownsSessionRecovery(generation, connection, publicKey)`, re-read after every await: not disposed, still the current generation, not in Offline Mode, not connecting, reconnecting or transferring, still at `ConnectionStep.connected`, the same `MeshCoreConnection` instance and the same device public key. The teardown paths bump that generation (`_invalidateLiveSessionRecovery`) and then wait, but only for `sessionRecoveryWaitTimeout` (15 s, through `awaitSessionRecoveryBounded`), after which they carry on and log under `[SESSION]`. Giving up is safe precisely because of the ownership re-read: the recovery finishes on its own and finds it has been superseded. A recovery is two network legs (an `/auth` POST, then the channel and validator work it applies), and an unbounded wait held `disconnect()` and `_startAutoReconnect()` for as long as it liked with the UI already reading Disconnecting and the radio still up. `disconnect()` releases the sign gate and the repeater-admin slot (`abortPendingSign()`, `abortPendingAdmin()`) BEFORE that wait, not after it: a live sign holding the gate through all 15 seconds is exactly what aborting first exists to prevent. A superseded recovery releases the replacement session it already minted through `_releaseRecoveredSession` without being awaited, because that release is a second `/auth` POST that can sit for 30 s, nothing on this path depends on its answer, and the caller that superseded it is blocked on this recovery settling. A recovery that fails for its own reasons still awaits its release before returning `failed`.
 - **Flow**: Auth response sets initial `expires_at` → each wardrive POST or heartbeat updates it → timer reschedules automatically
 
 ### External Antenna Flag
@@ -813,6 +885,27 @@ the app shows as "This region does not support claiming yet."
   `deleteWardrivingChannelEarly()`, `dispose()` and the provider's disconnect, the
   `abortPendingSign` pattern. The login frame is logged by length only, and
   `DebugFileLogger.scrubSecrets` redacts any `password=` shape as a backstop.
+  An ERR frame carries no correlation, so it is claimed for the admin lane only when no
+  poller or query completer is pending (stats, channel info, device query, export contact,
+  get time). Holding the pollers is not enough to make that rule hold, because `_pollsHeld`
+  only stops ticks that START after the slot is claimed: a `getNoiseFloor()` already awaiting
+  its answer keeps the stats completer set for up to 5 s, and its ERR would be eaten there
+  while the admin command timed out still holding the slot. Every admin command therefore
+  calls `_drainPollsForAdminCommand` before its frame is written, waiting out any stats or
+  battery request already on the wire (each bounded by the poll's own timeout, and their
+  errors stay with the poll). That drain also keeps a poll reply out of the 52 KB contact
+  stream, the collision the poll hold was added for. The claim is atomic against a poll
+  starting, because both the poll's guards and `getStats`' claim of its settle slot are
+  synchronous. `getStats` clears its own completer on its own timeout, or a request the radio
+  never answered would keep the stats poll reading as pending for the life of the connection
+  and go on deciding where every ERR went.
+  A command that times out with its bare `OK` still owed keeps the slot and waits for the late
+  reply, bounded by a 10 s `lateResponseBackstop`: when it fires, the slot is released and the
+  late state cleared. It arms nothing on the way out, because an `OK` carries no correlation
+  and the lane cannot tell the owed one from the next command's real one, so ignoring "the next
+  OK" would cascade. At worst a late `OK` completes the following command early. Without the
+  backstop the slot stayed owned until the sheet closed: every later tap refused and both
+  pollers held.
 - **Modules** (`repeater_admin_module.dart`): `RepeaterAdminModule { name, needsAdmin,
   run(session) }` produces one payload for one server action. `ClaimModule` needs admin,
   runs the ACL proof and returns `{login, acl, perms, fw_level}`; `NeighboursModule` allows
@@ -842,7 +935,12 @@ the app shows as "This region does not support claiming yet."
   local row with the phone's zone. If that refresh fails, the existing cache is kept.
   Passwords go through `SecureTokenStore` under `repeater_admin_pw_<HEX>`,
   are sent to the repeater over the mesh, but are never logged or sent to the MeshMapper
-  server. Nothing here bumps `mapRevision`.
+  server. Only a login that PROVED admin is persisted (`shouldRememberAdminPassword` in
+  `repeater_admin_sheet.dart`: `remember && state == RepeaterAdminState.admin`). A guest
+  login is a login too, and the Remember switch defaults on whenever an admin password is
+  already stored, so persisting on any login let a guest password overwrite the remembered
+  admin one; a guest login now writes nothing and deletes nothing, and Forget password stays
+  the only way to clear a stored password. Nothing here bumps `mapRevision`.
 - **Entry points**: the Trace row is three pieces, `[list + ID]` (one neutral group), `[Trace]`
   and `[Manage]` (each its own tinted box); Manage needs
   the full key, so a picked repeater carries it and a typed ID counts only when it prefixes
@@ -1002,7 +1100,15 @@ repeat Stop with a no-op, "MeshMapper is already stopping"
 session flag while the disable is still parked), and `PingService.disableAutoPing` returns
 early when a disable is already parked, so no caller can strand one: the old fall-through ran
 the immediate teardown, which disposes the tracker whose window completion is the only thing
-that drains it. `forceDisableAutoPing` is still the way to override a parked disable.
+that drains it. `forceDisableAutoPing` is still the way to override a parked disable. A Start
+arriving on that lane while the stop drains is REFUSED with `stillStopping` ("MeshMapper is
+still stopping. Try again shortly."), ahead of both the already-running and the already-starting
+tests, the mirror of the Stop branch: a parked disable still reads as an active session, so the
+answer used to be a no-op reported as success ("MeshMapper is already running in Active mode")
+about a session that was visibly stopping. It is the same reason `resolveSessionStartAvailability`
+gives for the same state, which is the gate the phone's own buttons and the watch's enablement
+read; the transition used to admit and lean on that second gate, so a surface consulting only
+this resolver was one call away from starting a mode on top of a draining stop.
 
 All three send lanes latch `_pingInProgress` BEFORE their fresh GPS fix, never after it, so a
 Stop pressed during that fetch parks rather than tearing the lane down under a send that is
@@ -1032,6 +1138,24 @@ alongside the new session's first ping. So each lane also captures `PingService.
 before its fetch; `forceDisableAutoPing` bumps it, and a send that finds it moved bows out
 without touching the flag, which by then is either already clear or held by the new session's
 send. The trace lane's `finally` makes the same exception for its flag reset.
+
+The discovery lane's `finally` is shaped like the trace lane's: it resets `_pingInProgress`
+first, under `!armedWindow && epoch == _sendEpoch`, and drains a parked disable after. The
+reset used to be a *condition* of the drain (`!armedWindow && !_pingInProgress &&
+_pendingDisable`), so a throw anywhere in the latched region left the flag set for the life of
+the service, which every discovery, trace, auto and manual ping reads, and made the drain
+unreachable on exactly that path.
+
+A session recovery is the third way a scheduled attempt bows out, and it has to re-arm the
+lane on the way. `sendTxPing` checks `_sessionRecoveryInProgress` twice, once before the fresh
+fix and once after it, and both bow-outs call `_rescheduleAutoLane`, which picks the Hybrid or
+the Active schedule exactly as the 25 m skip path picks it. Every interval timer here is
+one-shot and the provider clears the recovery flag in a `finally` only, so a tick that landed
+during a recovery used to end the lane for the rest of the session with the mode flags still
+reading enabled. A manual ping arms nothing. The second bow-out clears `_pingInProgress`
+before it reschedules, as the validation skip path does: `onAutoPingScheduled` fires
+synchronously, and a disable arriving while that flag is still true latches as pending with no
+window left to drain it.
 
 Two observations carry an `onGlance` flag so a state can belong to a lane (which
 the buttons read) without moving the single glance answer, or reach both. The
@@ -1651,24 +1775,56 @@ When modifying code, update `DEVELOPMENT.md` (this file) for architectural chang
 
 ## Device Catalog
 
+The catalog contract is `docs/DEVICE_CATALOG.md`.
+
 The app has no bundled device list. `DeviceModelService` loads the last fully
 validated server response from `SharedPreferences`, then starts one shared
 10-second catalog refresh for the launch. It replaces memory and the cache only
 after the whole response passes strict type, bound, and normalized-identity
-validation. A cacheless connection waits only for the remainder of that shared
-deadline at connection workflow step 4, then continues as unknown.
+validation (`DeviceCatalog.fromJson` in `lib/models/device_catalog.dart`: at most
+500 devices, 50 aliases per device, 1 MiB encoded, no duplicate device ID and no
+duplicate normalized identity). `initialize()` never throws. A platform-channel
+failure or an unreadable preference store leaves the service with no storage and
+no catalog, logged under `[MODEL]`, because app startup awaits this call and a
+throw used to abort the rest of it: preferences, regional CARpeaters, repeater
+claims, the remembered device and every listener below it were skipped, leaving
+the app on defaults with no sign of why. A fetched catalog is published to memory
+even when the cache write is refused, so a device that cannot persist still
+recognizes radios for the rest of that launch.
+
+A connect that finds no catalog cached arms one more refresh itself. At most one
+per connect resolve, never while a refresh is in flight, and no sooner than
+`connectRetryFloor` (30 s) after the previous refresh ended, so a dead link
+cannot turn every connect into a fetch. Identification then waits at most
+`connectWaitCap` (3 s) for a catalog to land, whatever deadline that refresh is
+running to, and continues as unknown when the cap expires. The cap is sized
+against `handshakeRerunWindow` in
+`lib/services/bluetooth/ble_connect_retry_policy.dart` (20 s): resolution happens
+at connection workflow step 4, before the first radio write of the handshake, and
+spending a whole fetch deadline there would push a link that dies right after the
+transport connect past the window that earns it a one-shot workflow rerun. The
+fetch itself keeps running to its own deadline and lands in the cache for the
+next connect.
 
 Cache publication writes an inactive slot before switching the active pointer.
 Startup reloads durable preferences before reading that pointer, because a failed
 SharedPreferences write can still change its process cache. Legacy cached JSON
 is retained as the fallback until a slot is successfully published.
 
-Matching is exact after shared sanitization, approved build-suffix removal, and
-ASCII-only normalization. It considers manufacturer, short name, and aliases,
-and recognizes a result only when exactly one device ID matches. Unknown or
+Matching (`lib/services/device_model_matcher.dart`) is exact after shared
+sanitization, approved build-suffix removal (a trailing
+`(nightly|stable|dev)-<hex>`, case-insensitive) and ASCII-only normalization
+(letters and digits, lower-cased). It considers manufacturer, short name, and
+aliases, and recognizes a result only when exactly one device ID matches. There
+is no partial or prefix fallback: a firmware identity the app does not recognize
+is fixed by adding a server-side alias, not by loosening the match. Unknown or
 unavailable-catalog paths remain connectable and preserve the existing manual
-reporting-power flow. Recognition only selects values reported to the API. It
-never writes radio TX settings.
+reporting-power flow. Recognition only selects the `power` and `txPower` values
+reported to the API (`resolveReportingPower` in
+`lib/services/reporting_power.dart`, where a saved per-radio override outranks
+the matched model). Those figures, the PA amplifier models' included, live in the
+server catalog; the app holds no power table of its own and never writes radio TX
+settings.
 
 Genuine unknown identities observed against a valid catalog enter a bounded,
 versioned `SharedPreferences` outbox. The outbox is serialized, reports at most
@@ -1770,7 +1926,12 @@ All API endpoints may return maintenance mode:
 - `lib/services/recent_coverage_service.dart` - Smart Pinging lookup: recently covered cells from filtered z13 tiles
 - `lib/services/airborne_release.dart` - Pure builder for the airborne session-end text and release telemetry
 - `lib/services/api_queue_service.dart` - Persistent upload queue
-- `lib/services/device_model_service.dart` - Device model identification
+- `lib/services/device_model_service.dart` - Device catalog cache, launch and connect-time refresh, unknown-device outbox
+- `lib/services/device_model_matcher.dart` - Shared identity sanitization, normalization and exact catalog match
+- `lib/models/device_catalog.dart` - Validated catalog envelope and its bounds
+- `lib/models/device_model.dart` - One validated catalog device record
+- `lib/services/reporting_power.dart` - Reporting-only power resolution with the per-radio override precedence
+- `lib/providers/device_connection_setup.dart` - Pure pre-auth and post-connect device decisions
 - `lib/services/background_service.dart` - Background operation (Android foreground service, iOS background modes)
 - `lib/services/audio_service.dart` - Sound notifications for TX/RX events
 - `lib/services/offline_session_service.dart` - Offline wardriving session storage
