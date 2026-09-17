@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../utils/debug_logger_io.dart';
 import 'onboarding_guide_pages.dart';
 
 enum OnboardingGuideResult { skipped, finished }
@@ -44,7 +45,19 @@ class _OnboardingGuideScreenState extends State<OnboardingGuideScreen> {
     );
   }
 
-  Future<void> _completeAndPop(OnboardingGuideResult result) async {
+  /// Persists the seen version, then pops with [result].
+  ///
+  /// [isDismiss] separates the two kinds of exit. Skip Guide and Finish Guide
+  /// are deliberate completions, so a persist that fails keeps the guide up and
+  /// re-enables the button for another try. A dismiss (the X, the Android back
+  /// gesture) may never be a dead end: it attempts the same persist but closes
+  /// either way, and the guide simply comes back on the next launch. Both kinds
+  /// keep the in-flight guard, so a second tap or gesture during a persist is a
+  /// no-op.
+  Future<void> _completeAndPop(
+    OnboardingGuideResult result, {
+    bool isDismiss = false,
+  }) async {
     if (_completionInFlight) return;
     final complete = widget.complete;
     if (complete == null) {
@@ -57,6 +70,10 @@ class _OnboardingGuideScreenState extends State<OnboardingGuideScreen> {
     if (!mounted) return;
     if (completed) {
       Navigator.of(context).pop(result);
+    } else if (isDismiss) {
+      debugLog(
+          '[APP] Onboarding seen version could not be saved, closing anyway');
+      Navigator.of(context).pop(result);
     } else {
       setState(() => _completionInFlight = false);
     }
@@ -67,14 +84,26 @@ class _OnboardingGuideScreenState extends State<OnboardingGuideScreen> {
     final pages = buildOnboardingGuidePages(context);
     final isLastPage = _pageIndex == _pageCount - 1;
 
+    // Back takes the same path as the X, so no exit from the guide leaves the
+    // seen version unwritten. While a completion is in flight the gesture does
+    // nothing, as before.
     return PopScope(
-      canPop: !_completionInFlight,
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _completeAndPop(OnboardingGuideResult.skipped, isDismiss: true);
+      },
       child: Scaffold(
         appBar: AppBar(
           leading: IconButton(
             tooltip: 'Close',
-            onPressed:
-                _completionInFlight ? null : () => Navigator.of(context).pop(),
+            // Closing with X persists the seen version the way Skip Guide does,
+            // or the welcome prompt comes back on every launch. It is a
+            // dismiss, so it closes even when that persist fails.
+            onPressed: _completionInFlight
+                ? null
+                : () => _completeAndPop(OnboardingGuideResult.skipped,
+                    isDismiss: true),
             icon: const Icon(Icons.close),
           ),
           title: Text(
