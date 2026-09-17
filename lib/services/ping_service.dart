@@ -765,6 +765,11 @@ class PingService {
 
     if (_sessionRecoveryInProgress) {
       debugLog('[SESSION] Ignoring TX ping while session recovery is installing');
+      // The interval timer that fired this attempt is one-shot, and the
+      // provider only releases the gate in a finally, so a tick that lands
+      // during recovery would end the lane for the rest of the session with
+      // the mode flags still reading enabled. Manual pings arm nothing.
+      if (!manual) _rescheduleAutoLane();
       return false;
     }
 
@@ -795,7 +800,12 @@ class PingService {
         }
         if (_sessionRecoveryInProgress) {
           debugLog('[SESSION] Session recovery started during fresh fix, not sending');
+          // Unlock before scheduling, as the validation skip path below does:
+          // onAutoPingScheduled fires synchronously and a disable arriving
+          // while this is still true latches as pending with no window to
+          // drain it. This lane is auto-only, so no manual check is needed.
           _pingInProgress = false;
+          _rescheduleAutoLane();
           return false;
         }
 
@@ -1299,6 +1309,22 @@ class PingService {
     }
 
     // TxTracker automatically stops after window duration
+  }
+
+  /// Re-arm the TX auto lane after an attempt that bowed out without
+  /// scheduling anything itself.
+  ///
+  /// Every interval timer here is one-shot, so an auto attempt that returns
+  /// early with nothing armed ends the lane for the rest of the session while
+  /// the mode flags still read enabled. Hybrid or Active is chosen exactly as
+  /// the validation skip path chooses it.
+  void _rescheduleAutoLane() {
+    if (!_autoPingEnabled || _passiveModeEnabled) return;
+    if (_hybridModeEnabled) {
+      _scheduleNextHybridPing();
+    } else {
+      _scheduleNextAutoPing();
+    }
   }
 
   /// Schedule next auto ping after interval
@@ -1919,6 +1945,18 @@ class PingService {
         return;
       }
 
+      // The fix above is the sample that sets the airborne latch on iOS in the
+      // background, where the position stream is quiet. A TX is covered by
+      // canPing(), which re-reads the latch after its own suspension; this lane
+      // has no such re-read, so the request went on the air from an aircraft
+      // anyway. No reschedule: the provider's airborne handler ends the
+      // session. The finally still drains a parked disable.
+      if (_gpsService.isAirborne) {
+        debugLog('[DISC] Airborne during the fresh fix, not sending');
+        _pingInProgress = false;
+        return;
+      }
+
       // As in sendTxPing: the transport parks a non-sign write behind an
       // in-progress sign, so take that wait here rather than inside the send.
       if (shouldAbortBeforeTransmit != null) {
@@ -2057,7 +2095,17 @@ class PingService {
       //
       // The send-failure catch drains on its own, and _executePendingDisable
       // clears _pendingDisable first, so at most one drain runs on any path.
-      if (!armedWindow && !_pingInProgress && _pendingDisable) {
+      //
+      // The reset comes first, as it does in the trace lane. A throw anywhere
+      // in the latched region would otherwise leave the flag set for the life
+      // of the service, and every discovery, trace, auto and manual ping reads
+      // it; it also made the drain below unreachable on exactly that path. A
+      // no-op on every path that already clears it. Skipped when the epoch
+      // moved: the flag was cleared by that force disable and may since have
+      // been taken by the next session's first send, which this attempt must
+      // not unlatch.
+      if (!armedWindow && epoch == _sendEpoch) _pingInProgress = false;
+      if (!armedWindow && _pendingDisable) {
         await _executePendingDisable('discovery ended without window');
       }
     }
@@ -2347,6 +2395,19 @@ class PingService {
       // has already cleared any parked disable.
       if (!_autoPingEnabled || !_targetedModeEnabled) {
         debugLog('[TRACE] Targeted mode ended during the fresh fix, not sending');
+        _pingInProgress = false;
+        return;
+      }
+
+      // The re-check above only catches a teardown the provider has already
+      // run. The fix just taken is the sample that sets the airborne latch on
+      // iOS in the background, and the provider has not seen it yet, so read
+      // the latch here as well: canPing() does the same for a TX after its own
+      // suspension, and this lane has no equivalent. No reschedule, the
+      // provider's airborne handler ends the session; the finally below still
+      // drains a parked disable.
+      if (_gpsService.isAirborne) {
+        debugLog('[TRACE] Airborne during the fresh fix, not sending');
         _pingInProgress = false;
         return;
       }

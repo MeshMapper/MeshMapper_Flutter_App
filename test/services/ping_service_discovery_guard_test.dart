@@ -379,4 +379,42 @@ void main() {
     ping.dispose();
   });
 
+  testWidgets('a throw inside the latched region unlocks and drains the stop',
+      (tester) async {
+    final gps = _FakeGps()..position = _pos();
+    final conn = _FakeConnection();
+    final discoveryWindow = DiscoveryWindowTimer();
+    // Any hook in the latched region can throw; the coverage lookup is the
+    // easiest to stand one up on.
+    final ping = _build(gps, conn, discoveryWindow)
+      ..checkRecentCoverage =
+          (lat, lon) => throw StateError('coverage lookup failed');
+
+    // Park the opening discovery on its fresh fix, then stop Passive: the
+    // latch turns the stop into a parked disable waiting on this attempt.
+    gps.freshPositionGate = Completer<void>();
+    final start = ping.enableAutoPing(passiveMode: true);
+    await tester.pump();
+    expect(ping.pingInProgress, isTrue,
+        reason: 'the discovery latched the shared flag and awaits its fix');
+    expect(await ping.disableAutoPing(), isTrue);
+    expect(ping.pendingDisable, isTrue, reason: 'the stop parked behind it');
+
+    gps.freshPositionGate!.complete();
+    gps.freshPositionGate = null;
+    await expectLater(start, throwsA(isA<StateError>()));
+    await tester.pump();
+
+    expect(conn.discoveryTransmits, 0, reason: 'nothing went on the air');
+    expect(ping.pingInProgress, isFalse,
+        reason: 'a throw must not leave the shared flag latched for the '
+            'life of the service');
+    expect(ping.pendingDisable, isFalse,
+        reason: 'the parked stop drains here, not at the 12s backstop');
+    expect(ping.autoPingEnabled, isFalse, reason: 'the stop completed');
+
+    ping.dispose();
+    discoveryWindow.stop();
+  });
+
 }
