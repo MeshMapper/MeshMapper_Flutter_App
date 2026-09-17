@@ -118,8 +118,8 @@ void main() {
   });
 
   for (final failure in <String>['false', 'throw']) {
-    test('restores cache and memory when persistence returns $failure',
-        () async {
+    test('keeps the committed cache and publishes memory when persistence '
+        'returns $failure', () async {
       final cached = DeviceCatalog.fromJson(catalogJson(1)).toJsonString();
       var firstWrite = true;
       final storage = MemoryCatalogStorage(
@@ -139,7 +139,9 @@ void main() {
       await service.initialize();
       await service.refreshFuture;
 
-      expect(service.catalog?.revision, 1);
+      // A refused write does not throw away a validated catalog: this launch
+      // uses it from memory while the committed cache stays untouched.
+      expect(service.catalog?.revision, 2);
       expect(storage.getString(DeviceModelService.catalogCacheKey), cached);
     });
   }
