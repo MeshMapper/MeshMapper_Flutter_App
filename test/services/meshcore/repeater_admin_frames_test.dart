@@ -875,4 +875,168 @@ void main() {
       await signExpectation;
     });
   });
+
+  group('poll drain', () {
+    // RESP_CODE_STATS [type:1][noise:int16 LE][lastRssi][lastSnr]
+    // [txAirSecs:u32][rxAirSecs:u32], 13 bytes on the wire.
+    List<int> statsFrame(int noise) => [
+          ResponseCodes.stats,
+          StatsTypes.radio,
+          noise & 0xFF,
+          (noise >> 8) & 0xFF,
+          0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+
+    ContactRecord newContact() => ContactRecord.newRepeater(
+        publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+
+    test('an admin frame waits for a stats request already on the wire',
+        () async {
+      // The poll hold (_pollsHeld) only stops ticks that start after the slot
+      // is claimed. This one is already on the wire.
+      final stats = connection.getStats(StatsTypes.radio);
+      await transport.settle();
+      expect(transport.commandAt(0), CommandCodes.getStats);
+
+      final add = connection.addContact(newContact());
+      await transport.settle();
+      expect(transport.writes.length, 1,
+          reason: 'the add must not join a poll that is still pending');
+
+      transport.emit(statsFrame(-120));
+      expect(await stats, -120);
+      await transport.settle();
+      expect(transport.commandAt(1), CommandCodes.addUpdateContact,
+          reason: 'the drained poll lets the admin frame out');
+
+      transport.emit([ResponseCodes.ok]);
+      await add;
+    });
+
+    test('a battery request already on the wire is drained too', () async {
+      // Fire and forget, so its window is the write. Nothing is pending by
+      // the time the admin frame goes out.
+      final battery = connection.getBatteryVoltage();
+      final contacts = connection.getContacts();
+      await transport.settle();
+      await battery;
+      await transport.settle();
+      expect(transport.commandAt(0), CommandCodes.getBatteryVoltage);
+      expect(transport.commandAt(1), CommandCodes.getContacts);
+
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect(await contacts, isEmpty);
+    });
+
+    test('an ERR after the drain fails the admin command and frees the slot',
+        () async {
+      // The bug: with the stats poll still pending, the ERR the radio sent
+      // for the add was handed to the poller, the add timed out holding the
+      // slot, and every later tap was refused.
+      final stats = connection.getStats(StatsTypes.radio);
+      await transport.settle();
+
+      final add = connection.addContact(newContact());
+      await transport.settle();
+      expect(transport.writes.length, 1);
+
+      transport.emit(statsFrame(-115));
+      expect(await stats, -115);
+      await transport.settle();
+      expect(transport.writes.length, 2);
+
+      transport.emit([ResponseCodes.err, ErrorCodes.tableFull]);
+      await expectLater(
+          add,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.isTableFull, 'isTableFull', isTrue)));
+
+      // The slot is free, which is also what un-holds the two pollers:
+      // _pollsHeld is exactly "a command owns the slot".
+      expect(connection.hasPendingAdminCommand, isFalse);
+      final next = connection.getContacts();
+      await transport.settle();
+      expect(transport.commandAt(2), CommandCodes.getContacts);
+      transport.emit([ResponseCodes.contactsStart, 0, 0, 0, 0]);
+      transport.emit([ResponseCodes.endOfContacts, 0, 0, 0, 0]);
+      expect(await next, isEmpty);
+    });
+  });
+
+  group('late-response backstop', () {
+    late FakeCompanionTransport t;
+    late MeshCoreConnection c;
+
+    setUp(() {
+      t = FakeCompanionTransport();
+      c = MeshCoreConnection(
+          transport: t,
+          lateResponseBackstop: const Duration(milliseconds: 40));
+    });
+
+    tearDown(() {
+      c.dispose();
+      t.dispose();
+    });
+
+    ContactRecord newContact() => ContactRecord.newRepeater(
+        publicKey: key(9), name: 'R', lat: 1, lon: 2, nowSecs: 5);
+
+    test('hands the slot back when the owed reply never arrives', () async {
+      await expectLater(
+          c.addContact(newContact(),
+              timeout: const Duration(milliseconds: 10)),
+          throwsA(isA<TimeoutException>()));
+      expect(c.hasPendingAdminCommand, isTrue,
+          reason: 'the slot is still held for the bare OK the radio owes');
+
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(c.hasPendingAdminCommand, isFalse,
+          reason: 'the backstop releases it rather than waiting for the '
+              'sheet to close');
+    });
+
+    test('the next command after the backstop is answered normally', () async {
+      // The backstop arms nothing on its way out. A bare OK carries no
+      // correlation, so ignoring "the next OK" would cascade: the next
+      // command's real OK eaten, that command timed out, the late state
+      // re-armed, the backstop fired again, and so on down the line.
+      await expectLater(
+          c.addContact(newContact(),
+              timeout: const Duration(milliseconds: 10)),
+          throwsA(isA<TimeoutException>()));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final second =
+          c.addContact(newContact(), timeout: const Duration(seconds: 2));
+      await t.settle();
+      expect(t.writes.length, 2, reason: 'the freed slot took the next tap');
+
+      t.emit([ResponseCodes.ok]);
+      await second;
+    });
+
+    test('a stray OK with nothing pending is harmless', () async {
+      await expectLater(
+          c.addContact(newContact(),
+              timeout: const Duration(milliseconds: 10)),
+          throwsA(isA<TimeoutException>()));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(c.hasPendingAdminCommand, isFalse);
+
+      // The OK the radio still owed that add, arriving with nothing pending:
+      // it falls through the handler the way any unsolicited OK always has.
+      t.emit([ResponseCodes.ok]);
+      await t.settle();
+      expect(c.hasPendingAdminCommand, isFalse);
+
+      // The lane is still usable afterwards.
+      final next = c.addContact(newContact(), timeout: const Duration(seconds: 2));
+      await t.settle();
+      expect(t.commandAt(1), CommandCodes.addUpdateContact);
+      t.emit([ResponseCodes.ok]);
+      await next;
+    });
+  });
 }

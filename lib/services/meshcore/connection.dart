@@ -420,6 +420,9 @@ class MeshCoreConnection {
   Completer<void>? _adminOkCompleter;
   _AdminCommandToken? _adminOkOwner;
   bool _adminOkAwaitingLateResponse = false;
+  // The late-response wait is not open ended: if that old reply never lands
+  // (the radio dropped it), the backstop hands the slot back anyway.
+  Timer? _adminLateResponseTimer;
   Completer<List<ContactRecord>>? _contactsCompleter;
   List<ContactRecord> _contactsBuffer = [];
 
@@ -469,8 +472,20 @@ class MeshCoreConnection {
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
   Timer? _batteryTimer;
 
-  MeshCoreConnection({required CompanionTransport transport})
-      : _transport = transport {
+  // Completes when the stats or battery request that is on the wire settles;
+  // null when that poller is idle. Read by [_drainPollsForAdminCommand].
+  Completer<void>? _statsRequestSettled;
+  Completer<void>? _batteryRequestSettled;
+
+  /// How long an admin command keeps the slot after timing out with its bare
+  /// OK still owed. Tests shorten it; nothing in the app passes it.
+  final Duration _adminLateResponseBackstop;
+
+  MeshCoreConnection({
+    required CompanionTransport transport,
+    Duration lateResponseBackstop = const Duration(seconds: 10),
+  })  : _transport = transport,
+        _adminLateResponseBackstop = lateResponseBackstop {
     _dataSubscription = _transport.dataStream.listen(_onFrameReceived);
   }
 
@@ -780,6 +795,7 @@ class MeshCoreConnection {
               _adminOkCompleter = null;
               _adminOkOwner = null;
               _adminOkAwaitingLateResponse = false;
+              _cancelAdminLateResponseBackstop();
               if (!adminOk.isCompleted) adminOk.complete();
               if (awaitingLateResponse && owner != null) {
                 _endAdminCommand(owner);
@@ -1064,6 +1080,65 @@ class MeshCoreConnection {
     }
   }
 
+  /// Wait for a poll that is already on the wire before an admin frame joins
+  /// it.
+  ///
+  /// [_pollsHeld] only stops poll ticks that START after the slot is claimed.
+  /// A getNoiseFloor() already awaiting its answer keeps [_statsCompleter] set
+  /// for up to 5s, and an ERR frame carries no correlation: the ERR handler
+  /// hands it to that poller, so an admin command's own ERR (addContact's
+  /// "table full", say) is eaten and the command times out still holding the
+  /// slot. Draining first also keeps a poll reply out of the 52 KB contact
+  /// stream, the collision the poll hold was added for.
+  ///
+  /// Each poll carries its own timeout, so this wait is bounded by theirs.
+  /// Their errors belong to the poll, not to the admin command: the settle
+  /// futures always complete normally.
+  Future<void> _drainPollsForAdminCommand(String name) async {
+    final pending = <Future<void>>[
+      if (_statsRequestSettled case final c?) c.future,
+      if (_batteryRequestSettled case final c?) c.future,
+    ];
+    if (pending.isEmpty) return;
+    debugLog('[CONN] $name waiting for ${pending.length} in-flight poll(s)');
+    await Future.wait(pending);
+    debugLog('[CONN] $name: pollers drained');
+  }
+
+  /// Hand the slot back when the bare OK still owed to [token] never arrives
+  /// (the radio dropped the reply, or answered an ERR that went elsewhere).
+  ///
+  /// Without this the slot stays owned until the sheet closes: every later tap
+  /// is refused and both pollers stay held.
+  ///
+  /// It arms nothing on the way out. A bare OK carries no correlation, so the
+  /// lane cannot tell the owed OK from the next command's real one, and
+  /// ignoring "the next OK" would cascade: the next command's OK is eaten, it
+  /// times out, re-arms the late state, the backstop fires again, and so on.
+  /// An OK is never ignored while a command is in flight; one arriving with
+  /// nothing pending falls through the handler as it always has.
+  void _armAdminLateResponseBackstop(_AdminCommandToken token) {
+    _adminLateResponseTimer?.cancel();
+    _adminLateResponseTimer = Timer(_adminLateResponseBackstop, () {
+      _adminLateResponseTimer = null;
+      if (!_adminOkAwaitingLateResponse || !identical(_adminOkOwner, token)) {
+        return;
+      }
+      debugLog('[CONN] Late-response backstop: releasing the admin slot held '
+          'by ${token.name} after '
+          '${_adminLateResponseBackstop.inSeconds}s with no reply');
+      _adminOkCompleter = null;
+      _adminOkOwner = null;
+      _adminOkAwaitingLateResponse = false;
+      _endAdminCommand(token);
+    });
+  }
+
+  void _cancelAdminLateResponseBackstop() {
+    _adminLateResponseTimer?.cancel();
+    _adminLateResponseTimer = null;
+  }
+
   /// Complete every pending repeater-admin completer with [error]. Returns
   /// true when at least one was pending.
   bool _failPendingAdmin(Object error) {
@@ -1081,6 +1156,7 @@ class MeshCoreConnection {
     fail(_contactsCompleter);
     fail(_loginCompleter);
     fail(_binaryResponseCompleter);
+    _cancelAdminLateResponseBackstop();
     _adminSentCompleter = null;
     _adminOkCompleter = null;
     _adminOkOwner = null;
@@ -1918,10 +1994,23 @@ class MeshCoreConnection {
   }
 
   /// Get battery voltage
+  ///
+  /// Fire and forget: RESP_BATTERY_VOLTAGE is pushed and no completer waits on
+  /// it, so the in-flight window is the write. That is the window a
+  /// repeater-admin frame must not join.
   Future<void> getBatteryVoltage() async {
-    final data = BufferWriter();
-    data.writeByte(CommandCodes.getBatteryVoltage);
-    await _sendToRadio(data);
+    final settled = Completer<void>();
+    _batteryRequestSettled = settled;
+    try {
+      final data = BufferWriter();
+      data.writeByte(CommandCodes.getBatteryVoltage);
+      await _sendToRadio(data);
+    } finally {
+      if (identical(_batteryRequestSettled, settled)) {
+        _batteryRequestSettled = null;
+      }
+      if (!settled.isCompleted) settled.complete();
+    }
   }
 
   /// Export signed contact URI for API authentication
@@ -1947,6 +2036,7 @@ class MeshCoreConnection {
     final token = _beginAdminCommand('getContacts');
     final completer = Completer<List<ContactRecord>>();
     try {
+      await _drainPollsForAdminCommand('getContacts');
       _contactsCompleter = completer;
       // CMD_GET_CONTACTS [4][since:u32]: the firmware sends only contacts
       // with lastmod > since. 0 is the full list, which primes the cache.
@@ -1982,6 +2072,7 @@ class MeshCoreConnection {
     final completer = Completer<void>();
     var awaitingLateResponse = false;
     try {
+      await _drainPollsForAdminCommand('addContact');
       _adminOkCompleter = completer;
       _adminOkOwner = token;
       _adminOkAwaitingLateResponse = false;
@@ -1992,6 +2083,7 @@ class MeshCoreConnection {
             identical(_adminOkOwner, token)) {
           awaitingLateResponse = true;
           _adminOkAwaitingLateResponse = true;
+          _armAdminLateResponseBackstop(token);
         }
         throw TimeoutException('addContact timed out');
       });
@@ -2036,6 +2128,7 @@ class MeshCoreConnection {
     final sentCompleter = Completer<SentInfo>();
     final loginCompleter = Completer<LoginResult>();
     try {
+      await _drainPollsForAdminCommand('login');
       _adminSentCompleter = sentCompleter;
       // _write parks a non-sign frame behind an in-progress sign's gate for
       // an unbounded wait (see _write), and abortPendingAdmin() can free
@@ -2108,6 +2201,7 @@ class MeshCoreConnection {
     final sentCompleter = Completer<SentInfo>();
     final responseCompleter = Completer<Uint8List>();
     try {
+      await _drainPollsForAdminCommand('sendBinaryRequest');
       _adminSentCompleter = sentCompleter;
       // Same parked-write hazard as login: _write parks a non-sign frame
       // behind an in-progress sign's gate for an unbounded wait (see
@@ -2176,6 +2270,7 @@ class MeshCoreConnection {
     final completer = Completer<void>();
     var awaitingLateResponse = false;
     try {
+      await _drainPollsForAdminCommand('resetPath');
       _adminOkCompleter = completer;
       _adminOkOwner = token;
       _adminOkAwaitingLateResponse = false;
@@ -2195,6 +2290,7 @@ class MeshCoreConnection {
             identical(_adminOkOwner, token)) {
           awaitingLateResponse = true;
           _adminOkAwaitingLateResponse = true;
+          _armAdminLateResponseBackstop(token);
         }
         throw TimeoutException('resetPath timed out');
       });
@@ -2310,20 +2406,37 @@ class MeshCoreConnection {
   /// Get radio statistics (noise floor)
   /// Reference: sendCommandGetStats in connection.js
   Future<int> getStats(int statsType) async {
-    _statsCompleter = Completer<int>();
+    final completer = Completer<int>();
+    _statsCompleter = completer;
 
     // Save reference to future BEFORE sending command to avoid race condition
-    final future = _statsCompleter!.future;
+    final future = completer.future;
 
-    final data = BufferWriter();
-    data.writeByte(CommandCodes.getStats);
-    data.writeByte(statsType);
-    await _sendToRadio(data);
+    // A repeater-admin command claiming the slot waits this out before it
+    // writes, so its own reply cannot be taken for this one's.
+    final settled = Completer<void>();
+    _statsRequestSettled = settled;
+    try {
+      final data = BufferWriter();
+      data.writeByte(CommandCodes.getStats);
+      data.writeByte(statsType);
+      await _sendToRadio(data);
 
-    return future.timeout(
-      const Duration(seconds: 5),
-      onTimeout: () => throw TimeoutException('Get stats timed out'),
-    );
+      return await future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          // Clear the slot, or a request the radio never answered keeps
+          // _statsCompleter set for the life of the connection and the ERR
+          // handler goes on treating the stats poll as pending, which is what
+          // decides whether an ERR belongs to the repeater-admin lane.
+          if (identical(_statsCompleter, completer)) _statsCompleter = null;
+          throw TimeoutException('Get stats timed out');
+        },
+      );
+    } finally {
+      if (identical(_statsRequestSettled, settled)) _statsRequestSettled = null;
+      if (!settled.isCompleted) settled.complete();
+    }
   }
 
   /// Get noise floor (convenience method for getStats with Radio type)
@@ -2355,6 +2468,8 @@ class MeshCoreConnection {
   /// companion's BLE queue, and both times the battery and noise floor
   /// requests landed inside one (2026-09-10) the radio dropped the link.
   /// The poll simply skips a tick; the next one runs once the command ends.
+  /// A poll that was ALREADY on the wire when the slot was claimed is waited
+  /// out instead, by [_drainPollsForAdminCommand].
   bool get _pollsHeld => _adminCommandInFlight != null;
 
   Future<void> _fetchNoiseFloor() async {
@@ -2365,6 +2480,10 @@ class MeshCoreConnection {
       return;
     }
     _isFetchingNoiseFloor = true;
+    // Both checks above, and getStats' claim of the settle slot below, are
+    // synchronous, so claiming the admin slot is atomic against this poll: an
+    // admin command either sees this request and drains it, or this poll sees
+    // the admin slot and skips its tick.
     try {
       debugLog('[CONN] Fetching noise floor...');
       await getNoiseFloor();
