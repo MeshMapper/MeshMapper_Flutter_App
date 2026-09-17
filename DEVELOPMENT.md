@@ -721,9 +721,14 @@ a connection.** Mobile only (`!kIsWeb`). Server contract:
   by design, for the same reason the `error=` rule above exists.
 - **Linking**: `requestNonce(pubkey)` → the app validates the answer is exactly
   64 hex / 32 bytes → `MeshCoreConnection.sign()` has the radio Ed25519-sign the
-  **raw 32 bytes** → `linkDevice(pubkey, nonce, signature, label)` binds it. The
-  app lane NEVER auto-adopts placeholders: `adoption_required` shows a dialog
-  pointing at the browser portal.
+  **raw 32 bytes** → `linkDevice(pubkey, nonce, signature, label)` binds it. A
+  key held by a placeholder group (a region admin's grouping from before
+  accounts existed) is adopted by the server on this lane exactly as in the
+  browser: every radio in the group moves to the account and the answer
+  carries `adopted: N` (this radio included), which the success toast reports
+  when N is above 1. An OLD server still answers `adoption_required` instead;
+  that dialog explains the group and says to link this same radio from the
+  portal's Link a companion button, which is what triggers adoption there.
 - **The sign write gate**: `CMD_SIGN_DATA` is acked by a bare `OK (0x00)`, and so
   are `setFloodScope`, `setChannel`, `setPathHashMode`, `setAdvertName` and
   `setTxPower`. Every outbound frame in `connection.dart` therefore funnels

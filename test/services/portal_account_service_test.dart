@@ -629,6 +629,23 @@ void main() {
       expect((result as LinkSuccess).already, isTrue);
     });
 
+    test('a link that adopted a placeholder group carries the count', () async {
+      final service = await signedIn(recordingClient((_) => http.Response(
+          '{"ok":true,"adopted":3,"pubkey":"${'A' * 64}"}', 200)));
+      final result = await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+      expect(result, isA<LinkSuccess>());
+      expect((result as LinkSuccess).adopted, 3);
+    });
+
+    test('a plain link reports no adoption', () async {
+      final service = await signedIn(recordingClient(
+          (_) => http.Response('{"ok":true,"pubkey":"${'A' * 64}"}', 200)));
+      final result = await service.linkDevice(
+          pubkey: 'A' * 64, nonce: 'b' * 64, signature: 'c' * 128);
+      expect((result as LinkSuccess).adopted, 0);
+    });
+
     test('already_linked maps to LinkAlreadyLinkedOtherAccount', () async {
       final service = await signedIn(recordingClient(
           (_) => http.Response('{"error":"already_linked"}', 409)));

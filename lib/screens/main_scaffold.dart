@@ -236,21 +236,25 @@ class _MainScaffoldState extends State<MainScaffold> {
       BuildContext context, PortalLinkOutcome outcome) async {
     switch (outcome.status) {
       case PortalLinkStatus.linked:
+        final account = outcome.accountName ?? 'your MeshMapper account';
         AppToast.success(
           context,
-          'Linked to ${outcome.accountName ?? 'your MeshMapper account'}',
+          outcome.adoptedCount > 1
+              ? 'Linked to $account and claimed ${outcome.adoptedCount} radios'
+              : 'Linked to $account',
         );
       case PortalLinkStatus.adoptionRequired:
         await showDialog<void>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('Finish Setup in the Portal'),
+            title: const Text('Claim This Radio in the Portal'),
             content: Text(
-              'Your account still has ${outcome.adoptionDeviceCount} '
-              'placeholder device(s). Claiming them moves every one of your '
-              'radios at once, so it has to be done deliberately at '
-              'portal.meshmapper.net. Once that is finished, come back and '
-              'link this device.',
+              'This radio is in a group of ${outcome.adoptionDeviceCount} '
+              'that a region admin set up before accounts existed. To claim '
+              'it, sign in at portal.meshmapper.net, choose Link a companion '
+              'and link this same radio over Bluetooth. All '
+              '${outcome.adoptionDeviceCount} radios in the group move to '
+              'your account together.',
             ),
             actions: [
               TextButton(

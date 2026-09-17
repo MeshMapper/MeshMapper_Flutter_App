@@ -11475,8 +11475,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
 
     switch (result) {
-      case LinkSuccess(:final already):
-        debugLog('[ACCOUNT] Device linked (already=$already)');
+      case LinkSuccess(:final already, :final adopted):
+        debugLog('[ACCOUNT] Device linked (already=$already, adopted=$adopted)');
         if (!_portalLinkedPubkeys.contains(pubkey)) {
           _portalLinkedPubkeys.add(pubkey);
         }
@@ -11497,11 +11497,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         return PortalLinkOutcome(
           PortalLinkStatus.linked,
           accountName: _portalAccount?.displayName,
+          adoptedCount: adopted,
         );
 
       case LinkAdoptionRequired(:final devices):
-        debugLog('[ACCOUNT] Link needs browser adoption first '
-            '($devices placeholder device(s))');
+        debugLog('[ACCOUNT] Old server refused the link: key sits in a '
+            'placeholder group of $devices, browser link needed');
         return PortalLinkOutcome(
           PortalLinkStatus.adoptionRequired,
           adoptionDeviceCount: devices,
