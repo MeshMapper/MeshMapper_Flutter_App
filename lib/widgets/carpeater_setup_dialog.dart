@@ -76,6 +76,11 @@ class _CarpeaterSetupDialogState extends State<_CarpeaterSetupDialog> {
         clearCarpeaterPublicKey: true,
         ignoreCarpeater: false,
       ));
+      // Clearing the field is the same answer as the re-entry prompt's
+      // "I don't use a CARpeater", and it takes the same provider path. The
+      // provider only dismisses the prompt when a key is SET, so without this
+      // the "filter reset" dialog came back after every connect.
+      _appState.dismissCarpeaterReentry();
       debugLog('[SETTINGS] CARpeater key cleared');
       Navigator.of(context).pop();
       return;

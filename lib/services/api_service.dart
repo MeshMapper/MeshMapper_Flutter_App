@@ -387,6 +387,33 @@ class ApiService {
     return sanitized;
   }
 
+  /// Longest raw (non-JSON) response body any log line may carry.
+  static const int _maxLoggedBodyChars = 200;
+
+  /// Redact a raw `/auth` body before it reaches a log line.
+  ///
+  /// An auth answer carries the region's whole `carpeaters` key list, and a
+  /// debug log file ships with bug reports, so the body may never be logged
+  /// verbatim. A body that parses as a JSON object goes through
+  /// [_sanitizePayload], the same redaction the request/response summaries
+  /// get; anything else (an HTML error page, a truncated stream) is cut to
+  /// [_maxLoggedBodyChars] so a stray key list cannot ride out in full.
+  String _redactBodyForLog(String body) {
+    if (body.isEmpty) return '(empty)';
+    try {
+      final decoded = json.decode(body);
+      if (decoded is Map<String, dynamic>) {
+        return json.encode(_sanitizePayload(decoded));
+      }
+    } catch (_) {
+      // Not JSON at all: fall through to the truncation below.
+    }
+    return body.length > _maxLoggedBodyChars
+        ? '${body.substring(0, _maxLoggedBodyChars)}... '
+            '(${body.length} chars, truncated)'
+        : body;
+  }
+
   /// Check if response indicates maintenance mode, trigger callback if so
   bool _checkMaintenanceMode(Map<String, dynamic> response) {
     if (response['maintenance'] == true) {
@@ -728,8 +755,7 @@ class ApiService {
       if (response.statusCode != 200) {
         debugError(
             '[API] /wardrive-api.php/auth returned HTTP ${response.statusCode}');
-        debugError(
-            '[API]   Response body: ${response.body.isEmpty ? '(empty)' : response.body}');
+        debugError('[API]   Response body: ${_redactBodyForLog(response.body)}');
       }
 
       Map<String, dynamic> data;
@@ -738,7 +764,7 @@ class ApiService {
       } on FormatException {
         debugError(
             '[API] Non-JSON response from /auth (HTTP ${response.statusCode}): '
-            '${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
+            '${_redactBodyForLog(response.body)}');
         rethrow;
       }
 
@@ -880,28 +906,36 @@ class ApiService {
           // (not on initial auth, since heartbeat is only for auto mode)
         }
 
-        // Regional CARpeater list: a full replace on every auth, so an entry
-        // an admin deleted (or retention aged out) leaves this phone at the
-        // next auth. Missing on an older server means an empty list. Read
-        // even on a skipSessionStore auth (the offline upload), because the
-        // server contract says every auth replaces it.
-        _regionalCarpeaters =
-            RegionalCarpeaterFilter.sanitize(data['carpeaters']);
-        final carpeaterError = data['carpeater_error'];
-        _lastCarpeaterError =
-            carpeaterError is String && carpeaterError.isNotEmpty
-                ? carpeaterError
-                : null;
-        debugLog(
-            '[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
-            '${_lastCarpeaterError != null ? ', carpeater refused: $_lastCarpeaterError' : ''}');
-        // Nothing on this lane may fail a connection: a throw from the
-        // listener would otherwise land in the outer catch and read as a
-        // network failure.
-        try {
-          onRegionalCarpeaters?.call(_regionalCarpeaters, _lastCarpeaterError);
-        } catch (e) {
-          debugError('[AUTH] regional carpeaters listener threw: $e');
+        // Regional CARpeater list: a full replace on every LIVE connect or
+        // register auth, so an entry an admin deleted (or retention aged out)
+        // leaves this phone at the next auth. A missing field on a live
+        // answer means an empty list (the server contract).
+        //
+        // An offline-mode or skipSessionStore auth is not a live auth: the
+        // offline upload authenticates only to close out its own isolated
+        // session, it never sends the user's own `carpeater`, and a server
+        // that answers it without the field would wipe the very cache
+        // Offline Mode exists to keep.
+        if (!offlineMode && !skipSessionStore) {
+          _regionalCarpeaters =
+              RegionalCarpeaterFilter.sanitize(data['carpeaters']);
+          final carpeaterError = data['carpeater_error'];
+          _lastCarpeaterError =
+              carpeaterError is String && carpeaterError.isNotEmpty
+                  ? carpeaterError
+                  : null;
+          debugLog(
+              '[AUTH] regional carpeaters: ${_regionalCarpeaters.length} keys'
+              '${_lastCarpeaterError != null ? ', carpeater refused: $_lastCarpeaterError' : ''}');
+          // Nothing on this lane may fail a connection: a throw from the
+          // listener would otherwise land in the outer catch and read as a
+          // network failure.
+          try {
+            onRegionalCarpeaters?.call(
+                _regionalCarpeaters, _lastCarpeaterError);
+          } catch (e) {
+            debugError('[AUTH] regional carpeaters listener threw: $e');
+          }
         }
       } else if (reason == 'disconnect') {
         // Only clear shared session when no explicit sessionId was provided
@@ -914,7 +948,15 @@ class ApiService {
       return data;
     } catch (e) {
       stopwatch.stop();
-      debugError('[API] POST /wardrive-api.php/auth failed: $e');
+      // Never interpolate a FormatException here. Its toString quotes a
+      // window of the source around the parse offset, which is the tail of
+      // the very body this lane redacts above, and that tail can hold a full
+      // public key. The type and the offset say what went wrong without
+      // carrying any of the body.
+      final detail = e is FormatException
+          ? '${e.runtimeType}${e.offset != null ? ' at offset ${e.offset}' : ''}'
+          : '${e.runtimeType}: $e';
+      debugError('[API] POST /wardrive-api.php/auth failed: $detail');
       return null;
     }
   }
