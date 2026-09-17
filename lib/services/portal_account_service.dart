@@ -248,7 +248,17 @@ class LinkSuccess extends LinkResult {
   /// True when the server answered `already:true` (idempotent relink).
   final bool already;
 
-  const LinkSuccess({required this.pubkey, required this.already});
+  /// How many radios the server moved to the account because this key sat in
+  /// a placeholder group (a region admin's grouping from before accounts
+  /// existed). The count includes this radio. Zero for a plain link and on a
+  /// server that does not adopt on this lane.
+  final int adopted;
+
+  const LinkSuccess({
+    required this.pubkey,
+    required this.already,
+    this.adopted = 0,
+  });
 }
 
 /// The pubkey belongs to a different account. `UNIQUE(pubkey)` means this is
@@ -257,8 +267,9 @@ class LinkAlreadyLinkedOtherAccount extends LinkResult {
   const LinkAlreadyLinkedOtherAccount();
 }
 
-/// The account still holds placeholder devices. The app lane NEVER adopts —
-/// adoption is irreversible and belongs in the browser portal.
+/// The key sits in a placeholder group and this server does not adopt on the
+/// app lane. Only an old server answers this: the current one claims the group
+/// and answers a `LinkSuccess` with `adopted` set.
 class LinkAdoptionRequired extends LinkResult {
   final int devices;
   const LinkAdoptionRequired(this.devices);
@@ -293,6 +304,10 @@ enum PortalLinkStatus {
 class PortalLinkOutcome {
   final PortalLinkStatus status;
   final int adoptionDeviceCount;
+
+  /// Radios the server moved to the account with this link because the key
+  /// sat in a placeholder group (this radio included). Zero for a plain link.
+  final int adoptedCount;
   final String? accountName;
 
   /// How long the portal asked us to stay off the link lane, when that is why
@@ -302,6 +317,7 @@ class PortalLinkOutcome {
   const PortalLinkOutcome(
     this.status, {
     this.adoptionDeviceCount = 0,
+    this.adoptedCount = 0,
     this.accountName,
     this.retryAfter,
   });
@@ -810,7 +826,8 @@ class PortalAccountService {
     }
     if (response.ok) {
       final already = response.json['already'] == true;
-      _log('link ok for ${_pk(upper)} (already=$already)');
+      final adopted = (response.json['adopted'] as num?)?.toInt() ?? 0;
+      _log('link ok for ${_pk(upper)} (already=$already, adopted=$adopted)');
       if (!_linkedPubkeys.any((p) => p.pubkey == upper)) {
         _linkedPubkeys = [
           ..._linkedPubkeys,
@@ -825,7 +842,7 @@ class PortalAccountService {
         ];
         onAccountChanged?.call();
       }
-      return LinkSuccess(pubkey: upper, already: already);
+      return LinkSuccess(pubkey: upper, already: already, adopted: adopted);
     }
 
     switch (response.error) {
@@ -834,8 +851,8 @@ class PortalAccountService {
         return const LinkAlreadyLinkedOtherAccount();
       case 'adoption_required':
         final devices = (response.json['devices'] as num?)?.toInt() ?? 0;
-        _log('link needs browser adoption first '
-            '($devices placeholder device(s))');
+        _log('link refused by an old server: key sits in a placeholder '
+            'group of $devices, browser link needed');
         return LinkAdoptionRequired(devices);
       default:
         _warn('link failed for ${_pk(upper)} '
