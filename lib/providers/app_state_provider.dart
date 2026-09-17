@@ -6396,7 +6396,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // what aborting first is meant to prevent.
     _meshCoreConnection?.abortPendingSign();
     _meshCoreConnection?.abortPendingAdmin();
-    await _waitForLiveSessionRecovery();
+    // awaitSessionRecoveryBounded swallows its own timeout but rethrows
+    // anything else, and a recovery that throws must never abandon the
+    // teardown with the radio still up: the user asked to disconnect.
+    try {
+      await _waitForLiveSessionRecovery();
+    } catch (e) {
+      debugWarn('[SESSION] recovery wait failed, continuing disconnect: $e');
+    }
 
     await closeRepeaterAdminSession();
 

@@ -610,6 +610,28 @@ void main() {
       expect(r.success, isTrue);
     });
 
+    test(
+        'a stats write that throws hands the slot back so the next ERR '
+        'reaches the admin lane', () async {
+      // The write never reached the radio, so no stats reply is coming. Only
+      // the timeout leg used to clear the slot, which a throw never gets to:
+      // the stats completer stayed set for the life of the connection and the
+      // ERR router went on handing every ERR to a poll that was long gone.
+      transport.failWrites = true;
+      await expectLater(
+          connection.getStats(StatsTypes.radio), throwsA(isA<StateError>()));
+      transport.failWrites = false;
+
+      final future = connection.login(pubkey, 'x',
+          replyTimeout: (_) => const Duration(milliseconds: 50));
+      await transport.settle();
+      transport.emit([ResponseCodes.err, ErrorCodes.badState]);
+      await expectLater(
+          future,
+          throwsA(isA<RadioErrorException>()
+              .having((e) => e.errorCode, 'code', ErrorCodes.badState)));
+    });
+
     test('the reply timeout is built from the SENT estimate', () async {
       int? seen;
       final future = connection.login(pubkey, 'x', replyTimeout: (est) {
