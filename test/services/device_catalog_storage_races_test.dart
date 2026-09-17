@@ -263,7 +263,9 @@ void main() {
               fetchCatalog: () async => DeviceCatalog.fromJson(catalogJson(2)));
           await service.initialize();
           await service.refreshFuture;
-          expect(service.catalog?.revision, initial == 'none' ? null : 1);
+          // The fetched catalog is published to memory even though the write
+          // was refused, so this launch still recognizes radios.
+          expect(service.catalog?.revision, 2);
           final reconstructed = DeviceModelService(
               loadStorage: () async => storage, fetchCatalog: () async => null);
           await reconstructed.initialize();
