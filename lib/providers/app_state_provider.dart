@@ -160,6 +160,34 @@ enum OfflineUploadResult {
   zoneDisabled,
 }
 
+/// How long a teardown waits for an in-flight session recovery before it
+/// carries on without it.
+@visibleForTesting
+const Duration sessionRecoveryWaitTimeout = Duration(seconds: 15);
+
+/// Await an in-flight session recovery, bounded by [limit].
+///
+/// True when the recovery settled, false when the wait expired. A recovery is
+/// two network legs (a `/auth` POST, then the channel and validator work it
+/// applies), so a stalled one used to hold `disconnect()` and
+/// `_startAutoReconnect()` for as long as it liked, with the UI already
+/// showing Disconnecting and the radio still up. Every step the recovery takes
+/// after this point re-checks ownership before it touches anything, so giving
+/// up on the wait is safe: the recovery finishes on its own and finds it has
+/// been superseded.
+@visibleForTesting
+Future<bool> awaitSessionRecoveryBounded(
+  Future<void> recovery, {
+  Duration limit = sessionRecoveryWaitTimeout,
+}) async {
+  try {
+    await recovery.timeout(limit);
+    return true;
+  } on TimeoutException {
+    return false;
+  }
+}
+
 /// Main application state provider
 class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Maximum sizes for in-memory lists to prevent unbounded growth during long sessions
@@ -493,6 +521,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   // Mode switching state (for hot-switching offline/online while connected)
   bool _isSwitchingMode = false;
   String? _modeSwitchError; // Error message if mode switch fails
+
+  /// While the Offline Mode hot switch is stopping a running mode, the switch
+  /// itself owns the offline session save: it has to happen after the stop has
+  /// flushed everything, and exactly once. The stop paths skip theirs while
+  /// this is set, because the drain behind an in-flight ping runs on its own
+  /// (PingService calls it back) and used to write the file a second time.
+  bool _modeSwitchOwnsOfflineSave = false;
 
   // Connection guard — prevents concurrent connect attempts and provides instant UI feedback
   bool _isConnecting = false;
@@ -3298,8 +3333,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     };
 
-    // Load device models
-    await _deviceModelService.loadModels();
+    // Load device models. Never allowed to abort the rest of startup: a throw
+    // here (a corrupt cached catalog, a storage read that fails) used to skip
+    // preferences, the regional CARpeaters, the repeater claims, the
+    // remembered device and every listener set up below it, leaving the app
+    // running on defaults with no sign of why.
+    try {
+      await _deviceModelService.loadModels();
+    } catch (e) {
+      debugError('[INIT] Device catalog load failed: $e');
+    }
 
     // Load stored noise floor sessions
     await _loadNoiseFloorSessions();
@@ -4893,8 +4936,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // uncovered square is a silent drop there, so the phone-side dedupe only
     // keeps the queue small.
     _pingService!.onPingDeferred = (lat, lon, held) {
-      // Every actual deferral leaves a marker, even in the same square or
-      // at the same location. Only server credit is deduplicated below.
+      final heldWord = held == BankedPingType.tx ? 'tx' : 'disc';
+      // One record per 300 m square per API session, for the markers as well
+      // as the server credit. The coverage check runs before the 25 m rule, so
+      // a phone parked on mapped ground defers on every interval tick: a
+      // marker per tick grew the noise floor session's Hive record and the
+      // map's deferred list without bound, and bumped the map (Critical
+      // Rule 9) for a square that already had a marker on it. The countdown
+      // still reads Deferred on every tick: that comes from the skip reason,
+      // which PingService sets whether or not the square is new.
+      if (!_recentCoverage.markDeferred(lat, lon)) {
+        debugLog(
+            '[COVERAGE] Deferral already recorded for this square ($heldWord)');
+        return;
+      }
       _deferredPingMarkers.add(PingEventMarker(
         timestamp: DateTime.now(),
         type: PingEventType.deferred,
@@ -4907,12 +4962,6 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       recordPingEvent(PingEventType.deferred, latitude: lat, longitude: lon);
       _notifyMapNow();
-      final heldWord = held == BankedPingType.tx ? 'tx' : 'disc';
-      if (!_recentCoverage.markDeferred(lat, lon)) {
-        debugLog(
-            '[COVERAGE] Deferral already reported for this square ($heldWord)');
-        return;
-      }
       debugLog('[COVERAGE] Deferral queued for square at '
           '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)} ($heldWord)');
       unawaited(_apiQueueService.enqueueDefer(
@@ -5247,23 +5296,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // an enabled Stop for the length of the echo window.
       _autoPingStopping = true;
       try {
-        _pingService!.stopEchoTracking();
-        _rxLogger?.stopWardriving(trigger: 'pending_disable');
-
-        await BackgroundServiceManager.stopService();
-
-        _autoPingTimer.stop();
-        _rxWindowTimer.stop();
-
-        if (_preferences.offlineMode) {
-          await _saveOfflineSession();
-        }
-
-        await _endNoiseFloorSession();
-
-        // The same tail as the inline stop in toggleAutoPing. The two used to
-        // differ in three ways, so what a stop left behind depended on whether
-        // a ping happened to be in flight when the user tapped it:
+        // The same tail as the inline stop in toggleAutoPing, and the same
+        // code since. The two used to differ in three ways, so what a stop
+        // left behind depended on whether a ping happened to be in flight when
+        // the user tapped it.
         //
         // The heartbeat is KEPT. It is enabled at connect, not at auto start,
         // and it is what keeps the API session valid while the radio sits
@@ -5271,16 +5307,15 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         // during an echo window (every Active stop tapped while the button was
         // counting down) let the session lapse five minutes later, and the next
         // Start or Send Ping came back session_expired and disconnected the
-        // radio. The 15 minute idle disconnect below is what ends an idle
-        // session, on both paths.
-        _startIdleDisconnectTimer();
-
-        _autoPingEnabled = false;
-        _resetIdleAutoStop();
-        _finishLiveActivitySession();
-
-        // Clear top-heard overlay on stop, as the inline path does.
-        _clearOverlayState();
+        // radio. The 15 minute idle disconnect the finish starts is what ends
+        // an idle session, on both paths.
+        //
+        // The cooldown is not armed here: PingService started it on the line
+        // before it called back.
+        await _finishAutoPingStop(
+          rxTrigger: 'pending_disable',
+          armCooldown: false,
+        );
 
         debugLog('[APP] Pending disable cleanup complete, cooldown running');
       } finally {
@@ -6353,12 +6388,16 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Immediate UI feedback
     _connectionStep = ConnectionStep.disconnecting;
     notifyListeners();
-    await _waitForLiveSessionRecovery();
 
     // Release the sign gate before any teardown write (advert-name restore,
     // path-hash restore, flood scope, channel deletion) is parked behind it.
+    // Ahead of the recovery wait below, not after it: the wait can take
+    // seconds, and a live sign holding the gate for all of them is exactly
+    // what aborting first is meant to prevent.
     _meshCoreConnection?.abortPendingSign();
     _meshCoreConnection?.abortPendingAdmin();
+    await _waitForLiveSessionRecovery();
+
     await closeRepeaterAdminSession();
 
     // Cancel idle disconnect timer
@@ -6677,7 +6716,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _waitForLiveSessionRecovery() async {
     final recovery = _liveSessionRecoveryInFlight;
-    if (recovery != null) await recovery;
+    if (recovery == null) return;
+    if (!await awaitSessionRecoveryBounded(recovery)) {
+      debugWarn('[SESSION] Recovery still running after '
+          '${sessionRecoveryWaitTimeout.inSeconds}s, continuing without it');
+    }
   }
 
   bool _ownsSessionRecovery(
@@ -6764,7 +6807,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       final replacementSessionId = result?['session_id'] as String?;
       if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-        await _releaseRecoveredSession(publicKey, replacementSessionId);
+        // Superseded: a disconnect or a reconnect took over and is blocked on
+        // this recovery settling. The release is a second /auth POST that can
+        // sit for 30 s, and nothing here depends on its answer, so it is fired
+        // and left to log its own failure.
+        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
         return SessionRecoveryResult.superseded;
       }
       if (result == null || result['success'] != true) {
@@ -6773,7 +6820,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (replacementSessionId == null ||
           _apiService.sessionId != replacementSessionId) {
-        await _releaseRecoveredSession(publicKey, replacementSessionId);
+        // The session was minted but not stored, which only happens when
+        // ownership went away during the POST. Same superseded case, same
+        // unawaited release.
+        unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
         return SessionRecoveryResult.superseded;
       }
 
@@ -6785,7 +6835,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           () => _ownsSessionRecovery(generation, connection, publicKey),
         );
         if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          await _releaseRecoveredSession(publicKey, replacementSessionId);
+          unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
           return SessionRecoveryResult.superseded;
         }
         if (!applied) {
@@ -6797,7 +6847,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       } catch (e) {
         if (!_ownsSessionRecovery(generation, connection, publicKey)) {
-          await _releaseRecoveredSession(publicKey, replacementSessionId);
+          unawaited(_releaseRecoveredSession(publicKey, replacementSessionId));
           return SessionRecoveryResult.superseded;
         }
         debugError('[SESSION] Failed to apply replacement session: $e');
@@ -7345,6 +7395,68 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
+  /// The finishing half of an auto-mode stop, with the radio still connected.
+  ///
+  /// Shared by the three paths that end a mode: the inline teardown in
+  /// [toggleAutoPing] (nothing in flight), the drain PingService hands back
+  /// after a parked disable, and the Offline Mode hot switch
+  /// ([_stopAutoPingGracefully]). Each used to carry its own copy, so what a
+  /// stop left behind depended on which one ran: the hot switch stopped the
+  /// 5 second cooldown the drain had just armed, and wrote the offline session
+  /// file a second time.
+  ///
+  /// [rxTrigger] names the stop in the RX logger's flush. [keepHeartbeat] is
+  /// true for a user stop, where the session stays valid while the radio sits
+  /// connected and idle and the 15 minute idle disconnect is what ends it, and
+  /// false for the hot switch, which is leaving this session behind either
+  /// way. [armCooldown] is false only for the drain, where PingService armed
+  /// the shared 5 second cooldown itself before handing back.
+  Future<void> _finishAutoPingStop({
+    required String rxTrigger,
+    bool keepHeartbeat = true,
+    bool armCooldown = true,
+  }) async {
+    // Stop TX echo tracking so a late timer callback cannot start a ping after
+    // the mode is gone.
+    _pingService?.stopEchoTracking();
+    // Stop RX wardriving (flushes batches).
+    _rxLogger?.stopWardriving(trigger: rxTrigger);
+
+    await BackgroundServiceManager.stopService();
+
+    // Stop the countdowns, or "Next ping in Xs" keeps running after the stop.
+    _autoPingTimer.stop();
+    _rxWindowTimer.stop();
+
+    if (_preferences.offlineMode && !_modeSwitchOwnsOfflineSave) {
+      await _saveOfflineSession();
+    }
+
+    await _endNoiseFloorSession();
+
+    if (!keepHeartbeat) _apiService.disableHeartbeat();
+
+    // The user is idle again, so the 15 minute idle disconnect takes over.
+    _startIdleDisconnectTimer();
+
+    _autoPingEnabled = false;
+    _resetIdleAutoStop();
+    _finishLiveActivitySession();
+
+    // Clear the top-heard overlay on stop.
+    _clearOverlayState();
+
+    if (armCooldown) {
+      // The 5 second shared cooldown for every mode, Passive included. Passive
+      // used to be exempt on the grounds that it is listen-only, but a Passive
+      // start puts a discovery request on the air within milliseconds, so an
+      // un-cooled stop let the button be toggled to flood the mesh.
+      _cooldownTimer.start(5000);
+      debugLog(
+          '[${_autoMode.name.toUpperCase()} MODE] Shared cooldown started (5s) - blocks TX Ping and every auto mode');
+    }
+  }
+
   /// Toggle auto-ping mode (Active, Passive, Hybrid, or Trace)
   /// Returns false if a start is blocked by the shared 5 second cooldown that
   /// follows any stop. Every mode is gated by it, Passive included.
@@ -7388,50 +7500,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           return true;
         }
 
-        // No ping in progress - immediate disable path
-        // Stop TX echo tracking to prevent late timer callbacks from triggering pings
-        // This fixes race condition where RX window timer fires after mode is disabled
-        _pingService!.stopEchoTracking();
-        // Stop RX wardriving (flushes batches)
-        _rxLogger?.stopWardriving(trigger: 'user_stop');
-
-        // Stop background service
-        await BackgroundServiceManager.stopService();
-
-        // Stop countdown timers (fixes "Next ping in Xs" continuing after stop)
-        _autoPingTimer.stop();
-        _rxWindowTimer.stop();
-
-        // Save offline session if offline mode is enabled
-        if (_preferences.offlineMode) {
-          await _saveOfflineSession();
-        }
-
-        // End noise floor session when mode is disabled
-        await _endNoiseFloorSession();
-
-        // Keep heartbeat enabled (stays on while connected to prevent session expiry)
-        // Re-start idle disconnect timer now that user is idle again
-        _startIdleDisconnectTimer();
-
-        _autoPingEnabled = false;
-        _resetIdleAutoStop();
-        _finishLiveActivitySession();
-
-        // Clear top-heard overlay on stop
-        _clearOverlayState();
-
-        // Start the 5 second shared cooldown for every mode, Passive included.
-        // Passive used to be exempt on the grounds that it is listen-only, but a
-        // Passive start puts a discovery request on the air within milliseconds,
-        // so an un-cooled stop let the button be toggled to flood the mesh. The
-        // pending-disable path (_executePendingDisable) has always started this
-        // cooldown regardless of mode, so Passive already got one whenever the
-        // stop was queued behind an in-flight ping; this makes the two stop paths
-        // agree instead of the cooldown depending on timing.
-        _cooldownTimer.start(5000);
-        debugLog(
-            '[${mode.name.toUpperCase()} MODE] Shared cooldown started (5s) - blocks TX Ping and every auto mode');
+        // No ping in progress - immediate disable path. The shared finish
+        // keeps the heartbeat (it stays on while connected to prevent session
+        // expiry) and arms the 5 second cooldown.
+        await _finishAutoPingStop(rxTrigger: 'user_stop');
       } finally {
         // Cleared on every exit, the parked-disable return included: from
         // there PingService.pendingDisable carries the stopping state, and
@@ -7843,7 +7915,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 1. Gracefully stop auto-ping if running (waits for RX window to complete)
       await _stopAutoPingGracefully();
 
-      // 2. Save accumulated offline pings as session file
+      // 2. Save accumulated offline pings as session file. The only save on
+      //    this path: the stop above holds its own back so the file is written
+      //    once, here, after everything it flushed has landed in the queue.
       await _saveOfflineSession();
 
       // 4. Request new auth session
@@ -8054,40 +8128,40 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     debugLog('[APP] Gracefully stopping auto-ping mode for mode switch');
 
-    // 1. Request graceful disable (sets pendingDisable if ping in progress)
-    //    This prevents new pings from being scheduled after RX window ends
-    await _pingService!.disableAutoPing();
-    notifyListeners(); // UI shows "Stopping..." state
+    // The switch owns the offline session save from here until this method
+    // returns: the drain below runs on PingService's own callback, and both
+    // of them saving wrote the file twice.
+    _modeSwitchOwnsOfflineSave = true;
+    try {
+      // 1. Request graceful disable (sets pendingDisable if ping in progress)
+      //    This prevents new pings from being scheduled after RX window ends
+      await _pingService!.disableAutoPing();
+      notifyListeners(); // UI shows "Stopping..." state
 
-    // 2. Wait for TX echo tracking / RX window to finish naturally (~7 seconds)
-    //    Don't wait for cooldown - proceed immediately after RX window ends
-    await _waitForPingToComplete();
+      // 2. Wait for TX echo tracking / RX window to finish naturally (~7
+      //    seconds). Don't wait for the cooldown: proceed as soon as the RX
+      //    window ends. A parked disable drains during this wait and runs the
+      //    shared finish itself; running it again below is what makes the two
+      //    sub-cases end in the same state.
+      await _waitForPingToComplete();
 
-    // 3. Now do cleanup in order
-    _pingService!.stopEchoTracking();
+      // 3. The discovery countdown is the one timer the user stop paths leave
+      //    alone, because a discovery window that is still open belongs to the
+      //    session being torn down here.
+      _discoveryWindowTimer.stop();
 
-    // 4. Stop RX wardriving (flushes batches)
-    _rxLogger?.stopWardriving(trigger: 'mode_switch');
-
-    // 5. Stop background service
-    await BackgroundServiceManager.stopService();
-
-    // 6. Stop timers (including any cooldown that may have started)
-    _autoPingTimer.stop();
-    _rxWindowTimer.stop();
-    _discoveryWindowTimer.stop();
-    _cooldownTimer.stop();
-
-    // 7. End noise floor session
-    await _endNoiseFloorSession();
-
-    // 8. Stop heartbeat
-    _apiService.disableHeartbeat();
-
-    // 9. Update state
-    _autoPingEnabled = false;
-    _resetIdleAutoStop();
-    _finishLiveActivitySession();
+      // 4. Finish like a user stop, minus the heartbeat: this session is being
+      //    left behind either way, and the switch releases or re-mints it
+      //    straight after. The 5 second cooldown is armed and LEFT RUNNING
+      //    (this used to stop it, including the one the drain had just armed),
+      //    so a mode cannot be restarted into the switch.
+      await _finishAutoPingStop(
+        rxTrigger: 'mode_switch',
+        keepHeartbeat: false,
+      );
+    } finally {
+      _modeSwitchOwnsOfflineSave = false;
+    }
     debugLog('[APP] Auto-ping mode stopped gracefully');
     notifyListeners();
   }

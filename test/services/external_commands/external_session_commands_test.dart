@@ -309,12 +309,44 @@ void main() {
       expect(admission.reason?.compactText, contains('already stopping'));
     });
 
-    test('a Start during a stop is still refused by the availability rule', () {
-      // The start side has always had this guard; it lives in
-      // resolveSessionStartAvailability, not here, so the transition still
-      // admits and the caller refuses. Pinned so the two halves stay paired.
+    test('a Start during a stop is refused here, not only downstream', () {
+      // This used to admit and lean on resolveSessionStartAvailability to
+      // refuse, so a surface that consults only the transition was one call
+      // away from starting a mode on top of a draining stop. Both gates now
+      // give the same answer, in the same words.
       final admission = resolve(command(), stopping: true);
-      expect(admission.disposition, ExternalCommandDisposition.admitted);
+
+      expect(admission.disposition, ExternalCommandDisposition.refused);
+      expect(admission.reason, ExternalCommandReason.stillStopping);
+      expect(admission.reason?.compactText, 'Still stopping');
+    });
+
+    test('a stop being drained outranks the session it is stopping', () {
+      // A parked disable still reads as an active session, so a Start landing
+      // there was answered "already running in Hybrid mode": a no-op reported
+      // as success, about a session that was visibly stopping. The mirror of
+      // the stop branch, where stopping outranks the idle test.
+      final admission = resolve(command(), active: true, stopping: true);
+
+      expect(admission.disposition, ExternalCommandDisposition.refused);
+      expect(admission.reason, ExternalCommandReason.stillStopping);
+    });
+
+    test('the voice form of a Start refused during a stop says to wait', () {
+      final requested = command(mode: 'active');
+      final completion = externalCommandCompletionForVoice(
+        command: requested,
+        completion: ExternalCommandCompletion(
+          success: false,
+          disposition: ExternalCommandDisposition.refused,
+          message: resolve(requested, stopping: true).reason,
+        ),
+      );
+
+      expect(
+        completion.message?.compactText,
+        'MeshMapper is still stopping. Try again shortly.',
+      );
     });
 
     test('Stop cannot terminate a newer session', () {

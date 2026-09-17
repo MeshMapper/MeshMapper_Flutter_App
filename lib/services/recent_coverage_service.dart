@@ -198,9 +198,10 @@ class RecentCoverageService {
 
   /// Record that smart pinging held a ping on this fix's fixed 300 m square.
   /// True the first time the square is seen this session, so the caller
-  /// queues one DEFER per square; false after. Not gated on [isActive]: by
-  /// the time a deferral happens the lookup was active, and a stale answer
-  /// here costs one extra DEFER the server drops anyway.
+  /// queues one DEFER and records one deferred marker per square; false
+  /// after. Not gated on [isActive]: by the time a deferral happens the
+  /// lookup was active, and a stale answer here costs one extra DEFER the
+  /// server drops anyway.
   bool markDeferred(double lat, double lon) =>
       _deferredCells.add(_cellKey300(lat, lon));
 
