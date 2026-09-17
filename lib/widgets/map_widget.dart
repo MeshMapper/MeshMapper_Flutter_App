@@ -3333,7 +3333,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// changed across the style load the old value still matches what build()
   /// computes and the build-driven sync never fires. Resetting to -1 (and
   /// asking for a rebuild, since the map only rebuilds when something notifies
-  /// it) is what actually makes the next build re-push the pins.
+  /// it) is what gets the next build back into the sync at all.
+  ///
+  /// What that retry recovers is narrower than a full re-push. It rewrites the
+  /// repeater source and the GPS puck, and it repaints the region borders
+  /// because the borders signature was reset to -1 on the way in. The coverage
+  /// ping symbols are NOT re-pushed: nothing about them changed, so the
+  /// annotation manager takes its unchanged branch and skips them. Those pins
+  /// come back only from the concurrent sync that superseded this one, or from
+  /// the next real marker change.
   void _abandonAndroidResync(String why) {
     debugLog('[MAP] Android deferred style re-sync abandoned: $why');
     _lastMarkerDataVersion = -1;

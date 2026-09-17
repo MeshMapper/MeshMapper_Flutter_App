@@ -229,8 +229,8 @@ class _MainScaffoldState extends State<MainScaffold> {
   }
 
   /// Present a link result. Success is a toast; the two cases that need the
-  /// user to go somewhere else get a dialog. Every other outcome — network,
-  /// server, unsupported firmware, unauthorized — is deliberately SILENT:
+  /// user to go somewhere else get a dialog. Every other outcome (network,
+  /// server, unsupported firmware, unauthorized) is deliberately SILENT:
   /// linking must never look like a wardriving failure.
   static Future<void> showLinkOutcome(
       BuildContext context, PortalLinkOutcome outcome) async {
@@ -301,22 +301,23 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   /// Report a failed sign-in.
   ///
-  /// The codes are the bounded set `PortalAccountService` emits — the portal's
-  /// own are already held to `^[a-z_]{1,32}$` by `_sanitizeErrorCode` — but the
+  /// The codes are the bounded set `PortalAccountService` emits (the portal's
+  /// own are already held to `^[a-z_]{1,32}$` by `_sanitizeErrorCode`), but the
   /// copy is written here so an unrecognized code can never reach the user as
   /// raw text.
   void _showPortalSignInError(String code) {
     debugLog('[ACCOUNT] Reporting a failed sign-in (reason=$code)');
-    // A cancel is a decision, not a failure — it gets the neutral toast.
+    // A cancel is a decision, not a failure, so it gets the neutral toast.
     final isCancel = code == 'denied' || code == 'access_denied';
     final message = switch (code) {
       'denied' || 'access_denied' => 'Sign-in cancelled',
-      'expired' => 'That sign-in expired — please try again',
+      'expired' => 'That sign-in expired. Please try again',
       'timeout' ||
       'network' =>
-        'Could not reach MyMeshMapper — check your connection',
-      'code_invalid' => 'That sign-in link was already used — please try again',
-      _ => 'Sign-in did not finish — please try again',
+        'Could not reach MyMeshMapper. Check your connection',
+      'code_invalid' =>
+        'That sign-in link was already used. Please try again',
+      _ => 'Sign-in did not finish. Please try again',
     };
     if (isCancel) {
       AppToast.info(context, message);
@@ -418,7 +419,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     // MyMeshMapper account link offer (post-connection, non-fatal).
     // A pending prompt survives disconnect by design (the provider no-ops
     // safely if it is answered afterwards), but never RAISE the dialog for a
-    // dead connection — the link handshake needs the radio to sign a nonce.
+    // dead connection: the link handshake needs the radio to sign a nonce.
     if (appState.isConnected &&
         appState.portalLinkPromptPending &&
         !onboardingModalLaneReserved &&

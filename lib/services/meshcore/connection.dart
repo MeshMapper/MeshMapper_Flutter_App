@@ -13,6 +13,14 @@ import 'crypto_service.dart';
 import 'packet_parser.dart';
 import 'protocol_constants.dart';
 
+/// How long a repeater-admin command waits for an in-flight noise floor or
+/// battery poll to settle before it writes anyway.
+///
+/// Both polls carry a 5s timeout of their own, so this only fires when a
+/// settle future is left uncompleted. Longer than the polls so a normal drain
+/// never trips it.
+const Duration kPollDrainTimeout = Duration(seconds: 6);
+
 /// Response from device query command
 class DeviceQueryResponse {
   /// Companion FIRMWARE_VER_CODE (byte 1 of RESP_CODE_DEVICE_INFO).
@@ -1093,7 +1101,9 @@ class MeshCoreConnection {
   ///
   /// Each poll carries its own timeout, so this wait is bounded by theirs.
   /// Their errors belong to the poll, not to the admin command: the settle
-  /// futures always complete normally.
+  /// futures always complete normally. [kPollDrainTimeout] is the backstop for
+  /// a settle future that is somehow never completed: the admin command goes
+  /// ahead rather than hanging the sheet on a poll that will never answer.
   Future<void> _drainPollsForAdminCommand(String name) async {
     final pending = <Future<void>>[
       if (_statsRequestSettled case final c?) c.future,
@@ -1101,7 +1111,19 @@ class MeshCoreConnection {
     ];
     if (pending.isEmpty) return;
     debugLog('[CONN] $name waiting for ${pending.length} in-flight poll(s)');
-    await Future.wait(pending);
+    var bounded = false;
+    await Future.wait(pending).timeout(
+      kPollDrainTimeout,
+      onTimeout: () {
+        bounded = true;
+        return <void>[];
+      },
+    );
+    if (bounded) {
+      debugWarn('[CONN] $name: poll drain timed out after '
+          '${kPollDrainTimeout.inSeconds}s, proceeding anyway');
+      return;
+    }
     debugLog('[CONN] $name: pollers drained');
   }
 
@@ -2434,6 +2456,12 @@ class MeshCoreConnection {
         },
       );
     } finally {
+      // The timeout leg clears the slot itself; this covers the leg it cannot
+      // reach, a write that throws. Left set, _statsCompleter stays non-null
+      // for the life of the connection and the ERR router keeps handing every
+      // ERR to a stats poll that is long gone, so the repeater-admin lane
+      // never sees its own. A no-op on the success and timeout legs.
+      if (identical(_statsCompleter, completer)) _statsCompleter = null;
       if (identical(_statsRequestSettled, settled)) _statsRequestSettled = null;
       if (!settled.isCompleted) settled.complete();
     }

@@ -416,5 +416,4 @@ void main() {
     ping.dispose();
     discoveryWindow.stop();
   });
-
 }
