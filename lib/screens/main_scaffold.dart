@@ -435,8 +435,15 @@ class _MainScaffoldState extends State<MainScaffold> {
     // A failed MyMeshMapper sign-in is reported HERE and nowhere else: the
     // browser round trip outlives the Settings tap that started it, so by the
     // time the callback lands there is no live call site left to answer. The
-    // scaffold survives the trip whichever tab the user comes back to.
-    if (appState.portalSignInError != null && !_signInErrorToastOpen) {
+    // scaffold survives the trip whichever tab the user comes back to. Like its
+    // sibling prompts it waits for the onboarding lane: a toast raised under
+    // the welcome dialog or the fullscreen guide is never seen, and clearing
+    // the error there would lose it. Held, not cleared, until the lane is free.
+    if (appState.portalSignInError != null &&
+        !onboardingModalLaneReserved &&
+        !onboardingPresentationReserved &&
+        !_onboardingGuideOpen &&
+        !_signInErrorToastOpen) {
       _signInErrorToastOpen = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _signInErrorToastOpen = false;

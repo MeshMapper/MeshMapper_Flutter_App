@@ -291,16 +291,19 @@ void main() {
               .onPressed,
           isNotNull,
         );
+        // Back is a dismiss: it attempts the same persist and then closes even
+        // though it failed again, so the gesture is never a dead end.
         await tester.binding.handlePopRoute();
         await tester.pumpAndSettle();
         expect(find.text('Welcome to MeshMapper'), findsNothing);
-        expect(find.text('Settings'), findsOneWidget);
+        expect(find.text('Map'), findsOneWidget);
       }
       expect(presenter.coordinator.isReserved, isFalse);
     });
   }
 
-  testWidgets('welcome allows Back before completion starts', (tester) async {
+  testWidgets('welcome Back persists the seen version like Skip',
+      (tester) async {
     var completions = 0;
     await tester.pumpWidget(_PresentationHarness(
       presenter: _freshPresenter(),
@@ -314,7 +317,92 @@ void main() {
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
     expect(find.text('Welcome to MeshMapper'), findsNothing);
-    expect(completions, 0);
+    // Backing out used to dismiss the prompt without recording it, so the
+    // welcome dialog came back on the next launch.
+    expect(completions, 1);
+    expect(find.text('Map'), findsOneWidget);
+  });
+
+  testWidgets('guide Close persists the seen version like Skip',
+      (tester) async {
+    final persistence = Completer<bool>();
+    var completions = 0;
+
+    await tester.pumpWidget(
+      _PresentationHarness(
+        presenter: _freshPresenter(),
+        complete: () {
+          completions++;
+          return persistence.future;
+        },
+      ),
+    );
+
+    await tester.tap(find.text('Show automatic guide'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start Guide'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Close'));
+    await tester.pump();
+
+    // The X used to pop with no result and no persistence, so the welcome
+    // dialog came back on the next launch.
+    expect(completions, 1);
+    expect(find.text('Page 1 of 12'), findsOneWidget);
+    expect(
+      tester
+          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.close))
+          .onPressed,
+      isNull,
+    );
+
+    persistence.complete(true);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Page 1 of 12'), findsNothing);
+    expect(find.text('Map'), findsOneWidget);
+  });
+
+  testWidgets('guide Back persists the seen version like Skip',
+      (tester) async {
+    final persistence = Completer<bool>();
+    var completions = 0;
+
+    await tester.pumpWidget(
+      _PresentationHarness(
+        presenter: _freshPresenter(),
+        complete: () {
+          completions++;
+          return persistence.future;
+        },
+      ),
+    );
+
+    await tester.tap(find.text('Show automatic guide'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start Guide'));
+    await tester.pumpAndSettle();
+    expect(find.text('Page 1 of 12'), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    // Back used to pop the guide with no result and no persistence, so the
+    // welcome dialog came back on the next launch.
+    expect(completions, 1);
+    expect(find.text('Page 1 of 12'), findsOneWidget);
+
+    // A second Back while the first is still persisting is a no-op.
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(completions, 1);
+    expect(find.text('Page 1 of 12'), findsOneWidget);
+
+    persistence.complete(true);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Page 1 of 12'), findsNothing);
+    expect(find.text('Map'), findsOneWidget);
   });
 
   testWidgets('guide Skip waits for completion persistence', (tester) async {
@@ -436,6 +524,91 @@ void main() {
           .onPressed,
       isNotNull,
     );
+  });
+
+  testWidgets('failed persistence still lets the guide Close out',
+      (tester) async {
+    var completions = 0;
+    await tester.pumpWidget(
+      _PresentationHarness(
+        presenter: _freshPresenter(),
+        complete: () async {
+          completions++;
+          return false;
+        },
+      ),
+    );
+
+    await tester.tap(find.text('Show automatic guide'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start Guide'));
+    await tester.pumpAndSettle();
+
+    // Skip Guide is a deliberate completion, so it refuses to close.
+    await tester.tap(find.text('Skip Guide'));
+    await tester.pumpAndSettle();
+    expect(completions, 1);
+    expect(find.text('Page 1 of 12'), findsOneWidget);
+
+    // The X is a dismiss: it attempts the same persist and closes anyway, so
+    // a broken write can never trap the user in the guide.
+    await tester.tap(find.byTooltip('Close'));
+    await tester.pumpAndSettle();
+    expect(completions, 2);
+    expect(find.text('Page 1 of 12'), findsNothing);
+    expect(find.text('Map'), findsOneWidget);
+  });
+
+  testWidgets('failed persistence still lets the guide Back out',
+      (tester) async {
+    var completions = 0;
+    await tester.pumpWidget(
+      _PresentationHarness(
+        presenter: _freshPresenter(),
+        complete: () async {
+          completions++;
+          return false;
+        },
+      ),
+    );
+
+    await tester.tap(find.text('Show automatic guide'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start Guide'));
+    await tester.pumpAndSettle();
+    expect(find.text('Page 1 of 12'), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(completions, 1);
+    expect(find.text('Page 1 of 12'), findsNothing);
+    expect(find.text('Map'), findsOneWidget);
+  });
+
+  testWidgets('failed persistence still lets the welcome prompt Back out',
+      (tester) async {
+    var completions = 0;
+    await tester.pumpWidget(
+      _PresentationHarness(
+        presenter: _freshPresenter(),
+        complete: () async {
+          completions++;
+          return false;
+        },
+      ),
+    );
+
+    await tester.tap(find.text('Show automatic guide'));
+    await tester.pumpAndSettle();
+    expect(find.text('Welcome to MeshMapper'), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(completions, 1);
+    expect(find.text('Welcome to MeshMapper'), findsNothing);
+    expect(find.text('Map'), findsOneWidget);
   });
 }
 

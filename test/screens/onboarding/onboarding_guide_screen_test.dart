@@ -702,7 +702,7 @@ void main() {
 
     await goToPage(tester, 10);
     expect(
-      find.textContaining('the message routed through the mesh'),
+      find.textContaining('your channel message routed through the mesh'),
       findsWidgets,
     );
 
@@ -727,7 +727,10 @@ void main() {
     expect(find.text('MyMeshMapper allows you to:'), findsOneWidget);
     expect(find.textContaining('Claim repeaters the user administers'),
         findsNothing);
-    expect(find.text('Claim and manage repeaters'), findsOneWidget);
+    expect(
+        find.text('Claim and manage repeaters you administer.'), findsOneWidget);
+
+    await openDetails(tester, 'How to claim a repeater');
     expect(
       find.textContaining('Once claimed, your MyMeshMapper identity'),
       findsOneWidget,

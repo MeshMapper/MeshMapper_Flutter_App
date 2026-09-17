@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../utils/debug_logger_io.dart';
 import 'onboarding_guide_screen.dart';
 
 class OnboardingPromptGate {
@@ -151,13 +152,25 @@ class _OnboardingWelcomeDialog extends StatefulWidget {
 class _OnboardingWelcomeDialogState extends State<_OnboardingWelcomeDialog> {
   var _completionInFlight = false;
 
-  Future<void> _skipGuide() async {
+  /// Persists the seen version, then closes the prompt with "do not start".
+  ///
+  /// [isDismiss] separates the two kinds of exit. Skip Guide is a deliberate
+  /// answer, so a persist that fails keeps the prompt up and re-enables the
+  /// button for another try. The back gesture is a dismiss and may never be a
+  /// dead end: it attempts the same persist but closes either way, and the
+  /// prompt simply comes back on the next launch. Both keep the in-flight
+  /// guard, so a second tap or gesture during a persist is a no-op.
+  Future<void> _skipGuide({bool isDismiss = false}) async {
     if (_completionInFlight) return;
     setState(() => _completionInFlight = true);
 
     final completed = await widget.complete();
     if (!mounted) return;
     if (completed) {
+      Navigator.of(context).pop(false);
+    } else if (isDismiss) {
+      debugLog(
+          '[APP] Onboarding seen version could not be saved, closing anyway');
       Navigator.of(context).pop(false);
     } else {
       setState(() => _completionInFlight = false);
@@ -166,8 +179,15 @@ class _OnboardingWelcomeDialogState extends State<_OnboardingWelcomeDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // Back runs the same persistence Skip does, so the prompt is not backed out
+    // of without recording that it was seen. While a completion is in flight
+    // the gesture does nothing, as before.
     return PopScope(
-      canPop: !_completionInFlight,
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _skipGuide(isDismiss: true);
+      },
       child: AlertDialog(
         title: const Text('Welcome to MeshMapper'),
         content: const Text(
