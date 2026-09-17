@@ -383,16 +383,18 @@ untouched. On by default with a 14 day window.
   hidden while the switch is off. An (i) button beside the switch opens `_showSmartPingInfo`,
   a dialog explaining the deferral in user-facing words.
 - **Map trail**: a deferral adds a hollow yellow marker (`PingColors.deferred`, with
-  color-vision palette variants), but only the FIRST deferral in a fixed 300 m square per API
-  session: `AppStateProvider`'s `onPingDeferred` handler asks
-  `RecentCoverageService.markDeferred` before it records anything and returns on a repeat, so
-  the one check gates the marker, the noise-floor event and the `DEFER` enqueue below
-  together. The coverage check runs before the 25 m rule, so a phone parked on already mapped
-  ground defers on every interval tick; a marker per tick grew the noise floor session's Hive
-  record and the map's deferred list without bound and bumped `mapRevision` (Critical Rule 9)
-  for a square that already had a marker on it. The countdown still reads "Deferred" on every
-  tick, because that comes from the skip reason, which `PingService` sets whether or not the
-  square is new. `AppStateProvider.deferredPingMarkers` follows the
+  color-vision palette variants) whenever the phone has moved the configured minimum ping
+  distance since the last deferred marker, the same rule a real ping answers to, so a drive
+  through mapped ground leaves the whole trail of rings. `AppStateProvider`'s `onPingDeferred`
+  handler keeps its own anchor for that (`_lastDeferredMarkerLat` / `_lastDeferredMarkerLon`,
+  cleared with the markers) and gates the marker and the noise-floor event on it; the `DEFER`
+  enqueue below keeps its separate per-square-per-session check, so the two no longer share one
+  gate. The distance gate is needed because the coverage check runs before the 25 m rule, so a
+  phone parked on already mapped ground defers on every interval tick; a marker per tick grew
+  the noise floor session's Hive record and the map's deferred list without bound and bumped
+  `mapRevision` (Critical Rule 9) for a marker already on the map. The countdown still reads
+  "Deferred" on every tick, because that comes from the skip reason, which `PingService` sets
+  whether or not a marker is dropped. `AppStateProvider.deferredPingMarkers` follows the
   normal log limit and clears with map markers or logs, with a `mapRevision` bump.
   Deferred events are also recorded in noise-floor sessions when a reading is available,
   so saved-session maps and the graph preserve them. Startup deferrals are held until
@@ -514,7 +516,8 @@ untouched. On by default with a 14 day window.
   sites (the TX auto branch and the discovery send) with the validated fix; the provider
   dedupes it through `RecentCoverageService.markDeferred` (always the 300 m grid, whatever the
   Coverage Grid setting, so a Detailed-grid user reports one per real square and a parked car
-  reports one) and queues it with `ApiQueueService.enqueueDefer`, which rides the normal batch,
+  reports one; the map marker is gated on distance instead, see Map trail above) and queues it
+  with `ApiQueueService.enqueueDefer`, which rides the normal batch,
   the offline recording (honouring the airborne pause) and the pre-disconnect snapshot, and is
   never dropped on a session change (no wire tag). A new session id under a kept queue resets
   the dedupe set (`clearDeferred` on `onSessionIdChanged`), matching the server's per-session

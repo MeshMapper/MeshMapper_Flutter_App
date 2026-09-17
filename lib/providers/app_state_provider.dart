@@ -382,6 +382,13 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<PingEventMarker> _deferredPingMarkers = [];
   final List<PingEventMarker> _startingDeferredHistory = [];
 
+  /// Where the last deferred marker was dropped, the anchor for the minimum
+  /// ping distance. A deferral drops its own marker once the phone has moved
+  /// that far, so a drive through mapped ground leaves the whole trail of
+  /// rings while a parked car leaves one.
+  double? _lastDeferredMarkerLat;
+  double? _lastDeferredMarkerLon;
+
   List<PingEventMarker> get deferredPingMarkers =>
       List.unmodifiable(_deferredPingMarkers);
   int _siriObservationRevision = 0;
@@ -4931,37 +4938,54 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _pingService!.checkRecentCoverage = _recentCoverage.isCovered;
 
-    // One DEFER per fixed 300 m square per API session. The server verifies
-    // the square against its own coverage and credits it; a duplicate or an
-    // uncovered square is a silent drop there, so the phone-side dedupe only
-    // keeps the queue small.
+    // A marker per deferral once the phone has moved the minimum ping
+    // distance, and one DEFER per fixed 300 m square per API session. The
+    // server verifies the square against its own coverage and credits it; a
+    // duplicate or an uncovered square is a silent drop there, so the
+    // phone-side square dedupe only keeps the queue small.
     _pingService!.onPingDeferred = (lat, lon, held) {
       final heldWord = held == BankedPingType.tx ? 'tx' : 'disc';
-      // One record per 300 m square per API session, for the markers as well
-      // as the server credit. The coverage check runs before the 25 m rule, so
-      // a phone parked on mapped ground defers on every interval tick: a
-      // marker per tick grew the noise floor session's Hive record and the
-      // map's deferred list without bound, and bumped the map (Critical
-      // Rule 9) for a square that already had a marker on it. The countdown
-      // still reads Deferred on every tick: that comes from the skip reason,
-      // which PingService sets whether or not the square is new.
+
+      // The map ring and the noise-floor event are gated on the minimum ping
+      // distance, the same rule a real ping answers to, so every deferral on
+      // new ground is shown. The coverage check runs before that rule, so a
+      // phone parked on mapped ground defers on every interval tick: a marker
+      // per tick grew the noise floor session's Hive record and the map's
+      // deferred list without bound, and bumped the map (Critical Rule 9) for
+      // a marker already there. The countdown still reads Deferred on every
+      // tick: that comes from the skip reason, which PingService sets whether
+      // or not a marker is dropped.
+      final lastLat = _lastDeferredMarkerLat;
+      final lastLon = _lastDeferredMarkerLon;
+      final movedEnough = lastLat == null ||
+          lastLon == null ||
+          Geolocator.distanceBetween(lastLat, lastLon, lat, lon) >=
+              _gpsService.configuredMinDistance;
+      if (movedEnough) {
+        _lastDeferredMarkerLat = lat;
+        _lastDeferredMarkerLon = lon;
+        _deferredPingMarkers.add(PingEventMarker(
+          timestamp: DateTime.now(),
+          type: PingEventType.deferred,
+          noiseFloor: _currentNoiseFloor ?? -120,
+          latitude: lat,
+          longitude: lon,
+        ));
+        if (_deferredPingMarkers.length > _maxLogEntries) {
+          _deferredPingMarkers.removeAt(0);
+        }
+        recordPingEvent(PingEventType.deferred, latitude: lat, longitude: lon);
+        _notifyMapNow();
+        debugLog('[COVERAGE] Deferral marked at '
+            '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)} ($heldWord)');
+      }
+
+      // The server credit is per square per session, whatever the markers did.
       if (!_recentCoverage.markDeferred(lat, lon)) {
         debugLog(
-            '[COVERAGE] Deferral already recorded for this square ($heldWord)');
+            '[COVERAGE] Deferral already reported for this square ($heldWord)');
         return;
       }
-      _deferredPingMarkers.add(PingEventMarker(
-        timestamp: DateTime.now(),
-        type: PingEventType.deferred,
-        noiseFloor: _currentNoiseFloor ?? -120,
-        latitude: lat,
-        longitude: lon,
-      ));
-      if (_deferredPingMarkers.length > _maxLogEntries) {
-        _deferredPingMarkers.removeAt(0);
-      }
-      recordPingEvent(PingEventType.deferred, latitude: lat, longitude: lon);
-      _notifyMapNow();
       debugLog('[COVERAGE] Deferral queued for square at '
           '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)} ($heldWord)');
       unawaited(_apiQueueService.enqueueDefer(
@@ -7691,6 +7715,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _discLogEntries.clear();
     _traceLogEntries.clear();
     _deferredPingMarkers.clear();
+    _lastDeferredMarkerLat = null;
+    _lastDeferredMarkerLon = null;
     _siriObservationRevision++;
     _clearOverlayState();
     _pingService?.resetStats();
@@ -7704,6 +7730,8 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _discLogEntries.clear();
     _traceLogEntries.clear();
     _deferredPingMarkers.clear();
+    _lastDeferredMarkerLat = null;
+    _lastDeferredMarkerLon = null;
     _siriObservationRevision++;
     _errorLogEntries.clear();
     _clearOverlayState();
