@@ -172,6 +172,8 @@ void main() {
   test('Retry-After parsing: delta-seconds, clamped, default on garbage', () {
     expect(ApiService.parseRetryAfter('75'), const Duration(seconds: 75));
     expect(ApiService.parseRetryAfter(' 120 '), const Duration(seconds: 120));
+    expect(ApiService.parseRetryAfter('3600'), const Duration(seconds: 3600),
+        reason: 'the server penalty is honoured in full, never shortened');
     expect(
         ApiService.parseRetryAfter('99999'), ApiService.maxWardriveRetryAfter);
     expect(
@@ -182,6 +184,42 @@ void main() {
         ApiService.defaultWardriveRetryAfter);
     expect(
         ApiService.parseRetryAfter(null), ApiService.defaultWardriveRetryAfter);
+  });
+
+  test('an hour-long Retry-After is honoured in full, not shortened', () {
+    // The penalty window is the server's to set, and it re-arms on every
+    // blocked hit (wardrive-api.php): a client that comes back early retries
+    // into the window that is still open and locks itself out for good. So a
+    // long Retry-After is waited out whole, even though the session lapses
+    // inside it.
+    fakeAsync((async) {
+      final built = build(retryAfter: '3600');
+      connect(async, built.api);
+      built.api.enableHeartbeat();
+      async.flushMicrotasks();
+
+      // The pre-expiry keepalive trips the brake and the server asks for an
+      // hour.
+      async.elapse(const Duration(seconds: 241));
+      expect(built.posts.length, 1);
+      final hold = built.api.wardriveBackoff;
+      expect(hold, isNotNull);
+      expect(hold!.inSeconds, greaterThan(3590),
+          reason: 'the whole hour the server asked for is held');
+
+      // Nothing on the wardrive door goes out for the whole hour, the
+      // keepalive included.
+      async.elapse(const Duration(seconds: 3550));
+      expect(built.posts.length, 1,
+          reason: 'coming back early re-arms the penalty and never clears it');
+
+      // Once the hour is up the lane comes back on its own, rather than
+      // going quiet for good.
+      async.elapse(const Duration(seconds: 100));
+      expect(built.posts.length, 2,
+          reason: 'the keepalive must be rescheduled after the hold, not '
+              'dropped');
+    });
   });
 
   test('a fresh session starts with no hold', () {
