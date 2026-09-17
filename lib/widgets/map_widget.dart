@@ -696,10 +696,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   bool _styleLoadInProgress = false;
   final CoalescedAsyncRunner _styleLoadRunner = CoalescedAsyncRunner();
 
-  // Monotonic counter for the Android deferred style re-sync. Bumped at the
-  // end of each _restoreStyle; the delayed callback bails when the generation
-  // it captured no longer matches, meaning a newer style load superseded it.
+  // Monotonic counter for the Android deferred style re-sync. Bumped when a
+  // style reload BEGINS (a new styleString handed to MapLibreMap), at the
+  // start of every _restoreStyle, and again when a re-sync is armed at the end
+  // of one. The delayed callback bails when the generation it captured no
+  // longer matches, meaning a newer style load superseded it. Bumping at the
+  // start matters: a callback armed by the previous load would otherwise pass
+  // all its checks while the next restore is still mid-flight, pushing into a
+  // style whose cluster layers do not exist yet (so the coverage fill, with no
+  // belowLayerId to anchor to, lands above the repeater stack).
   int _androidStyleResyncGen = 0;
+
+  // Style URL last handed to MapLibreMap. A change is the true start of a
+  // style reload: the plugin's didUpdateWidget fires a native setStyle that
+  // wipes every source and layer long before onStyleLoadedCallback fires.
+  String? _lastStyleUrl;
 
   // True only after _setupRepeaterClusterLayers has finished creating the
   // cluster GeoJSON source AND all 3 layers. Set to false at the start of
@@ -2062,6 +2073,21 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // cache. Network access is controlled via setOffline() instead.
     final newStyleUrl = mapStyle.styleUrl;
 
+    // A style swap starts here, not at onStyleLoadedCallback: handing a new
+    // styleString to MapLibreMap makes the plugin's didUpdateWidget fire a
+    // native setStyle, and every source, layer and registered image is gone
+    // from that moment. Mark the style as not loaded so nothing pushes into
+    // the style being torn down (_restoreStyle sets it true again once the
+    // new one is up), and bump the deferred re-sync generation so a callback
+    // armed by the previous load bails instead of pushing into the incoming
+    // style.
+    if (_lastStyleUrl != null && _lastStyleUrl != newStyleUrl) {
+      debugLog('[MAP] Style reload starting, marking style not loaded');
+      _styleLoaded = false;
+      _androidStyleResyncGen++;
+    }
+    _lastStyleUrl = newStyleUrl;
+
     // Detect mapTilesEnabled toggle changes and switch MapLibre between
     // online (network tiles) and offline (cache-only) mode. This avoids
     // a full style reload — the same style stays loaded but MapLibre stops
@@ -2979,6 +3005,15 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     _styleLoadInProgress = true;
     final isStyleReload = _hasStyleLoadedOnce;
+    // This restore supersedes any deferred re-sync armed by the previous style
+    // load. Bumping here (as well as when the reload begins in _buildMap, which
+    // a programmatic style swap may not route through) makes that stale
+    // callback bail rather than push into a style this pass is still building.
+    _androidStyleResyncGen++;
+    // Whether the Android GL pipeline workaround at the end of this pass will
+    // arm a deferred re-sync. Read before the annotation sync below, which
+    // hands the data-version stamp over to the re-sync when it is true.
+    final androidResyncPending = !kIsWeb && Platform.isAndroid && isStyleReload;
     try {
       _styleLoaded = true;
       _isMapReady = true;
@@ -3165,7 +3200,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // data because _lastMarkerDataVersion still holds the previous value
         // — that double-sync was racing the first sync's symbol refs and
         // throwing "you can only set existing annotations" errors twice.
-        _lastMarkerDataVersion = _computeMarkerDataVersion(appState);
+        //
+        // On an Android style RELOAD the push above may have been swallowed by
+        // the GL commit (see the deferred re-sync below), so the stamp is left
+        // to the re-sync, once its own push has landed. Until then the old
+        // value stands and a build-driven post-frame sync is free to retry the
+        // pins, which is the point: stamping here for a dropped sync is what
+        // left the coverage pins missing until the next marker change.
+        if (!androidResyncPending) {
+          _lastMarkerDataVersion = _computeMarkerDataVersion(appState);
+        }
         // The GPS-only sync gate needs no capture here: _syncAllAnnotations
         // ran _syncGpsSymbol, which records the version itself when its push
         // lands (and deliberately doesn't when it bails, so the build-driven
@@ -3179,31 +3223,146 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // is valid and the method channel calls succeed, but the GL render
       // thread has not committed the new style yet, so the data is accepted
       // but never drawn. A short delay lets the GL pipeline finish, then
-      // re-pushing repeater data and refreshing the coverage overlay makes
-      // both layers appear. This mirrors what a manual toggle-off-then-on
-      // does. Skipped on first load (no issue there) and on iOS/web. The
-      // generation guard ensures a rapid style cycle cancels the stale
-      // re-sync.
-      if (!kIsWeb &&
-          Platform.isAndroid &&
-          isStyleReload &&
-          mounted &&
-          _canContinueStyleRestore()) {
+      // re-pushing everything this pass wrote makes it all appear. This
+      // mirrors what a manual toggle-off-then-on does. Skipped on first load
+      // (no issue there) and on iOS/web. The generation guard ensures a rapid
+      // style cycle cancels the stale re-sync.
+      if (androidResyncPending && mounted && _canContinueStyleRestore()) {
         final gen = ++_androidStyleResyncGen;
-        Future.delayed(const Duration(milliseconds: 250), () async {
-          if (!mounted ||
-              _mapController == null ||
-              !_styleLoaded ||
-              gen != _androidStyleResyncGen) {
-            return;
-          }
-          debugLog('[MAP] Android deferred style re-sync (gen=$gen)');
-          await _syncRepeaterSymbols(appState);
-          await _refreshCoverageOverlay(appState);
+        Future.delayed(const Duration(milliseconds: 250), () {
+          runAsyncCallbackSafely(
+            () => _runAndroidStyleResync(appState, gen),
+            onError: (error, stackTrace) => debugError(
+                '[MAP] Android deferred style re-sync failed: $error',
+                stackTrace),
+          );
         });
       }
     } finally {
       _styleLoadInProgress = false;
+    }
+  }
+
+  /// Android-only: re-pushes everything the style-loaded pass wrote, a short
+  /// delay after it ran. See the arming site in [_restoreStyle] for why the
+  /// first push can be accepted natively yet never drawn.
+  ///
+  /// This mirrors the style-loaded pass push for push: coverage overlay,
+  /// region borders, then the full annotation sync (repeaters, coverage ping
+  /// symbols including deferred pins, GPS puck, focus lines, distance labels).
+  /// [gen] is the generation captured when the callback was armed; a newer
+  /// style load, or the start of the next restore, bumps the counter and this
+  /// run bails rather than pushing into a style it does not belong to.
+  Future<void> _runAndroidStyleResync(
+      AppStateProvider appState, int gen) async {
+    if (!_androidResyncStillValid(gen)) {
+      _abandonAndroidResync('superseded before it started');
+      return;
+    }
+    debugLog('[MAP] Android deferred style re-sync (gen=$gen)');
+
+    // Coverage overlay: source + fill layer + the tap cell-highlight layers.
+    try {
+      await _refreshCoverageOverlay(appState);
+    } catch (e) {
+      debugError('[MAP] Android re-sync: coverage overlay failed: $e');
+    }
+    if (!_androidResyncStillValid(gen)) {
+      _abandonAndroidResync('superseded after the coverage overlay');
+      return;
+    }
+
+    // Region borders. Reset the signature first so the build-driven watcher
+    // repaints them too if this push is the one that gets dropped.
+    try {
+      _lastBordersSignature = -1;
+      await _refreshRegionBorders(appState);
+    } catch (e) {
+      debugError('[MAP] Android re-sync: region borders failed: $e');
+    }
+    // Re-check immediately before the annotation leg, not only after the legs
+    // above: a style load that started while they ran makes every sub-sync of
+    // _syncAllAnnotations bail at its own _styleLoaded guard, and stamping the
+    // data version for that push would recreate the very bug this re-sync
+    // exists to fix.
+    if (!_androidResyncStillValid(gen)) {
+      _abandonAndroidResync('superseded before the annotation sync');
+      return;
+    }
+
+    // Repeaters, coverage ping symbols, GPS puck, focus lines, distance
+    // labels: the same set _syncAllAnnotations pushed during the style-loaded
+    // pass.
+    if (_syncInFlight) {
+      // A build-driven sync owns the symbol maps right now. Running a second
+      // pass alongside it would have each cleanup loop remove what the other
+      // just added, so let it finish and leave the data version unclaimed:
+      // the rebuild re-syncs once it is done.
+      _abandonAndroidResync('annotation sync already in flight');
+      return;
+    }
+    _syncInFlight = true;
+    try {
+      await _syncAllAnnotations(appState);
+      // The annotation manager mirrors every symbol into one GeoJSON source
+      // and only rewrites it on an add/update, so a sync that finds nothing
+      // changed (the usual case 250 ms after a style load) pushes nothing at
+      // all. Force the rewrite, or the coverage pins the swallowed push
+      // dropped would stay invisible.
+      await _repushCoverageSymbols();
+      // Claim the data version ONLY if this run is still the current one after
+      // its own awaits. A style load that landed during them means nothing was
+      // pushed, so -1 sends the next build back for another sync.
+      _lastMarkerDataVersion = _androidResyncStillValid(gen)
+          ? _computeMarkerDataVersion(appState)
+          : -1;
+    } catch (e) {
+      debugError('[MAP] Android re-sync: annotation sync failed: $e');
+      // Unstamped, so the next build retries the pins.
+      _lastMarkerDataVersion = -1;
+    } finally {
+      _syncInFlight = false;
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// Gives up on a deferred re-sync without claiming the marker data version.
+  ///
+  /// Leaving the previous value in place is NOT enough: the style-loaded pass
+  /// hands the stamp to this re-sync, so when nothing about the marker data
+  /// changed across the style load the old value still matches what build()
+  /// computes and the build-driven sync never fires. Resetting to -1 (and
+  /// asking for a rebuild, since the map only rebuilds when something notifies
+  /// it) is what actually makes the next build re-push the pins.
+  void _abandonAndroidResync(String why) {
+    debugLog('[MAP] Android deferred style re-sync abandoned: $why');
+    _lastMarkerDataVersion = -1;
+    if (mounted) setState(() {});
+  }
+
+  /// True while the deferred re-sync armed at generation [gen] is still the
+  /// current one and the map can take pushes.
+  bool _androidResyncStillValid(int gen) =>
+      mounted &&
+      _mapController != null &&
+      _styleLoaded &&
+      _clusterLayersReady &&
+      gen == _androidStyleResyncGen;
+
+  /// Rewrites the annotation manager's whole symbol source.
+  ///
+  /// Updating a single symbol is enough: the symbol manager has no per-layer
+  /// selector, so its set path rewrites every feature at once. One native
+  /// round trip re-pushes the coverage pins and the distance labels together.
+  Future<void> _repushCoverageSymbols() async {
+    final controller = _mapController;
+    final symbol = _coverageSymbols.values.firstOrNull;
+    if (controller == null || symbol == null) return;
+    try {
+      // Empty options: nothing about the symbol changes, only the push.
+      await controller.updateSymbol(symbol, const SymbolOptions());
+    } catch (e) {
+      debugError('[MAP] Android re-sync: coverage symbol re-push failed: $e');
     }
   }
 
@@ -4816,19 +4975,26 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // When viewing a history session, show only those markers
     if (appState.viewingHistorySession &&
         appState.historySessionMarkers != null) {
+      // The live branch below hides deferred pins when the preference is off,
+      // so a history session answers the same preference. Toggling it re-syncs
+      // (the marker data version reads it), and the cleanup loop at the end
+      // takes the now-unwanted pins off the map.
+      final showDeferred = appState.preferences.showDeferredMarkers;
       for (final marker in appState.historySessionMarkers!) {
         if (marker.latitude == null || marker.longitude == null) continue;
+        final isDeferred = marker.type == PingEventType.deferred;
+        if (isDeferred && !showDeferred) continue;
         final mapping = _historyMarkerType(marker.type);
         await syncOne(
           type: 'history_${mapping.type}',
-          keyOverride: marker.type == PingEventType.deferred
+          keyOverride: isDeferred
               ? 'history_deferred_${_deferredMarkerId(marker)}'
               : null,
           lat: marker.latitude!,
           lon: marker.longitude!,
           ts: marker.timestamp,
           success: mapping.success,
-          idForMetadata: marker.type == PingEventType.deferred
+          idForMetadata: isDeferred
               ? _deferredMarkerId(marker)
               : marker.timestamp.millisecondsSinceEpoch,
           iconImageOverride: _MapImages.coverage(mapping.type, mapping.success),
