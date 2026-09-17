@@ -376,6 +376,23 @@ void main() {
         expect(svc.markDeferred(lat, lon), isFalse);
       });
 
+      test('a parked phone reports once however many times it defers', () {
+        // This answer gates the deferred marker as well as the DEFER report.
+        // The coverage check runs ahead of the 25 m rule, so a phone parked on
+        // mapped ground defers on every interval tick: without the dedupe the
+        // noise floor session grew a marker per tick (persisted to Hive) and
+        // the map was bumped for a square that already had one on it.
+        var recorded = 0;
+        for (var i = 0; i < 10; i++) {
+          if (svc.markDeferred(lat, lon)) recorded++;
+        }
+        expect(recorded, 1, reason: 'one marker and one DEFER for the square');
+
+        // Driving into the next square is a new record.
+        final step = kCoverageGridSteps[300]![0];
+        expect(svc.markDeferred(lat + step, lon), isTrue);
+      });
+
       test('three fixes 100 m apart in one 300 m square report once, on the 100 m grid too',
           () {
         svc.configure(zone: 'YOW', gridSize: 100, days: 14, enabled: true);

@@ -204,6 +204,27 @@ ExternalCommandAdmission resolveExternalSessionTransition({
 
   switch (command.kind) {
     case ExternalSessionCommandKind.startSession:
+      // A stop is draining. Refused, not a no-op: nothing is being started,
+      // and the person has to try again once the stop and the 5 second
+      // cooldown behind it are done, which is what this reason says.
+      //
+      // Ahead of the running and starting tests on purpose, the mirror of the
+      // stop branch below. A parked disable still reads as an active session,
+      // so "MeshMapper is already running in Active mode" was the answer a
+      // Start got during a drain: a no-op, reported as success, about a
+      // session that was visibly stopping.
+      //
+      // It is the same answer resolveSessionStartAvailability gives for the
+      // same state, which is the gate the phone's own buttons and the watch's
+      // enablement read. The transition used to admit here and lean on that
+      // second gate to refuse; a surface that consults only this resolver was
+      // one call away from starting a mode on top of a draining stop.
+      if (isSessionStopping) {
+        return const ExternalCommandAdmission(
+          disposition: ExternalCommandDisposition.refused,
+          reason: ExternalCommandReason.stillStopping,
+        );
+      }
       if (isSessionActive) {
         return ExternalCommandAdmission(
           disposition: ExternalCommandDisposition.noOp,
