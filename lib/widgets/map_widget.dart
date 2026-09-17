@@ -696,6 +696,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   bool _styleLoadInProgress = false;
   final CoalescedAsyncRunner _styleLoadRunner = CoalescedAsyncRunner();
 
+  // Monotonic counter for the Android deferred style re-sync. Bumped at the
+  // end of each _restoreStyle; the delayed callback bails when the generation
+  // it captured no longer matches, meaning a newer style load superseded it.
+  int _androidStyleResyncGen = 0;
+
   // True only after _setupRepeaterClusterLayers has finished creating the
   // cluster GeoJSON source AND all 3 layers. Set to false at the start of
   // each style load. Used as an additional guard for build()-triggered post-
@@ -2973,6 +2978,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       return;
     }
     _styleLoadInProgress = true;
+    final isStyleReload = _hasStyleLoadedOnce;
     try {
       _styleLoaded = true;
       _isMapReady = true;
@@ -3165,6 +3171,36 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // lands (and deliberately doesn't when it bails, so the build-driven
         // sync retries).
         if (mounted) setState(() {});
+      }
+
+      // Android GL pipeline workaround: on style RELOADS (user cycling the
+      // basemap), the MapLibre Android SDK can silently drop layer data that
+      // is pushed immediately during onStyleLoaded. The native style object
+      // is valid and the method channel calls succeed, but the GL render
+      // thread has not committed the new style yet, so the data is accepted
+      // but never drawn. A short delay lets the GL pipeline finish, then
+      // re-pushing repeater data and refreshing the coverage overlay makes
+      // both layers appear. This mirrors what a manual toggle-off-then-on
+      // does. Skipped on first load (no issue there) and on iOS/web. The
+      // generation guard ensures a rapid style cycle cancels the stale
+      // re-sync.
+      if (!kIsWeb &&
+          Platform.isAndroid &&
+          isStyleReload &&
+          mounted &&
+          _canContinueStyleRestore()) {
+        final gen = ++_androidStyleResyncGen;
+        Future.delayed(const Duration(milliseconds: 250), () async {
+          if (!mounted ||
+              _mapController == null ||
+              !_styleLoaded ||
+              gen != _androidStyleResyncGen) {
+            return;
+          }
+          debugLog('[MAP] Android deferred style re-sync (gen=$gen)');
+          await _syncRepeaterSymbols(appState);
+          await _refreshCoverageOverlay(appState);
+        });
       }
     } finally {
       _styleLoadInProgress = false;
