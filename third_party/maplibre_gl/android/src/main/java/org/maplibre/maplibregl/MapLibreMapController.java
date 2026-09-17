@@ -1499,6 +1499,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           // Configure bitmap options to prevent density-based scaling
           BitmapFactory.Options options = new BitmapFactory.Options();
@@ -1526,6 +1527,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           List<LatLng> coordinates = Convert.toLatLngList(call.argument("coordinates"), false);
           style.addSource(
@@ -1548,6 +1550,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           ImageSource imageSource = style.getSourceAs(call.argument("imageSourceId"));
           List<LatLng> coordinates = Convert.toLatLngList(call.argument("coordinates"), false);
@@ -1582,6 +1585,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           style.removeSource((String) call.argument("sourceId"));
           result.success(null);
@@ -1594,6 +1598,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           addRasterLayer(
               call.argument("imageLayerId"),
@@ -1617,6 +1622,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           addRasterLayer(
               call.argument("imageLayerId"),
@@ -1640,6 +1646,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           String layerId = call.argument("layerId");
           style.removeLayer(layerId);
@@ -1675,6 +1682,7 @@ final class MapLibreMapController
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           String layerId = call.argument("layerId");
           String filter = call.argument("filter");
@@ -1715,6 +1723,7 @@ final class MapLibreMapController
                     "STYLE IS NULL",
                     "The style is null. Has onStyleLoaded() already been invoked?",
                     null);
+            return;
           }
           Map<String, Object> reply = new HashMap<>();
           String layerId = call.argument("layerId");
@@ -1747,12 +1756,12 @@ final class MapLibreMapController
         }
         case "layer#setVisibility":
         {
-
           if (style == null) {
             result.error(
                 "STYLE IS NULL",
                 "The style is null. Has onStyleLoaded() already been invoked?",
                 null);
+            return;
           }
           String layerId = call.argument("layerId");
           boolean visible = call.argument("visible");
