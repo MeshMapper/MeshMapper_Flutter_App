@@ -18,6 +18,20 @@ import 'app_toast.dart';
 /// card the user just used.
 enum _ErrorOwner { none, login, route, neighbours }
 
+/// Whether a finished login should write the typed password to the store.
+///
+/// Only a login that PROVED admin. A guest login is a login too
+/// ([RepeaterAdminSession.isLoggedIn] is true for it) and the Remember switch
+/// defaults on whenever an admin password is already stored, so persisting on
+/// any login let a guest password overwrite the remembered admin one. A guest
+/// login writes nothing and deletes nothing: Forget password is the only way
+/// to clear a stored password.
+bool shouldRememberAdminPassword({
+  required RepeaterAdminState state,
+  required bool remember,
+}) =>
+    remember && state == RepeaterAdminState.admin;
+
 /// Open the Manage sheet for [target]. Refuses (with a toast) when the
 /// provider cannot open a session right now.
 Future<void> showRepeaterAdminSheet(
@@ -123,7 +137,8 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
     final text = _password.text;
     final ok = await session.login(text);
     if (!mounted) return;
-    if (session.isLoggedIn && _remember) {
+    if (shouldRememberAdminPassword(
+        state: session.state, remember: _remember)) {
       await appState.rememberRepeaterPassword(session.target.hexId, text);
       if (!mounted) return;
       _hasRemembered = true;
