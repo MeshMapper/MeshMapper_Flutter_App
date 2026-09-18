@@ -8418,24 +8418,157 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return Wrap(spacing: 14, runSpacing: 6, children: chips);
   }
 
+  /// Show deferred (Smart Pinging) marker details. Same bottom-sheet shape as
+  /// the TX/RX/DISC/Trace sheets, minus the minimize control: a deferred ping
+  /// heard nothing, so there is no focus mode to fall back to.
   void _showDeferredPingDetails(PingEventMarker marker) {
-    showDialog<void>(
+    final lat = marker.latitude;
+    final lon = marker.longitude;
+
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        icon: Icon(Icons.circle_outlined, color: PingColors.deferred),
-        title: const Text('Deferred'),
-        content: Text(
-          'Ping held because this square already has recent coverage.\n\n'
-          '${TimeOfDay.fromDateTime(marker.timestamp).format(context)}\n'
-          '${marker.latitude!.toStringAsFixed(5)}, '
-          '${marker.longitude!.toStringAsFixed(5)}',
+      useSafeArea: true,
+      // Transparent barrier so the map stays fully bright, matching the other
+      // marker sheets.
+      barrierColor: Colors.transparent,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => Container(
+        padding: EdgeInsets.fromLTRB(
+            20, 24, 20, 32 + MediaQuery.of(context).viewPadding.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header with icon badge
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: PingColors.deferred.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: PingColors.deferred.withValues(alpha: 0.4)),
+                  ),
+                  child: Icon(Icons.circle_outlined,
+                      color: PingColors.deferred, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Deferred',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      Text(
+                        _formatTime(marker.timestamp),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: () => Navigator.pop(context),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // Location chip
+            if (lat != null && lon != null) ...[
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withValues(alpha: 0.5)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.location_on,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontFamily: 'monospace',
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            // Why the ping was held
+            Text(
+              'Smart Pinging',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outline
+                        .withValues(alpha: 0.5)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.pause_circle_outline,
+                      size: 16, color: PingColors.deferred),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Ping held because this square already has recent '
+                      'coverage. It goes out at the first fix in a square '
+                      'with nothing recent.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.4,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          )
-        ],
       ),
     );
   }
