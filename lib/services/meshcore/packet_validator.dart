@@ -37,7 +37,8 @@ class PacketValidator {
       final rawHex = metadata.raw
           .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
           .join(' ');
-      debugLog('[RX FILTER] ========== VALIDATING PACKET ==========');
+      // The raw-packet line below opens each validation, so the separator
+      // banner that used to sit above it carried no data of its own.
       debugLog(
           '[RX FILTER] Raw packet (${metadata.raw.length} bytes): $rawHex');
       debugLog(

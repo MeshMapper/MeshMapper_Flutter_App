@@ -480,6 +480,11 @@ class MeshCoreConnection {
   int? _lastBatteryMilliVolts; // millivolts or null if not supported
   Timer? _batteryTimer;
 
+  /// Extra bytes on the last battery reply, so the extended-format note is
+  /// logged when it changes instead of on every poll. -1 until the first
+  /// reply, so that one always reports whatever shape it has.
+  int _lastBatteryExtraBytes = -1;
+
   // Completes when the stats or battery request that is on the wire settles;
   // null when that poller is idle. Read by [_drainPollsForAdminCommand].
   Completer<void>? _statsRequestSettled;
@@ -773,13 +778,17 @@ class MeshCoreConnection {
         : _hexDump(frame);
 
     try {
-      debugLog('[CONN] Frame received (${frame.length} bytes): $frameDump');
-
       final reader = BufferReader(frame);
       final responseCode = reader.readByte();
 
+      // One line per frame, not two. The response code is byte 0 of the dump
+      // that follows it, so a separate "Response code:" line repeated the
+      // frame's first byte roughly 4,000 times in a five hour session. The
+      // per-frame line itself stays: its cadence is the liveness clock that
+      // shows when the link or the process went quiet.
       debugLog(
-          '[CONN] Response code: 0x${responseCode.toRadixString(16).padLeft(2, '0')} ($responseCode)');
+          '[CONN] Frame 0x${responseCode.toRadixString(16).padLeft(2, '0')} '
+          '($responseCode), ${frame.length} bytes: $frameDump');
 
       switch (responseCode) {
         case ResponseCodes.ok:
@@ -1582,8 +1591,18 @@ class MeshCoreConnection {
       // Consume any remaining bytes (firmware may send extended format)
       if (reader.remainingBytesCount > 0) {
         final extraBytes = reader.readRemainingBytes();
-        debugLog(
-            '[CONN] Battery response has ${extraBytes.length} extra bytes (ignoring)');
+        // Logged when the count CHANGES, not on every poll. An extended
+        // format is normal firmware behaviour, so announcing it twice a
+        // minute all session said nothing; a count that shifts mid-session
+        // is the part worth seeing, and that still gets a line.
+        if (extraBytes.length != _lastBatteryExtraBytes) {
+          debugLog('[CONN] Battery response has ${extraBytes.length} extra '
+              'bytes (ignoring)');
+          _lastBatteryExtraBytes = extraBytes.length;
+        }
+      } else if (_lastBatteryExtraBytes != 0) {
+        debugLog('[CONN] Battery response no longer carries extra bytes');
+        _lastBatteryExtraBytes = 0;
       }
 
       _batteryController.add(percent); // Emit percentage to stream
@@ -2513,7 +2532,11 @@ class MeshCoreConnection {
     // admin command either sees this request and drains it, or this poll sees
     // the admin slot and skips its tick.
     try {
-      debugLog('[CONN] Fetching noise floor...');
+      // No "fetching" line here on purpose. getNoiseFloor() runs through
+      // getStats(), which throws on its own 5 second timeout, so the attempt
+      // is recorded either by the value below or by the failure in the catch.
+      // An attempt can never go unlogged, which is what made the announcement
+      // line (once every 5 seconds, all session) pure duplication.
       await getNoiseFloor();
       _noiseFloorFailCount = 0; // Reset on success
     } catch (e) {

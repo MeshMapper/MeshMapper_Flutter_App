@@ -649,9 +649,10 @@ class ApiQueueService {
     _pingFlushTimer = Timer(timeout, () {
       debugLog('[API QUEUE] Ping flush timer fired '
           '(${timeout.inSeconds}s delay'
-          '${_lastIsConstrained ? ', constrained network' : ''})');
+          '${_lastIsConstrained ? ', constrained network' : ''}), '
+          '$queueSize queued');
       _flushRxBuffer();
-      _uploadBatch();
+      _uploadBatch(silentWhenEmpty: true);
     });
   }
 
@@ -660,10 +661,14 @@ class ApiQueueService {
     final timeout = constrained ? _batchTimeoutConstrained : _batchTimeout;
     _batchTimer?.cancel();
     _batchTimer = Timer.periodic(timeout, (_) {
+      // The tick carries the queue depth, so an idle lane is one line instead
+      // of this plus an "Upload skipped: queue empty" underneath it. The tick
+      // itself stays: its cadence is what shows the lane going quiet.
       debugLog('[API QUEUE] Batch timer fired (${timeout.inSeconds}s interval'
-          '${constrained ? ', constrained network' : ''})');
+          '${constrained ? ', constrained network' : ''}), '
+          '$queueSize queued');
       _flushRxBuffer();
-      _uploadBatch();
+      _uploadBatch(silentWhenEmpty: true);
     });
   }
 
@@ -674,7 +679,12 @@ class ApiQueueService {
   }
 
   /// Upload batch of queued items (from Hive box or in-memory fallback)
-  Future<void> _uploadBatch() async {
+  ///
+  /// [silentWhenEmpty] suppresses the empty-queue line for callers that
+  /// already report the depth themselves (the periodic timers). Every other
+  /// caller keeps it: on the disconnect flush, "queue empty" is the line that
+  /// distinguishes a drained queue from an upload that never ran.
+  Future<void> _uploadBatch({bool silentWhenEmpty = false}) async {
     if (_isUploading) {
       debugLog('[API QUEUE] Upload skipped: already uploading');
       return;
@@ -684,7 +694,9 @@ class ApiQueueService {
     final memoryEmpty = _memoryQueue.isEmpty;
 
     if (hiveEmpty && memoryEmpty) {
-      debugLog('[API QUEUE] Upload skipped: queue empty');
+      if (!silentWhenEmpty) {
+        debugLog('[API QUEUE] Upload skipped: queue empty');
+      }
       return;
     }
 

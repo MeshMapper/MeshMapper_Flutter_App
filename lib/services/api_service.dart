@@ -390,6 +390,35 @@ class ApiService {
   /// Longest raw (non-JSON) response body any log line may carry.
   static const int _maxLoggedBodyChars = 200;
 
+  /// Longest a single nested value may encode to before a log summary
+  /// replaces it with a count.
+  static const int _maxLoggedValueChars = 200;
+
+  /// Collapse bulk collections inside a payload so a log line stays readable.
+  ///
+  /// Every scalar field survives untouched, because those are the ones worth
+  /// reading. Only a nested list or map that encodes to more than
+  /// [_maxLoggedValueChars] is replaced by a count, which is what keeps a
+  /// zone border answer (thousands of polygon coordinates) from landing as a
+  /// single 15 KB log line. The coordinates themselves are never read back
+  /// out of a log, so the count carries the whole diagnostic value: that the
+  /// field was present, and how big it was.
+  dynamic _summarizeForLog(dynamic value) {
+    if (value is Map) {
+      return value.map((k, v) => MapEntry(k, _summarizeForLog(v)));
+    }
+    if (value is List) {
+      // Summarize the elements first, so a list of small records keeps the
+      // records (a border answer still shows each polygon's zone code) and
+      // only the bulk inside them collapses.
+      final summarized = value.map(_summarizeForLog).toList();
+      final encoded = json.encode(summarized);
+      if (encoded.length <= _maxLoggedValueChars) return summarized;
+      return '[${value.length} items, ${encoded.length} chars]';
+    }
+    return value;
+  }
+
   /// Redact a raw `/auth` body before it reaches a log line.
   ///
   /// An auth answer carries the region's whole `carpeaters` key list, and a
@@ -448,7 +477,7 @@ class ApiService {
 
     String resSummary;
     if (response is Map<String, dynamic>) {
-      resSummary = json.encode(_sanitizePayload(response));
+      resSummary = json.encode(_summarizeForLog(_sanitizePayload(response)));
     } else if (response is List) {
       resSummary = '[${response.length} items]';
     } else if (response != null) {
@@ -1632,6 +1661,22 @@ class ApiService {
   String _radioFilterSuffix() =>
       _radioFilterParams().entries.map((e) => '&${e.key}=${e.value}').join();
 
+  /// The radio preset filter as it was last logged, so a change is announced
+  /// once rather than repeated on every tile URL. A five hour session fetches
+  /// thousands of tiles and the suffix is identical on all of them until the
+  /// radio's preset changes, which is the only moment worth a line.
+  String? _loggedRadioFilter;
+
+  /// Log the radio preset filter when it differs from the last one logged.
+  /// Called by the tile lanes, whose per-tile lines no longer carry it.
+  void _logRadioFilterIfChanged() {
+    final filter = _radioFilterSuffix();
+    if (filter == _loggedRadioFilter) return;
+    _loggedRadioFilter = filter;
+    debugLog('[API] Radio preset tile filter now '
+        '${filter.isEmpty ? '(none)' : filter}');
+  }
+
   /// Force-rebuild one vector coverage tile on the region server
   /// (`vector_tile.php?...&fresh=1`, see VECTOR_TILES.md). Used by the
   /// post-wardrive live refresh: it keeps the server cache hot AND hands the
@@ -1663,8 +1708,11 @@ class ApiService {
             '?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter');
     final verdictOnly = z >= 11 && z <= 13;
     final sw = Stopwatch()..start();
-    debugLog(
-        '[API] GET /vector_tile.php?z=$z&x=$x&y=$y&gsize=$gsize&fresh=1$filter (zone ${zone.toLowerCase()})');
+    // No GET line here: the response and failure lines below both name the
+    // tile, the zone and the outcome, so announcing the request first only
+    // repeated z/x/y. The preset filter, the one part they do not carry, is
+    // logged when it changes.
+    _logRadioFilterIfChanged();
     try {
       final response = await _send(
         'GET /vector_tile.php?z=$z&x=$x&y=$y (fresh)',
@@ -1674,7 +1722,7 @@ class ApiService {
       );
       final changed = response.headers['x-tile-changed'];
       debugLog(
-          '[API]   Tile $z/$x/$y response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
+          '[API]   Tile $z/$x/$y (zone ${zone.toLowerCase()}) response (${response.statusCode}) in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: '
           '${response.bodyBytes.length}B, X-Tile-Changed=${changed ?? 'absent'}');
       if (response.statusCode != 200 &&
           response.statusCode != 204 &&
@@ -1688,7 +1736,7 @@ class ApiService {
       );
     } catch (e) {
       debugWarn(
-          '[API]   Tile $z/$x/$y fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
+          '[API]   Tile $z/$x/$y (zone ${zone.toLowerCase()}) fresh fetch failed in ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(2)}s: $e');
       return (changed: null, body: null);
     }
   }
