@@ -150,10 +150,12 @@ void main() {
     );
     expect(logLines.where((line) => line.contains('ab ab')), isEmpty);
 
-    // The frame is still logged — by length, with the payload redacted.
+    // The frame is still logged, by length, with the payload redacted. The
+    // frame line carries its response code inline (0x14 = RESP_SIGNATURE);
+    // it used to be a second "Response code:" line underneath.
     expect(
       logLines.where((line) =>
-          line.contains('Frame received (65 bytes)') &&
+          line.contains('Frame 0x14 (20), 65 bytes') &&
           line.contains('SIGNATURE payload redacted')),
       isNotEmpty,
     );
@@ -162,12 +164,12 @@ void main() {
     // still hexdump in full.
     expect(
       logLines.where((line) =>
-          line.contains('Frame received (6 bytes): 13 00 80 00 00 00')),
+          line.contains('Frame 0x13 (19), 6 bytes: 13 00 80 00 00 00')),
       isNotEmpty,
       reason: 'non-signature frames must keep the existing hexdump',
     );
     expect(
-      logLines.where((line) => line.contains('Frame received (1 bytes): 00')),
+      logLines.where((line) => line.contains('Frame 0x00 (0), 1 bytes: 00')),
       isNotEmpty,
     );
   });
