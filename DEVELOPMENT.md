@@ -617,6 +617,15 @@ Two-service system for capturing debug logs and submitting bug reports.
 - 5-second flush timer (critical for iOS background suspension)
 - Non-persistent: always starts disabled on app launch
 - Log format: `[ISO8601_timestamp] LEVEL: message`
+- Every file opens with a two-line header: the start time, then the app build,
+  OS version and hardware model (`=== App APP-1.4.0 | iOS 18.5 | iPhone 15 Pro
+  (iPhone16,1) ===`). Resolved once per launch via `device_info_plus` and
+  repeated on the rotated file, because a submission carries several files and
+  the one worth reading is rarely the first. It names the model and OS only:
+  no serial, no fingerprint, no device name, no vendor id. A report that blames
+  the app is often an OEM battery manager or an OS quirk instead, and this is
+  the only way to tell that from the log alone. A plugin that cannot answer
+  degrades to a note in the same line and never stops the log.
 
 **DebugSubmitService** — 4-step bug report workflow:
 1. **Create Ticket** (0-20%): POST to `/debug/submitdebug.php/create-ticket` → returns `issue_number`, `issue_url`

@@ -45,6 +45,10 @@ dependencies:
   app_links: ^6.3.0
   # Keychain / Android Keystore storage for the portal app token
   flutter_secure_storage: ^9.2.0
+  # OS version and hardware model for the debug log header. A bug report that
+  # blames the app is often an OEM battery manager instead, and the model is
+  # the only way to tell from the log alone.
+  device_info_plus: ^11.0.0
 
 dev_dependencies:
   flutter_test:
