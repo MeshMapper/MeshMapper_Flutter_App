@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+
+import '../utils/constants.dart';
 
 /// Service for writing debug logs to files on the device.
 ///
@@ -23,6 +26,43 @@ class DebugFileLogger {
   /// Returns whether file logging is currently enabled
   static bool get isEnabled => _enabled;
 
+  /// The app build and the device this log came from, resolved once per launch
+  /// and written at the top of every log file. A report that blames the app is
+  /// often an OEM battery manager or an OS version quirk instead, and the
+  /// model plus OS version is the only way to tell that from the log alone.
+  /// Deliberately identity-free: no serial, no fingerprint, no device name.
+  static String? _environmentLine;
+
+  static Future<String> _environmentHeader() async {
+    final cached = _environmentLine;
+    if (cached != null) return cached;
+
+    final parts = <String>['App ${AppConstants.appVersion}'];
+    try {
+      final info = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final a = await info.androidInfo;
+        parts.add('Android ${a.version.release} (SDK ${a.version.sdkInt})');
+        parts.add('${a.manufacturer} ${a.model}');
+      } else if (Platform.isIOS) {
+        final i = await info.iosInfo;
+        parts.add('iOS ${i.systemVersion}');
+        parts.add('${i.modelName} (${i.utsname.machine})');
+      } else {
+        parts.add(Platform.operatingSystem);
+        parts.add(Platform.operatingSystemVersion);
+      }
+    } catch (e) {
+      // The header is diagnostics: a plugin that cannot answer must never stop
+      // the log from being written.
+      parts.add('${Platform.operatingSystem} (device info unavailable: $e)');
+    }
+
+    final line = '=== ${parts.join(' | ')} ===';
+    _environmentLine = line;
+    return line;
+  }
+
   /// Enable debug file logging and create a new log file
   ///
   /// Creates a new file with format: meshmapper-debug-{unix_timestamp}.txt
@@ -31,6 +71,11 @@ class DebugFileLogger {
     if (_enabled) return;
 
     try {
+      // Resolved before the sink exists: an await between opening it and
+      // writing the header would let a concurrent debugLog land above the
+      // header.
+      final environment = await _environmentHeader();
+
       final dir = await getApplicationDocumentsDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final filename = 'meshmapper-debug-$timestamp.txt';
@@ -42,7 +87,8 @@ class DebugFileLogger {
 
       // Write header to file
       final now = DateTime.now().toIso8601String();
-      sink.writeln('=== MeshMapper Debug Log Started: $now ===\n');
+      sink.writeln('=== MeshMapper Debug Log Started: $now ===');
+      sink.writeln('$environment\n');
 
       // Flush any logs that were captured before the sink was ready
       _flushPendingLogs();
@@ -263,6 +309,10 @@ class DebugFileLogger {
     if (!_enabled) return;
 
     try {
+      // A submission usually carries rotated files too, and the one worth
+      // reading is rarely the first, so every file repeats the header.
+      final environment = await _environmentHeader();
+
       // Close current log file
       _flushTimer?.cancel();
       _flushTimer = null;
@@ -290,6 +340,7 @@ class DebugFileLogger {
       // Write header to new file
       final nowStr = DateTime.now().toIso8601String();
       newSink.writeln('=== MeshMapper Debug Log Started: $nowStr ===');
+      newSink.writeln(environment);
       newSink.writeln('=== (Previous log rotated for upload) ===\n');
 
       // Restart flush timer
