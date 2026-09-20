@@ -8252,6 +8252,31 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// The backbone share as a short suffix, or empty when the server did not
   /// send one. A share that rounds to zero reads as "<1%" rather than "0%",
   /// which would look like the repeater carries nothing.
+  /// The antenna row: the antenna and how high it is mounted read as one fact,
+  /// so they share a row rather than taking one each. Either half can be
+  /// missing, and the height follows the imperial preference like every other
+  /// distance in this sheet. Null when the administrator gave neither.
+  static String? _antennaLine(Repeater repeater, bool isImperial) {
+    final antenna = repeater.antenna;
+    final height = repeater.heightMeters;
+    final atHeight = height == null
+        ? null
+        : formatCoverageDistance(height, isImperial: isImperial);
+    if (antenna != null && atHeight != null) return '$antenna @ $atHeight';
+    if (antenna != null) return antenna;
+    if (atHeight != null) return 'Antenna at $atHeight';
+    return null;
+  }
+
+  /// The power row: transmit power and how the site is fed, one fact per half
+  /// and either can be missing. Null when the administrator gave neither.
+  static String? _powerLine(Repeater repeater) {
+    final parts = [repeater.displayPower, repeater.displayPowerSource]
+        .whereType<String>()
+        .toList();
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
   static String _backboneShareSuffix(Repeater repeater) {
     final share = repeater.backboneShare;
     if (share == null || !share.isFinite || share <= 0) return '';
@@ -10405,26 +10430,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     });
   }
 
-  /// Build a status chip for the repeater popup
-  Widget _buildRepeaterStatusChip(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          color: color,
-        ),
-      ),
-    );
-  }
-
   /// Show repeater details. Opens minimized as a stats pill by default; tapping
   /// the pill re-enters with [expand] true to show the full detail sheet, and
   /// the sheet's minimize re-enters with [expand] false. [cachedStats] carries
@@ -10473,28 +10478,33 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final iconColor = _getRepeaterMarkerColor(repeater, isDuplicate);
 
     // Determine status label and color (web labels, generateRepeaterPopup).
+    // The label is a row inside the details card, where every row is already
+    // about this repeater, so it drops the redundant noun the web chip carried
+    // ('New Repeater' -> 'New') and reads as a fact like the rows around it.
+    // The duplicate case says it once: it used to draw a 'Duplicate' chip and
+    // an 'Ambiguous' chip side by side, both in the same colour.
     String statusLabel;
     Color statusColor;
     if (isDuplicate) {
-      statusLabel = 'Ambiguous';
+      statusLabel = 'Ambiguous ID';
       statusColor = _repeaterDuplicateColor;
     } else if (repeater.enabled == 0) {
       statusLabel = 'Disabled';
       statusColor = _repeaterDeadColor;
     } else if (repeater.isNew) {
-      statusLabel = 'New Repeater';
+      statusLabel = 'New';
       statusColor = _repeaterNewColor;
     } else if (repeater.isBackbone) {
       // The server's verdict, never worked out here: it ranks a whole region's
       // repeaters by their share of its traffic, which this app never sees.
-      // The share rides along on the chip when the server sent one.
-      statusLabel = 'Backbone Repeater${_backboneShareSuffix(repeater)}';
+      // The share rides along on the label when the server sent one.
+      statusLabel = 'Backbone${_backboneShareSuffix(repeater)}';
       statusColor = _repeaterBackboneColor;
     } else if (repeater.isActive) {
-      statusLabel = 'Repeater Online';
+      statusLabel = 'Online';
       statusColor = _repeaterMarkerColor;
     } else {
-      statusLabel = 'Stale Repeater';
+      statusLabel = 'Stale';
       statusColor = _repeaterDeadColor;
     }
 
@@ -10692,21 +10702,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         ),
                     ]);
               }),
-              // Status chip only when there is something to say. The badge
-              // colour already says online, so that chip was redundant.
-              if (isDuplicate || statusLabel != 'Repeater Online') ...[
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    if (isDuplicate) ...[
-                      _buildRepeaterStatusChip(
-                          'Duplicate', _repeaterDuplicateColor),
-                      const SizedBox(width: 8),
-                    ],
-                    _buildRepeaterStatusChip(statusLabel, statusColor),
-                  ],
-                ),
-              ],
               const SizedBox(height: 14),
 
               // Details card
@@ -10723,6 +10718,23 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 ),
                 child: Column(
                   children: [
+                    // Status. This used to be a chip floating on its own row
+                    // between the Manage button and this card, the only
+                    // left-aligned element in a column of full-width blocks.
+                    // It is a fact about the repeater like every other row
+                    // here, so it reads as one, tinted by the status colour
+                    // the way the clock-skew row below is. The tower icon
+                    // matches the minimized pill's status tower.
+                    _repRow(
+                      context,
+                      Icons.cell_tower,
+                      Text(
+                        'Status: $statusLabel',
+                        style: const TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600),
+                      ),
+                      color: statusColor,
+                    ),
                     // Location
                     _repRow(
                       context,
@@ -10809,6 +10821,38 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         );
                       },
                     ),
+                    // The site details an administrator filled in. Each row is
+                    // absent unless the server sent that field, which is the
+                    // usual case: only a few dozen repeaters in a zone carry
+                    // any of them, and an older server sends none.
+                    if (repeater.hardware != null)
+                      _repRow(
+                        context,
+                        Icons.memory,
+                        Text(repeater.hardware!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    if (_antennaLine(repeater, isImperial) != null)
+                      _repRow(
+                        context,
+                        Icons.settings_input_antenna,
+                        Text(_antennaLine(repeater, isImperial)!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    if (_powerLine(repeater) != null)
+                      _repRow(
+                        context,
+                        Icons.bolt,
+                        Text(_powerLine(repeater)!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                    if (repeater.displayPreset != null)
+                      _repRow(
+                        context,
+                        Icons.radio,
+                        Text(repeater.displayPreset!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
                     // Administrators (repeater administrators feature)
                     _repRow(
                       context,
@@ -10823,6 +10867,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         style: const TextStyle(fontSize: 13),
                       ),
                     ),
+                    // The administrator's own description of the site. Last in
+                    // the card because it is the only row that runs to a
+                    // paragraph; the server caps it, so it is not truncated.
+                    if (repeater.siteNotes != null)
+                      _repRow(
+                        context,
+                        Icons.notes,
+                        Text(repeater.siteNotes!,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
                   ],
                 ),
               ),

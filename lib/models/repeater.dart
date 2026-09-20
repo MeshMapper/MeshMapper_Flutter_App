@@ -135,6 +135,40 @@ class Repeater {
   /// never polled.
   final double? backboneShare;
 
+  /// The site details an administrator fills in about their installation.
+  /// Every one is additive, optional and free text the server does not
+  /// validate, so they are null on most repeaters and on any server that
+  /// predates them. Null is the expected state and is never logged.
+  ///
+  /// The radio model, e.g. `Station G3` or `RAK WisBlock 4631`.
+  final String? hardware;
+
+  /// The antenna, e.g. `Seeed 8dBi`.
+  final String? antenna;
+
+  /// How high the antenna is mounted, in metres. The server sends whole and
+  /// fractional values alike (`40`, `22.9`).
+  final double? heightMeters;
+
+  /// Transmit power exactly as the administrator typed it. Inconsistent by
+  /// nature (`0.3`, `0.3w`, `1.0W` are all real stored values), so read
+  /// [displayPower] rather than this.
+  final String? power;
+
+  /// How the site is powered: `solar`, `poe` or `mains` as stored. Read
+  /// [displayPowerSource] for the cased form.
+  final String? powerSource;
+
+  /// The administrator's free-text description of the installation.
+  final String? siteNotes;
+
+  /// The radio preset this repeater is currently heard on, as the server's
+  /// `freq,bw,sf` tag (e.g. `910.525,62.5,7`). Note it is three slots, not the
+  /// four of the app's own radio configuration tag: the coding rate is left
+  /// out, exactly as the `f_freq`/`f_bw`/`f_sf` filter leaves it out. Read
+  /// [displayPreset] for the readable form.
+  final String? presetCurrent;
+
   const Repeater({
     required this.id,
     required this.hexId,
@@ -154,6 +188,13 @@ class Repeater {
     this.provenNeighbours = const [],
     this.backbone = false,
     this.backboneShare,
+    this.hardware,
+    this.antenna,
+    this.heightMeters,
+    this.power,
+    this.powerSource,
+    this.siteNotes,
+    this.presetCurrent,
   }) : advertBytes = advertBytes ?? hopBytes;
 
   /// Parse from JSON object in repeaters.json
@@ -230,6 +271,26 @@ class Repeater {
         rawMultibyteCapable == 1 ||
         rawMultibyteCapable == '1';
 
+    // Admin-entered site details. Free text the server does not validate, so a
+    // blank is read as "not filled in" and a non-string is ignored rather than
+    // stringified into something like "true" on the row.
+    String? text(String key) {
+      final raw = json[key];
+      if (raw is! String) return null;
+      final trimmed = raw.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    }
+
+    final rawHeight = json['height_m'];
+    final heightValue = rawHeight is num
+        ? rawHeight
+        : rawHeight is String
+            ? num.tryParse(rawHeight.trim())
+            : null;
+    final heightMeters = heightValue == null || !heightValue.isFinite
+        ? null
+        : heightValue.toDouble();
+
     return Repeater(
       id: json['id'] as String,
       hexId: json['hex_id'] as String? ?? '',
@@ -249,6 +310,13 @@ class Repeater {
       provenNeighbours: proven,
       backbone: backbone,
       backboneShare: backboneShare,
+      hardware: text('hardware'),
+      antenna: text('antenna'),
+      heightMeters: heightMeters,
+      power: text('power'),
+      powerSource: text('power_source'),
+      siteNotes: text('site_notes'),
+      presetCurrent: text('preset_current'),
     );
   }
 
@@ -274,6 +342,15 @@ class Repeater {
       // means not backbone" shape the server sends.
       if (backbone) 'backbone': 1,
       if (backboneShare != null) 'backbone_share': backboneShare,
+      // Same rule for the site details: absent means "not filled in", so an
+      // unset one must not come back as an explicit null.
+      if (hardware != null) 'hardware': hardware,
+      if (antenna != null) 'antenna': antenna,
+      if (heightMeters != null) 'height_m': heightMeters,
+      if (power != null) 'power': power,
+      if (powerSource != null) 'power_source': powerSource,
+      if (siteNotes != null) 'site_notes': siteNotes,
+      if (presetCurrent != null) 'preset_current': presetCurrent,
     };
   }
 
@@ -327,6 +404,53 @@ class Repeater {
   /// marks it.
   bool get isBackbone => backbone && isActive;
 
+  /// [power] with its unit normalised for display: `0.3` and `0.3w` both read
+  /// as `0.3W`. The column is typed by hand into a free-text field, and all
+  /// four spellings are real stored values, so the app tidies what it can
+  /// recognise and shows anything else exactly as the administrator wrote it
+  /// rather than guessing at a unit that may not be watts.
+  String? get displayPower {
+    final raw = power;
+    if (raw == null) return null;
+    if (RegExp(r'^\d+(\.\d+)?$').hasMatch(raw)) return '${raw}W';
+    if (RegExp(r'^\d+(\.\d+)?w$').hasMatch(raw)) {
+      return '${raw.substring(0, raw.length - 1)}W';
+    }
+    return raw;
+  }
+
+  /// [powerSource] cased for display. The three the server stores are lower
+  /// case; an unrecognised one is capitalised rather than dropped, since the
+  /// field is free text and a new value is more useful shown than hidden.
+  String? get displayPowerSource {
+    final raw = powerSource;
+    if (raw == null) return null;
+    switch (raw.toLowerCase()) {
+      case 'solar':
+        return 'Solar';
+      case 'poe':
+        return 'PoE';
+      case 'mains':
+        return 'Mains';
+      default:
+        return raw[0].toUpperCase() + raw.substring(1);
+    }
+  }
+
+  /// [presetCurrent] as readable radio settings: `910.525,62.5,7` becomes
+  /// `910.525 MHz · 62.5 kHz · SF7`. A tag that is not exactly three numeric
+  /// slots is shown as stored, so a server that changes the shape degrades to
+  /// the raw string instead of rendering a half-parsed line.
+  String? get displayPreset {
+    final raw = presetCurrent;
+    if (raw == null) return null;
+    final slots = raw.split(',').map((s) => s.trim()).toList();
+    if (slots.length != 3) return raw;
+    final numeric = RegExp(r'^\d+(\.\d+)?$');
+    if (slots.any((s) => !numeric.hasMatch(s))) return raw;
+    return '${slots[0]} MHz · ${slots[1]} kHz · SF${slots[2]}';
+  }
+
   /// True if the repeater has been heard within the past 30 days. Used by
   /// the map to hide long-stale repeaters. Returns false when [lastHeard]
   /// is 0 (never heard).
@@ -372,6 +496,13 @@ class Repeater {
     List<ProvenNeighbour>? provenNeighbours,
     bool? backbone,
     double? backboneShare,
+    String? hardware,
+    String? antenna,
+    double? heightMeters,
+    String? power,
+    String? powerSource,
+    String? siteNotes,
+    String? presetCurrent,
   }) =>
       Repeater(
         id: id ?? this.id,
@@ -392,6 +523,13 @@ class Repeater {
         provenNeighbours: provenNeighbours ?? this.provenNeighbours,
         backbone: backbone ?? this.backbone,
         backboneShare: backboneShare ?? this.backboneShare,
+        hardware: hardware ?? this.hardware,
+        antenna: antenna ?? this.antenna,
+        heightMeters: heightMeters ?? this.heightMeters,
+        power: power ?? this.power,
+        powerSource: powerSource ?? this.powerSource,
+        siteNotes: siteNotes ?? this.siteNotes,
+        presetCurrent: presetCurrent ?? this.presetCurrent,
       );
 
   @override
