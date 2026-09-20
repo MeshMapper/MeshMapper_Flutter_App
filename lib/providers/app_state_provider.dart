@@ -31,6 +31,7 @@ import '../services/api_service.dart';
 import '../services/audio_service.dart';
 import '../services/background_service.dart';
 import '../services/debug_file_logger.dart';
+import '../services/disconnect_alert_decision.dart';
 import '../services/offline_session_service.dart';
 import '../services/bluetooth/ble_connect_retry_policy.dart';
 import '../services/bluetooth/bluetooth_service.dart';
@@ -630,12 +631,23 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _reconnectAttempt = 0;
   Timer? _reconnectTimer;
   Timer? _reconnectTimeoutTimer;
+
+  /// When the BLE link actually dropped, for the disconnect alert's staleness
+  /// check. The abandon that plays the alert is timer-driven, so the moment it
+  /// runs is not the moment the user lost their radio.
+  DateTime? _reconnectStartedAt;
+
   Timer? _restoreAutoPingTimer;
   Timer? _offlineAutoSaveTimer;
   Timer? _zoneRefreshTimer;
   bool _autoPingWasEnabled = false;
   AutoMode _autoModeBeforeReconnect = AutoMode.active;
   int _reconnectRestoreGeneration = 0;
+
+  /// Total time auto-reconnect gets before it gives up. One constant, so the
+  /// timeout timer and the stuck-window diagnostic cannot describe different
+  /// budgets.
+  static const Duration _autoReconnectBudget = Duration(seconds: 30);
   static const int _maxReconnectAttempts = 3;
   static const Duration _reconnectDelay = Duration(seconds: 3);
   static const Duration _reconnectDelayAfterBondError = Duration(seconds: 5);
@@ -921,6 +933,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         !_discoveryWindowTimer.isRunning) {
       debugWarn('[TIMER] pendingDisable stuck true with no RX/discovery window '
           'running — locks ping controls until restart [$reason]');
+    }
+
+    // The reconnect window runs to a 30 second budget. Still open long after
+    // that means the process was frozen and the timeout never ticked, which is
+    // what once delayed a disconnect alert by 21 minutes. Name the overrun so
+    // the next occurrence is readable straight off a user log.
+    final reconnectStart = _reconnectStartedAt;
+    if (_isAutoReconnecting && reconnectStart != null) {
+      final open = DateTime.now().difference(reconnectStart);
+      if (open > _autoReconnectBudget * 2) {
+        debugWarn('[CONN] Auto-reconnect window still open after '
+            '${open.inSeconds}s (budget ${_autoReconnectBudget.inSeconds}s), '
+            'the process was suspended [$reason]');
+      }
     }
   }
 
@@ -3423,7 +3449,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           _cancelZoneGraceTimers();
           _isInZoneGracePeriod = false;
           _zoneGraceSecondsRemaining = 0;
-          if (_autoPingWasEnabledBeforeGrace) _playDisconnectAlert();
+          if (_autoPingWasEnabledBeforeGrace) {
+            _playDisconnectAlert(DateTime.now());
+          }
           _autoPingWasEnabledBeforeGrace = false;
           await _fullDisconnectCleanup();
         } else if (wasConnected && hasRemembered && isUnexpected && !kIsWeb) {
@@ -6019,7 +6047,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cooldownTimer.stop();
     if (_autoPingEnabled) {
       if (!_userRequestedDisconnect) {
-        _playDisconnectAlert();
+        _playDisconnectAlert(DateTime.now());
       }
       _autoPingEnabled = false;
       _resetIdleAutoStop();
@@ -6099,6 +6127,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelIdleDisconnectTimer();
     _isAutoReconnecting = true;
     _reconnectAttempt = 0;
+    _reconnectStartedAt = DateTime.now();
     _lastReconnectWasBondError = false;
     _connectionStep = ConnectionStep.reconnecting;
 
@@ -6122,8 +6151,20 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Flush RX logger
     _rxLogger?.stopWardriving(trigger: 'reconnect');
 
-    // Stop background service
-    await BackgroundServiceManager.stopService();
+    // KEEP the foreground service running. On Android it is the only thing
+    // holding the process alive, and stopping it here froze the app within
+    // about three seconds: every Dart timer stalled with it, including the 30
+    // second timeout armed below, so a reconnect that should have given up
+    // after 30 seconds gave up 18 to 21 minutes later, when the user picked
+    // the phone back up. That is what played the disconnect alert on return
+    // to the car instead of at the radio going out of range. The abandon path
+    // stops the service through _fullDisconnectCleanup, and a success that
+    // restores auto-ping updates this notification rather than starting a
+    // second service.
+    await BackgroundServiceManager.updateNotification(
+      title: 'MeshMapper - Reconnecting',
+      body: 'Trying to reach ${_rememberedDevice?.name ?? 'your radio'}',
+    );
 
     // Clean up dead BLE-dependent objects
     _logRxDataSubscription?.cancel();
@@ -6163,9 +6204,14 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    // Start overall timeout (30 seconds)
-    _reconnectTimeoutTimer = Timer(const Duration(seconds: 30), () {
-      debugLog('[CONN] Auto-reconnect timed out after 30s');
+    // Start overall timeout
+    _reconnectTimeoutTimer = Timer(_autoReconnectBudget, () {
+      final armed = _reconnectStartedAt;
+      final late = armed == null
+          ? ''
+          : ' (armed ${DateTime.now().difference(armed).inSeconds}s ago)';
+      debugLog('[CONN] Auto-reconnect timed out after '
+          '${_autoReconnectBudget.inSeconds}s$late');
       _abandonAutoReconnect();
     });
 
@@ -6305,6 +6351,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     // Clear reconnect state
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
+    _reconnectStartedAt = null;
     _autoPingWasEnabled = false;
 
     debugLog(
@@ -6336,6 +6383,11 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       });
     } else {
+      // No auto-ping to restore, so nothing needs the foreground service any
+      // more. _startAutoReconnect deliberately left it running to keep the
+      // process alive through the reconnect window; without this it would sit
+      // there showing "Reconnecting" for a link that is already back up.
+      unawaited(BackgroundServiceManager.stopService());
       // No auto-ping to restore — start idle timer
       _startIdleDisconnectTimer();
     }
@@ -6363,14 +6415,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _reconnectTimeoutTimer = null;
     _cancelPendingAutoPingRestore();
 
-    // Alert if auto-ping was running before disconnect
+    // Alert if auto-ping was running before disconnect. Dated to the BLE drop,
+    // not to now: this runs off the 30 second timeout, which does not tick
+    // while the OS has the process frozen.
+    final droppedAt = _reconnectStartedAt ?? DateTime.now();
     if (_autoPingWasEnabled) {
-      _playDisconnectAlert();
+      _playDisconnectAlert(droppedAt);
     }
 
     // Clear reconnect state
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
+    _reconnectStartedAt = null;
     _autoPingWasEnabled = false;
 
     // Reset antenna and power settings so user must choose again on next connect
@@ -6398,7 +6454,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugError(
         '[GPS] Airborne detected (${info.detail}), abandoning auto-reconnect');
     // _abandonAutoReconnect only alerts when auto-ping was running.
-    if (!_autoPingWasEnabled) _playDisconnectAlert();
+    if (!_autoPingWasEnabled) {
+      _playDisconnectAlert(_reconnectStartedAt ?? DateTime.now());
+    }
     logError(
         'Session ended: wardriving from an aircraft is not allowed\n${info.detail}');
     _abandonAutoReconnect(releaseExtras: info.extras, flushQueue: false);
@@ -6447,6 +6505,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelPendingAutoPingRestore();
     _isAutoReconnecting = false;
     _reconnectAttempt = 0;
+    _reconnectStartedAt = null;
     _autoPingWasEnabled = false;
 
     // Cancel any active zone grace period
@@ -7328,7 +7387,10 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Auto-stop auto-ping after prolonged idle (no movement)
   void _triggerIdleAutoStop() {
     if (!_autoPingEnabled) return;
-    _playDisconnectAlert();
+    // Now, not when the 30 minute deadline passed. The idle stop is checked on
+    // each GPS fix rather than fired by a timer, and pinging really is stopping
+    // at this instant, so the alert is not describing anything stale.
+    _playDisconnectAlert(DateTime.now());
     final elapsed = _idleAutoStopReference != null
         ? DateTime.now().difference(_idleAutoStopReference!).inMinutes
         : 30;
@@ -7391,7 +7453,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final info = _airborneReleaseInfo();
       debugError('[GPS] Airborne detected (${info.detail}), ending session');
-      _playDisconnectAlert();
+      _playDisconnectAlert(DateTime.now());
       logError(
           'Session ended: wardriving from an aircraft is not allowed\n${info.detail}');
       // Whatever is still queued is the last 30 s before detection, the part
@@ -9047,9 +9109,25 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Play disconnect alert if enabled (triple beep for unexpected ping stop)
-  void _playDisconnectAlert() {
+  /// Play disconnect alert if enabled (triple beep for unexpected ping stop).
+  ///
+  /// [occurredAt] is when the thing being reported actually happened, NOT when
+  /// this runs. The two are the same for anything driven by an event, but the
+  /// reconnect abandon and the idle auto-stop are driven by timers, and a timer
+  /// does not run while the OS has the process frozen. A beep that arrives 20
+  /// minutes late describes a problem the user has already walked back to, so
+  /// it is replaced by an error-log entry that says when it really happened.
+  void _playDisconnectAlert(DateTime occurredAt) {
     if (!_audioService.isEnabled || !_preferences.disconnectAlertEnabled) {
+      return;
+    }
+    final age = DateTime.now().difference(occurredAt);
+    if (!shouldPlayDisconnectAlert(age)) {
+      debugWarn(
+          '[AUDIO] Disconnect alert is ${age.inSeconds}s stale, not beeping '
+          '(the app was suspended)');
+      logError(staleDisconnectAlertMessage(age),
+          severity: ErrorSeverity.warning, autoSwitch: false);
       return;
     }
     debugLog('[AUDIO] Playing disconnect alert — pinging stopped unexpectedly');
@@ -9266,7 +9344,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Alert if auto-ping was running (maintenance is not user-initiated)
     if (_autoPingEnabled) {
-      _playDisconnectAlert();
+      _playDisconnectAlert(DateTime.now());
     }
 
     // Log to error log (this sets _requestErrorLogSwitch = true)
@@ -9901,7 +9979,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelZoneGraceTimers();
 
     if (_autoPingWasEnabledBeforeGrace) {
-      _playDisconnectAlert();
+      _playDisconnectAlert(DateTime.now());
     }
 
     // Clear grace state
