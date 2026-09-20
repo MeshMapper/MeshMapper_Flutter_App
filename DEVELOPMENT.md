@@ -131,6 +131,22 @@ components adapt accent brightness for dark mode; coverage swatches keep the
 map's exact colors. The CARpeater and background-location setup actions use
 the existing provider-backed flows.
 
+### Cluster Tap Device Experiment
+
+Cluster badges have a transparent circle hit layer above their symbol layers
+and below spider markers and annotation symbols. Its radius follows half the
+existing badge image canvas (24 logical pixels at the current scale); it does
+not change marker artwork or the single `_clusterRadiusPx` merge radius.
+The circle uses the same cluster source and filter, count lookup, resolver,
+GPS fall-through and style-reload teardown as the badge. Detailed mode leaves
+it inert because that source does not cluster.
+
+This is a device experiment, not a verified reliability fix. `[MAP] tap dispatch:`
+logs distinguish feature-layer hits from empty-map taps and include whether a
+spider was open. Cluster re-taps now log `-> collapse` before returning, closing
+a gap in the previous decision logging. Confirm repeated single taps on a real
+iPhone before treating the symbol hit-test hypothesis as resolved.
+
 ### Repeater Identity and Collision Handling
 
 Repeater identity is the cleaned full public key. The server's short `id`

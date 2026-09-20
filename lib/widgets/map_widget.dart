@@ -843,6 +843,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const _repeaterClusterBubbleLayerId = 'repeaters-cluster-bubble';
   static const _repeaterClusterDotsLayerId = 'repeaters-cluster-dots';
   static const _repeaterClusterCountLayerId = 'repeaters-cluster-count';
+  static const _repeaterClusterHitLayerId = 'repeaters-cluster-hit';
 
   // Spiderfy source/layer IDs — non-clustered shadow source rendering spread
   // markers + leader lines for stacked repeaters that won't separate by zoom.
@@ -2439,6 +2440,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// parameter.
   void _onMapEmptyTap(math.Point<double> point, LatLng coordinates) {
     if (!mounted) return;
+    debugLog('[MAP] tap dispatch: empty '
+        'x=${point.x.toStringAsFixed(1)} y=${point.y.toStringAsFixed(1)} '
+        'spider=${_spiderCenter != null}');
     if (_spiderCenter != null) {
       _collapseSpider();
       return; // dismissing the spider shouldn't also open a cell summary
@@ -2690,6 +2694,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     Annotation? annotation,
   ) {
     if (!mounted) return;
+    debugLog('[MAP] tap dispatch: layer=$layerId '
+        'x=${point.x.toStringAsFixed(1)} y=${point.y.toStringAsFixed(1)} '
+        'spider=${_spiderCenter != null}');
 
     // Spider spread marker: the user has picked one of the fanned-out repeaters
     // to inspect → collapse the spider and focus that repeater (focus mode + its
@@ -2712,7 +2719,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // start (~150ms before any noticeable motion). Passing a duration switches
     // the native code path to fly(to:withDuration:) which ramps in faster and
     // finishes in 200ms, making the tap feel "instant" rather than delayed.
-    if (layerId == _repeaterClusterBubbleLayerId ||
+    if (layerId == _repeaterClusterHitLayerId ||
+        layerId == _repeaterClusterBubbleLayerId ||
         layerId == _repeaterClusterDotsLayerId ||
         layerId == _repeaterClusterCountLayerId) {
       _handleClusterBubbleTap(point, coordinates);
@@ -2807,6 +2815,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // matching it ensures the spider expands exactly the markers represented
     // by the tapped bubble, not a chained connected component.
     const layers = [
+      _repeaterClusterHitLayerId,
       _repeaterClusterBubbleLayerId,
       _repeaterClusterDotsLayerId,
       _repeaterClusterCountLayerId,
@@ -2911,6 +2920,10 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (_spiderCenter != null) {
       final spiderIds = _spiderRepeaters.map(_repeaterIdentity).toSet();
       if (group.any((r) => spiderIds.contains(_repeaterIdentity(r)))) {
+        debugLog('[MAP] cluster tap: count=${pointCount ?? 'unknown'}'
+            '${widened ? ' (widened)' : ''} group=${group.length} '
+            'zoom=${_mapController?.cameraPosition?.zoom.toStringAsFixed(2) ?? '?'} '
+            '-> collapse');
         _collapseSpider();
         return;
       }
@@ -2978,6 +2991,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         point,
         const [
           _spiderSymbolLayerId,
+          _repeaterClusterHitLayerId,
           _repeaterClusterCountLayerId,
           _repeaterClusterDotsLayerId,
           _repeaterClusterBubbleLayerId,
@@ -4452,6 +4466,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (final layerId in [
       _spiderSymbolLayerId,
       _spiderLineLayerId,
+      _repeaterClusterHitLayerId,
       _repeaterClusterCountLayerId,
       _repeaterClusterDotsLayerId,
       _repeaterClusterBubbleLayerId,
@@ -4651,7 +4666,26 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         belowLayerId: belowLayer,
       );
 
-      // Spider shadow source + layers — non-clustered. Carries spread Point
+      // Device experiment: a circle hit target avoids symbol placement in the
+      // badge's touch path. Its radius is half the existing image canvas (24
+      // logical pixels), with no change to the visible badge or merge radius.
+      // Keep it above the badge, but below spider and annotation symbols.
+      await _mapController!.addCircleLayer(
+        _repeaterSourceId,
+        _repeaterClusterHitLayerId,
+        const CircleLayerProperties(
+          circleRadius:
+              RepeaterMarkerStyle.badgeCanvas * RepeaterMarkerStyle.iconScale / 2,
+          circleOpacity: 0,
+          circleStrokeWidth: 0,
+          circlePitchAlignment: 'viewport',
+          circlePitchScale: 'viewport',
+        ),
+        filter: ['has', 'point_count'],
+        belowLayerId: belowLayer,
+      );
+
+      // Spider shadow source + layers, non-clustered. Carries spread Point
       // features (one per spiderfied repeater) and LineString features for
       // leader lines from the cluster centre to each spread position.
       // Cluster on this source MUST stay false; we want every Point to render
