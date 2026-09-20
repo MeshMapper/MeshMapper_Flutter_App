@@ -10410,20 +10410,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
       if (fetchedRepeaters.isNotEmpty) {
         _repeaters = rcComputeExclusions(fetchedRepeaters);
-        final firstByteGroups = <String, List<Repeater>>{};
-        for (final repeater in _repeaters) {
-          final hex = rcCleanHex(
-              repeater.hexId.isNotEmpty ? repeater.hexId : repeater.id);
-          if (hex.length < 2) continue;
-          (firstByteGroups[hex.substring(0, 2)] ??= []).add(repeater);
-        }
-        _repeaterConflictHexIds = Set.unmodifiable({
-          for (final group in firstByteGroups.values)
-            for (final repeater in group)
-              if (repeater.enabled == 2 ||
-                  repeaterConflictKind(group, repeater).isNotEmpty)
-                rcCleanHex(repeater.hexId),
-        });
+        _repeaterConflictHexIds = rcConflictHexIds(_repeaters);
         _siriRepeaterCatalogRevision++;
         _repeatersLoaded = true;
         _repeatersLoadedForIata = iata;

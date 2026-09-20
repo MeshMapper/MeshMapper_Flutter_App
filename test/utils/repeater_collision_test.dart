@@ -271,5 +271,41 @@ void main() {
       });
       expect(copy.admins, same(original.admins));
     });
+
+    test('a three-byte pair sharing two bytes is not an ambiguous ID', () {
+      // CBC-FORTUNE-R1 and CBC-Archives-R2 in YOW: both advertise three bytes
+      // and share only CBC0, so each is still uniquely addressable on the air.
+      // The ID-Usage grid calls that a 2-Byte Conflict; the map does not call
+      // it ambiguous.
+      final fortune = rep(
+        'CBC001${'0' * 58}',
+        advertBytes: 3,
+        hopBytes: 3,
+        multibyteCapable: true,
+      );
+      final archives = rep(
+        'CBC002${'1' * 58}',
+        advertBytes: 3,
+        hopBytes: 3,
+        multibyteCapable: true,
+      );
+
+      final result = rcComputeExclusions([fortune, archives]);
+
+      expect(repeaterConflictKind(result, result.first), '2');
+      expect(rcConflictHexIds(result), isEmpty);
+    });
+
+    test('an overlap at the advertised width is an ambiguous ID', () {
+      final narrow = rep('AA11${'0' * 60}');
+      final other = rep('AA22${'1' * 60}');
+
+      final result = rcComputeExclusions([narrow, other]);
+
+      expect(
+        rcConflictHexIds(result),
+        {rcCleanHex(narrow.hexId), rcCleanHex(other.hexId)},
+      );
+    });
   });
 }

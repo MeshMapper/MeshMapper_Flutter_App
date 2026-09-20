@@ -206,3 +206,18 @@ bool _samePrefix(String a, String b, int width) {
   final bEnd = width.clamp(0, b.length);
   return a.substring(0, aEnd) == b.substring(0, bEnd);
 }
+
+/// The repeaters whose ID is ambiguous, keyed by cleaned full hex.
+///
+/// Takes the output of [rcComputeExclusions] and reads the verdict that pass
+/// already reached: a repeater is ambiguous when its key collides at the width
+/// it actually advertises (`enabled == 2`), which is the only thing the web
+/// map and its popup read. The byte-depth answer from [repeaterConflictKind]
+/// belongs to the ID-Usage grid's chips and must NOT be folded in here: a
+/// three-byte repeater that shares only its first two bytes with a neighbour
+/// is a 2-Byte Conflict in that grid, yet it is still uniquely addressable on
+/// the air, so the map does not call it ambiguous.
+Set<String> rcConflictHexIds(List<Repeater> repeaters) => Set.unmodifiable({
+      for (final repeater in repeaters)
+        if (repeater.enabled == 2) rcCleanHex(repeater.hexId),
+    });
