@@ -850,6 +850,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // at the user's max zoom` of each other will visually overlap even when
   // fully zoomed in, so they're the candidates that won't be separated by
   // additional zoom and need to be spread apart instead.
+  //
+  // This is ALSO the value handed to the cluster source as `clusterRadius`,
+  // and the one `clusterExpansionZoom` inverts to find the zoom a tap should
+  // jump to. All three have to be the same number or the tap rule starts
+  // describing a map that does not exist.
   static const double _clusterRadiusPx = 50;
   static const double _spiderInnerRadiusPx = 44;
   static const double _spiderOuterRadiusPx = 80;
@@ -2798,35 +2803,55 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // authoritative count of leaves Supercluster grouped into this bubble —
     // matching it ensures the spider expands exactly the markers represented
     // by the tapped bubble, not a chained connected component.
+    const layers = [
+      _repeaterClusterBubbleLayerId,
+      _repeaterClusterDotsLayerId,
+      _repeaterClusterCountLayerId,
+    ];
     int? pointCount;
+    var widened = false;
     try {
-      final features = await _mapController?.queryRenderedFeatures(
-        point,
-        const [
-          _repeaterClusterBubbleLayerId,
-          _repeaterClusterDotsLayerId,
-          _repeaterClusterCountLayerId,
-        ],
-        null,
-      );
-      if (features != null) {
-        for (final f in features) {
-          final props = ((f as Map)['properties'] as Map?) ?? const {};
-          if (props['cluster'] == true) {
-            final pc = props['point_count'];
-            if (pc is num) {
-              pointCount = pc.toInt();
-              break;
-            }
-          }
-        }
+      pointCount = _clusterCountIn(
+          await _mapController?.queryRenderedFeatures(point, layers, null));
+      if (pointCount == null) {
+        // Losing the count here is not harmless: the caller then falls back to
+        // a BFS group, which can be WIDER than the cluster actually tapped and
+        // so answers "zoom" where the real group would have answered "spread".
+        // That is what made a tight group of three spread on some taps and
+        // zoom on others. Widen to a small box around the finger before
+        // giving up.
+        widened = true;
+        pointCount = _clusterCountIn(
+            await _mapController?.queryRenderedFeaturesInRect(
+          Rect.fromCenter(
+            center: Offset(point.x, point.y),
+            width: _clusterTapTolerancePx * 2,
+            height: _clusterTapTolerancePx * 2,
+          ),
+          layers,
+          null,
+        ));
       }
     } catch (e) {
       debugError('[MAP] cluster point_count query failed: $e');
     }
 
     if (!mounted) return;
-    _resolveClusterTap(coordinates, pointCount);
+    _resolveClusterTap(coordinates, pointCount, widened: widened);
+  }
+
+  /// The `point_count` of the first clustered feature in [features], or null
+  /// when none of them is a cluster.
+  int? _clusterCountIn(List<dynamic>? features) {
+    if (features == null) return null;
+    for (final f in features) {
+      final props = ((f as Map)['properties'] as Map?) ?? const {};
+      if (props['cluster'] == true) {
+        final pc = props['point_count'];
+        if (pc is num) return pc.toInt();
+      }
+    }
+    return null;
   }
 
   /// Zooms in on [coordinates], far enough to be worth the tap.
@@ -2868,7 +2893,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// pull it apart, the tap jumps STRAIGHT to that zoom rather than crawling
   /// two levels at a time. If no zoom ever would, because the markers share a
   /// rooftop, it spreads immediately at whatever zoom the user is on.
-  void _resolveClusterTap(LatLng coordinates, int? pointCount) {
+  void _resolveClusterTap(LatLng coordinates, int? pointCount,
+      {bool widened = false}) {
     if (!mounted) return;
     final appState = context.read<AppStateProvider>();
     // If we couldn't read point_count (race with style reload, etc.), fall
@@ -2893,18 +2919,29 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // reachable zoom does. Jumping straight there is what turns a three-press
     // zoom crawl into one press.
     final expansionZoom = group.length >= 2 ? _clusterExpansionZoom(group) : null;
+    final currentZoom = _mapController?.cameraPosition?.zoom;
+    void log(String action) => debugLog(
+        '[MAP] cluster tap: count=${pointCount ?? 'unknown'}'
+        '${widened ? ' (widened)' : ''} group=${group.length} '
+        'zoom=${currentZoom?.toStringAsFixed(2) ?? '?'} '
+        'expansion=${expansionZoom?.toStringAsFixed(0) ?? 'none'} -> $action');
+
     if (expansionZoom != null) {
-      if (_zoomInOnCluster(coordinates, target: expansionZoom)) return;
+      if (_zoomInOnCluster(coordinates, target: expansionZoom)) {
+        log('zoom');
+        return;
+      }
     }
 
     if (group.length >= 2) {
       _spiderfy(coordinates, group);
+      log('spread');
       return;
     }
 
     // No group resolved, so there is nothing to spread. A zoom is still the
     // most useful thing a tap can do, and it no-ops harmlessly at max zoom.
-    _zoomInOnCluster(coordinates);
+    log(_zoomInOnCluster(coordinates) ? 'zoom (no group)' : 'nothing');
   }
 
   /// The zoom that would pull [group] apart into separate markers, or null
@@ -2916,7 +2953,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       lats: [for (final r in located) r.lat],
       lons: [for (final r in located) r.lon],
       maxZoom: _maxUserZoom,
-      clusterRadiusPx: _repeaterClusterRadiusPx,
+      clusterRadiusPx: _clusterRadiusPx,
     );
   }
 
@@ -4503,7 +4540,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           },
           // Simplified clusters; Detailed shows every repeater individually.
           cluster: clustered,
-          clusterRadius: _repeaterClusterRadiusPx,
+          clusterRadius: _clusterRadiusPx,
           // Cluster at every reachable zoom (max user zoom is 17). Stacked
           // markers — those within `clusterRadius` pixels at the current
           // zoom — stay as a cluster bubble + count instead of degenerating
@@ -4761,10 +4798,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// bug described above.
   static const double _maxUserZoom = 17.0 - _zoomEpsilon;
 
-  /// Screen radius MapLibre merges points within, shared by the cluster source
-  /// and the tap rule that asks whether zooming could ever un-merge them. If
-  /// these two drift apart the tap rule starts lying.
-  static const double _repeaterClusterRadiusPx = 50.0;
+  /// How far a tap may land from a cluster badge and still count as hitting
+  /// it. The native tap dispatcher is more forgiving than an exact-point
+  /// feature query, so a tap can route to the cluster handler and then find
+  /// nothing under that one pixel.
+  static const double _clusterTapTolerancePx = 22.0;
 
   /// True when the camera is at (or floating-point close to) the user's
   /// hard zoom cap. Spider expansion is gated on this — at any lower zoom

@@ -1065,14 +1065,25 @@ sat on. The constant body is dE 25.7 from the nearest coverage colour.
     Points under half a metre apart are one mast by definition; that floor also
     stops a pole, where the span and the scale are both floating-point noise,
     dividing one near-zero by another and claiming a spread of 900,000 px.
-  - The merge radius is one constant, `_repeaterClusterRadiusPx`, read by the
-    cluster source AND the rule, because a drift between them makes the rule
-    lie. MapLibre documents its own radius against tile width rather than
-    screen pixels, so the model can be off; `_zoomInOnCluster` therefore never
-    zooms LESS than the old two-level step, and a tap that lands short simply
-    recomputes from wherever the camera ended up. It also reports whether the
-    camera had anywhere to go at all, so a tap at max zoom is never spent on a
-    move nobody can see.
+  - The merge radius is ONE constant, `_clusterRadiusPx`, read by the cluster
+    source, by this rule, and by the spider grouping. A drift between them
+    makes the rule describe a map that does not exist. MapLibre documents its
+    own radius against tile width rather than screen pixels, so the model can
+    still be off; `_zoomInOnCluster` therefore never zooms LESS than the old
+    two-level step, and a tap that lands short simply recomputes from wherever
+    the camera ended up. It also reports whether the camera had anywhere to go
+    at all, so a tap at max zoom is never spent on a move nobody can see.
+  - **A tap that routes here must not then fail to find what it hit.** The
+    native tap dispatcher is more forgiving than an exact-point feature query,
+    so the `point_count` lookup falls back to a `_clusterTapTolerancePx` box
+    around the finger before giving up. Losing the count is not harmless: the
+    resolver then falls back to a BFS group, which can be WIDER than the
+    cluster actually tapped and so answers "zoom" where the real group would
+    have answered "spread". That is what made one tight group of three spread
+    on some taps and zoom on others.
+  - Every cluster tap logs its count, group size, zoom, computed expansion zoom
+    and the action taken under `[MAP]`, because "sometimes" is not a thing that
+    can be reasoned about from the source.
 - **Backbone comes from the server and is NEVER computed locally.** Scoring is
   whole-pool: every repeater in a region ranked by its share of the region's
   summed link counts, smallest set reaching 50% of the traffic. The app fetches
