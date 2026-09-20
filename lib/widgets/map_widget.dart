@@ -23,6 +23,7 @@ import '../services/repeater_admin/repeater_admin_models.dart';
 import '../utils/async_callback_boundary.dart';
 import '../utils/coverage_summary.dart';
 import '../utils/coverage_tile_palette.dart';
+import '../utils/cluster_spread.dart';
 import '../utils/coalesced_async_runner.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/geo_validation.dart';
@@ -2793,24 +2794,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       math.Point<double> point, LatLng coordinates) async {
     if (!mounted) return;
 
-    // Below max zoom: zoom in further so the user has a chance to separate
-    // the stack visually before we resort to the spread UI. _spiderCenter is
-    // always null at non-max zoom (the camera-change collapse fires when the
-    // user zooms out), so no collapse-handling is needed here.
-    if (!_isAtMaxZoom()) {
-      if (_canAnimateCamera &&
-          isValidLatLng(coordinates.latitude, coordinates.longitude)) {
-        final currentZoom =
-            _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-        final newZoom = math.min(currentZoom + 2, _maxUserZoom);
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLngZoom(coordinates, newZoom),
-          duration: const Duration(milliseconds: 200),
-        );
-      }
-      return;
-    }
-
     // Read the tapped cluster's point_count from MapLibre. This is the
     // authoritative count of leaves Supercluster grouped into this bubble —
     // matching it ensures the spider expands exactly the markers represented
@@ -2843,7 +2826,44 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
 
     if (!mounted) return;
+    _resolveClusterTap(coordinates, pointCount);
+  }
 
+  /// Zooms one step further into [coordinates].
+  ///
+  /// Returns false when the camera is already as far in as it will go, so the
+  /// caller can spend the tap on something else instead of a move the user
+  /// cannot see. That dead tap is exactly what made a stacked cluster feel
+  /// broken: every press at max zoom animated to the zoom it was already at.
+  bool _zoomInOnCluster(LatLng coordinates) {
+    if (!_canAnimateCamera ||
+        !isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+      return false;
+    }
+    final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
+    final newZoom = math.min(currentZoom + 2, _maxUserZoom);
+    if (newZoom <= currentZoom + 0.01) return false;
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(coordinates, newZoom),
+      duration: const Duration(milliseconds: 200),
+    );
+    return true;
+  }
+
+  /// What a tap on a cluster does: zoom in, spread it out, or close the spread
+  /// that is already open. Shared by the direct tap path and the GPS-marker
+  /// fall-through so the two can never answer differently.
+  ///
+  /// **Zoom only while zooming can still achieve something.** The old rule was
+  /// "zoom until max zoom, and only spread there", which meant a stack of
+  /// repeaters on one rooftop cost three or four presses before anything
+  /// useful happened, and the presses at the end did nothing at all. Now the
+  /// group's own geography decides: if it would still be inside MapLibre's
+  /// merge radius at max zoom, zooming can never pull it apart, so it spreads
+  /// on the first press at whatever zoom the user is at. A genuinely spread
+  /// cluster still zooms, which is the more useful answer for it.
+  void _resolveClusterTap(LatLng coordinates, int? pointCount) {
+    if (!mounted) return;
     final appState = context.read<AppStateProvider>();
     // If we couldn't read point_count (race with style reload, etc.), fall
     // back to the BFS-based group — better to spiderfy something than nothing.
@@ -2851,7 +2871,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
         : _findSpiderGroup(coordinates, appState);
 
-    // Re-tap on the open spider's own group → collapse instead of churn.
+    // Re-tap on the open spider's own group → collapse instead of churn. This
+    // now has to run at every zoom, not just max: a spider can be open lower
+    // down since the group's spread, not the zoom, decides when to spread.
     if (_spiderCenter != null) {
       final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
       if (group.any((r) => spiderIds.contains(r.id))) {
@@ -2861,11 +2883,30 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _collapseSpider();
     }
 
+    if (group.length >= 2 && _clusterCanSeparate(group)) {
+      if (_zoomInOnCluster(coordinates)) return;
+    }
+
     if (group.length >= 2) {
       _spiderfy(coordinates, group);
+      return;
     }
-    // Already at max zoom with a single-marker group: nothing useful to
-    // zoom into and no stack to spread. Silent no-op.
+
+    // No group resolved, so there is nothing to spread. A zoom is still the
+    // most useful thing a tap can do, and it no-ops harmlessly at max zoom.
+    _zoomInOnCluster(coordinates);
+  }
+
+  /// Whether zooming could ever pull [group] apart into separate markers.
+  /// Pure geometry, in `cluster_spread.dart`.
+  bool _clusterCanSeparate(List<Repeater> group) {
+    final located = group.where((r) => r.hasLocation).toList();
+    return clusterCanSeparateByZoom(
+      lats: [for (final r in located) r.lat],
+      lons: [for (final r in located) r.lon],
+      maxZoom: _maxUserZoom,
+      clusterRadiusPx: _repeaterClusterRadiusPx,
+    );
   }
 
   /// When a tap hits the GPS marker (which has no detail sheet), try to find
@@ -2902,40 +2943,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final properties = (feature['properties'] as Map?) ?? {};
 
       // Cluster (auto-tagged by MapLibre when cluster: true is set on source).
-      // Mirrors the cluster path in _handleFeatureTap, including the
-      // max-zoom gate on spiderfy. We already have the feature in hand here,
-      // so read `point_count` directly instead of re-querying.
       if (properties['cluster'] == true) {
-        if (!_isAtMaxZoom()) {
-          if (_canAnimateCamera &&
-              isValidLatLng(coordinates.latitude, coordinates.longitude)) {
-            final currentZoom =
-                _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-            final newZoom = math.min(currentZoom + 2, _maxUserZoom);
-            _mapController?.animateCamera(
-              CameraUpdate.newLatLngZoom(coordinates, newZoom),
-              duration: const Duration(milliseconds: 200),
-            );
-          }
-          return;
-        }
-        final appState = context.read<AppStateProvider>();
+        // We already have the feature in hand here, so read `point_count`
+        // directly instead of re-querying, then hand it to the same resolver
+        // the direct tap path uses.
         final pcRaw = properties['point_count'];
-        final pointCount = pcRaw is num ? pcRaw.toInt() : null;
-        final group = pointCount != null
-            ? _findSpiderGroupForCluster(coordinates, pointCount, appState)
-            : _findSpiderGroup(coordinates, appState);
-        if (_spiderCenter != null) {
-          final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
-          if (group.any((r) => spiderIds.contains(r.id))) {
-            _collapseSpider();
-            return;
-          }
-          _collapseSpider();
-        }
-        if (group.length >= 2) {
-          _spiderfy(coordinates, group);
-        }
+        _resolveClusterTap(coordinates, pcRaw is num ? pcRaw.toInt() : null);
         return;
       }
 
@@ -4479,7 +4492,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           },
           // Simplified clusters; Detailed shows every repeater individually.
           cluster: clustered,
-          clusterRadius: 50,
+          clusterRadius: _repeaterClusterRadiusPx,
           // Cluster at every reachable zoom (max user zoom is 17). Stacked
           // markers — those within `clusterRadius` pixels at the current
           // zoom — stay as a cluster bubble + count instead of degenerating
@@ -4710,26 +4723,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // ---------------------------------------------------------------------------
 
   /// Web-Mercator metres-per-pixel at the given latitude and zoom.
-  double _metersPerPxAtZoom(double latDeg, num zoom) {
-    return 156543.03392 * math.cos(latDeg * math.pi / 180) / math.pow(2, zoom);
-  }
+  double _metersPerPxAtZoom(double latDeg, num zoom) =>
+      metersPerPixelAtZoom(latDeg, zoom);
 
   /// Great-circle distance between two LatLngs in metres (haversine).
   /// Used for the spider candidate / connectivity tests — accurate at any
   /// latitude, including the poles.
-  double _haversineMeters(LatLng a, LatLng b) {
-    const earthRadiusM = 6378137.0;
-    final lat1 = a.latitude * math.pi / 180;
-    final lat2 = b.latitude * math.pi / 180;
-    final dLat = (b.latitude - a.latitude) * math.pi / 180;
-    final dLon = (b.longitude - a.longitude) * math.pi / 180;
-    final h = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(lat1) *
-            math.cos(lat2) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    return 2 * earthRadiusM * math.asin(math.min(1.0, math.sqrt(h)));
-  }
+  double _haversineMeters(LatLng a, LatLng b) =>
+      haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude);
 
   /// MapLibre Native (Android SDK 12.3.1 / iOS 6.19.1, both bound by
   /// maplibre_gl 0.25.0) blinks symbol-layer labels for one frame when an
@@ -4748,6 +4749,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// Subtracted by [_zoomEpsilon] to dodge the integer-zoom label-blink
   /// bug described above.
   static const double _maxUserZoom = 17.0 - _zoomEpsilon;
+
+  /// Screen radius MapLibre merges points within, shared by the cluster source
+  /// and the tap rule that asks whether zooming could ever un-merge them. If
+  /// these two drift apart the tap rule starts lying.
+  static const double _repeaterClusterRadiusPx = 50.0;
 
   /// True when the camera is at (or floating-point close to) the user's
   /// hard zoom cap. Spider expansion is gated on this — at any lower zoom

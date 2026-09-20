@@ -205,6 +205,31 @@ void main() {
       }
     });
 
+    test('rendered sizes stay in the range the old markers occupied', () {
+      // Measured on an iPhone 16 Pro Max after the redesign first shipped: a
+      // 6-character chip came out 84 pt wide and the cluster badge 56 pt
+      // across, against 56 pt and 40 pt before it. The scale was the culprit.
+      // These bounds are what "too big" looked like, so they stay pinned.
+      double rendered(double logical) => logical * RepeaterMarkerStyle.iconScale;
+
+      final widest =
+          rendered(RepeaterMarkerStyle.chipSize(6, isNew: false).width);
+      expect(widest, lessThanOrEqualTo(64.0),
+          reason: 'a 6-character chip is $widest pt wide; the old one was 56');
+
+      final tallest =
+          rendered(RepeaterMarkerStyle.chipSize(6, isNew: true).height);
+      expect(tallest, lessThanOrEqualTo(30.0),
+          reason: 'a new-repeater chip is $tallest pt tall; the old one was 28');
+
+      final badgeAcross = rendered(
+          (RepeaterMarkerStyle.badgeHairlineRadius +
+                  RepeaterMarkerStyle.hairlineWidth / 2) *
+              2);
+      expect(badgeAcross, lessThanOrEqualTo(42.0),
+          reason: 'the badge is $badgeAcross pt across; the old one was 40');
+    });
+
     test('the edge is added inward, so the footprint is the spec width', () {
       // bodyInset is exactly the state line plus the hairline: the two-tone
       // edge costs nothing outside the box it is drawn in.

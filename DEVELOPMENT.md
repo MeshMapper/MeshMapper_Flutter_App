@@ -1044,6 +1044,27 @@ sat on. The constant body is dE 25.7 from the nearest coverage colour.
   whatever palette was active when the style loaded, so without this the
   repeater markers, cluster badges and coverage pins kept the old palette until
   the user happened to cycle the basemap.
+- **Tapping a group: zoom only while zooming can still achieve something.**
+  One rule, `_resolveClusterTap`, shared by the direct tap and the GPS-marker
+  fall-through so the two can never answer differently. The group's own
+  geography decides, not the zoom level: `clusterCanSeparateByZoom`
+  (`lib/utils/cluster_spread.dart`) measures the group's widest span as it
+  would appear at MAX zoom, and if it still fits inside MapLibre's merge radius
+  there, no amount of zooming will ever pull it apart, so the tap spreads it
+  immediately at whatever zoom the user is on. A genuinely spread-out cluster
+  still zooms in, which is the more useful answer for it. The span is the
+  bounding box diagonal, which can only over-state the widest pair, so the
+  answer errs towards zooming and only the tight clusters changed behaviour.
+  Points under half a metre apart are one mast by definition; that floor also
+  stops a pole, where the span and the scale are both floating-point noise,
+  dividing one near-zero by another and claiming a spread of 900,000 px.
+  The merge radius is one constant, `_repeaterClusterRadiusPx`, read by the
+  cluster source AND the rule, because a drift between them makes the rule lie.
+  `_zoomInOnCluster` reports whether the camera actually had anywhere to go, so
+  a tap at max zoom is never spent on a move nobody can see. Before this the
+  rule was "zoom until max zoom, spread only there", which cost three or four
+  presses on a stack no zoom could separate and then swallowed the presses at
+  the end.
 - **Backbone comes from the server and is NEVER computed locally.** Scoring is
   whole-pool: every repeater in a region ranked by its share of the region's
   summed link counts, smallest set reaching 50% of the traffic. The app fetches
@@ -2106,6 +2127,7 @@ All API endpoints may return maintenance mode:
 - `lib/services/meshcore/regional_carpeater_filter.dart` - The region's shared CARpeater list: own-key exclusion, hop-prefix and full-key matching
 - `lib/utils/public_key.dart` - Full public key normalization (upper-case 64 hex)
 - `lib/utils/repeater_marker_style.dart` - Repeater marker geometry, the five-state colour registry, and the cluster dominant/presence expressions
+- `lib/utils/cluster_spread.dart` - Whether zooming could ever pull a repeater cluster apart, deciding zoom vs spread on tap
 - `lib/utils/repeater_marker_painter.dart` - Draws the repeater chip, the cluster badge disc and its presence dots
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
 - `lib/widgets/noise_floor_chart.dart` - Noise floor graph visualization

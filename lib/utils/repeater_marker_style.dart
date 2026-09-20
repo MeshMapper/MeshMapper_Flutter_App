@@ -126,12 +126,25 @@ class RepeaterMarkerStyle {
   /// redesign Simplified rendered at roughly 39 logical px tall and Detailed at
   /// 26, because they were sized independently.
   ///
-  /// NOT verified on hardware yet. `addImage` honours the screen scale on both
-  /// platforms (iOS reads `UIScreen.main.scale`, Android the decoded bitmap's
-  /// density), so a 2x device renders these slightly larger than intended, the
-  /// same way every other baked marker in this app already does.
+  /// **The scale is 1.0 because the geometry above is already final size.**
+  /// It was briefly 1.4, carried over from the pre-redesign Simplified marker,
+  /// whose 48x28 bitmap held a 40x20 body inside shadow padding and genuinely
+  /// needed enlarging. Applying the same multiplier to measurements that are
+  /// already the intended size made every marker far too big: on an iPhone 16
+  /// Pro Max a 6-character chip measured 84 pt wide against the old 56, and
+  /// the cluster badge 56 pt across against the old 40.
+  ///
+  /// At 1.0 the badge is 40 pt across, the size it has always been, and a chip
+  /// is 24 pt tall against the old 28 while growing with the id instead of
+  /// being padded to a fixed width. Raising this again means re-measuring
+  /// against those numbers, not guessing.
+  ///
+  /// `addImage` honours the screen scale on both platforms (iOS reads
+  /// `UIScreen.main.scale`, Android the decoded bitmap's density), so a 2x
+  /// device renders these slightly larger than intended, the same way every
+  /// other baked marker in this app already does.
   static const double bakeDevicePixelRatio = 3.0;
-  static const double iconScale = 1.4;
+  static const double iconScale = 1.0;
 
   /// Outer footprint of a chip carrying a [labelLength]-character hex.
   ///
