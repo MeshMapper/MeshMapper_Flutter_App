@@ -68,6 +68,9 @@ class RepeaterMarkerStyle {
   static const double chipHeight = 24;
   static const double chipHeightNew = 28;
 
+  /// Uniform body corner radius for every repeater label length.
+  static const double chipCornerRadius = 8;
+
   /// Label size, and the larger variant for a newly discovered repeater.
   static const double chipFontSize = 12;
   static const double chipFontSizeNew = 13;

@@ -2,6 +2,7 @@ import AppIntents
 import Flutter
 import MapLibre
 import UIKit
+import UserNotifications
 import flutter_background_service_ios
 
 /// URLProtocol that fails fast for MapLibre tile/style/glyph/sprite requests
@@ -84,6 +85,7 @@ class IOSMapOfflineBridge {
     }
 
     GeneratedPluginRegistrant.register(with: self)
+    UNUserNotificationCenter.current().delegate = self
 
     // App Shortcut metadata is extracted at build time, but asking the system
     // to refresh parameters on launch makes newly added Siri phrases and enum

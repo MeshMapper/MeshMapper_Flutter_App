@@ -81,8 +81,10 @@ class GeneralSettingsPage extends StatelessWidget {
               SwitchListTile(
                 secondary: const SizedBox(width: 24),
                 title: const Text('Disconnect Alert'),
-                subtitle:
-                    const Text('Triple beep when pinging stops unexpectedly'),
+                subtitle: const Text(
+                  'Triple beep when an automatic mode stops unexpectedly, '
+                  'such as when your radio disconnects',
+                ),
                 value: appState.isDisconnectAlertEnabled,
                 onChanged: (value) => appState.setDisconnectAlertEnabled(value),
               ),

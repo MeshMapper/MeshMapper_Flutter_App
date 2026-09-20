@@ -4219,14 +4219,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
-  /// Returns the borderRadius value for a repeater shape based on hop_bytes.
-  /// Mirrors the values in the original `_buildRepeaterMarkers` (lines ~2390).
-  double _repeaterBorderRadius(int hopBytes) {
-    if (hopBytes >= 3) return 8;
-    if (hopBytes == 2) return 6;
-    return 4;
-  }
-
   /// Pre-renders and registers all marker bitmaps that the native MapLibre
   /// symbols reference via `iconImage`. Called from [_onStyleLoaded] after the
   /// style is ready (so addImage can succeed). Idempotent — safe to call again
@@ -4261,7 +4253,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           final chip = RepeaterMarkerStyle.chipSize(hopBytes * 2, isNew: isNew);
           final painter = _RepeaterShapePainter(
             accent: color,
-            borderRadius: _repeaterBorderRadius(hopBytes),
+            borderRadius: RepeaterMarkerStyle.chipCornerRadius,
             isNew: isNew,
           );
           final bytes = await _renderPainterToPng(
@@ -4382,13 +4374,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final parts = name.split('_');
       if (parts.length != 4) continue;
       final status = parts[1];
-      final hop = int.tryParse(parts[2]) ?? 1;
       final hex = parts[3];
       try {
         final bytes = await _renderRepeaterChipPng(
           hex,
           _repeaterStatusColor(status),
-          _repeaterBorderRadius(hop),
+          RepeaterMarkerStyle.chipCornerRadius,
           isNew: status == RepeaterMarkerStatus.fresh.wireKey,
         );
         await _mapController!.addImage(name, bytes);
@@ -10749,7 +10740,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                   _RepeaterChip(
                     hex: repeater.displayHexId(),
                     accent: iconColor,
-                    bodyRadius: _repeaterBorderRadius(repeater.advertBytes),
+                    bodyRadius: RepeaterMarkerStyle.chipCornerRadius,
                     isNew: repeater.isNew,
                   ),
                   const SizedBox(width: 12),

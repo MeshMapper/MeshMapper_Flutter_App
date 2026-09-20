@@ -147,6 +147,13 @@ spider was open. Cluster re-taps now log `-> collapse` before returning, closing
 a gap in the previous decision logging. Confirm repeated single taps on a real
 iPhone before treating the symbol hit-test hypothesis as resolved.
 
+### Uniform Repeater Corners
+
+Single-repeater chips use `RepeaterMarkerStyle.chipCornerRadius` (8 logical
+pixels) for every ID length and state, on both map modes and in the detail
+popup header. Cluster badges remain circular. The matching server change is
+implemented in the server repository.
+
 ### Repeater Identity and Collision Handling
 
 Repeater identity is the cleaned full public key. The server's short `id`
@@ -682,6 +689,7 @@ Sound notifications for TX pings and RX observations, configurable on/off.
 - **Storage**: Hive box `audio_preferences` with key `sound_enabled`
 - **Audio focus**: Android uses transient focus with ducking (Android Auto compatible). iOS uses ambient category (plays alongside other audio).
 - **Resilience**: 3-second timeout protection prevents indefinite hangs from audio session corruption. On timeout, resets session and reloads assets.
+- **iOS background sounds**: `SoundNotificationService` routes TX, RX and disconnect sounds through standard local notifications whenever the app is not resumed. Bundled WAV files preserve the existing sounds. Each type reuses its own ID (891 disconnect, 892 TX, 893 RX), replacing earlier notifications of that type. Silent mode, Focus and notification settings control delivery and sound; no critical alerts or background media playback are used. The master and per-sound toggles gate playback. Enabling sounds requests notification permission, including at startup for existing enabled preferences. Foreground and Android audio playback remain unchanged. Disconnect automatic-mode and stale-alert gates remain in the provider. The app must still execute each event callback before the system can deliver a notification; system notification throttling can limit rapid RX sounds.
 - **File**: `lib/services/audio_service.dart`
 
 ### Session Heartbeat

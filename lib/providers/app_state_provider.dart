@@ -29,6 +29,7 @@ import '../services/api_queue_service.dart';
 import '../utils/mvt_cells.dart';
 import '../services/api_service.dart';
 import '../services/audio_service.dart';
+import '../services/sound_notification_service.dart';
 import '../services/background_service.dart';
 import '../services/debug_file_logger.dart';
 import '../services/disconnect_alert_decision.dart';
@@ -204,7 +205,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   late final OfflineSessionService _offlineSessionService;
   late final DeviceModelService _deviceModelService;
   late final CustomApiService _customApiService;
-  final AudioService _audioService = AudioService();
+  final _soundNotifications = SoundNotificationService();
+  late final AudioService _audioService =
+      AudioService(notifications: _soundNotifications);
   late final CooldownTimer
       _cooldownTimer; // Shared cooldown for TX Ping and Active Mode
   late final ManualPingCooldownTimer
@@ -3614,6 +3617,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Initialize audio service for sound notifications
     await _audioService.initialize();
+    await _requestSoundNotificationPermission();
 
     debugLog('[INIT] AppStateProvider initialization complete');
     debugLog('[INIT] Final init state: gpsStatus=$_gpsStatus, '
@@ -9069,24 +9073,28 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// Toggle sound notifications on/off
   Future<void> toggleSoundEnabled() async {
     await _audioService.toggle();
+    await _requestSoundNotificationPermission();
     notifyListeners();
   }
 
   /// Set sound notifications enabled state
   Future<void> setSoundEnabled(bool enabled) async {
     await _audioService.setEnabled(enabled);
+    await _requestSoundNotificationPermission();
     notifyListeners();
   }
 
   /// Set TX sound enabled state (ping sent / discovery sent)
   Future<void> setTxSoundEnabled(bool enabled) async {
     await _audioService.setTxEnabled(enabled);
+    await _requestSoundNotificationPermission();
     notifyListeners();
   }
 
   /// Set RX sound enabled state (repeater echo / RX observation)
   Future<void> setRxSoundEnabled(bool enabled) async {
     await _audioService.setRxEnabled(enabled);
+    await _requestSoundNotificationPermission();
     notifyListeners();
   }
 
@@ -9094,8 +9102,18 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setDisconnectAlertEnabled(bool enabled) async {
     _preferences = _preferences.copyWith(disconnectAlertEnabled: enabled);
     await _savePreferences();
+    await _requestSoundNotificationPermission();
     debugLog('[AUDIO] Disconnect alert ${enabled ? 'enabled' : 'disabled'}');
     notifyListeners();
+  }
+
+  Future<void> _requestSoundNotificationPermission() async {
+    if (_audioService.isEnabled &&
+        (_audioService.isTxEnabled ||
+            _audioService.isRxEnabled ||
+            _preferences.disconnectAlertEnabled)) {
+      await _soundNotifications.requestPermission();
+    }
   }
 
   /// Broadcast my coordinates: when true, TX pings put real GPS on the air
@@ -9130,8 +9148,12 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
           severity: ErrorSeverity.warning, autoSwitch: false);
       return;
     }
-    debugLog('[AUDIO] Playing disconnect alert — pinging stopped unexpectedly');
-    _audioService.playAlertSound();
+    debugLog(
+        '[AUDIO] Delivering disconnect alert: automatic mode stopped unexpectedly');
+    unawaited(_soundNotifications.play(
+      lifecycleState: WidgetsBinding.instance.lifecycleState,
+      playAudio: _audioService.playAlertSound,
+    ));
   }
 
   /// Navigate to coordinates on map (triggered from log entries)

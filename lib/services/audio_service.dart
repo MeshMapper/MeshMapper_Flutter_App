@@ -1,14 +1,21 @@
 import 'dart:async';
 
 import 'package:just_audio/just_audio.dart';
+import 'package:flutter/widgets.dart';
 import 'package:hive/hive.dart';
 import 'package:audio_session/audio_session.dart';
+
+import 'sound_notification_service.dart';
 
 import '../utils/debug_logger_io.dart';
 
 /// Audio service for playing sound notifications
 /// Plays sounds when TX pings are sent and RX packets are received
 class AudioService {
+  AudioService({SoundNotificationService? notifications})
+      : _notifications = notifications ?? SoundNotificationService();
+
+  final SoundNotificationService _notifications;
   static const String _prefsBoxName = 'audio_preferences';
   static const String _enabledKey = 'sound_enabled';
   static const String _txEnabledKey = 'tx_sound_enabled';
@@ -178,14 +185,22 @@ class AudioService {
 
   /// Play the transmit sound (when TX ping or Discovery request is sent)
   Future<void> playTransmitSound() async {
-    if (!_txEnabled) return;
-    await _playSound(_txPlayer, _txAsset, 'TX');
+    await _notifications.play(
+      sound: SoundNotification.transmitted,
+      enabled: _enabled && _txEnabled,
+      lifecycleState: WidgetsBinding.instance.lifecycleState,
+      playAudio: () => _playSound(_txPlayer, _txAsset, 'TX'),
+    );
   }
 
   /// Play the receive sound (when repeater echo or RX observation is detected)
   Future<void> playReceiveSound() async {
-    if (!_rxEnabled) return;
-    await _playSound(_rxPlayer, _rxAsset, 'RX');
+    await _notifications.play(
+      sound: SoundNotification.received,
+      enabled: _enabled && _rxEnabled,
+      lifecycleState: WidgetsBinding.instance.lifecycleState,
+      playAudio: () => _playSound(_rxPlayer, _rxAsset, 'RX'),
+    );
   }
 
   /// Shared playback logic for both TX and RX sounds.
