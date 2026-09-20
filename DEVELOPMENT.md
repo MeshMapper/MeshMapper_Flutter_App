@@ -973,6 +973,103 @@ the app shows as "This region does not support claiming yet."
   and the server-resolved neighbours; an old list has neither.
 - Logged under `[RADMIN]` (session, modules, API, sheet, provider) and `[CONN]` (frames).
 
+### Repeater Markers
+
+A repeater marker's large area is NEUTRAL and its state rides the edge. That is
+the one rule the whole design rests on, and it is not a preference: the old
+state-coloured fills were darker siblings of the coverage colours drawn
+underneath them (OKLab dE 6.2 for `new` against the no-coverage red, 7.6 for
+`stale` against the dead-zone grey), so every marker competed with the data it
+sat on. The constant body is dE 25.7 from the nearest coverage colour.
+
+- **Single repeater**: a `#22303A` body in every state and every colour-vision
+  palette, an 8 px state-coloured bar down the left clipped to the rounded
+  rect, a 1.5 px state line just outside the body and a 1 px `#0d1114`
+  hairline outside that. The body is inset 2.5 px (1.5 + 1) so the edge is
+  added INWARD and the footprint is unchanged. Width follows the id length
+  (`<= 2` chars: 24, else `10 + len * 7`, plus 8 for the bar), and the label is
+  centred in the space RIGHT of the bar, not in the whole box. A newly
+  discovered repeater is taller (28 vs 24), with a larger label and a wider
+  glow. Corner radius still encodes hop-byte width (4 / 6 / 8), which is this
+  app's own signal and has no web counterpart.
+- **Group marker**: a `#22303A` disc of radius 19 with the count across it, a
+  2.5 px ring at radius 17.75 in the DOMINANT state's colour, a 1 px hairline
+  at 19.5, and one uniform 2.6 px dot per state PRESENT, pitch 4.2, centred at
+  `cy + 9.5`. The dots say WHICH states are in the cluster and the ring says
+  which one DOMINATES: two different facts, which is why both are drawn.
+  Sizing the dots by share instead was considered and rejected. It stays a
+  circle rather than a pill because hex ids like `41`, `CC` and `FD` are real,
+  so a pill reading `23` would be ambiguous with a single repeater.
+- **Five states**, `RepeaterMarkerStatus` in
+  `lib/utils/repeater_marker_style.dart`. Declaration order is load-bearing
+  twice: it is the dot-row order and the tie-break order for the dominant
+  state. `wireKey` keeps the names already baked into image ids and GeoJSON
+  properties (`dead` for stale, `dup` for excluded).
+  Priority for a single repeater is `dup > dead > new > backbone > active`.
+  One registry, one lookup: a status with no entry draws in the active colour
+  and logs a single `[MAP]` warning, because a silent wrong colour is worse
+  than a loud one.
+- **Three measured constraints that must not be optimised away.** The state
+  colour never goes in the fill (above). The label ink is DERIVED from the body
+  by `RepeaterMarkerStyle.labelInkFor` at the 0.179129 luminance threshold
+  where white and black contrast equally, never hardcoded, so a future palette
+  cannot ship an unreadable label. Backbone gold `#E8B923` stays light: it is
+  the same hue as the brown it replaced and only reads as gold above roughly
+  L* 75, so darkening it for a dark theme turns it back into brown.
+- **Cluster aggregation.** Clustering happens natively inside MapLibre, so
+  there is no Dart-side view of a cluster's members. The source declares one
+  `clusterProperties` running count per state, accumulated with `+` only (the
+  operator both native bridges are exercised with); the badge layer picks its
+  disc with a `case` chain over those counts (plurality, ties to the earlier
+  status) and its dot strip with a `step` over a presence bitmask. This needed
+  the MapLibre upgrade: `clusterProperties` was unimplemented on iOS and absent
+  on Android before it.
+- **Bitmaps.** Simplified (clustered) bakes 15 chip BODIES (5 states x 3 hop
+  widths) and lets MapLibre place the hex as a shared-glyph label nudged right
+  by half the bar; Detailed (un-clustered) bakes the label INTO the chip, one
+  image per `(status, hop, hex)`, because an overlapping un-clustered chip can
+  otherwise have its label detach onto a neighbour's box (the MapLibre symbol
+  two-pass overlap bug). Badge discs are 5 images; presence-dot strips are
+  baked lazily for the masks the states on screen can actually produce (a zone
+  showing three states needs 8, not 32), read back off the pushed
+  FeatureCollection so the registered set cannot drift from what the layer
+  asks for. Both caches are cleared on style reload, because a native style
+  teardown drops every registered image.
+- **A Colour Vision change re-bakes every marker bitmap.** They are baked with
+  whatever palette was active when the style loaded, so without this the
+  repeater markers, cluster badges and coverage pins kept the old palette until
+  the user happened to cycle the basemap.
+- **Backbone comes from the server and is NEVER computed locally.** Scoring is
+  whole-pool: every repeater in a region ranked by its share of the region's
+  summed link counts, smallest set reaching 50% of the traffic. The app fetches
+  a zone's repeaters, not a region's traffic, so a local score would disagree
+  with the web for the same area, and no app-facing endpoint carries link data.
+  `Repeater.backbone` and `backboneShare` are additive and **absent, not null**,
+  in three ordinary cases: a server predating the fields, a region whose
+  background job has not run, and a region too quiet to score. Absent means
+  "not backbone", it is the expected state, and nothing is logged or surfaced.
+  Gold REPLACES active and never stacks, so a stale or ambiguous repeater keeps
+  its own colour even when the server marks it (`Repeater.isBackbone` folds the
+  active requirement in). The values refresh on the order of hours, so they are
+  never polled. The repeater detail sheet shows the share as a rounded percent
+  when the server sent one.
+- **Tests**: `test/utils/repeater_marker_style_test.dart` pins the derived ink,
+  the dominant/presence resolvers against a small evaluator for the MapLibre
+  expressions (the only way to check those agree without a device), the chip
+  and badge geometry, and a guard that all five accents clear 3:1 on the body
+  and differ from one another in every palette.
+  `test/utils/repeater_marker_painter_test.dart` rasterises the real painters
+  and probes pixels, because "the body is neutral and the state is on the edge"
+  is a claim about pixels that no amount of clean analysis speaks to.
+  `test/models/repeater_backbone_test.dart` covers the absent and present
+  paths against a faked response.
+- **Files**: `lib/utils/repeater_marker_style.dart` (geometry, registry,
+  cluster expressions), `lib/utils/repeater_marker_painter.dart` (the drawing),
+  `lib/widgets/map_widget.dart` (`_MapImages`, `_registerMapImages`,
+  `_ensureRepeaterChipImages`, `_ensureRepeaterDotImages`,
+  `_setupRepeaterClusterLayers`), `lib/utils/ping_colors.dart` (the five
+  accents per colour-vision palette).
+
 ### Coverage Overlay (vector tiles)
 
 The MeshMapper coverage layer is rendered from the region server's vector tiles
@@ -2003,5 +2100,7 @@ All API endpoints may return maintenance mode:
 - `lib/services/meshcore/packet_validator.dart` - Packet validation and carpeater filtering
 - `lib/services/meshcore/regional_carpeater_filter.dart` - The region's shared CARpeater list: own-key exclusion, hop-prefix and full-key matching
 - `lib/utils/public_key.dart` - Full public key normalization (upper-case 64 hex)
+- `lib/utils/repeater_marker_style.dart` - Repeater marker geometry, the five-state colour registry, and the cluster dominant/presence expressions
+- `lib/utils/repeater_marker_painter.dart` - Draws the repeater chip, the cluster badge disc and its presence dots
 - `lib/models/noise_floor_session.dart` - Noise floor session data models
 - `lib/widgets/noise_floor_chart.dart` - Noise floor graph visualization

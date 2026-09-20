@@ -31,6 +31,8 @@ import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
 import '../utils/public_key.dart';
 import '../utils/repeater_format.dart';
+import '../utils/repeater_marker_painter.dart';
+import '../utils/repeater_marker_style.dart';
 import '../utils/map_style_errors.dart';
 import '../utils/serial_task_gate.dart';
 import 'cell_summary_sheet.dart';
@@ -61,12 +63,15 @@ const _defaultFontStack = ['Noto Sans Regular'];
 class _MapImages {
   _MapImages._();
 
-  // Repeater shape bitmaps: status × hop_bytes
+  // Simplified-mode repeater CHIP bodies: status x hop_bytes. The chip body is
+  // baked here and MapLibre places the hex on top as a shared-glyph text
+  // label. Width follows the hop's hex length, so the label always has room in
+  // the space right of the state bar.
   // Names: rep_active_1, rep_dead_2, rep_dup_3, etc.
   static String repeater(String status, int hopBytes) =>
       'rep_${status}_$hopBytes';
 
-  // Detailed-mode baked repeater CHIP bitmaps: status × hop_bytes × hex label.
+  // Detailed-mode baked repeater CHIP bitmaps: status x hop_bytes x hex label.
   // The hex is baked into the icon (no text-field) so overlapping un-clustered
   // chips can't have a label detach onto a neighbour's box. One image per
   // distinct (status, hop, hex); registered lazily + deduped. See
@@ -75,7 +80,22 @@ class _MapImages {
   static String repeaterChip(String status, int hopBytes, String hex) =>
       'repchip_${status}_${hopBytes}_$hex';
 
-  static const repeaterStatuses = ['active', 'dead', 'new', 'dup'];
+  // Cluster badge disc, one per DOMINANT state. The count rides on top as a
+  // text label and the presence dots are a separate strip image, so "which
+  // states are present" and "which one dominates" stay two independent facts
+  // instead of needing one bitmap per combination of the two.
+  // Names: repbadge_active, repbadge_backbone, etc.
+  static String repeaterBadge(String status) => 'repbadge_$status';
+
+  // Cluster presence-dot strip, one per bitmask of the states present.
+  // Registered lazily for the masks the visible repeaters can actually
+  // produce: a zone showing three states needs 8 of these, not 32.
+  // Names: repdots_0 .. repdots_31.
+  static String repeaterDots(int mask) => 'repdots_$mask';
+
+  static final List<String> repeaterStatuses = [
+    for (final status in RepeaterMarkerStatus.values) status.wireKey,
+  ];
   static const repeaterHopBytes = [1, 2, 3];
 
   // Coverage marker bitmaps: type × success state
@@ -180,101 +200,109 @@ Future<({Uint8List bytes, Size size})> _renderDistanceLabelPng(
   );
 }
 
-/// Bakes a complete repeater "chip" — the status-colored rounded box plus its
-/// centered hex label — into a single PNG, so the label is part of the icon and
-/// can never detach onto a neighbouring chip's box (the MapLibre symbol two-pass
-/// "all icons, then all glyphs" overlap bug). Used ONLY in Detailed grid mode,
-/// where repeaters are un-clustered and can overlap. Simplified mode keeps the
-/// cheap shared-glyph text-field path (clustering guarantees ≥50px spacing).
-///
-/// Variable width — sized to the measured hex like [_renderDistanceLabelPng].
-/// Baked at devicePixelRatio 3.0 to stay crisp on hi-DPI; rendered with
-/// iconSize 1.0 + center anchor. Box visuals mirror [_RepeaterShapePainter]
-/// (drop shadow, filled box, 2px white border) so chips match the Simplified
-/// shape markers.
-Future<Uint8List> _renderRepeaterChipPng(
-  String hex,
-  Color fill,
-  double borderRadius, {
-  double devicePixelRatio = 3.0,
-}) async {
-  const fontSize = 13.0;
-  const horizontalPad = 8.0; // inside the box, each side
-  const boxHeight = 26.0;
-  const shadowBlur = 4.0;
-  const margin = 5.0; // room around the box for the (blurred, +2px) shadow
-
-  final textPainter = TextPainter(
-    text: TextSpan(
-      text: hex,
-      style: const TextStyle(
-        fontSize: fontSize,
-        color: Colors.white,
-        fontWeight: FontWeight.bold,
-      ),
-    ),
-    textDirection: TextDirection.ltr,
-  )..layout();
-
-  final boxWidth = textPainter.width + horizontalPad * 2;
-  final logicalWidth = boxWidth + margin * 2;
-  const logicalHeight = boxHeight + margin * 2;
-
-  final recorder = ui.PictureRecorder();
-  final canvas = Canvas(recorder);
-  canvas.scale(devicePixelRatio);
-
-  final boxRect = Rect.fromLTWH(margin, margin, boxWidth, boxHeight);
-  final radius = Radius.circular(borderRadius);
-
-  // Drop shadow (positioned 2px below the box).
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(boxRect.shift(const Offset(0, 2)), radius),
-    Paint()
-      ..color = Colors.black26
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, shadowBlur),
-  );
-
-  // Filled colored box.
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(boxRect, radius),
-    Paint()..color = fill,
-  );
-
-  // White border (2px, drawn just inside the box edge).
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-      boxRect.deflate(1),
-      Radius.circular(borderRadius - 1),
-    ),
-    Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0,
-  );
-
-  // Centered hex label.
-  textPainter.paint(
-    canvas,
-    Offset(
-      margin + (boxWidth - textPainter.width) / 2,
-      margin + (boxHeight - textPainter.height) / 2,
-    ),
-  );
-
-  final picture = recorder.endRecording();
+/// Encodes a recorded picture of [logicalSize] to PNG bytes at [dpr].
+Future<Uint8List> _encodePicture(
+  ui.Picture picture,
+  Size logicalSize,
+  double dpr,
+  String what,
+) async {
   final image = await picture.toImage(
-    (logicalWidth * devicePixelRatio).round(),
-    (logicalHeight * devicePixelRatio).round(),
+    (logicalSize.width * dpr).round(),
+    (logicalSize.height * dpr).round(),
   );
   final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
   picture.dispose();
   image.dispose();
   if (byteData == null) {
-    throw StateError('Failed to encode repeater chip to PNG bytes');
+    throw StateError('Failed to encode $what to PNG bytes');
   }
   return byteData.buffer.asUint8List();
 }
+
+/// Bakes a complete repeater chip (body, state bar, edge and the hex label)
+/// into a single PNG, so the label is part of the icon and can never detach
+/// onto a neighbouring chip's box (the MapLibre symbol two-pass "all icons,
+/// then all glyphs" overlap bug). Used ONLY in Detailed grid mode, where
+/// repeaters are un-clustered and can overlap. Simplified keeps the cheap
+/// shared-glyph text-field path, since clustering guarantees spacing there.
+Future<Uint8List> _renderRepeaterChipPng(
+  String hex,
+  Color accent,
+  double borderRadius, {
+  required bool isNew,
+  double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
+}) async {
+  final textPainter = repeaterChipLabelPainter(hex, isNew: isNew);
+  final chip = RepeaterMarkerStyle.chipSize(hex.length,
+      isNew: isNew, measuredLabelWidth: textPainter.width);
+  final logical = Size(
+    chip.width + repeaterChipGlowMargin * 2,
+    chip.height + repeaterChipGlowMargin * 2,
+  );
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+
+  final body = paintRepeaterChip(
+    canvas,
+    Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width, chip.height),
+    accent,
+    borderRadius,
+    isNew: isNew,
+  );
+
+  paintRepeaterChipLabel(canvas, body, textPainter);
+
+  return _encodePicture(
+      recorder.endRecording(), logical, devicePixelRatio, 'repeater chip');
+}
+
+/// Bakes the cluster badge disc: neutral body, a ring in the DOMINANT state's
+/// colour, and the hairline outside it. The count and the presence dots are
+/// drawn over this by their own layers.
+///
+/// A circle, not a pill: hex ids like 41, CC and FD are real, so a pill
+/// reading "23" would be ambiguous with a single repeater.
+Future<Uint8List> _renderRepeaterBadgePng(
+  Color ring, {
+  double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
+}) async {
+  const size = Size(
+      RepeaterMarkerStyle.badgeCanvas, RepeaterMarkerStyle.badgeCanvas);
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+  paintRepeaterBadge(canvas, ring);
+
+  return _encodePicture(
+      recorder.endRecording(), size, devicePixelRatio, 'repeater badge');
+}
+
+/// Bakes the cluster badge's presence-dot row: one dot per state PRESENT, all
+/// the same size, centred as a row.
+///
+/// Uniform on purpose. The dots answer "which states are in here"; the badge
+/// ring answers "which one dominates". Sizing them by share would blur the two
+/// questions into one ambiguous picture.
+Future<Uint8List> _renderRepeaterDotsPng(
+  List<Color> dots, {
+  double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
+}) async {
+  const size = Size(RepeaterMarkerStyle.dotStripWidth,
+      RepeaterMarkerStyle.dotStripHeight);
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+  paintRepeaterDots(canvas, dots);
+
+  return _encodePicture(
+      recorder.endRecording(), size, devicePixelRatio, 'repeater dots');
+}
+
 
 Future<Uint8List> _renderPainterToPng(
   CustomPainter painter,
@@ -793,6 +821,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // _ensureRepeaterChipImages; cleared on style reload (native drops images).
   final Set<String> _registeredChipImages = {};
 
+  // Cluster presence-dot strips registered so far, by image name. Grown lazily
+  // by _ensureRepeaterDotImages and cleared on style reload with the chips,
+  // because a native style teardown drops every registered image.
+  final Set<String> _registeredDotImages = {};
+
   // When true, _syncAllAnnotations skips _updateFocusLines and
   // _syncDistanceLabels so the 500ms zoom-to-fit animation runs without
   // contention from heavy native platform calls. The deferred work runs
@@ -803,6 +836,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   static const _repeaterSourceId = 'repeaters-source';
   static const _repeaterIndividualLayerId = 'repeaters-individual';
   static const _repeaterClusterBubbleLayerId = 'repeaters-cluster-bubble';
+  static const _repeaterClusterDotsLayerId = 'repeaters-cluster-dots';
   static const _repeaterClusterCountLayerId = 'repeaters-cluster-count';
 
   // Spiderfy source/layer IDs — non-clustered shadow source rendering spread
@@ -2150,6 +2184,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         _styleLoaded &&
         _lastAppliedGridSize != null &&
         _lastAppliedGridSize != prefsForOverlay.coverageGridSize;
+    // Every marker bitmap is baked with the palette that was active when the
+    // style loaded, so a Colour Vision change has to re-bake them. Without
+    // this the repeater markers, the cluster badges and the coverage pins keep
+    // the old palette until the user happens to cycle the basemap.
+    final cvdChanged = _isMapReady &&
+        _styleLoaded &&
+        _lastAppliedCvd != null &&
+        _lastAppliedCvd != prefsForOverlay.colorVisionType;
     // The preset filter is baked into the tile URL like the grid size, so a
     // change (connect on a different preset, or the remembered value
     // arriving) rebuilds the overlay. The first add records the key itself.
@@ -2191,6 +2233,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           _coverageRefreshScheduled = false;
           if (!mounted) return;
+          // Re-bake first: a layer rebuild below would otherwise wire itself
+          // to bitmaps still carrying the outgoing palette. The lazily-baked
+          // caches are dropped so the resync re-registers those too.
+          if (cvdChanged) {
+            _registeredChipImages.clear();
+            _registeredDotImages.clear();
+            await _registerMapImages(appState);
+            debugLog('[MAP] Re-baked marker bitmaps for colour vision '
+                '${prefsForOverlay.colorVisionType}');
+          }
           // Rebuild the repeater source/layers with the new cluster flag BEFORE
           // the coverage overlay refresh — coverage targets the bottom repeater
           // layer as its belowLayerId, so those layers must exist first. Collapse
@@ -2201,6 +2253,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             _clusterLayersReady = false;
             await _setupRepeaterClusterLayers(
                 clustered: appState.preferences.coverageGridSize != 100);
+            await _syncRepeaterSymbols(appState);
+          } else if (cvdChanged) {
+            // addImage replaces by name, so the chips already on the map pick
+            // the new palette up on their own. The lazily-baked ones were just
+            // dropped from the cache and only a sync re-registers them.
             await _syncRepeaterSymbols(appState);
           }
           await _refreshCoverageOverlay(appState);
@@ -2647,6 +2704,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // the native code path to fly(to:withDuration:) which ramps in faster and
     // finishes in 200ms, making the tap feel "instant" rather than delayed.
     if (layerId == _repeaterClusterBubbleLayerId ||
+        layerId == _repeaterClusterDotsLayerId ||
         layerId == _repeaterClusterCountLayerId) {
       _handleClusterBubbleTap(point, coordinates);
       return;
@@ -2763,6 +2821,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         point,
         const [
           _repeaterClusterBubbleLayerId,
+          _repeaterClusterDotsLayerId,
           _repeaterClusterCountLayerId,
         ],
         null,
@@ -2828,6 +2887,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         const [
           _spiderSymbolLayerId,
           _repeaterClusterCountLayerId,
+          _repeaterClusterDotsLayerId,
           _repeaterClusterBubbleLayerId,
           _repeaterIndividualLayerId,
         ],
@@ -3059,6 +3119,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // Detailed-mode baked repeater chips are dropped by the native side on
       // style reload too — clear the cache so the next sync re-registers them.
       _registeredChipImages.clear();
+      _registeredDotImages.clear();
       // Mark cluster layers as not-ready until _setupRepeaterClusterLayers
       // creates them on the new style. This gates build()-driven post-frame
       // syncs from racing ahead of source creation.
@@ -3926,21 +3987,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     await _addCoverageOverlay(appState);
   }
 
-  /// Returns the fill color for a repeater status keyword.
-  /// Mirrors the priority logic in [_getRepeaterMarkerColor].
-  Color _repeaterStatusColor(String status) {
-    switch (status) {
-      case 'dup':
-        return PingColors.repeaterDuplicate;
-      case 'dead':
-        return PingColors.repeaterDead;
-      case 'new':
-        return PingColors.repeaterNew;
-      case 'active':
-      default:
-        return PingColors.repeaterActive;
-    }
-  }
+  /// The ACCENT colour for a repeater status keyword: the left bar, the state
+  /// line, the cluster ring. Never a fill. See [RepeaterMarkerStyle].
+  ///
+  /// One registry, one lookup. A keyword with no entry draws in the active
+  /// colour and logs a single warning, because a silent wrong colour is worse
+  /// than a loud one.
+  Color _repeaterStatusColor(String status) =>
+      RepeaterMarkerStyle.colorForKey(status);
 
   /// Returns the color for a coverage marker (TX/RX/DISC/Trace × success/fail).
   Color _coverageStatusColor(String type, bool success) {
@@ -3974,11 +4028,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// if a style reload happens; addImage replaces existing entries by name.
   ///
   /// Generates:
-  ///   - 12 repeater shape bitmaps (4 status colors × 3 hop_byte radii) — fixed
-  ///     width 48px, the widest case (6-char hex IDs); shorter text is centered
-  ///     by MapLibre's textField rendering.
+  ///   - 15 repeater chip bodies (5 states × 3 hop_byte widths). Width follows
+  ///     the hop's hex length so the shared-glyph label always has room right
+  ///     of the state bar; a `new` chip is taller than the rest.
+  ///   - 5 cluster badge discs, one per dominant state.
   ///   - 8 coverage marker bitmaps for the user's currently-selected style.
   ///   - 6 GPS marker bitmaps (one per style).
+  ///
+  /// The cluster presence-dot strips are NOT registered here: which ones are
+  /// reachable depends on the states actually on screen, so
+  /// [_ensureRepeaterDotImages] bakes them from the live repeater set.
   ///
   /// Marker style preference changes are handled separately by
   /// [_reregisterCoverageImages] which only re-runs the coverage section.
@@ -3986,27 +4045,45 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (_mapController == null) return;
 
     try {
-      // 1. Repeater shapes — 12 variants
-      const repeaterSize = Size(48, 28);
-      for (final status in _MapImages.repeaterStatuses) {
-        final color = _repeaterStatusColor(status);
+      // 1. Repeater chip bodies: 5 states × 3 hop widths.
+      for (final status in RepeaterMarkerStatus.values) {
+        final color = _repeaterStatusColor(status.wireKey);
+        final isNew = status == RepeaterMarkerStatus.fresh;
         for (final hopBytes in _MapImages.repeaterHopBytes) {
+          // The hex is hopBytes * 2 characters wide, which is what sizes the
+          // body. displayHexId can fall back to a SHORTER numeric id, never a
+          // longer one, so the label always fits.
+          final chip = RepeaterMarkerStyle.chipSize(hopBytes * 2, isNew: isNew);
           final painter = _RepeaterShapePainter(
-            fillColor: color,
+            accent: color,
             borderRadius: _repeaterBorderRadius(hopBytes),
+            isNew: isNew,
           );
-          final bytes = await _renderPainterToPng(painter, repeaterSize);
+          final bytes = await _renderPainterToPng(
+            painter,
+            Size(chip.width + repeaterChipGlowMargin * 2,
+                chip.height + repeaterChipGlowMargin * 2),
+            devicePixelRatio: RepeaterMarkerStyle.bakeDevicePixelRatio,
+          );
           await _mapController!.addImage(
-            _MapImages.repeater(status, hopBytes),
+            _MapImages.repeater(status.wireKey, hopBytes),
             bytes,
           );
         }
       }
 
-      // 2. Coverage markers — 8 variants for current style
+      // 2. Cluster badge discs: one per dominant state.
+      for (final status in RepeaterMarkerStatus.values) {
+        final bytes =
+            await _renderRepeaterBadgePng(_repeaterStatusColor(status.wireKey));
+        await _mapController!
+            .addImage(_MapImages.repeaterBadge(status.wireKey), bytes);
+      }
+
+      // 3. Coverage markers: 8 variants for current style
       await _registerCoverageImages(appState.preferences.markerStyle);
 
-      // 3. GPS marker variants — 7 styles
+      // 4. GPS marker variants: 7 styles
       const gpsSize = Size(48, 48);
       final gpsPainters = <String, CustomPainter>{
         'arrow': const _ArrowPainter(),
@@ -4024,7 +4101,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       _imagesRegistered = true;
       debugLog(
-          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater + 8 coverage + ${gpsPainters.length} GPS marker images');
+          '[MAP] Registered ${_MapImages.repeaterStatuses.length * _MapImages.repeaterHopBytes.length} repeater chip + ${_MapImages.repeaterStatuses.length} cluster badge + 8 coverage + ${gpsPainters.length} GPS marker images');
       // NOTE: do NOT trigger _syncAllAnnotations here. The repeater cluster
       // source/layers haven't been created yet — _onStyleLoaded calls
       // _setupRepeaterClusterLayers AFTER us, then triggers the initial sync
@@ -4061,12 +4138,18 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Returns the status keyword used as the iconImage suffix for a repeater.
   /// Mirrors the priority logic in [_getRepeaterMarkerColor]: duplicate > dead
-  /// > new > active.
+  /// > new > backbone > active.
+  ///
+  /// Backbone sits just above active and never stacks with anything: it
+  /// REPLACES the active colour, and a stale or ambiguous repeater keeps its
+  /// own even when the server marks it. `Repeater.isBackbone` already folds
+  /// the active requirement in.
   String _repeaterStatusKey(Repeater repeater, bool isDuplicate) {
-    if (isDuplicate) return 'dup';
-    if (repeater.isDead) return 'dead';
-    if (repeater.isNew) return 'new';
-    return 'active';
+    if (isDuplicate) return RepeaterMarkerStatus.excluded.wireKey;
+    if (repeater.isDead) return RepeaterMarkerStatus.stale.wireKey;
+    if (repeater.isNew) return RepeaterMarkerStatus.fresh.wireKey;
+    if (repeater.isBackbone) return RepeaterMarkerStatus.backbone.wireKey;
+    return RepeaterMarkerStatus.active.wireKey;
   }
 
   /// Ensures every baked repeater-chip image referenced by [featureCollection]
@@ -4101,6 +4184,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           hex,
           _repeaterStatusColor(status),
           _repeaterBorderRadius(hop),
+          isNew: status == RepeaterMarkerStatus.fresh.wireKey,
         );
         await _mapController!.addImage(name, bytes);
         _registeredChipImages.add(name);
@@ -4112,6 +4196,67 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (baked > 0) {
       debugLog('[MAP] Baked $baked new repeater chip image(s); '
           '${_registeredChipImages.length} total registered');
+    }
+  }
+
+  /// The distinct repeater states carried by [featureCollection].
+  ///
+  /// Read back off the pushed collection rather than recomputed from app
+  /// state, so the bitmaps registered can never name a different set from the
+  /// one the layer will ask for.
+  Set<RepeaterMarkerStatus> _statusesInCollection(
+      Map<String, dynamic> featureCollection) {
+    final present = <RepeaterMarkerStatus>{};
+    final features =
+        (featureCollection['features'] as List?) ?? const <dynamic>[];
+    for (final f in features) {
+      final props = (f as Map)['properties'] as Map?;
+      final key = props?[RepeaterMarkerStyle.statusProperty];
+      if (key is! String) continue;
+      final status = RepeaterMarkerStyle.statusForKey(key);
+      if (status != null) present.add(status);
+    }
+    return present;
+  }
+
+  /// Ensures a presence-dot strip exists for every combination of states the
+  /// cluster badges can actually show, given the states [present] on screen.
+  ///
+  /// The badge layer's `step` expression names all 32 masks, but only subsets
+  /// of what is visible are reachable: a zone showing active, new and stale
+  /// needs 8 strips, not 32. Mask 0 is always baked as the expression's
+  /// fallback, though a cluster never has zero points.
+  ///
+  /// Deduped by image name in [_registeredDotImages], cleared on style reload
+  /// alongside the chip cache.
+  Future<void> _ensureRepeaterDotImages(
+      Set<RepeaterMarkerStatus> present) async {
+    if (_mapController == null) return;
+    final presentMask = present.fold<int>(
+      0,
+      (mask, status) => mask | (1 << RepeaterMarkerStatus.values.indexOf(status)),
+    );
+    var baked = 0;
+    for (var mask = 0; mask < RepeaterMarkerStyle.presenceMaskCount; mask++) {
+      // Only masks that are subsets of what is on screen can ever be selected.
+      if (mask & ~presentMask != 0) continue;
+      final name = _MapImages.repeaterDots(mask);
+      if (_registeredDotImages.contains(name)) continue;
+      try {
+        final bytes = await _renderRepeaterDotsPng([
+          for (final status in RepeaterMarkerStyle.statusesInMask(mask))
+            _repeaterStatusColor(status.wireKey),
+        ]);
+        await _mapController!.addImage(name, bytes);
+        _registeredDotImages.add(name);
+        baked++;
+      } catch (e) {
+        debugError('[MAP] render/addImage(cluster dots $name) failed: $e');
+      }
+    }
+    if (baked > 0) {
+      debugLog('[MAP] Baked $baked new cluster presence-dot strip(s); '
+          '${_registeredDotImages.length} total registered');
     }
   }
 
@@ -4202,6 +4347,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           'iconImage': iconImage,
           'color': colorHex,
           'hex': hex,
+          // The cluster source sums one running count per state off this, so
+          // a badge can name its dominant state and the states present in it.
+          RepeaterMarkerStyle.statusProperty: statusKey,
           'isDuplicate': isDuplicate,
           if (hopOverride != null) 'hopOverride': hopOverride,
           if (spiderIds.contains(repeater.id)) 'inSpider': true,
@@ -4243,6 +4391,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _spiderSymbolLayerId,
       _spiderLineLayerId,
       _repeaterClusterCountLayerId,
+      _repeaterClusterDotsLayerId,
       _repeaterClusterBubbleLayerId,
       _repeaterIndividualLayerId,
     ]) {
@@ -4259,30 +4408,55 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
     // Shared symbol styling for the individual layer AND the spider symbol
     // layer (the spider comment requires they look identical). Selected once by
-    // mode: Simplified keeps the shared-glyph text-field hex; Detailed bakes the
-    // hex into the chip image (no text-field, no iconColor — colour is baked in)
-    // so overlapping un-clustered chips can't have a label detach. iconSize 1.0
-    // matches the distance-label baked-icon convention (DPR-3 PNG, centre
-    // anchor); the Simplified 48×28 shape keeps its existing 1.4 scale.
+    // mode: Simplified draws the chip BODY as a shared image and lets MapLibre
+    // place the hex as a shared-glyph label; Detailed bakes the hex into the
+    // chip image (no text-field) so overlapping un-clustered chips can't have a
+    // label detach onto a neighbour's box.
+    //
+    // No iconColor: the chip is neutral by design and the state rides its edge,
+    // so there is nothing left to tint. Both modes render at the same
+    // iconScale, so a Grid Mode switch no longer changes marker size.
+    //
+    // The Simplified label is nudged right by half the state bar, because it is
+    // centred in the space RIGHT of the bar rather than in the whole chip.
+    // text-offset is in ems, so that is barWidth / 2 over the font size. The
+    // halo is the body colour, not black: it only exists to keep a glyph
+    // legible if it overhangs the body, and a black one would smear the chip.
+    const labelNudgeEm = RepeaterMarkerStyle.barWidth /
+        2 /
+        RepeaterMarkerStyle.chipFontSize;
+    final labelInk = _colorToHex(
+        RepeaterMarkerStyle.labelInkFor(RepeaterMarkerStyle.bodyColor));
     final SymbolLayerProperties repeaterSymbolProps = clustered
-        ? const SymbolLayerProperties(
-            iconImage: ['get', 'iconImage'],
-            iconColor: ['get', 'color'],
-            iconSize: 1.4,
+        ? SymbolLayerProperties(
+            iconImage: const ['get', 'iconImage'],
+            iconSize: RepeaterMarkerStyle.iconScale,
             iconAllowOverlap: true,
             iconIgnorePlacement: true,
-            textField: ['get', 'hex'],
-            textColor: '#FFFFFF',
-            textHaloColor: '#000000',
-            textHaloWidth: 1.5,
-            textSize: 13,
+            textField: const ['get', 'hex'],
+            textColor: labelInk,
+            textHaloColor: _colorToHex(RepeaterMarkerStyle.bodyColor),
+            textHaloWidth: 1,
+            // A newly discovered repeater gets the taller chip and the larger
+            // label. Data-driven, so one layer still covers every state.
+            textSize: [
+              'case',
+              [
+                '==',
+                ['get', RepeaterMarkerStyle.statusProperty],
+                RepeaterMarkerStatus.fresh.wireKey
+              ],
+              RepeaterMarkerStyle.chipFontSizeNew,
+              RepeaterMarkerStyle.chipFontSize,
+            ],
+            textOffset: const [labelNudgeEm, 0],
             textAllowOverlap: true,
             textIgnorePlacement: true,
             textFont: _defaultFontStack,
           )
         : const SymbolLayerProperties(
             iconImage: ['get', 'iconImage'],
-            iconSize: 1.0,
+            iconSize: RepeaterMarkerStyle.iconScale,
             iconAllowOverlap: true,
             iconIgnorePlacement: true,
           );
@@ -4315,6 +4489,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // zooms still separate into individuals naturally on zoom. Inert
           // when cluster is false.
           clusterMaxZoom: 17,
+          // One running count per state, summed natively as points merge. The
+          // badge reads them for its ring (which state DOMINATES) and its dots
+          // (which states are PRESENT). Clustering happens inside MapLibre, so
+          // there is no Dart-side view of a cluster's members to derive this
+          // from. Unimplemented on iOS and absent on Android before the
+          // MapLibre upgrade, which is what this badge waited on.
+          clusterProperties: RepeaterMarkerStyle.clusterProperties(),
         ),
       );
 
@@ -4346,45 +4527,61 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         belowLayerId: belowLayer,
       );
 
-      // Layer 2: cluster bubble (circle, sized by point_count).
-      // The 'step' expression makes the bubble grow as more repeaters merge:
-      //   - default radius 18px (clusters of 2-9)
-      //   - 22px for clusters of 10+
-      //   - 26px for clusters of 50+
-      await _mapController!.addCircleLayer(
+      // Layer 2: the cluster badge disc, picked by the cluster's DOMINANT
+      // state. A fixed radius, unlike the old bubble that grew with the count:
+      // the count is already written across it, so growth said nothing extra.
+      //
+      // Layers 2-4 are added in bottom-to-top order: each goes directly below
+      // `belowLayer`, so a later one lands above its predecessor. Disc, then
+      // dots, then count.
+      await _mapController!.addSymbolLayer(
         _repeaterSourceId,
         _repeaterClusterBubbleLayerId,
-        CircleLayerProperties(
-          circleColor: _colorToHex(PingColors.repeaterActive),
-          circleRadius: const [
-            'step',
-            ['get', 'point_count'],
-            18,
-            10,
-            22,
-            50,
-            26,
-          ],
-          circleStrokeColor: '#FFFFFF',
-          circleStrokeWidth: 2,
-          circleOpacity: 0.9,
+        SymbolLayerProperties(
+          iconImage: RepeaterMarkerStyle.dominantStatusExpression(
+              (status) => _MapImages.repeaterBadge(status.wireKey)),
+          iconSize: RepeaterMarkerStyle.iconScale,
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
         ),
         filter: ['has', 'point_count'],
         belowLayerId: belowLayer,
       );
 
-      // Layer 3: cluster count text (uses MapLibre's built-in
+      // Layer 3: the presence dots, one per state PRESENT, picked by a bitmask
+      // of the states in the cluster. icon-offset is multiplied by icon-size,
+      // so the row lands on the badge at the same scale as the badge itself.
+      await _mapController!.addSymbolLayer(
+        _repeaterSourceId,
+        _repeaterClusterDotsLayerId,
+        SymbolLayerProperties(
+          iconImage: RepeaterMarkerStyle.presenceMaskImageExpression(
+              (mask) => _MapImages.repeaterDots(mask)),
+          iconSize: RepeaterMarkerStyle.iconScale,
+          iconOffset: const [0, RepeaterMarkerStyle.dotRowCenterY],
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+        ),
+        filter: ['has', 'point_count'],
+        belowLayerId: belowLayer,
+      );
+
+      // Layer 4: cluster count text (uses MapLibre's built-in
       // 'point_count_abbreviated' property — automatically formatted as
-      // "1.2k" for large counts).
+      // "1.2k" for large counts). Sits above the disc's centre, leaving the
+      // dot row its own band underneath. Ink derived from the body, like every
+      // other label on these markers.
       await _mapController!.addSymbolLayer(
         _repeaterSourceId,
         _repeaterClusterCountLayerId,
-        const SymbolLayerProperties(
-          textField: ['get', 'point_count_abbreviated'],
-          textColor: '#FFFFFF',
-          textSize: 14,
-          textHaloColor: '#000000',
-          textHaloWidth: 1,
+        SymbolLayerProperties(
+          textField: const ['get', 'point_count_abbreviated'],
+          textColor: labelInk,
+          textSize: RepeaterMarkerStyle.countFontSize,
+          textOffset: const [
+            0,
+            RepeaterMarkerStyle.countCenterY / RepeaterMarkerStyle.countFontSize
+          ],
           textAllowOverlap: true,
           textIgnorePlacement: true,
           textFont: _defaultFontStack,
@@ -4392,6 +4589,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         filter: ['has', 'point_count'],
         belowLayerId: belowLayer,
       );
+
 
       // Spider shadow source + layers — non-clustered. Carries spread Point
       // features (one per spiderfied repeater) and LineString features for
@@ -4488,6 +4686,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // shape images). Driven off the FeatureCollection, so it can't drift.
       if (appState.preferences.coverageGridSize == 100) {
         await _ensureRepeaterChipImages(geojson);
+      } else {
+        // Simplified clusters, so the badges need a presence-dot strip for
+        // every combination of the states actually on screen. Read off the
+        // same collection for the same reason.
+        await _ensureRepeaterDotImages(_statusesInCollection(geojson));
       }
       await _mapController!.setGeoJsonSource(_repeaterSourceId, geojson);
     } catch (e) {
@@ -4766,6 +4969,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           'iconImage': iconImage,
           'color': colorHex,
           'hex': hex,
+          RepeaterMarkerStyle.statusProperty: statusKey,
           'isDuplicate': isDuplicate,
           if (hopOverride != null) 'hopOverride': hopOverride,
         },
@@ -7028,6 +7232,84 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         ),
                         const SizedBox(height: 20),
 
+                        // Repeaters section
+                        Text(
+                          'Repeaters',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'The state is on the marker edge, so the coverage '
+                            'underneath stays readable.',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surface,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outline
+                                    .withValues(alpha: 0.3)),
+                          ),
+                          child: Column(
+                            children: [
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.active,
+                                label: 'Active',
+                                description: 'Heard recently',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.fresh,
+                                label: 'New',
+                                description: 'Added in the last few days',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.stale,
+                                label: 'Stale',
+                                description:
+                                    'Not heard for a while in this region',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.excluded,
+                                label: 'Overlap',
+                                description:
+                                    'Its ID matches another repeater at this '
+                                    'ID length',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterLegendItem(
+                                context: context,
+                                status: RepeaterMarkerStatus.backbone,
+                                label: 'Backbone',
+                                description:
+                                    "Carries a large share of this region's "
+                                    'traffic',
+                              ),
+                              _legendDivider(context),
+                              _buildRepeaterGroupLegendItem(context),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+
+
                         // Sound Notifications section
                         Text(
                           'Sound Notifications',
@@ -7258,6 +7540,113 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Build a legend item row with colored circle, label, and description
+  /// The hairline rule the legend puts between rows.
+  Widget _legendDivider(BuildContext context) => Divider(
+        height: 1,
+        color:
+            Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+      );
+
+  /// A miniature of the real marker: neutral body, state on the edge. Drawn
+  /// rather than reduced to a colour dot, because the whole point of the
+  /// design is WHERE the colour sits.
+  Widget _repeaterChipSwatch(Color accent) => Container(
+        width: 30,
+        height: 18,
+        alignment: Alignment.centerLeft,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: RepeaterMarkerStyle.bodyColor,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: accent, width: 1.5),
+        ),
+        child: Container(width: 5, color: accent),
+      );
+
+  /// One repeater-state row in the legend.
+  Widget _buildRepeaterLegendItem({
+    required BuildContext context,
+    required RepeaterMarkerStatus status,
+    required String label,
+    required String description,
+  }) =>
+      _legendRow(
+        context: context,
+        swatch: _repeaterChipSwatch(RepeaterMarkerStyle.colorFor(status)),
+        label: label,
+        description: description,
+      );
+
+  /// The group-marker row. Its ring and dots answer two different questions,
+  /// so the description has to say both.
+  Widget _buildRepeaterGroupLegendItem(BuildContext context) => _legendRow(
+        context: context,
+        swatch: SizedBox(
+          width: 30,
+          height: 18,
+          child: Center(
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: RepeaterMarkerStyle.bodyColor,
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: RepeaterMarkerStyle.colorFor(
+                        RepeaterMarkerStatus.active),
+                    width: 2),
+              ),
+            ),
+          ),
+        ),
+        label: 'Group',
+        description: 'Several repeaters too close to separate. The ring is '
+            'the most common state among them, and there is one dot for each '
+            'state inside.',
+      );
+
+  /// Shared row layout for the legend: swatch, fixed-width label, description.
+  Widget _legendRow({
+    required BuildContext context,
+    required Widget swatch,
+    required String label,
+    required String description,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          swatch,
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 64,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLegendItem({
     required BuildContext context,
     required Color color,
@@ -7770,6 +8159,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
   /// Dead repeater marker color (delegates to active palette)
   static Color get _repeaterDeadColor => PingColors.repeaterDead;
+
+  /// Backbone repeater marker color (delegates to active palette). Gold, and
+  /// deliberately LIGHT: the same hue any darker reads as brown.
+  static Color get _repeaterBackboneColor => PingColors.repeaterBackbone;
+
+  /// The backbone share as a short suffix, or empty when the server did not
+  /// send one. A share that rounds to zero reads as "<1%" rather than "0%",
+  /// which would look like the repeater carries nothing.
+  static String _backboneShareSuffix(Repeater repeater) {
+    final share = repeater.backboneShare;
+    if (share == null || !share.isFinite || share <= 0) return '';
+    final percent = (share * 100).round();
+    return percent < 1 ? ' · <1%' : ' · $percent%';
+  }
 
   /// Get set of duplicate repeater IDs
   /// Resolve heard repeater hex IDs to Repeater objects with GPS coordinates.
@@ -8660,17 +9063,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   List<Repeater> _mapVisibleRepeaters(AppStateProvider appState) =>
       appState.repeaters.where((r) => r.isHeardRecently).toList();
 
-  /// Get marker color for a repeater based on status priority:
-  /// 1. Duplicate → Red (always takes priority)
-  /// 2. Dead → Grey (not heard in 24 hours)
-  /// 3. New → Orange (created in past 7 days)
-  /// 4. Active → Magenta (default healthy state)
-  Color _getRepeaterMarkerColor(Repeater repeater, bool isDuplicate) {
-    if (isDuplicate) return _repeaterDuplicateColor;
-    if (repeater.isDead) return _repeaterDeadColor;
-    if (repeater.isNew) return _repeaterNewColor;
-    return _repeaterMarkerColor; // Active (default)
-  }
+  /// The accent colour for a repeater, by the one status priority chain in
+  /// [_repeaterStatusKey]: duplicate > dead > new > backbone > active.
+  ///
+  /// Deliberately not a second copy of that chain. The two drifting apart
+  /// would show a marker in one colour and its detail sheet in another.
+  Color _getRepeaterMarkerColor(Repeater repeater, bool isDuplicate) =>
+      _repeaterStatusColor(_repeaterStatusKey(repeater, isDuplicate));
 
   /// Compute node column width based on hop byte count.
   /// [extraPadding] adds space for additional content (e.g. nodeTypeLabel in DISC popup).
@@ -10017,6 +10416,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     } else if (repeater.isNew) {
       statusLabel = 'New Repeater';
       statusColor = _repeaterNewColor;
+    } else if (repeater.isBackbone) {
+      // The server's verdict, never worked out here: it ranks a whole region's
+      // repeaters by their share of its traffic, which this app never sees.
+      // The share rides along on the chip when the server sent one.
+      statusLabel = 'Backbone Repeater${_backboneShareSuffix(repeater)}';
+      statusColor = _repeaterBackboneColor;
     } else if (repeater.isActive) {
       statusLabel = 'Repeater Online';
       statusColor = _repeaterMarkerColor;
@@ -11167,60 +11572,45 @@ class _DiamondMarkerPainter extends CustomPainter {
 /// and drop shadow). Used at startup to generate bitmap variants for native
 /// MapLibre symbols. The text (hex ID) is rendered separately by the symbol's
 /// `textField` property at runtime — this painter only draws the box itself.
+/// Draws the Simplified-mode chip BODY (no label). MapLibre places the hex on
+/// top as a shared-glyph text label, so this bitmap is shared by every
+/// repeater at the same (state, hop) and the atlas stays small.
+///
+/// Detailed mode bakes the label in instead (see [_renderRepeaterChipPng])
+/// because its markers are un-clustered and a shared-glyph label can detach
+/// onto an overlapping neighbour's box.
 class _RepeaterShapePainter extends CustomPainter {
-  final Color fillColor;
+  final Color accent;
   final double borderRadius;
+  final bool isNew;
 
   const _RepeaterShapePainter({
-    required this.fillColor,
+    required this.accent,
     required this.borderRadius,
+    required this.isNew,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Inset the box by the shadow blur amount so the shadow has room to draw
-    const shadowBlur = 4.0;
-    final boxRect = Rect.fromLTWH(
-      shadowBlur,
-      shadowBlur,
-      size.width - 2 * shadowBlur,
-      size.height - 2 * shadowBlur,
-    );
-
-    // Drop shadow (positioned 2px below the box)
-    final shadowPaint = Paint()
-      ..color = Colors.black26
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, shadowBlur);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        boxRect.shift(const Offset(0, 2)),
-        Radius.circular(borderRadius),
+    paintRepeaterChip(
+      canvas,
+      Rect.fromLTWH(
+        repeaterChipGlowMargin,
+        repeaterChipGlowMargin,
+        size.width - repeaterChipGlowMargin * 2,
+        size.height - repeaterChipGlowMargin * 2,
       ),
-      shadowPaint,
-    );
-
-    // Filled colored box
-    final fillPaint = Paint()..color = fillColor;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(boxRect, Radius.circular(borderRadius)),
-      fillPaint,
-    );
-
-    // White border (2px wide, drawn inside the box edge)
-    final borderPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
-    final innerRect = boxRect.deflate(1);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(innerRect, Radius.circular(borderRadius - 1)),
-      borderPaint,
+      accent,
+      borderRadius,
+      isNew: isNew,
     );
   }
 
   @override
   bool shouldRepaint(covariant _RepeaterShapePainter old) =>
-      old.fillColor != fillColor || old.borderRadius != borderRadius;
+      old.accent != accent ||
+      old.borderRadius != borderRadius ||
+      old.isNew != isNew;
 }
 
 /// Paints a coverage ping marker (TX/RX/DISC/Trace) in one of the four user

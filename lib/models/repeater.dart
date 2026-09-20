@@ -106,6 +106,28 @@ class Repeater {
   /// predates this field or none were reported.
   final List<ProvenNeighbour> provenNeighbours;
 
+  /// Whether the server ranks this repeater as part of its region's backbone:
+  /// the smallest set of repeaters carrying half the region's traffic.
+  ///
+  /// **Never computed here.** Scoring is whole-pool, over every repeater in a
+  /// region ranked by its share of the region's summed link counts. The app
+  /// fetches a zone's repeaters, not a region's traffic, so scoring locally
+  /// over whatever it happens to hold would give a different answer from the
+  /// one the web shows for the same area. Read the server's verdict or show
+  /// nothing.
+  ///
+  /// The field is added lazily server-side, so it is **absent** rather than
+  /// null in three ordinary cases: a server that predates it, a region whose
+  /// background job has not run, and a region too quiet to score. Absent means
+  /// "not backbone", it is the expected state, and it is never logged or
+  /// surfaced.
+  final bool backbone;
+
+  /// This repeater's own share of its region's traffic, 0..1, or null when the
+  /// server did not say. Stable and refreshed on the order of hours, so it is
+  /// never polled.
+  final double? backboneShare;
+
   const Repeater({
     required this.id,
     required this.hexId,
@@ -121,6 +143,8 @@ class Repeater {
     this.timeOffset,
     this.admins = const [],
     this.provenNeighbours = const [],
+    this.backbone = false,
+    this.backboneShare,
   });
 
   /// Parse from JSON object in repeaters.json
@@ -167,6 +191,23 @@ class Repeater {
       }
     }
 
+    // Absent is the normal case and means "not backbone": no log line, no
+    // user-visible anything. 1/true/"1" are all accepted because the field
+    // crosses PHP.
+    final rawBackbone = json['backbone'];
+    final backbone = rawBackbone == 1 ||
+        rawBackbone == true ||
+        rawBackbone == '1' ||
+        (rawBackbone is num && rawBackbone == 1);
+    final rawShare = json['backbone_share'];
+    final shareValue = rawShare is num
+        ? rawShare
+        : rawShare is String
+            ? num.tryParse(rawShare)
+            : null;
+    final backboneShare =
+        shareValue == null || !shareValue.isFinite ? null : shareValue.toDouble();
+
     return Repeater(
       id: json['id'] as String,
       hexId: json['hex_id'] as String? ?? '',
@@ -182,6 +223,8 @@ class Repeater {
       timeOffset: timeOffset,
       admins: admins,
       provenNeighbours: proven,
+      backbone: backbone,
+      backboneShare: backboneShare,
     );
   }
 
@@ -201,6 +244,10 @@ class Repeater {
       'time_offset': timeOffset,
       'admins': admins,
       'proven_neighbours': provenNeighbours.map((n) => n.toJson()).toList(),
+      // Round-tripped only when set, so a cached list keeps the same "absent
+      // means not backbone" shape the server sends.
+      if (backbone) 'backbone': 1,
+      if (backboneShare != null) 'backbone_share': backboneShare,
     };
   }
 
@@ -243,6 +290,13 @@ class Repeater {
 
   /// Check if the repeater has not been heard in the past 24 hours
   bool get isDead => !isActive;
+
+  /// True when this repeater should be drawn in the backbone accent.
+  ///
+  /// Backbone replaces the active colour and never stacks with another state,
+  /// so a stale or ambiguous repeater keeps its own colour even if the server
+  /// marks it.
+  bool get isBackbone => backbone && isActive;
 
   /// True if the repeater has been heard within the past 30 days. Used by
   /// the map to hide long-stale repeaters. Returns false when [lastHeard]

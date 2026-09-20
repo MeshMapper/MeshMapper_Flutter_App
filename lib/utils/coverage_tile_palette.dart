@@ -45,7 +45,9 @@ class CoverageTilePalette {
       ['#009E73', '#006F51'],
       ['#E69F00', '#A16F00'],
       ['#CC79A7', '#8F5575'],
-      ['#CC79A7', '#8F5575'],
+      // Purple/RX was #CC79A7, the same hex as orange/TX above, so the two
+      // categories were indistinguishable. The server split them 2026-09-19.
+      ['#5E35B1', '#42257C'],
       ['#9E9E9E', '#6F6F6F'],
       ['#D55E00', '#954200'],
     ],

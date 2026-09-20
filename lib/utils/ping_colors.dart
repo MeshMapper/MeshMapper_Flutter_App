@@ -32,11 +32,15 @@ class ColorPalette {
   final Color signalMedium;
   final Color signalBad;
 
-  // Repeater status on map
+  // Repeater marker accents on the map. These are ACCENTS on a constant
+  // neutral chip body, never fills. See [RepeaterMarkerStyle]: painting a
+  // chip in one of them puts it in direct competition with the coverage
+  // carpet drawn underneath.
   final Color repeaterActive;
   final Color repeaterNew;
   final Color repeaterDead;
   final Color repeaterDuplicate;
+  final Color repeaterBackbone;
 
   // Noise floor gradient (good → medium → bad)
   final Color noiseFloorGood;
@@ -68,6 +72,7 @@ class ColorPalette {
     required this.repeaterNew,
     required this.repeaterDead,
     required this.repeaterDuplicate,
+    required this.repeaterBackbone,
     required this.noiseFloorGood,
     required this.noiseFloorMedium,
     required this.noiseFloorBad,
@@ -104,10 +109,11 @@ class ColorPalettes {
     signalGood: Colors.green,
     signalMedium: Colors.orange,
     signalBad: Colors.red,
-    repeaterActive: Color(0xFFD63384),
-    repeaterNew: Color(0xFFFD7E14),
-    repeaterDead: Color(0xFF6C757D),
-    repeaterDuplicate: Color(0xFFDC3545),
+    repeaterActive: Color(0xFF2BB673),
+    repeaterNew: Color(0xFFFF4D9D),
+    repeaterDead: Color(0xFF8A97A3),
+    repeaterDuplicate: Color(0xFFE0565B),
+    repeaterBackbone: Color(0xFFE8B923), // Gold: stays light on purpose
     noiseFloorGood: Colors.green,
     noiseFloorMedium: Colors.orange,
     noiseFloorBad: Colors.red,
@@ -135,10 +141,11 @@ class ColorPalettes {
     signalGood: Color(0xFF0072B2), // Blue
     signalMedium: Color(0xFFF0E442), // Wong yellow
     signalBad: Color(0xFFD55E00), // Vermillion
-    repeaterActive: Color(0xFFCC79A7), // Reddish purple
-    repeaterNew: Color(0xFFF0E442), // Yellow
-    repeaterDead: Color(0xFF9E9E9E), // Grey
-    repeaterDuplicate: Color(0xFFD55E00), // Vermillion
+    repeaterActive: Color(0xFF2E8FDB), // Blue
+    repeaterNew: Color(0xFFF0E442), // Wong yellow
+    repeaterDead: Color(0xFFC2C8CE), // Light grey
+    repeaterDuplicate: Color(0xFFE8833C), // Orange
+    repeaterBackbone: Color(0xFFFFFFFF), // White
     noiseFloorGood: Color(0xFF0072B2),
     noiseFloorMedium: Color(0xFFF0E442),
     noiseFloorBad: Color(0xFFD55E00),
@@ -166,10 +173,11 @@ class ColorPalettes {
     signalGood: Color(0xFF009E73), // Bluish green
     signalMedium: Color(0xFFE69F00), // Orange
     signalBad: Color(0xFFD55E00), // Vermillion
-    repeaterActive: Color(0xFFCC79A7), // Reddish purple
-    repeaterNew: Color(0xFFE69F00), // Orange
-    repeaterDead: Color(0xFF9E9E9E), // Grey
-    repeaterDuplicate: Color(0xFFD55E00), // Vermillion
+    repeaterActive: Color(0xFF3DCB86), // Green
+    repeaterNew: Color(0xFFF58FC2), // Pink
+    repeaterDead: Color(0xFF7E8A94), // Grey
+    repeaterDuplicate: Color(0xFFE03A3A), // Red
+    repeaterBackbone: Color(0xFFFFFFFF), // White
     noiseFloorGood: Color(0xFF009E73),
     noiseFloorMedium: Color(0xFFE69F00),
     noiseFloorBad: Color(0xFFD55E00),
@@ -197,10 +205,11 @@ class ColorPalettes {
     signalGood: Color(0xFFE0E0E0), // Light
     signalMedium: Color(0xFF9E9E9E), // Medium
     signalBad: Color(0xFF424242), // Very dark
-    repeaterActive: Color(0xFFE0E0E0), // Light
-    repeaterNew: Color(0xFFBDBDBD), // Medium-light
-    repeaterDead: Color(0xFF616161), // Dark
-    repeaterDuplicate: Color(0xFF424242), // Very dark
+    repeaterActive: Color(0xFFBBBBBB), // Light
+    repeaterNew: Color(0xFFDDDDDD), // Lightest
+    repeaterDead: Color(0xFF7C7C7C), // Dark
+    repeaterDuplicate: Color(0xFF9B9B9B), // Medium-dark
+    repeaterBackbone: Color(0xFFFFFFFF), // White
     noiseFloorGood: Color(0xFFE0E0E0),
     noiseFloorMedium: Color(0xFF9E9E9E),
     noiseFloorBad: Color(0xFF424242),
@@ -268,6 +277,7 @@ class PingColors {
   static Color get repeaterNew => _activePalette.repeaterNew;
   static Color get repeaterDead => _activePalette.repeaterDead;
   static Color get repeaterDuplicate => _activePalette.repeaterDuplicate;
+  static Color get repeaterBackbone => _activePalette.repeaterBackbone;
 
   // ── Noise floor gradient ──
   static Color get noiseFloorGood => _activePalette.noiseFloorGood;

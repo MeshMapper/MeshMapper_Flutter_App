@@ -84,13 +84,18 @@ class ExternalSurfaceGeoBuilder {
     return latestColor;
   }
 
-  /// Colour for a repeater pin, matching the iOS map's `_repeaterStatusColor`.
+  /// Colour for a repeater pin, matching the map's `_repeaterStatusKey`
+  /// priority chain. Duplicate is not represented here: these surfaces show
+  /// one pin at a time, with no neighbour to collide with.
   static ExternalSurfaceColor repeaterColor(Repeater repeater) {
     if (repeater.isDead) {
       return ExternalSurfaceColor.fromColor(PingColors.repeaterDead);
     }
     if (repeater.isNew) {
       return ExternalSurfaceColor.fromColor(PingColors.repeaterNew);
+    }
+    if (repeater.isBackbone) {
+      return ExternalSurfaceColor.fromColor(PingColors.repeaterBackbone);
     }
     return ExternalSurfaceColor.fromColor(PingColors.repeaterActive);
   }
