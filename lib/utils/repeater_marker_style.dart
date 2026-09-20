@@ -317,24 +317,26 @@ class RepeaterMarkerStyle {
 
   /// Picks [imageForStatus] by the cluster's dominant state.
   ///
-  /// A `case` chain rather than a sort: the first status whose count is at
-  /// least every later status's count wins, which is plurality with ties
-  /// broken in declaration order, the same rule as [dominantStatus].
+  /// The first status whose count equals the maximum wins, preserving ties
+  /// in declaration order. Keep each `case` binary: iOS translates a multi-arm
+  /// case to MLN_IF, which crashes in native literal parsing for icon images.
+  /// Comparing with the maximum also avoids iOS folding paired inequalities
+  /// into a BETWEEN predicate with different bounds.
   static List<Object> dominantStatusExpression(
     String Function(RepeaterMarkerStatus status) imageForStatus,
   ) {
     const all = RepeaterMarkerStatus.values;
-    final expr = <Object>['case'];
-    for (var i = 0; i < all.length - 1; i++) {
-      final tests = <Object>['all'];
-      for (var j = i + 1; j < all.length; j++) {
-        tests.add(<Object>['>=', _count(all[i]), _count(all[j])]);
-      }
-      expr.add(tests);
-      expr.add(imageForStatus(all[i]));
+    final maximum = <Object>['max', for (final status in all) _count(status)];
+    Object result = imageForStatus(all.last);
+    for (var i = all.length - 2; i >= 0; i--) {
+      result = <Object>[
+        'case',
+        <Object>['==', _count(all[i]), maximum],
+        imageForStatus(all[i]),
+        result,
+      ];
     }
-    expr.add(imageForStatus(all.last)); // fallback: every earlier test failed
-    return expr;
+    return result as List<Object>;
   }
 
   /// The cluster's presence bitmask as a MapLibre expression, mirroring

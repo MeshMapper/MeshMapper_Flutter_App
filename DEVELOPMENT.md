@@ -1020,8 +1020,13 @@ sat on. The constant body is dE 25.7 from the nearest coverage colour.
   there is no Dart-side view of a cluster's members. The source declares one
   `clusterProperties` running count per state, accumulated with `+` only (the
   operator both native bridges are exercised with); the badge layer picks its
-  disc with a `case` chain over those counts (plurality, ties to the earlier
-  status) and its dot strip with a `step` over a presence bitmask. This needed
+  disc with nested binary `case` expressions comparing each count to the
+  maximum (plurality, ties to the earlier status). Binary cases avoid the iOS
+  MLN_IF icon-image parsing crash; maximum comparisons avoid its BETWEEN
+  predicate folding. The native regression check in
+  `test/native/check_repeater_expressions.py` exercises the production JSON
+  against the pinned simulator SDK. The layer picks its dot strip with a `step`
+  over a presence bitmask. This needed
   the MapLibre upgrade: `clusterProperties` was unimplemented on iOS and absent
   on Android before it.
 - **Bitmaps.** Simplified (clustered) bakes 15 chip BODIES (5 states x 3 hop

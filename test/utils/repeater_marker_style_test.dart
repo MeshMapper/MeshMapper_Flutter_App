@@ -19,6 +19,10 @@ Object _eval(Object expr, Map<String, Object> props) {
   switch (op) {
     case 'get':
       return props[args[0] as String] ?? 0;
+    case 'max':
+      return args
+          .map((a) => _eval(a, props) as num)
+          .reduce((a, b) => a > b ? a : b);
     case '+':
       return args.fold<num>(0, (sum, a) => sum + (_eval(a, props) as num));
     case '>':
@@ -268,6 +272,21 @@ void main() {
             reason: 'counts $counts');
       }
     });
+
+    test('they agree on EVERY tie and plurality shape, not just samples', () {
+      // Counts drawn from {0, 1, 2} over five states cover every shape that
+      // can decide the winner: absent, present, and present-more-than-another.
+      // The same 243 cases run against the real iOS SDK in
+      // test/native/check_repeater_expressions.py, but that one needs a booted
+      // simulator, so this is the copy that runs everywhere.
+      final expr = RepeaterMarkerStyle.dominantStatusExpression(
+          (status) => status.wireKey);
+      for (final counts in _everyCountShape()) {
+        expect(_eval(expr, _clusterProps(counts)),
+            RepeaterMarkerStyle.dominantStatus(counts).wireKey,
+            reason: 'counts $counts');
+      }
+    });
   });
 
   group('presence mask', () {
@@ -296,7 +315,7 @@ void main() {
 
     test('the MapLibre expression agrees with the Dart reference', () {
       final expr = RepeaterMarkerStyle.presenceMaskExpression();
-      for (final counts in _sampleCounts()) {
+      for (final counts in _everyCountShape()) {
         expect(_eval(expr, _clusterProps(counts)),
             RepeaterMarkerStyle.presenceMask(counts),
             reason: 'counts $counts');
@@ -341,6 +360,22 @@ void main() {
       }
     });
   });
+}
+
+/// Every count vector over {0, 1, 2} for the five states: 243 in all, the same
+/// grid the native check walks.
+Iterable<List<int>> _everyCountShape() sync* {
+  final n = RepeaterMarkerStatus.values.length;
+  final total = [for (var i = 0; i < n; i++) 3].fold<int>(1, (a, b) => a * b);
+  for (var sample = 0; sample < total; sample++) {
+    var value = sample;
+    final counts = <int>[];
+    for (var i = 0; i < n; i++) {
+      counts.add(value % 3);
+      value ~/= 3;
+    }
+    yield counts;
+  }
 }
 
 /// Count vectors worth checking: every single state alone, a few pluralities,
