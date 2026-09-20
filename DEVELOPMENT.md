@@ -1673,30 +1673,49 @@ Key packages used in this project:
 
 ### Vendored `maplibre_gl` (`third_party/maplibre_gl`)
 
-`maplibre_gl` is consumed from an in-repo copy of the pub.dev `0.25.0` release via
-`dependency_overrides` in `pubspec.yaml`, **not** from pub. The ONLY delta from upstream is a
-native camera-viewport guard.
+The app consumes upstream `0.27.1` through the local `dependency_overrides` path,
+with `example/` and the Android/iOS `.gitignore` files omitted. The native delta
+is confined to the two `MapLibreMapController` files, tagged `MESHMAPPER GUARD`:
 
-**Why:** MapLibre's transform unprojects against the live viewport. When the GL surface is
-degenerate/zero-sized (e.g. a launch where tiles never finish loading, so the surface never renders
-a real frame), the very first animated `flyTo`/`setCamera` makes `unproject` produce NaN, and
-`mbgl::LatLng`'s constructor throws an **uncaught C++ `std::domain_error` → SIGABRT**. That throw
-crosses the Obj-C++→Swift/JNI boundary and **cannot be caught from Dart**, so the only place it can
-be reliably stopped is inside the plugin's camera handlers.
+- Android retains the `camera#move` and `camera#animate` guards. A missing map view
+  or either dimension below one pixel completes the call with `false` before
+  camera conversion. Upstream 0.27.1 still has no equivalent viewport check.
+- iOS keeps upstream's central `camera#` deferral before camera conversion, but
+  checks each bounds dimension below one point and limits each call to ten
+  retries, spaced 16 ms apart. A permanently unusable viewport or a controller
+  released while waiting completes the call with `false`. A viewport that becomes
+  usable proceeds normally. Upstream only checks an exactly zero frame and
+  redispatches indefinitely, leaving the Dart future unfinished on persistent
+  layout failure. The retry bound is per call, not shared between camera calls.
 
-**The patch:** the `camera#animate` / `camera#move` / `camera#ease` cases in
-`MapLibreMapController.swift` (iOS) and `MapLibreMapController.java` (Android) bail (completing the
-method-channel result so the Dart `await` returns) when the map view has no usable size
-(`bounds.width/height < 1` / `getWidth()/getHeight() < 1`). Search the patch with the tag
-`MESHMAPPER GUARD`.
+These checks prevent a degenerate viewport from reaching native `unproject`,
+which can produce NaN and an uncaught C++ `std::domain_error` (SIGABRT). Dart
+cannot catch that native abort. The Dart `_mapHasRenderedOnce` / `_canAnimateCamera`
+backstop in `map_widget.dart` remains in place.
 
-The Dart side (`map_widget.dart`) is defense-in-depth: `_mapHasRenderedOnce` (set on the first
-`onMapIdle`) is folded into `_canAnimateCamera`, so no programmatic camera move is even attempted
-until the map has rendered once; the one-shot initial GPS zoom re-attempts on later ticks instead of
-burning. See the `_canAnimateCamera` getter and `_onMapIdle`.
+The previous 0.25.0 vendor also carried ten Android returns after null-style
+errors; the old documentation's claim that the camera guard was the only delta
+was incorrect. Each site was checked against 0.27.1 and all ten are now retired:
+`style#addImage`, `style#addImageSource`, `style#updateImageSource`,
+`style#removeSource`, `style#removeLayer`, `style#setFilter`, `style#getFilter`,
+and `layer#setVisibility` exit with `break` on `STYLE_NOT_READY`.
+`style#addLayer` and `style#addLayerBelow` call `addRasterLayer`, which returns
+`false` before accessing an unavailable style; both callers then report the
+error and exit. No additional style-handler patch is carried.
 
-**On upgrade:** re-apply the `MESHMAPPER GUARD` blocks to the new plugin version (or drop the
-override if upstream gains an equivalent guard).
+**Native versions:** iOS is governed by
+`third_party/maplibre_gl/ios/maplibre_gl/Package.swift`, which pins MapLibre
+`6.28.0`; the podspec matches for CocoaPods consumers. Verify the actual Swift
+package resolution when building this app. Android uses `android-sdk-opengl:13.5.0`,
+including the app's explicit dependency for offline cache access. The previous
+Android version was `12.3.1`. JDK 21 compiles the plugin; the app retains its
+Java/Kotlin 17 targets.
+
+**On upgrade:** compare against the upstream package, retain the camera guards
+unless upstream provides equivalent persistent-viewport protection, and recheck
+all native pins. `python3 -m unittest discover -s test/native` compiles and runs
+the production Swift method's camera gate against controlled viewport and
+lifetime scenarios on macOS. It does not replace real-device rendering checks.
 
 ## Development Workflow Requirements
 
