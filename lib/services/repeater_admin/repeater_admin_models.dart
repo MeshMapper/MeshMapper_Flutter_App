@@ -69,6 +69,8 @@ class RepeaterTarget {
   /// Longitude of the repeater.
   final double lon;
 
+  final String? _displayId;
+
   /// Builds a target from an already-known key, name and location. Throws
   /// [ArgumentError] when [hexId] does not normalize to a full public key.
   RepeaterTarget({
@@ -76,20 +78,33 @@ class RepeaterTarget {
     required this.name,
     required this.lat,
     required this.lon,
-  }) : hexId = normalizePublicKey(hexId) ??
-            (throw ArgumentError.value(hexId, 'hexId', 'not a full public key'));
+    String? displayId,
+  })  : hexId = normalizePublicKey(hexId) ??
+            (throw ArgumentError.value(
+                hexId, 'hexId', 'not a full public key')),
+        _displayId = displayId?.toUpperCase();
 
   /// Builds a target from a [Repeater] loaded from the API. Throws
   /// [ArgumentError] when the repeater's `hexId` is not a full public key.
   factory RepeaterTarget.fromRepeater(Repeater r) {
-    return RepeaterTarget(hexId: r.hexId, name: r.name, lat: r.lat, lon: r.lon);
+    return RepeaterTarget(
+      hexId: r.hexId,
+      name: r.name,
+      lat: r.lat,
+      lon: r.lon,
+      displayId: r.displayHexId(),
+    );
   }
 
   /// The 32-byte public key.
   Uint8List get publicKey => hexToBytes(hexId);
 
-  /// The first 8 hex characters of the key, used as a short display id.
-  String get shortId => hexId.substring(0, 8);
+  /// The per-repeater ID shown in admin UI. Direct callers keep the historical
+  /// eight-character fallback when they do not provide display metadata.
+  String get displayId => _displayId ?? hexId.substring(0, 8);
+
+  /// Backwards-compatible name for the ID shown in admin UI.
+  String get shortId => displayId;
 }
 
 /// A route to a repeater, decoded from the radio's route-hop bytes: a
@@ -124,7 +139,8 @@ class RepeaterRoute {
   /// contact's `out_path_len`, see `ContactRecord.hasRoute`). When the
   /// length does not divide evenly by [hopBytes] (or [hopBytes] is less
   /// than 1), falls back to splitting into one-byte hops.
-  factory RepeaterRoute.fromRouteBytes(Uint8List bytes, {required int hopBytes}) {
+  factory RepeaterRoute.fromRouteBytes(Uint8List bytes,
+      {required int hopBytes}) {
     if (bytes.isEmpty) {
       return const RepeaterRoute.direct();
     }
@@ -321,7 +337,8 @@ NeighbourPage parseNeighbourPage(Uint8List data, {required int prefixLen}) {
         'Neighbour prefix length must be at least 1: $prefixLen');
   }
   if (data.length < 4) {
-    throw FormatException('Neighbour page response too short: ${data.length} bytes');
+    throw FormatException(
+        'Neighbour page response too short: ${data.length} bytes');
   }
   final reader = BufferReader(data);
   final total = reader.readUInt16LE();

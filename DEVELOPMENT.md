@@ -131,6 +131,26 @@ components adapt accent brightness for dark mode; coverage swatches keep the
 map's exact colors. The CARpeater and background-location setup actions use
 the existing provider-backed flows.
 
+### Repeater Identity and Collision Handling
+
+Repeater identity is the cleaned full public key. The server's short `id`
+can collide and must never select a device by first match. Marker taps,
+spider groups, focus, isolation and coverage fading use full keys. The shared
+`RepeaterLookup.resolveByHex` accepts an exact key or a unique prefix/legacy
+id and rejects ambiguous matches, including for devices without coordinates.
+
+At zone load, `repeater_collision.dart` mirrors the web's ordered twin and
+fragment collapse, resets server exclusions, and recomputes exclusions at each
+repeater's effective address width. The provider also caches full keys with a
+conflict warning, since a wider-addressable device may still share two bytes.
+These use the existing duplicate marker style. No collision pass runs on a
+position tick or map rebuild. Load completion uses `_notifyMapNow()`.
+
+Labels and detail/Manage sheets use each repeater's `advert_bytes`, falling
+back to `hop_bytes`, independently of regional TX path-width enforcement.
+Coverage requests use up to 40 characters of the full key to meet the API's
+prefix limit. Legacy narrow coverage tokens can remain inherently ambiguous.
+
 ### Service-Oriented Architecture
 
 The app uses a layered service architecture with clear separation of concerns:

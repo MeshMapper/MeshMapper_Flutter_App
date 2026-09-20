@@ -215,6 +215,8 @@ class RepeaterLookup {
   final Map<String, _RepInfo> _byId = {};
   final Map<String, _RepInfo> _byFullHex = {};
   final Map<String, List<_RepInfo>> _byShortHex = {};
+  final Map<String, List<Repeater>> _identityByFullHex = {};
+  final Map<String, List<Repeater>> _identityByLegacyId = {};
 
   RepeaterLookup._(this.prefixLen);
 
@@ -226,6 +228,14 @@ class RepeaterLookup {
     for (final r in repeaters) {
       // web adds enabled IN (1,2) to the lookup
       if (r.enabled != 1 && r.enabled != 2) continue;
+      final identityHex = _cleanIdentityHex(r.hexId);
+      if (identityHex.isNotEmpty) {
+        (lk._identityByFullHex[identityHex] ??= <Repeater>[]).add(r);
+      }
+      final legacyId = _cleanIdentityHex(r.id);
+      if (legacyId.isNotEmpty) {
+        (lk._identityByLegacyId[legacyId] ??= <Repeater>[]).add(r);
+      }
       if (r.lat.isNaN || r.lon.isNaN) continue;
       // Web parity (index.php:10231 `if (rep.lat && rep.lon && rep.id)`): a 0
       // lat/lon is the "location not published" sentinel — exclude it, or MAX
@@ -251,6 +261,29 @@ class RepeaterLookup {
       if (cleanHex.isNotEmpty) lk._byFullHex[cleanHex] = info;
     }
     return lk;
+  }
+
+  /// Resolves a full key, unique key prefix, or unique legacy id without ever
+  /// choosing arbitrarily between colliding repeaters. Identity indexes include
+  /// repeaters whose location is unpublished; coverage indexes remain limited
+  /// to located repeaters so distance calculations keep their existing rules.
+  Repeater? resolveByHex(String value) {
+    final clean = _cleanIdentityHex(value);
+    if (clean.isEmpty) return null;
+
+    final exact = _identityByFullHex[clean] ?? const <Repeater>[];
+    if (exact.length == 1) return exact.first;
+    if (exact.length > 1) return null;
+
+    final prefixMatches = <Repeater>[];
+    _identityByFullHex.forEach((hex, repeaters) {
+      if (hex.startsWith(clean)) prefixMatches.addAll(repeaters);
+    });
+    if (prefixMatches.length == 1) return prefixMatches.first;
+    if (prefixMatches.length > 1) return null;
+
+    final legacy = _identityByLegacyId[clean] ?? const <Repeater>[];
+    return legacy.length == 1 ? legacy.first : null;
   }
 
   /// Port of `narrowCandidates` (`dev/index.php:9709`): greedy narrowing on a
@@ -308,6 +341,14 @@ class RepeaterLookup {
     if (cands.length == 1) return cands.first;
     return _byId[rid];
   }
+}
+
+String _cleanIdentityHex(String value) {
+  final clean = value
+      .replaceAll('!', '')
+      .replaceAll(RegExp('0x', caseSensitive: false), '')
+      .toLowerCase();
+  return RegExp(r'^[a-f0-9]+$').hasMatch(clean) ? clean : '';
 }
 
 // --- cell GRID SUMMARY -------------------------------------------------------
@@ -459,7 +500,7 @@ class GridSummary {
             if (tLat != null &&
                 tLon != null &&
                 _within100m(targetRep.lat, targetRep.lon, tLat, tLon)) {
-              ids.add(targetRep.id);
+              ids.add(targetRep.hexId);
             }
           }
         }
@@ -533,7 +574,7 @@ class RepeaterStats {
       List<Map<String, dynamic>> points, Repeater target, RepeaterLookup lookup,
       {bool disableDupLogic = false}) {
     final matchedPoints = <Map<String, dynamic>>[];
-    final repId = target.id.toLowerCase();
+    final targetHex = target.hexId.replaceAll(_hexOnlyRe, '').toLowerCase();
     final repLat = target.lat;
     final repLon = target.lon;
     int bidir = 0, tx = 0, rx = 0, disc = 0, dead = 0;
@@ -543,7 +584,7 @@ class RepeaterStats {
       if (!disableDupLogic && m.group(2) == '?') return false;
       final rID = m.group(1)!.toLowerCase();
       final candidates = lookup._candidatesFor(rID);
-      if (!candidates.any((c) => c.id == repId)) return false;
+      if (!candidates.any((c) => c.hexId == targetHex)) return false;
       final coords = m.group(4);
       if (coords != null) {
         final c = coords.split(',');
@@ -606,7 +647,7 @@ class RepeaterStats {
             .replaceAll(_hexOnlyRe, '')
             .toLowerCase();
         final tr = lookup._byFullHex[pk];
-        if (tr != null && tr.id == repId) {
+        if (tr != null && tr.hexId == targetHex) {
           final hrStr = hr is String ? hr : '';
           final cm = _coordBracketRe.firstMatch(hrStr);
           if (cm != null) {
@@ -755,7 +796,8 @@ final RegExp _hexRunRe = RegExp(r'[a-f0-9]+', caseSensitive: false);
 /// and hidden candidates, skip VIA tokens already heard, honour the DISC
 /// public_key pre-branch and the DISC/TRACE coord requirement. The
 /// ambiguous-`?`-no-candidate fallback is omitted because it only ever yields
-/// duplicate-marked endpoints (which the intercept skips).
+/// duplicate-marked endpoints (which the intercept skips). [repeaterId] is the
+/// full cleaned repeater key so downstream selection never aliases a short id.
 List<HeardEndpoint> heardEndpointsForCell(
     List<Map<String, dynamic>> blobPoints, RepeaterLookup lookup,
     {required double startLat, required double startLon}) {
@@ -774,7 +816,7 @@ List<HeardEndpoint> heardEndpointsForCell(
       lat: rep.lat,
       lon: rep.lon,
       snr: snr,
-      repeaterId: rep.id,
+      repeaterId: rep.hexId,
       distanceMeters: _haversineMeters(startLat, startLon, rep.lat, rep.lon),
     );
   }

@@ -20,6 +20,48 @@ void main() {
   final target = _rep('ab12', 'ab12cd34', 45.0, -75.0);
   final lookup = RepeaterLookup.fromRepeaters([target], hopBytes: 2);
 
+  group('RepeaterLookup.resolveByHex', () {
+    final durham = _rep(
+      'DF85',
+      'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
+      36.000378,
+      -78.912449,
+      name: 'df85353ab65d',
+    );
+    final georgia = _rep(
+      'DF85',
+      'DF85F67DCAC04FB8D567C77853DE6DF0DF72C2CE4575C94D03FB990A48A5E702',
+      34.52335,
+      -84.03748,
+      name: 'Dahlonega Solar RAK 1W',
+    );
+    final colliding =
+        RepeaterLookup.fromRepeaters([durham, georgia], hopBytes: 2);
+
+    test('full keys resolve each real DF85 repeater independently', () {
+      expect(colliding.resolveByHex(durham.hexId), same(durham));
+      expect(
+          colliding.resolveByHex(georgia.hexId.toLowerCase()), same(georgia));
+    });
+
+    test('an ambiguous prefix or legacy id is rejected', () {
+      expect(colliding.resolveByHex('DF85'), isNull);
+    });
+
+    test('a unique longer prefix resolves its repeater', () {
+      expect(colliding.resolveByHex('df8535'), same(durham));
+      expect(colliding.resolveByHex('DF85F6'), same(georgia));
+    });
+
+    test('a repeater without a published location remains resolvable', () {
+      final noLocation = _rep('A102', 'A102${'CD' * 30}', 0, 0);
+      final lk = RepeaterLookup.fromRepeaters([noLocation], hopBytes: 2);
+
+      expect(lk.resolveByHex(noLocation.hexId), same(noLocation));
+      expect(lk.resolveByHex('A102'), same(noLocation));
+    });
+  });
+
   group('GridSummary.fromPoints', () {
     final points = <Map<String, dynamic>>[
       // BIDIR, snr 10, noise -100, 0.02° west of the repeater (~1573 m).
@@ -190,6 +232,34 @@ void main() {
       // DROP -> skipped.
       {'status': 0, 'lat': 45.0, 'lon': -75.0},
     ];
+
+    test('a colliding colocated repeater full token does not match target', () {
+      final durham = _rep(
+        'DF85',
+        'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
+        36.000378,
+        -78.912449,
+      );
+      final sibling = _rep(
+        'DF85',
+        'DF85F67DCAC04FB8D567C77853DE6DF0DF72C2CE4575C94D03FB990A48A5E702',
+        36.000378,
+        -78.912449,
+      );
+      final lk = RepeaterLookup.fromRepeaters([durham, sibling], hopBytes: 2);
+      final siblingPoint = <String, dynamic>{
+        'status': 1,
+        'lat': 36.001,
+        'lon': -78.912449,
+        'heard_repeats': '${sibling.hexId}(7)[36.000378,-78.912449]',
+      };
+
+      final result =
+          RepeaterStats.fromCoverageWithPoints([siblingPoint], durham, lk);
+
+      expect(result.stats.totalMatched, 0);
+      expect(result.matched, isEmpty);
+    });
 
     final stats = RepeaterStats.fromCoverage(points, target, lookup);
 
@@ -427,5 +497,29 @@ void main() {
       expect(dominantCoverageStatus([p(2), p(6), p(3)]),
           2); // orange/cyan/grey -> cyan
     });
+  });
+
+  test('heard endpoints carry the full repeater identity', () {
+    final rep = _rep(
+        'DF85',
+        'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
+        36.0,
+        -78.9);
+    final lk = RepeaterLookup.fromRepeaters([rep], hopBytes: 2);
+
+    final endpoints = heardEndpointsForCell(
+      [
+        {
+          'status': 1,
+          'heard_repeats': '${rep.hexId}(6)[36.0,-78.9]',
+        }
+      ],
+      lk,
+      startLat: 35.9,
+      startLon: -78.9,
+    );
+
+    expect(endpoints, hasLength(1));
+    expect(endpoints.single.repeaterId, rep.hexId.toLowerCase());
   });
 }

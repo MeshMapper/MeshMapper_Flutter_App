@@ -85,6 +85,7 @@ import '../services/repeater_admin/repeater_admin_module.dart';
 import '../services/repeater_admin/repeater_admin_session.dart';
 import '../utils/constants.dart';
 import '../utils/geo_validation.dart';
+import '../utils/repeater_collision.dart';
 import '../utils/ping_colors.dart';
 import '../utils/radio_filter.dart' as radio_filter;
 import '../services/wakelock_service.dart';
@@ -675,6 +676,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Repeater markers state
   List<Repeater> _repeaters = [];
+  Set<String> _repeaterConflictHexIds = const {};
   int _siriRepeaterCatalogRevision = 0;
   bool _repeatersLoaded = false;
   String? _repeatersLoadedForIata;
@@ -1528,6 +1530,9 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // Repeater markers getters
   List<Repeater> get repeaters => List.unmodifiable(_repeaters);
+
+  /// Full identities with a web collision warning, computed once per load.
+  Set<String> get repeaterConflictHexIds => _repeaterConflictHexIds;
 
   /// How many zone repeaters are loaded, without copying the list.
   /// `repeaters` wraps in `List.unmodifiable`, which allocates a copy, and the
@@ -9614,6 +9619,7 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // Clear repeaters when exiting zone
         _repeaters = [];
+        _repeaterConflictHexIds = const {};
         _siriRepeaterCatalogRevision++;
         _repeatersLoaded = false;
         _repeatersLoadedForIata = null;
@@ -10325,7 +10331,21 @@ class AppStateProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final fetchedRepeaters = await _apiService.fetchRepeaters(iata);
       if (fetchedRepeaters.isNotEmpty) {
-        _repeaters = fetchedRepeaters;
+        _repeaters = rcComputeExclusions(fetchedRepeaters);
+        final firstByteGroups = <String, List<Repeater>>{};
+        for (final repeater in _repeaters) {
+          final hex = rcCleanHex(
+              repeater.hexId.isNotEmpty ? repeater.hexId : repeater.id);
+          if (hex.length < 2) continue;
+          (firstByteGroups[hex.substring(0, 2)] ??= []).add(repeater);
+        }
+        _repeaterConflictHexIds = Set.unmodifiable({
+          for (final group in firstByteGroups.values)
+            for (final repeater in group)
+              if (repeater.enabled == 2 ||
+                  repeaterConflictKind(group, repeater).isNotEmpty)
+                rcCleanHex(repeater.hexId),
+        });
         _siriRepeaterCatalogRevision++;
         _repeatersLoaded = true;
         _repeatersLoadedForIata = iata;

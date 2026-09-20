@@ -29,8 +29,35 @@ void main() {
     test('from a repeater with a full key', () {
       final t = RepeaterTarget.fromRepeater(rep);
       expect(t.hexId, 'AB' * 32);
-      expect(t.shortId, 'ABABABAB');
+      expect(t.shortId, 'AB');
       expect(t.name, 'Hill');
+    });
+    test('fromRepeater keeps the repeater display id for the admin header', () {
+      final t = RepeaterTarget.fromRepeater(const Repeater(
+        id: 'DF85',
+        hexId:
+            'DF85353AB65D4477D9A1C9075ADCF4358CCEFD33D913C711D9C9551C111A17F4',
+        name: 'Durham',
+        lat: 36.000378,
+        lon: -78.912449,
+        lastHeard: 0,
+        enabled: 1,
+        hopBytes: 2,
+      ));
+
+      expect(t.displayId, 'DF85');
+      expect(t.shortId, 'DF85');
+    });
+    test('direct construction keeps the legacy eight-character display id', () {
+      final t = RepeaterTarget(
+        hexId: '12' * 32,
+        name: 'Legacy caller',
+        lat: 0,
+        lon: 0,
+      );
+
+      expect(t.displayId, '12121212');
+      expect(t.shortId, '12121212');
     });
     test('a short key is refused', () {
       expect(

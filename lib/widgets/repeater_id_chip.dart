@@ -6,6 +6,7 @@ import '../providers/app_state_provider.dart';
 import '../services/gps_service.dart';
 import '../utils/debug_logger_io.dart';
 import '../utils/distance_formatter.dart';
+import '../utils/coverage_summary.dart';
 import '../utils/ping_colors.dart';
 
 /// A styled repeater ID text with a dotted underline hint that it's tappable.
@@ -121,9 +122,10 @@ class RepeaterIdChip extends StatelessWidget {
     final appState = Provider.of<AppStateProvider>(context, listen: false);
     final repeaters = appState.repeaters;
 
-    final matchKey = fullHexId != null && fullHexId.length >= 8
-        ? fullHexId.substring(0, 8)
-        : repeaterId;
+    final matchKey = fullHexId ?? repeaterId;
+    final lookup = RepeaterLookup.fromRepeaters(repeaters,
+        hopBytes: appState.effectiveHopBytes);
+    final resolved = lookup.resolveByHex(matchKey);
     final matchCount = repeaters
         .where((r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
         .length;
@@ -147,10 +149,12 @@ class RepeaterIdChip extends StatelessWidget {
         ),
       );
     } else {
-      final matches = repeaters
-          .where(
-              (r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
-          .toList();
+      final matches = resolved != null
+          ? <Repeater>[resolved]
+          : repeaters
+              .where((r) =>
+                  r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
+              .toList();
 
       if (matches.isEmpty) {
         content = Padding(
@@ -181,15 +185,11 @@ class RepeaterIdChip extends StatelessWidget {
           });
         }
 
-        final regionOverride =
-            appState.enforceHopBytes ? appState.effectiveHopBytes : null;
         content = Column(
           mainAxisSize: MainAxisSize.min,
           children: matches
-              .map((r) => buildRepeaterRow(context, r,
-                  refLat: refLat,
-                  refLon: refLon,
-                  regionHopBytesOverride: regionOverride))
+              .map((r) =>
+                  buildRepeaterRow(context, r, refLat: refLat, refLon: refLon))
               .toList(),
         );
       }
@@ -287,9 +287,7 @@ class RepeaterIdChip extends StatelessWidget {
       child: Row(
         children: [
           // Colored badge — circle for short IDs, pill for longer
-          buildHexBadge(
-              repeater.displayHexId(overrideHopBytes: regionHopBytesOverride),
-              badgeColor),
+          buildHexBadge(repeater.displayHexId(), badgeColor),
           const SizedBox(width: 12),
           // Repeater name + distance subtitle
           Expanded(

@@ -340,7 +340,7 @@ class _RepeaterAdminBodyState extends State<_RepeaterAdminBody> {
               ),
               alignment: Alignment.center,
               child: Text(
-                session.target.shortId,
+                session.target.displayId,
                 style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.bold,

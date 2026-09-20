@@ -31,6 +31,7 @@ import '../utils/mvt_cells.dart';
 import '../utils/distance_formatter.dart';
 import '../utils/ping_colors.dart';
 import '../utils/public_key.dart';
+import '../utils/repeater_collision.dart';
 import '../utils/repeater_format.dart';
 import '../utils/repeater_marker_painter.dart';
 import '../utils/repeater_marker_style.dart';
@@ -53,6 +54,8 @@ const _satelliteStyleJson =
 /// Default font stack used for all native text labels (textField property).
 /// Available in OpenFreeMap glyph sets (Liberty, Bright, Dark, Positron).
 const _defaultFontStack = ['Noto Sans Regular'];
+
+String _repeaterIdentity(Repeater repeater) => rcCleanHex(repeater.hexId);
 
 /// Image-name constants for the marker bitmaps registered via
 /// `controller.addImage()` and referenced by `SymbolOptions.iconImage`.
@@ -248,7 +251,8 @@ Future<Uint8List> _renderRepeaterChipPng(
 
   final body = paintRepeaterChip(
     canvas,
-    Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width, chip.height),
+    Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width,
+        chip.height),
     accent,
     borderRadius,
     isNew: isNew,
@@ -270,8 +274,8 @@ Future<Uint8List> _renderRepeaterBadgePng(
   Color ring, {
   double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
 }) async {
-  const size = Size(
-      RepeaterMarkerStyle.badgeCanvas, RepeaterMarkerStyle.badgeCanvas);
+  const size =
+      Size(RepeaterMarkerStyle.badgeCanvas, RepeaterMarkerStyle.badgeCanvas);
 
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
@@ -292,8 +296,8 @@ Future<Uint8List> _renderRepeaterDotsPng(
   List<Color> dots, {
   double devicePixelRatio = RepeaterMarkerStyle.bakeDevicePixelRatio,
 }) async {
-  const size = Size(RepeaterMarkerStyle.dotStripWidth,
-      RepeaterMarkerStyle.dotStripHeight);
+  const size = Size(
+      RepeaterMarkerStyle.dotStripWidth, RepeaterMarkerStyle.dotStripHeight);
 
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
@@ -303,7 +307,6 @@ Future<Uint8List> _renderRepeaterDotsPng(
   return _encodePicture(
       recorder.endRecording(), size, devicePixelRatio, 'repeater dots');
 }
-
 
 Future<Uint8List> _renderPainterToPng(
   CustomPainter painter,
@@ -628,6 +631,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   // paint; a change to either rebuilds the overlay via the build watcher.
   int? _lastAppliedGridSize;
   String? _lastAppliedCvd;
+
   /// The radio preset filter key the overlay was last built with (Task: the
   /// preset filter is baked into the tile URL like the grid size). Null
   /// means unfiltered.
@@ -1885,8 +1889,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     distanceFromLastPing: state.distanceFromLastPing,
                     isImperial: state.preferences.isImperial,
                   ),
-                  builder: (_, readings, __) =>
-                      GpsInfoChip(readings: readings),
+                  builder: (_, readings, __) => GpsInfoChip(readings: readings),
                 ),
                 if (appState.preferences.showTopRepeaters) ...[
                   const SizedBox(height: 6),
@@ -2589,7 +2592,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           segments, cell.centerLat, cell.centerLon, isImperial);
       // Empty -> null restores all repeaters (never hide-all on an empty set).
       _coverageHeardRepeaterIds =
-          eps.isEmpty ? null : {for (final e in eps) e.repeaterId};
+          eps.isEmpty ? null : {for (final e in eps) rcCleanHex(e.repeaterId)};
       _syncRepeaterSymbols(appState);
       // Match ping focus: frame the cell + the repeaters that heard it (no-op
       // when nothing was heard — single point — leaving the north-up view).
@@ -2675,7 +2678,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   ///  - individual repeater layer → look up the Repeater by id and open the
   ///    existing detail sheet
   ///
-  /// [id] is the GeoJSON Feature `id` (which we set to `repeater.id` for
+  /// [id] is the GeoJSON Feature `id` (the repeater's full public key for
   /// individual repeaters; MapLibre auto-generates one for cluster features).
   /// [annotation] is always null here since these layers aren't managed by
   /// the annotation manager.
@@ -2821,8 +2824,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // zoom on others. Widen to a small box around the finger before
         // giving up.
         widened = true;
-        pointCount = _clusterCountIn(
-            await _mapController?.queryRenderedFeaturesInRect(
+        pointCount =
+            _clusterCountIn(await _mapController?.queryRenderedFeaturesInRect(
           Rect.fromCenter(
             center: Offset(point.x, point.y),
             width: _clusterTapTolerancePx * 2,
@@ -2872,8 +2875,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
     final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
     final step = currentZoom + 2;
-    final newZoom =
-        math.min(math.max(target ?? step, step), _maxUserZoom);
+    final newZoom = math.min(math.max(target ?? step, step), _maxUserZoom);
     if (newZoom <= currentZoom + 0.01) return false;
     _mapController?.animateCamera(
       CameraUpdate.newLatLngZoom(coordinates, newZoom),
@@ -2907,8 +2909,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // now has to run at every zoom, not just max: a spider can be open lower
     // down since the group's spread, not the zoom, decides when to spread.
     if (_spiderCenter != null) {
-      final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
-      if (group.any((r) => spiderIds.contains(r.id))) {
+      final spiderIds = _spiderRepeaters.map(_repeaterIdentity).toSet();
+      if (group.any((r) => spiderIds.contains(_repeaterIdentity(r)))) {
         _collapseSpider();
         return;
       }
@@ -2918,7 +2920,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // The zoom that would actually pull this group apart, or null when no
     // reachable zoom does. Jumping straight there is what turns a three-press
     // zoom crawl into one press.
-    final expansionZoom = group.length >= 2 ? _clusterExpansionZoom(group) : null;
+    final expansionZoom =
+        group.length >= 2 ? _clusterExpansionZoom(group) : null;
     final currentZoom = _mapController?.cameraPosition?.zoom;
     void log(String action) => debugLog(
         '[MAP] cluster tap: count=${pointCount ?? 'unknown'}'
@@ -3001,7 +3004,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       }
 
       // Individual repeater (cluster or spider symbol). The feature `id`
-      // field is the repeater.id we set in our feature builders. Spider
+      // field is the full repeater key we set in our feature builders. Spider
       // symbols never need spiderfy expansion — they ARE the spread; just
       // open the detail sheet and leave the spider open.
       final repeaterId =
@@ -3039,24 +3042,22 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }
 
   /// Open the repeater detail sheet for a given [repeaterId]. Looks up the
-  /// Repeater object from app state and recomputes the duplicate/hopOverride
-  /// flags. Used by both direct tap dispatch and the GPS fall-through path.
+  /// Repeater object from app state and recomputes its conflict status.
+  /// Used by both direct tap dispatch and the GPS fall-through path.
   void _showRepeaterDetailsById(String repeaterId, {bool isolate = true}) {
     if (!mounted) return;
     final appState = context.read<AppStateProvider>();
-    final repeater =
-        appState.repeaters.where((r) => r.id == repeaterId).firstOrNull;
+    final repeater = RepeaterLookup.fromRepeaters(appState.repeaters,
+            hopBytes: appState.effectiveHopBytes)
+        .resolveByHex(repeaterId);
     if (repeater == null) return;
 
-    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
-    final isDuplicate = duplicates.contains(repeater.id);
-    final hopOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    final isDuplicate =
+        appState.repeaterConflictHexIds.contains(_repeaterIdentity(repeater));
 
     _showRepeaterDetails(
       repeater,
       isDuplicate: isDuplicate,
-      regionHopBytesOverride: hopOverride,
       isolate: isolate,
     );
   }
@@ -4295,7 +4296,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     if (_mapController == null) return;
     final presentMask = present.fold<int>(
       0,
-      (mask, status) => mask | (1 << RepeaterMarkerStatus.values.indexOf(status)),
+      (mask, status) =>
+          mask | (1 << RepeaterMarkerStatus.values.indexOf(status)),
     );
     var baked = 0;
     for (var mask = 0; mask < RepeaterMarkerStyle.presenceMaskCount; mask++) {
@@ -4342,9 +4344,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   Map<String, dynamic> _buildRepeaterFeatureCollection(
       AppStateProvider appState) {
     final visible = _mapVisibleRepeaters(appState);
-    final duplicates = _getDuplicateRepeaterIds(visible);
-    final hopOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    final conflicts = appState.repeaterConflictHexIds;
     // Detailed (gsize 100) is un-clustered, so each feature references a baked
     // chip image (hex baked in). Simplified reuses the 12 shared shape images
     // + a text-field hex label. See _setupRepeaterClusterLayers.
@@ -4355,43 +4355,45 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // features so the spread markers from `_spiderSourceId` render in their
     // place. Cluster aggregation is not affected — the cluster bubble keeps
     // its full point_count.
-    final spiderIds = _spiderRepeaters.map((r) => r.id).toSet();
+    final spiderIds = _spiderRepeaters.map(_repeaterIdentity).toSet();
 
     final features = <Map<String, dynamic>>[];
     for (final repeater in visible) {
+      final identity = _repeaterIdentity(repeater);
       // Repeater isolation: while a repeater is focused/selected, hide every
       // other repeater entirely (skip the feature, so they also drop out of
       // cluster counts) — same approach as focus mode below. Restored on close
       // by _clearRepeaterIsolation.
-      if (_isolatedRepeaterId != null && repeater.id != _isolatedRepeaterId) {
+      if (_isolatedRepeaterId != null && identity != _isolatedRepeaterId) {
         continue;
       }
       // Feature A (tile fan-out): when a tapped cell's heard-repeater set is
       // active and no single repeater is isolated, hide every repeater that did
       // NOT hear the cell's pings (the web fades-but-keeps; we hide, matching
       // focus/isolation). Cleared by _restoreFadedRepeaters. The set holds
-      // lowercased ids (from RepeaterLookup), so compare lowercased.
+      // cleaned full keys from RepeaterLookup.
       if (_coverageHeardRepeaterIds != null &&
           _isolatedRepeaterId == null &&
-          !_coverageHeardRepeaterIds!.contains(repeater.id.toLowerCase())) {
+          !_coverageHeardRepeaterIds!.contains(identity)) {
         continue;
       }
-      final isDuplicate = duplicates.contains(repeater.id);
+      final isDuplicate = conflicts.contains(identity);
       final statusKey = _repeaterStatusKey(repeater, isDuplicate);
       final isConnected = focusActive &&
-          _focusedRepeaters.any((r) => r.repeater.id == repeater.id);
+          _focusedRepeaters
+              .any((r) => _repeaterIdentity(r.repeater) == identity);
       // In focus mode, hide repeaters not involved in the focused ping entirely
       // (skip the feature) rather than dimming — cleaner focus view and prevents
       // them from contributing to clusters.
       if (focusActive && !isConnected) continue;
-      final effectiveBytes = hopOverride ?? repeater.hopBytes;
+      final effectiveBytes = repeater.advertBytes;
       // Clamp to the 1/2/3 hop_byte image variants we registered
       final shapeBytes = effectiveBytes >= 3
           ? 3
           : effectiveBytes == 2
               ? 2
               : 1;
-      final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      final hex = repeater.displayHexId();
       // Detailed: per-(status,hop,hex) baked chip (hex baked in); Simplified:
       // shared shape image + a text-field hex label. _ensureRepeaterChipImages
       // registers the chip lazily before the source is pushed.
@@ -4402,9 +4404,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       features.add({
         'type': 'Feature',
-        'id': repeater.id,
+        'id': identity,
         'properties': {
-          'repeaterId': repeater.id,
+          'repeaterId': identity,
           'iconImage': iconImage,
           'color': colorHex,
           'hex': hex,
@@ -4412,8 +4414,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // a badge can name its dominant state and the states present in it.
           RepeaterMarkerStyle.statusProperty: statusKey,
           'isDuplicate': isDuplicate,
-          if (hopOverride != null) 'hopOverride': hopOverride,
-          if (spiderIds.contains(repeater.id)) 'inSpider': true,
+          if (spiderIds.contains(identity)) 'inSpider': true,
         },
         'geometry': {
           'type': 'Point',
@@ -4483,9 +4484,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // text-offset is in ems, so that is barWidth / 2 over the font size. The
     // halo is the body colour, not black: it only exists to keep a glyph
     // legible if it overhangs the body, and a black one would smear the chip.
-    const labelNudgeEm = RepeaterMarkerStyle.barWidth /
-        2 /
-        RepeaterMarkerStyle.chipFontSize;
+    const labelNudgeEm =
+        RepeaterMarkerStyle.barWidth / 2 / RepeaterMarkerStyle.chipFontSize;
     final labelInk = _colorToHex(
         RepeaterMarkerStyle.labelInkFor(RepeaterMarkerStyle.bodyColor));
     final SymbolLayerProperties repeaterSymbolProps = clustered
@@ -4650,7 +4650,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         filter: ['has', 'point_count'],
         belowLayerId: belowLayer,
       );
-
 
       // Spider shadow source + layers — non-clustered. Carries spread Point
       // features (one per spiderfied repeater) and LineString features for
@@ -4858,16 +4857,17 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
 
     // Connected component (single-link clustering at stick threshold).
-    final visited = <String>{seed.id};
+    final visited = <String>{_repeaterIdentity(seed)};
     final queue = <Repeater>[seed];
     final result = <Repeater>[seed];
     while (queue.isNotEmpty) {
       final cur = queue.removeAt(0);
       final curPos = LatLng(cur.lat, cur.lon);
       for (final r in candidates) {
-        if (visited.contains(r.id)) continue;
+        final identity = _repeaterIdentity(r);
+        if (visited.contains(identity)) continue;
         if (_haversineMeters(curPos, LatLng(r.lat, r.lon)) <= stickThresholdM) {
-          visited.add(r.id);
+          visited.add(identity);
           result.add(r);
           queue.add(r);
         }
@@ -4988,9 +4988,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final mPerPx = _metersPerPxAtZoom(center.latitude, currentZoom);
     final cosLat = math.cos(center.latitude * math.pi / 180);
 
-    final duplicates = _getDuplicateRepeaterIds(_mapVisibleRepeaters(appState));
-    final hopOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
+    final conflicts = appState.repeaterConflictHexIds;
     // Match the individual layer: Detailed (gsize 100) bakes the hex into the
     // chip image (the spider layer reuses the same no-text-field props, so a
     // generic shape would render as an empty box); Simplified uses the shared
@@ -5002,15 +5000,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final repeater = _spiderRepeaters[i];
       final pos = positions[i];
 
-      final isDuplicate = duplicates.contains(repeater.id);
+      final identity = _repeaterIdentity(repeater);
+      final isDuplicate = conflicts.contains(identity);
       final statusKey = _repeaterStatusKey(repeater, isDuplicate);
-      final effectiveBytes = hopOverride ?? repeater.hopBytes;
+      final effectiveBytes = repeater.advertBytes;
       final shapeBytes = effectiveBytes >= 3
           ? 3
           : effectiveBytes == 2
               ? 2
               : 1;
-      final hex = repeater.displayHexId(overrideHopBytes: hopOverride);
+      final hex = repeater.displayHexId();
       final iconImage = detailed
           ? _MapImages.repeaterChip(statusKey, shapeBytes, hex)
           : _MapImages.repeater(statusKey, shapeBytes);
@@ -5018,15 +5017,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
 
       features.add({
         'type': 'Feature',
-        'id': repeater.id,
+        'id': identity,
         'properties': {
-          'repeaterId': repeater.id,
+          'repeaterId': identity,
           'iconImage': iconImage,
           'color': colorHex,
           'hex': hex,
           RepeaterMarkerStyle.statusProperty: statusKey,
           'isDuplicate': isDuplicate,
-          if (hopOverride != null) 'hopOverride': hopOverride,
         },
         'geometry': {
           'type': 'Point',
@@ -5049,7 +5047,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       final endLat = center.latitude + (pos.latitude - center.latitude) * scale;
       features.add({
         'type': 'Feature',
-        'properties': {'repeaterId': repeater.id},
+        'properties': {'repeaterId': identity},
         'geometry': {
           'type': 'LineString',
           'coordinates': [
@@ -6262,7 +6260,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final wantedKeys = <String>{};
 
     for (final r in _focusedRepeaters) {
-      final key = r.repeater.id;
+      final key = _repeaterIdentity(r.repeater);
       wantedKeys.add(key);
       final midLat = (ping.latitude + r.repeater.lat) / 2;
       final midLon = (ping.longitude + r.repeater.lon) / 2;
@@ -6357,7 +6355,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Deterministic order: iterate focused repeaters in the list order we got
     // them in (SNR-ranked upstream), so the "primary" label wins t=0.5.
     final orderedIds = _focusedRepeaters
-        .map((r) => r.repeater.id)
+        .map((r) => _repeaterIdentity(r.repeater))
         .where(_distanceLabelSymbols.containsKey)
         .toList();
     if (orderedIds.isEmpty) return;
@@ -7364,7 +7362,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         ),
                         const SizedBox(height: 20),
 
-
                         // Sound Notifications section
                         Text(
                           'Sound Notifications',
@@ -7598,8 +7595,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// The hairline rule the legend puts between rows.
   Widget _legendDivider(BuildContext context) => Divider(
         height: 1,
-        color:
-            Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
+        color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.3),
       );
 
   /// A miniature of the real marker: neutral body, state on the edge. Drawn
@@ -8243,12 +8239,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     for (int i = 0; i < hexIds.length; i++) {
       final fullHex = i < fullHexIds.length ? fullHexIds[i] : null;
       final snr = i < snrValues.length ? snrValues[i] : null;
-      final matchKey = (fullHex != null && fullHex.length >= 8)
-          ? fullHex.substring(0, 8)
-          : hexIds[i];
+      final matchKey =
+          rcCleanHex(fullHex?.isNotEmpty == true ? fullHex : hexIds[i]);
+      if (matchKey.isEmpty) continue;
       final matches = allRepeaters
-          .where(
-              (r) => r.hexId.toLowerCase().startsWith(matchKey.toLowerCase()))
+          .where((r) => _repeaterIdentity(r).startsWith(matchKey))
           .toList();
       final ambiguous = matches.length > 1;
       resolved.addAll(matches.map((r) => _ResolvedRepeater(r, snr, ambiguous)));
@@ -8256,18 +8251,16 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     return resolved;
   }
 
-  /// Look up the first matching [Repeater] by hex-ID prefix (case-insensitive).
+  /// Look up a [Repeater] by an exact full key or an unambiguous hex prefix.
   /// Used by focus bottom-sheet rows to decide whether to surface the
   /// `location_off` indicator. Returns null when no match is found — callers
   /// treat that as "no location" too, since we have no coordinates.
   Repeater? _lookupRepeaterByHexId(String hexId) {
     if (hexId.isEmpty) return null;
-    final all = context.read<AppStateProvider>().repeaters;
-    final key = hexId.toLowerCase();
-    for (final r in all) {
-      if (r.hexId.toLowerCase().startsWith(key)) return r;
-    }
-    return null;
+    final appState = context.read<AppStateProvider>();
+    return RepeaterLookup.fromRepeaters(appState.repeaters,
+            hopBytes: appState.effectiveHopBytes)
+        .resolveByHex(hexId);
   }
 
   /// True when we should show a "no location" hint for the given hex ID,
@@ -8993,8 +8986,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 12),
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(8),
@@ -9102,14 +9094,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     }
   }
 
-  Set<String> _getDuplicateRepeaterIds(List<Repeater> repeaters) {
-    final idCounts = <String, int>{};
-    for (final repeater in repeaters) {
-      idCounts[repeater.id] = (idCounts[repeater.id] ?? 0) + 1;
-    }
-    return idCounts.entries.where((e) => e.value > 1).map((e) => e.key).toSet();
-  }
-
   /// Repeaters eligible for map rendering — excludes anything not heard in
   /// the past 30 days so long-stale entries don't appear, contribute to
   /// clusters, or get pulled into spider expansions. All map-rendering
@@ -9151,10 +9135,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   }) {
     final ambiguous = resolved.where((r) => r.ambiguous).toList();
     if (ambiguous.isEmpty) return;
-
-    final appState = context.read<AppStateProvider>();
-    final regionOverride =
-        appState.enforceHopBytes ? appState.effectiveHopBytes : null;
 
     showDialog(
       context: context,
@@ -9206,7 +9186,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                       r.repeater,
                       refLat: fromLatLng?.lat,
                       refLon: fromLatLng?.lon,
-                      regionHopBytesOverride: regionOverride,
                     )),
               ],
             ),
@@ -10418,7 +10397,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// the lazily-fetched stats across those toggles so they aren't re-fetched.
   void _showRepeaterDetails(Repeater repeater,
       {bool isDuplicate = false,
-      int? regionHopBytesOverride,
       bool isolate = true,
       bool expand = false,
       Future<RepeaterStats?>? cachedStats}) {
@@ -10430,12 +10408,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // by _clearRepeaterIsolation on sheet/pill close or empty-map tap.
     final wasCell = _cellPopupActive;
     final prevRepeater = _isolatedRepeaterId;
-    if (isolate) _isolatedRepeaterId = repeater.id;
+    final repeaterIdentity = _repeaterIdentity(repeater);
+    if (isolate) _isolatedRepeaterId = repeaterIdentity;
     _clearMinimizedInfoPopup(); // drop the prior pill widget only
     if (wasCell) {
       // Switching from a tile view: tear down its footprint/dim/fade/lines.
       _clearCellHighlight();
-    } else if (prevRepeater != null && prevRepeater != repeater.id) {
+    } else if (prevRepeater != null && prevRepeater != repeaterIdentity) {
       // Switching repeater->repeater: tear down the old cells/lines/dim WITHOUT
       // clearing the (now new) _isolatedRepeaterId via _clearRepeaterIsolation.
       _clearCoverageLines();
@@ -10462,7 +10441,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     // Determine status label and color (web labels, generateRepeaterPopup).
     String statusLabel;
     Color statusColor;
-    if (repeater.enabled == 2) {
+    if (isDuplicate) {
       statusLabel = 'Ambiguous';
       statusColor = _repeaterDuplicateColor;
     } else if (repeater.enabled == 0) {
@@ -10495,7 +10474,9 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     final gridSize = appState.preferences.coverageGridSize;
     final Future<RepeaterStats?> statsFuture = cachedStats ??
         appState
-            .fetchRepeaterCoveragePoints(prefix: repeater.id)
+            .fetchRepeaterCoveragePoints(
+                prefix: repeaterIdentity.substring(
+                    0, math.min(40, repeaterIdentity.length)))
             .then<RepeaterStats?>((pts) {
           // null means the points could not be fetched at all. Keep it null so
           // the sheet can say so, rather than aggregating an empty list into a
@@ -10515,11 +10496,11 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           // this repeater is still the isolated selection — guards a fast
           // repeater switch during the network fetch — and has a known location.
           if (mounted &&
-              _isolatedRepeaterId == repeater.id &&
+              _isolatedRepeaterId == repeaterIdentity &&
               repeater.hasLocation) {
             _drawRepeaterCoverage(repeater, res.matched, cvd, gridSize)
                 .then((cells) {
-              if (!mounted || _isolatedRepeaterId != repeater.id) return;
+              if (!mounted || _isolatedRepeaterId != repeaterIdentity) return;
               // Match ping focus: frame the repeater + its whole coverage
               // footprint (no-op when it heard nothing — single point).
               _fitCameraToPoints([
@@ -10534,11 +10515,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           return null;
         });
 
-    final fingerprintShort =
-        repeater.displayHexId(overrideHopBytes: regionHopBytesOverride);
-    final fingerprintFull = repeater.hexId.length >= 8
-        ? repeater.hexId.substring(0, 8).toUpperCase()
-        : repeater.hexId.toUpperCase();
+    final fingerprintShort = repeater.displayHexId();
     final clockSkew = humanizeClockSkew(repeater.timeOffset);
 
     // Open minimized by default — a compact stats pill; tap it to expand to the
@@ -10552,7 +10529,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
           _clearMinimizedInfoPopup();
           _showRepeaterDetails(repeater,
               isDuplicate: isDuplicate,
-              regionHopBytesOverride: regionHopBytesOverride,
               isolate: false,
               expand: true,
               cachedStats: statsFuture);
@@ -10572,8 +10548,8 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       // default sheet caps at ~9/16 of the screen and cut the card off);
       // the constraint keeps a sliver of map visible above it.
       isScrollControlled: true,
-      constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.92),
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.92),
       // Transparent barrier so the map stays bright (like focus mode).
       barrierColor: Colors.transparent,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -10594,8 +10570,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                 children: [
                   // Icon badge with hex ID (mirrors map marker)
                   Builder(builder: (context) {
-                    final displayId = repeater.displayHexId(
-                        overrideHopBytes: regionHopBytesOverride);
+                    final displayId = repeater.displayHexId();
                     final isLongId = displayId.length > 2;
                     return Container(
                       constraints: const BoxConstraints(minWidth: 44),
@@ -10728,23 +10703,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                     _repRow(
                       context,
                       Icons.fingerprint,
-                      Text.rich(TextSpan(children: [
-                        TextSpan(
-                          text: fingerprintShort,
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontFamily: 'monospace',
-                              fontWeight: FontWeight.w600),
-                        ),
-                        TextSpan(
-                          text: '  ($fingerprintFull)',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ])),
+                      Text(
+                        fingerprintShort,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.w600),
+                      ),
                     ),
                     // Hop bytes
                     _repRow(
@@ -10932,10 +10897,7 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // selection stays isolated throughout, same as the minimize path.
         debugLog('[COVERAGE] retrying coverage fetch for ${repeater.id}');
         _showRepeaterDetails(repeater,
-            isDuplicate: isDuplicate,
-            regionHopBytesOverride: regionHopBytesOverride,
-            isolate: false,
-            expand: true);
+            isDuplicate: isDuplicate, isolate: false, expand: true);
       } else if (result == 'minimized') {
         // Collapse back to the stats pill. The selection (and its coverage
         // cells/lines + tile dim) persists throughout pill<->sheet; it's torn
@@ -10943,7 +10905,6 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
         // doesn't re-fetch (and doesn't redraw the coverage).
         _showRepeaterDetails(repeater,
             isDuplicate: isDuplicate,
-            regionHopBytesOverride: regionHopBytesOverride,
             isolate: false,
             expand: false,
             cachedStats: statsFuture);

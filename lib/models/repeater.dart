@@ -58,10 +58,10 @@ class Repeater {
   /// per-repeater [staleTime].
   static int staleHoursFallback = 24;
 
-  /// Unique ID (e.g., "01", "92")
+  /// Advertised short ID. This can collide with another repeater.
   final String id;
 
-  /// Hex ID (8-character hex string)
+  /// Full public key. This is the repeater's unique identity.
   final String hexId;
 
   /// Display name of the repeater
@@ -91,6 +91,13 @@ class Repeater {
 
   /// Number of bytes per hop hash for this repeater's path (1, 2, or 3)
   final int hopBytes;
+
+  /// Number of bytes this repeater advertises as its on-air ID.
+  /// Falls back to [hopBytes] for older server payloads.
+  final int advertBytes;
+
+  /// Whether this repeater can be addressed with a multi-byte ID.
+  final bool multibyteCapable;
 
   /// Repeater clock skew in seconds reported by the server (+ve = repeater
   /// clock behind real time, -ve = ahead), or null when unknown. Drives the
@@ -140,12 +147,14 @@ class Repeater {
     this.createdAt,
     this.staleTime,
     this.hopBytes = 1,
+    int? advertBytes,
+    this.multibyteCapable = false,
     this.timeOffset,
     this.admins = const [],
     this.provenNeighbours = const [],
     this.backbone = false,
     this.backboneShare,
-  });
+  }) : advertBytes = advertBytes ?? hopBytes;
 
   /// Parse from JSON object in repeaters.json
   factory Repeater.fromJson(Map<String, dynamic> json) {
@@ -208,6 +217,19 @@ class Repeater {
     final backboneShare =
         shareValue == null || !shareValue.isFinite ? null : shareValue.toDouble();
 
+    final rawHopBytes = json['hop_bytes'];
+    final hopBytes = rawHopBytes is num
+        ? rawHopBytes.toInt()
+        : int.tryParse(rawHopBytes?.toString() ?? '') ?? 1;
+    final rawAdvertBytes = json['advert_bytes'];
+    final advertBytes = rawAdvertBytes is num
+        ? rawAdvertBytes.toInt()
+        : int.tryParse(rawAdvertBytes?.toString() ?? '') ?? hopBytes;
+    final rawMultibyteCapable = json['multibyte_capable'];
+    final multibyteCapable = rawMultibyteCapable == true ||
+        rawMultibyteCapable == 1 ||
+        rawMultibyteCapable == '1';
+
     return Repeater(
       id: json['id'] as String,
       hexId: json['hex_id'] as String? ?? '',
@@ -219,7 +241,9 @@ class Repeater {
       iata: json['iata'] as String?,
       createdAt: createdAt,
       staleTime: staleTime,
-      hopBytes: (json['hop_bytes'] as int?) ?? 1,
+      hopBytes: hopBytes,
+      advertBytes: advertBytes,
+      multibyteCapable: multibyteCapable,
       timeOffset: timeOffset,
       admins: admins,
       provenNeighbours: proven,
@@ -241,6 +265,8 @@ class Repeater {
       'created_at': createdAt,
       'stale_time': staleTime,
       'hop_bytes': hopBytes,
+      'advert_bytes': advertBytes,
+      'multibyte_capable': multibyteCapable ? 1 : 0,
       'time_offset': timeOffset,
       'admins': admins,
       'proven_neighbours': provenNeighbours.map((n) => n.toJson()).toList(),
@@ -260,6 +286,9 @@ class Repeater {
 
   /// Check if the repeater is enabled (any non-zero value)
   bool get isEnabled => enabled != 0;
+
+  /// Whether the web client treats this repeater as anonymized.
+  bool get isHidden => name.startsWith('🚫') || name.endsWith('🚫');
 
   /// True when the repeater has known GPS coordinates. The API uses
   /// `(0, 0)` as a sentinel for "location not yet published" — those
@@ -307,16 +336,63 @@ class Repeater {
     return DateTime.now().difference(heard).inDays < 30;
   }
 
-  /// Get display hex ID based on hop bytes (or override).
-  /// [overrideHopBytes] is used when regional admin enforces a byte size.
+  /// Get the on-air display ID, using this repeater's advertised byte width.
+  /// [overrideHopBytes] preserves the explicit regional override used by older
+  /// callers, but does not affect the default width.
   String displayHexId({int? overrideHopBytes}) {
-    final bytes = overrideHopBytes ?? hopBytes;
+    final bytes = overrideHopBytes ?? advertBytes;
     final hexChars = bytes * 2; // 1 byte = 2 hex chars
-    if (hexId.length >= hexChars) {
-      return hexId.substring(0, hexChars).toUpperCase();
+    final cleanHex = hexId
+        .replaceAll('!', '')
+        .replaceAll(RegExp('0x', caseSensitive: false), '')
+        .toLowerCase();
+    if (cleanHex.isNotEmpty) {
+      final end = cleanHex.length < hexChars ? cleanHex.length : hexChars;
+      return cleanHex.substring(0, end).toUpperCase();
     }
-    return id; // Fallback to short numeric ID
+    return id.toUpperCase();
   }
+
+  Repeater copyWith({
+    String? id,
+    String? hexId,
+    String? name,
+    double? lat,
+    double? lon,
+    int? lastHeard,
+    int? enabled,
+    String? iata,
+    int? createdAt,
+    int? staleTime,
+    int? hopBytes,
+    int? advertBytes,
+    bool? multibyteCapable,
+    int? timeOffset,
+    List<String>? admins,
+    List<ProvenNeighbour>? provenNeighbours,
+    bool? backbone,
+    double? backboneShare,
+  }) =>
+      Repeater(
+        id: id ?? this.id,
+        hexId: hexId ?? this.hexId,
+        name: name ?? this.name,
+        lat: lat ?? this.lat,
+        lon: lon ?? this.lon,
+        lastHeard: lastHeard ?? this.lastHeard,
+        enabled: enabled ?? this.enabled,
+        iata: iata ?? this.iata,
+        createdAt: createdAt ?? this.createdAt,
+        staleTime: staleTime ?? this.staleTime,
+        hopBytes: hopBytes ?? this.hopBytes,
+        advertBytes: advertBytes ?? this.advertBytes,
+        multibyteCapable: multibyteCapable ?? this.multibyteCapable,
+        timeOffset: timeOffset ?? this.timeOffset,
+        admins: admins ?? this.admins,
+        provenNeighbours: provenNeighbours ?? this.provenNeighbours,
+        backbone: backbone ?? this.backbone,
+        backboneShare: backboneShare ?? this.backboneShare,
+      );
 
   @override
   String toString() => 'Repeater(id=$id, name=$name, enabled=$isEnabled)';
