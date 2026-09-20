@@ -240,6 +240,16 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Set Up Background Location'), findsNothing);
+    expect(
+      find.textContaining(
+        'Some Android phones may pause wardriving when the screen is off',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('select Unrestricted'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('iPhone explains Always permission and offers setup',

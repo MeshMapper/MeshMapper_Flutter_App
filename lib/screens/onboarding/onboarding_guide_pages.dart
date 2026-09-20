@@ -880,6 +880,12 @@ Widget buildBackgroundPage(BuildContext context) {
               'No additional background location permission is required. Allow MeshMapper notifications so you can see when the active mode keeps Bluetooth and GPS running.',
           color: accent,
         ),
+        const GuideCallout(
+          text:
+              'Some Android phones may pause wardriving when the screen is off. If this happens, open Android Settings > Apps > MeshMapper > App battery usage and select Unrestricted. This may increase battery use.',
+          icon: Icons.battery_alert,
+          color: accent,
+        ),
       ],
       const GuideCallout(
         text:
