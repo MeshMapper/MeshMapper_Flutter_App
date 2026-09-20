@@ -2829,19 +2829,26 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _resolveClusterTap(coordinates, pointCount);
   }
 
-  /// Zooms one step further into [coordinates].
+  /// Zooms in on [coordinates], far enough to be worth the tap.
+  ///
+  /// [target] is the zoom that would actually break the tapped cluster apart;
+  /// pass null when that is unknown and the old fixed two-level step is the
+  /// best available guess. Either way the result never zooms less than the old
+  /// step did, and never past the user's ceiling.
   ///
   /// Returns false when the camera is already as far in as it will go, so the
   /// caller can spend the tap on something else instead of a move the user
-  /// cannot see. That dead tap is exactly what made a stacked cluster feel
-  /// broken: every press at max zoom animated to the zoom it was already at.
-  bool _zoomInOnCluster(LatLng coordinates) {
+  /// cannot see. That dead tap is what made a stacked cluster feel broken:
+  /// every press at max zoom animated to the zoom it was already at.
+  bool _zoomInOnCluster(LatLng coordinates, {double? target}) {
     if (!_canAnimateCamera ||
         !isValidLatLng(coordinates.latitude, coordinates.longitude)) {
       return false;
     }
     final currentZoom = _mapController?.cameraPosition?.zoom ?? _defaultZoom;
-    final newZoom = math.min(currentZoom + 2, _maxUserZoom);
+    final step = currentZoom + 2;
+    final newZoom =
+        math.min(math.max(target ?? step, step), _maxUserZoom);
     if (newZoom <= currentZoom + 0.01) return false;
     _mapController?.animateCamera(
       CameraUpdate.newLatLngZoom(coordinates, newZoom),
@@ -2854,14 +2861,13 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
   /// that is already open. Shared by the direct tap path and the GPS-marker
   /// fall-through so the two can never answer differently.
   ///
-  /// **Zoom only while zooming can still achieve something.** The old rule was
-  /// "zoom until max zoom, and only spread there", which meant a stack of
-  /// repeaters on one rooftop cost three or four presses before anything
-  /// useful happened, and the presses at the end did nothing at all. Now the
-  /// group's own geography decides: if it would still be inside MapLibre's
-  /// merge radius at max zoom, zooming can never pull it apart, so it spreads
-  /// on the first press at whatever zoom the user is at. A genuinely spread
-  /// cluster still zooms, which is the more useful answer for it.
+  /// **One press, one useful outcome.** The old rule was "zoom two levels, and
+  /// only spread once you hit max zoom", so a group took three or four presses
+  /// before anything useful happened and the presses at the end did nothing at
+  /// all. Now the group's own geography decides. If some reachable zoom would
+  /// pull it apart, the tap jumps STRAIGHT to that zoom rather than crawling
+  /// two levels at a time. If no zoom ever would, because the markers share a
+  /// rooftop, it spreads immediately at whatever zoom the user is on.
   void _resolveClusterTap(LatLng coordinates, int? pointCount) {
     if (!mounted) return;
     final appState = context.read<AppStateProvider>();
@@ -2883,8 +2889,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
       _collapseSpider();
     }
 
-    if (group.length >= 2 && _clusterCanSeparate(group)) {
-      if (_zoomInOnCluster(coordinates)) return;
+    // The zoom that would actually pull this group apart, or null when no
+    // reachable zoom does. Jumping straight there is what turns a three-press
+    // zoom crawl into one press.
+    final expansionZoom = group.length >= 2 ? _clusterExpansionZoom(group) : null;
+    if (expansionZoom != null) {
+      if (_zoomInOnCluster(coordinates, target: expansionZoom)) return;
     }
 
     if (group.length >= 2) {
@@ -2897,11 +2907,12 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
     _zoomInOnCluster(coordinates);
   }
 
-  /// Whether zooming could ever pull [group] apart into separate markers.
+  /// The zoom that would pull [group] apart into separate markers, or null
+  /// when no reachable zoom does and the tap should spread it instead.
   /// Pure geometry, in `cluster_spread.dart`.
-  bool _clusterCanSeparate(List<Repeater> group) {
+  double? _clusterExpansionZoom(List<Repeater> group) {
     final located = group.where((r) => r.hasLocation).toList();
-    return clusterCanSeparateByZoom(
+    return clusterExpansionZoom(
       lats: [for (final r in located) r.lat],
       lons: [for (final r in located) r.lon],
       maxZoom: _maxUserZoom,

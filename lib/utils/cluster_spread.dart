@@ -27,6 +27,80 @@ double haversineMeters(
   return 2 * earthRadiusM * math.asin(math.min(1.0, math.sqrt(h)));
 }
 
+/// Metres across the group's bounding box diagonal, or null when the group is
+/// too small, malformed, or effectively a single point.
+///
+/// The diagonal can only ever OVER-state the widest pair, so every caller errs
+/// towards "this group is wide", which is the conservative direction: it keeps
+/// the older zoom-in behaviour on genuinely spread-out clusters and only
+/// changes the tight ones.
+({double meters, double midLat})? clusterSpan({
+  required List<double> lats,
+  required List<double> lons,
+}) {
+  if (lats.length != lons.length || lats.length < 2) return null;
+
+  var minLat = double.infinity, maxLat = double.negativeInfinity;
+  var minLon = double.infinity, maxLon = double.negativeInfinity;
+  for (var i = 0; i < lats.length; i++) {
+    final lat = lats[i];
+    final lon = lons[i];
+    if (!lat.isFinite || !lon.isFinite) return null;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
+
+  final meters = haversineMeters(minLat, minLon, maxLat, maxLon);
+  // Points this close are the same mast for any purpose, and zoom will never
+  // tell them apart. The floor also keeps the division in the callers honest:
+  // at a pole both the span and the metres-per-pixel collapse to
+  // floating-point noise, and the ratio of two near-zero numbers came out
+  // large enough to claim the group would separate.
+  if (meters < 0.5) return null;
+  return (meters: meters, midLat: (minLat + maxLat) / 2);
+}
+
+/// The lowest zoom at which a group stops being merged into one cluster, or
+/// null when no zoom at or below [maxZoom] separates it.
+///
+/// This is [metersPerPixelAtZoom] inverted. The group comes apart once its
+/// on-screen span exceeds [clusterRadiusPx], so solve for the zoom where that
+/// happens and round UP to the next whole level, because clustering is
+/// re-evaluated at integer zooms.
+///
+/// **Why the caller should jump straight here.** A tap used to zoom a fixed two
+/// levels, so a cluster that needed five levels cost three presses before
+/// anything happened. Landing on the answer in one press is the whole point.
+/// If the pixel model is off (MapLibre's own radius is documented against tile
+/// width, not screen pixels), the worst case is one extra press, because the
+/// next tap recomputes from wherever the camera ended up.
+double? clusterExpansionZoom({
+  required List<double> lats,
+  required List<double> lons,
+  required double maxZoom,
+  required double clusterRadiusPx,
+}) {
+  if (!clusterRadiusPx.isFinite || clusterRadiusPx <= 0) return null;
+  final span = clusterSpan(lats: lats, lons: lons);
+  if (span == null) return null;
+
+  // span / (C * cos(lat) / 2^z) > radius  =>  z > log2(radius * C * cos / span)
+  final metersPerPixelAtZoomZero = metersPerPixelAtZoom(span.midLat, 0);
+  if (!metersPerPixelAtZoomZero.isFinite || metersPerPixelAtZoomZero <= 0) {
+    return null;
+  }
+  final ratio = clusterRadiusPx * metersPerPixelAtZoomZero / span.meters;
+  if (!ratio.isFinite || ratio <= 0) return null;
+  final exact = math.log(ratio) / math.ln2;
+  if (!exact.isFinite) return null;
+
+  final zoom = (exact + 0.0001).ceilToDouble();
+  if (zoom > maxZoom) return null;
+  return zoom < 0 ? 0 : zoom;
+}
+
 /// Whether zooming all the way in to [maxZoom] could ever break a group of
 /// points apart into separate markers.
 ///
@@ -52,31 +126,11 @@ bool clusterCanSeparateByZoom({
   required List<double> lons,
   required double maxZoom,
   required double clusterRadiusPx,
-}) {
-  if (lats.length != lons.length || lats.length < 2) return false;
-  if (!clusterRadiusPx.isFinite || clusterRadiusPx < 0) return false;
-
-  var minLat = double.infinity, maxLat = double.negativeInfinity;
-  var minLon = double.infinity, maxLon = double.negativeInfinity;
-  for (var i = 0; i < lats.length; i++) {
-    final lat = lats[i];
-    final lon = lons[i];
-    if (!lat.isFinite || !lon.isFinite) return false;
-    if (lat < minLat) minLat = lat;
-    if (lat > maxLat) maxLat = lat;
-    if (lon < minLon) minLon = lon;
-    if (lon > maxLon) maxLon = lon;
-  }
-
-  final spreadMeters = haversineMeters(minLat, minLon, maxLat, maxLon);
-  // Points this close are the same mast for any purpose, and zoom will never
-  // tell them apart. The floor also keeps the division below honest: at a pole
-  // both the span and the metres-per-pixel collapse to floating-point noise,
-  // and the ratio of two near-zero numbers came out large enough to claim the
-  // group would separate.
-  if (spreadMeters < 0.5) return false;
-
-  final metersPerPixel = metersPerPixelAtZoom((minLat + maxLat) / 2, maxZoom);
-  if (!metersPerPixel.isFinite || metersPerPixel <= 0) return false;
-  return spreadMeters / metersPerPixel > clusterRadiusPx;
-}
+}) =>
+    clusterExpansionZoom(
+      lats: lats,
+      lons: lons,
+      maxZoom: maxZoom,
+      clusterRadiusPx: clusterRadiusPx,
+    ) !=
+    null;
