@@ -36,7 +36,7 @@ if [ -n "$CLI_TYPE" ] && [ -n "$CLI_VERSION" ]; then
     NONINTERACTIVE=1
 fi
 
-# maplibre_gl 0.25.0 plugin requires JDK 21 to compile.
+# maplibre_gl 0.27.1 plugin requires JDK 21 to compile.
 # Force the build to use Homebrew openjdk@21, regardless of the user's shell JAVA_HOME.
 JDK21_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
 if [ ! -d "$JDK21_HOME" ]; then

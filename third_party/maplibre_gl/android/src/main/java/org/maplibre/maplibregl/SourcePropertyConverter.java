@@ -1,7 +1,11 @@
 package org.maplibre.maplibregl;
 
 import android.net.Uri;
+import android.util.Log;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import org.maplibre.android.style.expressions.Expression;
 import org.maplibre.geojson.FeatureCollection;
 import org.maplibre.android.geometry.LatLng;
 import org.maplibre.android.geometry.LatLngQuad;
@@ -17,6 +21,8 @@ import org.maplibre.android.style.sources.VectorSource;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -66,7 +72,9 @@ class SourcePropertyConverter {
   }
 
   static GeoJsonOptions buildGeojsonOptions(Map<String, Object> data) {
-    GeoJsonOptions options = new GeoJsonOptions();
+    // Disabled until upstream maplibre-native#4326 is fixed: synchronousUpdate causes a
+    // texture atlas slot-reuse bug that silently discards icons added via addImage().
+    GeoJsonOptions options = new GeoJsonOptions().withSynchronousUpdate(false);
 
     final Object buffer = data.get("buffer");
     if (buffer != null) {
@@ -88,25 +96,57 @@ class SourcePropertyConverter {
       options = options.withClusterRadius(Convert.toInt(clusterRadius));
     }
 
+    final Object clusterMinPoints = data.get("clusterMinPoints");
+    if (clusterMinPoints != null) {
+      options = options.withClusterMinPoints(Convert.toInt(clusterMinPoints));
+    }
+
     final Object lineMetrics = data.get("lineMetrics");
     if (lineMetrics != null) {
       options = options.withLineMetrics(Convert.toBoolean(lineMetrics));
     }
 
-    final Object maxZoom = data.get("maxZoom");
+    // The spec key is lowercase, which is what GeojsonSourceProperties sends.
+    // A GeoJSON source has no minzoom, so there is nothing to read for one.
+    final Object maxZoom = data.get("maxzoom");
     if (maxZoom != null) {
       options = options.withMaxZoom(Convert.toInt(maxZoom));
-    }
-
-    final Object minZoom = data.get("minZoom");
-    if (minZoom != null) {
-      options = options.withMinZoom(Convert.toInt(minZoom));
     }
 
     final Object tolerance = data.get("tolerance");
     if (tolerance != null) {
       options = options.withTolerance(Convert.toFloat(tolerance));
     }
+
+    final Object clusterProperties = data.get("clusterProperties");
+    if (clusterProperties instanceof Map) {
+      final Gson gson = new Gson();
+      for (Map.Entry<?, ?> entry : ((Map<?, ?>) clusterProperties).entrySet()) {
+        final String propertyName = entry.getKey().toString();
+        if (!(entry.getValue() instanceof List)) continue;
+        final List<?> value = (List<?>) entry.getValue();
+        if (value.size() < 2) continue;
+        // Format: [operator, map_expression]. The operator may be a simple string
+        // (e.g. "+") that needs expanding to ["+", ["accumulated"], ["get", propertyName]],
+        // or a full reduce-expression array that is passed through as-is.
+        final Object opRaw = value.get(0);
+        final JsonElement operatorJson;
+        if (opRaw instanceof String) {
+          final List<Object> expanded = Arrays.asList(
+              opRaw,
+              Collections.singletonList("accumulated"),
+              Arrays.asList("get", propertyName));
+          operatorJson = JsonParser.parseString(gson.toJson(expanded));
+        } else {
+          operatorJson = JsonParser.parseString(gson.toJson(opRaw));
+        }
+        final JsonElement mapExprJson = JsonParser.parseString(gson.toJson(value.get(1)));
+        final Expression operatorExpr = Expression.Converter.convert(operatorJson);
+        final Expression mapExpr = Expression.Converter.convert(mapExprJson);
+        options = options.withClusterProperty(propertyName, operatorExpr, mapExpr);
+      }
+    }
+
     return options;
   }
 
@@ -196,10 +236,26 @@ class SourcePropertyConverter {
     }
 
     final TileSet tileSet = buildTileset(properties);
-    return tileSet != null ? new RasterDemSource(id, tileSet) : null;
+    if (tileSet != null) {
+      final Object encoding = properties.get("encoding");
+      if (encoding != null) {
+        tileSet.setEncoding(Convert.toString(encoding));
+      }
+      return new RasterDemSource(id, tileSet);
+    }
+    return null;
   }
 
   static void addSource(String id, Map<String, Object> properties, Style style) {
+    // Check if source already exists to prevent CannotAddSourceException
+    // which can lead to native crashes. Log so callers don't silently see
+    // "success" while the existing source is kept untouched — if an update
+    // is intended, the source should be removed and re-added explicitly.
+    if (style.getSource(id) != null) {
+      Log.w(TAG, "addSource: source with id '" + id + "' already exists, skipping");
+      return;
+    }
+
     final Object type = properties.get("type");
     Source source = null;
 
@@ -226,6 +282,13 @@ class SourcePropertyConverter {
     }
 
     if (source != null) {
+      // Tile caching is a source-level setting rather than a tileset option, so
+      // it is applied to the built source. Set before the source joins the
+      // style, so the first tile requests already honour it.
+      final Object volatileTiles = properties.get("volatile");
+      if (volatileTiles != null) {
+        source.setVolatile(Convert.toBoolean(volatileTiles));
+      }
       style.addSource(source);
     }
   }

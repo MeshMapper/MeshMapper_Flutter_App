@@ -13,7 +13,7 @@ dependencies:
   flutter_blue_plus: ^1.32.0
   flutter_web_bluetooth: ^0.2.3
   geolocator: ^11.0.0
-  maplibre_gl: ^0.25.0
+  maplibre_gl: ^0.27.1
   clock: ^1.1.1
   http: ^1.2.0
   shared_preferences: ^2.2.0
@@ -59,14 +59,11 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.3
   fake_async: ^1.3.3
 
-# Vendored, patched copy of maplibre_gl 0.25.0. The ONLY delta from the
-# upstream pub.dev release is a native guard in the camera handlers
-# (ios/.../MapLibreMapController.swift + android/.../MapLibreMapController.java)
-# that refuses camera moves while the map view has no usable viewport —
-# MapLibre's transform unprojects against the viewport and aborts the app with
-# an uncaught C++ std::domain_error (SIGABRT) when it is degenerate/zero-sized.
-# That throw cannot be caught from Dart, so the fix must live in the plugin.
-# Re-apply the guard when bumping maplibre_gl. See DEVELOPMENT.md.
+# Vendored maplibre_gl 0.27.1 with native viewport guards (MESHMAPPER GUARD).
+# Android skips camera moves with no usable viewport; iOS bounds upstream's
+# layout deferral so permanently degenerate views still complete the Dart call.
+# The ten Android null-style returns previously carried are now handled upstream.
+# Recheck both guards on upgrade. See DEVELOPMENT.md for the complete delta.
 dependency_overrides:
   maplibre_gl:
     path: third_party/maplibre_gl

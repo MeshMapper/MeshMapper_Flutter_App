@@ -10,6 +10,7 @@ protocol MapLibreMapOptionsSink {
     func setTiltGesturesEnabled(tiltGesturesEnabled: Bool)
     func setTrackCameraPosition(trackCameraPosition: Bool)
     func setZoomGesturesEnabled(zoomGesturesEnabled: Bool)
+    func setDoubleClickZoomEnabled(doubleClickZoomEnabled: Bool)
     func setMyLocationEnabled(myLocationEnabled: Bool)
     func setMyLocationTrackingMode(myLocationTrackingMode: MLNUserTrackingMode)
     func setMyLocationRenderMode(myLocationRenderMode: MyLocationRenderMode)
@@ -20,4 +21,13 @@ protocol MapLibreMapOptionsSink {
     func setCompassViewMargins(x: Double, y: Double)
     func setAttributionButtonMargins(x: Double, y: Double)
     func setAttributionButtonPosition(position: MLNOrnamentPosition)
+    func setAttributionButtonColor(color: Int)
+    func setFeatureTapsTriggersMapClick(triggers: Bool)
+    func setLocationEngineProperties(
+        enableHighAccuracy: Bool,
+        distanceFilter: Double,
+        intervalMs: Int,
+        pulseWindowMs: Int
+    )
+    func setLocationSource(token: String)
 }

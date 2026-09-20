@@ -227,6 +227,10 @@ static LocationEngineRequest toLocationEngineRequest(Object o) {
       final List<?> locationEnginePropertiesList = toList(locationEngineProperties);
         sink.setLocationEngineProperties(toLocationEngineRequest(locationEnginePropertiesList));
     }
+    final Object locationSource = data.get("locationSource");
+    if (locationSource != null) {
+      sink.setLocationSource(toString(locationSource));
+    }
     final Object cameraTargetBounds = data.get("cameraTargetBounds");
     if (cameraTargetBounds != null) {
       final List<?> targetData = toList(cameraTargetBounds);
@@ -266,6 +270,10 @@ static LocationEngineRequest toLocationEngineRequest(Object o) {
     final Object zoomGesturesEnabled = data.get("zoomGesturesEnabled");
     if (zoomGesturesEnabled != null) {
       sink.setZoomGesturesEnabled(toBoolean(zoomGesturesEnabled));
+    }
+    final Object doubleClickZoomEnabled = data.get("doubleClickZoomEnabled");
+    if (doubleClickZoomEnabled != null) {
+      sink.setDoubleClickZoomEnabled(toBoolean(doubleClickZoomEnabled));
     }
     final Object myLocationEnabled = data.get("myLocationEnabled");
     if (myLocationEnabled != null) {
@@ -313,13 +321,25 @@ static LocationEngineRequest toLocationEngineRequest(Object o) {
       final Point point = toPoint(attributionButtonMarginsData, metrics.density);
       sink.setAttributionButtonMargins(point.x, point.y);
     }
+    final Object attributionButtonColor = data.get("attributionButtonColor");
+    if (attributionButtonColor != null) {
+      sink.setAttributionButtonColor(toInt(attributionButtonColor));
+    }
     final Object foregroundLoadColor = data.get("foregroundLoadColor");
     if (foregroundLoadColor != null) {
       sink.setForegroundLoadColor(toInt(foregroundLoadColor));
     }
+    final Object useHybridComposition = data.get("useHybridComposition");
+    if (useHybridComposition != null) {
+      sink.setUseHybridComposition(toBoolean(useHybridComposition));
+    }
     final Object translucentTextureSurface = data.get("translucentTextureSurface");
     if (translucentTextureSurface != null) {
       sink.setTranslucentTextureSurface(toBoolean(translucentTextureSurface));
+    }
+    final Object featureTapsTriggersMapClick = data.get("featureTapsTriggersMapClick");
+    if (featureTapsTriggersMapClick != null) {
+      sink.setFeatureTapsTriggersMapClick(toBoolean(featureTapsTriggersMapClick));
     }
   }
 }

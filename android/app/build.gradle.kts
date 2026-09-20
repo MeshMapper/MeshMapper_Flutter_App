@@ -76,6 +76,6 @@ dependencies {
     // MapLibre Android SDK — already pulled transitively by maplibre_gl, but
     // declaring it explicitly gives MainActivity.kt compile-time access to
     // OfflineManager for the tile cache MethodChannel handlers. Version must
-    // match maplibre_gl-0.25.0's transitive dep.
-    implementation("org.maplibre.gl:android-sdk:12.3.1")
+    // match maplibre_gl-0.27.1's OpenGL transitive dependency.
+    implementation("org.maplibre.gl:android-sdk-opengl:13.5.0")
 }

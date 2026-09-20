@@ -6,9 +6,20 @@ import UIKit
 public class MapLibreMapsPlugin: NSObject, FlutterPlugin {
     static var downloadOfflineRegionChannelHandler: OfflineChannelHandler? = nil
 
+
     public static func register(with registrar: FlutterPluginRegistrar) {
         let instance = MapLibreMapFactory(withRegistrar: registrar)
         registrar.register(instance, withId: "plugins.flutter.io/maplibre_gl")
+
+        // Register the header-injection protocol before any MLNMapView is created.
+        // MLNNetworkConfiguration docs require sessionConfiguration to be set before
+        // the first map view; we bake the protocol class into the session config here
+        // so that MapLibreHeadersProtocol can intercept requests at call time.
+        let sessionConfig = MLNNetworkConfiguration.sharedManager.sessionConfiguration
+            ?? URLSessionConfiguration.default
+        sessionConfig.protocolClasses = [MapLibreHeadersProtocol.self]
+            + (sessionConfig.protocolClasses ?? [])
+        MLNNetworkConfiguration.sharedManager.sessionConfiguration = sessionConfig
 
         let channel = FlutterMethodChannel(
             name: "plugins.flutter.io/maplibre_gl",
@@ -29,9 +40,7 @@ public class MapLibreMapsPlugin: NSObject, FlutterPlugin {
                     result(nil)
                     return
                 }
-                let sessionConfig = URLSessionConfiguration.default
-                sessionConfig.httpAdditionalHeaders = headers // your headers here
-                MLNNetworkConfiguration.sharedManager.sessionConfiguration = sessionConfig
+                MapLibreCustomHeaders.setHeaders(headers)
                 result(nil)
             case "installOfflineMapTiles":
                 guard let arguments = methodCall.arguments as? [String: String] else { return }
@@ -101,6 +110,22 @@ public class MapLibreMapsPlugin: NSObject, FlutterPlugin {
             case "getListOfRegions":
                 // Note: this does not download anything from internet, it only fetches data drom database
                 OfflineManagerUtils.regionsList(result: result)
+            case "mergeOfflineRegions":
+                guard let args = methodCall.arguments as? [String: Any],
+                      let path = args["path"] as? String
+                else {
+                    result(FlutterError(
+                        code: "INVALID_ARGUMENT",
+                        message: "Expected a 'path' string argument",
+                        details: nil
+                    ))
+                    return
+                }
+                OfflineManagerUtils.mergeRegions(result: result, path: path)
+            case "getOfflineDatabasePath":
+                // The shared store backing offline packs and the ambient cache.
+                // This is the same file mergeOfflineRegions imports from.
+                result(MLNOfflineStorage.shared.databaseURL.path)
             case "deleteOfflineRegion":
                 guard let args = methodCall.arguments as? [String: Any],
                       let id = args["id"] as? Int
@@ -109,6 +134,44 @@ public class MapLibreMapsPlugin: NSObject, FlutterPlugin {
                     return
                 }
                 OfflineManagerUtils.deleteRegion(result: result, id: id)
+            case "clearAmbientCache":
+                OfflineManagerUtils.clearAmbientCache(result: result)
+            case "resetOfflineDatabase":
+                OfflineManagerUtils.resetOfflineDatabase(result: result)
+            case "pauseOfflineRegionDownload":
+                guard let args = methodCall.arguments as? [String: Any],
+                      let id = args["id"] as? Int
+                else {
+                    result(nil)
+                    return
+                }
+                OfflineManagerUtils.pauseRegion(result: result, id: id)
+            case "resumeOfflineRegionDownload":
+                guard let args = methodCall.arguments as? [String: Any],
+                      let id = args["id"] as? Int
+                else {
+                    result(nil)
+                    return
+                }
+                OfflineManagerUtils.resumeRegion(result: result, id: id)
+            case "getOfflineRegionStatus":
+                guard let args = methodCall.arguments as? [String: Any],
+                      let id = args["id"] as? Int
+                else {
+                    result(nil)
+                    return
+                }
+                OfflineManagerUtils.getRegionStatus(result: result, id: id)
+            case "setOfflineMaxConcurrentRequests":
+                let args = methodCall.arguments as? [String: Any]
+                let maxRequestsPerHost = args?["maxRequestsPerHost"] as? Int
+                OfflineManagerUtils.setMaxConcurrentRequests(
+                    result: result,
+                    maxRequestsPerHost: maxRequestsPerHost
+                )
+            case "preWarm":
+                _ = MLNOfflineStorage.shared
+                result(nil)
             default:
                 result(FlutterMethodNotImplemented)
             }
