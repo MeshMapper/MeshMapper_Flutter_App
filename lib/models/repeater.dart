@@ -1,55 +1,5 @@
 import 'package:intl/intl.dart';
 
-/// A direct neighbour the repeater itself reported to an administrator's
-/// app, as `repeater_list.php` hands it back. [hex] is the full key when the
-/// server resolved the prefix, else the 16-hex prefix with [resolved] false.
-class ProvenNeighbour {
-  final String hex;
-  final bool resolved;
-  final double? snr;
-  final int? heardAt;
-
-  const ProvenNeighbour({
-    required this.hex,
-    required this.resolved,
-    this.snr,
-    this.heardAt,
-  });
-
-  /// The shortest key this accepts. The wire contract carries a 16-hex
-  /// prefix or a full 64-hex key, and every surface shows the first 8
-  /// characters, so anything shorter is malformed and is dropped rather than
-  /// left to blow up the row that renders it.
-  static const int minHexChars = 8;
-
-  static ProvenNeighbour? tryFromJson(Map<String, dynamic> json) {
-    final rawValue = json['hex'] is String ? json['hex'] : json['prefix'];
-    final raw = rawValue is String ? rawValue.trim() : null;
-    if (raw == null || raw.length < minHexChars) return null;
-    final resolvedRaw = json['resolved'];
-    final resolved = resolvedRaw == true || resolvedRaw == 1;
-    final snr = json['snr'];
-    final heard = json['heard_at'];
-    final heardValue = heard is num
-        ? heard
-        : heard is String
-            ? num.tryParse(heard)
-            : null;
-    final heardAt = heardValue == null || !heardValue.isFinite
-        ? null
-        : heardValue.toInt();
-    return ProvenNeighbour(
-      hex: raw.toUpperCase(),
-      resolved: resolved,
-      snr: snr is num ? snr.toDouble() : null,
-      heardAt: heardAt,
-    );
-  }
-
-  Map<String, dynamic> toJson() =>
-      {'hex': hex, 'resolved': resolved ? 1 : 0, 'snr': snr, 'heard_at': heardAt};
-}
-
 /// Represents a repeater from the MeshMapper API.
 /// Used to display repeater markers on the map.
 class Repeater {
@@ -107,11 +57,6 @@ class Repeater {
   /// Display names of the repeater's administrators. Empty when the server
   /// list predates this field or the repeater has none.
   final List<String> admins;
-
-  /// Neighbours the repeater itself reported to an administrator's app,
-  /// resolved server-side where possible. Empty when the server list
-  /// predates this field or none were reported.
-  final List<ProvenNeighbour> provenNeighbours;
 
   /// Whether the server ranks this repeater as part of its region's backbone:
   /// the smallest set of repeaters carrying half the region's traffic.
@@ -185,7 +130,6 @@ class Repeater {
     this.multibyteCapable = false,
     this.timeOffset,
     this.admins = const [],
-    this.provenNeighbours = const [],
     this.backbone = false,
     this.backboneShare,
     this.hardware,
@@ -230,16 +174,6 @@ class Repeater {
 
     final rawAdmins = json['admins'];
     final admins = rawAdmins is List ? rawAdmins.whereType<String>().toList() : const <String>[];
-    final rawProven = json['proven_neighbours'];
-    final proven = <ProvenNeighbour>[];
-    if (rawProven is List) {
-      for (final row in rawProven) {
-        if (row is Map<String, dynamic>) {
-          final n = ProvenNeighbour.tryFromJson(row);
-          if (n != null) proven.add(n);
-        }
-      }
-    }
 
     // Absent is the normal case and means "not backbone": no log line, no
     // user-visible anything. 1/true/"1" are all accepted because the field
@@ -307,7 +241,6 @@ class Repeater {
       multibyteCapable: multibyteCapable,
       timeOffset: timeOffset,
       admins: admins,
-      provenNeighbours: proven,
       backbone: backbone,
       backboneShare: backboneShare,
       hardware: text('hardware'),
@@ -337,7 +270,6 @@ class Repeater {
       'multibyte_capable': multibyteCapable ? 1 : 0,
       'time_offset': timeOffset,
       'admins': admins,
-      'proven_neighbours': provenNeighbours.map((n) => n.toJson()).toList(),
       // Round-tripped only when set, so a cached list keeps the same "absent
       // means not backbone" shape the server sends.
       if (backbone) 'backbone': 1,
@@ -493,7 +425,6 @@ class Repeater {
     bool? multibyteCapable,
     int? timeOffset,
     List<String>? admins,
-    List<ProvenNeighbour>? provenNeighbours,
     bool? backbone,
     double? backboneShare,
     String? hardware,
@@ -520,7 +451,6 @@ class Repeater {
         multibyteCapable: multibyteCapable ?? this.multibyteCapable,
         timeOffset: timeOffset ?? this.timeOffset,
         admins: admins ?? this.admins,
-        provenNeighbours: provenNeighbours ?? this.provenNeighbours,
         backbone: backbone ?? this.backbone,
         backboneShare: backboneShare ?? this.backboneShare,
         hardware: hardware ?? this.hardware,

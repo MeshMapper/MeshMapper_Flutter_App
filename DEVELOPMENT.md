@@ -1001,14 +1001,35 @@ the app shows as "This region does not support claiming yet."
   the full key, so a picked repeater carries it and a typed ID counts only when it prefixes
   exactly one loaded repeater (`resolveManageTarget`), else the tooltip reads "Choose from
   the list". The compact (landscape) controls are unchanged. The detail sheet gets an
-  Administrators row, a "Proven neighbours (via app)" list from the repeater list's
-  `proven_neighbours`, and a Manage button (disabled with the block reason while it cannot
-  open). My Repeaters lists the cached claims; a row opens the sheet when a radio is
+  Administrators row and a Manage button (disabled with the block reason while it cannot
+  open). A repeater's neighbours appear ONLY in the Manage sheet, at the moment they are
+  fetched off the radio for upload. The detail sheet used to echo the server's own
+  `proven_neighbours` back as a "Proven neighbours (via app)" list; that was both unwanted
+  and dead, since the parser read `hex`/`prefix` and the server has always sent `key`, so
+  every row failed to parse and the section never rendered. The app ignores the field. My Repeaters lists the cached claims; a row opens the sheet when a radio is
   connected. Labels prefer the server's nonempty `group_code` (such as BALTIC), otherwise
   `iata`. Both fields persist in the JSON claim cache; older rows without `group_code`
   retain their IATA label until a successful refresh supplies a group.
-- **Repeater list fields** (`Repeater.admins`, `Repeater.provenNeighbours`): display names
-  and the server-resolved neighbours; an old list has neither.
+- **Repeater list fields**: `Repeater.admins` (display names; an old list has none). The
+  server also sends `proven_neighbours`, which the app does not read.
+- **Admin-entered site details** (`hardware`, `antenna`, `heightMeters`, `power`,
+  `powerSource`, `siteNotes`) and the preset the repeater is heard on (`presetCurrent`,
+  the server's three-slot `freq,bw,sf` tag, not the app's own four-slot radio tag). Free
+  text the server does not validate, so a blank reads as absent and a non-string is
+  ignored rather than stringified. Null on most repeaters and on any older server, which
+  is the expected state and is never logged. The detail sheet renders each as its own row
+  only when set, with the antenna and its height on one row and the power and its source
+  on another, and the height following the imperial preference. Three getters do the
+  tidying the server does not: `displayPower` normalises a hand-typed column where `0.3`,
+  `0.3w` and `1.0W` are all real stored values, `displayPowerSource` cases `solar`/`poe`/
+  `mains`, and `displayPreset` renders the tag as `910.525 MHz · 62.5 kHz · SF7`, falling
+  back to the raw string when it is not three numeric slots. Covered by
+  `test/models/repeater_site_details_test.dart`.
+- **The detail sheet's facts card scrolls inside a cap** (`_repeaterCardMaxHeightFraction`,
+  32% of screen height) so a fully populated repeater cannot grow the sheet past its normal
+  opening height and scroll the close button away. Its ID chip is drawn by the map's own
+  painter (`_RepeaterChip` over `paintRepeaterChip`), scaled to the header by
+  `_sheetChipBoxHeight`, so the chip and the marker that was tapped can never drift apart.
 - Logged under `[RADMIN]` (session, modules, API, sheet, provider) and `[CONN]` (frames).
 
 ### Repeater Markers

@@ -21,7 +21,6 @@ Repeater rep(
   int? staleTime,
   int? timeOffset,
   List<String> admins = const [],
-  List<ProvenNeighbour> provenNeighbours = const [],
   bool backbone = false,
   double? backboneShare,
 }) =>
@@ -41,7 +40,6 @@ Repeater rep(
       multibyteCapable: multibyteCapable,
       timeOffset: timeOffset,
       admins: admins,
-      provenNeighbours: provenNeighbours,
       backbone: backbone,
       backboneShare: backboneShare,
     );
@@ -244,8 +242,6 @@ void main() {
     });
 
     test('all-distinct data is a metadata-preserving no-op', () {
-      const neighbour =
-          ProvenNeighbour(hex: '12345678', resolved: true, snr: 4);
       final original = rep(
         '1010${'A' * 60}',
         id: '10',
@@ -262,7 +258,6 @@ void main() {
         staleTime: 20,
         timeOffset: -3,
         admins: const ['admin'],
-        provenNeighbours: const [neighbour],
         backbone: true,
         backboneShare: 0.4,
       );
@@ -275,7 +270,6 @@ void main() {
         'enabled': 1,
       });
       expect(copy.admins, same(original.admins));
-      expect(copy.provenNeighbours, same(original.provenNeighbours));
     });
   });
 }

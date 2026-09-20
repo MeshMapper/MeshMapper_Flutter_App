@@ -224,6 +224,135 @@ Future<Uint8List> _encodePicture(
   return byteData.buffer.asUint8List();
 }
 
+/// How much of the screen the repeater detail sheet's facts card may occupy
+/// before it starts scrolling inside itself.
+///
+/// Measured, not picked: the sheet used to open at about 58% of the screen,
+/// and a repeater carrying the full set of admin-entered site details pushed
+/// it to 81%. The card accounts for roughly 32 points of that, so capping it
+/// here returns the sheet to its old opening height while leaving every
+/// shorter card, which is most of them, exactly as it was.
+const double _repeaterCardMaxHeightFraction = 0.32;
+
+/// Height of the repeater chip's whole BOX in the detail sheet's header,
+/// glow margin included, against the 44 the old solid pill occupied.
+///
+/// The map bakes its chips at their final size, 24 logical px tall (28 for a
+/// newly discovered one). That is right on a map and small beside a
+/// `titleLarge` name, so the sheet draws the SAME chip scaled up rather than a
+/// lookalike built from a `Container`. Scaling the canvas takes the bar, the
+/// state line, the hairline, the corner radius and the label with it, so the
+/// proportions the design rests on survive exactly.
+///
+/// It measures the BOX, not the body, because [repeaterChipGlowMargin] is
+/// transparent padding the chip needs but the header cannot spend. Sizing the
+/// body to 40 instead put the box at 67 tall and up to 127 wide for a
+/// six-character id, against the old badge's 44 by roughly 70, and the name
+/// beside it had nowhere left to go.
+///
+/// 44 is the old badge's own footprint, so swapping the pill for this chip
+/// cannot reflow the header, and it lands the label at about 13 px, which is
+/// the size the old badge used for anything longer than two characters. Raise
+/// it if the chip reads too small on a device; it is the only number to
+/// change, and everything else scales with it.
+const double _sheetChipBoxHeight = 44;
+
+/// The scale every header chip is drawn at. Derived from the ORDINARY chip, so
+/// it is one number for all of them and a new repeater stays proportionally
+/// taller here exactly as it is on the map, rather than being squashed back to
+/// a common height and losing the signal.
+const double _sheetChipScale = _sheetChipBoxHeight /
+    (RepeaterMarkerStyle.chipHeight + repeaterChipGlowMargin * 2);
+
+/// Draws one repeater chip in the map's marker style, at [_sheetChipScale].
+///
+/// Deliberately a thin wrapper over [paintRepeaterChip] and
+/// [paintRepeaterChipLabel], the same functions that bake the map's bitmaps.
+/// A palette change, a geometry change or a new state then moves the marker
+/// and this chip together; a hand-rolled copy would drift the moment either
+/// side was touched, which is exactly what the old solid-fill pill did.
+class _RepeaterChip extends StatelessWidget {
+  const _RepeaterChip({
+    required this.hex,
+    required this.accent,
+    required this.bodyRadius,
+    required this.isNew,
+  });
+
+  final String hex;
+  final Color accent;
+  final double bodyRadius;
+  final bool isNew;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = repeaterChipLabelPainter(hex, isNew: isNew);
+    final chip = RepeaterMarkerStyle.chipSize(hex.length,
+        isNew: isNew, measuredLabelWidth: label.width);
+    // The glow is drawn outside the chip's own box, so the widget reserves the
+    // same margin the baked bitmaps do or it would be clipped at the edges.
+    final logical = Size(
+      chip.width + repeaterChipGlowMargin * 2,
+      chip.height + repeaterChipGlowMargin * 2,
+    );
+    const scale = _sheetChipScale;
+    return SizedBox(
+      width: logical.width * scale,
+      height: logical.height * scale,
+      child: CustomPaint(
+        painter: _RepeaterChipPainter(
+          label: label,
+          chip: chip,
+          accent: accent,
+          bodyRadius: bodyRadius,
+          isNew: isNew,
+          scale: scale,
+        ),
+      ),
+    );
+  }
+}
+
+class _RepeaterChipPainter extends CustomPainter {
+  _RepeaterChipPainter({
+    required this.label,
+    required this.chip,
+    required this.accent,
+    required this.bodyRadius,
+    required this.isNew,
+    required this.scale,
+  });
+
+  final TextPainter label;
+  final Size chip;
+  final Color accent;
+  final double bodyRadius;
+  final bool isNew;
+  final double scale;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.scale(scale);
+    final body = paintRepeaterChip(
+      canvas,
+      Rect.fromLTWH(repeaterChipGlowMargin, repeaterChipGlowMargin, chip.width,
+          chip.height),
+      accent,
+      bodyRadius,
+      isNew: isNew,
+    );
+    paintRepeaterChipLabel(canvas, body, label);
+  }
+
+  @override
+  bool shouldRepaint(_RepeaterChipPainter old) =>
+      old.accent != accent ||
+      old.bodyRadius != bodyRadius ||
+      old.isNew != isNew ||
+      old.scale != scale ||
+      old.label.text?.toPlainText() != label.text?.toPlainText();
+}
+
 /// Bakes a complete repeater chip (body, state bar, edge and the hex label)
 /// into a single PNG, so the label is part of the icon and can never detach
 /// onto a neighbouring chip's box (the MapLibre symbol two-pass "all icons,
@@ -10609,36 +10738,20 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Header with icon badge (containing ID) and name
+              // Header: the repeater's own map chip, then its name. The chip is
+              // drawn by the map's painter at a larger size, so this header and
+              // the marker the user just tapped are the same object. It used to
+              // be a white-bordered pill filled solid with the state colour,
+              // which is the treatment the marker redesign deliberately moved
+              // away from, so the two no longer matched.
               Row(
                 children: [
-                  // Icon badge with hex ID (mirrors map marker)
-                  Builder(builder: (context) {
-                    final displayId = repeater.displayHexId();
-                    final isLongId = displayId.length > 2;
-                    return Container(
-                      constraints: const BoxConstraints(minWidth: 44),
-                      height: 44,
-                      padding: isLongId
-                          ? const EdgeInsets.symmetric(horizontal: 8)
-                          : EdgeInsets.zero,
-                      decoration: BoxDecoration(
-                        color: iconColor,
-                        borderRadius: BorderRadius.circular(22),
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        displayId,
-                        style: TextStyle(
-                          fontSize: isLongId ? 13 : 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                    );
-                  }),
+                  _RepeaterChip(
+                    hex: repeater.displayHexId(),
+                    accent: iconColor,
+                    bodyRadius: _repeaterBorderRadius(repeater.advertBytes),
+                    isNew: repeater.isNew,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
@@ -10704,7 +10817,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
               }),
               const SizedBox(height: 14),
 
-              // Details card
+              // Details card. Its contents scroll inside a fixed cap rather
+              // than growing the whole sheet: a repeater carrying the full set
+              // of admin-entered site details pushed the sheet from about 58%
+              // of the screen to 81%, which buried the map and scrolled the
+              // close button away with everything else. Capping here keeps the
+              // header, the Manage button and the totals row on screen at all
+              // times, and a card shorter than the cap is untouched, which is
+              // most of them.
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -10716,8 +10836,14 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                           .outline
                           .withValues(alpha: 0.5)),
                 ),
-                child: Column(
-                  children: [
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height *
+                          _repeaterCardMaxHeightFraction),
+                  child: Scrollbar(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: [
                     // Status. This used to be a chip floating on its own row
                     // between the Manage button and this card, the only
                     // left-aligned element in a column of full-width blocks.
@@ -10877,41 +11003,19 @@ class _MapWidgetState extends State<MapWidget> with WidgetsBindingObserver {
                         Text(repeater.siteNotes!,
                             style: const TextStyle(fontSize: 13)),
                       ),
-                  ],
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 14),
-              // Neighbours the repeater reported to an administrator's app.
-              if (repeater.provenNeighbours.isNotEmpty) ...[
-                Text('Proven neighbours (via app)',
-                    style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 4),
-                for (final n in repeater.provenNeighbours)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(children: [
-                      Expanded(
-                        child: Text(
-                          n.resolved
-                              ? (appState.repeaterNameForKey(n.hex) ??
-                                  n.hex.substring(0, 8))
-                              : '${n.hex.substring(0, 8)} (unknown)',
-                          style: const TextStyle(fontSize: 13),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      if (n.snr != null)
-                        Text('${n.snr!.toStringAsFixed(1)} dB',
-                            style: const TextStyle(fontSize: 12)),
-                      if (n.heardAt != null) ...[
-                        const SizedBox(width: 8),
-                        Text(formatDateWithAgo(n.heardAt),
-                            style: const TextStyle(fontSize: 12)),
-                      ],
-                    ]),
-                  ),
-                const SizedBox(height: 14),
-              ],
+              // A repeater's neighbours are shown only in the Manage sheet, at
+              // the moment they are fetched off the radio for upload. This
+              // sheet used to echo the server's own `proven_neighbours` back
+              // here as well, which was both unwanted and dead: the parser
+              // read `hex`/`prefix` and the server has always sent `key`, so
+              // every row failed to parse and the section never rendered.
               // BIDIR/TX/RX/DISC/DEAD totals (lazy — filled after the fetch)
               FutureBuilder<RepeaterStats?>(
                 future: statsFuture,
