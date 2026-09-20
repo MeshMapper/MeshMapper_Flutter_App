@@ -610,6 +610,8 @@ Keeps BLE and GPS active when the app is backgrounded during auto-ping.
 - **iOS**: Uses declared background modes (`bluetooth-central`, `location`). Users can enable "Background Location" in Settings to upgrade to "Always" location permission, which prevents iOS throttling during extended sessions. This must be manually enabled — a disclosure dialog explains the feature, then the system permission prompt appears.
 - **Web**: No-op (Web Bluetooth requires active tab)
 - **Lifecycle**: Lazy-initialized on first `startService()` call (triggered by auto-ping start), stopped on disconnect or auto-ping stop
+- **It MUST outlive the auto-reconnect window.** On Android the foreground service is the only thing holding the process alive, so `_startAutoReconnect` only re-titles it ("Reconnecting") and never stops it. Stopping it there froze the app within about three seconds and every Dart timer stalled with it, the 30 second reconnect timeout included: one user's reconnect gave up 18 to 21 minutes late, when they picked the phone back up, which is why the disconnect alert beeped on their return to the car instead of when the radio went out of range (the GPS stream, the 15 second batch timer and the reconnect timeout all resumed in the same millisecond). The service is stopped on the abandon path through `_fullDisconnectCleanup`, and by `_onReconnectSuccess` when there is no auto-ping to restore. A success that does restore auto-ping re-uses the running service, since `startService` folds into `updateNotification` when it is already up.
+- **The disconnect alert is dated to its cause, not to when it plays.** `AppStateProvider._playDisconnectAlert(occurredAt)` refuses to beep once the event is older than `maxDisconnectAlertAge` (`lib/services/disconnect_alert_decision.dart`, 2 minutes) and writes an error-log entry naming the real delay instead. The reconnect abandon passes `_reconnectStartedAt` (the BLE drop); every other caller is event-driven and passes the current moment. This is the backstop for phones that freeze anyway, not the fix. `_logStuckTimers` also reports a reconnect window still open past twice its budget, under `[CONN]`.
 - **Orphan cleanup**: `cleanupOrphanedService()` detects and stops stale foreground services from previous sessions
 - **File**: `lib/services/background_service.dart`
 
@@ -2139,6 +2141,7 @@ All API endpoints may return maintenance mode:
 - `lib/services/gps_service.dart` - GPS tracking and geofencing
 - `lib/services/recent_coverage_service.dart` - Smart Pinging lookup: recently covered cells from filtered z13 tiles
 - `lib/services/airborne_release.dart` - Pure builder for the airborne session-end text and release telemetry
+- `lib/services/disconnect_alert_decision.dart` - Pure staleness rule for the disconnect alert, so a beep delayed by a suspended process is never played
 - `lib/services/api_queue_service.dart` - Persistent upload queue
 - `lib/services/device_model_service.dart` - Device catalog cache, launch and connect-time refresh, unknown-device outbox
 - `lib/services/device_model_matcher.dart` - Shared identity sanitization, normalization and exact catalog match
